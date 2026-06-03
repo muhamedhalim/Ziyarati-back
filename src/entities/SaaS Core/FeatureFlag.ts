@@ -1,8 +1,8 @@
-import { Entity, PrimaryGeneratedColumn, Column, Unique, ManyToOne } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, Unique, ManyToOne, CreateDateColumn } from 'typeorm';
 import { Tenant } from '../SaaS Core/Tenant';
 
 @Entity('feature_flags')
-@Unique(['tenant_id', 'feature_key'])
+@Unique(['tenant', 'feature_key'])
 export class FeatureFlag {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -16,6 +16,6 @@ export class FeatureFlag {
   @Column({ default: false })
   is_enabled!: boolean;
 
-  @Column({ type: 'timestamptz' })
+  @CreateDateColumn()
   created_at!: Date;
 }
