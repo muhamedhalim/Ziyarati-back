@@ -40,7 +40,7 @@ export class Customer {
   @Column({ nullable: true })
   whatsapp_name?: string;
 
-  @Column({ nullable: true })
+@Column({ unique: true })
   email?: string;
 
   @Column({ nullable: true })

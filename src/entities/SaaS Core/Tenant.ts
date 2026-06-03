@@ -39,7 +39,7 @@ export class Tenant {
   @Column({ nullable: true })
   legal_name?: string;
 
-  @Column({ nullable: true })
+@Column({ unique: true })
   contact_email?: string;
 
   @Column({ nullable: true })

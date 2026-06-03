@@ -33,9 +33,11 @@ export class AuthController {
    * create users inside their own tenant; only a super-admin (tenantId null)
    * may target another tenant or provision another super-admin.
    */
+  // @Post('register')
+  // @UseGuards(PermissionsGuard)
+  // @RequirePermissions('users:create')
+  @Public()
   @Post('register')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('users:create')
   register(
     @Body() dto: RegisterDto,
     @CurrentUser() actor: AuthenticatedUser,
