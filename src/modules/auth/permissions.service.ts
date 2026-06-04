@@ -1,14 +1,11 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { Permission } from '../../entities/Auth&RBAC/Permission';
 import { CreatePermissionDto } from './dto/create-permission.dto';
 import { UpdatePermissionDto } from './dto/update-permission.dto';
+import { AppError, ErrorCode } from '../../common/errors';
 
 /**
  * Permissions form a global catalogue (no tenant column): the set of actions
@@ -27,7 +24,7 @@ export class PermissionsService {
       where: { slug: dto.slug },
     });
     if (exists) {
-      throw new ConflictException('A permission with this slug already exists');
+      throw new AppError(ErrorCode.CONFLICT, { message: 'A permission with this slug already exists' });
     }
     return this.permissions.save(this.permissions.create(dto));
   }
@@ -42,7 +39,7 @@ export class PermissionsService {
   async findOne(id: string): Promise<Permission> {
     const permission = await this.permissions.findOne({ where: { id } });
     if (!permission) {
-      throw new NotFoundException('Permission not found');
+      throw new AppError(ErrorCode.PERMISSION_NOT_FOUND);
     }
     return permission;
   }

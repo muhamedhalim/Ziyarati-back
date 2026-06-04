@@ -1,9 +1,4 @@
-import {
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
 
@@ -15,6 +10,7 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
+import { AppError, ErrorCode } from '../../common/errors';
 
 /**
  * Manages roles and role/permission/user assignments. Every operation is
@@ -42,7 +38,7 @@ export class RolesService {
       },
     });
     if (duplicate) {
-      throw new ConflictException('A role with this slug already exists');
+      throw new AppError(ErrorCode.ROLE_ALREADY_EXISTS);
     }
 
     const role = this.roles.create({
@@ -85,12 +81,12 @@ export class RolesService {
       relations: { tenant: true, rolePermissions: { permission: true } },
     });
     if (!role) {
-      throw new NotFoundException('Role not found');
+      throw new AppError(ErrorCode.ROLE_NOT_FOUND);
     }
     // Visible if it belongs to the tenant or is a shared system role.
     const ownedByTenant = (role.tenant?.id ?? null) === tenantId;
     if (!ownedByTenant && !role.is_system) {
-      throw new NotFoundException('Role not found');
+      throw new AppError(ErrorCode.ROLE_NOT_FOUND);
     }
     return role;
   }
@@ -139,7 +135,7 @@ export class RolesService {
         where: { id: In(permissionIds) },
       });
       if (found.length !== permissionIds.length) {
-        throw new NotFoundException('One or more permissions do not exist');
+        throw new AppError(ErrorCode.PERMISSION_NOT_FOUND, { message: 'One or more permissions do not exist' });
       }
     }
     await this.replaceRolePermissions(role, permissionIds);
@@ -160,7 +156,7 @@ export class RolesService {
       where: { user: { id: user.id }, role: { id: role.id } },
     });
     if (existing) {
-      throw new ConflictException('User already has this role');
+      throw new AppError(ErrorCode.ROLE_ASSIGNMENT_EXISTS);
     }
     return this.userRoles.save(this.userRoles.create({ user, role }));
   }
@@ -175,7 +171,7 @@ export class RolesService {
       where: { user: { id: userId }, role: { id: roleId } },
     });
     if (!link) {
-      throw new NotFoundException('Role assignment not found');
+      throw new AppError(ErrorCode.ROLE_ASSIGNMENT_NOT_FOUND);
     }
     await this.userRoles.remove(link);
   }
@@ -204,15 +200,15 @@ export class RolesService {
       relations: { tenant: true },
     });
     if (!role) {
-      throw new NotFoundException('Role not found');
+      throw new AppError(ErrorCode.ROLE_NOT_FOUND);
     }
     // A tenant can only mutate roles it owns. System roles (tenant null) are
     // mutable only by the super-admin (tenantId null) — handled by equality.
     if ((role.tenant?.id ?? null) !== tenantId) {
-      throw new ForbiddenException('You cannot modify this role');
+      throw new AppError(ErrorCode.ROLE_IMMUTABLE, { message: 'You cannot modify this role' });
     }
     if (role.is_system && tenantId !== null) {
-      throw new ForbiddenException('System roles cannot be modified');
+      throw new AppError(ErrorCode.ROLE_IMMUTABLE, { message: 'System roles cannot be modified' });
     }
     return role;
   }
@@ -226,7 +222,7 @@ export class RolesService {
       relations: { tenant: true },
     });
     if (!user || (user.tenant?.id ?? null) !== tenantId) {
-      throw new NotFoundException('User not found');
+      throw new AppError(ErrorCode.USER_NOT_FOUND);
     }
     return user;
   }

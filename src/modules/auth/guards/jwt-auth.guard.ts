@@ -1,11 +1,8 @@
-import {
-  ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { AppError, ErrorCode } from '../../../common/errors';
 
 /**
  * Authenticates every request using the JWT strategy, unless the handler (or
@@ -31,7 +28,7 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
 
   handleRequest<TUser = unknown>(err: unknown, user: TUser): TUser {
     if (err || !user) {
-      throw new UnauthorizedException('Authentication required');
+      throw new AppError(ErrorCode.UNAUTHORIZED);
     }
     return user;
   }

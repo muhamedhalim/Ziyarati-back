@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  Logger,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -26,6 +20,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtPayload, RefreshTokenPayload } from './interfaces/jwt-payload.interface';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { AuthResult, AuthTokens } from './interfaces/auth-tokens.interface';
+import { AppError, ErrorCode } from '../../common/errors';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -68,7 +63,7 @@ export class AuthService {
       },
     });
     if (existing) {
-      throw new ConflictException('Email already registered');
+      throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
     }
 
     const user = await this.users.save(
@@ -119,12 +114,12 @@ export class AuthService {
     });
 
     if (!user || !user.password_hash || !user.is_active) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new AppError(ErrorCode.INVALID_CREDENTIALS);
     }
 
     const matches = await bcrypt.compare(password, user.password_hash);
     if (!matches) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new AppError(ErrorCode.INVALID_CREDENTIALS);
     }
     return user;
   }
@@ -141,11 +136,11 @@ export class AuthService {
         secret: this.config.get<string>('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
       });
     } catch {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
     }
 
     if (payload.type !== 'refresh') {
-      throw new UnauthorizedException('Invalid token type');
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN, { message: 'Invalid token type' });
     }
 
     const stored = await this.refreshTokens.findOne({
@@ -165,7 +160,7 @@ export class AuthService {
       if (stored?.user) {
         await this.revokeAllForUser(stored.user.id);
       }
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
     }
 
     stored.revoked_at = new Date();
@@ -244,7 +239,7 @@ export class AuthService {
     });
 
     if (!reset || reset.expires_at.getTime() < Date.now() || !reset.user) {
-      throw new BadRequestException('Invalid or expired reset token');
+      throw new AppError(ErrorCode.INVALID_RESET_TOKEN);
     }
 
     await this.dataSource.transaction(async (manager) => {
@@ -267,12 +262,12 @@ export class AuthService {
   async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {
     const user = await this.users.findOne({ where: { id: userId } });
     if (!user || !user.password_hash) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new AppError(ErrorCode.INVALID_CREDENTIALS);
     }
 
     const matches = await bcrypt.compare(dto.currentPassword, user.password_hash);
     if (!matches) {
-      throw new UnauthorizedException('Current password is incorrect');
+      throw new AppError(ErrorCode.INVALID_CREDENTIALS, { message: 'Current password is incorrect' });
     }
 
     user.password_hash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
@@ -300,7 +295,7 @@ export class AuthService {
     });
 
     if (!user || !user.is_active) {
-      throw new UnauthorizedException('User is inactive or no longer exists');
+      throw new AppError(ErrorCode.USER_INACTIVE);
     }
 
     const roleSlugs = new Set<string>();
@@ -402,7 +397,7 @@ export class AuthService {
     }
     const tenant = await this.tenants.findOne({ where: { slug: tenantSlug } });
     if (!tenant) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new AppError(ErrorCode.INVALID_CREDENTIALS);
     }
     return tenant.id;
   }

@@ -2,9 +2,20 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { requestContext } from './common/middleware/request-context.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // ---------------- Request correlation id ----------------
+  // Registered first so every downstream layer (guards, routes, filter) sees it.
+  app.use(requestContext);
+
+  // ---------------- Global Exception Filter ----------------
+  // Catches everything (HttpException, TypeORM errors, runtime errors) and
+  // renders the single canonical error shape. Applies to ALL modules.
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   // ---------------- CORS ----------------
   app.enableCors({

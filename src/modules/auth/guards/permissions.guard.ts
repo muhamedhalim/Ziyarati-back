@@ -1,13 +1,9 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  ForbiddenException,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { PermissionSlug, ROLE } from '../../../rbac/rbac.constants';
+import { AppError, ErrorCode } from '../../../common/errors';
 
 /**
  * Grants access only when the user holds EVERY required permission slug.
@@ -37,7 +33,7 @@ export class PermissionsGuard implements CanActivate {
       .switchToHttp()
       .getRequest().user;
     if (!user) {
-      throw new ForbiddenException('Insufficient permissions');
+      throw new AppError(ErrorCode.PERMISSION_DENIED);
     }
 
     // Platform super-admin bypasses permission checks.
@@ -47,7 +43,7 @@ export class PermissionsGuard implements CanActivate {
 
     const hasAll = required.every((perm) => user.permissions.includes(perm));
     if (!hasAll) {
-      throw new ForbiddenException('Insufficient permissions');
+      throw new AppError(ErrorCode.PERMISSION_DENIED);
     }
     return true;
   }
