@@ -6,8 +6,8 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
-import { Branch } from '../SaaS Core/Branch';
+import { Tenant } from '../SaaS-Core/Tenant';
+import { Branch } from '../SaaS-Core/Branch';
 
 @Entity('analytics_events')
 export class AnalyticsEvent {

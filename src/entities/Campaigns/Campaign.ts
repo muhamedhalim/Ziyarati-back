@@ -9,7 +9,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { WhatsappTemplate } from '../WhatsApp/WhatsappTemplate';
 import { CampaignStatus, CampaignType } from '../enums';
 import { User } from '../Auth&RBAC/User';

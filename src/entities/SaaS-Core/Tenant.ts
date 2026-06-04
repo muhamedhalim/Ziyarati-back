@@ -10,12 +10,12 @@ import {
   DeleteDateColumn,
 } from 'typeorm';
 
-import { TenantSetting } from '../SaaS Core/TenantSetting';
-import { Branch } from '../SaaS Core/Branch';
-import { Subscription } from '../SaaS Core/Subscription';
-import { TenantVerificationDocument } from '../SaaS Core/TenantVerificationDocument';
-import { TenantApprovalEvent } from '../SaaS Core/TenantApprovalEvent';
-import { FeatureFlag } from '../SaaS Core/FeatureFlag';
+import { TenantSetting } from './TenantSetting';
+import { Branch } from './Branch';
+import { Subscription } from './Subscription';
+import { TenantVerificationDocument } from './TenantVerificationDocument';
+import { TenantApprovalEvent } from './TenantApprovalEvent';
+import { FeatureFlag } from './FeatureFlag';
 import { TenantApprovalStatus } from '../enums';
 
 @Entity('tenants')

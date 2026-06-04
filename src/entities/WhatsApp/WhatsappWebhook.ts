@@ -7,7 +7,7 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('whatsapp_webhooks')
 @Index(['created_at'])

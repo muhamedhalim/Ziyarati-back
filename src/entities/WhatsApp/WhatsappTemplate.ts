@@ -8,7 +8,7 @@ import {
   DeleteDateColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { WhatsappAccount } from './WhatsappAccount';
 
 @Entity('whatsapp_templates')

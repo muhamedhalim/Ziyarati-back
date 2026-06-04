@@ -9,7 +9,7 @@ import { DataSource, IsNull, Repository } from 'typeorm';
 import { User } from '../../entities/Auth&RBAC/User';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
-import { Tenant } from '../../entities/SaaS Core/Tenant';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';

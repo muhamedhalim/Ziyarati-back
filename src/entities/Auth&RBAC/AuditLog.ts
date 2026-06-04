@@ -6,7 +6,7 @@ import {
   ManyToOne,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('audit_logs')

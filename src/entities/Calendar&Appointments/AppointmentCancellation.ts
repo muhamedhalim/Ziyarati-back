@@ -7,7 +7,7 @@ import {
 } from 'typeorm';
 
 import { Appointment } from './Appointment';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('appointment_cancellations')

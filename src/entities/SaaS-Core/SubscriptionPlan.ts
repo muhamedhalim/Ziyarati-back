@@ -4,16 +4,16 @@ import { BillingCycle } from '../enums';
 @Entity('subscription_plans')
 export class SubscriptionPlan {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  name: string;
+  name!: string;
 
   @Column({ type: 'numeric', precision: 14, scale: 2 })
-  price: string;
+  price!: string;
 
   @Column({ type: 'enum', enum: BillingCycle })
-  billing_cycle: BillingCycle;
+  billing_cycle!: BillingCycle;
 
   @Column({ nullable: true })
   max_branches?: number;
@@ -34,8 +34,8 @@ export class SubscriptionPlan {
   max_campaigns?: number;
 
   @Column({ default: true })
-  is_active: boolean;
+  is_active!: boolean;
 
   @Column({ default: false })
-  is_custom: boolean;
+  is_custom!: boolean;
 }

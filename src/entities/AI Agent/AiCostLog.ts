@@ -6,7 +6,7 @@ import {
   Unique,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('ai_cost_logs')
 @Unique(['tenant', 'period_month'])

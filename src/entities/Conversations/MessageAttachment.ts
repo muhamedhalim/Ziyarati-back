@@ -7,7 +7,7 @@ import {
 } from 'typeorm';
 
 import { Message } from './Message';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('message_attachments')
 export class MessageAttachment {

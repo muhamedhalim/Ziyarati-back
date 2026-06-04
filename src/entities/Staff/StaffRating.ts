@@ -6,7 +6,7 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { StaffProfile } from './StaffProfile';
 import { Customer } from '../CRM/Customer';
 import { Appointment } from '../Calendar&Appointments/Appointment';

@@ -8,44 +8,44 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
 } from 'typeorm';
-import { Tenant } from '../SaaS Core/Tenant';
-import { SubscriptionPlan } from '../SaaS Core/SubscriptionPlan';
+import { Tenant } from '../SaaS-Core/Tenant';
+import { SubscriptionPlan } from './SubscriptionPlan';
 import { SubscriptionStatus } from '../enums';
 
 @Entity('subscriptions')
 @Index(['tenant'])
 export class Subscription {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @ManyToOne(() => Tenant, (t) => t.subscriptions)
-  tenant: Tenant;
+  tenant!: Tenant;
 
   @ManyToOne(() => SubscriptionPlan)
-  plan: SubscriptionPlan;
+  plan!: SubscriptionPlan;
 
   @Column({
     type: 'enum',
     enum: SubscriptionStatus,
     default: SubscriptionStatus.TRIAL,
   })
-  status: SubscriptionStatus;
+  status!: SubscriptionStatus;
 
   @Column({ type: 'timestamptz' })
-  starts_at: Date;
+  starts_at!: Date;
 
   @Column({ type: 'timestamptz' })
-  ends_at: Date;
+  ends_at!: Date;
 
   @Column({ default: true })
-  auto_renew: boolean;
+  auto_renew!: boolean;
 
   @CreateDateColumn()
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn()
-  updated_at: Date;
+  updated_at!: Date;
 
   @DeleteDateColumn()
-  deleted_at: Date;
+  deleted_at!: Date;
 }

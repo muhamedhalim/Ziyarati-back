@@ -9,8 +9,8 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
-import { Branch } from '../SaaS Core/Branch';
+import { Tenant } from '../SaaS-Core/Tenant';
+import { Branch } from '../SaaS-Core/Branch';
 import { Appointment } from '../Calendar&Appointments/Appointment';
 import { Customer } from '../CRM/Customer';
 import { PaymentStatus, SettlementStatus } from '../enums';

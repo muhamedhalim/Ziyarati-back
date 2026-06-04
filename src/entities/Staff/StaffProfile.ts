@@ -12,7 +12,7 @@ import {
 } from 'typeorm';
 
 import { User } from '../Auth&RBAC/User';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { StaffService } from './StaffService';
 import { StaffSchedule } from './StaffSchedule';
 import { StaffTimeOff } from './StaffTimeOff';

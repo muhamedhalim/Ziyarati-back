@@ -7,8 +7,8 @@ import {
   Column,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
-import { Branch } from '../SaaS Core/Branch';
+import { Tenant } from '../SaaS-Core/Tenant';
+import { Branch } from '../SaaS-Core/Branch';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('branch_users')

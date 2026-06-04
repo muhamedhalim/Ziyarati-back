@@ -1,6 +1,6 @@
 import { Column, CreateDateColumn, Entity, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Customer } from "./Customer";
-import { Tenant } from "../SaaS Core/Tenant";
+import { Tenant } from "../SaaS-Core/Tenant";
 import { User } from "../Auth&RBAC/User";
 
 @Entity('customer_files')

@@ -7,7 +7,7 @@ import {
 } from 'typeorm';
 
 import { AiAgent } from './AiAgent';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('ai_training_files')
 export class AiTrainingFile {

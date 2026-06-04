@@ -9,8 +9,8 @@ import {
   JoinColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
-import { Branch } from '../SaaS Core/Branch';
+import { Tenant } from '../SaaS-Core/Tenant';
+import { Branch } from '../SaaS-Core/Branch';
 
 @Entity('whatsapp_accounts')
 @Unique(['branch'])

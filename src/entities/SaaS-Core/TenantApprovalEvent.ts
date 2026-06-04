@@ -6,7 +6,7 @@ import {
   CreateDateColumn,
   Index,
 } from 'typeorm';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from './Tenant';
 
 @Entity('tenant_approval_events')
 @Index(['tenant', 'created_at'])

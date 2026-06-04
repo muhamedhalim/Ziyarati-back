@@ -8,7 +8,7 @@ import {
   Unique,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { Appointment } from '../Calendar&Appointments/Appointment';
 import { Customer } from '../CRM/Customer';
 import { InvoiceStatus } from '../enums';

@@ -7,7 +7,7 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { NotificationTemplate } from './NotificationTemplate';
 import { Appointment } from '../Calendar&Appointments/Appointment';
 

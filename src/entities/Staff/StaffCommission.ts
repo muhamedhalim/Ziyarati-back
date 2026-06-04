@@ -11,7 +11,7 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { StaffProfile } from './StaffProfile';
 import { Service } from '../Services/Service';
 

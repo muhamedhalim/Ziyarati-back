@@ -12,7 +12,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { CustomerProfile } from '../CRM/CustomerProfile';
 import { CustomerAddress } from '../CRM/CustomerAddress';
 import { CustomerNote } from '../CRM/CustomerNote';

@@ -1,6 +1,6 @@
 import { Column, Entity, JoinColumn, ManyToOne, OneToOne, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
 import { Customer } from "./Customer";
-import { Tenant } from "../SaaS Core/Tenant";
+import { Tenant } from "../SaaS-Core/Tenant";
 
 @Entity('customer_profiles')
 export class CustomerProfile {

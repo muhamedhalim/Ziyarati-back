@@ -7,7 +7,7 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('ai_messages')
 @Index(['ai_conversation_id', 'created_at'])

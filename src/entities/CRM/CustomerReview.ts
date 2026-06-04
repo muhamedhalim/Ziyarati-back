@@ -1,6 +1,6 @@
 import { Column, CreateDateColumn, DeleteDateColumn, Entity, JoinColumn, ManyToOne, OneToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Customer } from "./Customer";
-import { Tenant } from "../SaaS Core/Tenant";
+import { Tenant } from "../SaaS-Core/Tenant";
 import { Appointment } from "../Calendar&Appointments/Appointment";
 
 @Entity('customer_reviews')

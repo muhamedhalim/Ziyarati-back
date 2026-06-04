@@ -6,7 +6,7 @@ import {
 } from 'typeorm';
 
 import { Invoice } from './Invoice';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('invoice_items')
 export class InvoiceItem {

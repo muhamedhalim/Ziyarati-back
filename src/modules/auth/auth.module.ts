@@ -11,7 +11,7 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { RolePermission } from '../../entities/Auth&RBAC/RolePermission';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
-import { Tenant } from '../../entities/SaaS Core/Tenant';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { AuthService } from './auth.service';
 import { RolesService } from './roles.service';

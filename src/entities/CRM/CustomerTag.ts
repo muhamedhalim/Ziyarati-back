@@ -1,6 +1,6 @@
 import { Column, CreateDateColumn, Entity, Index, ManyToOne, OneToMany, PrimaryGeneratedColumn } from "typeorm";
 import { CustomerTagRelation } from "./CustomerTagRelation";
-import { Tenant } from "../SaaS Core/Tenant";
+import { Tenant } from "../SaaS-Core/Tenant";
 
 @Entity('customer_tags')
 @Index(['tenant', 'name'], { unique: true })

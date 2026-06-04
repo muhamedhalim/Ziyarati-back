@@ -7,7 +7,7 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { Conversation } from '../Conversations/Conversation';
 import { User } from '../Auth&RBAC/User';
 

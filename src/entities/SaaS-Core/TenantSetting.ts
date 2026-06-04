@@ -5,7 +5,7 @@ import {
   OneToOne,
   JoinColumn,
 } from 'typeorm';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from './Tenant';
 
 @Entity('tenant_settings')
 export class TenantSetting {

@@ -1,6 +1,6 @@
 import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from "typeorm";
 import { Customer } from "./Customer";
-import { Tenant } from "../SaaS Core/Tenant";
+import { Tenant } from "../SaaS-Core/Tenant";
 
 @Entity('customer_addresses')
 export class CustomerAddress {

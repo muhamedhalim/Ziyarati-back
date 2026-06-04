@@ -8,7 +8,7 @@ import {
 } from 'typeorm';
 
 import { Conversation } from './Conversation';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
 import { Customer } from '../CRM/Customer';
 

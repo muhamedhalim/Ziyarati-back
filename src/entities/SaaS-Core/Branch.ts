@@ -8,7 +8,7 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
 } from 'typeorm';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from './Tenant';
 
 @Entity('branches')
 @Index(['tenant'])

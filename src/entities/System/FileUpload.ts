@@ -7,7 +7,7 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('file_uploads')

@@ -10,7 +10,7 @@ import {
   Unique,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { UserRole } from '../Auth&RBAC/UserRole';
 import { RefreshToken } from '../Auth&RBAC/RefreshToken';
 

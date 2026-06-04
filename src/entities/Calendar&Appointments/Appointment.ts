@@ -11,8 +11,8 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
-import { Branch } from '../SaaS Core/Branch';
+import { Tenant } from '../SaaS-Core/Tenant';
+import { Branch } from '../SaaS-Core/Branch';
 import { Customer } from '../CRM/Customer';
 import { StaffProfile } from '../Staff/StaffProfile';
 import { User } from '../Auth&RBAC/User';

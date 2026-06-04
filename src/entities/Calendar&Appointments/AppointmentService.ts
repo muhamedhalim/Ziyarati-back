@@ -7,7 +7,7 @@ import {
 } from 'typeorm';
 import { Appointment } from './Appointment';
 import { Service } from '../Services/Service';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 
 @Entity('appointment_services')
 export class AppointmentService {

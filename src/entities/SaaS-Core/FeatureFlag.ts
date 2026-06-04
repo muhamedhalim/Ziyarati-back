@@ -1,5 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, Unique, ManyToOne, CreateDateColumn } from 'typeorm';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from './Tenant';
 
 @Entity('feature_flags')
 @Unique(['tenant', 'feature_key'])

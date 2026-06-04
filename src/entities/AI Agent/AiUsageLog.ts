@@ -6,7 +6,7 @@ import {
   Unique,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { AiAgent } from './AiAgent';
 
 @Entity('ai_usage_logs')

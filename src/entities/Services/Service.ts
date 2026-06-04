@@ -10,7 +10,7 @@ import {
   Index,
 } from 'typeorm';
 
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { ServiceCategory } from './ServiceCategory';
 import { ServicePrice } from './ServicePrice';
 import { ServiceResource } from './ServiceResource';

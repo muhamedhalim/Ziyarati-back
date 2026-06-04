@@ -8,7 +8,7 @@ import {
 
 import { Appointment } from './Appointment';
 import { CalendarSlot } from './CalendarSlot';
-import { Tenant } from '../SaaS Core/Tenant';
+import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('appointment_reschedules')
