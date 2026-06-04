@@ -63,10 +63,17 @@ export class Payment {
   })
   gateway?: string;
 
-  @Column({
-    nullable: true,
-  })
-  gateway_payment_id?: string;
+@Column({
+  nullable: true,
+  unique: true,
+})
+gateway_payment_id?: string;
+
+@Column({
+  nullable: true,
+  unique: true,
+})
+idempotency_key?: string;
 
   @Column({
     type: 'enum',

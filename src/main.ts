@@ -6,34 +6,75 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // ---------------- CORS ----------------
   app.enableCors({
     origin: true,
     credentials: true,
   });
 
-  // ---------------- Global Pipes ----------------
+  // ---------------- Global Prefix ----------------
+  app.setGlobalPrefix('api/v1');
+
+  // ---------------- Global Validation ----------------
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
-      transformOptions: { enableImplicitConversion: true },
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
     }),
   );
 
-  // ---------------- Swagger ----------------
-  const config = new DocumentBuilder()
+  // ---------------- Swagger Config ----------------
+  const swaggerConfig = new DocumentBuilder()
     .setTitle('Clinic SaaS API')
     .setDescription('Auth + RBAC + Multi Tenant System')
     .setVersion('1.0')
-    .addBearerAuth()
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+      },
+      'JWT-auth',
+    )
     .build();
 
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('docs', app, document);
+  const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
 
+  // Swagger under global prefix (recommended)
+  SwaggerModule.setup('api/v1/docs', app, swaggerDocument, {
+    swaggerOptions: {
+      persistAuthorization: true,
+    },
+  });
+
+  // ---------------- Health Route ----------------
+  app.use('/api/v1/health', (_req, res) => {
+    res.status(200).json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ---------------- Root Route ----------------
+  app.use('/', (_req, res, next) => {
+    if (_req.method === 'GET' && _req.url === '/') {
+      return res.status(200).json({
+        status: 'ok',
+        message: 'Clinic SaaS API is running',
+        docs: '/api/v1/docs',
+        health: '/api/v1/health',
+      });
+    }
+    next();
+  });
+
+  // ---------------- Start Server ----------------
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
-
+  await app.listen(port, '0.0.0.0');
 }
+
 bootstrap();
