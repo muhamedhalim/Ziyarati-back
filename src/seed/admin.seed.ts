@@ -3,7 +3,7 @@ import * as bcrypt from 'bcryptjs';
 import { Role } from '../entities/Auth&RBAC/Role';
 import { User } from '../entities/Auth&RBAC/User';
 import { UserRole } from '../entities/Auth&RBAC/UserRole';
-import { ROLE_SLUGS } from './rbac.constants';
+import { ROLE } from '../rbac/rbac.constants';
 import { logger } from './seed.logger';
 
 const BCRYPT_ROUNDS = 12;
@@ -33,7 +33,7 @@ export async function seedAdminUser(manager: EntityManager): Promise<void> {
   const userRoleRepo = manager.getRepository(UserRole);
 
   const superAdminRole = await roleRepo.findOne({
-    where: { slug: ROLE_SLUGS.SUPER_ADMIN, tenant: IsNull() },
+    where: { slug: ROLE.SUPER_ADMIN, tenant: IsNull() },
   });
   if (!superAdminRole) {
     throw new Error(

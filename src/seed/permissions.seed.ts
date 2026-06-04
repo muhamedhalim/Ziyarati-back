@@ -1,6 +1,6 @@
 import { EntityManager } from 'typeorm';
 import { Permission } from '../entities/Auth&RBAC/Permission';
-import { PERMISSIONS } from './rbac.constants';
+import { PERMISSIONS } from '../rbac/rbac.constants';
 import { logger } from './seed.logger';
 
 /**

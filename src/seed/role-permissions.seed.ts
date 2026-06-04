@@ -2,7 +2,7 @@ import { EntityManager, IsNull } from 'typeorm';
 import { Permission } from '../entities/Auth&RBAC/Permission';
 import { Role } from '../entities/Auth&RBAC/Role';
 import { RolePermission } from '../entities/Auth&RBAC/RolePermission';
-import { ALL_PERMISSIONS, ROLE_PERMISSIONS } from './rbac.constants';
+import { ALL_PERMISSIONS, ROLE_PERMISSIONS } from '../rbac/rbac.constants';
 import { logger } from './seed.logger';
 
 /**

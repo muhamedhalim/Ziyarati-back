@@ -6,5 +6,5 @@
     "resolvePackageJsonExports": false,
     "noEmit": true
   },
-  "include": ["src/seed/**/*.ts", "src/entities/**/*.ts"]
+  "include": ["src/seed/**/*.ts", "src/entities/**/*.ts", "src/rbac/**/*.ts"]
 }

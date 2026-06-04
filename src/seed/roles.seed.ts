@@ -1,6 +1,6 @@
 import { EntityManager, IsNull } from 'typeorm';
 import { Role } from '../entities/Auth&RBAC/Role';
-import { ROLES } from './rbac.constants';
+import { ROLES } from '../rbac/rbac.constants';
 import { logger } from './seed.logger';
 
 /**

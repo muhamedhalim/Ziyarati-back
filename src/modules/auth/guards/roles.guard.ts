@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
+import { RoleSlug } from '../../../rbac/rbac.constants';
 
 /**
  * Grants access when the user holds at least one of the required role slugs.
@@ -17,7 +18,7 @@ export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const required = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
+    const required = this.reflector.getAllAndOverride<RoleSlug[]>(ROLES_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);

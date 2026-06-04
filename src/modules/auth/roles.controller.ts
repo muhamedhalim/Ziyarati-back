@@ -21,6 +21,7 @@ import { SetRolePermissionsDto } from './dto/set-role-permissions.dto';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { RequirePermissions } from './decorators/permissions.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
+import { PERMISSION } from '../../rbac/rbac.constants';
 
 /**
  * Role administration. Everything is scoped to the caller's tenant; the tenant
@@ -33,7 +34,7 @@ export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 
   @Post()
-  @RequirePermissions('roles:create')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   create(
     @Body() dto: CreateRoleDto,
     @CurrentUser('tenantId') tenantId: string | null,
@@ -42,13 +43,13 @@ export class RolesController {
   }
 
   @Get()
-  @RequirePermissions('roles:read')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   findAll(@CurrentUser('tenantId') tenantId: string | null) {
     return this.rolesService.findAll(tenantId);
   }
 
   @Get(':id')
-  @RequirePermissions('roles:read')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('tenantId') tenantId: string | null,
@@ -57,7 +58,7 @@ export class RolesController {
   }
 
   @Patch(':id')
-  @RequirePermissions('roles:update')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateRoleDto,
@@ -68,7 +69,7 @@ export class RolesController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @RequirePermissions('roles:delete')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   remove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('tenantId') tenantId: string | null,
@@ -77,7 +78,7 @@ export class RolesController {
   }
 
   @Put(':id/permissions')
-  @RequirePermissions('roles:update')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   setPermissions(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SetRolePermissionsDto,
@@ -89,7 +90,7 @@ export class RolesController {
   // --------------------------- user assignment --------------------------- //
 
   @Post(':id/users/:userId')
-  @RequirePermissions('roles:assign')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   assign(
     @Param('id', ParseUUIDPipe) roleId: string,
     @Param('userId', ParseUUIDPipe) userId: string,
@@ -100,7 +101,7 @@ export class RolesController {
 
   @Delete(':id/users/:userId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @RequirePermissions('roles:assign')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   unassign(
     @Param('id', ParseUUIDPipe) roleId: string,
     @Param('userId', ParseUUIDPipe) userId: string,
@@ -110,7 +111,7 @@ export class RolesController {
   }
 
   @Get('users/:userId')
-  @RequirePermissions('roles:read')
+  @RequirePermissions(PERMISSION.ROLES_MANAGE)
   userRoles(
     @Param('userId', ParseUUIDPipe) userId: string,
     @CurrentUser('tenantId') tenantId: string | null,

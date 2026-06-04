@@ -23,25 +23,27 @@ import { RequirePermissions } from './decorators/permissions.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
 import type { AuthenticatedUser } from './interfaces/authenticated-user.interface';
+import { PERMISSION } from '../../rbac/rbac.constants';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   /**
-   * Creates a user. Protected: requires `users:create`. A tenant admin may only
+   * Creates a user. Protected: requires `users.manage`. A tenant admin may only
    * create users inside their own tenant; only a super-admin (tenantId null)
    * may target another tenant or provision another super-admin.
+   *
+   * NOTE: this is an administrative endpoint, NOT public self-signup. The first
+   * platform super-admin is provisioned by the seeder (`npm run seed`), so no
+   * public bootstrap route is needed. If end-user self-registration is required
+   * later, add a separate @Public() endpoint that hard-codes the `customer`
+   * role and forbids `tenantId`/super-admin creation.
    */
-  // @Post('register')
-  // @UseGuards(PermissionsGuard)
-  // @RequirePermissions('users:create')
-  @Public()
   @Post('register')
-  register(
-    @Body() dto: RegisterDto,
-    @CurrentUser() actor: AuthenticatedUser,
-  ) {
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions(PERMISSION.USERS_MANAGE)
+  register(@Body() dto: RegisterDto, @CurrentUser() actor: AuthenticatedUser) {
     if (actor.tenantId !== null) {
       // Non-super-admins are pinned to their own tenant.
       dto.tenantId = actor.tenantId;
