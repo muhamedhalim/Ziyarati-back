@@ -45,7 +45,7 @@ async function bootstrap() {
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
 
   // Swagger under global prefix (recommended)
-  SwaggerModule.setup('api/v1/docs', app, swaggerDocument, {
+  SwaggerModule.setup('docs', app, swaggerDocument, {
     swaggerOptions: {
       persistAuthorization: true,
     },

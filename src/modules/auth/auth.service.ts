@@ -13,8 +13,6 @@ import * as bcrypt from 'bcryptjs';
 import { DataSource, IsNull, Repository } from 'typeorm';
 
 import { User } from '../../entities/Auth&RBAC/User';
-import { Role } from '../../entities/Auth&RBAC/Role';
-import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS Core/Tenant';
@@ -37,9 +35,6 @@ export class AuthService {
 
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
-    @InjectRepository(Role) private readonly roles: Repository<Role>,
-    @InjectRepository(UserRole)
-    private readonly userRoles: Repository<UserRole>,
     @InjectRepository(RefreshToken)
     private readonly refreshTokens: Repository<RefreshToken>,
     @InjectRepository(PasswordReset)
@@ -55,19 +50,16 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
 
   /**
-   * Creates a user (scoped to a tenant, or a super-admin when tenantId is
-   * omitted), optionally assigning roles, then returns a fresh token pair.
+   * Creates a user account and returns a fresh token pair.
+   *
+   * `tenantId` is supplied by the caller from the authenticated principal — it
+   * is NOT part of the request body. This keeps registration (authentication)
+   * separate from authorization: the new user is created within the acting
+   * admin's tenant scope (or as a platform user when the actor is a
+   * super-admin, tenantId === null). Role assignment is a distinct concern,
+   * handled afterwards via the roles endpoints.
    */
-  async register(dto: RegisterDto): Promise<AuthResult> {
-    const tenantId = dto.tenantId ?? null;
-
-    if (tenantId) {
-      const tenant = await this.tenants.findOne({ where: { id: tenantId } });
-      if (!tenant) {
-        throw new BadRequestException('Tenant not found');
-      }
-    }
-
+  async register(dto: RegisterDto, tenantId: string | null): Promise<AuthResult> {
     // Enforce per-tenant email uniqueness (matches uq_user_tenant_email).
     const existing = await this.users.findOne({
       where: {
@@ -79,31 +71,16 @@ export class AuthService {
       throw new ConflictException('Email already registered');
     }
 
-    const user = await this.dataSource.transaction(async (manager) => {
-      const created = manager.create(User, {
+    const user = await this.users.save(
+      this.users.create({
         email: dto.email,
         phone: dto.phone,
         full_name: dto.fullName,
         password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
         is_active: true,
         tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
-      });
-      const saved = await manager.save(created);
-
-      if (dto.roleSlugs?.length) {
-        const roles = await this.resolveRolesBySlug(
-          manager.getRepository(Role),
-          dto.roleSlugs,
-          tenantId,
-        );
-        await manager.save(
-          roles.map((role) =>
-            manager.create(UserRole, { user: saved, role }),
-          ),
-        );
-      }
-      return saved;
-    });
+      }),
+    );
 
     return this.issueAuthResult(user.id);
   }
@@ -428,25 +405,6 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
     return tenant.id;
-  }
-
-  private async resolveRolesBySlug(
-    repo: Repository<Role>,
-    slugs: string[],
-    tenantId: string | null,
-  ): Promise<Role[]> {
-    const roles = await repo.find({
-      where: slugs.map((slug) => ({
-        slug,
-        // System roles (tenant NULL) are assignable to anyone; tenant roles
-        // only within that tenant.
-        tenant: tenantId ? { id: tenantId } : IsNull(),
-      })),
-    });
-    if (roles.length !== slugs.length) {
-      throw new BadRequestException('One or more roles are invalid for this tenant');
-    }
-    return roles;
   }
 
   private hashToken(token: string): string {

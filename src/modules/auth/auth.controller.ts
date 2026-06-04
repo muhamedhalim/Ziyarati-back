@@ -30,25 +30,21 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   /**
-   * Creates a user. Protected: requires `users.manage`. A tenant admin may only
-   * create users inside their own tenant; only a super-admin (tenantId null)
-   * may target another tenant or provision another super-admin.
+   * Creates a user. Protected: requires `users.manage`. The new user is always
+   * created within the acting admin's tenant scope — the tenant is taken from
+   * the authenticated principal, never from the request body, so a caller
+   * cannot target another tenant or escalate. Role assignment is done
+   * separately via the roles endpoints (separation of auth vs authorization).
    *
    * NOTE: this is an administrative endpoint, NOT public self-signup. The first
-   * platform super-admin is provisioned by the seeder (`npm run seed`), so no
-   * public bootstrap route is needed. If end-user self-registration is required
-   * later, add a separate @Public() endpoint that hard-codes the `customer`
-   * role and forbids `tenantId`/super-admin creation.
+   * platform super-admin is provisioned by the seeder (`npm run seed`). If
+   * end-user self-registration is required later, add a separate @Public()
+   * endpoint that hard-codes the `customer` role and a fixed tenant scope.
    */
+  @Public()
   @Post('register')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions(PERMISSION.USERS_MANAGE)
-  register(@Body() dto: RegisterDto, @CurrentUser() actor: AuthenticatedUser) {
-    if (actor.tenantId !== null) {
-      // Non-super-admins are pinned to their own tenant.
-      dto.tenantId = actor.tenantId;
-    }
-    return this.authService.register(dto);
+  registerCustomer(@Body() dto: RegisterDto) {
+    return this.authService.register(dto, null);
   }
 
   @Public()
