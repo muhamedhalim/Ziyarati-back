@@ -10,7 +10,7 @@ import {
   DeleteDateColumn,
 } from 'typeorm';
 
-import { TenantSetting } from './TenantSetting';
+import { TenantSetting } from '../SaaS-Core/TenantSetting';
 import { Branch } from './Branch';
 import { Subscription } from './Subscription';
 import { TenantVerificationDocument } from './TenantVerificationDocument';

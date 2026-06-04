@@ -67,8 +67,11 @@ import { validate } from './config/env.validation';
 
           autoLoadEntities: true,
 
-          // fallback explicit loader (VERY IMPORTANT)
-          entities: [__dirname + '/**/*.entity{.ts,.js}'],
+          // Entities in this project are NOT named *.entity.ts (they are
+          // Tenant.ts, TenantSetting.ts, …), so the *.entity glob matched
+          // nothing — leaving relation targets like TenantSetting unloaded.
+          // Load every entity file under /entities so all relations resolve.
+          entities: [__dirname + '/entities/**/*.{ts,js}'],
 
           synchronize,
           migrationsRun: !synchronize,
