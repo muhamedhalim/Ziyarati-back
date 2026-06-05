@@ -11,6 +11,23 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { AppError, ErrorCode } from '../../common/errors';
+import { ROLE } from '../../rbac/rbac.constants';
+
+/**
+ * Privileged roles that must NEVER be grantable through the roles API.
+ *
+ * - `super_admin`: platform role, seeded only. Granting it would escalate a
+ *   tenant user to full platform control (PermissionsGuard bypasses on this
+ *   slug).
+ * - `owner`: a tenant's founding role, created exclusively via
+ *   `/auth/register-owner`.
+ *
+ * This is the hard boundary between the Platform layer and the Tenant layer.
+ */
+const API_PROTECTED_ROLE_SLUGS: readonly string[] = [
+  ROLE.SUPER_ADMIN,
+  ROLE.OWNER,
+];
 
 /**
  * Manages roles and role/permission/user assignments. Every operation is
@@ -151,6 +168,7 @@ export class RolesService {
   ): Promise<UserRole> {
     const user = await this.assertUserInTenant(userId, tenantId);
     const role = await this.findOne(roleId, tenantId); // enforces visibility
+    this.assertRoleAssignableViaApi(role); // blocks super_admin / owner
 
     const existing = await this.userRoles.findOne({
       where: { user: { id: user.id }, role: { id: role.id } },
@@ -189,6 +207,18 @@ export class RolesService {
   }
 
   // ------------------------------ internals ------------------------------ //
+
+  /**
+   * Blocks granting platform/founding roles via the API. `super_admin` is
+   * created only by the seeder; `owner` only via `/auth/register-owner`.
+   */
+  private assertRoleAssignableViaApi(role: Role): void {
+    if (API_PROTECTED_ROLE_SLUGS.includes(role.slug)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Role "${role.slug}" cannot be assigned through the API`,
+      });
+    }
+  }
 
   /** Loads a role and asserts the caller's tenant is allowed to mutate it. */
   private async assertMutable(
