@@ -4,14 +4,20 @@ import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import * as bcrypt from 'bcryptjs';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
 
 import { User } from '../../entities/Auth&RBAC/User';
+import { Role } from '../../entities/Auth&RBAC/Role';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
-import { RegisterDto } from './dto/register.dto';
+import { RegisterOwnerDto } from './dto/register-owner.dto';
+import {
+  ASSIGNABLE_STAFF_ROLES,
+  RegisterUserDto,
+} from './dto/register-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -21,6 +27,7 @@ import { JwtPayload, RefreshTokenPayload } from './interfaces/jwt-payload.interf
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { AuthResult, AuthTokens } from './interfaces/auth-tokens.interface';
 import { AppError, ErrorCode } from '../../common/errors';
+import { ROLE, RoleSlug } from '../../rbac/rbac.constants';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -45,39 +52,99 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
 
   /**
-   * Creates a user account and returns a fresh token pair.
+   * CLINIC ONBOARDING (public). Creates a brand-new tenant (clinic) and its
+   * first user, who is assigned the `owner` role — atomically. The owner is
+   * signed in immediately, so a token pair is returned.
    *
-   * `tenantId` is supplied by the caller from the authenticated principal — it
-   * is NOT part of the request body. This keeps registration (authentication)
-   * separate from authorization: the new user is created within the acting
-   * admin's tenant scope (or as a platform user when the actor is a
-   * super-admin, tenantId === null). Role assignment is a distinct concern,
-   * handled afterwards via the roles endpoints.
+   * The tenant starts `PENDING_VERIFICATION` / inactive (entity defaults); a
+   * super-admin approves it later.
    */
-  async register(dto: RegisterDto, tenantId: string | null): Promise<AuthResult> {
-    // Enforce per-tenant email uniqueness (matches uq_user_tenant_email).
+  async registerOwner(
+    dto: RegisterOwnerDto,
+    context?: TokenContext,
+  ): Promise<AuthResult> {
+    const slugTaken = await this.tenants.findOne({ where: { slug: dto.slug } });
+    if (slugTaken) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'A clinic with this slug already exists',
+      });
+    }
+
+    const userId = await this.dataSource.transaction(async (manager) => {
+      const tenant = await manager.save(
+        manager.create(Tenant, {
+          name: dto.clinicName,
+          slug: dto.slug,
+          contact_email: dto.email,
+          contact_phone: dto.phone,
+          commercial_registration_number: dto.commercialRegistrationNumber,
+        }),
+      );
+
+      const user = await manager.save(
+        manager.create(User, {
+          email: dto.email,
+          phone: dto.phone,
+          full_name: dto.fullName,
+          password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
+          is_active: true,
+          tenant,
+        }),
+      );
+
+      // Owner ALWAYS gets the owner role; if this fails the tenant+user roll back.
+      await this.assignRoleBySlug(manager, user, ROLE.OWNER);
+      return user.id;
+    });
+
+    return this.issueAuthResult(userId, context);
+  }
+
+  /**
+   * STAFF CREATION (admin-only). Adds a user to an EXISTING tenant and assigns
+   * a non-privileged staff role (default: receptionist). The tenant comes from
+   * the acting admin's principal — never the body — preserving tenant isolation.
+   *
+   * Returns the created principal (NOT tokens): an admin is provisioning
+   * someone else, not signing themselves in.
+   */
+  async createTenantUser(
+    dto: RegisterUserDto,
+    actorTenantId: string | null,
+  ): Promise<AuthenticatedUser> {
+    if (!actorTenantId) {
+      // A platform super-admin has no tenant scope to create staff into.
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'Staff can only be created within a tenant',
+      });
+    }
+
+    const roleSlug = dto.roleSlug ?? ROLE.RECEPTIONIST;
+    this.assertAssignableStaffRole(roleSlug);
+
     const existing = await this.users.findOne({
-      where: {
-        email: dto.email,
-        tenant: tenantId ? { id: tenantId } : IsNull(),
-      },
+      where: { email: dto.email, tenant: { id: actorTenantId } },
     });
     if (existing) {
       throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
     }
 
-    const user = await this.users.save(
-      this.users.create({
-        email: dto.email,
-        phone: dto.phone,
-        full_name: dto.fullName,
-        password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
-        is_active: true,
-        tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
-      }),
-    );
+    const userId = await this.dataSource.transaction(async (manager) => {
+      const user = await manager.save(
+        manager.create(User, {
+          email: dto.email,
+          phone: dto.phone,
+          full_name: dto.fullName,
+          password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
+          is_active: true,
+          tenant: { id: actorTenantId } as Tenant,
+        }),
+      );
+      await this.assignRoleBySlug(manager, user, roleSlug);
+      return user.id;
+    });
 
-    return this.issueAuthResult(user.id);
+    return this.buildAuthenticatedUser(userId);
   }
 
   /** Verifies credentials and returns a token pair on success. */
@@ -321,6 +388,35 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
   // Internal helpers
   // ----------------------------------------------------------------------- //
+
+  /**
+   * Links a user to a seeded SYSTEM role (tenant IS NULL) inside a transaction.
+   * Throws if the role isn't seeded, so a user is never left without a role.
+   */
+  private async assignRoleBySlug(
+    manager: EntityManager,
+    user: User,
+    slug: RoleSlug,
+  ): Promise<void> {
+    const role = await manager.findOne(Role, {
+      where: { slug, tenant: IsNull() },
+    });
+    if (!role) {
+      throw new AppError(ErrorCode.ROLE_NOT_FOUND, {
+        message: `System role "${slug}" is not seeded`,
+      });
+    }
+    await manager.save(manager.create(UserRole, { user, role }));
+  }
+
+  /** Guards against assigning privileged roles through the staff flow. */
+  private assertAssignableStaffRole(slug: RoleSlug): void {
+    if (!ASSIGNABLE_STAFF_ROLES.includes(slug)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Role "${slug}" cannot be assigned to staff`,
+      });
+    }
+  }
 
   private async issueAuthResult(
     userId: string,

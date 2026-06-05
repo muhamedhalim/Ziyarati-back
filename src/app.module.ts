@@ -8,6 +8,7 @@ import { AppService } from './app.service';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
+import { SeedModule } from './seed/seed.module';
 
 import { validate } from './config/env.validation';
 
@@ -93,6 +94,7 @@ import { validate } from './config/env.validation';
     }),
 
     AuthModule,
+    SeedModule,
   ],
 
   controllers: [AppController],

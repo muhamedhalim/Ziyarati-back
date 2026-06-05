@@ -25,8 +25,8 @@ export class AiKnowledgeBase {
   @Column({ type: 'text' })
   content!: string;
 
-  @Column({ type: 'vector', nullable: true })
-  embedding?: number[];
+  // @Column({ type: 'vector', nullable: true })
+  // embedding?: number[];
 
   @Column({ length: 50, nullable: true })
   source_type?: string;

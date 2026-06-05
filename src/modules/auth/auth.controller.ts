@@ -11,7 +11,8 @@ import {
 import type { Request } from 'express';
 
 import { AuthService, TokenContext } from './auth.service';
-import { RegisterDto } from './dto/register.dto';
+import { RegisterOwnerDto } from './dto/register-owner.dto';
+import { RegisterUserDto } from './dto/register-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -30,21 +31,29 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   /**
-   * Creates a user. Protected: requires `users.manage`. The new user is always
-   * created within the acting admin's tenant scope — the tenant is taken from
-   * the authenticated principal, never from the request body, so a caller
-   * cannot target another tenant or escalate. Role assignment is done
-   * separately via the roles endpoints (separation of auth vs authorization).
-   *
-   * NOTE: this is an administrative endpoint, NOT public self-signup. The first
-   * platform super-admin is provisioned by the seeder (`npm run seed`). If
-   * end-user self-registration is required later, add a separate @Public()
-   * endpoint that hard-codes the `customer` role and a fixed tenant scope.
+   * CLINIC ONBOARDING (public). Creates a new tenant + its owner, assigns the
+   * `owner` role, and signs the owner in. This is the ONLY public registration.
    */
   @Public()
-  @Post('register')
-  registerCustomer(@Body() dto: RegisterDto) {
-    return this.authService.register(dto, null);
+  @Post('register-owner')
+  registerOwner(@Body() dto: RegisterOwnerDto, @Req() req: Request) {
+    return this.authService.registerOwner(dto, this.tokenContext(req));
+  }
+
+  /**
+   * STAFF CREATION (protected). A tenant admin (`users.manage`) adds a staff
+   * member to their OWN tenant — the tenant is taken from the principal, never
+   * the body. The new user always receives a non-privileged role (never null).
+   * Super-admin accounts are NEVER creatable via the API (seeder only).
+   */
+  @Post('register-user')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions(PERMISSION.USERS_MANAGE)
+  registerUser(
+    @Body() dto: RegisterUserDto,
+    @CurrentUser('tenantId') tenantId: string | null,
+  ) {
+    return this.authService.createTenantUser(dto, tenantId);
   }
 
   @Public()
