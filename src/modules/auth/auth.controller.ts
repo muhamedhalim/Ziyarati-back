@@ -11,8 +11,10 @@ import {
 import type { Request } from 'express';
 
 import { AuthService, TokenContext } from './auth.service';
+import { PatientService } from './patient.service';
 import { RegisterOwnerDto } from './dto/register-owner.dto';
 import { RegisterUserDto } from './dto/register-user.dto';
+import { RegisterPatientDto } from './dto/register-patient.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -25,10 +27,16 @@ import { CurrentUser } from './decorators/current-user.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
 import type { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AppError } from 'src/common/errors/app-error';
+import { ErrorCode } from 'src/common/errors/error-code';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly patientService: PatientService,
+  ) {}
 
   /**
    * CLINIC ONBOARDING (public). Creates a new tenant + its owner, assigns the
@@ -46,14 +54,32 @@ export class AuthController {
    * the body. The new user always receives a non-privileged role (never null).
    * Super-admin accounts are NEVER creatable via the API (seeder only).
    */
-  @Post('register-user')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions(PERMISSION.USERS_MANAGE)
-  registerUser(
-    @Body() dto: RegisterUserDto,
-    @CurrentUser('tenantId') tenantId: string | null,
-  ) {
-    return this.authService.createTenantUser(dto, tenantId);
+@Post('register-user')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermissions(PERMISSION.USERS_MANAGE)
+registerUser(
+  @Body() dto: RegisterUserDto,
+  @CurrentUser('tenantId') tenantId: string | null,
+) {
+  if (!tenantId) {
+    throw new AppError(ErrorCode.INVALID_CREDENTIALS, {
+      message: 'Tenant context is required',
+    });
+  }
+
+  return this.authService.createTenantUser(dto, tenantId);
+}
+
+  /**
+   * PATIENT SIGNUP (public, B2C). Creates a standalone external patient with NO
+   * tenant and NO RBAC, and returns patient-scoped tokens. Fully isolated from
+   * the tenant/RBAC user flows — patient tokens carry `type: 'patient'` and are
+   * rejected by the tenant JwtStrategy.
+   */
+  @Public()
+  @Post('register-patient')
+  registerPatient(@Body() dto: RegisterPatientDto) {
+    return this.patientService.registerPatient(dto);
   }
 
   @Public()
