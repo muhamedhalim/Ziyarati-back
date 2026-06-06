@@ -27,7 +27,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
    */
   async validate(payload: JwtPayload): Promise<AuthenticatedUser> {
       console.log('JWT PAYLOAD:', payload);
-
+    
     if (payload.type !== 'access') {
       throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid token type' });
     }

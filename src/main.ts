@@ -4,6 +4,7 @@ import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { requestContext } from './common/middleware/request-context.middleware';
+import { TenantContextService } from './core/tenant-context/tenant-context.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,6 +12,14 @@ async function bootstrap() {
   // ---------------- Request correlation id ----------------
   // Registered first so every downstream layer (guards, routes, filter) sees it.
   app.use(requestContext);
+
+  // ---------------- Tenant runtime context ----------------
+  // Open an AsyncLocalStorage store per request. The whole Nest pipeline
+  // (guards → interceptors → controllers → services) runs inside next(), so
+  // TenantContextService is available everywhere downstream. It is *populated*
+  // by TenantContextInterceptor once authentication has set request.user.
+  const tenantContext = app.get(TenantContextService);
+  app.use((_req, _res, next) => tenantContext.run(() => next()));
 
   // ---------------- Global Exception Filter ----------------
   // Catches everything (HttpException, TypeORM errors, runtime errors) and

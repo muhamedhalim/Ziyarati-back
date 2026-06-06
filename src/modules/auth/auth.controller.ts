@@ -30,8 +30,10 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AppError } from 'src/common/errors/app-error';
 import { ErrorCode } from 'src/common/errors/error-code';
+import { ApiBearerAuth } from 'node_modules/@nestjs/swagger/dist/decorators/api-bearer.decorator';
 
 @Controller('auth')
+@ApiBearerAuth('JWT-auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,

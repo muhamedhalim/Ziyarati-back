@@ -22,6 +22,7 @@ import { CurrentUser } from './decorators/current-user.decorator';
 import { RequirePermissions } from './decorators/permissions.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { ApiBearerAuth } from 'node_modules/@nestjs/swagger/dist/decorators/api-bearer.decorator';
 
 /**
  * Role administration. Everything is scoped to the caller's tenant; the tenant
@@ -29,6 +30,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
  * to keep tenants isolated.
  */
 @Controller('roles')
+@ApiBearerAuth('JWT-auth')
 @UseGuards(PermissionsGuard)
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}

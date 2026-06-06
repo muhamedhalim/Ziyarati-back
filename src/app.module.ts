@@ -8,6 +8,8 @@ import { AppService } from './app.service';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
+import { TenantModule } from './modules/tenant/tenant.module';
+import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
 import { validate } from './config/env.validation';
@@ -93,7 +95,9 @@ import { validate } from './config/env.validation';
       },
     }),
 
+    TenantContextModule,
     AuthModule,
+    TenantModule,
     SeedModule,
   ],
 
@@ -101,7 +105,6 @@ import { validate } from './config/env.validation';
 
   providers: [
     AppService,
-
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
