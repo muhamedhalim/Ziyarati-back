@@ -12,6 +12,7 @@ export enum ErrorCode {
   BAD_REQUEST = 'BAD_REQUEST',
   NOT_FOUND = 'NOT_FOUND',
   CONFLICT = 'CONFLICT',
+  UNPROCESSABLE_ENTITY = 'UNPROCESSABLE_ENTITY',
   UNAUTHORIZED = 'UNAUTHORIZED',
   FORBIDDEN = 'FORBIDDEN',
   RATE_LIMITED = 'RATE_LIMITED',
@@ -74,6 +75,10 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.CONFLICT]: {
     status: HttpStatus.CONFLICT,
     message: 'Resource conflict',
+  },
+  [ErrorCode.UNPROCESSABLE_ENTITY]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'The request was well-formed but cannot be processed',
   },
   [ErrorCode.UNAUTHORIZED]: {
     status: HttpStatus.UNAUTHORIZED,

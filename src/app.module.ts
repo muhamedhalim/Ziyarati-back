@@ -10,6 +10,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { TenantModule } from './modules/tenant/tenant.module';
 import { AppointmentModule } from './modules/appointment/appointment.module';
+import { StaffModule } from './modules/staff/staff.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -100,6 +101,7 @@ import { validate } from './config/env.validation';
     AuthModule,
     TenantModule,
     AppointmentModule,
+    StaffModule,
     SeedModule,
   ],
 

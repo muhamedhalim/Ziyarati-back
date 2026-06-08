@@ -53,7 +53,14 @@ export const PERMISSION = {
   SERVICES_DELETE: 'services.delete',
 
   // Staff
+  STAFF_CREATE: 'staff.create',
+  STAFF_READ: 'staff.read',
+  STAFF_UPDATE: 'staff.update',
   STAFF_MANAGE: 'staff.manage',
+  STAFF_SCHEDULE_MANAGE: 'staff.schedule.manage',
+  STAFF_TIMEOFF_MANAGE: 'staff.timeoff.manage',
+  STAFF_COMMISSION_READ: 'staff.commission.read',
+  STAFF_RATING_READ: 'staff.rating.read',
 
   // Payments (financial — kept strictly separate from reporting)
   PAYMENTS_READ: 'payments.read',
@@ -154,7 +161,14 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.SERVICES_UPDATE, name: 'Update services', module: 'services' },
   { slug: PERMISSION.SERVICES_DELETE, name: 'Delete services', module: 'services' },
 
+  { slug: PERMISSION.STAFF_CREATE, name: 'Create staff', module: 'staff' },
+  { slug: PERMISSION.STAFF_READ, name: 'Read staff', module: 'staff' },
+  { slug: PERMISSION.STAFF_UPDATE, name: 'Update staff', module: 'staff' },
   { slug: PERMISSION.STAFF_MANAGE, name: 'Manage staff', module: 'staff' },
+  { slug: PERMISSION.STAFF_SCHEDULE_MANAGE, name: 'Manage staff schedules & working hours', module: 'staff' },
+  { slug: PERMISSION.STAFF_TIMEOFF_MANAGE, name: 'Manage staff time off', module: 'staff' },
+  { slug: PERMISSION.STAFF_COMMISSION_READ, name: 'Read staff commissions', module: 'staff' },
+  { slug: PERMISSION.STAFF_RATING_READ, name: 'Read staff ratings', module: 'staff' },
 
   { slug: PERMISSION.PAYMENTS_READ, name: 'Read payments', module: 'payments' },
   { slug: PERMISSION.PAYMENTS_MANAGE, name: 'Manage payments', module: 'payments' },
@@ -235,7 +249,14 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.SERVICES_READ,
     PERMISSION.SERVICES_UPDATE,
     PERMISSION.SERVICES_DELETE,
+    PERMISSION.STAFF_CREATE,
+    PERMISSION.STAFF_READ,
+    PERMISSION.STAFF_UPDATE,
     PERMISSION.STAFF_MANAGE,
+    PERMISSION.STAFF_SCHEDULE_MANAGE,
+    PERMISSION.STAFF_TIMEOFF_MANAGE,
+    PERMISSION.STAFF_COMMISSION_READ,
+    PERMISSION.STAFF_RATING_READ,
     PERMISSION.PAYMENTS_READ,
     PERMISSION.PAYMENTS_MANAGE,
     PERMISSION.REFUNDS_MANAGE,
@@ -265,7 +286,14 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CUSTOMERS_UPDATE,
     PERMISSION.CUSTOMERS_MANAGE,
     PERMISSION.SERVICES_READ,
+    PERMISSION.STAFF_CREATE,
+    PERMISSION.STAFF_READ,
+    PERMISSION.STAFF_UPDATE,
     PERMISSION.STAFF_MANAGE,
+    PERMISSION.STAFF_SCHEDULE_MANAGE,
+    PERMISSION.STAFF_TIMEOFF_MANAGE,
+    PERMISSION.STAFF_COMMISSION_READ,
+    PERMISSION.STAFF_RATING_READ,
     PERMISSION.REPORTS_READ,
   ],
 
@@ -280,6 +308,7 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CUSTOMERS_CREATE,
     PERMISSION.CUSTOMERS_READ,
     PERMISSION.CUSTOMERS_UPDATE,
+    PERMISSION.STAFF_READ,
     PERMISSION.WHATSAPP_SEND,
   ],
 
