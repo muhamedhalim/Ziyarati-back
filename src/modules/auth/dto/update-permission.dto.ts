@@ -1,4 +1,4 @@
-import { OmitType, PartialType } from '@nestjs/mapped-types';
+import { OmitType, PartialType } from '@nestjs/swagger';
 import { CreatePermissionDto } from './create-permission.dto';
 
 /** Slug is immutable; only name/module can be updated. */

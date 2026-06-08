@@ -22,7 +22,7 @@ export const validate = (config: Record<string, unknown>) => {
 
     REDIS_URL: Joi.string().allow('', null),
 
-    JWT_SECRET: Joi.string().required(),
+    JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_EXPIRES_IN: Joi.string().default('7d'),
   });
 

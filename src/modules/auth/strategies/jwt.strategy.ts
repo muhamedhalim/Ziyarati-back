@@ -26,8 +26,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
    * was issued) and return the principal stored on `request.user`.
    */
   async validate(payload: JwtPayload): Promise<AuthenticatedUser> {
-      console.log('JWT PAYLOAD:', payload);
-    
     if (payload.type !== 'access') {
       throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid token type' });
     }

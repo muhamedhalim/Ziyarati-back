@@ -64,7 +64,12 @@ async function bootstrap() {
 
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
 
-  // Swagger under global prefix (recommended)
+  // Require the bearer scheme on EVERY operation, so clicking "Authorize" once
+  // attaches `Authorization: Bearer <token>` to all requests (public routes
+  // simply ignore it). Without this, only operations decorated with
+  // @ApiBearerAuth('JWT-auth') send the token — the rest hit "No auth token".
+  swaggerDocument.security = [{ 'JWT-auth': [] }];
+
   SwaggerModule.setup('docs', app, swaggerDocument, {
     swaggerOptions: {
       persistAuthorization: true,
