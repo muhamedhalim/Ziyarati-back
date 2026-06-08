@@ -28,8 +28,14 @@ export const PERMISSION = {
   APPOINTMENTS_READ: 'appointments.read',
   APPOINTMENTS_READ_OWN: 'appointments.read_own', // ABAC — see below
   APPOINTMENTS_UPDATE: 'appointments.update',
+  APPOINTMENTS_RESCHEDULE: 'appointments.reschedule',
   APPOINTMENTS_CANCEL: 'appointments.cancel',
   APPOINTMENTS_MANAGE_ALL: 'appointments.manage_all',
+
+  // Reviews (customer feedback on completed appointments)
+  REVIEWS_READ: 'reviews.read',
+  REVIEWS_CREATE: 'reviews.create',
+  REVIEWS_MANAGE: 'reviews.manage', // staff replies / moderation
 
   // Customers
   CUSTOMERS_CREATE: 'customers.create',
@@ -128,8 +134,13 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.APPOINTMENTS_READ, name: 'Read appointments', module: 'appointments' },
   { slug: PERMISSION.APPOINTMENTS_READ_OWN, name: 'Read own appointments', module: 'appointments' },
   { slug: PERMISSION.APPOINTMENTS_UPDATE, name: 'Update appointments', module: 'appointments' },
+  { slug: PERMISSION.APPOINTMENTS_RESCHEDULE, name: 'Reschedule appointments', module: 'appointments' },
   { slug: PERMISSION.APPOINTMENTS_CANCEL, name: 'Cancel appointments', module: 'appointments' },
   { slug: PERMISSION.APPOINTMENTS_MANAGE_ALL, name: 'Manage all appointments', module: 'appointments' },
+
+  { slug: PERMISSION.REVIEWS_READ, name: 'Read customer reviews', module: 'reviews' },
+  { slug: PERMISSION.REVIEWS_CREATE, name: 'Create customer reviews', module: 'reviews' },
+  { slug: PERMISSION.REVIEWS_MANAGE, name: 'Manage / reply to reviews', module: 'reviews' },
 
   { slug: PERMISSION.CUSTOMERS_CREATE, name: 'Create customers', module: 'customers' },
   { slug: PERMISSION.CUSTOMERS_READ, name: 'Read customers', module: 'customers' },
@@ -211,8 +222,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_UPDATE,
+    PERMISSION.APPOINTMENTS_RESCHEDULE,
     PERMISSION.APPOINTMENTS_CANCEL,
     PERMISSION.APPOINTMENTS_MANAGE_ALL,
+    PERMISSION.REVIEWS_READ,
+    PERMISSION.REVIEWS_MANAGE,
     PERMISSION.CUSTOMERS_CREATE,
     PERMISSION.CUSTOMERS_READ,
     PERMISSION.CUSTOMERS_UPDATE,
@@ -241,8 +255,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_UPDATE,
+    PERMISSION.APPOINTMENTS_RESCHEDULE,
     PERMISSION.APPOINTMENTS_CANCEL,
     PERMISSION.APPOINTMENTS_MANAGE_ALL,
+    PERMISSION.REVIEWS_READ,
+    PERMISSION.REVIEWS_MANAGE,
     PERMISSION.CUSTOMERS_CREATE,
     PERMISSION.CUSTOMERS_READ,
     PERMISSION.CUSTOMERS_UPDATE,
@@ -257,7 +274,9 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_UPDATE,
+    PERMISSION.APPOINTMENTS_RESCHEDULE,
     PERMISSION.APPOINTMENTS_CANCEL,
+    PERMISSION.REVIEWS_READ,
     PERMISSION.CUSTOMERS_CREATE,
     PERMISSION.CUSTOMERS_READ,
     PERMISSION.CUSTOMERS_UPDATE,
@@ -268,6 +287,7 @@ export const ROLE_PERMISSIONS: Record<
   [ROLE.CUSTOMER]: [
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ_OWN,
+    PERMISSION.REVIEWS_CREATE,
     PERMISSION.PROFILE_UPDATE_OWN,
   ],
 };

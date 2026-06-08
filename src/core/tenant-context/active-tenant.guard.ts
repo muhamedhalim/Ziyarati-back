@@ -1,13 +1,12 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import type { Request } from 'express';
 
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantApprovalStatus } from '../../entities/enums';
 import { AuthenticatedUser } from '../../modules/auth/interfaces/authenticated-user.interface';
 import { TenantContextService } from './tenant-context.service';
+import { TenantLookupService } from './tenant-lookup.service';
 import { ALLOW_INACTIVE_TENANT_KEY } from './allow-inactive-tenant.decorator';
 import { AppError, ErrorCode } from '../../common/errors';
 
@@ -30,7 +29,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 export class ActiveTenantGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
-    @InjectRepository(Tenant) private readonly tenants: Repository<Tenant>,
+    private readonly tenantLookup: TenantLookupService,
     private readonly context: TenantContextService,
   ) {}
 
@@ -56,9 +55,7 @@ export class ActiveTenantGuard implements CanActivate {
       return true;
     }
 
-    const tenant = await this.tenants.findOne({
-      where: { id: user.tenantId },
-    });
+    const tenant = await this.tenantLookup.findById(user.tenantId);
     if (!tenant) {
       throw new AppError(ErrorCode.TENANT_NOT_FOUND);
     }
