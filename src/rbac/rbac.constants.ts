@@ -79,6 +79,15 @@ export const PERMISSION = {
   AI_CHAT: 'ai.chat',
   AI_MANAGE: 'ai.manage',
 
+  // Subscription & Billing
+  SUBSCRIPTION_READ: 'subscription.read',
+  SUBSCRIPTION_MANAGE: 'subscription.manage',
+  BILLING_READ: 'billing.read',
+  BILLING_MANAGE: 'billing.manage',
+  USAGE_READ: 'usage.read',
+  FEATUREFLAG_READ: 'featureflag.read',
+  FEATUREFLAG_MANAGE: 'featureflag.manage',
+
   // Admin / system
   USERS_MANAGE: 'users.manage',
   ROLES_MANAGE: 'roles.manage',
@@ -183,6 +192,14 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.AI_CHAT, name: 'Use AI assistant', module: 'ai' },
   { slug: PERMISSION.AI_MANAGE, name: 'Manage AI assistant', module: 'ai' },
 
+  { slug: PERMISSION.SUBSCRIPTION_READ, name: 'Read subscription', module: 'billing' },
+  { slug: PERMISSION.SUBSCRIPTION_MANAGE, name: 'Manage subscription', module: 'billing' },
+  { slug: PERMISSION.BILLING_READ, name: 'Read billing & invoices', module: 'billing' },
+  { slug: PERMISSION.BILLING_MANAGE, name: 'Manage billing & invoices', module: 'billing' },
+  { slug: PERMISSION.USAGE_READ, name: 'Read usage stats', module: 'billing' },
+  { slug: PERMISSION.FEATUREFLAG_READ, name: 'Read feature flags', module: 'billing' },
+  { slug: PERMISSION.FEATUREFLAG_MANAGE, name: 'Manage feature flags', module: 'billing' },
+
   { slug: PERMISSION.USERS_MANAGE, name: 'Manage users', module: 'admin' },
   { slug: PERMISSION.ROLES_MANAGE, name: 'Manage roles', module: 'admin' },
   { slug: PERMISSION.TENANTS_MANAGE, name: 'Manage tenants', module: 'admin' },
@@ -266,6 +283,12 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.WHATSAPP_TEMPLATES_MANAGE,
     PERMISSION.AI_CHAT,
     PERMISSION.AI_MANAGE,
+    PERMISSION.SUBSCRIPTION_READ,
+    PERMISSION.SUBSCRIPTION_MANAGE,
+    PERMISSION.BILLING_READ,
+    PERMISSION.BILLING_MANAGE,
+    PERMISSION.USAGE_READ,
+    PERMISSION.FEATUREFLAG_READ,
     PERMISSION.USERS_MANAGE,
     PERMISSION.ROLES_MANAGE,
   ],
@@ -294,6 +317,10 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.STAFF_TIMEOFF_MANAGE,
     PERMISSION.STAFF_COMMISSION_READ,
     PERMISSION.STAFF_RATING_READ,
+    PERMISSION.SUBSCRIPTION_READ,
+    PERMISSION.BILLING_READ,
+    PERMISSION.USAGE_READ,
+    PERMISSION.FEATUREFLAG_READ,
     PERMISSION.REPORTS_READ,
   ],
 

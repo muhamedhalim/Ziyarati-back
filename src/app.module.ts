@@ -11,6 +11,7 @@ import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { TenantModule } from './modules/tenant/tenant.module';
 import { AppointmentModule } from './modules/appointment/appointment.module';
 import { StaffModule } from './modules/staff/staff.module';
+import { SubscriptionBillingModule } from './modules/subscription-billing/subscription-billing.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -102,6 +103,7 @@ import { validate } from './config/env.validation';
     TenantModule,
     AppointmentModule,
     StaffModule,
+    SubscriptionBillingModule,
     SeedModule,
   ],
 
