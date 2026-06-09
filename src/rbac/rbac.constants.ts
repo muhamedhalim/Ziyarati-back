@@ -88,6 +88,14 @@ export const PERMISSION = {
   FEATUREFLAG_READ: 'featureflag.read',
   FEATUREFLAG_MANAGE: 'featureflag.manage',
 
+  // Notifications
+  NOTIFICATIONS_READ: 'notifications.read',
+  NOTIFICATIONS_MANAGE: 'notifications.manage',
+  NOTIFICATION_TEMPLATES_READ: 'notification_templates.read',
+  NOTIFICATION_TEMPLATES_MANAGE: 'notification_templates.manage',
+  NOTIFICATION_RULES_READ: 'notification_rules.read',
+  NOTIFICATION_RULES_MANAGE: 'notification_rules.manage',
+
   // Admin / system
   USERS_MANAGE: 'users.manage',
   ROLES_MANAGE: 'roles.manage',
@@ -200,6 +208,13 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.FEATUREFLAG_READ, name: 'Read feature flags', module: 'billing' },
   { slug: PERMISSION.FEATUREFLAG_MANAGE, name: 'Manage feature flags', module: 'billing' },
 
+  { slug: PERMISSION.NOTIFICATIONS_READ, name: 'Read notifications', module: 'notifications' },
+  { slug: PERMISSION.NOTIFICATIONS_MANAGE, name: 'Manage notifications', module: 'notifications' },
+  { slug: PERMISSION.NOTIFICATION_TEMPLATES_READ, name: 'Read notification templates', module: 'notifications' },
+  { slug: PERMISSION.NOTIFICATION_TEMPLATES_MANAGE, name: 'Manage notification templates', module: 'notifications' },
+  { slug: PERMISSION.NOTIFICATION_RULES_READ, name: 'Read notification rules', module: 'notifications' },
+  { slug: PERMISSION.NOTIFICATION_RULES_MANAGE, name: 'Manage notification rules', module: 'notifications' },
+
   { slug: PERMISSION.USERS_MANAGE, name: 'Manage users', module: 'admin' },
   { slug: PERMISSION.ROLES_MANAGE, name: 'Manage roles', module: 'admin' },
   { slug: PERMISSION.TENANTS_MANAGE, name: 'Manage tenants', module: 'admin' },
@@ -289,6 +304,12 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.BILLING_MANAGE,
     PERMISSION.USAGE_READ,
     PERMISSION.FEATUREFLAG_READ,
+    PERMISSION.NOTIFICATIONS_READ,
+    PERMISSION.NOTIFICATIONS_MANAGE,
+    PERMISSION.NOTIFICATION_TEMPLATES_READ,
+    PERMISSION.NOTIFICATION_TEMPLATES_MANAGE,
+    PERMISSION.NOTIFICATION_RULES_READ,
+    PERMISSION.NOTIFICATION_RULES_MANAGE,
     PERMISSION.USERS_MANAGE,
     PERMISSION.ROLES_MANAGE,
   ],
@@ -321,6 +342,12 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.BILLING_READ,
     PERMISSION.USAGE_READ,
     PERMISSION.FEATUREFLAG_READ,
+    PERMISSION.NOTIFICATIONS_READ,
+    PERMISSION.NOTIFICATIONS_MANAGE,
+    PERMISSION.NOTIFICATION_TEMPLATES_READ,
+    PERMISSION.NOTIFICATION_TEMPLATES_MANAGE,
+    PERMISSION.NOTIFICATION_RULES_READ,
+    PERMISSION.NOTIFICATION_RULES_MANAGE,
     PERMISSION.REPORTS_READ,
   ],
 
@@ -336,6 +363,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CUSTOMERS_READ,
     PERMISSION.CUSTOMERS_UPDATE,
     PERMISSION.STAFF_READ,
+    PERMISSION.NOTIFICATIONS_READ,
+    PERMISSION.NOTIFICATION_TEMPLATES_READ,
     PERMISSION.WHATSAPP_SEND,
   ],
 
