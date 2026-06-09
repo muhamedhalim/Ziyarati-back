@@ -1,0 +1,103 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+
+import { AiAgent } from '../../entities/AI Agent/AiAgent';
+import { AiKnowledgeBase } from '../../entities/AI Agent/AiKnowledgeBase';
+import { AiTrainingFile } from '../../entities/AI Agent/AiTrainingFile';
+import { AiPrompt } from '../../entities/AI Agent/AiPrompt';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { AiMessage } from '../../entities/AI Agent/AiMessage';
+import { AiUsageLog } from '../../entities/AI Agent/AiUsageLog';
+import { AiCostLog } from '../../entities/AI Agent/AiCostLog';
+import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
+import { Branch } from '../../entities/SaaS-Core/Branch';
+import { Conversation } from '../../entities/Conversations/Conversation';
+import { User } from '../../entities/Auth&RBAC/User';
+
+import { AiAgentService } from './ai-agent.service';
+import { AiKnowledgeBaseService } from './ai-knowledge-base.service';
+import { AiTrainingFileService } from './ai-training-file.service';
+import { AiPromptService } from './ai-prompt.service';
+import { AiConversationService } from './ai-conversation.service';
+import { AiMessageService } from './ai-message.service';
+import { AiRagService } from './ai-rag.service';
+import { AiExecutionService } from './ai-execution.service';
+import { AiAnalyticsService } from './ai-analytics.service';
+import { HandoverRequestService } from './handover-request.service';
+
+import { AiAgentController } from './ai-agent.controller';
+import { AiKnowledgeBaseController } from './ai-knowledge-base.controller';
+import { AiTrainingFileController } from './ai-training-file.controller';
+import { AiPromptController } from './ai-prompt.controller';
+import { AiConversationController } from './ai-conversation.controller';
+import { AiAnalyticsController } from './ai-analytics.controller';
+import { HandoverRequestController } from './handover-request.controller';
+
+import { AiProviderFactory } from './providers/ai-provider.factory';
+import { NoopAiProvider } from './providers/noop-ai.provider';
+import { AI_COMPLETION_PROVIDERS } from './providers/ai-provider.interface';
+
+/**
+ * AI / RAG Domain.
+ *
+ * Builds on existing infrastructure: RBAC (PermissionsGuard / @RequirePermissions),
+ * ActiveTenantGuard + TenantContextService (tenant scope), and the global
+ * JwtAuthGuard.
+ *
+ * Provider-agnostic: real LLM adapters (OpenAI/Anthropic/Azure) register into the
+ * AI_COMPLETION_PROVIDERS multi-provider token; AiProviderFactory resolves one,
+ * falling back to NoopAiProvider. AiExecutionService is the single RAG turn
+ * orchestrator (retrieve → assemble → provider → persist + meter usage/cost).
+ */
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([
+      AiAgent,
+      AiKnowledgeBase,
+      AiTrainingFile,
+      AiPrompt,
+      AiConversation,
+      AiMessage,
+      AiUsageLog,
+      AiCostLog,
+      HandoverRequest,
+      Branch,
+      Conversation,
+      User,
+    ]),
+  ],
+  controllers: [
+    AiAgentController,
+    AiKnowledgeBaseController,
+    AiTrainingFileController,
+    AiPromptController,
+    AiConversationController,
+    AiAnalyticsController,
+    HandoverRequestController,
+  ],
+  providers: [
+    AiAgentService,
+    AiKnowledgeBaseService,
+    AiTrainingFileService,
+    AiPromptService,
+    AiConversationService,
+    AiMessageService,
+    AiRagService,
+    AiExecutionService,
+    AiAnalyticsService,
+    HandoverRequestService,
+    AiProviderFactory,
+    NoopAiProvider,
+    // No real LLM providers yet — the array is the registration point.
+    { provide: AI_COMPLETION_PROVIDERS, useValue: [] },
+  ],
+  exports: [
+    AiAgentService,
+    AiKnowledgeBaseService,
+    AiConversationService,
+    AiExecutionService,
+    AiRagService,
+    HandoverRequestService,
+  ],
+})
+export class AiModule {}

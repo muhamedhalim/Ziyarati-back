@@ -15,6 +15,8 @@ import { SubscriptionBillingModule } from './modules/subscription-billing/subscr
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
+import { ConversationsModule } from './modules/conversations/conversations.module';
+import { AiModule } from './modules/ai/ai.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -110,6 +112,8 @@ import { validate } from './config/env.validation';
     NotificationsModule,
     CampaignsModule,
     WhatsappModule,
+    ConversationsModule,
+    AiModule,
     SeedModule,
   ],
 
