@@ -96,6 +96,13 @@ export const PERMISSION = {
   NOTIFICATION_RULES_READ: 'notification_rules.read',
   NOTIFICATION_RULES_MANAGE: 'notification_rules.manage',
 
+  // Campaigns
+  CAMPAIGNS_READ: 'campaigns.read',
+  CAMPAIGNS_MANAGE: 'campaigns.manage',
+  CAMPAIGN_RECIPIENTS_READ: 'campaign_recipients.read',
+  CAMPAIGN_RECIPIENTS_MANAGE: 'campaign_recipients.manage',
+  CAMPAIGN_ANALYTICS_READ: 'campaign_analytics.read',
+
   // Admin / system
   USERS_MANAGE: 'users.manage',
   ROLES_MANAGE: 'roles.manage',
@@ -215,6 +222,12 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.NOTIFICATION_RULES_READ, name: 'Read notification rules', module: 'notifications' },
   { slug: PERMISSION.NOTIFICATION_RULES_MANAGE, name: 'Manage notification rules', module: 'notifications' },
 
+  { slug: PERMISSION.CAMPAIGNS_READ, name: 'Read campaigns', module: 'campaigns' },
+  { slug: PERMISSION.CAMPAIGNS_MANAGE, name: 'Manage campaigns', module: 'campaigns' },
+  { slug: PERMISSION.CAMPAIGN_RECIPIENTS_READ, name: 'Read campaign recipients', module: 'campaigns' },
+  { slug: PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE, name: 'Manage campaign recipients', module: 'campaigns' },
+  { slug: PERMISSION.CAMPAIGN_ANALYTICS_READ, name: 'Read campaign analytics', module: 'campaigns' },
+
   { slug: PERMISSION.USERS_MANAGE, name: 'Manage users', module: 'admin' },
   { slug: PERMISSION.ROLES_MANAGE, name: 'Manage roles', module: 'admin' },
   { slug: PERMISSION.TENANTS_MANAGE, name: 'Manage tenants', module: 'admin' },
@@ -310,6 +323,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.NOTIFICATION_TEMPLATES_MANAGE,
     PERMISSION.NOTIFICATION_RULES_READ,
     PERMISSION.NOTIFICATION_RULES_MANAGE,
+    PERMISSION.CAMPAIGNS_READ,
+    PERMISSION.CAMPAIGNS_MANAGE,
+    PERMISSION.CAMPAIGN_RECIPIENTS_READ,
+    PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE,
+    PERMISSION.CAMPAIGN_ANALYTICS_READ,
     PERMISSION.USERS_MANAGE,
     PERMISSION.ROLES_MANAGE,
   ],
@@ -348,6 +366,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.NOTIFICATION_TEMPLATES_MANAGE,
     PERMISSION.NOTIFICATION_RULES_READ,
     PERMISSION.NOTIFICATION_RULES_MANAGE,
+    PERMISSION.CAMPAIGNS_READ,
+    PERMISSION.CAMPAIGNS_MANAGE,
+    PERMISSION.CAMPAIGN_RECIPIENTS_READ,
+    PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE,
+    PERMISSION.CAMPAIGN_ANALYTICS_READ,
     PERMISSION.REPORTS_READ,
   ],
 
@@ -365,6 +388,9 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.STAFF_READ,
     PERMISSION.NOTIFICATIONS_READ,
     PERMISSION.NOTIFICATION_TEMPLATES_READ,
+    PERMISSION.CAMPAIGNS_READ,
+    PERMISSION.CAMPAIGN_RECIPIENTS_READ,
+    PERMISSION.CAMPAIGN_ANALYTICS_READ,
     PERMISSION.WHATSAPP_SEND,
   ],
 
