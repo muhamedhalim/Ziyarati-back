@@ -73,7 +73,14 @@ export const PERMISSION = {
 
   // WhatsApp
   WHATSAPP_SEND: 'whatsapp.send',
+  WHATSAPP_ACCOUNTS_READ: 'whatsapp.accounts.read',
+  WHATSAPP_ACCOUNTS_MANAGE: 'whatsapp.accounts.manage',
+  WHATSAPP_TEMPLATES_READ: 'whatsapp.templates.read',
   WHATSAPP_TEMPLATES_MANAGE: 'whatsapp.templates.manage',
+  WHATSAPP_CONTACTS_READ: 'whatsapp.contacts.read',
+  WHATSAPP_CONTACTS_MANAGE: 'whatsapp.contacts.manage',
+  WHATSAPP_WEBHOOKS_MANAGE: 'whatsapp.webhooks.manage',
+  WHATSAPP_ANALYTICS_READ: 'whatsapp.analytics.read',
 
   // AI
   AI_CHAT: 'ai.chat',
@@ -202,7 +209,14 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.REPORTS_EXPORT, name: 'Export reports', module: 'reports' },
 
   { slug: PERMISSION.WHATSAPP_SEND, name: 'Send WhatsApp messages', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_ACCOUNTS_READ, name: 'Read WhatsApp accounts', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_ACCOUNTS_MANAGE, name: 'Manage WhatsApp accounts', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_TEMPLATES_READ, name: 'Read WhatsApp templates', module: 'whatsapp' },
   { slug: PERMISSION.WHATSAPP_TEMPLATES_MANAGE, name: 'Manage WhatsApp templates', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_CONTACTS_READ, name: 'Read WhatsApp contacts', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_CONTACTS_MANAGE, name: 'Manage WhatsApp contacts', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_WEBHOOKS_MANAGE, name: 'Manage WhatsApp webhooks', module: 'whatsapp' },
+  { slug: PERMISSION.WHATSAPP_ANALYTICS_READ, name: 'Read WhatsApp analytics', module: 'whatsapp' },
 
   { slug: PERMISSION.AI_CHAT, name: 'Use AI assistant', module: 'ai' },
   { slug: PERMISSION.AI_MANAGE, name: 'Manage AI assistant', module: 'ai' },
@@ -308,7 +322,14 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.REPORTS_READ,
     PERMISSION.REPORTS_EXPORT,
     PERMISSION.WHATSAPP_SEND,
+    PERMISSION.WHATSAPP_ACCOUNTS_READ,
+    PERMISSION.WHATSAPP_ACCOUNTS_MANAGE,
+    PERMISSION.WHATSAPP_TEMPLATES_READ,
     PERMISSION.WHATSAPP_TEMPLATES_MANAGE,
+    PERMISSION.WHATSAPP_CONTACTS_READ,
+    PERMISSION.WHATSAPP_CONTACTS_MANAGE,
+    PERMISSION.WHATSAPP_WEBHOOKS_MANAGE,
+    PERMISSION.WHATSAPP_ANALYTICS_READ,
     PERMISSION.AI_CHAT,
     PERMISSION.AI_MANAGE,
     PERMISSION.SUBSCRIPTION_READ,
@@ -371,6 +392,15 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CAMPAIGN_RECIPIENTS_READ,
     PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE,
     PERMISSION.CAMPAIGN_ANALYTICS_READ,
+    PERMISSION.WHATSAPP_SEND,
+    PERMISSION.WHATSAPP_ACCOUNTS_READ,
+    PERMISSION.WHATSAPP_ACCOUNTS_MANAGE,
+    PERMISSION.WHATSAPP_TEMPLATES_READ,
+    PERMISSION.WHATSAPP_TEMPLATES_MANAGE,
+    PERMISSION.WHATSAPP_CONTACTS_READ,
+    PERMISSION.WHATSAPP_CONTACTS_MANAGE,
+    PERMISSION.WHATSAPP_WEBHOOKS_MANAGE,
+    PERMISSION.WHATSAPP_ANALYTICS_READ,
     PERMISSION.REPORTS_READ,
   ],
 
@@ -392,6 +422,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CAMPAIGN_RECIPIENTS_READ,
     PERMISSION.CAMPAIGN_ANALYTICS_READ,
     PERMISSION.WHATSAPP_SEND,
+    PERMISSION.WHATSAPP_ACCOUNTS_READ,
+    PERMISSION.WHATSAPP_TEMPLATES_READ,
+    PERMISSION.WHATSAPP_CONTACTS_READ,
+    PERMISSION.WHATSAPP_CONTACTS_MANAGE,
+    PERMISSION.WHATSAPP_ANALYTICS_READ,
   ],
 
   // End user: self-service only (ownership enforced in the service layer).

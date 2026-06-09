@@ -14,6 +14,7 @@ import { StaffModule } from './modules/staff/staff.module';
 import { SubscriptionBillingModule } from './modules/subscription-billing/subscription-billing.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
+import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -108,6 +109,7 @@ import { validate } from './config/env.validation';
     SubscriptionBillingModule,
     NotificationsModule,
     CampaignsModule,
+    WhatsappModule,
     SeedModule,
   ],
 
