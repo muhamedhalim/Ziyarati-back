@@ -153,6 +153,18 @@ export const PERMISSION = {
   CAMPAIGN_RECIPIENTS_MANAGE: 'campaign_recipients.manage',
   CAMPAIGN_ANALYTICS_READ: 'campaign_analytics.read',
 
+  // Platform / Integrations (infrastructure: API keys, audit logs, files)
+  PLATFORM_API_KEYS_READ: 'platform.api-keys.read',
+  PLATFORM_API_KEYS_MANAGE: 'platform.api-keys.manage',
+  PLATFORM_API_LOGS_READ: 'platform.api-logs.read',
+  PLATFORM_WEBHOOKS_READ: 'platform.webhooks.read',
+  PLATFORM_WEBHOOKS_MANAGE: 'platform.webhooks.manage',
+  PLATFORM_FILES_READ: 'platform.files.read',
+  PLATFORM_FILES_MANAGE: 'platform.files.manage',
+  // Platform-owned global settings (super_admin only; held via the * wildcard)
+  PLATFORM_SETTINGS_READ: 'platform.settings.read',
+  PLATFORM_SETTINGS_MANAGE: 'platform.settings.manage',
+
   // Admin / system
   USERS_MANAGE: 'users.manage',
   ROLES_MANAGE: 'roles.manage',
@@ -325,6 +337,16 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE, name: 'Manage campaign recipients', module: 'campaigns' },
   { slug: PERMISSION.CAMPAIGN_ANALYTICS_READ, name: 'Read campaign analytics', module: 'campaigns' },
 
+  { slug: PERMISSION.PLATFORM_API_KEYS_READ, name: 'Read API keys', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_API_KEYS_MANAGE, name: 'Manage API keys', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_API_LOGS_READ, name: 'Read API logs', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_WEBHOOKS_READ, name: 'Read webhook logs', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_WEBHOOKS_MANAGE, name: 'Manage webhook logs', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_FILES_READ, name: 'Read file uploads', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_FILES_MANAGE, name: 'Manage file uploads', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_SETTINGS_READ, name: 'Read system settings', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_SETTINGS_MANAGE, name: 'Manage system settings', module: 'platform' },
+
   { slug: PERMISSION.USERS_MANAGE, name: 'Manage users', module: 'admin' },
   { slug: PERMISSION.ROLES_MANAGE, name: 'Manage roles', module: 'admin' },
   { slug: PERMISSION.TENANTS_MANAGE, name: 'Manage tenants', module: 'admin' },
@@ -471,6 +493,13 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CAMPAIGN_ANALYTICS_READ,
     PERMISSION.USERS_MANAGE,
     PERMISSION.ROLES_MANAGE,
+    PERMISSION.PLATFORM_API_KEYS_READ,
+    PERMISSION.PLATFORM_API_KEYS_MANAGE,
+    PERMISSION.PLATFORM_API_LOGS_READ,
+    PERMISSION.PLATFORM_WEBHOOKS_READ,
+    PERMISSION.PLATFORM_WEBHOOKS_MANAGE,
+    PERMISSION.PLATFORM_FILES_READ,
+    PERMISSION.PLATFORM_FILES_MANAGE,
   ],
 
   // Operations manager: appointments + customers + staff + reports.
@@ -557,6 +586,10 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
     PERMISSION.ANALYTICS_REPORTS_MANAGE,
+    PERMISSION.PLATFORM_API_LOGS_READ,
+    PERMISSION.PLATFORM_WEBHOOKS_READ,
+    PERMISSION.PLATFORM_FILES_READ,
+    PERMISSION.PLATFORM_FILES_MANAGE,
   ],
 
   // Front desk: books appointments, manages customer records, WhatsApp replies.

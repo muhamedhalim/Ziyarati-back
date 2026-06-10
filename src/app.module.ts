@@ -20,6 +20,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { PlatformModule } from './modules/platform/platform.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -120,6 +121,7 @@ import { validate } from './config/env.validation';
     PaymentsModule,
     CrmModule,
     AnalyticsModule,
+    PlatformModule,
     SeedModule,
   ],
 
