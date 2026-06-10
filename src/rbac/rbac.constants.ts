@@ -66,6 +66,10 @@ export const PERMISSION = {
   PAYMENTS_READ: 'payments.read',
   PAYMENTS_MANAGE: 'payments.manage',
   REFUNDS_MANAGE: 'refunds.manage',
+  INVOICES_READ: 'invoices.read',
+  INVOICES_MANAGE: 'invoices.manage',
+  SETTLEMENTS_READ: 'settlements.read',
+  SETTLEMENTS_MANAGE: 'settlements.manage',
 
   // Reports / analytics (its own domain — NOT an alias of payments)
   REPORTS_READ: 'reports.read',
@@ -226,6 +230,10 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.PAYMENTS_READ, name: 'Read payments', module: 'payments' },
   { slug: PERMISSION.PAYMENTS_MANAGE, name: 'Manage payments', module: 'payments' },
   { slug: PERMISSION.REFUNDS_MANAGE, name: 'Manage refunds', module: 'payments' },
+  { slug: PERMISSION.INVOICES_READ, name: 'Read invoices', module: 'payments' },
+  { slug: PERMISSION.INVOICES_MANAGE, name: 'Manage invoices', module: 'payments' },
+  { slug: PERMISSION.SETTLEMENTS_READ, name: 'Read settlements', module: 'payments' },
+  { slug: PERMISSION.SETTLEMENTS_MANAGE, name: 'Generate / manage settlements', module: 'payments' },
 
   { slug: PERMISSION.REPORTS_READ, name: 'Read reports', module: 'reports' },
   { slug: PERMISSION.REPORTS_EXPORT, name: 'Export reports', module: 'reports' },
@@ -362,6 +370,10 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PAYMENTS_READ,
     PERMISSION.PAYMENTS_MANAGE,
     PERMISSION.REFUNDS_MANAGE,
+    PERMISSION.INVOICES_READ,
+    PERMISSION.INVOICES_MANAGE,
+    PERMISSION.SETTLEMENTS_READ,
+    PERMISSION.SETTLEMENTS_MANAGE,
     PERMISSION.REPORTS_READ,
     PERMISSION.REPORTS_EXPORT,
     PERMISSION.WHATSAPP_SEND,

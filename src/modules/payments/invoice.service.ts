@@ -1,0 +1,149 @@
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import {
+  Between,
+  DataSource,
+  EntityManager,
+  FindOptionsWhere,
+  LessThan,
+  MoreThanOrEqual,
+  Repository,
+} from 'typeorm';
+
+import { Invoice } from '../../entities/Payments/Invoice';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { Customer } from '../../entities/CRM/Customer';
+import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { InvoiceStatus } from '../../entities/enums';
+import { AppError, ErrorCode } from '../../common/errors';
+
+import { InvoiceItemService } from './invoice-item.service';
+import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { AddInvoiceItemsDto } from './dto/add-invoice-item.dto';
+import { QueryInvoicesDto } from './dto/query-invoices.dto';
+
+/**
+ * Invoices (`invoices`) — DRAFT → OPEN (finalized) → PAID/VOID/REFUNDED.
+ *
+ * Tenant-scoped via the `tenant` relation. Invoice numbers are generated per
+ * tenant and protected by the entity's `(tenant, invoice_number)` unique
+ * constraint. Totals are auto-calculated from line items. The Invoice entity has
+ * no inverse items relation, so detail views compose items via InvoiceItemService.
+ */
+@Injectable()
+export class InvoiceService {
+  constructor(
+    @InjectRepository(Invoice)
+    private readonly invoices: Repository<Invoice>,
+    private readonly dataSource: DataSource,
+    private readonly itemsService: InvoiceItemService,
+  ) {}
+
+  async create(tenantId: string, dto: CreateInvoiceDto) {
+    const id = await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(Invoice);
+      const invoiceNumber = await this.nextInvoiceNumber(manager, tenantId);
+
+      const invoice = await repo.save(
+        repo.create({
+          tenant: { id: tenantId } as Tenant,
+          customer: dto.customerId ? ({ id: dto.customerId } as Customer) : undefined,
+          appointment: dto.appointmentId
+            ? ({ id: dto.appointmentId } as Appointment)
+            : undefined,
+          invoice_number: invoiceNumber,
+          total_amount: 0,
+          status: InvoiceStatus.DRAFT,
+        }),
+      );
+
+      if (dto.items?.length) {
+        await this.itemsService.addItems(tenantId, invoice.id, dto.items, manager);
+        await this.itemsService.recalcTotal(tenantId, invoice.id, manager);
+      }
+      return invoice.id;
+    });
+
+    return this.getOne(tenantId, id);
+  }
+
+  async addItems(tenantId: string, id: string, dto: AddInvoiceItemsDto) {
+    const invoice = await this.findOne(tenantId, id);
+    if (invoice.status !== InvoiceStatus.DRAFT) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Items can only be added to a DRAFT invoice (status: ${invoice.status})`,
+      });
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      await this.itemsService.addItems(tenantId, id, dto.items, manager);
+      await this.itemsService.recalcTotal(tenantId, id, manager);
+    });
+
+    return this.getOne(tenantId, id);
+  }
+
+  /** DRAFT → OPEN. Stamps `issued_at` and freezes the invoice for payment. */
+  async finalize(tenantId: string, id: string) {
+    const invoice = await this.findOne(tenantId, id);
+    if (invoice.status !== InvoiceStatus.DRAFT) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: `Invoice is already ${invoice.status}`,
+      });
+    }
+    invoice.status = InvoiceStatus.OPEN;
+    invoice.issued_at = new Date();
+    await this.invoices.save(invoice);
+    return this.getOne(tenantId, id);
+  }
+
+  async list(tenantId: string, query: QueryInvoicesDto) {
+    const where: FindOptionsWhere<Invoice> = { tenant: { id: tenantId } };
+    if (query.status) where.status = query.status;
+    if (query.customerId) where.customer = { id: query.customerId };
+    if (query.from && query.to) {
+      where.created_at = Between(new Date(query.from), new Date(query.to));
+    } else if (query.from) {
+      where.created_at = MoreThanOrEqual(new Date(query.from));
+    } else if (query.to) {
+      where.created_at = LessThan(new Date(query.to));
+    }
+
+    const [data, total] = await this.invoices.findAndCount({
+      where,
+      order: { created_at: 'DESC' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+    });
+    return { data, total, page: query.page, limit: query.limit };
+  }
+
+  /** Invoice with its composed line items (entity has no inverse relation). */
+  async getOne(tenantId: string, id: string) {
+    const invoice = await this.findOne(tenantId, id);
+    const items = await this.itemsService.listForInvoice(tenantId, id);
+    return { ...invoice, items };
+  }
+
+  async findOne(tenantId: string, id: string): Promise<Invoice> {
+    const invoice = await this.invoices.findOne({
+      where: { id, tenant: { id: tenantId } },
+    });
+    if (!invoice) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Invoice not found' });
+    }
+    return invoice;
+  }
+
+  /** Tenant-scoped sequential number, e.g. `INV-2026-000001`. */
+  private async nextInvoiceNumber(
+    manager: EntityManager,
+    tenantId: string,
+  ): Promise<string> {
+    const count = await manager.getRepository(Invoice).count({
+      where: { tenant: { id: tenantId } },
+    });
+    const year = new Date().getFullYear();
+    return `INV-${year}-${String(count + 1).padStart(6, '0')}`;
+  }
+}

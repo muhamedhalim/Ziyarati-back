@@ -24,6 +24,14 @@ export const validate = (config: Record<string, unknown>) => {
 
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_EXPIRES_IN: Joi.string().default('7d'),
+
+    // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
+    // Optional: when unset, the payment gateway factory falls back to the
+    // Noop provider so the app boots and runs without a live integration.
+    MOYASAR_SECRET_KEY: Joi.string().allow('', null),
+    MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
+    MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
+    MOYASAR_API_BASE: Joi.string().allow('', null),
   });
 
   const { error, value } = schema.validate(config, {
