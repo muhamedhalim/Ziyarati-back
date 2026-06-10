@@ -85,6 +85,13 @@ export const PERMISSION = {
   REPORTS_READ: 'reports.read',
   REPORTS_EXPORT: 'reports.export',
 
+  // Analytics (events ingestion + dashboard + pre-aggregated reports)
+  ANALYTICS_EVENTS_READ: 'analytics.events.read',
+  ANALYTICS_EVENTS_MANAGE: 'analytics.events.manage',
+  ANALYTICS_DASHBOARD_READ: 'analytics.dashboard.read',
+  ANALYTICS_REPORTS_READ: 'analytics.reports.read',
+  ANALYTICS_REPORTS_MANAGE: 'analytics.reports.manage',
+
   // WhatsApp
   WHATSAPP_SEND: 'whatsapp.send',
   WHATSAPP_ACCOUNTS_READ: 'whatsapp.accounts.read',
@@ -257,6 +264,12 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.REPORTS_READ, name: 'Read reports', module: 'reports' },
   { slug: PERMISSION.REPORTS_EXPORT, name: 'Export reports', module: 'reports' },
 
+  { slug: PERMISSION.ANALYTICS_EVENTS_READ, name: 'Read analytics events', module: 'analytics' },
+  { slug: PERMISSION.ANALYTICS_EVENTS_MANAGE, name: 'Track analytics events', module: 'analytics' },
+  { slug: PERMISSION.ANALYTICS_DASHBOARD_READ, name: 'Read dashboard metrics', module: 'analytics' },
+  { slug: PERMISSION.ANALYTICS_REPORTS_READ, name: 'Read analytics reports', module: 'analytics' },
+  { slug: PERMISSION.ANALYTICS_REPORTS_MANAGE, name: 'Generate analytics reports', module: 'analytics' },
+
   { slug: PERMISSION.WHATSAPP_SEND, name: 'Send WhatsApp messages', module: 'whatsapp' },
   { slug: PERMISSION.WHATSAPP_ACCOUNTS_READ, name: 'Read WhatsApp accounts', module: 'whatsapp' },
   { slug: PERMISSION.WHATSAPP_ACCOUNTS_MANAGE, name: 'Manage WhatsApp accounts', module: 'whatsapp' },
@@ -403,6 +416,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.SETTLEMENTS_MANAGE,
     PERMISSION.REPORTS_READ,
     PERMISSION.REPORTS_EXPORT,
+    PERMISSION.ANALYTICS_EVENTS_READ,
+    PERMISSION.ANALYTICS_EVENTS_MANAGE,
+    PERMISSION.ANALYTICS_DASHBOARD_READ,
+    PERMISSION.ANALYTICS_REPORTS_READ,
+    PERMISSION.ANALYTICS_REPORTS_MANAGE,
     PERMISSION.WHATSAPP_SEND,
     PERMISSION.WHATSAPP_ACCOUNTS_READ,
     PERMISSION.WHATSAPP_ACCOUNTS_MANAGE,
@@ -534,6 +552,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.AI_HANDOVER_MANAGE,
     PERMISSION.AI_ANALYTICS_READ,
     PERMISSION.REPORTS_READ,
+    PERMISSION.ANALYTICS_EVENTS_READ,
+    PERMISSION.ANALYTICS_EVENTS_MANAGE,
+    PERMISSION.ANALYTICS_DASHBOARD_READ,
+    PERMISSION.ANALYTICS_REPORTS_READ,
+    PERMISSION.ANALYTICS_REPORTS_MANAGE,
   ],
 
   // Front desk: books appointments, manages customer records, WhatsApp replies.
