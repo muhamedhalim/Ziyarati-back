@@ -28,6 +28,7 @@ import { User } from '../../entities/Auth&RBAC/User';
 
 import { AppointmentSource, AppointmentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
+import { AvailabilityService } from '../scheduling/availability.service';
 
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
@@ -37,15 +38,6 @@ import { CancelAppointmentDto } from './dto/cancel-appointment.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AddAppointmentNoteDto } from './dto/add-appointment-note.dto';
 import { SetAppointmentServicesDto } from './dto/set-appointment-services.dto';
-
-/**
- * Statuses that no longer occupy a time slot, so they never cause a booking
- * conflict and are excluded from overlap detection.
- */
-const NON_BLOCKING_STATUSES: AppointmentStatus[] = [
-  AppointmentStatus.CANCELLED,
-  AppointmentStatus.NO_SHOW,
-];
 
 /** Terminal statuses — no further lifecycle transitions are permitted. */
 const TERMINAL_STATUSES: AppointmentStatus[] = [
@@ -120,6 +112,8 @@ export class AppointmentsService {
     @InjectRepository(AppointmentCancellation)
     private readonly cancellations: Repository<AppointmentCancellation>,
     private readonly dataSource: DataSource,
+    /** The single availability engine: every booking path validates through it. */
+    private readonly availability: AvailabilityService,
   ) {}
 
   // ───────────────────────────── Queries ─────────────────────────────────── //
@@ -199,7 +193,18 @@ export class AppointmentsService {
       );
       this.assertChronological(startAt, endAt);
 
-      await this.assertNoStaffConflict(manager, tenantId, dto.staffId, startAt, endAt);
+      // Single source of truth — validate REAL availability (working hours,
+      // calendar slots, blocked periods, holidays, staff time off / active flag,
+      // and existing appointment conflicts). Runs inside this transaction so the
+      // double-booking check is race-safe.
+      await this.availability.assertBookable(
+        tenantId,
+        dto.branchId,
+        dto.staffId,
+        startAt,
+        endAt,
+        { manager },
+      );
 
       const repo = manager.getRepository(Appointment);
       const status = AppointmentStatus.PENDING_PAYMENT;
@@ -252,25 +257,34 @@ export class AppointmentsService {
       this.assertNotTerminal(appointment, 'updated');
 
       const changes: string[] = [];
+      let availabilityAffected = false;
 
       if (dto.branchId && dto.branchId !== appointment.branch?.id) {
         await this.assertBranch(manager, tenantId, dto.branchId);
         appointment.branch = { id: dto.branchId } as Branch;
         changes.push('branch reassigned');
+        availabilityAffected = true;
       }
 
       if (dto.staffId && dto.staffId !== appointment.staff?.id) {
         await this.assertStaff(manager, tenantId, dto.staffId);
-        await this.assertNoStaffConflict(
-          manager,
-          tenantId,
-          dto.staffId,
-          appointment.start_at,
-          appointment.end_at,
-          appointment.id,
-        );
         appointment.staff = { id: dto.staffId } as StaffProfile;
         changes.push('staff reassigned');
+        availabilityAffected = true;
+      }
+
+      // Reassigning the branch or staff changes the availability context, so the
+      // (new branch, new staff, current window) must be re-validated through the
+      // single engine — not just the previous staff-overlap check.
+      if (availabilityAffected) {
+        await this.availability.assertBookable(
+          tenantId,
+          appointment.branch.id,
+          appointment.staff.id,
+          appointment.start_at,
+          appointment.end_at,
+          { excludeAppointmentId: appointment.id, manager },
+        );
       }
 
       if (dto.notes !== undefined) {
@@ -450,13 +464,16 @@ export class AppointmentsService {
         : new Date(newStart.getTime() + durationMs);
       this.assertChronological(newStart, newEnd);
 
-      await this.assertNoStaffConflict(
-        manager,
+      // Re-validate the NEW window through the single availability engine
+      // (working hours, slots, blocks, holidays, time off, conflicts) inside the
+      // transaction, excluding this appointment from its own occupancy check.
+      await this.availability.assertBookable(
         tenantId,
+        appointment.branch.id,
         appointment.staff.id,
         newStart,
         newEnd,
-        appointment.id,
+        { excludeAppointmentId: appointment.id, manager },
       );
 
       appointment.start_at = newStart;
@@ -782,50 +799,6 @@ export class AppointmentsService {
       throw new AppError(ErrorCode.CONFLICT, {
         message: `Illegal status transition: ${from} → ${to}`,
         context: { allowed: ALLOWED_TRANSITIONS[from] },
-      });
-    }
-  }
-
-  /**
-   * Booking-conflict detection: rejects an overlapping window for the SAME
-   * staff member within the SAME tenant. Joins relations (instead of guessing
-   * FK column names) and excludes non-blocking + soft-deleted rows.
-   */
-  private async assertNoStaffConflict(
-    manager: EntityManager,
-    tenantId: string,
-    staffId: string,
-    startAt: Date,
-    endAt: Date,
-    excludeAppointmentId?: string,
-  ): Promise<void> {
-    const qb = manager
-      .getRepository(Appointment)
-      .createQueryBuilder('a')
-      .leftJoin('a.tenant', 'tenant')
-      .leftJoin('a.staff', 'staff')
-      .where('tenant.id = :tenantId', { tenantId })
-      .andWhere('staff.id = :staffId', { staffId })
-      .andWhere('a.status NOT IN (:...nonBlocking)', {
-        nonBlocking: NON_BLOCKING_STATUSES,
-      })
-      .andWhere('a.deleted_at IS NULL')
-      // Half-open overlap test: [start, end) intersects [a.start, a.end)
-      .andWhere('a.start_at < :endAt AND a.end_at > :startAt', {
-        startAt,
-        endAt,
-      });
-
-    if (excludeAppointmentId) {
-      qb.andWhere('a.id != :excludeAppointmentId', { excludeAppointmentId });
-    }
-
-    const conflict = await qb.getOne();
-    if (conflict) {
-      throw new AppError(ErrorCode.CONFLICT, {
-        message:
-          'The selected staff member already has an appointment in this time window',
-        context: { conflictingAppointmentId: conflict.id },
       });
     }
   }

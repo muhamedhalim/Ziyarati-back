@@ -11,6 +11,8 @@ import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 
+import { StaffModule } from '../staff/staff.module';
+
 import { SchedulingRefService } from './scheduling-ref.service';
 import { CalendarSlotService } from './calendar-slot.service';
 import { BlockedSlotService } from './blocked-slot.service';
@@ -52,6 +54,9 @@ import { AvailabilityController } from './availability.controller';
       Branch,
       StaffProfile,
     ]),
+    // Reuse the Staff domain's recurring-schedule availability + time-off logic
+    // instead of re-implementing it in the engine.
+    StaffModule,
   ],
   controllers: [
     CalendarSlotController,

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThanOrEqual, MoreThanOrEqual, Repository } from 'typeorm';
 
 import { StaffTimeOff } from '../../entities/Staff/StaffTimeOff';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
@@ -52,6 +52,22 @@ export class StaffTimeOffService {
       reason: dto.reason,
     });
     return this.timeOff.save(row);
+  }
+
+  /**
+   * Is the staff member on time off on a given calendar day ('YYYY-MM-DD')?
+   * Reused by the unified availability engine so time-off logic stays in the
+   * Staff domain. `start_date`/`end_date` are inclusive `date` columns.
+   */
+  isOffOn(tenantId: string, staffId: string, dateStr: string): Promise<boolean> {
+    return this.timeOff.exists({
+      where: {
+        staff: { id: staffId },
+        tenant: { id: tenantId },
+        start_date: LessThanOrEqual(dateStr as unknown as Date),
+        end_date: MoreThanOrEqual(dateStr as unknown as Date),
+      },
+    });
   }
 
   async list(tenantId: string, staffId: string): Promise<StaffTimeOff[]> {

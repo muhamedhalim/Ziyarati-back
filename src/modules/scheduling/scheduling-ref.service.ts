@@ -31,11 +31,17 @@ export class SchedulingRefService {
   }
 
   async assertStaff(tenantId: string, staffId: string): Promise<void> {
+    await this.getStaff(tenantId, staffId);
+  }
+
+  /** Loads a tenant-owned staff profile (incl. `is_available_for_booking`) or 404. */
+  async getStaff(tenantId: string, staffId: string): Promise<StaffProfile> {
     const staff = await this.staff.findOne({
       where: { id: staffId, tenant: { id: tenantId } },
     });
     if (!staff) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Staff member not found' });
     }
+    return staff;
   }
 }

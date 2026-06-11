@@ -17,6 +17,8 @@ import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { Service } from '../../entities/Services/Service';
 
+import { SchedulingModule } from '../scheduling/scheduling.module';
+
 import { AppointmentsService } from './appointment.service';
 import { AppointmentReviewService } from './appointment-review.service';
 import { AppointmentController } from './appointment.controller';
@@ -50,6 +52,8 @@ import { ReviewController } from './review.controller';
       StaffProfile,
       Service,
     ]),
+    // The single availability engine — every booking path validates through it.
+    SchedulingModule,
   ],
   controllers: [AppointmentController, ReviewController],
   providers: [AppointmentsService, AppointmentReviewService],

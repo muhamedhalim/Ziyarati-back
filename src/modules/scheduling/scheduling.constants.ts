@@ -9,13 +9,37 @@ import { AppointmentStatus } from '../../entities/enums';
  * Day-level math uses UTC boundaries for determinism.
  */
 
-/** Appointment statuses that OCCUPY a time window (block double-booking). */
+/**
+ * Appointment statuses that OCCUPY a time window (block double-booking).
+ *
+ * This is the complement of {CANCELLED, NO_SHOW} — deliberately aligned with the
+ * Appointment module's own conflict rule (`NON_BLOCKING_STATUSES`) so the unified
+ * availability engine and the booking write path agree exactly. RESCHEDULED is
+ * included: a rescheduled appointment still holds its (new) window.
+ */
 export const OCCUPYING_APPOINTMENT_STATUSES: AppointmentStatus[] = [
   AppointmentStatus.PENDING_PAYMENT,
   AppointmentStatus.CONFIRMED,
   AppointmentStatus.IN_PROGRESS,
   AppointmentStatus.COMPLETED,
+  AppointmentStatus.RESCHEDULED,
 ];
+
+/**
+ * Behavior when a staff member has NO positive availability defined for a day
+ * (no recurring StaffSchedule slot AND no CalendarSlot).
+ *
+ *  - false (default, migration-safe): the positive "within working hours" gate
+ *    is skipped — the clinic simply hasn't configured availability yet, so we do
+ *    not block on it. ALL hard exclusions (holiday, blocked, time off, inactive
+ *    staff, double-booking) are still enforced.
+ *  - true (strict): "nothing defined" means "nothing available" — every booking
+ *    requires an explicit schedule or calendar slot.
+ *
+ * Flipping this to `true` is the opt-in path to fully strict availability once a
+ * tenant has populated its schedules; it needs no schema change.
+ */
+export const ENFORCE_AVAILABILITY_WHEN_UNDEFINED = false;
 
 export interface Interval {
   start: Date;
