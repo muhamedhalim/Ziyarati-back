@@ -8,6 +8,7 @@ import { Customer } from '../../entities/CRM/Customer';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
+import { QueueService } from '../../queue/queue.service';
 import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
@@ -47,6 +48,7 @@ export class WhatsappExecutionService {
     private readonly accounts: WhatsappAccountService,
     private readonly templates: WhatsappTemplateService,
     private readonly messaging: WhatsappMessagingService,
+    private readonly queue: QueueService,
   ) {}
 
   /** Sends a template message immediately and records the outcome. */
@@ -118,6 +120,25 @@ export class WhatsappExecutionService {
       WHATSAPP_DELIVERY_STATUS.QUEUED,
       {},
     );
+
+    // Produce a DELAYED send job; the whatsapp worker performs the actual send
+    // (reusing sendTemplateMessage) at scheduledAt.
+    const delay = Math.max(0, new Date(dto.scheduledAt).getTime() - Date.now());
+    await this.queue.enqueueWhatsappSend(
+      {
+        tenantId,
+        templateId,
+        payload: {
+          accountId: dto.accountId,
+          contactId: dto.contactId,
+          customerId: dto.customerId,
+          toWaId: dto.toWaId,
+          variables: dto.variables,
+        },
+      },
+      { delay },
+    );
+
     return { status: WHATSAPP_DELIVERY_STATUS.QUEUED, scheduledAt: dto.scheduledAt, logId: log.id };
   }
 

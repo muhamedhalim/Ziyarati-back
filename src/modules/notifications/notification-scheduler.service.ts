@@ -15,6 +15,7 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { NotificationDispatchService } from './notification-dispatch.service';
+import { QueueService } from '../../queue/queue.service';
 import { ScheduleNotificationDto } from './dto/schedule-notification.dto';
 import { UpdateScheduledNotificationDto } from './dto/update-scheduled-notification.dto';
 import { RescheduleNotificationDto } from './dto/reschedule-notification.dto';
@@ -45,6 +46,7 @@ export class NotificationSchedulerService {
     @InjectRepository(Appointment)
     private readonly appointments: Repository<Appointment>,
     private readonly dispatch: NotificationDispatchService,
+    private readonly queue: QueueService,
   ) {}
 
   async schedule(
@@ -67,7 +69,11 @@ export class NotificationSchedulerService {
       scheduled_at: new Date(dto.scheduledAt),
       status: NOTIFICATION_STATUS.SCHEDULED,
     });
-    return this.scheduled.save(row);
+    const saved = await this.scheduled.save(row);
+    // Produce a DELAYED dispatch job; BullMQ fires it at scheduled_at. The worker
+    // performs the send (NotificationDispatchService) — no in-process scheduler.
+    await this.enqueueDispatch(tenantId, saved.id, saved.scheduled_at);
+    return saved;
   }
 
   async findAll(tenantId: string, filter: ScheduledNotificationFilterDto) {
@@ -149,7 +155,9 @@ export class NotificationSchedulerService {
       });
     }
     row.status = NOTIFICATION_STATUS.CANCELLED;
-    return this.scheduled.save(row);
+    const saved = await this.scheduled.save(row);
+    await this.queue.removeNotificationDispatch(id); // keep the queue consistent
+    return saved;
   }
 
   async reschedule(
@@ -165,15 +173,43 @@ export class NotificationSchedulerService {
     }
     row.scheduled_at = new Date(dto.scheduledAt);
     row.status = NOTIFICATION_STATUS.SCHEDULED;
-    return this.scheduled.save(row);
+    const saved = await this.scheduled.save(row);
+    // Replace the old delayed job with one for the new time.
+    await this.queue.removeNotificationDispatch(id);
+    await this.enqueueDispatch(tenantId, saved.id, saved.scheduled_at);
+    return saved;
   }
 
-  /** Retries a failed notification (delegates the actual send to the dispatcher). */
-  retry(tenantId: string, id: string) {
-    return this.dispatch.retry(tenantId, id);
+  /**
+   * Retries a FAILED notification by ENQUEUING a fresh dispatch job; the worker
+   * performs the actual send (NotificationDispatchService.processScheduled).
+   * Asynchronous by design — returns a queue acknowledgement, not the delivery
+   * result. The dispatcher itself remains the single send seam (reused, not
+   * reimplemented).
+   */
+  async retry(tenantId: string, id: string) {
+    const row = await this.findOne(tenantId, id);
+    if (row.status !== NOTIFICATION_STATUS.FAILED) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Only failed notifications can be retried',
+        context: { currentStatus: row.status },
+      });
+    }
+    const job = await this.queue.retryNotificationDispatch({ tenantId, notificationId: id });
+    return { queued: true, notificationId: id, jobId: job.id };
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
+
+  /** Enqueue a delayed dispatch job that fires at `scheduledAt`. */
+  private async enqueueDispatch(
+    tenantId: string,
+    notificationId: string,
+    scheduledAt: Date,
+  ): Promise<void> {
+    const delay = Math.max(0, scheduledAt.getTime() - Date.now());
+    await this.queue.enqueueNotificationDispatch({ tenantId, notificationId }, { delay });
+  }
 
   private async assertTemplate(tenantId: string, templateId: string): Promise<void> {
     const ok = await this.templates.exists({

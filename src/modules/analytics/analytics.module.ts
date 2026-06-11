@@ -78,6 +78,13 @@ import { MonthlyReportController } from './monthly-report.controller';
     MonthlyReportService,
     AnalyticsAggregationService,
   ],
-  exports: [AnalyticsEventService, AnalyticsAggregationService],
+  exports: [
+    AnalyticsEventService,
+    AnalyticsAggregationService,
+    // Exposed so the background worker's analytics processor can reuse them.
+    DashboardMetricService,
+    DailyReportService,
+    MonthlyReportService,
+  ],
 })
 export class AnalyticsModule {}

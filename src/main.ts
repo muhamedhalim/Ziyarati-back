@@ -19,7 +19,14 @@ async function bootstrap() {
   // TenantContextService is available everywhere downstream. It is *populated*
   // by TenantContextInterceptor once authentication has set request.user.
   const tenantContext = app.get(TenantContextService);
-  app.use((_req, _res, next) => tenantContext.run(() => next()));
+  app.use((req, _res, next) =>
+    tenantContext.run(() => {
+      // `requestContext` (registered above) set req.requestId; propagate it so
+      // enqueued jobs and logs carry the correlation id.
+      tenantContext.setCorrelationId((req as { requestId?: string }).requestId ?? null);
+      next();
+    }),
+  );
 
   // ---------------- Global Exception Filter ----------------
   // Catches everything (HttpException, TypeORM errors, runtime errors) and

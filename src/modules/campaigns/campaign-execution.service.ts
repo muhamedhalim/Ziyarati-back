@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
 import { CampaignStatus, RecipientStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
+import { QueueService } from '../../queue/queue.service';
 import { CampaignDeliveryFactory } from './delivery/campaign-delivery.factory';
 import { ScheduleCampaignDto } from './dto/schedule-campaign.dto';
 import { LaunchCampaignDto } from './dto/launch-campaign.dto';
@@ -40,6 +41,7 @@ export class CampaignExecutionService {
     @InjectRepository(CampaignRecipient)
     private readonly recipients: Repository<CampaignRecipient>,
     private readonly delivery: CampaignDeliveryFactory,
+    private readonly queue: QueueService,
   ) {}
 
   async schedule(
@@ -85,8 +87,10 @@ export class CampaignExecutionService {
     if (!campaign.scheduled_at) campaign.scheduled_at = new Date();
     await this.campaigns.save(campaign);
 
-    // Enqueue seam: in production a BullMQ producer would add delivery jobs here.
-    this.logger.log(`Campaign ${id} launched (RUNNING) — recipients ready for dispatch`);
+    // Produce the fan-out job; the campaigns worker enqueues one
+    // processRecipient job per QUEUED recipient (each retried independently).
+    await this.queue.enqueueCampaignLaunch({ tenantId, campaignId: id });
+    this.logger.log(`Campaign ${id} launched (RUNNING) — fan-out enqueued`);
     return this.loadOwned(tenantId, id);
   }
 
@@ -118,19 +122,31 @@ export class CampaignExecutionService {
     return this.loadOwned(tenantId, id);
   }
 
-  /** Re-queues a campaign's FAILED recipients for another delivery attempt. */
+  /** Re-queues a campaign's FAILED recipients and enqueues a delivery job each. */
   async retryFailed(tenantId: string, id: string) {
     await this.loadOwned(tenantId, id);
-    const result = await this.recipients
-      .createQueryBuilder()
-      .update(CampaignRecipient)
-      .set({ status: RecipientStatus.QUEUED })
-      .where('campaign_id = :id AND status = :failed', {
-        id,
-        failed: RecipientStatus.FAILED,
-      })
-      .execute();
-    return { requeued: result.affected ?? 0 };
+    const failed = await this.recipients.find({
+      where: { campaign: { id }, status: RecipientStatus.FAILED },
+      select: { id: true },
+    });
+    if (failed.length === 0) return { requeued: 0 };
+
+    const ids = failed.map((r) => r.id);
+    await this.recipients.update({ id: In(ids) }, { status: RecipientStatus.QUEUED });
+    for (const recipientId of ids) {
+      await this.queue.enqueueCampaignRecipient({ tenantId, recipientId });
+    }
+    return { requeued: ids.length };
+  }
+
+  /** QUEUED recipient ids for a campaign (tenant-scoped) — used by the launch fan-out. */
+  async queuedRecipientIds(tenantId: string, campaignId: string): Promise<string[]> {
+    await this.loadOwned(tenantId, campaignId);
+    const rows = await this.recipients.find({
+      where: { campaign: { id: campaignId }, status: RecipientStatus.QUEUED },
+      select: { id: true },
+    });
+    return rows.map((r) => r.id);
   }
 
   /**

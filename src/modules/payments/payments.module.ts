@@ -100,6 +100,11 @@ import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
       inject: [MoyasarProvider],
     },
   ],
-  exports: [PaymentService, InvoiceService],
+  exports: [
+    PaymentService,
+    InvoiceService,
+    // Exposed so the background worker's settlements processor can reuse it.
+    SettlementService,
+  ],
 })
 export class PaymentsModule {}

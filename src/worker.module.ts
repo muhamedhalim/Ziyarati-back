@@ -1,0 +1,70 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+
+import { typeOrmFactory } from './config/typeorm.config';
+import { validate } from './config/env.validation';
+
+import { Tenant } from './entities/SaaS-Core/Tenant';
+import { Subscription } from './entities/SaaS-Core/Subscription';
+
+import { TenantContextModule } from './core/tenant-context/tenant-context.module';
+import { QueueModule } from './queue/queue.module';
+
+// Domain modules whose EXISTING services the processors reuse (no logic copied).
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
+import { CampaignsModule } from './modules/campaigns/campaigns.module';
+import { AiModule } from './modules/ai/ai.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { PaymentsModule } from './modules/payments/payments.module';
+
+import { WorkerTenantsService } from './worker/worker-tenants.service';
+import { QueueMonitorService } from './worker/queue-monitor.service';
+import { ScheduleRegistrarService } from './worker/schedule-registrar.service';
+
+import { NotificationsProcessor } from './worker/processors/notifications.processor';
+import { WhatsappProcessor } from './worker/processors/whatsapp.processor';
+import { CampaignsProcessor } from './worker/processors/campaigns.processor';
+import { AiProcessor } from './worker/processors/ai.processor';
+import { AnalyticsProcessor } from './worker/processors/analytics.processor';
+import { SettlementsProcessor } from './worker/processors/settlements.processor';
+import { SubscriptionsProcessor } from './worker/processors/subscriptions.processor';
+
+/**
+ * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
+ *
+ * This is a separate process root from AppModule: it contains the BullMQ
+ * `@Processor` classes (consumers) — so workers run ONLY here, never in the HTTP
+ * API. It imports the same DB + tenant-context + queue infrastructure and the
+ * domain modules whose services the processors call, but NOT the HTTP guards,
+ * controllers' auth, or the seeder. Stateless and horizontally scalable.
+ */
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env', cache: true, validate }),
+    TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: typeOrmFactory }),
+    TypeOrmModule.forFeature([Tenant, Subscription]),
+    TenantContextModule,
+    QueueModule,
+    NotificationsModule,
+    WhatsappModule,
+    CampaignsModule,
+    AiModule,
+    AnalyticsModule,
+    PaymentsModule,
+  ],
+  providers: [
+    WorkerTenantsService,
+    QueueMonitorService,
+    ScheduleRegistrarService,
+    NotificationsProcessor,
+    WhatsappProcessor,
+    CampaignsProcessor,
+    AiProcessor,
+    AnalyticsProcessor,
+    SettlementsProcessor,
+    SubscriptionsProcessor,
+  ],
+})
+export class WorkerModule {}

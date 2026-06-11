@@ -20,7 +20,13 @@ export const validate = (config: Record<string, unknown>) => {
     DB_POOL_MIN: Joi.number().default(1),
     DB_POOL_IDLE_TIMEOUT: Joi.number().default(30000),
 
+    // Redis / BullMQ. REDIS_URL is required at runtime by the queue subsystem
+    // (the worker won't process without it); kept optional in the schema so the
+    // API can still boot in environments where queues are disabled.
     REDIS_URL: Joi.string().allow('', null),
+    QUEUE_DEFAULT_ATTEMPTS: Joi.number().default(5),
+    QUEUE_BACKOFF_MS: Joi.number().default(3000),
+    WORKER_CONCURRENCY: Joi.number().default(5),
 
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_EXPIRES_IN: Joi.string().default('7d'),

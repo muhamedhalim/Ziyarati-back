@@ -10,6 +10,8 @@ interface TenantContextStore {
   user: AuthenticatedUser | null;
   /** The loaded tenant entity, cached by ActiveTenantGuard to avoid re-querying. */
   tenant: Tenant | null;
+  /** Request/job correlation id — propagated into enqueued jobs + logs. */
+  correlationId: string | null;
 }
 
 /**
@@ -27,14 +29,23 @@ interface TenantContextStore {
 export class TenantContextService {
   private readonly als = new AsyncLocalStorage<TenantContextStore>();
 
-  /** Opens an isolated context for the lifetime of one request. */
+  /** Opens an isolated context for the lifetime of one request (or one job). */
   run<T>(callback: () => T): T {
-    return this.als.run({ user: null, tenant: null }, callback);
+    return this.als.run({ user: null, tenant: null, correlationId: null }, callback);
   }
 
   setPrincipal(user: AuthenticatedUser | null): void {
     const store = this.als.getStore();
     if (store) store.user = user;
+  }
+
+  setCorrelationId(correlationId: string | null): void {
+    const store = this.als.getStore();
+    if (store) store.correlationId = correlationId;
+  }
+
+  getCorrelationId(): string | null {
+    return this.als.getStore()?.correlationId ?? null;
   }
 
   setTenant(tenant: Tenant | null): void {
