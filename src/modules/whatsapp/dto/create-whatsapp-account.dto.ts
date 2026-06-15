@@ -1,11 +1,17 @@
 import {
   IsBoolean,
+  IsISO8601,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  WHATSAPP_ACCOUNT_MODE,
+  WHATSAPP_ACCOUNT_MODES,
+} from '../whatsapp.constants';
 
 /**
  * Creates a WhatsApp business account for one branch of the caller's tenant.
@@ -20,6 +26,18 @@ export class CreateWhatsappAccountDto {
   })
   @IsUUID()
   branchId!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Account mode. `CUSTOM` = the clinic\'s own WhatsApp number (default). ' +
+      '`PLATFORM` = bind the branch to the shared SaaS number. A branch may have one of each.',
+    enum: WHATSAPP_ACCOUNT_MODES,
+    default: WHATSAPP_ACCOUNT_MODE.CUSTOM,
+    example: WHATSAPP_ACCOUNT_MODE.CUSTOM,
+  })
+  @IsOptional()
+  @IsIn(WHATSAPP_ACCOUNT_MODES)
+  mode?: string;
 
   @ApiPropertyOptional({
     description: 'Meta phone number id for this WhatsApp number.',
@@ -49,6 +67,15 @@ export class CreateWhatsappAccountDto {
   @IsOptional()
   @IsString()
   accessToken?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Access-token expiry (ISO-8601). Recommended for rotated System User tokens so the platform can detect/replace expiring credentials.',
+    example: '2026-12-31T00:00:00Z',
+  })
+  @IsOptional()
+  @IsISO8601()
+  tokenExpiresAt?: string;
 
   @ApiPropertyOptional({
     description: 'Whether the account is active. Defaults to true.',

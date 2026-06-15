@@ -9,7 +9,11 @@
  */
 export interface WhatsappSendPayload {
   tenantId: string;
+  /** Resolved account id, or 'platform-env' for the env-level shared number. */
   accountId: string;
+  /** Routing metadata resolved by WhatsappMessageRouter (no secrets here). */
+  mode?: string;
+  phoneNumberId?: string;
   /** Destination WhatsApp id / phone (E.164 digits). */
   to: string;
   templateId: string;

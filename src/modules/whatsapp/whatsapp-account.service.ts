@@ -10,6 +10,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { CreateWhatsappAccountDto } from './dto/create-whatsapp-account.dto';
 import { UpdateWhatsappAccountDto } from './dto/update-whatsapp-account.dto';
 import { WhatsappAccountFilterDto } from './dto/whatsapp-account-filter.dto';
+import { WHATSAPP_ACCOUNT_MODE } from './whatsapp.constants';
 
 /**
  * WhatsApp business accounts (one per branch).
@@ -32,21 +33,27 @@ export class WhatsappAccountService {
   async create(tenantId: string, dto: CreateWhatsappAccountDto) {
     await this.assertBranch(tenantId, dto.branchId);
 
+    const mode = dto.mode ?? WHATSAPP_ACCOUNT_MODE.CUSTOM;
+
+    // Uniqueness is per (branch, mode): a branch may hold one PLATFORM and one
+    // CUSTOM account, but not two of the same mode.
     const existing = await this.accounts.findOne({
-      where: { branch: { id: dto.branchId }, tenant: { id: tenantId } },
+      where: { branch: { id: dto.branchId }, tenant: { id: tenantId }, mode },
     });
     if (existing) {
       throw new AppError(ErrorCode.CONFLICT, {
-        message: 'This branch already has a WhatsApp account',
+        message: `This branch already has a ${mode} WhatsApp account`,
       });
     }
 
     const account = this.accounts.create({
       tenant: { id: tenantId } as Tenant,
       branch: { id: dto.branchId } as Branch,
+      mode,
       phone_number_id: dto.phoneNumberId,
       waba_id: dto.wabaId,
       access_token: dto.accessToken,
+      token_expires_at: dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : undefined,
       is_active: dto.isActive ?? true,
     });
     const saved = await this.accounts.save(account);
@@ -56,6 +63,7 @@ export class WhatsappAccountService {
   async findAll(tenantId: string, filter: WhatsappAccountFilterDto) {
     const where: FindOptionsWhere<WhatsappAccount> = { tenant: { id: tenantId } };
     if (filter.branchId) where.branch = { id: filter.branchId };
+    if (filter.mode) where.mode = filter.mode;
     if (filter.isActive !== undefined) where.is_active = filter.isActive === 'true';
 
     const [rows, total] = await this.accounts.findAndCount({
@@ -78,6 +86,9 @@ export class WhatsappAccountService {
     if (dto.phoneNumberId !== undefined) account.phone_number_id = dto.phoneNumberId;
     if (dto.wabaId !== undefined) account.waba_id = dto.wabaId;
     if (dto.accessToken !== undefined) account.access_token = dto.accessToken;
+    if (dto.tokenExpiresAt !== undefined) {
+      account.token_expires_at = dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : undefined;
+    }
     if (dto.isActive !== undefined) account.is_active = dto.isActive;
     await this.accounts.save(account);
     return this.findOne(tenantId, id);

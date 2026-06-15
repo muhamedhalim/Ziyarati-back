@@ -38,6 +38,19 @@ export const validate = (config: Record<string, unknown>) => {
     MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
     MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
     MOYASAR_API_BASE: Joi.string().allow('', null),
+
+    // ── WhatsApp Cloud API / Meta (PLATFORM-level shared number) ──────────
+    // Optional in the schema so the app boots without a live integration, BUT:
+    //   • the webhook verifier fails CLOSED at request time if
+    //     WHATSAPP_APP_SECRET / WHATSAPP_VERIFY_TOKEN are unset (no dev bypass);
+    //   • the message router only falls back to the env PLATFORM number when
+    //     WHATSAPP_PHONE_NUMBER_ID + WHATSAPP_ACCESS_TOKEN are present.
+    // A clinic's own (CUSTOM) number lives on the WhatsappAccount entity instead.
+    WHATSAPP_APP_SECRET: Joi.string().allow('', null),
+    WHATSAPP_VERIFY_TOKEN: Joi.string().allow('', null),
+    WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null),
+    WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null),
+    WHATSAPP_WABA_ID: Joi.string().allow('', null),
   });
 
   const { error, value } = schema.validate(config, {

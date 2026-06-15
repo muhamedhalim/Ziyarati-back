@@ -15,7 +15,10 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
-import { WhatsappWebhookEventDto } from './dto/whatsapp-webhook-event.dto';
+import type {
+  WhatsappWebhookBody,
+  MetaWebhookEntry,
+} from './webhooks/whatsapp-webhook.types';
 import { CreateWhatsappWebhookDto } from './dto/create-whatsapp-webhook.dto';
 import { UpdateWhatsappWebhookDto } from './dto/update-whatsapp-webhook.dto';
 import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
@@ -54,30 +57,45 @@ export class WhatsappWebhookService {
   }
 
   /**
-   * Public ingestion: verify signature, dedupe by idempotency key, resolve the
-   * tenant from the payload, and persist the event (processed = false).
+   * Public ingestion (called by Meta). Steps:
+   *  1. Verify the `X-Hub-Signature-256` over the EXACT raw bytes (Buffer) — the
+   *     parsed body is NEVER used for the signature.
+   *  2. Derive the event type (messages / message_status) and an idempotency key
+   *     (the WhatsApp `wamid`) from the Meta payload — falling back to the legacy
+   *     wrapper fields for backward compatibility.
+   *  3. De-duplicate redelivered events on the idempotency key.
+   *  4. Resolve the tenant from the payload (`phone_number_id` → account) — never
+   *     trusted from the request.
+   *  5. Persist the raw payload (`processed = false`) for the worker to handle.
    */
   async ingest(
-    dto: WhatsappWebhookEventDto,
+    body: WhatsappWebhookBody,
+    rawBody: Buffer | undefined,
     signatureHeader?: string,
   ): Promise<{ accepted: boolean; id?: string; deduplicated?: boolean }> {
-    if (!this.verifier.verify(signatureHeader, dto.payload)) {
+    if (!this.verifier.verify(signatureHeader, rawBody)) {
       throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid webhook signature' });
     }
 
-    if (dto.idempotencyKey) {
+    // Accept both the Meta-native body and the legacy `{ payload }` wrapper.
+    const payload: Record<string, unknown> =
+      body?.payload ?? (body as unknown as Record<string, unknown>);
+    const eventType = body?.eventType ?? this.deriveEventType(body);
+    const idempotencyKey = body?.idempotencyKey ?? this.deriveIdempotencyKey(body);
+
+    if (idempotencyKey) {
       const existing = await this.webhooks.findOne({
-        where: { idempotency_key: dto.idempotencyKey },
+        where: { idempotency_key: idempotencyKey },
       });
       if (existing) return { accepted: true, id: existing.id, deduplicated: true };
     }
 
-    const tenant = await this.resolveTenantFromPayload(dto.payload);
+    const tenant = await this.resolveTenantFromPayload(payload);
     const row = this.webhooks.create({
       tenant: tenant ? ({ id: tenant } as Tenant) : undefined,
-      event_type: dto.eventType,
-      payload: dto.payload,
-      idempotency_key: dto.idempotencyKey,
+      event_type: eventType,
+      payload,
+      idempotency_key: idempotencyKey,
       processed: false,
     });
     const saved = await this.webhooks.save(row);
@@ -176,5 +194,40 @@ export class WhatsappWebhookService {
     } catch {
       return undefined;
     }
+  }
+
+  /** First entry/change of a Meta payload, regardless of wrapper shape. */
+  private firstChangeValue(body: WhatsappWebhookBody) {
+    const entries: MetaWebhookEntry[] | undefined =
+      body?.entry ?? (body?.payload as { entry?: MetaWebhookEntry[] })?.entry;
+    return entries?.[0]?.changes?.[0]?.value;
+  }
+
+  /**
+   * Maps a Meta change into a coarse event type the worker can branch on:
+   * `messages` (inbound message) or `message_status` (sent/delivered/read/failed).
+   */
+  private deriveEventType(body: WhatsappWebhookBody): string | undefined {
+    const value = this.firstChangeValue(body);
+    if (!value) return undefined;
+    if (Array.isArray(value.statuses) && value.statuses.length > 0) return 'message_status';
+    if (Array.isArray(value.messages) && value.messages.length > 0) return 'messages';
+    const field = body?.entry?.[0]?.changes?.[0]?.field;
+    return field ?? undefined;
+  }
+
+  /**
+   * Idempotency key = the WhatsApp message id (`wamid`) of the first message or
+   * status in the payload. Meta redelivers events on the same wamid, so this
+   * de-duplicates safely. Undefined when the payload carries no wamid.
+   */
+  private deriveIdempotencyKey(body: WhatsappWebhookBody): string | undefined {
+    const value = this.firstChangeValue(body);
+    if (!value) return undefined;
+    const statusId = value.statuses?.[0]?.id;
+    if (statusId) return `status:${statusId}`;
+    const messageId = value.messages?.[0]?.id;
+    if (messageId) return `message:${messageId}`;
+    return undefined;
   }
 }

@@ -22,6 +22,7 @@ export interface WhatsappSendJob extends BaseJobData {
   templateId: string;
   payload: {
     accountId?: string;
+    branchId?: string;
     contactId?: string;
     customerId?: string;
     toWaId?: string;

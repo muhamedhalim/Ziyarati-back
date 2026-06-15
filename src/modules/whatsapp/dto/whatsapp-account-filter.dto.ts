@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsBooleanString,
+  IsIn,
   IsInt,
   IsOptional,
   IsUUID,
@@ -8,6 +9,7 @@ import {
   Min,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { WHATSAPP_ACCOUNT_MODES } from '../whatsapp.constants';
 
 /** Filter + pagination for listing WhatsApp accounts (always tenant-scoped). */
 export class WhatsappAccountFilterDto {
@@ -15,6 +17,11 @@ export class WhatsappAccountFilterDto {
   @IsOptional()
   @IsUUID()
   branchId?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by account mode.', enum: WHATSAPP_ACCOUNT_MODES })
+  @IsOptional()
+  @IsIn(WHATSAPP_ACCOUNT_MODES)
+  mode?: string;
 
   @ApiPropertyOptional({ description: 'Filter by active state. `true` or `false`.', example: 'true' })
   @IsOptional()

@@ -9,9 +9,9 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { QueueService } from '../../queue/queue.service';
-import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
+import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { SendTemplateMessageDto } from './dto/send-template-message.dto';
 import {
   WHATSAPP_CHANNEL,
@@ -45,7 +45,7 @@ export class WhatsappExecutionService {
     private readonly contacts: Repository<WhatsappContact>,
     @InjectRepository(Customer)
     private readonly customers: Repository<Customer>,
-    private readonly accounts: WhatsappAccountService,
+    private readonly router: WhatsappMessageRouter,
     private readonly templates: WhatsappTemplateService,
     private readonly messaging: WhatsappMessagingService,
     private readonly queue: QueueService,
@@ -57,7 +57,10 @@ export class WhatsappExecutionService {
     templateId: string,
     dto: SendTemplateMessageDto,
   ) {
-    const account = await this.accounts.findEntityForSend(tenantId, dto.accountId);
+    const account = await this.router.resolveForSend(tenantId, {
+      accountId: dto.accountId,
+      branchId: dto.branchId,
+    });
     const template = await this.templates.getSendableTemplate(tenantId, templateId);
     const recipient = await this.resolveRecipient(tenantId, dto);
 
@@ -65,7 +68,9 @@ export class WhatsappExecutionService {
     try {
       result = await this.messaging.send({
         tenantId,
-        accountId: account.id,
+        accountId: account.id ?? 'platform-env',
+        mode: account.mode,
+        phoneNumberId: account.phoneNumberId,
         to: recipient.to,
         templateId: template.id,
         templateName: template.name,
@@ -109,7 +114,12 @@ export class WhatsappExecutionService {
         message: 'scheduledAt is required to schedule a message',
       });
     }
-    await this.accounts.findEntityForSend(tenantId, dto.accountId);
+    // Validate routing + template + recipient up front so scheduling fails fast
+    // (the actual account is re-resolved by the worker at send time).
+    await this.router.resolveForSend(tenantId, {
+      accountId: dto.accountId,
+      branchId: dto.branchId,
+    });
     await this.templates.getSendableTemplate(tenantId, templateId);
     const recipient = await this.resolveRecipient(tenantId, dto);
 
@@ -130,6 +140,7 @@ export class WhatsappExecutionService {
         templateId,
         payload: {
           accountId: dto.accountId,
+          branchId: dto.branchId,
           contactId: dto.contactId,
           customerId: dto.customerId,
           toWaId: dto.toWaId,

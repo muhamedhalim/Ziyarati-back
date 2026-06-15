@@ -10,10 +10,13 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { RawBodyRequest } from '@nestjs/common';
+import type { Request, Response } from 'express';
+import type { WhatsappWebhookBody } from './webhooks/whatsapp-webhook.types';
 import {
   ApiBearerAuth,
   ApiExcludeEndpoint,
@@ -27,7 +30,6 @@ import {
 } from '@nestjs/swagger';
 
 import { WhatsappWebhookService } from './whatsapp-webhook.service';
-import { WhatsappWebhookEventDto } from './dto/whatsapp-webhook-event.dto';
 import { CreateWhatsappWebhookDto } from './dto/create-whatsapp-webhook.dto';
 import { UpdateWhatsappWebhookDto } from './dto/update-whatsapp-webhook.dto';
 import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
@@ -137,10 +139,13 @@ JWT; the tenant is NEVER taken from the request body.
   @Post('events')
   @HttpCode(HttpStatus.OK)
   ingest(
-    @Body() dto: WhatsappWebhookEventDto,
+    @Req() req: RawBodyRequest<Request>,
+    @Body() body: WhatsappWebhookBody,
     @Headers('x-hub-signature-256') signature?: string,
   ) {
-    return this.webhooks.ingest(dto, signature);
+    // The verifier hashes the EXACT raw bytes (req.rawBody), never the parsed
+    // body — that is the only signature input Meta will agree with.
+    return this.webhooks.ingest(body, req.rawBody, signature);
   }
 
   @ApiOperation({

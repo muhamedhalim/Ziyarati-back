@@ -27,6 +27,8 @@ import { WhatsappProviderFactory } from './providers/whatsapp-provider.factory';
 import { NoopWhatsappProvider } from './providers/noop-whatsapp.provider';
 import { WHATSAPP_MESSAGE_PROVIDERS } from './providers/whatsapp-message.provider.interface';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
+import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
+import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 
 /**
  * WhatsApp Domain.
@@ -74,6 +76,8 @@ import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier'
     WhatsappProviderFactory,
     NoopWhatsappProvider,
     WebhookSignatureVerifier,
+    WhatsappAccountResolver,
+    WhatsappMessageRouter,
     // No real WhatsApp providers yet — the array is the registration point.
     { provide: WHATSAPP_MESSAGE_PROVIDERS, useValue: [] },
   ],

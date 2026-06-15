@@ -33,6 +33,25 @@ export const WHATSAPP_DELIVERY_STATUS = {
 export type WhatsappDeliveryStatus =
   (typeof WHATSAPP_DELIVERY_STATUS)[keyof typeof WHATSAPP_DELIVERY_STATUS];
 
+/**
+ * WhatsApp account mode (hybrid SaaS model). A branch may have BOTH:
+ *  - a PLATFORM account (the shared SaaS number), and
+ *  - a CUSTOM account (the clinic's own WhatsApp number).
+ * Routing prefers CUSTOM and falls back to PLATFORM. Stored on
+ * `WhatsappAccount.mode` (app-defined varchar, no DB enum).
+ */
+export const WHATSAPP_ACCOUNT_MODE = {
+  PLATFORM: 'PLATFORM',
+  CUSTOM: 'CUSTOM',
+} as const;
+
+export type WhatsappAccountMode =
+  (typeof WHATSAPP_ACCOUNT_MODE)[keyof typeof WHATSAPP_ACCOUNT_MODE];
+
+export const WHATSAPP_ACCOUNT_MODES: WhatsappAccountMode[] = Object.values(
+  WHATSAPP_ACCOUNT_MODE,
+);
+
 /** Channel marker written to `notification_logs.channel` for WhatsApp sends. */
 export const WHATSAPP_CHANNEL = 'WHATSAPP';
 
