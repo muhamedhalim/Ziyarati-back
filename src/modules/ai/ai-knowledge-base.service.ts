@@ -10,6 +10,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { CreateKnowledgeBaseDto } from './dto/create-knowledge-base.dto';
 import { UpdateKnowledgeBaseDto } from './dto/update-knowledge-base.dto';
 import { KnowledgeBaseFilterDto } from './dto/knowledge-base-filter.dto';
+import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
 
 /**
  * AI knowledge base.
@@ -29,18 +30,16 @@ export class AiKnowledgeBaseService {
     @InjectRepository(AiKnowledgeBase)
     private readonly kb: Repository<AiKnowledgeBase>,
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
+    private readonly ingestion: AiKnowledgeIngestionService,
   ) {}
 
   async create(tenantId: string, dto: CreateKnowledgeBaseDto): Promise<AiKnowledgeBase> {
     await this.assertAgent(tenantId, dto.agentId);
-    const entry = this.kb.create({
-      tenant: { id: tenantId } as Tenant,
-      agent: { id: dto.agentId } as AiAgent,
-      content: dto.content,
-      source_type: dto.sourceType,
-      source_id: dto.sourceId,
+    // Creates the chunk AND (best-effort) its embedding in the pgvector sidecar.
+    return this.ingestion.ingestChunk(tenantId, dto.agentId, dto.content, {
+      type: dto.sourceType,
+      id: dto.sourceId,
     });
-    return this.kb.save(entry);
   }
 
   async findAll(tenantId: string, filter: KnowledgeBaseFilterDto) {
@@ -69,10 +68,16 @@ export class AiKnowledgeBaseService {
 
   async update(tenantId: string, id: string, dto: UpdateKnowledgeBaseDto): Promise<AiKnowledgeBase> {
     const entry = await this.findOne(tenantId, id);
+    const contentChanged = dto.content !== undefined && dto.content !== entry.content;
     if (dto.content !== undefined) entry.content = dto.content;
     if (dto.sourceType !== undefined) entry.source_type = dto.sourceType;
     if (dto.sourceId !== undefined) entry.source_id = dto.sourceId;
-    return this.kb.save(entry);
+    const saved = await this.kb.save(entry);
+    // Keep the embedding in sync when the text changes.
+    if (contentChanged && entry.agent?.id) {
+      await this.ingestion.reembedChunk(tenantId, entry.agent.id, saved.id, saved.content);
+    }
+    return saved;
   }
 
   async remove(tenantId: string, id: string): Promise<void> {
@@ -87,8 +92,17 @@ export class AiKnowledgeBaseService {
    */
   async rebuildEmbeddings(tenantId: string, agentId: string) {
     await this.assertAgent(tenantId, agentId);
-    const chunks = await this.kb.count({ where: { tenant: { id: tenantId }, agent: { id: agentId } } });
-    return { accepted: true, agentId, chunks, note: 'Embedding rebuild is an abstraction seam (no vector store configured).' };
+    const { chunks, embedded } = await this.ingestion.reembedAgent(tenantId, agentId);
+    return {
+      accepted: true,
+      agentId,
+      chunks,
+      embedded,
+      note:
+        embedded > 0
+          ? 'Embeddings rebuilt into the pgvector store.'
+          : 'No embeddings written (OpenAI/pgvector not configured) — keyword retrieval active.',
+    };
   }
 
   private async assertAgent(tenantId: string, agentId: string): Promise<void> {

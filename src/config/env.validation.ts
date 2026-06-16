@@ -51,6 +51,21 @@ export const validate = (config: Record<string, unknown>) => {
     WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null),
     WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null),
     WHATSAPP_WABA_ID: Joi.string().allow('', null),
+
+    // ── AI / OpenAI + pgvector RAG ────────────────────────────────────────
+    // All optional: with no key the AI falls back to the Noop provider and RAG
+    // degrades to keyword search, so the app still boots & runs.
+    OPENAI_API_KEY: Joi.string().allow('', null),
+    OPENAI_CHAT_MODEL: Joi.string().default('gpt-4o'),
+    OPENAI_EMBEDDING_MODEL: Joi.string().default('text-embedding-3-small'),
+    // Must match the vector(N) column dimension created by the pgvector bootstrap.
+    OPENAI_EMBEDDING_DIM: Joi.number().default(1536),
+    RAG_TOP_K: Joi.number().default(5),
+    // HNSW query-time recall/latency knob (higher = better recall, slower).
+    HNSW_EF_SEARCH: Joi.number().default(60),
+    // Toggle to create/use the pgvector sidecar. If false (or extension missing),
+    // RAG uses keyword fallback.
+    AI_PGVECTOR_ENABLED: Joi.string().valid('true', 'false').default('true'),
   });
 
   const { error, value } = schema.validate(config, {

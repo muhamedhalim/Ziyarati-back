@@ -36,6 +36,7 @@ export function typeOrmFactory(config: ConfigService): TypeOrmModuleOptions {
     url: databaseUrl,
     autoLoadEntities: true,
     entities: [join(__dirname, '..', 'entities', '**', '*.{ts,js}')],
+    migrations: [join(__dirname, '..', 'migrations', '*.{ts,js}')],
     synchronize,
     migrationsRun: !synchronize,
     logging: logging ? ['query', 'error', 'warn'] : ['error'],

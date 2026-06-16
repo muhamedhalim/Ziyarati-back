@@ -1,8 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { AiKnowledgeBase } from '../../entities/AI Agent/AiKnowledgeBase';
+import { AI_EMBEDDING_PROVIDER } from './providers/ai-provider.interface';
+import type { AiEmbeddingProvider } from './providers/ai-provider.interface';
+import { PgVectorBootstrapService } from './rag/pgvector-bootstrap.service';
+import { AI_KB_EMBEDDINGS_TABLE, toSqlVector } from './rag/pgvector.util';
 
 export interface RetrievedChunk {
   id: string;
@@ -15,20 +20,27 @@ export interface RetrievedChunk {
 /**
  * Retrieval-Augmented Generation retriever.
  *
- * The schema has no active vector column, so retrieval is a KEYWORD abstraction:
- * it matches knowledge-base chunks for the agent against the query terms and
- * assigns a naive relevance score. The interface (`retrieve` → ranked chunks,
- * `assembleContext`) is what the execution layer depends on — swapping in a
- * vector store later requires no change to AiExecutionService.
+ * Primary path: pgvector cosine ANN over the `ai_kb_embeddings` sidecar (HNSW),
+ * tenant + agent scoped in the WHERE clause (no cross-tenant leakage). Falls back
+ * to keyword overlap scoring when embeddings/pgvector are not configured, so the
+ * execution layer (which only depends on `retrieve`/`assembleContext`) is
+ * unaffected either way.
  *
- * Tenant isolation: retrieval is always scoped to `tenant: { id }` and the
- * agent's chunks.
+ * pgvector is confined to THIS service + the ingestion pipeline — never the
+ * execution, analytics, controller or DTO layers.
  */
 @Injectable()
 export class AiRagService {
+  private readonly logger = new Logger('AiRagService');
+
   constructor(
     @InjectRepository(AiKnowledgeBase)
     private readonly kb: Repository<AiKnowledgeBase>,
+    @Inject(AI_EMBEDDING_PROVIDER)
+    private readonly embedder: AiEmbeddingProvider,
+    private readonly pgvector: PgVectorBootstrapService,
+    private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
   ) {}
 
   /** Retrieves the most relevant knowledge chunks for an agent + query. */
@@ -36,18 +48,93 @@ export class AiRagService {
     tenantId: string,
     agentId: string,
     query: string,
-    limit = 5,
+    limit?: number,
+  ): Promise<RetrievedChunk[]> {
+    const topK = limit ?? Number(this.config.get<number>('RAG_TOP_K', 5));
+
+    if (this.embedder.isConfigured() && this.pgvector.isAvailable()) {
+      try {
+        return await this.vectorSearch(tenantId, agentId, query, topK);
+      } catch (err) {
+        this.logger.warn(
+          `Vector search failed (${(err as Error).message}) — using keyword fallback`,
+        );
+      }
+    }
+    return this.keywordSearch(tenantId, agentId, query, topK);
+  }
+
+  /** Builds a single context block from retrieved chunks for prompt assembly. */
+  assembleContext(chunks: RetrievedChunk[]): string {
+    if (!chunks.length) return '';
+    return chunks
+      .map((c, i) => `[${i + 1}] (score ${c.score.toFixed(3)}) ${c.content}`)
+      .join('\n\n');
+  }
+
+  // ──────────────────────────── Vector path ──────────────────────────────── //
+
+  private async vectorSearch(
+    tenantId: string,
+    agentId: string,
+    query: string,
+    topK: number,
+  ): Promise<RetrievedChunk[]> {
+    const { vectors } = await this.embedder.embed(tenantId, [query]);
+    const queryVec = vectors[0];
+    if (!queryVec) return [];
+
+    const efSearch = Math.max(
+      1,
+      Math.floor(Number(this.config.get<number>('HNSW_EF_SEARCH', 60))),
+    );
+    const vec = toSqlVector(queryVec);
+
+    // SET LOCAL keeps the recall knob scoped to this transaction (pool-safe).
+    const rows = await this.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
+      return m.query(
+        `
+        SELECT k.id AS id,
+               k.content AS content,
+               k.source_type AS "sourceType",
+               k.source_id AS "sourceId",
+               1 - (e.embedding <=> $1::vector) AS score
+        FROM ${AI_KB_EMBEDDINGS_TABLE} e
+        JOIN ai_knowledge_bases k ON k.id = e.kb_id
+        WHERE e.tenant_id = $2 AND e.agent_id = $3
+        ORDER BY e.embedding <=> $1::vector
+        LIMIT $4
+        `,
+        [vec, tenantId, agentId, topK],
+      );
+    });
+
+    return rows.map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      content: r.content as string,
+      sourceType: (r.sourceType as string) ?? undefined,
+      sourceId: (r.sourceId as string) ?? undefined,
+      score: Number(r.score),
+    }));
+  }
+
+  // ──────────────────────────── Keyword fallback ─────────────────────────── //
+
+  private async keywordSearch(
+    tenantId: string,
+    agentId: string,
+    query: string,
+    topK: number,
   ): Promise<RetrievedChunk[]> {
     const terms = this.tokenize(query);
-    // Candidate set: the agent's chunks (bounded). A vector store would replace
-    // this with an ANN search; here we score candidates by term overlap.
     const candidates = await this.kb.find({
       where: { tenant: { id: tenantId }, agent: { id: agentId } },
       order: { created_at: 'DESC' },
       take: 200,
     });
 
-    const scored = candidates
+    return candidates
       .map((c) => ({
         id: c.id,
         content: c.content,
@@ -57,17 +144,7 @@ export class AiRagService {
       }))
       .filter((c) => c.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-
-    return scored;
-  }
-
-  /** Builds a single context block from retrieved chunks for prompt assembly. */
-  assembleContext(chunks: RetrievedChunk[]): string {
-    if (!chunks.length) return '';
-    return chunks
-      .map((c, i) => `[${i + 1}] (relevance ${c.score.toFixed(2)}) ${c.content}`)
-      .join('\n\n');
+      .slice(0, topK);
   }
 
   private tokenize(text: string): string[] {
@@ -82,7 +159,6 @@ export class AiRagService {
     );
   }
 
-  /** Naive relevance: fraction of query terms present in the chunk. */
   private score(content: string, terms: string[]): number {
     if (!terms.length) return 0;
     const lc = content.toLowerCase();

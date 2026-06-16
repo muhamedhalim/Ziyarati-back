@@ -35,7 +35,14 @@ import { HandoverRequestController } from './handover-request.controller';
 
 import { AiProviderFactory } from './providers/ai-provider.factory';
 import { NoopAiProvider } from './providers/noop-ai.provider';
-import { AI_COMPLETION_PROVIDERS } from './providers/ai-provider.interface';
+import { OpenAiChatProvider } from './providers/openai-chat.provider';
+import { OpenAiEmbeddingProvider } from './providers/openai-embedding.provider';
+import {
+  AI_COMPLETION_PROVIDERS,
+  AI_EMBEDDING_PROVIDER,
+} from './providers/ai-provider.interface';
+import { PgVectorBootstrapService } from './rag/pgvector-bootstrap.service';
+import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
 
 /**
  * AI / RAG Domain.
@@ -88,8 +95,18 @@ import { AI_COMPLETION_PROVIDERS } from './providers/ai-provider.interface';
     HandoverRequestService,
     AiProviderFactory,
     NoopAiProvider,
-    // No real LLM providers yet — the array is the registration point.
-    { provide: AI_COMPLETION_PROVIDERS, useValue: [] },
+    OpenAiChatProvider,
+    PgVectorBootstrapService,
+    AiKnowledgeIngestionService,
+    // Embedding backend (RAG + ingestion only). Falls back to keyword retrieval
+    // when no API key is configured (provider.isConfigured() === false).
+    { provide: AI_EMBEDDING_PROVIDER, useClass: OpenAiEmbeddingProvider },
+    // Completion providers: OpenAI first, Noop fallback resolved by the factory.
+    {
+      provide: AI_COMPLETION_PROVIDERS,
+      useFactory: (openai: OpenAiChatProvider) => [openai],
+      inject: [OpenAiChatProvider],
+    },
   ],
   exports: [
     AiAgentService,

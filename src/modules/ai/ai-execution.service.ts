@@ -82,12 +82,15 @@ export class AiExecutionService {
         }),
       );
 
-      // 2) load recent history (includes the just-saved user message)
-      const history = await msgRepo.find({
+      // 2) load recent history (the LATEST 20, then restore chronological order).
+      // NOTE: must order DESC+take to get the most recent turns; ordering ASC
+      // would return the OLDEST 20 and drop recent context in long chats.
+      const recent = await msgRepo.find({
         where: { ai_conversation_id: aiConversationId, tenant: { id: tenantId } },
-        order: { created_at: 'ASC' },
+        order: { created_at: 'DESC' },
         take: 20,
       });
+      const history = recent.reverse();
 
       // 3) assemble the prompt
       const messages: AiChatMessage[] = [];
