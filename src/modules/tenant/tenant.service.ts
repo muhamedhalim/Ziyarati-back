@@ -230,10 +230,25 @@ export class TenantService {
       reason?: string;
     },
   ): Promise<Tenant> {
+    // Allowed approval-status transitions (current → permitted next states).
+    const ALLOWED: Record<TenantApprovalStatus, TenantApprovalStatus[]> = {
+      [TenantApprovalStatus.PENDING_VERIFICATION]: [TenantApprovalStatus.APPROVED, TenantApprovalStatus.REJECTED],
+      [TenantApprovalStatus.PENDING_APPROVAL]: [TenantApprovalStatus.APPROVED, TenantApprovalStatus.REJECTED],
+      [TenantApprovalStatus.APPROVED]: [TenantApprovalStatus.SUSPENDED],
+      [TenantApprovalStatus.REJECTED]: [TenantApprovalStatus.APPROVED],
+      [TenantApprovalStatus.SUSPENDED]: [TenantApprovalStatus.APPROVED],
+    };
+
     return this.dataSource.transaction(async (manager) => {
       const tenant = await manager.findOne(Tenant, { where: { id } });
       if (!tenant) {
         throw new AppError(ErrorCode.TENANT_NOT_FOUND);
+      }
+
+      if (!ALLOWED[tenant.approval_status]?.includes(opts.status)) {
+        throw new AppError(ErrorCode.BAD_REQUEST, {
+          message: `Invalid transition: ${tenant.approval_status} → ${opts.status}`,
+        });
       }
 
       tenant.approval_status = opts.status;
