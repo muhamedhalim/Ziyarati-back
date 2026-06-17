@@ -13,6 +13,7 @@ import {
   CampaignLaunchJob,
   CampaignProcessRecipientJob,
   NotificationDispatchJob,
+  RefundsReapJob,
   SettlementsProcessJob,
   SubscriptionsRenewalCheckJob,
   WhatsappSendJob,
@@ -40,6 +41,7 @@ export class QueueService {
     @InjectQueue(QUEUE.ANALYTICS) analytics: Queue,
     @InjectQueue(QUEUE.SETTLEMENTS) settlements: Queue,
     @InjectQueue(QUEUE.SUBSCRIPTIONS) subscriptions: Queue,
+    @InjectQueue(QUEUE.REFUNDS) refunds: Queue,
     private readonly ctx: TenantContextService,
   ) {
     this.queues = {
@@ -50,6 +52,7 @@ export class QueueService {
       [QUEUE.ANALYTICS]: analytics,
       [QUEUE.SETTLEMENTS]: settlements,
       [QUEUE.SUBSCRIPTIONS]: subscriptions,
+      [QUEUE.REFUNDS]: refunds,
     };
   }
 
@@ -116,6 +119,10 @@ export class QueueService {
 
   enqueueSubscriptionsRenewalCheck(data: SubscriptionsRenewalCheckJob, opts?: JobsOptions) {
     return this.add(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_CHECK, data, opts);
+  }
+
+  enqueueRefundsReap(data: RefundsReapJob, opts?: JobsOptions) {
+    return this.add(QUEUE.REFUNDS, JOB.REFUNDS_REAP, data, opts);
   }
 
   // ── Repeatable (scheduled) jobs ──────────────────────────────────────────

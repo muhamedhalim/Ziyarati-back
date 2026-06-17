@@ -97,6 +97,9 @@ export class MoyasarProvider implements PaymentGatewayProvider {
       success: true,
       gatewayPaymentId: json?.id ?? gatewayPaymentId,
       status: this.mapStatus(json?.status),
+      // Moyasar reports `refunded` as cumulative halalas (smallest unit).
+      refundedMinorUnits:
+        json?.refunded != null ? Math.round(Number(json.refunded)) : undefined,
       raw: json,
     };
   }

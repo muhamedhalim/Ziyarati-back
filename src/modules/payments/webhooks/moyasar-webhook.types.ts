@@ -23,7 +23,10 @@ export interface MoyasarWebhookEvent {
   data?: {
     id?: string;
     status?: string;
+    /** Payment total in the smallest currency unit (halalas). */
     amount?: number;
+    /** Cumulative amount refunded so far, in the smallest unit (halalas). */
+    refunded?: number;
     currency?: string;
     [key: string]: any;
   };

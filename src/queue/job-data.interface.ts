@@ -10,6 +10,9 @@ export interface BaseJobData {
   actorId?: string;
 }
 
+// ── Refunds (R2 reaper sweep — platform-level, tenantId null) ───────────────
+export type RefundsReapJob = BaseJobData;
+
 // ── Notifications ──────────────────────────────────────────────────────────
 export interface NotificationDispatchJob extends BaseJobData {
   tenantId: string;

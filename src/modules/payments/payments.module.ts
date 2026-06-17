@@ -20,6 +20,8 @@ import { InvoiceService } from './invoice.service';
 import { InvoiceItemService } from './invoice-item.service';
 import { SettlementService } from './settlement.service';
 import { SettlementItemService } from './settlement-item.service';
+import { SettlementAdjustmentService } from './settlement-adjustment.service';
+import { RefundRecoveryService } from './refund-recovery.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
@@ -36,6 +38,7 @@ import { NoopGatewayProvider } from './providers/noop-gateway.provider';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { PAYMENT_GATEWAY_PROVIDERS } from './providers/payment-gateway.provider.interface';
 import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
+import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
 
 /**
  * Payments Domain.
@@ -88,12 +91,15 @@ import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
     InvoiceItemService,
     SettlementService,
     SettlementItemService,
+    SettlementAdjustmentService,
+    RefundRecoveryService,
     PaymentWebhookService,
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
     MoyasarProvider,
     NoopGatewayProvider,
     PaymentGatewayFactory,
     MoyasarWebhookVerifier,
+    PaymentsSchemaBootstrap,
     {
       provide: PAYMENT_GATEWAY_PROVIDERS,
       useFactory: (moyasar: MoyasarProvider) => [moyasar],
@@ -105,6 +111,8 @@ import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
     InvoiceService,
     // Exposed so the background worker's settlements processor can reuse it.
     SettlementService,
+    // Exposed so the background worker's refunds reaper can reuse it.
+    RefundRecoveryService,
   ],
 })
 export class PaymentsModule {}

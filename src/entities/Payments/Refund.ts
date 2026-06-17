@@ -39,6 +39,25 @@ export class Refund {
   })
   status!: string;
 
+  /**
+   * Caller-supplied idempotency key. A UNIQUE (tenant_id, idempotency_key)
+   * partial index (created by PaymentsSchemaBootstrap / migration) makes refund
+   * creation safe to retry — a replay returns the existing refund instead of
+   * issuing a second gateway refund.
+   */
+  @Column({ nullable: true })
+  idempotency_key?: string;
+
+  /**
+   * Gateway-side refund identifier. For refunds we initiate, this is the
+   * provider's refund id; for refunds reconciled from a webhook (e.g. a refund
+   * issued in the Moyasar dashboard), it is `recon:<eventId>`. A partial UNIQUE
+   * index (created by PaymentsSchemaBootstrap / migration) makes reconciliation
+   * idempotent at the DB level.
+   */
+  @Column({ nullable: true })
+  gateway_refund_id?: string;
+
   @ManyToOne(() => User, {
     nullable: true,
   })

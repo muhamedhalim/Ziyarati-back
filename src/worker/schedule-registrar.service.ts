@@ -27,7 +27,9 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.SETTLEMENTS, JOB.SETTLEMENTS_PROCESS, { tenantId: null }, '0 1 * * *');
       // Subscription renewal/expiry check — 02:00 UTC.
       await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_CHECK, { tenantId: null }, '0 2 * * *');
-      this.logger.log('Repeatable jobs registered (analytics ×2, settlements, subscriptions)');
+      // Refund recovery / reaper sweep — every 5 minutes (R2).
+      await this.queue.addRepeatable(QUEUE.REFUNDS, JOB.REFUNDS_REAP, { tenantId: null }, '*/5 * * * *');
+      this.logger.log('Repeatable jobs registered (analytics ×2, settlements, subscriptions, refunds-reaper)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

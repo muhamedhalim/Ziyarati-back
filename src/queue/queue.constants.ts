@@ -10,6 +10,7 @@ export const QUEUE = {
   ANALYTICS: 'analytics',
   SETTLEMENTS: 'settlements',
   SUBSCRIPTIONS: 'subscriptions',
+  REFUNDS: 'refunds',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -28,6 +29,7 @@ export const JOB = {
   ANALYTICS_GENERATE_REPORT: 'analytics.generateReport',
   SETTLEMENTS_PROCESS: 'settlements.process',
   SUBSCRIPTIONS_RENEWAL_CHECK: 'subscriptions.renewalCheck',
+  REFUNDS_REAP: 'refunds.reap',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

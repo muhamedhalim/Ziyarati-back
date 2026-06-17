@@ -80,11 +80,39 @@ export class TransactionService {
     return row;
   }
 
-  /** Webhook idempotency: has this provider event already been recorded? */
-  async existsByGatewayEvent(eventId: string, type: string): Promise<boolean> {
-    const count = await this.transactions.count({
-      where: { gateway_transaction_id: eventId, type },
-    });
-    return count > 0;
+  /**
+   * Record a webhook transaction idempotently (H4). Relies on the partial UNIQUE
+   * index on `transactions (gateway_transaction_id) WHERE type = 'webhook'`
+   * (created by PaymentsSchemaBootstrap / migration). Returns `{ created: false }`
+   * when this provider event was already recorded — a race-proof replacement for
+   * the previous check-then-insert, which two concurrent redeliveries could both
+   * pass. Non-webhook logs keep using `record()` and are unaffected by the index.
+   */
+  async recordWebhookOnce(
+    tenantId: string,
+    paymentId: string,
+    input: RecordTransactionInput,
+    manager?: EntityManager,
+  ): Promise<{ created: boolean }> {
+    const repo = manager
+      ? manager.getRepository(Transaction)
+      : this.transactions;
+    try {
+      await repo.insert({
+        tenant: { id: tenantId } as Tenant,
+        payment: { id: paymentId } as Payment,
+        type: input.type,
+        amount: input.amount,
+        status: input.status,
+        gateway_transaction_id: input.gatewayTransactionId,
+        raw_response: input.raw,
+      });
+      return { created: true };
+    } catch (err) {
+      if ((err as { code?: string })?.code === '23505') {
+        return { created: false }; // duplicate event — safe to ignore
+      }
+      throw err;
+    }
   }
 }

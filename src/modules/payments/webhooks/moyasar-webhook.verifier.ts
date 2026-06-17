@@ -28,6 +28,14 @@ export class MoyasarWebhookVerifier {
     const expected = this.config.get<string>('MOYASAR_WEBHOOK_SECRET') ?? '';
 
     if (!expected) {
+      // H3: fail CLOSED in production — an unconfigured secret must never accept
+      // unauthenticated webhooks (forgery → fake "paid" payments).
+      if (this.config.get<string>('NODE_ENV') === 'production') {
+        this.logger.error(
+          'MOYASAR_WEBHOOK_SECRET not configured — rejecting webhook in production',
+        );
+        return false;
+      }
       this.logger.warn(
         'MOYASAR_WEBHOOK_SECRET not configured — accepting webhook (dev only)',
       );

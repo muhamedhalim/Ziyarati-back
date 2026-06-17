@@ -4,7 +4,6 @@ import {
   Between,
   DataSource,
   FindOptionsWhere,
-  In,
   LessThan,
   MoreThanOrEqual,
   Repository,
@@ -18,9 +17,10 @@ import { PaymentStatus, PayoutStatus, SettlementStatus } from '../../entities/en
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { SettlementItemService } from './settlement-item.service';
+import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { GenerateSettlementDto } from './dto/generate-settlement.dto';
 import { QuerySettlementsDto } from './dto/query-settlements.dto';
-import { DEFAULT_PAYMENT_CURRENCY, round2 } from './payments.constants';
+import { DEFAULT_PAYMENT_CURRENCY } from './payments.constants';
 
 /**
  * Settlement batches (`settlements`).
@@ -39,39 +39,80 @@ export class SettlementService {
     private readonly payments: Repository<Payment>,
     private readonly dataSource: DataSource,
     private readonly itemsService: SettlementItemService,
+    private readonly adjustments: SettlementAdjustmentService,
   ) {}
 
   async generate(tenantId: string, dto: GenerateSettlementDto) {
+    // Resolve actual FK column names from metadata (naming-strategy-proof).
+    const meta = this.payments.metadata;
+    const tenantCol = meta.findRelationWithPropertyPath('tenant')!.joinColumns[0]
+      .databaseName;
+    const branchCol = meta.findRelationWithPropertyPath('branch')!.joinColumns[0]
+      .databaseName;
+
     const settlementId = await this.dataSource.transaction(async (manager) => {
-      const paymentRepo = manager.getRepository(Payment);
-
-      const where: FindOptionsWhere<Payment> = {
-        tenant: { id: tenantId },
-        status: PaymentStatus.PAID,
-        settlement_status: SettlementStatus.UNSETTLED,
-      };
-      if (dto.branchId) where.branch = { id: dto.branchId };
-      if (dto.periodStart && dto.periodEnd) {
-        where.paid_at = Between(new Date(dto.periodStart), new Date(dto.periodEnd));
-      } else if (dto.periodStart) {
-        where.paid_at = MoreThanOrEqual(new Date(dto.periodStart));
-      } else if (dto.periodEnd) {
-        where.paid_at = LessThan(new Date(dto.periodEnd));
+      // C2: atomically CLAIM eligible payments in a single UPDATE … RETURNING.
+      // A concurrent generate() cannot claim the same rows — once flipped to
+      // IN_BATCH they no longer satisfy the `settlement_status = UNSETTLED`
+      // predicate, so no payment can land in two settlements (no double payout).
+      // R1: settle on NET collectible value. Eligible = PAID or
+      // PARTIALLY_REFUNDED + UNSETTLED; fully REFUNDED is excluded (status filter).
+      // QueryBuilder .returning().execute() yields a deterministic `.raw` row set
+      // (manager.query on UPDATE…RETURNING returns a [rows, count] tuple).
+      const qb = manager
+        .createQueryBuilder()
+        .update(Payment)
+        .set({ settlement_status: SettlementStatus.IN_BATCH })
+        .where(`"${tenantCol}" = :tenantId`, { tenantId })
+        .andWhere('status IN (:...statuses)', {
+          statuses: [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED],
+        })
+        .andWhere('settlement_status = :unsettled', {
+          unsettled: SettlementStatus.UNSETTLED,
+        });
+      if (dto.branchId) {
+        qb.andWhere(`"${branchCol}" = :branchId`, { branchId: dto.branchId });
       }
+      if (dto.periodStart) {
+        qb.andWhere('paid_at >= :periodStart', { periodStart: new Date(dto.periodStart) });
+      }
+      if (dto.periodEnd) {
+        qb.andWhere('paid_at < :periodEnd', { periodEnd: new Date(dto.periodEnd) });
+      }
+      const claimedRes = await qb.returning(['id', 'amount', 'currency']).execute();
+      const claimed = claimedRes.raw as Array<{
+        id: string;
+        amount: string;
+        currency: string;
+      }>;
 
-      const eligible = await paymentRepo.find({ where });
-      if (eligible.length === 0) {
+      // Claim OPEN clawbacks (refunds that landed after a prior settlement).
+      const claw = await this.adjustments.lockOpen(manager, tenantId);
+
+      if (claimed.length === 0 && claw.ids.length === 0) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-          message: 'No unsettled, paid payments match the given criteria',
+          message: 'No unsettled payments or pending adjustments match the given criteria',
         });
       }
 
+      // Exact integer-cent aggregation.
+      const grossC = claimed.reduce(
+        (c, p) => c + Math.round(Number(p.amount) * 100),
+        0,
+      );
+      const refundedC = claimed.length
+        ? await this.sumSucceededRefundsCents(manager, claimed.map((p) => p.id))
+        : 0;
+      // net collectible = collected − refunds-on-claimed − prior-settlement clawbacks.
+      const netCollectibleC = grossC - refundedC - claw.totalCents;
+      // Fee only on positive collectible; never on a clawback-negative batch.
+      const feeC =
+        netCollectibleC > 0
+          ? Math.round((netCollectibleC * (dto.feePercent ?? 0)) / 100)
+          : 0;
+      const netC = netCollectibleC - feeC;
       const currency =
-        dto.currency ?? eligible[0].currency ?? DEFAULT_PAYMENT_CURRENCY;
-      const gross = round2(eligible.reduce((sum, p) => sum + Number(p.amount), 0));
-      const feePercent = dto.feePercent ?? 0;
-      const fee = round2((gross * feePercent) / 100);
-      const net = round2(gross - fee);
+        dto.currency ?? claimed[0]?.currency ?? DEFAULT_PAYMENT_CURRENCY;
 
       const settlementRepo = manager.getRepository(Settlement);
       const settlement = await settlementRepo.save(
@@ -80,30 +121,42 @@ export class SettlementService {
           branch: dto.branchId ? ({ id: dto.branchId } as Branch) : undefined,
           period_start: dto.periodStart ? new Date(dto.periodStart) : undefined,
           period_end: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
-          gross_amount: gross,
-          fee_amount: fee,
-          net_amount: net,
+          gross_amount: grossC / 100,
+          fee_amount: feeC / 100,
+          net_amount: netC / 100,
           currency,
           status: PayoutStatus.PENDING,
         }),
       );
 
-      await this.itemsService.mapPayments(
-        settlement.id,
-        eligible.map((p) => p.id),
-        manager,
-      );
-
-      // Flag the payments as batched so a second run can't re-settle them.
-      await paymentRepo.update(
-        { id: In(eligible.map((p) => p.id)) },
-        { settlement_status: SettlementStatus.IN_BATCH },
-      );
+      // Bind the claimed clawbacks to this settlement, and map the payments.
+      // Claim + settlement commit together — a failure rolls everything back.
+      await this.adjustments.markApplied(manager, claw.ids, settlement.id);
+      if (claimed.length) {
+        await this.itemsService.mapPayments(
+          settlement.id,
+          claimed.map((p) => p.id),
+          manager,
+        );
+      }
 
       return settlement.id;
     });
 
     return this.getOne(tenantId, settlementId);
+  }
+
+  /** Exact SUM (SQL numeric) of SUCCEEDED refunds for the given payments, in cents. */
+  private async sumSucceededRefundsCents(
+    manager: import('typeorm').EntityManager,
+    paymentIds: string[],
+  ): Promise<number> {
+    const row = await manager.query(
+      `SELECT COALESCE(SUM(amount), 0) AS sum FROM refunds
+       WHERE "paymentId" = ANY($1) AND status = 'SUCCEEDED'`,
+      [paymentIds],
+    );
+    return Math.round(Number(row[0]?.sum ?? 0) * 100);
   }
 
   async list(tenantId: string, query: QuerySettlementsDto) {

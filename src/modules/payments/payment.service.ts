@@ -102,14 +102,23 @@ export class PaymentService {
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
       }
-      await this.payments.save(payment);
 
-      await this.transactions.record(tenantId, payment.id, {
-        type: TRANSACTION_TYPE.CHARGE,
-        amount: Number(payment.amount),
-        status: result.status,
-        gatewayTransactionId: result.gatewayPaymentId,
-        raw: result.raw,
+      // Ledger atomicity: the status change and its CHARGE audit row commit
+      // together — never a status change without a transaction record.
+      await this.dataSource.transaction(async (manager) => {
+        await manager.getRepository(Payment).save(payment);
+        await this.transactions.record(
+          tenantId,
+          payment.id,
+          {
+            type: TRANSACTION_TYPE.CHARGE,
+            amount: Number(payment.amount),
+            status: result.status,
+            gatewayTransactionId: result.gatewayPaymentId,
+            raw: result.raw,
+          },
+          manager,
+        );
       });
     } catch (err) {
       // Leave the payment PENDING; confirm() or a webhook can still resolve it.
@@ -123,22 +132,21 @@ export class PaymentService {
   }
 
   async confirm(tenantId: string, id: string, dto: ConfirmPaymentDto) {
-    // Ownership / existence (tenant-scoped, no lock).
-    await this.findOne(tenantId, id);
-
-    return this.dataSource.transaction(async (manager) => {
+    // ── Phase 1: short tx — lock, idempotent checks, resolve the gateway id.
+    // (The gateway is NOT called here, so the row lock is held only briefly.)
+    const prep = await this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(Payment);
       const payment = await repo.findOne({
-        where: { id },
+        where: { id, tenant: { id: tenantId } },
         lock: { mode: 'pessimistic_write' },
       });
       if (!payment) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
       }
 
-      // Idempotent: already settled → return as-is.
+      // Idempotent: already settled → nothing to verify.
       if (payment.status === PaymentStatus.PAID) {
-        return payment;
+        return { settled: payment };
       }
       if (
         payment.status === PaymentStatus.REFUNDED ||
@@ -151,16 +159,37 @@ export class PaymentService {
 
       if (dto.gatewayPaymentId && !payment.gateway_payment_id) {
         payment.gateway_payment_id = dto.gatewayPaymentId;
+        await repo.save(payment);
       }
-      const gatewayPaymentId = payment.gateway_payment_id;
-      if (!gatewayPaymentId) {
+      if (!payment.gateway_payment_id) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: 'No gateway payment to verify for this payment',
         });
       }
+      return {
+        gatewayPaymentId: payment.gateway_payment_id,
+        gateway: payment.gateway,
+        amount: Number(payment.amount),
+      };
+    });
 
-      const provider = this.gateways.resolve(payment.gateway);
-      const result = await provider.verifyPayment(gatewayPaymentId);
+    if ('settled' in prep) return prep.settled;
+
+    // ── Phase 2: gateway verify OUTSIDE any tx/lock (C3).
+    const result = await this.gateways
+      .resolve(prep.gateway)
+      .verifyPayment(prep.gatewayPaymentId);
+
+    // ── Phase 3: short tx — re-lock and finalize idempotently.
+    return this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(Payment);
+      const payment = await repo.findOne({
+        where: { id, tenant: { id: tenantId } },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!payment) {
+        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
+      }
 
       await this.transactions.record(
         tenantId,
@@ -169,12 +198,14 @@ export class PaymentService {
           type: TRANSACTION_TYPE.VERIFY,
           amount: Number(payment.amount),
           status: result.status,
-          gatewayTransactionId: gatewayPaymentId,
+          gatewayTransactionId: prep.gatewayPaymentId,
           raw: result.raw,
         },
         manager,
       );
 
+      // A webhook may have settled it between phases — don't regress a terminal state.
+      if (payment.status === PaymentStatus.PAID) return payment;
       if (result.status === 'paid') {
         payment.status = PaymentStatus.PAID;
         payment.paid_at = new Date();

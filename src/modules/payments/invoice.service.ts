@@ -135,15 +135,30 @@ export class InvoiceService {
     return invoice;
   }
 
-  /** Tenant-scoped sequential number, e.g. `INV-2026-000001`. */
+  /**
+   * Tenant-scoped sequential number, e.g. `INV-2026-000001`.
+   *
+   * H1 fix: a monotonic per-tenant counter incremented atomically via
+   * `INSERT … ON CONFLICT DO UPDATE … RETURNING`. This serializes concurrent
+   * invoice creates on the counter row, so two requests can never compute the
+   * same number (the old `count(*)+1` raced and could also reuse numbers after
+   * voids/deletes). The `tenant_counters` table is created by
+   * PaymentsSchemaBootstrap / migration.
+   */
   private async nextInvoiceNumber(
     manager: EntityManager,
     tenantId: string,
   ): Promise<string> {
-    const count = await manager.getRepository(Invoice).count({
-      where: { tenant: { id: tenantId } },
-    });
+    const rows: Array<{ seq: string }> = await manager.query(
+      `INSERT INTO tenant_counters (tenant_id, name, seq)
+       VALUES ($1, 'invoice', 1)
+       ON CONFLICT (tenant_id, name)
+       DO UPDATE SET seq = tenant_counters.seq + 1
+       RETURNING seq`,
+      [tenantId],
+    );
+    const seq = Number(rows[0]?.seq ?? 1);
     const year = new Date().getFullYear();
-    return `INV-${year}-${String(count + 1).padStart(6, '0')}`;
+    return `INV-${year}-${String(seq).padStart(6, '0')}`;
   }
 }

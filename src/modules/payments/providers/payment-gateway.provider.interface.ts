@@ -39,6 +39,13 @@ export interface GatewayPaymentResult {
   /** Hosted payment-page / 3DS redirect, when the provider returns one. */
   redirectUrl?: string;
   failureReason?: string;
+  /**
+   * Cumulative amount refunded so far, in the smallest unit (e.g. halalas).
+   * Returned by `verifyPayment` and used by the refund reaper to confirm whether
+   * a stuck PENDING refund actually settled at the gateway. `undefined` when the
+   * provider cannot report it (caller must not assume zero).
+   */
+  refundedMinorUnits?: number;
   /** Raw provider response — persisted on `Transaction.raw_response` for audit. */
   raw?: Record<string, any>;
 }

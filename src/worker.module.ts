@@ -30,6 +30,7 @@ import { AiProcessor } from './worker/processors/ai.processor';
 import { AnalyticsProcessor } from './worker/processors/analytics.processor';
 import { SettlementsProcessor } from './worker/processors/settlements.processor';
 import { SubscriptionsProcessor } from './worker/processors/subscriptions.processor';
+import { RefundsProcessor } from './worker/processors/refunds.processor';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -65,6 +66,7 @@ import { SubscriptionsProcessor } from './worker/processors/subscriptions.proces
     AnalyticsProcessor,
     SettlementsProcessor,
     SubscriptionsProcessor,
+    RefundsProcessor,
   ],
 })
 export class WorkerModule {}

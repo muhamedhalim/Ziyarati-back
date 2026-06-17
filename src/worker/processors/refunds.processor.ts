@@ -1,0 +1,32 @@
+import { Logger } from '@nestjs/common';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { Job } from 'bullmq';
+
+import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import { RefundsReapJob } from '../../queue/job-data.interface';
+import { RefundRecoveryService } from '../../modules/payments/refund-recovery.service';
+
+/**
+ * Consumes the `refunds` queue (`refunds.reap`) — a platform-level scheduled
+ * sweep (every few minutes) that finalizes stale PENDING refunds via
+ * RefundRecoveryService. Idempotent and safe to run on multiple replicas (each
+ * refund is finalized under a payment row lock).
+ */
+@Processor(QUEUE.REFUNDS, { concurrency: workerConcurrency() })
+export class RefundsProcessor extends WorkerHost {
+  private readonly logger = new Logger('RefundsProcessor');
+
+  constructor(private readonly recovery: RefundRecoveryService) {
+    super();
+  }
+
+  async process(_job: Job<RefundsReapJob>) {
+    const summary = await this.recovery.reapStalePending();
+    return summary;
+  }
+
+  @OnWorkerEvent('failed')
+  onFailed(job: Job, err: Error) {
+    this.logger.error(`${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+  }
+}

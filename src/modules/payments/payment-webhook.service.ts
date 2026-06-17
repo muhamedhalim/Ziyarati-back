@@ -1,15 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { Payment } from '../../entities/Payments/Payment';
+import { Refund } from '../../entities/Payments/Refund';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { PaymentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
 import { TransactionService } from './transaction.service';
-import { TRANSACTION_TYPE } from './payments.constants';
+import { SettlementAdjustmentService } from './settlement-adjustment.service';
+import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
 
 type TargetStatus = 'paid' | 'failed' | 'refunded' | 'pending';
 
@@ -45,6 +48,7 @@ export class PaymentWebhookService {
     private readonly dataSource: DataSource,
     private readonly verifier: MoyasarWebhookVerifier,
     private readonly transactions: TransactionService,
+    private readonly adjustments: SettlementAdjustmentService,
   ) {}
 
   async handleMoyasar(
@@ -59,17 +63,7 @@ export class PaymentWebhookService {
       });
     }
 
-    // 2. Idempotency on the provider event id.
     const eventId = event?.id;
-    if (
-      eventId &&
-      (await this.transactions.existsByGatewayEvent(
-        eventId,
-        TRANSACTION_TYPE.WEBHOOK,
-      ))
-    ) {
-      return { accepted: true, deduplicated: true };
-    }
 
     // 3. Resolve our payment from the gateway payment id (tenant comes from it).
     const gatewayPaymentId = event?.data?.id;
@@ -93,27 +87,58 @@ export class PaymentWebhookService {
     const target = this.mapEvent(event);
 
     // 4. Apply state idempotently under a row lock.
-    const finalStatus = await this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(Payment);
       const payment = await repo.findOne({
         where: { id: owner.id },
         lock: { mode: 'pessimistic_write' },
       });
-      if (!payment) return owner.status;
+      if (!payment) return { status: owner.status, deduplicated: false };
 
-      // Always log the raw event (gateway_transaction_id = eventId → dedup key).
-      await this.transactions.record(
-        tenantId,
-        payment.id,
-        {
-          type: TRANSACTION_TYPE.WEBHOOK,
-          amount: Number(payment.amount),
-          status: event?.type ?? target,
-          gatewayTransactionId: eventId,
-          raw: event as Record<string, any>,
-        },
-        manager,
-      );
+      // H4: atomic dedup — insert the raw event under the partial UNIQUE index
+      // (gateway_transaction_id where type='webhook'). A redelivery loses the
+      // insert race and is skipped, so the state change runs at most once.
+      if (eventId) {
+        const { created } = await this.transactions.recordWebhookOnce(
+          tenantId,
+          payment.id,
+          {
+            type: TRANSACTION_TYPE.WEBHOOK,
+            amount: Number(payment.amount),
+            status: event?.type ?? target,
+            gatewayTransactionId: eventId,
+            raw: event as Record<string, any>,
+          },
+          manager,
+        );
+        if (!created) return { status: payment.status, deduplicated: true };
+      } else {
+        // No event id to dedup on — still log the raw event for audit.
+        await this.transactions.record(
+          tenantId,
+          payment.id,
+          {
+            type: TRANSACTION_TYPE.WEBHOOK,
+            amount: Number(payment.amount),
+            status: event?.type ?? target,
+            gatewayTransactionId: eventId,
+            raw: event as Record<string, any>,
+          },
+          manager,
+        );
+      }
+
+      // H2: refunds are NEVER flipped directly — reconcile against Refund rows.
+      if (target === 'refunded') {
+        const status = await this.reconcileRefund(
+          manager,
+          tenantId,
+          payment,
+          event,
+          eventId,
+        );
+        return { status, deduplicated: false };
+      }
 
       let changed = false;
       if (target === 'paid' && payment.status !== PaymentStatus.PAID) {
@@ -126,19 +151,123 @@ export class PaymentWebhookService {
       ) {
         payment.status = PaymentStatus.FAILED;
         changed = true;
-      } else if (
-        target === 'refunded' &&
-        payment.status !== PaymentStatus.REFUNDED
-      ) {
-        payment.status = PaymentStatus.REFUNDED;
-        changed = true;
       }
 
       if (changed) await repo.save(payment);
-      return payment.status;
+      return { status: payment.status, deduplicated: false };
     });
 
-    return { accepted: true, matched: true, status: finalStatus };
+    return {
+      accepted: true,
+      matched: true,
+      status: result.status,
+      deduplicated: result.deduplicated,
+    };
+  }
+
+  /**
+   * Reconcile a refund webhook against our Refund ledger (H2). The gateway's
+   * cumulative refunded amount is the source of truth; we NEVER flip the payment
+   * straight to REFUNDED. If the gateway has refunded more than we have recorded
+   * (e.g. a refund issued directly in the Moyasar dashboard), we append a
+   * SUCCEEDED Refund row for the delta + a REFUND transaction, then recompute the
+   * payment status from the cumulative SUCCEEDED total.
+   *
+   * In-flight (PENDING) refunds are included in the baseline so an API refund
+   * mid-flight (gateway called, not yet finalized) is never double-counted by a
+   * webhook that races it. All work runs under the caller's payment row lock.
+   */
+  private async reconcileRefund(
+    manager: EntityManager,
+    tenantId: string,
+    payment: Payment,
+    event: MoyasarWebhookEvent,
+    eventId?: string,
+  ): Promise<PaymentStatus> {
+    const paymentCents = Math.round(Number(payment.amount) * 100);
+
+    // Moyasar reports `refunded` in halalas (== our cents). Absent on a refund
+    // event ⇒ treat as full refund. Clamp to [0, paymentCents] so a unit
+    // mismatch / gateway anomaly can never over-refund the ledger.
+    const reported = event.data?.refunded;
+    let gatewayCents =
+      reported != null ? Math.round(Number(reported)) : paymentCents;
+    gatewayCents = Math.max(0, Math.min(gatewayCents, paymentCents));
+
+    const recordedCents = await this.sumRefundsCents(manager, payment.id, [
+      REFUND_STATUS.SUCCEEDED,
+      REFUND_STATUS.PENDING,
+    ]);
+    const deltaCents = gatewayCents - recordedCents;
+
+    if (deltaCents > 0) {
+      const reconRefund = await manager.getRepository(Refund).save(
+        manager.getRepository(Refund).create({
+          tenant: { id: tenantId } as Tenant,
+          payment: { id: payment.id } as Payment,
+          amount: deltaCents / 100,
+          status: REFUND_STATUS.SUCCEEDED,
+          reason: 'Gateway-reconciled refund (webhook)',
+          gateway_refund_id: eventId ? `recon:${eventId}` : undefined,
+        }),
+      );
+      // R1 clawback: a reconciled refund on an already-settled payment nets out
+      // of the next settlement.
+      await this.adjustments.recordClawbackIfSettled(
+        manager,
+        tenantId,
+        payment.id,
+        payment.settlement_status,
+        deltaCents,
+        reconRefund.id,
+      );
+      // Ledger: every financial state change gets its own audit record.
+      await this.transactions.record(
+        tenantId,
+        payment.id,
+        {
+          type: TRANSACTION_TYPE.REFUND,
+          amount: deltaCents / 100,
+          status: REFUND_STATUS.SUCCEEDED.toLowerCase(),
+          gatewayTransactionId: eventId,
+          raw: event as Record<string, any>,
+        },
+        manager,
+      );
+    }
+
+    // Recompute payment status from the cumulative SUCCEEDED refunds only.
+    const succeededCents = await this.sumRefundsCents(manager, payment.id, [
+      REFUND_STATUS.SUCCEEDED,
+    ]);
+    let newStatus = payment.status;
+    if (succeededCents > 0) {
+      newStatus =
+        succeededCents >= paymentCents
+          ? PaymentStatus.REFUNDED
+          : PaymentStatus.PARTIALLY_REFUNDED;
+    }
+    if (newStatus !== payment.status) {
+      payment.status = newStatus;
+      await manager.getRepository(Payment).save(payment);
+    }
+    return newStatus;
+  }
+
+  /** Exact SUM (SQL `numeric`) of refunds in the given statuses, in integer cents. */
+  private async sumRefundsCents(
+    manager: EntityManager,
+    paymentId: string,
+    statuses: string[],
+  ): Promise<number> {
+    const row = await manager
+      .createQueryBuilder(Refund, 'r')
+      .innerJoin('r.payment', 'p')
+      .select('COALESCE(SUM(r.amount), 0)', 'sum')
+      .where('p.id = :pid', { pid: paymentId })
+      .andWhere('r.status IN (:...st)', { st: statuses })
+      .getRawOne<{ sum: string }>();
+    return Math.round(Number(row?.sum ?? 0) * 100);
   }
 
   /** Normalize a Moyasar event/status into our target transition. */

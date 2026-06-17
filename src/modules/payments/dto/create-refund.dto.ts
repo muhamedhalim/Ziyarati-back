@@ -28,4 +28,15 @@ export class CreateRefundDto {
   @IsString()
   @MaxLength(500)
   reason?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Idempotency key. Retrying with the same key returns the existing refund instead of issuing a second gateway refund (safe retry). Strongly recommended.',
+    maxLength: 128,
+    example: 'refund-appt-50-001',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
