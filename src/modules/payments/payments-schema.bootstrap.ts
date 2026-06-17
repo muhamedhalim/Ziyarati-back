@@ -100,6 +100,11 @@ export class PaymentsSchemaBootstrap implements OnApplicationBootstrap {
       CREATE INDEX IF NOT EXISTS idx_settlement_adj_open
       ON settlement_adjustments (tenant_id, status) WHERE status = 'OPEN'
     `);
+    // M1: at most one clawback per refund (prevents double-subtraction).
+    await this.run('settlement_adjustments refund unique', `
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_settlement_adj_refund
+      ON settlement_adjustments (refund_id) WHERE refund_id IS NOT NULL
+    `);
 
     // R5: transactions are an immutable audit log — block UPDATE/DELETE at the
     // DB layer (the app only ever INSERTs). Idempotent (CREATE OR REPLACE + drop).

@@ -22,9 +22,11 @@ import { SettlementService } from './settlement.service';
 import { SettlementItemService } from './settlement-item.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { RefundRecoveryService } from './refund-recovery.service';
+import { FinancialMetricsService } from './financial-metrics.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
+import { PaymentsOpsController } from './payments-ops.controller';
 import { PaymentController } from './payment.controller';
 import { PaymentLinkController } from './payment-link.controller';
 import { TransactionController } from './transaction.controller';
@@ -73,6 +75,7 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
   ],
   controllers: [
     PaymentGatewayController,
+    PaymentsOpsController,
     PaymentController,
     PaymentLinkController,
     TransactionController,
@@ -93,6 +96,7 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     SettlementItemService,
     SettlementAdjustmentService,
     RefundRecoveryService,
+    FinancialMetricsService,
     PaymentWebhookService,
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
     MoyasarProvider,
@@ -113,6 +117,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     SettlementService,
     // Exposed so the background worker's refunds reaper can reuse it.
     RefundRecoveryService,
+    // Exposed so the worker can write the reaper heartbeat.
+    FinancialMetricsService,
   ],
 })
 export class PaymentsModule {}

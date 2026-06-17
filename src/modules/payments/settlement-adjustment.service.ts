@@ -39,7 +39,8 @@ export class SettlementAdjustmentService {
          (id, tenant_id, payment_id, refund_id, origin_settlement_id, amount_cents, reason, status)
        VALUES ($1,$2,$3,$4,
          (SELECT settlement_id FROM settlement_items WHERE payment_id = $3 LIMIT 1),
-         $5,$6,'OPEN')`,
+         $5,$6,'OPEN')
+       ON CONFLICT (refund_id) WHERE refund_id IS NOT NULL DO NOTHING`,
       [randomUUID(), tenantId, paymentId, refundId ?? null, amountCents, 'Refund after settlement'],
     );
   }

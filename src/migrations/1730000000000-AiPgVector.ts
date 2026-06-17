@@ -12,6 +12,23 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  */
 export class AiPgVector1730000000000 implements MigrationInterface {
   public async up(q: QueryRunner): Promise<void> {
+    // H3: FAIL-SAFE. The `vector` extension may be unavailable on a given server.
+    // We must NOT *issue* a failing CREATE EXTENSION here: migrations run inside a
+    // transaction, and a failed statement poisons the whole tx (aborting the
+    // ordered run and blocking the critical payments migrations). So we first
+    // check pg_available_extensions and skip cleanly when absent — no failing
+    // statement, no tx abort. PgVectorBootstrapService re-attempts idempotently on
+    // every boot once the extension exists; RAG degrades to keyword search until then.
+    const available: unknown[] = await q.query(
+      `SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`,
+    );
+    if (available.length === 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[AiPgVector] "vector" extension not available on this server — skipping AI vector schema (payments migrations continue).',
+      );
+      return;
+    }
     await q.query(`CREATE EXTENSION IF NOT EXISTS vector`);
     await q.query(`
       CREATE TABLE IF NOT EXISTS ai_kb_embeddings (

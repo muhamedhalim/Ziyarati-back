@@ -27,6 +27,10 @@ export class PaymentsPhase3a1730000300000 implements MigrationInterface {
       ON settlement_adjustments (tenant_id, status) WHERE status = 'OPEN'
     `);
     await q.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_settlement_adj_refund
+      ON settlement_adjustments (refund_id) WHERE refund_id IS NOT NULL
+    `);
+    await q.query(`
       CREATE OR REPLACE FUNCTION trg_transactions_immutable() RETURNS trigger AS $func$
       BEGIN
         RAISE EXCEPTION 'transactions is append-only: % is not permitted', TG_OP;

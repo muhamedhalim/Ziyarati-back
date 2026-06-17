@@ -46,6 +46,14 @@ export interface GatewayPaymentResult {
    * provider cannot report it (caller must not assume zero).
    */
   refundedMinorUnits?: number;
+  /**
+   * Set TRUE only when the gateway POSITIVELY reports that the refund was
+   * failed/cancelled/voided (not merely "not yet reflected"). The refund reaper
+   * uses this as the ONLY trigger to mark a stuck refund FAILED — absent this
+   * signal it keeps the refund PENDING and alerts, never guessing failure from a
+   * still-zero refunded amount (H1).
+   */
+  refundExplicitlyFailed?: boolean;
   /** Raw provider response — persisted on `Transaction.raw_response` for audit. */
   raw?: Record<string, any>;
 }

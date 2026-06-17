@@ -118,17 +118,19 @@ export class RefundRecoveryService {
 
     // Phase B: gateway truth, OUTSIDE any lock (only when a gateway charge exists).
     let gatewayRefundedCents: number | undefined;
+    let explicitlyFailed = false;
     if (payment.gateway_payment_id) {
       const verify = await this.gateways
         .resolve(payment.gateway)
         .verifyPayment(payment.gateway_payment_id);
-      if (verify.refundedMinorUnits == null) {
+      explicitlyFailed = verify.refundExplicitlyFailed === true;
+      if (verify.refundedMinorUnits == null && !explicitlyFailed) {
         // Provider can't confirm → don't guess; leave for the next run / alert.
         return 'stillPending';
       }
       gatewayRefundedCents = Math.max(
         0,
-        Math.min(verify.refundedMinorUnits, toCents(payment.amount)),
+        Math.min(verify.refundedMinorUnits ?? 0, toCents(payment.amount)),
       );
     }
 
@@ -143,7 +145,6 @@ export class RefundRecoveryService {
 
       const thisCents = toCents(fresh.amount);
       const succeededCents = await this.sumSucceededCents(m, payment.id);
-      const ageMs = Date.now() - new Date(fresh.created_at).getTime();
       const tenantId = await this.tenantIdOf(m, payment.id);
 
       let succeed: boolean;
@@ -153,10 +154,14 @@ export class RefundRecoveryService {
         const headroom = (gatewayRefundedCents ?? 0) - succeededCents;
         if (headroom >= thisCents) {
           succeed = true; // gateway confirms enough refunded to cover this row
-        } else if (ageMs >= this.hardFailMs()) {
-          succeed = false; // gateway says NOT refunded, and it's old → fail it
+        } else if (explicitlyFailed) {
+          // H1: ONLY fail on a positive gateway "failed/cancelled" signal —
+          // never infer failure from a still-zero refunded amount + age.
+          succeed = false;
         } else {
-          return 'stillPending'; // gateway may still catch up; retry next run
+          // Unknown/not-yet-reflected → keep PENDING; the sweep alerts past the
+          // hard threshold so an operator (not the system) resolves it.
+          return 'stillPending';
         }
       }
 

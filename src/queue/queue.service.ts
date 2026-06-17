@@ -136,6 +136,19 @@ export class QueueService {
 
   // ── Health helpers (used by HealthController) ────────────────────────────
 
+  /** Small shared-Redis KV used for cross-process operational signals (e.g. the
+   *  reaper heartbeat read by the API's metrics endpoint). */
+  async kvSet(key: string, value: string, ttlSec?: number): Promise<void> {
+    const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
+    if (ttlSec) await client.set(key, value, 'EX', ttlSec);
+    else await client.set(key, value);
+  }
+
+  async kvGet(key: string): Promise<string | null> {
+    const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
+    return client.get(key);
+  }
+
   async redisPing(): Promise<number> {
     const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
     const started = Date.now();
