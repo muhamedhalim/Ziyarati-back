@@ -5,6 +5,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
+import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   // `rawBody: true` makes Nest preserve the unparsed request body as a Buffer on
@@ -38,9 +39,23 @@ async function bootstrap() {
   // renders the single canonical error shape. Applies to ALL modules.
   app.useGlobalFilters(new AllExceptionsFilter());
 
+  // ---------------- Cookie parser ----------------
+  // Required to READ cookies (req.cookies) for cookie-based auth + CSRF.
+  app.use(cookieParser());
+
   // ---------------- CORS ----------------
+  // Cookie auth requires an explicit origin allow-list with credentials — a
+  // wildcard origin is both invalid alongside credentials and unsafe. Set
+  // FRONTEND_ORIGIN as a comma-separated list (defaults to the dev SPA origin).
+  const allowedOrigins = (
+    process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000'
+  )
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: true,
+    origin: allowedOrigins,
     credentials: true,
   });
 

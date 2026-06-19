@@ -9,6 +9,17 @@ import { logger } from './seed.logger';
 const BCRYPT_ROUNDS = 12;
 
 /**
+ * DEV ONLY — local development fallback credentials.
+ * Used solely when ADMIN_EMAIL / ADMIN_PASSWORD are unset AND the process is
+ * not running in production. Never relied upon in production: there, missing
+ * env vars cause the seed to skip rather than create a known-password admin.
+ */
+const DEV_ONLY_FALLBACK = {
+  email: 'admin@local.test',
+  password: 'admin123',
+} as const;
+
+/**
  * Creates (or repairs) the platform super-admin user from ADMIN_EMAIL /
  * ADMIN_PASSWORD and guarantees it holds the `super_admin` role.
  *
@@ -20,12 +31,27 @@ const BCRYPT_ROUNDS = 12;
 export async function seedAdminUser(manager: EntityManager): Promise<void> {
   logger.step('Seeding super-admin user');
 
-  const email = process.env.ADMIN_EMAIL?.trim();
-  const password = process.env.ADMIN_PASSWORD;
+  const isProduction = process.env.NODE_ENV === 'production';
+  const envEmail = process.env.ADMIN_EMAIL?.trim();
+  const envPassword = process.env.ADMIN_PASSWORD;
+
+  // Outside production, fall back to DEV-ONLY placeholders so a fresh local
+  // database always has a usable super-admin. In production we never fabricate
+  // credentials — we skip instead.
+  const usingFallback = !isProduction && (!envEmail || !envPassword);
+  const email = envEmail || (!isProduction ? DEV_ONLY_FALLBACK.email : undefined);
+  const password =
+    envPassword || (!isProduction ? DEV_ONLY_FALLBACK.password : undefined);
 
   if (!email || !password) {
     logger.warn('ADMIN_EMAIL / ADMIN_PASSWORD not set — skipping admin seed');
     return;
+  }
+
+  if (usingFallback) {
+    logger.warn(
+      `Using DEV-ONLY fallback admin credentials ("${DEV_ONLY_FALLBACK.email}") — set ADMIN_EMAIL / ADMIN_PASSWORD to override`,
+    );
   }
 
   const userRepo = manager.getRepository(User);
@@ -55,9 +81,9 @@ export async function seedAdminUser(manager: EntityManager): Promise<void> {
         is_active: true,
       }),
     );
-    logger.success(`created super-admin user "${email}"`);
+    logger.success(`Super admin created successfully — "${email}"`);
   } else {
-    logger.info(`super-admin user "${email}" already exists (password left unchanged)`);
+    logger.info(`Super admin already exists — "${email}" (password left unchanged)`);
   }
 
   const existingLink = await userRoleRepo.findOne({

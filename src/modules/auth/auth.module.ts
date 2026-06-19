@@ -18,6 +18,7 @@ import { AuthService } from './auth.service';
 import { RolesService } from './roles.service';
 import { PermissionsService } from './permissions.service';
 import { PatientService } from './patient.service';
+import { CookieService } from './cookie.service';
 
 import { AuthController } from './auth.controller';
 import { RolesController } from './roles.controller';
@@ -56,6 +57,7 @@ import { PermissionsGuard } from './guards/permissions.guard';
     RolesService,
     PermissionsService,
     PatientService,
+    CookieService,
     JwtStrategy,
     JwtAuthGuard,
     RolesGuard,

@@ -196,7 +196,7 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
 
   /** Rotates a refresh token: validates the old one, revokes it, issues a new pair. */
-  async refresh(refreshToken: string, context?: TokenContext): Promise<AuthTokens> {
+  async refresh(refreshToken: string, context?: TokenContext): Promise<AuthResult> {
     let payload: RefreshTokenPayload;
     try {
       payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
@@ -233,7 +233,9 @@ export class AuthService {
     stored.revoked_at = new Date();
     await this.refreshTokens.save(stored);
 
-    return this.issueTokens(stored.user.id, payload.tenantId, context);
+    // Return the rotated tokens AND the live principal so the controller can
+    // set fresh cookies and respond with the user (never tokens in the body).
+    return this.issueAuthResult(stored.user.id, context);
   }
 
   /** Revokes a single refresh token (single-device logout). */

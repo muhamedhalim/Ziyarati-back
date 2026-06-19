@@ -6,9 +6,11 @@ import {
   HttpStatus,
   Post,
   Req,
+  Res,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -28,7 +30,7 @@ import { RegisterOwnerDto } from './dto/register-owner.dto';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterPatientDto } from './dto/register-patient.dto';
 import { LoginDto } from './dto/login.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { CookieService } from './cookie.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -131,6 +133,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly patientService: PatientService,
+    private readonly cookies: CookieService,
   ) {}
 
   // ────────────────────────── Clinic onboarding ──────────────────────────── //
@@ -186,8 +189,20 @@ public clinic sign-up page.
   })
   @Public()
   @Post('register-owner')
-  registerOwner(@Body() dto: RegisterOwnerDto, @Req() req: Request) {
-    return this.authService.registerOwner(dto, this.tokenContext(req));
+  async registerOwner(
+    @Body() dto: RegisterOwnerDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // Owner onboarding auto-logs-in → same cookie treatment as login.
+    // Tokens are set as HttpOnly cookies, never returned in the JSON body.
+    const result = await this.authService.registerOwner(
+      dto,
+      this.tokenContext(req),
+    );
+    this.cookies.setAuthCookies(res, result);
+    this.cookies.setCsrfCookie(res);
+    return { user: result.user };
   }
 
   // ────────────────────────── Staff creation ─────────────────────────────── //
@@ -349,8 +364,17 @@ token row for security audit purposes.
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  login(@Body() dto: LoginDto, @Req() req: Request) {
-    return this.authService.login(dto, this.tokenContext(req));
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.login(dto, this.tokenContext(req));
+    // Set HttpOnly auth cookies + the readable CSRF token. Tokens are NEVER
+    // returned in the JSON body.
+    this.cookies.setAuthCookies(res, result);
+    this.cookies.setCsrfCookie(res);
+    return { user: result.user };
   }
 
   // ──────────────────────────── Token refresh ────────────────────────────── //
@@ -396,8 +420,24 @@ on other endpoints — it will be rejected (\`type !== "access"\`).
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  refresh(@Body() dto: RefreshTokenDto, @Req() req: Request) {
-    return this.authService.refresh(dto.refreshToken, this.tokenContext(req));
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // Refresh token comes from the HttpOnly cookie — never the request body.
+    const token = req.cookies?.[CookieService.REFRESH_COOKIE] as
+      | string
+      | undefined;
+    if (!token) {
+      throw new UnauthorizedException('Missing refresh token');
+    }
+    const result = await this.authService.refresh(
+      token,
+      this.tokenContext(req),
+    );
+    this.cookies.setAuthCookies(res, result);
+    this.cookies.setCsrfCookie(res);
+    return { user: result.user };
   }
 
   // ───────────────────────────── Logout ──────────────────────────────────── //
@@ -421,8 +461,18 @@ To invalidate **all sessions** across all devices, use
   @Public()
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  logout(@Body() dto: RefreshTokenDto) {
-    return this.authService.logout(dto.refreshToken);
+  async logout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const token = req.cookies?.[CookieService.REFRESH_COOKIE] as
+      | string
+      | undefined;
+    // Revoke the refresh token server-side (if present), then clear all cookies.
+    if (token) {
+      await this.authService.logout(token);
+    }
+    this.cookies.clearAuthCookies(res);
   }
 
   // ──────────────────────── Password recovery ────────────────────────────── //
