@@ -97,6 +97,12 @@ export class MoyasarProvider implements PaymentGatewayProvider {
       success: true,
       gatewayPaymentId: json?.id ?? gatewayPaymentId,
       status: this.mapStatus(json?.status),
+      // Moyasar reports `amount` as the captured total in halalas (smallest unit)
+      // and `currency` as the ISO code — surfaced so the domain reconciles them
+      // against our expected payment before booking it PAID.
+      capturedMinorUnits:
+        json?.amount != null ? Math.round(Number(json.amount)) : undefined,
+      capturedCurrency: json?.currency,
       // Moyasar reports `refunded` as cumulative halalas (smallest unit).
       refundedMinorUnits:
         json?.refunded != null ? Math.round(Number(json.refunded)) : undefined,

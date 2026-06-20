@@ -54,6 +54,16 @@ export interface GatewayPaymentResult {
    * still-zero refunded amount (H1).
    */
   refundExplicitlyFailed?: boolean;
+  /**
+   * Amount actually captured at the gateway, in the smallest unit (e.g. halalas).
+   * Returned by `verifyPayment` so the domain can reconcile the captured amount
+   * against our expected `Payment.amount` BEFORE marking PAID — never trust the
+   * status alone (anti under/over-payment & amount tampering). `undefined` when
+   * the provider cannot report it (caller must NOT assume a match).
+   */
+  capturedMinorUnits?: number;
+  /** ISO currency the gateway captured in; reconciled against `Payment.currency`. */
+  capturedCurrency?: string;
   /** Raw provider response — persisted on `Transaction.raw_response` for audit. */
   raw?: Record<string, any>;
 }

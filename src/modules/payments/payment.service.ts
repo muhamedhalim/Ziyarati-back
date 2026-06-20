@@ -207,6 +207,11 @@ export class PaymentService {
       // A webhook may have settled it between phases — don't regress a terminal state.
       if (payment.status === PaymentStatus.PAID) return payment;
       if (result.status === 'paid') {
+        // Anti under/over-payment & amount tampering: when the gateway reports
+        // what it actually captured, it MUST match our expected amount/currency
+        // before we book it PAID. No-op when the provider can't report it, so the
+        // Noop/dev flow is unaffected.
+        this.assertCapturedMatches(payment, result);
         payment.status = PaymentStatus.PAID;
         payment.paid_at = new Date();
       } else if (result.status === 'failed') {
@@ -214,6 +219,50 @@ export class PaymentService {
       }
       return repo.save(payment);
     });
+  }
+
+  /**
+   * Reconcile the gateway-captured amount/currency against our expected payment.
+   * Throws (leaving the payment PENDING for review) on any mismatch — stops an
+   * underpaid / overpaid / amount-tampered gateway charge from being booked PAID
+   * (e.g. a client-created charge linked via `confirm` for a different amount).
+   * A no-op when the provider does not report the captured figures.
+   */
+  private assertCapturedMatches(
+    payment: Payment,
+    result: { capturedMinorUnits?: number; capturedCurrency?: string },
+  ): void {
+    const expectedC = Math.round(Number(payment.amount) * 100);
+    if (
+      result.capturedMinorUnits != null &&
+      result.capturedMinorUnits !== expectedC
+    ) {
+      this.logger.error(
+        `Payment ${payment.id} confirm rejected: captured ${result.capturedMinorUnits} ≠ expected ${expectedC} minor units`,
+      );
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Captured amount does not match the expected payment amount',
+        context: {
+          expectedMinorUnits: expectedC,
+          capturedMinorUnits: result.capturedMinorUnits,
+        },
+      });
+    }
+    if (
+      result.capturedCurrency &&
+      result.capturedCurrency.toUpperCase() !== payment.currency.toUpperCase()
+    ) {
+      this.logger.error(
+        `Payment ${payment.id} confirm rejected: captured currency ${result.capturedCurrency} ≠ expected ${payment.currency}`,
+      );
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Captured currency does not match the expected payment currency',
+        context: {
+          expected: payment.currency,
+          captured: result.capturedCurrency,
+        },
+      });
+    }
   }
 
   async getStatus(tenantId: string, id: string) {

@@ -107,7 +107,7 @@ export class PaymentWebhookService {
             amount: Number(payment.amount),
             status: event?.type ?? target,
             gatewayTransactionId: eventId,
-            raw: event as Record<string, any>,
+            raw: this.sanitizeEvent(event),
           },
           manager,
         );
@@ -122,7 +122,7 @@ export class PaymentWebhookService {
             amount: Number(payment.amount),
             status: event?.type ?? target,
             gatewayTransactionId: eventId,
-            raw: event as Record<string, any>,
+            raw: this.sanitizeEvent(event),
           },
           manager,
         );
@@ -142,9 +142,19 @@ export class PaymentWebhookService {
 
       let changed = false;
       if (target === 'paid' && payment.status !== PaymentStatus.PAID) {
-        payment.status = PaymentStatus.PAID;
-        payment.paid_at = new Date();
-        changed = true;
+        // Anti under/over-payment & tampering: honor a 'paid' event only when the
+        // reported captured amount/currency match our payment. A mismatch is NOT
+        // flipped to PAID (left for review); we still return 200 so the provider
+        // does not retry-storm. No-op when the event omits the figures.
+        if (this.capturedMatches(payment, event)) {
+          payment.status = PaymentStatus.PAID;
+          payment.paid_at = new Date();
+          changed = true;
+        } else {
+          this.logger.error(
+            `Webhook 'paid' for payment ${payment.id} rejected: captured amount/currency mismatch`,
+          );
+        }
       } else if (
         target === 'failed' &&
         payment.status === PaymentStatus.PENDING
@@ -230,7 +240,7 @@ export class PaymentWebhookService {
           amount: deltaCents / 100,
           status: REFUND_STATUS.SUCCEEDED.toLowerCase(),
           gatewayTransactionId: eventId,
-          raw: event as Record<string, any>,
+          raw: this.sanitizeEvent(event),
         },
         manager,
       );
@@ -268,6 +278,43 @@ export class PaymentWebhookService {
       .andWhere('r.status IN (:...st)', { st: statuses })
       .getRawOne<{ sum: string }>();
     return Math.round(Number(row?.sum ?? 0) * 100);
+  }
+
+  /**
+   * Strip the shared webhook secret before the event is persisted to the
+   * append-only `transactions` ledger (which is readable via the tenant-facing
+   * transactions API). Moyasar echoes `secret_token` in the body; storing it
+   * verbatim would leak the platform-wide webhook secret to any tenant with
+   * `payments.read`. Tenants must never see it.
+   */
+  private sanitizeEvent(event: MoyasarWebhookEvent): Record<string, any> {
+    const { secret_token: _omit, ...safe } = event as Record<string, any>;
+    return safe;
+  }
+
+  /**
+   * Reconcile the webhook-reported captured amount/currency against our payment
+   * before honoring a 'paid' event. Returns true when they match OR the provider
+   * did not report them (no false negatives — preserves the existing flow when a
+   * gateway omits the figures).
+   */
+  private capturedMatches(
+    payment: Payment,
+    event: MoyasarWebhookEvent,
+  ): boolean {
+    const reportedAmount = event.data?.amount;
+    if (reportedAmount != null) {
+      const expectedC = Math.round(Number(payment.amount) * 100);
+      if (Math.round(Number(reportedAmount)) !== expectedC) return false;
+    }
+    const reportedCurrency = event.data?.currency;
+    if (
+      reportedCurrency &&
+      reportedCurrency.toUpperCase() !== payment.currency.toUpperCase()
+    ) {
+      return false;
+    }
+    return true;
   }
 
   /** Normalize a Moyasar event/status into our target transition. */
