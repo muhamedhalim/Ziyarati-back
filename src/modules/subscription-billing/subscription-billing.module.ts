@@ -6,18 +6,26 @@ import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
+import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { UsageService } from './usage.service';
 import { FeatureFlagService } from './feature-flag.service';
+import { BillingModeService } from './billing-mode.service';
+import { FreeAccessOverrideService } from './free-access-override.service';
+import { AccessControlService } from './access-control.service';
+import { PlanAdminService } from './plan-admin.service';
 
 import { SubscriptionController } from './subscription.controller';
 import { BillingController } from './billing.controller';
 import { UsageController } from './usage.controller';
 import { FeatureFlagController } from './feature-flag.controller';
+import { PlatformBillingAdminController } from './platform-billing-admin.controller';
 
 import { FeatureGuard } from './guards/feature.guard';
+import { SubscriptionAccessGuard } from './guards/subscription-access.guard';
+import { PlatformBillingBootstrap } from './platform-billing.bootstrap';
 import { PAYMENT_PROVIDER } from './payment/payment-provider.interface';
 import { StubPaymentProvider } from './payment/stub-payment.provider';
 
@@ -43,6 +51,7 @@ import { StubPaymentProvider } from './payment/stub-payment.provider';
       SubscriptionUsage,
       SubscriptionInvoice,
       FeatureFlag,
+      SystemSetting,
     ]),
   ],
   controllers: [
@@ -50,13 +59,20 @@ import { StubPaymentProvider } from './payment/stub-payment.provider';
     BillingController,
     UsageController,
     FeatureFlagController,
+    PlatformBillingAdminController,
   ],
   providers: [
     SubscriptionService,
     BillingService,
     UsageService,
     FeatureFlagService,
+    BillingModeService,
+    FreeAccessOverrideService,
+    AccessControlService,
+    PlanAdminService,
     FeatureGuard,
+    SubscriptionAccessGuard,
+    PlatformBillingBootstrap,
     { provide: PAYMENT_PROVIDER, useClass: StubPaymentProvider },
   ],
   exports: [
@@ -64,6 +80,13 @@ import { StubPaymentProvider } from './payment/stub-payment.provider';
     BillingService,
     UsageService,
     FeatureFlagService,
+    // Exported so other domains can enforce access declaratively:
+    //   @RequireActiveSubscription() + @UseGuards(SubscriptionAccessGuard)
+    // or imperatively via AccessControlService.assertUsable(tenantId).
+    AccessControlService,
+    BillingModeService,
+    FreeAccessOverrideService,
+    SubscriptionAccessGuard,
   ],
 })
 export class SubscriptionBillingModule {}

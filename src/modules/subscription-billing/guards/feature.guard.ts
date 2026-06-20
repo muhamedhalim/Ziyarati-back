@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 
 import { REQUIRE_FEATURE_KEY } from '../decorators/require-feature.decorator';
 import { FeatureFlagService } from '../feature-flag.service';
+import { BillingModeService } from '../billing-mode.service';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 
 /**
@@ -20,6 +21,7 @@ export class FeatureGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly features: FeatureFlagService,
+    private readonly billingMode: BillingModeService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -32,6 +34,10 @@ export class FeatureGuard implements CanActivate {
 
     const tenantId = this.ctx.getTenantId();
     if (!tenantId) return true; // super-admin / no-tenant: nothing to gate here
+
+    // Global FREE platform mode opens every module to everyone — feature flags
+    // are only enforced while the platform is in PAID mode.
+    if (!(await this.billingMode.isPaidMode())) return true;
 
     await this.features.assertEnabled(tenantId, featureKey);
     return true;

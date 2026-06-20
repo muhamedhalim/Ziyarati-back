@@ -6,6 +6,7 @@ import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
 import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
+import { AccessControlService } from './access-control.service';
 import {
   USAGE_METRIC_MAP,
   UsageMetric,
@@ -27,6 +28,7 @@ export class UsageService {
     private readonly subscriptions: Repository<Subscription>,
     @InjectRepository(SubscriptionUsage)
     private readonly usage: Repository<SubscriptionUsage>,
+    private readonly access: AccessControlService,
   ) {}
 
   /**
@@ -88,6 +90,10 @@ export class UsageService {
     metric: UsageMetric,
     amount = 1,
   ): Promise<void> {
+    // Free platform mode or an active free-access override grant unmetered
+    // access — plan quotas are not enforced against them.
+    if (!(await this.access.isEnforced(tenantId))) return;
+
     const subscription = await this.resolveSubscription(tenantId, true);
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
 

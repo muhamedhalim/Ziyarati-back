@@ -9,6 +9,7 @@ import { BillingCycle, SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { BillingService } from './billing.service';
+import { AccessControlService } from './access-control.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { ChangePlanDto } from './dto/change-plan.dto';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
@@ -41,6 +42,7 @@ export class SubscriptionService {
     @InjectRepository(SubscriptionPlan)
     private readonly plans: Repository<SubscriptionPlan>,
     private readonly billing: BillingService,
+    private readonly access: AccessControlService,
   ) {}
 
   // ───────────────────────────── Plans ───────────────────────────────────── //
@@ -208,17 +210,13 @@ export class SubscriptionService {
   }
 
   /**
-   * Throws 403 unless the tenant has a usable subscription (ACTIVE/TRIAL and not
-   * expired). Exported for other domains to gate protected actions.
+   * Throws 403 unless the tenant currently has platform access. Delegates to
+   * AccessControlService so the FULL priority chain is honoured (global free
+   * mode → free-access override → usable paid subscription) — not just the raw
+   * subscription state. Exported for other domains to gate protected actions.
    */
   async assertUsable(tenantId: string): Promise<void> {
-    const { isUsable, effectiveStatus } = await this.getCurrent(tenantId);
-    if (!isUsable) {
-      throw new AppError(ErrorCode.FORBIDDEN, {
-        message: `Subscription is not active (status: ${effectiveStatus})`,
-        context: { effectiveStatus },
-      });
-    }
+    await this.access.assertUsable(tenantId);
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

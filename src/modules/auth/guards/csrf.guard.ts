@@ -41,8 +41,14 @@ export class CsrfGuard implements CanActivate {
     const cookies = (req.cookies ?? {}) as Record<string, string | undefined>;
 
     // No auth cookie → not a cookie-authenticated request → no CSRF surface.
-    if (!cookies[CookieService.ACCESS_COOKIE]) return true;
+      const hasAuthCookie =
+        cookies[CookieService.ACCESS_COOKIE] ||
+        cookies[CookieService.REFRESH_COOKIE];
 
+      if (!hasAuthCookie) {
+        return true;
+      }
+      
     const cookieToken = cookies[CookieService.CSRF_COOKIE];
     const headerToken = req.headers['x-csrf-token'];
     const headerValue = Array.isArray(headerToken) ? headerToken[0] : headerToken;
