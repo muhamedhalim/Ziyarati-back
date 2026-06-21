@@ -18,6 +18,7 @@ import { MessageAttachmentService } from './message-attachment.service';
 import { MessageStatusService } from './message-status.service';
 import { ConversationExecutionService } from './conversation-execution.service';
 import { ConversationAnalyticsService } from './conversation-analytics.service';
+import { ConversationsSchemaBootstrap } from './conversations-schema.bootstrap';
 
 import { ConversationController } from './conversation.controller';
 import { MessageController } from './message.controller';
@@ -66,6 +67,7 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
     MessageStatusService,
     ConversationExecutionService,
     ConversationAnalyticsService,
+    ConversationsSchemaBootstrap,
   ],
   exports: [
     ConversationService,

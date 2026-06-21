@@ -43,7 +43,11 @@ import {
 } from './providers/ai-provider.interface';
 import { PgVectorBootstrapService } from './rag/pgvector-bootstrap.service';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
+import { AiToolDispatchService } from './tools/ai-tool-dispatch.service';
+import { AiToolCallsBootstrap } from './tools/ai-tool-calls.bootstrap';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { AppointmentModule } from '../appointment/appointment.module';
+import { SchedulingModule } from '../scheduling/scheduling.module';
 
 /**
  * AI / RAG Domain.
@@ -75,6 +79,10 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     ]),
     // Usage-quota enforcement (UsageService) for AI token metering.
     SubscriptionBillingModule,
+    // Booking toolset: reuse the existing transactional booking + availability
+    // engines — the AI never duplicates booking logic.
+    AppointmentModule,
+    SchedulingModule,
   ],
   controllers: [
     AiAgentController,
@@ -96,6 +104,8 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     AiExecutionService,
     AiAnalyticsService,
     HandoverRequestService,
+    AiToolDispatchService,
+    AiToolCallsBootstrap,
     AiProviderFactory,
     NoopAiProvider,
     OpenAiChatProvider,

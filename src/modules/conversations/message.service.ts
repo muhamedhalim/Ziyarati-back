@@ -13,6 +13,7 @@ import { Conversation } from '../../entities/Conversations/Conversation';
 import { AppError, ErrorCode } from '../../common/errors';
 import { MessageFilterDto } from './dto/message-filter.dto';
 import { UpdateMessageDto } from './dto/update-message.dto';
+import { SENDER_TYPE } from './conversation.constants';
 
 /**
  * Message reads + edit + delete.
@@ -73,6 +74,10 @@ export class MessageService {
 
   async edit(tenantId: string, id: string, dto: UpdateMessageDto): Promise<Message> {
     const message = await this.findOne(tenantId, id);
+    // Integrity: only an agent's OWN outbound messages may be edited. The record
+    // of what a CUSTOMER, the BOT, or the SYSTEM said is immutable — an agent must
+    // never be able to rewrite the other party's words.
+    this.assertAgentAuthored(message, 'edited');
     message.content = dto.content;
     await this.messages.save(message);
     return this.findOne(tenantId, id);
@@ -80,7 +85,19 @@ export class MessageService {
 
   async remove(tenantId: string, id: string): Promise<void> {
     const message = await this.findOne(tenantId, id);
+    // Same integrity rule as edit: CUSTOMER/BOT/SYSTEM messages cannot be deleted
+    // through the agent API (would erase the other party's record).
+    this.assertAgentAuthored(message, 'deleted');
     await this.messages.delete({ id: message.id });
+  }
+
+  /** Guards that the message is agent-authored before a mutating operation. */
+  private assertAgentAuthored(message: Message, verb: string): void {
+    if (message.sender_type !== SENDER_TYPE.AGENT) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Only AGENT messages can be ${verb}; a ${message.sender_type} message is immutable`,
+      });
+    }
   }
 
   private async assertConversation(tenantId: string, conversationId: string): Promise<void> {

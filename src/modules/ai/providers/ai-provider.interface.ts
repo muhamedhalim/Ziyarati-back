@@ -9,8 +9,29 @@
  * to AiExecutionService.
  */
 export interface AiChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  /** Null on an assistant turn that only requests tool calls. */
+  content: string | null;
+  /** Present on an assistant turn that requests function/tool calls. */
+  tool_calls?: AiToolCall[];
+  /** Present on a `tool` role message (the result fed back to the model). */
+  tool_call_id?: string;
+  /** Tool name (on a `tool` role message). */
+  name?: string;
+}
+
+/** An OpenAI-style function/tool definition (JSON-schema parameters). */
+export interface AiToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** A tool call the model wants executed. `arguments` is a raw JSON string. */
+export interface AiToolCall {
+  id: string;
+  name: string;
+  arguments: string;
 }
 
 export interface AiCompletionRequest {
@@ -19,6 +40,8 @@ export interface AiCompletionRequest {
   temperature?: number;
   /** Fully-assembled message list (system + retrieved context + history + user). */
   messages: AiChatMessage[];
+  /** Tools the model may call. When present the provider enables tool calling. */
+  tools?: AiToolDefinition[];
 }
 
 export interface AiCompletionResult {
@@ -26,6 +49,8 @@ export interface AiCompletionResult {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  /** Tool calls the model requested this turn (empty/undefined → plain answer). */
+  toolCalls?: AiToolCall[];
   /** True when produced by the no-op fallback (no real provider). */
   fallback?: boolean;
 }

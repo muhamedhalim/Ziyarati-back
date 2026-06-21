@@ -9,6 +9,16 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { MESSAGE_STATUS, MESSAGE_STATUSES } from './conversation.constants';
 
 /**
+ * Forward-progress rank for the happy path SENT → DELIVERED → READ. FAILED is a
+ * terminal side-state (rank 0) that may be recorded regardless of progress.
+ */
+const STATUS_RANK: Record<string, number> = {
+  [MESSAGE_STATUS.SENT]: 1,
+  [MESSAGE_STATUS.DELIVERED]: 2,
+  [MESSAGE_STATUS.READ]: 3,
+};
+
+/**
  * Append-only message delivery status log (SENT → DELIVERED → READ, or FAILED).
  *
  * Tenant isolation: logs are stamped with the tenant and read via the
@@ -48,20 +58,49 @@ export class MessageStatusService {
 
   /** Records that a message was read (READ). */
   async markRead(tenantId: string, messageId: string): Promise<MessageStatusLog> {
-    await this.assertMessage(tenantId, messageId);
-    return this.append(tenantId, messageId, MESSAGE_STATUS.READ);
+    return this.transition(tenantId, messageId, MESSAGE_STATUS.READ);
   }
 
   /** Records a delivery (DELIVERED) — webhook/seam driven. */
   async markDelivered(tenantId: string, messageId: string): Promise<MessageStatusLog> {
-    await this.assertMessage(tenantId, messageId);
-    return this.append(tenantId, messageId, MESSAGE_STATUS.DELIVERED);
+    return this.transition(tenantId, messageId, MESSAGE_STATUS.DELIVERED);
   }
 
   /** Records a failed delivery (FAILED) — webhook/seam driven; retry handled upstream. */
   async markFailed(tenantId: string, messageId: string): Promise<MessageStatusLog> {
+    return this.transition(tenantId, messageId, MESSAGE_STATUS.FAILED);
+  }
+
+  /**
+   * Append a status only if it is a valid FORWARD transition, making delivery
+   * status monotonic and idempotent under out-of-order, at-least-once webhooks:
+   *  - the same status arriving twice is a no-op (returns the existing latest);
+   *  - a stale/earlier status (e.g. DELIVERED after READ) is ignored, so READ is
+   *    never regressed;
+   *  - FAILED is always recordable (terminal side-state).
+   * A DB-level UNIQUE(messageId, status) (see ConversationsSchemaBootstrap) is the
+   * backstop against the read-then-write race between concurrent webhooks.
+   */
+  private async transition(
+    tenantId: string,
+    messageId: string,
+    next: string,
+  ): Promise<MessageStatusLog> {
     await this.assertMessage(tenantId, messageId);
-    return this.append(tenantId, messageId, MESSAGE_STATUS.FAILED);
+
+    const latest = await this.statusLogs.findOne({
+      where: { message: { id: messageId }, tenant: { id: tenantId } },
+      order: { created_at: 'DESC' },
+    });
+
+    if (next !== MESSAGE_STATUS.FAILED && latest) {
+      const currentRank = STATUS_RANK[latest.status] ?? 0;
+      const nextRank = STATUS_RANK[next] ?? 0;
+      // Same or earlier state → no-op (idempotent), never regress.
+      if (nextRank <= currentRank) return latest;
+    }
+
+    return this.append(tenantId, messageId, next);
   }
 
   /** Full status history (chronological) for a message. */

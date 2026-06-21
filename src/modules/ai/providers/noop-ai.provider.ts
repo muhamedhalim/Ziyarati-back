@@ -25,13 +25,17 @@ export class NoopAiProvider implements AiCompletionProvider {
     this.logger.log(
       `Simulated AI completion (tenant ${request.tenantId}, ${request.messages.length} msgs)`,
     );
+    // The no-op provider never emits tool calls (no real model to plan them), so
+    // the executor degrades to a plain text answer — booking tools are inert
+    // until a real provider (OpenAI) is configured.
     return {
       content:
         'AI provider is not configured in this environment. ' +
-        (lastUser ? `(Echo: "${lastUser.content.slice(0, 120)}")` : ''),
+        (lastUser?.content ? `(Echo: "${lastUser.content.slice(0, 120)}")` : ''),
       model: request.model ?? 'noop',
       promptTokens: 0,
       completionTokens: 0,
+      toolCalls: [],
       fallback: true,
     };
   }
