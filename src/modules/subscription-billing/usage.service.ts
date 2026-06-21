@@ -43,8 +43,14 @@ export class UsageService {
     amount = 1,
   ): Promise<void> {
     if (amount <= 0) return;
+    // Free mode / active override → unmetered (no quota tracking).
+    if (!(await this.access.isEnforced(tenantId))) return;
     const { usageColumn } = USAGE_METRIC_MAP[metric];
-    const subscription = await this.resolveSubscription(tenantId);
+    // Best-effort: metering must NEVER break the operation it accompanies, so a
+    // missing subscription (e.g. a worker/bot flow for an unsubscribed tenant)
+    // is a silent no-op rather than a throw.
+    const subscription = await this.findCurrentSubscription(tenantId);
+    if (!subscription) return;
     const period = currentPeriodMonth();
 
     // 1) Ensure the (subscription, period) row exists — ON CONFLICT DO NOTHING.
@@ -191,5 +197,17 @@ export class UsageService {
       });
     }
     return subscription;
+  }
+
+  /** Non-throwing variant for best-effort metering (returns null when none). */
+  private findCurrentSubscription(tenantId: string): Promise<Subscription | null> {
+    return this.subscriptions.findOne({
+      where: {
+        tenant: { id: tenantId },
+        status: Not(SubscriptionStatus.CANCELLED),
+        deleted_at: IsNull(),
+      },
+      order: { created_at: 'DESC' },
+    });
   }
 }

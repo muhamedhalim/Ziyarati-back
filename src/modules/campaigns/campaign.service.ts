@@ -9,6 +9,9 @@ import { User } from '../../entities/Auth&RBAC/User';
 import { CampaignStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
+import { UsageService } from '../subscription-billing/usage.service';
+import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { CampaignQueryDto } from './dto/campaign-query.dto';
@@ -32,6 +35,7 @@ export class CampaignService {
     private readonly campaigns: Repository<Campaign>,
     @InjectRepository(WhatsappTemplate)
     private readonly templates: Repository<WhatsappTemplate>,
+    private readonly usage: UsageService,
   ) {}
 
   async create(
@@ -39,6 +43,10 @@ export class CampaignService {
     userId: string,
     dto: CreateCampaignDto,
   ): Promise<Campaign> {
+    // Quota: campaigns are a usage-limited resource (per-month). No-op under
+    // free mode / override; throws 422 when the plan's limit is reached.
+    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.CAMPAIGNS, 1);
+
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
 
     const campaign = this.campaigns.create({
@@ -57,6 +65,7 @@ export class CampaignService {
       created_by: { id: userId } as User,
     });
     const saved = await this.campaigns.save(campaign);
+    await this.usage.increment(tenantId, USAGE_METRIC.CAMPAIGNS, 1);
     return this.findOne(tenantId, saved.id);
   }
 

@@ -19,6 +19,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -75,6 +76,7 @@ const S_STATS = {
 @ApiBearerAuth('JWT-auth')
 @Controller('notification-logs')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class NotificationLogController {
   constructor(
     private readonly logs: NotificationLogService,

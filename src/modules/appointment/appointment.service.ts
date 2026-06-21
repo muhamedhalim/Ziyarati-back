@@ -29,6 +29,8 @@ import { User } from '../../entities/Auth&RBAC/User';
 import { AppointmentSource, AppointmentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AvailabilityService } from '../scheduling/availability.service';
+import { UsageService } from '../subscription-billing/usage.service';
+import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
@@ -114,6 +116,7 @@ export class AppointmentsService {
     private readonly dataSource: DataSource,
     /** The single availability engine: every booking path validates through it. */
     private readonly availability: AvailabilityService,
+    private readonly usage: UsageService,
   ) {}
 
   // ───────────────────────────── Queries ─────────────────────────────────── //
@@ -178,6 +181,10 @@ export class AppointmentsService {
     userId: string,
     dto: CreateAppointmentDto,
   ): Promise<Appointment> {
+    // Quota: appointments are a usage-limited resource. No-op under free mode /
+    // override; throws 422 when the plan's monthly appointment limit is reached.
+    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.APPOINTMENTS, 1);
+
     const created = await this.dataSource.transaction(async (manager) => {
       // All references validated within the SAME tenant scope.
       await this.assertBranch(manager, tenantId, dto.branchId);
@@ -239,6 +246,9 @@ export class AppointmentsService {
 
       return saved;
     });
+
+    // Count the booking against the tenant's monthly quota (best-effort).
+    await this.usage.increment(tenantId, USAGE_METRIC.APPOINTMENTS, 1);
 
     return this.findOne(tenantId, created.id);
   }

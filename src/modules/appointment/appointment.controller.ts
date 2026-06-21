@@ -43,6 +43,7 @@ import { SetAppointmentServicesDto } from './dto/set-appointment-services.dto';
 import { CreateReviewDto } from './dto/create-review.dto';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -168,6 +169,7 @@ const S_REVIEW = {
 @ApiBearerAuth('JWT-auth')
 @Controller('appointments')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class AppointmentController {
   constructor(
     private readonly appointments: AppointmentsService,

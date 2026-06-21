@@ -35,6 +35,8 @@ import { ConversationFilterDto } from './dto/conversation-filter.dto';
 import { AssignConversationDto } from './dto/assign-conversation.dto';
 import { BulkMessageDto } from './dto/bulk-message.dto';
 
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -85,6 +87,7 @@ const S_CONVERSATION_LIST = {
 @ApiBearerAuth('JWT-auth')
 @Controller('conversations')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class ConversationController {
   constructor(
     private readonly conversations: ConversationService,

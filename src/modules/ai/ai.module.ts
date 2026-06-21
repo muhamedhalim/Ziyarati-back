@@ -43,6 +43,7 @@ import {
 } from './providers/ai-provider.interface';
 import { PgVectorBootstrapService } from './rag/pgvector-bootstrap.service';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 /**
  * AI / RAG Domain.
@@ -72,6 +73,8 @@ import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.
       Conversation,
       User,
     ]),
+    // Usage-quota enforcement (UsageService) for AI token metering.
+    SubscriptionBillingModule,
   ],
   controllers: [
     AiAgentController,

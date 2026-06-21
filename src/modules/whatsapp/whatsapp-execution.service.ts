@@ -13,6 +13,8 @@ import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { SendTemplateMessageDto } from './dto/send-template-message.dto';
+import { UsageService } from '../subscription-billing/usage.service';
+import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import {
   WHATSAPP_CHANNEL,
   WHATSAPP_DELIVERY_STATUS,
@@ -49,6 +51,7 @@ export class WhatsappExecutionService {
     private readonly templates: WhatsappTemplateService,
     private readonly messaging: WhatsappMessagingService,
     private readonly queue: QueueService,
+    private readonly usage: UsageService,
   ) {}
 
   /** Sends a template message immediately and records the outcome. */
@@ -63,6 +66,12 @@ export class WhatsappExecutionService {
     });
     const template = await this.templates.getSendableTemplate(tenantId, templateId);
     const recipient = await this.resolveRecipient(tenantId, dto);
+
+    // Quota: WhatsApp messages are usage-limited. This is the single send seam
+    // (immediate, scheduled-via-worker, and campaign sends all reuse it), so the
+    // check/meter here covers every path — including background jobs. No-op under
+    // free mode / override; throws 422 when the monthly message cap is reached.
+    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
 
     let result;
     try {
@@ -85,6 +94,11 @@ export class WhatsappExecutionService {
     const status = result.success
       ? WHATSAPP_DELIVERY_STATUS.SENT
       : WHATSAPP_DELIVERY_STATUS.FAILED;
+
+    // Meter only successful sends against the monthly quota (best-effort).
+    if (result.success) {
+      await this.usage.increment(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
+    }
 
     const log = await this.recordLog(tenantId, template.id, recipient, status, {
       error: result.success ? undefined : result.error,

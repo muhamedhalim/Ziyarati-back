@@ -16,6 +16,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -36,6 +38,8 @@ const S_ERROR = {
 @ApiBearerAuth('JWT-auth')
 @Controller('ai/analytics')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
+@RequireFeature('ai')
 export class AiAnalyticsController {
   constructor(
     private readonly analytics: AiAnalyticsService,

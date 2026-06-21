@@ -34,6 +34,7 @@ import { NotificationRuleFilterDto } from './dto/notification-rule-filter.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -83,6 +84,7 @@ const S_RULE_LIST = {
 @ApiBearerAuth('JWT-auth')
 @Controller('notification-rules')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class NotificationRuleController {
   constructor(
     private readonly rules: NotificationRuleService,

@@ -38,6 +38,8 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
 /** Pagination for history endpoint. */
@@ -114,6 +116,8 @@ const S_SEND_RESULT = {
 @ApiBearerAuth('JWT-auth')
 @Controller('ai/conversations')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
+@RequireFeature('ai')
 export class AiConversationController {
   constructor(
     private readonly conversations: AiConversationService,

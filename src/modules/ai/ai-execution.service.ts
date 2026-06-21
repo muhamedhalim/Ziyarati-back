@@ -14,6 +14,8 @@ import { AiRagService } from './ai-rag.service';
 import { AiProviderFactory } from './providers/ai-provider.factory';
 import { AiChatMessage } from './providers/ai-provider.interface';
 import { SendMessageDto } from './dto/send-message.dto';
+import { UsageService } from '../subscription-billing/usage.service';
+import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import {
   AI_CONVERSATION_STATUS,
   AI_MESSAGE_ROLE,
@@ -45,6 +47,7 @@ export class AiExecutionService {
     private readonly rag: AiRagService,
     private readonly providers: AiProviderFactory,
     private readonly dataSource: DataSource,
+    private readonly usage: UsageService,
   ) {}
 
   async sendMessage(tenantId: string, aiConversationId: string, dto: SendMessageDto) {
@@ -61,6 +64,11 @@ export class AiExecutionService {
       });
     }
     const agent: AiAgent | undefined = aiConv.agent;
+
+    // Quota: AI tokens are a usage-limited resource. Pre-check (amount 1) blocks
+    // a tenant already at/over its monthly token cap; the actual token count is
+    // metered after completion. No-op under free mode / override.
+    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
 
     // RAG retrieval (outside the tx — read-only, possibly slow).
     const chunks = agent
@@ -125,6 +133,9 @@ export class AiExecutionService {
 
       return { assistant, completion, totalTokens };
     });
+
+    // Meter the actual tokens consumed against the tenant's monthly quota.
+    await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, result.totalTokens);
 
     return {
       message: result.assistant,

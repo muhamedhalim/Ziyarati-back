@@ -32,6 +32,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -64,6 +65,7 @@ const S_ATTACHMENT = {
 @ApiBearerAuth('JWT-auth')
 @Controller('messages/:messageId/attachments')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class MessageAttachmentController {
   constructor(
     private readonly attachments: MessageAttachmentService,

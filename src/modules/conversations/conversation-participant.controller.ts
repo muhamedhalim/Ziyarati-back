@@ -34,6 +34,7 @@ import { UpdateParticipantDto } from './dto/update-participant.dto';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
@@ -68,6 +69,7 @@ const S_PARTICIPANT = {
 @ApiBearerAuth('JWT-auth')
 @Controller('conversations/:conversationId/participants')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class ConversationParticipantController {
   constructor(
     private readonly participants: ConversationParticipantService,

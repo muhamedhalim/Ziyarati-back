@@ -6,6 +6,8 @@ import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { Customer } from '../../entities/CRM/Customer';
 
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+
 import { CampaignService } from './campaign.service';
 import { CampaignRecipientService } from './campaign-recipient.service';
 import { CampaignExecutionService } from './campaign-execution.service';
@@ -44,6 +46,8 @@ import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provid
       WhatsappTemplate,
       Customer,
     ]),
+    // Usage-quota enforcement (UsageService) for campaign creation.
+    SubscriptionBillingModule,
   ],
   controllers: [
     CampaignController,

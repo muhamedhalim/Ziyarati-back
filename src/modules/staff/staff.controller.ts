@@ -38,6 +38,8 @@ import { StaffRatingService } from './staff-rating.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto } from './dto/query-staff.dto';
+
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { AssignServicesDto } from './dto/assign-services.dto';
 import { AssignBranchesDto } from './dto/assign-branches.dto';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
@@ -233,6 +235,7 @@ const S_AVAILABILITY = {
 @ApiBearerAuth('JWT-auth')
 @Controller('staff')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class StaffController {
   constructor(
     private readonly staff: StaffService,

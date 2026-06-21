@@ -18,6 +18,7 @@ import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { Service } from '../../entities/Services/Service';
 
 import { SchedulingModule } from '../scheduling/scheduling.module';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { AppointmentsService } from './appointment.service';
 import { AppointmentReviewService } from './appointment-review.service';
@@ -54,6 +55,8 @@ import { ReviewController } from './review.controller';
     ]),
     // The single availability engine — every booking path validates through it.
     SchedulingModule,
+    // Usage-quota enforcement (UsageService) for appointment creation.
+    SubscriptionBillingModule,
   ],
   controllers: [AppointmentController, ReviewController],
   providers: [AppointmentsService, AppointmentReviewService],

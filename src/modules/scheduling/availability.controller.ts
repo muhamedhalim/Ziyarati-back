@@ -18,6 +18,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -39,6 +40,7 @@ const S_ERROR = {
 @ApiBearerAuth('JWT-auth')
 @Controller('scheduling/availability')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class AvailabilityController {
   constructor(
     private readonly availability: AvailabilityService,

@@ -12,6 +12,8 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { CsrfGuard } from './modules/auth/guards/csrf.guard';
+import { SubscriptionAccessGuard } from './modules/subscription-billing/guards/subscription-access.guard';
+import { FeatureGuard } from './modules/subscription-billing/guards/feature.guard';
 import { TenantModule } from './modules/tenant/tenant.module';
 import { AppointmentModule } from './modules/appointment/appointment.module';
 import { StaffModule } from './modules/staff/staff.module';
@@ -81,6 +83,18 @@ import { validate } from './config/env.validation';
     {
       provide: APP_GUARD,
       useClass: CsrfGuard,
+    },
+    // Billing enforcement layer (runs after auth; reads request.user). Both are
+    // no-ops unless a route carries @RequireActiveSubscription() / @RequireFeature():
+    //  - SubscriptionAccessGuard: global mode → free override → paid subscription.
+    //  - FeatureGuard: per-tenant feature entitlement (enforced only in paid mode).
+    {
+      provide: APP_GUARD,
+      useClass: SubscriptionAccessGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: FeatureGuard,
     },
   ],
 })

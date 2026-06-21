@@ -30,6 +30,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -51,6 +52,7 @@ const S_ERROR = {
 @ApiBearerAuth('JWT-auth')
 @Controller('crm/customers/:customerId/tags')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class CustomerTagRelationController {
   constructor(
     private readonly relations: CustomerTagRelationService,

@@ -38,6 +38,8 @@ import { SendTemplateMessageDto } from './dto/send-template-message.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -95,6 +97,8 @@ const S_SEND_RESULT = {
 @ApiBearerAuth('JWT-auth')
 @Controller('whatsapp/templates')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
+@RequireFeature('whatsapp')
 export class WhatsappTemplateController {
   constructor(
     private readonly templates: WhatsappTemplateService,

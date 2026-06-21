@@ -1,9 +1,10 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import type { Request } from 'express';
 
 import { REQUIRE_ACTIVE_SUBSCRIPTION_KEY } from '../decorators/require-active-subscription.decorator';
 import { AccessControlService } from '../access-control.service';
-import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
+import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 
 /**
  * Enforces platform access on routes annotated with `@RequireActiveSubscription()`.
@@ -11,18 +12,23 @@ import { TenantContextService } from '../../../core/tenant-context/tenant-contex
  * Delegates the decision to AccessControlService (global mode → free override →
  * paid subscription), so enforcement is centralized and consistent everywhere.
  *
- * No tenant in context (e.g. a super-admin/platform call) is not gated here —
- * platform operators are never blocked by tenant billing state.
+ * Registered as a GLOBAL guard (APP_GUARD in AppModule, after JwtAuthGuard so
+ * `request.user` is populated): it runs on every request but only acts where the
+ * decorator is present, so adding `@RequireActiveSubscription()` to a controller
+ * is the entire integration — no per-module guard wiring.
  *
- * To use it in another module, export AccessControlService + this guard from the
- * SubscriptionBillingModule and import that module where the guard is applied.
+ * IMPORTANT: the tenant id is read from `request.user` (set by JwtAuthGuard),
+ * NOT from TenantContextService — the ALS principal is only populated by the
+ * TenantContextInterceptor, which runs AFTER the guard phase.
+ *
+ * No tenant on the principal (super-admin / platform call) is not gated —
+ * platform operators are never blocked by tenant billing state.
  */
 @Injectable()
 export class SubscriptionAccessGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly access: AccessControlService,
-    private readonly ctx: TenantContextService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -32,10 +38,13 @@ export class SubscriptionAccessGuard implements CanActivate {
     );
     if (!required) return true; // route not gated
 
-    const tenantId = this.ctx.getTenantId();
-    if (!tenantId) return true; // platform/super-admin context — nothing to gate
+    const user = context.switchToHttp().getRequest<Request>().user as
+      | AuthenticatedUser
+      | undefined;
+    // Unauthenticated is handled by JwtAuthGuard; super-admin/no-tenant bypasses.
+    if (!user?.tenantId) return true;
 
-    await this.access.assertUsable(tenantId); // throws 403 when denied
+    await this.access.assertUsable(user.tenantId); // throws 403 when denied
     return true;
   }
 }

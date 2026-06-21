@@ -34,6 +34,7 @@ import { UpdateMessageDto } from './dto/update-message.dto';
 import { MessageFilterDto } from './dto/message-filter.dto';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -81,6 +82,7 @@ const S_MESSAGE_LIST = {
 @ApiBearerAuth('JWT-auth')
 @Controller('conversations/:conversationId/messages')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class MessageController {
   constructor(
     private readonly messages: MessageService,

@@ -34,6 +34,7 @@ import { NotificationTemplateFilterDto } from './dto/notification-template-filte
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -81,6 +82,7 @@ const S_TEMPLATE_LIST = {
 @ApiBearerAuth('JWT-auth')
 @Controller('notification-templates')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class NotificationTemplateController {
   constructor(
     private readonly templates: NotificationTemplateService,

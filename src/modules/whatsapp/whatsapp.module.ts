@@ -29,6 +29,7 @@ import { WHATSAPP_MESSAGE_PROVIDERS } from './providers/whatsapp-message.provide
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 /**
  * WhatsApp Domain.
@@ -57,6 +58,8 @@ import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
       Branch,
       Customer,
     ]),
+    // Usage-quota enforcement (UsageService) for WhatsApp message metering.
+    SubscriptionBillingModule,
   ],
   controllers: [
     WhatsappAccountController,

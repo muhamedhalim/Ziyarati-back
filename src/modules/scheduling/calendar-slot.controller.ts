@@ -34,6 +34,7 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
 const S_ERROR = {
@@ -55,6 +56,7 @@ const S_ERROR = {
 @ApiBearerAuth('JWT-auth')
 @Controller('scheduling/slots')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
+@RequireActiveSubscription()
 export class CalendarSlotController {
   constructor(
     private readonly slots: CalendarSlotService,
