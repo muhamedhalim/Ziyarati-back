@@ -28,6 +28,13 @@ export const validate = (config: Record<string, unknown>) => {
     QUEUE_BACKOFF_MS: Joi.number().default(3000),
     WORKER_CONCURRENCY: Joi.number().default(5),
 
+    // ── Analytics read cache (Redis) ──────────────────────────────────────
+    // Optional: reuses REDIS_URL on a dedicated connection. When REDIS_URL is
+    // unset or ANALYTICS_CACHE_ENABLED=false, analytics reads fail open to the
+    // database (no behavior change). TTL is in seconds.
+    ANALYTICS_CACHE_ENABLED: Joi.string().valid('true', 'false').default('true'),
+    ANALYTICS_CACHE_TTL: Joi.number().default(60),
+
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_EXPIRES_IN: Joi.string().default('7d'),
 

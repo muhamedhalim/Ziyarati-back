@@ -22,6 +22,7 @@ import { DashboardMetricService } from './dashboard-metric.service';
 import { DailyReportService } from './daily-report.service';
 import { MonthlyReportService } from './monthly-report.service';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
+import { AnalyticsCacheService } from './analytics-cache.service';
 
 import { AnalyticsEventController } from './analytics-event.controller';
 import { DashboardController } from './dashboard.controller';
@@ -77,6 +78,7 @@ import { MonthlyReportController } from './monthly-report.controller';
     DailyReportService,
     MonthlyReportService,
     AnalyticsAggregationService,
+    AnalyticsCacheService,
   ],
   exports: [
     AnalyticsEventService,

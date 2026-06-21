@@ -52,6 +52,20 @@ export const USAGE_METRIC_MAP: Record<UsageMetric, MetricMapping> = {
   },
 };
 
+/**
+ * Plan limits that cap an ABSOLUTE count of a resource (not per-month usage).
+ *
+ * Unlike USAGE_METRIC there is no accumulator column on `subscription_usage` —
+ * the current count is queried live from the resource's own table and compared
+ * against the plan limit. Used by `UsageService.assertCountWithinLimit`.
+ */
+export const COUNT_LIMIT = {
+  BRANCHES: 'max_branches',
+  USERS: 'max_users',
+} as const;
+
+export type CountLimitColumn = (typeof COUNT_LIMIT)[keyof typeof COUNT_LIMIT];
+
 /** Current billing period key, e.g. "2026-06". */
 export function currentPeriodMonth(date: Date = new Date()): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;

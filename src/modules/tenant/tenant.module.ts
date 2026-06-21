@@ -15,6 +15,8 @@ import { TenantController } from './tenant.controller';
 import { BranchController } from './branch.controller';
 import { TenantVerificationController } from './tenant-verification.controller';
 
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+
 /**
  * Tenant aggregate root: the clinic and everything it directly owns —
  * settings (1:1), verification documents, approval events (audit), and
@@ -31,6 +33,8 @@ import { TenantVerificationController } from './tenant-verification.controller';
       TenantApprovalEvent,
       Branch,
     ]),
+    // Provides UsageService for plan-limit enforcement (max_branches).
+    SubscriptionBillingModule,
   ],
   controllers: [
     TenantController,

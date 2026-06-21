@@ -7,6 +7,8 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
 import { AppError, ErrorCode } from '../../common/errors';
+import { UsageService } from '../subscription-billing/usage.service';
+import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 
 /**
  * Branches are a child aggregate of Tenant. EVERY method is scoped to a
@@ -17,9 +19,18 @@ import { AppError, ErrorCode } from '../../common/errors';
 export class BranchService {
   constructor(
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
+    private readonly usage: UsageService,
   ) {}
 
-  create(tenantId: string, dto: CreateBranchDto): Promise<Branch> {
+  async create(tenantId: string, dto: CreateBranchDto): Promise<Branch> {
+    // Plan limit: max_branches. Counts the tenant's existing (non-deleted)
+    // branches and rejects (422) when the cap would be exceeded. No-op under
+    // free mode / active override.
+    const current = await this.branches.count({
+      where: { tenant: { id: tenantId } },
+    });
+    await this.usage.assertCountWithinLimit(tenantId, COUNT_LIMIT.BRANCHES, current);
+
     const branch = this.branches.create({
       tenant: { id: tenantId } as Tenant,
       name: dto.name,

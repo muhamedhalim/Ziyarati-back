@@ -1,12 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  Between,
-  FindOptionsWhere,
-  LessThan,
-  MoreThanOrEqual,
-  Repository,
-} from 'typeorm';
+import { Repository } from 'typeorm';
 
 import { DailyReport } from '../../entities/Analytics/DailyReport';
 import { Branch } from '../../entities/SaaS-Core/Branch';
@@ -14,8 +8,12 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
+import { AnalyticsCacheService, CACHE_NS } from './analytics-cache.service';
 import { GenerateDailyReportDto } from './dto/generate-daily-report.dto';
 import { QueryDailyReportsDto } from './dto/query-daily-reports.dto';
+import { reportDateColumn } from './analytics.constants';
+import { BatchResult, mapBranchesSettled } from './batch.util';
+import { Page, ReportQueryBuilder } from './query/report-query.builder';
 
 /**
  * Daily reports (`daily_reports`) — pre-aggregated, per tenant + branch + day.
@@ -23,64 +21,89 @@ import { QueryDailyReportsDto } from './dto/query-daily-reports.dto';
  * Tenant-scoped via the `tenant` relation. Reports are immutable to clients (no
  * update endpoint); `generate` performs the only allowed write — a system
  * (re)computation that upserts on the (tenant, branch, date) unique key. With no
- * `branchId`, all active branches are generated in one batch.
+ * `branchId`, all active branches are generated as a bounded-concurrency batch
+ * with partial-failure isolation (one bad branch never aborts the rest).
+ *
+ * Reads (`get` / `list`) are Redis read-through cached per tenant; any
+ * generation invalidates the tenant's `daily` cache namespace so reads are never
+ * stale.
  */
 @Injectable()
 export class DailyReportService {
+  private readonly logger = new Logger('DailyReportService');
+
   constructor(
     @InjectRepository(DailyReport)
     private readonly reports: Repository<DailyReport>,
     private readonly aggregation: AnalyticsAggregationService,
+    private readonly cache: AnalyticsCacheService,
   ) {}
 
-  async generate(tenantId: string, dto: GenerateDailyReportDto) {
-    const branchIds = dto.branchId
-      ? [(await this.aggregation.assertBranch(tenantId, dto.branchId)).id]
-      : await this.aggregation.listActiveBranchIds(tenantId);
+  async generate(
+    tenantId: string,
+    dto: GenerateDailyReportDto,
+  ): Promise<DailyReport | BatchResult<DailyReport>> {
+    // Single-branch path: validate ownership, generate, surface errors directly.
+    if (dto.branchId) {
+      const branch = await this.aggregation.assertBranch(tenantId, dto.branchId);
+      const report = await this.generateForBranch(tenantId, branch.id, dto.date);
+      await this.cache.invalidate(tenantId, CACHE_NS.DAILY);
+      return report;
+    }
 
+    // Batch path: all active branches, bounded concurrency, isolate failures.
+    const branchIds = await this.aggregation.listActiveBranchIds(tenantId);
     if (branchIds.length === 0) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'No active branches to generate a report for',
       });
     }
 
-    const results: DailyReport[] = [];
-    for (const branchId of branchIds) {
-      results.push(await this.generateForBranch(tenantId, branchId, dto.date));
+    const result = await mapBranchesSettled(branchIds, (branchId) =>
+      this.generateForBranch(tenantId, branchId, dto.date),
+    );
+
+    for (const f of result.failed) {
+      this.logger.error(
+        `daily report failed tenant=${tenantId} branch=${f.branchId} date=${dto.date}: ${f.error}`,
+      );
     }
-    return dto.branchId ? results[0] : results;
+
+    // Invalidate once after the batch (any successful write changes read results).
+    if (result.generated.length > 0) {
+      await this.cache.invalidate(tenantId, CACHE_NS.DAILY);
+    }
+    return result;
   }
 
-  async get(tenantId: string, id: string): Promise<DailyReport> {
-    const report = await this.reports.findOne({
-      where: { id, tenant: { id: tenantId } },
-      relations: { branch: true },
+  get(tenantId: string, id: string): Promise<DailyReport> {
+    return this.cache.wrap(tenantId, CACHE_NS.DAILY, `id:${id}`, async () => {
+      const report = await ReportQueryBuilder.scoped(
+        this.reports.createQueryBuilder('report'),
+        'report',
+        tenantId,
+      )
+        .andWhere('report.id = :id', { id })
+        .getOne();
+      if (!report) {
+        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Daily report not found' });
+      }
+      return report;
     });
-    if (!report) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Daily report not found' });
-    }
-    return report;
   }
 
-  async list(tenantId: string, query: QueryDailyReportsDto) {
-    const where: FindOptionsWhere<DailyReport> = { tenant: { id: tenantId } };
-    if (query.branchId) where.branch = { id: query.branchId };
-    if (query.from && query.to) {
-      where.date = Between(query.from, query.to) as any;
-    } else if (query.from) {
-      where.date = MoreThanOrEqual(query.from) as any;
-    } else if (query.to) {
-      where.date = LessThan(query.to) as any;
-    }
-
-    const [data, total] = await this.reports.findAndCount({
-      where,
-      relations: { branch: true },
-      order: { date: 'DESC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
+  list(tenantId: string, query: QueryDailyReportsDto): Promise<Page<DailyReport>> {
+    const suffix = `list:${query.branchId ?? '*'}:${query.from ?? '*'}:${query.to ?? '*'}:${query.page}:${query.limit}`;
+    return this.cache.wrap(tenantId, CACHE_NS.DAILY, suffix, () => {
+      let qb = ReportQueryBuilder.scoped(
+        this.reports.createQueryBuilder('report'),
+        'report',
+        tenantId,
+      );
+      qb = ReportQueryBuilder.branch(qb, query.branchId);
+      qb = ReportQueryBuilder.dateRange(qb, 'report', query.from, query.to);
+      return ReportQueryBuilder.page(qb, 'report', 'date', query);
     });
-    return { data, total, page: query.page, limit: query.limit };
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -101,14 +124,14 @@ export class DailyReportService {
       where: {
         tenant: { id: tenantId },
         branch: { id: branchId },
-        date: dateStr as unknown as Date,
+        date: reportDateColumn(dateStr),
       },
     });
     if (!report) {
       report = this.reports.create({
         tenant: { id: tenantId } as Tenant,
         branch: { id: branchId } as Branch,
-        date: dateStr as unknown as Date,
+        date: reportDateColumn(dateStr),
       });
     }
 

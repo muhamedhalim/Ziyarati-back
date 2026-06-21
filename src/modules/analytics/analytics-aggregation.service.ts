@@ -114,40 +114,22 @@ export class AnalyticsAggregationService {
   ): Promise<DailyMetrics> {
     const { start, end } = dayRangeUtc(dateStr);
 
-    const apptBase = {
-      tenant: { id: tenantId },
-      branch: { id: branchId },
-      start_at: Between(start, end),
-    };
-
-    const [
-      total_appointments,
-      completed_appointments,
-      cancelled_appointments,
-      total_revenue,
-      new_customers,
-      ai_messages_count,
-    ] = await Promise.all([
-      this.appointments.count({ where: apptBase }),
-      this.appointments.count({
-        where: { ...apptBase, status: AppointmentStatus.COMPLETED },
-      }),
-      this.appointments.count({
-        where: { ...apptBase, status: AppointmentStatus.CANCELLED },
-      }),
-      this.sumBranchRevenue(tenantId, branchId, start, end),
-      this.customers.count({
-        where: { tenant: { id: tenantId }, created_at: Between(start, end) },
-      }),
-      this.aiMessages.count({
-        where: { tenant: { id: tenantId }, created_at: Between(start, end) },
-      }),
-    ]);
+    const [appts, total_revenue, new_customers, ai_messages_count] =
+      await Promise.all([
+        this.countBranchAppointments(tenantId, branchId, start, end),
+        this.sumBranchRevenue(tenantId, branchId, start, end),
+        this.customers.count({
+          where: { tenant: { id: tenantId }, created_at: Between(start, end) },
+        }),
+        this.aiMessages.count({
+          where: { tenant: { id: tenantId }, created_at: Between(start, end) },
+        }),
+      ]);
 
     return {
-      total_appointments,
-      completed_appointments,
-      cancelled_appointments,
+      total_appointments: appts.total,
+      completed_appointments: appts.completed,
+      cancelled_appointments: appts.cancelled,
       total_revenue,
       new_customers,
       ai_messages_count,
@@ -216,6 +198,46 @@ export class AnalyticsAggregationService {
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
+
+  /**
+   * Total / completed / cancelled appointment counts for one branch/day in a
+   * SINGLE round-trip via conditional aggregation (`COUNT(*) FILTER (WHERE …)`),
+   * replacing the previous three separate `count()` queries.
+   */
+  private async countBranchAppointments(
+    tenantId: string,
+    branchId: string,
+    start: Date,
+    end: Date,
+  ): Promise<{ total: number; completed: number; cancelled: number }> {
+    const row = await this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .innerJoin('a.branch', 'b')
+      .select('COUNT(*)', 'total')
+      .addSelect(
+        'COUNT(*) FILTER (WHERE a.status = :completed)',
+        'completed',
+      )
+      .addSelect(
+        'COUNT(*) FILTER (WHERE a.status = :cancelled)',
+        'cancelled',
+      )
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('b.id = :branchId', { branchId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .setParameters({
+        completed: AppointmentStatus.COMPLETED,
+        cancelled: AppointmentStatus.CANCELLED,
+      })
+      .getRawOne<{ total: string; completed: string; cancelled: string }>();
+
+    return {
+      total: Number(row?.total ?? 0),
+      completed: Number(row?.completed ?? 0),
+      cancelled: Number(row?.cancelled ?? 0),
+    };
+  }
 
   private async sumBranchRevenue(
     tenantId: string,

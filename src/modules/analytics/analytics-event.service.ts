@@ -1,12 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  Between,
-  FindOptionsWhere,
-  LessThan,
-  MoreThanOrEqual,
-  Repository,
-} from 'typeorm';
+import { Repository } from 'typeorm';
 
 import { AnalyticsEvent } from '../../entities/Analytics/AnalyticsEvent';
 import { Branch } from '../../entities/SaaS-Core/Branch';
@@ -15,6 +9,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { TrackEventDto } from './dto/track-event.dto';
 import { QueryEventsDto } from './dto/query-events.dto';
+import { AnalyticsQueryBuilder } from './query/analytics-query.builder';
+import { Page } from './query/report-query.builder';
 
 /**
  * Event ingestion layer (`analytics_events`).
@@ -55,25 +51,13 @@ export class AnalyticsEventService {
     );
   }
 
-  async list(tenantId: string, query: QueryEventsDto) {
-    const where: FindOptionsWhere<AnalyticsEvent> = { tenant: { id: tenantId } };
-    if (query.eventType) where.event_type = query.eventType;
-    if (query.entityType) where.entity_type = query.entityType;
-    if (query.branchId) where.branch = { id: query.branchId };
-    if (query.from && query.to) {
-      where.created_at = Between(new Date(query.from), new Date(query.to));
-    } else if (query.from) {
-      where.created_at = MoreThanOrEqual(new Date(query.from));
-    } else if (query.to) {
-      where.created_at = LessThan(new Date(query.to));
-    }
-
-    const [data, total] = await this.events.findAndCount({
-      where,
-      order: { created_at: 'DESC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
-    });
-    return { data, total, page: query.page, limit: query.limit };
+  list(tenantId: string, query: QueryEventsDto): Promise<Page<AnalyticsEvent>> {
+    let qb = AnalyticsQueryBuilder.scoped(
+      this.events.createQueryBuilder('event'),
+      'event',
+      tenantId,
+    );
+    qb = AnalyticsQueryBuilder.filters(qb, 'event', query);
+    return AnalyticsQueryBuilder.page(qb, 'event', query);
   }
 }

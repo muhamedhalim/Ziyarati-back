@@ -8,6 +8,7 @@ import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
 import {
+  CountLimitColumn,
   USAGE_METRIC_MAP,
   UsageMetric,
   currentPeriodMonth,
@@ -119,6 +120,36 @@ export class UsageService {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Usage limit reached for ${metric} (${used}/${limit})`,
         context: { metric, used, limit, requested: amount },
+      });
+    }
+  }
+
+  /**
+   * Throws (422) when creating `amount` more of a COUNT-limited resource would
+   * exceed the plan's absolute cap (e.g. max_branches, max_users). The caller
+   * passes the CURRENT count from the resource's own repository; a null/absent
+   * plan limit means unlimited. No-op under free mode / active override, matching
+   * `assertWithinLimit` — so count limits behave identically to usage quotas.
+   */
+  async assertCountWithinLimit(
+    tenantId: string,
+    limitColumn: CountLimitColumn,
+    currentCount: number,
+    amount = 1,
+  ): Promise<void> {
+    if (!(await this.access.isEnforced(tenantId))) return;
+
+    const subscription = await this.resolveSubscription(tenantId, true);
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
+      limitColumn
+    ];
+    if (limitRaw === null || limitRaw === undefined) return; // unlimited
+
+    const limit = Number(limitRaw);
+    if (currentCount + amount > limit) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
+        context: { limit: limitColumn, current: currentCount, max: limit, requested: amount },
       });
     }
   }

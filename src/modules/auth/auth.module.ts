@@ -29,6 +29,8 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
 
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -50,6 +52,8 @@ import { PermissionsGuard } from './guards/permissions.guard';
       useFactory: () => ({}),
     }),
     ConfigModule,
+    // Provides UsageService for plan-limit enforcement (max_users).
+    SubscriptionBillingModule,
   ],
   controllers: [AuthController, RolesController, PermissionsController],
   providers: [

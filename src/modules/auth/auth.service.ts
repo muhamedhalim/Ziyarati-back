@@ -28,6 +28,8 @@ import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { AuthResult, AuthTokens } from './interfaces/auth-tokens.interface';
 import { AppError, ErrorCode } from '../../common/errors';
 import { ROLE, RoleSlug } from '../../rbac/rbac.constants';
+import { UsageService } from '../subscription-billing/usage.service';
+import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -45,6 +47,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly usage: UsageService,
   ) {}
 
   // ----------------------------------------------------------------------- //
@@ -128,6 +131,19 @@ export class AuthService {
     if (existing) {
       throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
     }
+
+    // Plan limit: max_users. Counts the tenant's existing users and rejects
+    // (422) when adding another would exceed the cap. Self-signup of the owner
+    // (registerOwner) is deliberately NOT limited — only adding staff to an
+    // existing tenant is. No-op under free mode / active override.
+    const currentUsers = await this.users.count({
+      where: { tenant: { id: actorTenantId } },
+    });
+    await this.usage.assertCountWithinLimit(
+      actorTenantId,
+      COUNT_LIMIT.USERS,
+      currentUsers,
+    );
 
     const userId = await this.dataSource.transaction(async (manager) => {
       const user = await manager.save(

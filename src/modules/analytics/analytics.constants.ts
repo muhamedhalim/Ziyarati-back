@@ -26,6 +26,29 @@ export const ACTIVE_CONVERSATION_WINDOW_DAYS = 7;
 /** Round monetary/decimal values to 2 dp (avoids float drift in sums). */
 export const round2 = (n: number): number => Math.round(Number(n) * 100) / 100;
 
+/**
+ * ── DATE STRATEGY (single source of truth) ──────────────────────────────────
+ * Calendar report values are STRINGS, never JS `Date` objects:
+ *   • daily report `date`            → 'YYYY-MM-DD'  (ReportDate)
+ *   • monthly report `period_month`  → 'YYYY-MM'     (ReportMonth)
+ * JS `Date` objects are used ONLY for timestamptz range bounds (created_at /
+ * paid_at / start_at / last_message_at), produced exclusively by
+ * `dayRangeUtc()` / `monthRangeUtc()` below.
+ *
+ * The frozen `DailyReport` entity mistypes its Postgres `date` column as `Date`,
+ * but that column round-trips through TypeORM as a 'YYYY-MM-DD' STRING at
+ * runtime. `reportDateColumn()` is the ONE sanctioned boundary cast that
+ * reconciles the runtime string with the entity's declared type — it replaces
+ * the previously scattered `dateStr as unknown as Date` / `as any` casts.
+ */
+export type ReportDate = string; // 'YYYY-MM-DD'
+export type ReportMonth = string; // 'YYYY-MM'
+
+/** The single sanctioned cast at the frozen-entity boundary (see note above). */
+export function reportDateColumn(dateStr: ReportDate): Date {
+  return dateStr as unknown as Date;
+}
+
 /** Inclusive UTC day range [00:00:00.000, 23:59:59.999] for a 'YYYY-MM-DD'. */
 export function dayRangeUtc(dateStr: string): { start: Date; end: Date } {
   const start = new Date(`${dateStr}T00:00:00.000Z`);
