@@ -43,33 +43,44 @@ export class DashboardMetricService {
     );
   }
 
-  /** Recompute the KPI snapshot, upsert the metric rows, and invalidate cache. */
+  /**
+   * Recompute the KPI snapshot and persist it ATOMICALLY.
+   *
+   * All rows are upserted inside a single transaction (`INSERT … ON CONFLICT
+   * (tenantId, metric_key, period) DO UPDATE`), so:
+   *  - the snapshot is all-or-nothing — a mid-loop failure no longer leaves a
+   *    half-updated dashboard;
+   *  - concurrent refreshes (API + the hourly worker sweep) can no longer create
+   *    duplicate rows for the same metric (the old find-then-save raced).
+   * Cache is invalidated AFTER commit so a concurrent read cannot repopulate the
+   * cache with pre-commit data.
+   */
   async refresh(tenantId: string): Promise<DashboardMetric[]> {
     const kpis = await this.aggregation.computeDashboardKpis(tenantId);
-    const saved: DashboardMetric[] = [];
 
-    for (const kpi of kpis) {
-      let row = await this.metrics.findOne({
-        where: {
-          tenant: { id: tenantId },
-          metric_key: kpi.metric_key,
-          period: kpi.period,
-        },
-      });
-      if (!row) {
-        row = this.metrics.create({
-          tenant: { id: tenantId } as Tenant,
-          metric_key: kpi.metric_key,
-          period: kpi.period ?? DASHBOARD_PERIOD,
-        });
+    await this.metrics.manager.transaction(async (manager) => {
+      for (const kpi of kpis) {
+        await manager
+          .createQueryBuilder()
+          .insert()
+          .into(DashboardMetric)
+          .values({
+            tenant: { id: tenantId } as Tenant,
+            metric_key: kpi.metric_key,
+            metric_value: kpi.metric_value,
+            period: kpi.period ?? DASHBOARD_PERIOD,
+            updated_at: new Date(),
+          })
+          .orUpdate(['metric_value', 'updated_at'], ['tenantId', 'metric_key', 'period'])
+          .execute();
       }
-      row.metric_value = kpi.metric_value;
-      row.updated_at = new Date();
-      saved.push(await this.metrics.save(row));
-    }
+    });
 
-    // Invalidate AFTER the write so concurrent reads can't repopulate stale data.
     await this.cache.invalidate(tenantId, CACHE_NS.DASHBOARD);
-    return saved;
+
+    return this.metrics.find({
+      where: { tenant: { id: tenantId } },
+      order: { metric_key: 'ASC' },
+    });
   }
 }

@@ -60,6 +60,8 @@ export interface AnalyticsGenerateReportJob extends BaseJobData {
   month?: string; // YYYY-MM (monthly)
   branchId?: string;
 }
+/** Platform-level retention sweep (tenantId null) — purges old analytics_events. */
+export type AnalyticsCleanupJob = BaseJobData;
 
 // ── Settlements ────────────────────────────────────────────────────────────
 export interface SettlementsProcessJob extends BaseJobData {

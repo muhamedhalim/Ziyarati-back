@@ -9,8 +9,13 @@
  * one failed branch never aborts the batch.
  */
 
+import { Logger } from '@nestjs/common';
+
 /** Default fan-out width for per-branch generation (kept below the DB pool max). */
 export const DEFAULT_BATCH_CONCURRENCY = 5;
+
+/** Cap on per-branch error lines logged before collapsing to a summary count. */
+export const BATCH_LOG_SAMPLE = 5;
 
 export interface BatchResult<T> {
   /** Successfully produced items, in completion order. */
@@ -54,4 +59,24 @@ export async function mapBranchesSettled<T>(
 
   await Promise.all(Array.from({ length: width }, () => worker()));
   return { generated, failed };
+}
+
+/**
+ * Log batch failures WITHOUT flooding: emit at most `BATCH_LOG_SAMPLE` per-branch
+ * error lines, then a single summary count. A 5,000-branch tenant whose DB is
+ * down would otherwise produce 5,000 error lines per run.
+ */
+export function logBatchFailures(
+  logger: Logger,
+  failed: { branchId: string; error: string }[],
+  scope: string,
+): void {
+  if (failed.length === 0) return;
+  for (const f of failed.slice(0, BATCH_LOG_SAMPLE)) {
+    logger.error(`${scope} branch=${f.branchId}: ${f.error}`);
+  }
+  const suppressed = failed.length - BATCH_LOG_SAMPLE;
+  if (suppressed > 0) {
+    logger.error(`${scope}: ${failed.length} branches failed (${suppressed} more suppressed)`);
+  }
 }

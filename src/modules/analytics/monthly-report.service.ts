@@ -3,7 +3,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { MonthlyReport } from '../../entities/Analytics/MonthlyReport';
-import { DailyReport } from '../../entities/Analytics/DailyReport';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -11,20 +10,20 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { GenerateMonthlyReportDto } from './dto/generate-monthly-report.dto';
 import { QueryMonthlyReportsDto } from './dto/query-monthly-reports.dto';
-import { monthDateBounds, round2 } from './analytics.constants';
-import { BatchResult, mapBranchesSettled } from './batch.util';
+import { BatchResult, logBatchFailures, mapBranchesSettled } from './batch.util';
 import { Page, ReportQueryBuilder } from './query/report-query.builder';
 
 /**
  * Monthly reports (`monthly_reports`) — per tenant + branch + month.
  *
- * Totals (`total_appointments`, `total_revenue`) are aggregated IN SQL from that
- * month's DailyReports (`SUM(...)`, not an in-memory `reduce`); `avg_rating` and
- * `top_services` are computed from source via the aggregation service.
- * Tenant-scoped; immutable to clients (only `generate` recomputes, upserting on
- * the (tenant, branch, period_month) unique key). With no `branchId`, all active
- * branches are generated as a bounded-concurrency batch with partial-failure
- * isolation.
+ * ALL fields (`total_appointments`, `total_revenue`, `avg_rating`,
+ * `top_services`) are computed DIRECTLY FROM SOURCE over the same UTC month
+ * window, so the snapshot is internally consistent and never stale w.r.t. daily
+ * reports (it no longer silently reads 0 when the month's dailies weren't built).
+ * Tenant-scoped; immutable to clients (only `generate` recomputes, via an atomic
+ * upsert on the (tenant, branch, period_month) unique key). With no `branchId`,
+ * all active branches are generated as a bounded-concurrency batch with
+ * partial-failure isolation.
  */
 @Injectable()
 export class MonthlyReportService {
@@ -33,8 +32,6 @@ export class MonthlyReportService {
   constructor(
     @InjectRepository(MonthlyReport)
     private readonly reports: Repository<MonthlyReport>,
-    @InjectRepository(DailyReport)
-    private readonly dailyReports: Repository<DailyReport>,
     private readonly aggregation: AnalyticsAggregationService,
   ) {}
 
@@ -58,11 +55,7 @@ export class MonthlyReportService {
       this.generateForBranch(tenantId, branchId, dto.month),
     );
 
-    for (const f of result.failed) {
-      this.logger.error(
-        `monthly report failed tenant=${tenantId} branch=${f.branchId} month=${dto.month}: ${f.error}`,
-      );
-    }
+    logBatchFailures(this.logger, result.failed, `monthly report tenant=${tenantId} month=${dto.month}`);
     return result;
   }
 
@@ -95,69 +88,47 @@ export class MonthlyReportService {
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
+  /**
+   * Idempotent, concurrency-safe upsert of one branch's monthly report. All
+   * fields come from source over the same window; the write is an atomic
+   * `INSERT … ON CONFLICT (tenantId, branchId, period_month) DO UPDATE`.
+   */
   private async generateForBranch(
     tenantId: string,
     branchId: string,
     month: string,
   ): Promise<MonthlyReport> {
-    // Totals summed from the month's daily reports IN SQL (no in-memory reduce).
-    const totals = await this.sumDailyTotals(tenantId, branchId, month);
+    const [totals, extras] = await Promise.all([
+      this.aggregation.computeMonthlyTotals(tenantId, branchId, month),
+      this.aggregation.computeMonthlyExtras(tenantId, branchId, month),
+    ]);
 
-    // Rating + top services come from source (not stored on daily reports).
-    const extras = await this.aggregation.computeMonthlyExtras(
-      tenantId,
-      branchId,
-      month,
-    );
+    await this.reports
+      .createQueryBuilder()
+      .insert()
+      .values({
+        tenant: { id: tenantId } as Tenant,
+        branch: { id: branchId } as Branch,
+        period_month: month,
+        total_appointments: totals.total_appointments,
+        total_revenue: totals.total_revenue,
+        avg_rating: extras.avg_rating ?? undefined,
+        top_services: extras.top_services as unknown as Record<string, any>,
+      })
+      .orUpdate(
+        ['total_appointments', 'total_revenue', 'avg_rating', 'top_services'],
+        ['tenantId', 'branchId', 'period_month'],
+      )
+      .execute();
 
-    let report = await this.reports.findOne({
+    const saved = await this.reports.findOne({
       where: {
         tenant: { id: tenantId },
         branch: { id: branchId },
         period_month: month,
       },
+      relations: { branch: true },
     });
-    if (!report) {
-      report = this.reports.create({
-        tenant: { id: tenantId } as Tenant,
-        branch: { id: branchId } as Branch,
-        period_month: month,
-      });
-    }
-
-    report.total_appointments = totals.total_appointments;
-    report.total_revenue = totals.total_revenue;
-    report.avg_rating = extras.avg_rating ?? undefined;
-    report.top_services = extras.top_services as unknown as Record<string, any>;
-
-    return this.reports.save(report);
-  }
-
-  /**
-   * `SUM()` the month's daily-report totals in the database — one aggregate
-   * round-trip that returns no rows to the app, instead of fetching every daily
-   * row and reducing in memory.
-   */
-  private async sumDailyTotals(
-    tenantId: string,
-    branchId: string,
-    month: string,
-  ): Promise<{ total_appointments: number; total_revenue: number }> {
-    const { firstDay, lastDay } = monthDateBounds(month);
-    const row = await this.dailyReports
-      .createQueryBuilder('d')
-      .innerJoin('d.tenant', 't')
-      .innerJoin('d.branch', 'b')
-      .select('COALESCE(SUM(d.total_appointments), 0)', 'appointments')
-      .addSelect('COALESCE(SUM(d.total_revenue), 0)', 'revenue')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('b.id = :branchId', { branchId })
-      .andWhere('d.date BETWEEN :firstDay AND :lastDay', { firstDay, lastDay })
-      .getRawOne<{ appointments: string; revenue: string }>();
-
-    return {
-      total_appointments: Number(row?.appointments ?? 0),
-      total_revenue: round2(Number(row?.revenue ?? 0)),
-    };
+    return saved as MonthlyReport;
   }
 }

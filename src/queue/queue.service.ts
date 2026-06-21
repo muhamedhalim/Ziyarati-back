@@ -8,6 +8,7 @@ import { ALL_QUEUES, JOB, QUEUE, QueueName } from './queue.constants';
 import {
   AiExecuteJob,
   AnalyticsAggregateJob,
+  AnalyticsCleanupJob,
   AnalyticsGenerateReportJob,
   BaseJobData,
   CampaignLaunchJob,
@@ -111,6 +112,10 @@ export class QueueService {
 
   enqueueAnalyticsReport(data: AnalyticsGenerateReportJob, opts?: JobsOptions) {
     return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_GENERATE_REPORT, data, opts);
+  }
+
+  enqueueAnalyticsCleanup(data: AnalyticsCleanupJob, opts?: JobsOptions) {
+    return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_CLEANUP, data, opts);
   }
 
   enqueueSettlementsProcess(data: SettlementsProcessJob, opts?: JobsOptions) {

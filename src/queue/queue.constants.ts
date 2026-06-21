@@ -27,6 +27,7 @@ export const JOB = {
   AI_EXECUTE: 'ai.execute',
   ANALYTICS_AGGREGATE: 'analytics.aggregate',
   ANALYTICS_GENERATE_REPORT: 'analytics.generateReport',
+  ANALYTICS_CLEANUP: 'analytics.cleanup',
   SETTLEMENTS_PROCESS: 'settlements.process',
   SUBSCRIPTIONS_RENEWAL_CHECK: 'subscriptions.renewalCheck',
   REFUNDS_REAP: 'refunds.reap',

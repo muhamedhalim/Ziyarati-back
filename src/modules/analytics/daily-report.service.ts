@@ -12,7 +12,7 @@ import { AnalyticsCacheService, CACHE_NS } from './analytics-cache.service';
 import { GenerateDailyReportDto } from './dto/generate-daily-report.dto';
 import { QueryDailyReportsDto } from './dto/query-daily-reports.dto';
 import { reportDateColumn } from './analytics.constants';
-import { BatchResult, mapBranchesSettled } from './batch.util';
+import { BatchResult, logBatchFailures, mapBranchesSettled } from './batch.util';
 import { Page, ReportQueryBuilder } from './query/report-query.builder';
 
 /**
@@ -63,11 +63,7 @@ export class DailyReportService {
       this.generateForBranch(tenantId, branchId, dto.date),
     );
 
-    for (const f of result.failed) {
-      this.logger.error(
-        `daily report failed tenant=${tenantId} branch=${f.branchId} date=${dto.date}: ${f.error}`,
-      );
-    }
+    logBatchFailures(this.logger, result.failed, `daily report tenant=${tenantId} date=${dto.date}`);
 
     // Invalidate once after the batch (any successful write changes read results).
     if (result.generated.length > 0) {
@@ -108,7 +104,14 @@ export class DailyReportService {
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
-  /** Upsert one branch's report for the day (the system recomputation path). */
+  /**
+   * Idempotent, concurrency-safe upsert of one branch's report for the day.
+   *
+   * `INSERT … ON CONFLICT (tenantId, branchId, date) DO UPDATE` is atomic against
+   * the entity's unique constraint, so two concurrent generations of the same
+   * (tenant, branch, date) can no longer both insert (the old find-then-save
+   * raced into a 23505) — they collapse into one row, last write wins.
+   */
   private async generateForBranch(
     tenantId: string,
     branchId: string,
@@ -120,28 +123,42 @@ export class DailyReportService {
       dateStr,
     );
 
-    let report = await this.reports.findOne({
+    await this.reports
+      .createQueryBuilder()
+      .insert()
+      .values({
+        tenant: { id: tenantId } as Tenant,
+        branch: { id: branchId } as Branch,
+        date: reportDateColumn(dateStr),
+        total_appointments: metrics.total_appointments,
+        completed_appointments: metrics.completed_appointments,
+        cancelled_appointments: metrics.cancelled_appointments,
+        total_revenue: metrics.total_revenue,
+        new_customers: metrics.new_customers,
+        ai_messages_count: metrics.ai_messages_count,
+      })
+      .orUpdate(
+        [
+          'total_appointments',
+          'completed_appointments',
+          'cancelled_appointments',
+          'total_revenue',
+          'new_customers',
+          'ai_messages_count',
+        ],
+        ['tenantId', 'branchId', 'date'],
+      )
+      .execute();
+
+    const saved = await this.reports.findOne({
       where: {
         tenant: { id: tenantId },
         branch: { id: branchId },
         date: reportDateColumn(dateStr),
       },
+      relations: { branch: true },
     });
-    if (!report) {
-      report = this.reports.create({
-        tenant: { id: tenantId } as Tenant,
-        branch: { id: branchId } as Branch,
-        date: reportDateColumn(dateStr),
-      });
-    }
-
-    report.total_appointments = metrics.total_appointments;
-    report.completed_appointments = metrics.completed_appointments;
-    report.cancelled_appointments = metrics.cancelled_appointments;
-    report.total_revenue = metrics.total_revenue;
-    report.new_customers = metrics.new_customers;
-    report.ai_messages_count = metrics.ai_messages_count;
-
-    return this.reports.save(report);
+    // The row was just upserted, so it must exist.
+    return saved as DailyReport;
   }
 }

@@ -34,6 +34,9 @@ export const validate = (config: Record<string, unknown>) => {
     // database (no behavior change). TTL is in seconds.
     ANALYTICS_CACHE_ENABLED: Joi.string().valid('true', 'false').default('true'),
     ANALYTICS_CACHE_TTL: Joi.number().default(60),
+    // Raw analytics_events older than this are purged by the daily retention
+    // sweep. Floored at 1 day so a 0/negative value can't purge the whole table.
+    ANALYTICS_EVENT_RETENTION_DAYS: Joi.number().min(1).default(90),
 
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_EXPIRES_IN: Joi.string().default('7d'),

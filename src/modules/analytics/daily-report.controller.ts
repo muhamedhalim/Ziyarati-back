@@ -78,7 +78,7 @@ export class DailyReportController {
 
   @ApiOperation({
     summary: 'List daily reports',
-    description: '**Protected — `analytics.reports.read`. Clinic active.** Tenant-scoped, newest first, with branch/date filters + pagination.',
+    description: '**Protected — `analytics.reports.read`. Clinic active.** Tenant-scoped, newest first, with branch/date filters + pagination. All fields are strictly BRANCH-scoped: `*_appointments`, `total_revenue`, and `ai_messages_count` (AI messages whose conversation belongs to the branch). `new_customers` is always 0 — customer acquisition is not branch-attributable and is excluded from branch reports; tenant-level customer/AI totals live on the dashboard.',
   })
   @ApiOkResponse({ description: 'Paginated daily reports.' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
@@ -91,7 +91,7 @@ export class DailyReportController {
 
   @ApiOperation({
     summary: 'Get a daily report',
-    description: '**Protected — `analytics.reports.read`. Clinic active.** Another tenant\'s report returns 404.',
+    description: '**Protected — `analytics.reports.read`. Clinic active.** Another tenant\'s report returns 404. All fields are branch-scoped (appointments, revenue, branch-linked `ai_messages_count`); `new_customers` is 0 (not branch-attributable — see the tenant dashboard).',
   })
   @ApiParam({ name: 'id', description: 'Daily report UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'Daily report.' })

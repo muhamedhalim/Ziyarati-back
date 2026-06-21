@@ -23,13 +23,15 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_GENERATE_REPORT, { tenantId: null }, '30 0 * * *');
       // Dashboard metric aggregation sweep — hourly.
       await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_AGGREGATE, { tenantId: null }, '0 * * * *');
+      // Analytics event retention purge — 03:15 UTC daily.
+      await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_CLEANUP, { tenantId: null }, '15 3 * * *');
       // Settlement batching sweep — 01:00 UTC.
       await this.queue.addRepeatable(QUEUE.SETTLEMENTS, JOB.SETTLEMENTS_PROCESS, { tenantId: null }, '0 1 * * *');
       // Subscription renewal/expiry check — 02:00 UTC.
       await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_CHECK, { tenantId: null }, '0 2 * * *');
       // Refund recovery / reaper sweep — every 5 minutes (R2).
       await this.queue.addRepeatable(QUEUE.REFUNDS, JOB.REFUNDS_REAP, { tenantId: null }, '*/5 * * * *');
-      this.logger.log('Repeatable jobs registered (analytics ×2, settlements, subscriptions, refunds-reaper)');
+      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

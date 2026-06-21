@@ -1,11 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  IsObject,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
 } from 'class-validator';
+
+import { IsBoundedMetadata } from './is-bounded-metadata.validator';
 
 /**
  * Track a raw analytics event for the caller's tenant. Tenant is NEVER taken
@@ -34,11 +35,11 @@ export class TrackEventDto {
   branchId?: string;
 
   @ApiPropertyOptional({
-    description: 'Arbitrary event payload.',
+    description: 'Arbitrary event payload. Bounded: ≤ 8 KB, ≤ 100 keys, depth ≤ 5.',
     type: 'object',
     additionalProperties: true,
   })
   @IsOptional()
-  @IsObject()
+  @IsBoundedMetadata()
   metadata?: Record<string, any>;
 }

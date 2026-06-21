@@ -14,6 +14,7 @@ import { WorkerTenantsService } from '../worker-tenants.service';
 import { DashboardMetricService } from '../../modules/analytics/dashboard-metric.service';
 import { DailyReportService } from '../../modules/analytics/daily-report.service';
 import { MonthlyReportService } from '../../modules/analytics/monthly-report.service';
+import { AnalyticsRetentionService } from '../../modules/analytics/analytics-retention.service';
 
 /**
  * Consumes the `analytics` queue. Each job is either a scheduled SWEEP
@@ -28,6 +29,7 @@ export class AnalyticsProcessor extends WorkerHost {
     private readonly dashboard: DashboardMetricService,
     private readonly daily: DailyReportService,
     private readonly monthly: MonthlyReportService,
+    private readonly retention: AnalyticsRetentionService,
     private readonly tenants: WorkerTenantsService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
@@ -40,6 +42,11 @@ export class AnalyticsProcessor extends WorkerHost {
       const data = job.data as AnalyticsAggregateJob;
       if (!data.tenantId) return this.sweepAggregate();
       return runInTenantContext(this.ctx, data, () => this.dashboard.refresh(data.tenantId!));
+    }
+
+    if (job.name === JOB.ANALYTICS_CLEANUP) {
+      // Platform-wide retention sweep — no tenant scope.
+      return this.retention.purgeExpiredEvents();
     }
 
     // analytics.generateReport

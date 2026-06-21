@@ -56,11 +56,27 @@ export interface MonthlyExtras {
  * the caller (resolved from TenantContext upstream), never from input. Reads are
  * read-only against source domains; no source rows are mutated.
  *
- * Branch attribution: appointments and payments carry a branch, so those metrics
- * are branch-accurate. Customers and AI messages have NO branch column, so
- * `new_customers` / `ai_messages_count` are tenant-level daily totals (and so
- * repeat across a day's branch reports). The monthly report does not carry those
- * two fields, so this never affects monthly totals.
+ * STRICT scope separation between branch analytics and tenant analytics:
+ *
+ *  - BRANCH analytics (daily reports) contain ONLY metrics that are truly
+ *    branch-scoped, each from a real relation — so two branches genuinely differ:
+ *      • appointments (total/completed/cancelled), revenue — own branch FK.
+ *      • ai_messages_count — AI messages whose conversation belongs to the branch
+ *        (AiMessage → ai_conversations → conversations.branch). Messages with no
+ *        branch are NOT branch-attributable and are excluded from branch reports
+ *        (never duplicated or faked); they remain in the tenant total below.
+ *      • avg_rating, top_services (monthly) — via appointment.branch.
+ *    A metric that cannot be attributed to a branch is EXCLUDED from branch
+ *    reports (e.g. new_customers — Customer has no branch relation — is reported
+ *    as 0 at branch scope, not the tenant figure copied onto every branch).
+ *
+ *  - TENANT analytics (dashboard snapshot) own the tenant-wide figures and are
+ *    the ONLY place they live: TOTAL_CUSTOMERS, AI_MESSAGES (all messages incl.
+ *    branchless), AI_TOKENS_USED, etc. Nothing is removed — it just isn't smeared
+ *    across branch rows.
+ *
+ * Tenant-level figures are never used for branch comparison and never replicated
+ * across branches.
  */
 @Injectable()
 export class AnalyticsAggregationService {
@@ -107,6 +123,16 @@ export class AnalyticsAggregationService {
 
   // ──────────────────────────── Daily aggregation ────────────────────────── //
 
+  /**
+   * The daily-report metrics for one branch/day — STRICTLY branch-scoped only:
+   *  - appointment counts + revenue: the source row's own branch FK.
+   *  - ai_messages_count: AI messages whose conversation belongs to this branch;
+   *    branchless messages are excluded (counted only in the tenant dashboard).
+   *  - new_customers: 0 — customer acquisition is NOT branch-attributable
+   *    (Customer has no branch relation), so it is EXCLUDED from branch reports.
+   *    The tenant-level customer figure lives on the dashboard (TOTAL_CUSTOMERS),
+   *    never copied onto branch rows.
+   */
   async computeDailyMetrics(
     tenantId: string,
     branchId: string,
@@ -114,24 +140,20 @@ export class AnalyticsAggregationService {
   ): Promise<DailyMetrics> {
     const { start, end } = dayRangeUtc(dateStr);
 
-    const [appts, total_revenue, new_customers, ai_messages_count] =
-      await Promise.all([
-        this.countBranchAppointments(tenantId, branchId, start, end),
-        this.sumBranchRevenue(tenantId, branchId, start, end),
-        this.customers.count({
-          where: { tenant: { id: tenantId }, created_at: Between(start, end) },
-        }),
-        this.aiMessages.count({
-          where: { tenant: { id: tenantId }, created_at: Between(start, end) },
-        }),
-      ]);
+    const [appts, total_revenue, ai_messages_count] = await Promise.all([
+      this.countBranchAppointments(tenantId, branchId, start, end),
+      this.sumBranchRevenue(tenantId, branchId, start, end),
+      this.countBranchAiMessages(tenantId, branchId, start, end),
+    ]);
 
     return {
       total_appointments: appts.total,
       completed_appointments: appts.completed,
       cancelled_appointments: appts.cancelled,
       total_revenue,
-      new_customers,
+      // Excluded from branch scope (not branch-attributable). Tenant-level
+      // customer counts are on the dashboard, never replicated across branches.
+      new_customers: 0,
       ai_messages_count,
     };
   }
@@ -197,6 +219,34 @@ export class AnalyticsAggregationService {
     return { avg_rating, top_services };
   }
 
+  /**
+   * Monthly totals computed DIRECTLY FROM SOURCE (not summed from daily reports).
+   *
+   * Computing from source keeps the monthly snapshot internally consistent with
+   * its source-derived extras (avg_rating / top_services) and immune to missing
+   * or stale daily reports — a monthly regeneration no longer silently reads 0
+   * because the dailies weren't (re)built first. Same UTC month window as the
+   * extras, so every monthly field reflects the same instant.
+   */
+  async computeMonthlyTotals(
+    tenantId: string,
+    branchId: string,
+    monthStr: string,
+  ): Promise<{ total_appointments: number; total_revenue: number }> {
+    const { start, end } = monthRangeUtc(monthStr);
+    const [total_appointments, total_revenue] = await Promise.all([
+      this.appointments.count({
+        where: {
+          tenant: { id: tenantId },
+          branch: { id: branchId },
+          start_at: Between(start, end),
+        },
+      }),
+      this.sumBranchRevenue(tenantId, branchId, start, end),
+    ]);
+    return { total_appointments, total_revenue };
+  }
+
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   /**
@@ -256,6 +306,35 @@ export class AnalyticsAggregationService {
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .getRawOne<{ sum: string }>();
     return round2(Number(row?.sum ?? 0));
+  }
+
+  /**
+   * AI messages BRANCH-attributed for this branch/day, via the message's
+   * conversation (AiMessage → ai_conversations → conversations.branch). Messages
+   * whose conversation has no branch are not branch-attributable and are excluded
+   * here — they are NOT dropped from analytics: the tenant dashboard's AI_MESSAGES
+   * KPI still counts every message.
+   *
+   * NB: ai_messages.ai_conversation_id is a VARCHAR (not a uuid FK), so the join
+   * to ai_conversations.id (uuid) is compared as text to avoid a type-mismatch.
+   */
+  private async countBranchAiMessages(
+    tenantId: string,
+    branchId: string,
+    start: Date,
+    end: Date,
+  ): Promise<number> {
+    const row = await this.aiMessages
+      .createQueryBuilder('m')
+      .innerJoin('m.tenant', 't')
+      .innerJoin('ai_conversations', 'ac', 'ac.id::text = m.ai_conversation_id')
+      .innerJoin('conversations', 'c', 'c.id = ac."conversationId"')
+      .select('COUNT(*)', 'count')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('c."branchId" = :branchId', { branchId })
+      .andWhere('m.created_at BETWEEN :start AND :end', { start, end })
+      .getRawOne<{ count: string }>();
+    return Number(row?.count ?? 0);
   }
 
   private async sumTenantRevenue(tenantId: string): Promise<number> {
