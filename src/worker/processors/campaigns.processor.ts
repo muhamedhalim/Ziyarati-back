@@ -113,8 +113,10 @@ export class CampaignDispatchProcessor extends WorkerHost {
         data.runId,
         data.recipientId,
       );
-      if (outcome.status === 'rate_limited') {
-        // Reschedule WITHOUT consuming an attempt (tenant pacing, not a failure).
+      if (outcome.status === 'rate_limited' || outcome.status === 'deferred') {
+        // Reschedule WITHOUT consuming an attempt:
+        //  - rate_limited: tenant pacing/cap throttle.
+        //  - deferred: run is PAUSED (DRAINING) — re-check after the pause window.
         await job.moveToDelayed(Date.now() + outcome.retryAfterMs, token);
         throw new DelayedError();
       }
@@ -133,6 +135,16 @@ export class CampaignDispatchProcessor extends WorkerHost {
         `(attempt ${job?.attemptsMade}, permanent=${permanent}): ${err?.message}`,
     );
     if (exhausted && !permanent) {
+      // Reconcile the run FIRST: mark the recipient terminally FAILED + advance
+      // counters, so the run can complete even though this one is dead-lettered.
+      // Without this the run would hang in PROCESSING forever.
+      if (data?.runId && data?.recipientId) {
+        await this.dispatch
+          .markDeadLettered(data.runId, data.recipientId, err?.message ?? 'exhausted')
+          .catch((e) =>
+            this.logger.error(`DLQ reconcile failed: ${(e as Error)?.message}`),
+          );
+      }
       // Poison transient failure → park in the DLQ for admin replay.
       await this.queue
         .enqueueCampaignDlq({

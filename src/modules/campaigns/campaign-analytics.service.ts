@@ -52,7 +52,10 @@ export class CampaignAnalyticsService {
     }
 
     const total = run.total_recipients;
-    const delivered = run.delivered + run.read;
+    // `run.delivered` already counts every recipient that reached DELIVERED-or-
+    // beyond (READ passes through the DELIVERED increment), so it must NOT be
+    // summed with `run.read` — read is a subset.
+    const delivered = run.delivered;
     const processed = run.sent + run.failed + run.skipped;
     const rate = (n: number) => (total === 0 ? 0 : +((n / total) * 100).toFixed(2));
 
@@ -62,9 +65,11 @@ export class CampaignAnalyticsService {
       execution: run.execution,
       totalRecipients: total,
       deliveredCount: delivered,
+      readCount: run.read,
       failedCount: run.failed,
       processedCount: processed,
       deliveryRate: rate(delivered),
+      readRate: rate(run.read),
       completionRate: rate(processed),
       counters: {
         queued: run.queued,
@@ -167,7 +172,8 @@ export class CampaignAnalyticsService {
       }>();
 
     const totalRecipients = Number(agg?.total ?? 0);
-    const delivered = Number(agg?.delivered ?? 0) + Number(agg?.read ?? 0);
+    // `delivered` already includes recipients that went on to READ — do not add read.
+    const delivered = Number(agg?.delivered ?? 0);
     const failed = Number(agg?.failed ?? 0);
 
     return {
@@ -176,6 +182,7 @@ export class CampaignAnalyticsService {
       campaignsByLifecycle,
       totalRecipients,
       deliveredCount: delivered,
+      readCount: Number(agg?.read ?? 0),
       failedCount: failed,
       deliveryRate:
         totalRecipients === 0 ? 0 : +((delivered / totalRecipients) * 100).toFixed(2),

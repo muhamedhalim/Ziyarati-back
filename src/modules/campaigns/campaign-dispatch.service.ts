@@ -26,7 +26,11 @@ export type DispatchOutcome =
   | { status: 'skipped'; reason: string }
   | { status: 'failed_permanent'; reason: string }
   | { status: 'rate_limited'; retryAfterMs: number }
+  | { status: 'deferred'; retryAfterMs: number }
   | { status: 'noop'; reason: string };
+
+/** How long a paused (DRAINING) recipient waits before re-checking the run. */
+const PAUSE_RECHECK_MS = 30_000;
 
 /**
  * The single per-recipient send seam, split into ordered single-responsibility
@@ -89,7 +93,19 @@ export class CampaignDispatchService {
       where: { id: runId, tenant: { id: tenantId } },
       select: { id: true, execution: true },
     });
-    if (!run || run.execution !== CampaignExecution.PROCESSING) {
+    if (!run) {
+      await this.markSkipped(runId, recipientId, 'run-missing');
+      return { status: 'skipped', reason: 'run-missing' };
+    }
+    if (run.execution === CampaignExecution.DRAINING) {
+      // PAUSED: defer without dropping. Release the claim back to PENDING so the
+      // recipient stays in the audience; the delayed re-run (or resume re-fanout)
+      // sends it once the run is PROCESSING again. NEVER skip on pause.
+      await this.releaseClaim(recipientId);
+      return { status: 'deferred', retryAfterMs: PAUSE_RECHECK_MS };
+    }
+    if (run.execution !== CampaignExecution.PROCESSING) {
+      // CANCELLED / FAILED / COMPLETED → genuinely terminal: skip and count.
       await this.markSkipped(runId, recipientId, 'run-stopped');
       return { status: 'skipped', reason: 'run-stopped' };
     }
@@ -177,6 +193,22 @@ export class CampaignDispatchService {
     return { status: 'failed_permanent', reason };
   }
 
+  /**
+   * Reconcile a poison (transient-exhausted / dead-lettered) recipient into a
+   * terminal FAILED state and the run counters. Called by the dispatch processor
+   * when a job is routed to the DLQ — WITHOUT this the run can never complete
+   * (its counters would never sum to total_recipients). Idempotent via the
+   * claimable-state guard so a re-fire doesn't double-count.
+   */
+  async markDeadLettered(
+    runId: string,
+    recipientId: string,
+    reason: string,
+  ): Promise<void> {
+    await this.markTerminalFailed(runId, recipientId, FailureClass.TRANSIENT, reason);
+    await this.checkCompletion(runId);
+  }
+
   // ──────────────────────────── persistence steps ─────────────────────────── //
 
   private async markDispatched(
@@ -185,10 +217,14 @@ export class CampaignDispatchService {
     providerRef: string,
   ): Promise<void> {
     await this.dataSource.transaction(async (mgr) => {
+      let res;
       try {
-        await mgr.update(
+        res = await mgr.update(
           CampaignRecipient,
-          { id: recipientId },
+          {
+            id: recipientId,
+            processing: In([RecipientProcessing.PENDING, RecipientProcessing.DISPATCHING]),
+          },
           {
             processing: RecipientProcessing.DISPATCHED,
             delivery: RecipientDelivery.ACCEPTED,
@@ -199,42 +235,61 @@ export class CampaignDispatchService {
           },
         );
       } catch (err) {
-        // UNIQUE(provider_ref) collision = this message was already sent.
+        // UNIQUE(provider_ref) collision = this message was already sent. Still
+        // settle the recipient as DISPATCHED (without the duplicate ref) and
+        // count it once, so the run can complete rather than getting stuck.
         this.logger.warn(
-          `provider_ref collision for recipient=${recipientId} (idempotent skip): ${(err as Error)?.message}`,
+          `provider_ref collision for recipient=${recipientId} (reconciling as sent): ${(err as Error)?.message}`,
         );
-        return;
+        res = await mgr.update(
+          CampaignRecipient,
+          {
+            id: recipientId,
+            processing: In([RecipientProcessing.PENDING, RecipientProcessing.DISPATCHING]),
+          },
+          {
+            processing: RecipientProcessing.DISPATCHED,
+            delivery: RecipientDelivery.ACCEPTED,
+            dispatched_at: new Date(),
+            failure_class: null,
+            failure_reason: null,
+          },
+        );
       }
-      await mgr
-        .createQueryBuilder()
-        .update(CampaignRun)
-        .set({ sent: () => 'sent + 1', queued: () => 'GREATEST(queued - 1, 0)' })
-        .where('id = :runId', { runId })
-        .execute();
+      // Only move counters when this call actually transitioned the row.
+      if ((res?.affected ?? 0) > 0) {
+        await this.incrRun(mgr, runId, 'sent');
+      }
     });
   }
 
-  private async markFailed(
+  private markFailed(runId: string, recipientId: string, reason: string): Promise<void> {
+    return this.markTerminalFailed(runId, recipientId, FailureClass.PERMANENT, reason);
+  }
+
+  /** Shared FAILED transition + counter, guarded against double-count. */
+  private async markTerminalFailed(
     runId: string,
     recipientId: string,
+    failureClass: FailureClass,
     reason: string,
   ): Promise<void> {
     await this.dataSource.transaction(async (mgr) => {
-      await mgr.update(
+      const res = await mgr.update(
         CampaignRecipient,
-        { id: recipientId },
+        {
+          id: recipientId,
+          processing: In([RecipientProcessing.PENDING, RecipientProcessing.DISPATCHING]),
+        },
         {
           processing: RecipientProcessing.FAILED,
-          failure_class: FailureClass.PERMANENT,
+          failure_class: failureClass,
           failure_reason: reason,
         },
       );
-      await mgr
-        .createQueryBuilder()
-        .update(CampaignRun)
-        .set({ failed: () => 'failed + 1', queued: () => 'GREATEST(queued - 1, 0)' })
-        .where('id = :runId', { runId })
-        .execute();
+      if ((res.affected ?? 0) > 0) {
+        await this.incrRun(mgr, runId, 'failed');
+      }
     });
   }
 
@@ -244,22 +299,33 @@ export class CampaignDispatchService {
     reason: string,
   ): Promise<void> {
     await this.dataSource.transaction(async (mgr) => {
-      await mgr.update(
+      const res = await mgr.update(
         CampaignRecipient,
         { id: recipientId, processing: In([RecipientProcessing.PENDING, RecipientProcessing.DISPATCHING]) },
         { processing: RecipientProcessing.SKIPPED, failure_reason: reason },
       );
-      await mgr
-        .createQueryBuilder()
-        .update(CampaignRun)
-        .set({ skipped: () => 'skipped + 1', queued: () => 'GREATEST(queued - 1, 0)' })
-        .where('id = :runId', { runId })
-        .execute();
+      if ((res.affected ?? 0) > 0) {
+        await this.incrRun(mgr, runId, 'skipped');
+      }
     });
     await this.checkCompletion(runId);
   }
 
-  /** Returns a claimed recipient to PENDING without counting it (rate-limit path). */
+  /** Atomically increment a run outcome counter and decrement `queued`. */
+  private incrRun(
+    mgr: DataSource['manager'],
+    runId: string,
+    field: 'sent' | 'failed' | 'skipped',
+  ) {
+    return mgr
+      .createQueryBuilder()
+      .update(CampaignRun)
+      .set({ [field]: () => `${field} + 1`, queued: () => 'GREATEST(queued - 1, 0)' })
+      .where('id = :runId', { runId })
+      .execute();
+  }
+
+  /** Returns a claimed recipient to PENDING without counting it (rate-limit / pause path). */
   private async releaseClaim(recipientId: string): Promise<void> {
     await this.recipients.update(
       { id: recipientId, processing: RecipientProcessing.DISPATCHING },

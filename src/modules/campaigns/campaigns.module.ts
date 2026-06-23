@@ -18,11 +18,13 @@ import { CampaignFanoutService } from './campaign-fanout.service';
 import { CampaignDispatchService } from './campaign-dispatch.service';
 import { CampaignAnalyticsService } from './campaign-analytics.service';
 import { CampaignDlqService } from './campaign-dlq.service';
+import { RecipientDeliveryService } from './recipient-delivery.service';
 
 import { CampaignController } from './campaign.controller';
 import { CampaignRecipientController } from './campaign-recipient.controller';
 import { CampaignAnalyticsController } from './campaign-analytics.controller';
 import { CampaignDlqController } from './campaign-dlq.controller';
+import { RecipientDeliveryController } from './recipient-delivery.controller';
 
 import { CampaignDeliveryFactory } from './delivery/campaign-delivery.factory';
 import { NoopCampaignDeliveryProvider } from './delivery/noop-campaign-delivery.provider';
@@ -58,6 +60,7 @@ import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provid
     CampaignRecipientController,
     CampaignAnalyticsController,
     CampaignDlqController,
+    RecipientDeliveryController,
   ],
   providers: [
     CampaignService,
@@ -68,6 +71,7 @@ import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provid
     CampaignDispatchService,
     CampaignAnalyticsService,
     CampaignDlqService,
+    RecipientDeliveryService,
     CampaignDeliveryFactory,
     NoopCampaignDeliveryProvider,
     { provide: CAMPAIGN_DELIVERY_PROVIDERS, useValue: [] },
@@ -81,6 +85,7 @@ import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provid
     CampaignDispatchService,
     CampaignAnalyticsService,
     CampaignDlqService,
+    RecipientDeliveryService,
   ],
 })
 export class CampaignsModule {}

@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource } from 'typeorm';
 
 import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
-import { RecipientProcessing } from '../../entities/enums';
+import { CampaignRun } from '../../entities/Campaigns/CampaignRun';
+import { CampaignExecution, RecipientProcessing } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { QueueService } from '../../queue/queue.service';
@@ -19,8 +19,7 @@ export class CampaignDlqService {
   private readonly logger = new Logger('CampaignDlqService');
 
   constructor(
-    @InjectRepository(CampaignRecipient)
-    private readonly recipients: Repository<CampaignRecipient>,
+    private readonly dataSource: DataSource,
     private readonly queue: QueueService,
   ) {}
 
@@ -50,8 +49,12 @@ export class CampaignDlqService {
 
   /**
    * Replay a parked job back onto its source queue with a fresh attempt budget.
-   * For recipient jobs the recipient is reset to PENDING so the claim guard lets
-   * the new job through.
+   *
+   * Because the dead-letter reconcile counted the recipient as FAILED (so the run
+   * could complete), replay must REVERSE that accounting in the same transaction:
+   * reset the recipient to PENDING, give back one `failed`→`queued`, and reopen a
+   * COMPLETED run to PROCESSING so the re-enqueued send can actually run and the
+   * run can re-complete. All guarded by affected-rows so a double replay is a no-op.
    */
   async replay(jobId: string) {
     const dlq = this.queue.queue(QUEUE.CAMPAIGNS_DLQ);
@@ -59,24 +62,45 @@ export class CampaignDlqService {
     if (!job) throw new AppError(ErrorCode.NOT_FOUND, { message: 'DLQ job not found' });
 
     const data = job.data as CampaignDlqJob;
-    if (data.sourceQueue === QUEUE.CAMPAIGNS_PROCESS) {
-      const orig = data.originalData as unknown as CampaignProcessRecipientJob;
-      await this.recipients.update(
-        { id: orig.recipientId },
-        { processing: RecipientProcessing.PENDING, failure_class: null, failure_reason: null },
-      );
-      await this.queue.enqueueCampaignRecipient({
-        tenantId: orig.tenantId,
-        campaignId: orig.campaignId,
-        runId: orig.runId,
-        recipientId: orig.recipientId,
-        correlationId: data.correlationId,
-      });
-    } else {
+    if (data.sourceQueue !== QUEUE.CAMPAIGNS_PROCESS) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Replay not supported for source queue "${data.sourceQueue}"`,
       });
     }
+
+    const orig = data.originalData as unknown as CampaignProcessRecipientJob;
+    await this.dataSource.transaction(async (mgr) => {
+      const res = await mgr.update(
+        CampaignRecipient,
+        { id: orig.recipientId, processing: RecipientProcessing.FAILED },
+        { processing: RecipientProcessing.PENDING, failure_class: null, failure_reason: null },
+      );
+      if ((res.affected ?? 0) > 0) {
+        // Give the slot back to the run's queue.
+        await mgr
+          .createQueryBuilder()
+          .update(CampaignRun)
+          .set({ failed: () => 'GREATEST(failed - 1, 0)', queued: () => 'queued + 1' })
+          .where('id = :runId', { runId: orig.runId })
+          .execute();
+        // Reopen a finished run so the replayed send can proceed.
+        await mgr
+          .createQueryBuilder()
+          .update(CampaignRun)
+          .set({ execution: CampaignExecution.PROCESSING, finished_at: () => 'NULL' })
+          .where('id = :runId', { runId: orig.runId })
+          .andWhere('execution = :done', { done: CampaignExecution.COMPLETED })
+          .execute();
+      }
+    });
+
+    await this.queue.enqueueCampaignRecipient({
+      tenantId: orig.tenantId,
+      campaignId: orig.campaignId,
+      runId: orig.runId,
+      recipientId: orig.recipientId,
+      correlationId: data.correlationId,
+    });
 
     await job.remove().catch(() => undefined);
     this.logger.log(`Replayed DLQ job ${jobId} → ${data.sourceQueue}`);
