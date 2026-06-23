@@ -19,6 +19,7 @@ export interface RecordLogInput {
   recipientId?: string;
   channel?: string;
   status: string;
+  providerRef?: string;
   errorMessage?: string;
   sentAt?: Date;
 }
@@ -47,10 +48,27 @@ export class NotificationLogService {
       recipient_id: input.recipientId,
       channel: input.channel,
       status: input.status,
+      provider_ref: input.providerRef,
       error_message: input.errorMessage,
       sent_at: input.sentAt,
     });
     return this.logs.save(log);
+  }
+
+  /**
+   * Retention purge — deletes a capped batch of logs older than `days`. Called
+   * by the maintenance sweep so `notification_logs` cannot grow unbounded.
+   */
+  async purgeOlderThan(days: number, batch = 5000): Promise<number> {
+    const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000);
+    const res = await this.logs
+      .createQueryBuilder()
+      .delete()
+      .from(NotificationLog)
+      .where('id IN (SELECT id FROM notification_logs WHERE created_at < :cutoff ORDER BY created_at ASC LIMIT :batch)')
+      .setParameters({ cutoff, batch })
+      .execute();
+    return res.affected ?? 0;
   }
 
   async findAll(tenantId: string, filter: NotificationLogFilterDto) {

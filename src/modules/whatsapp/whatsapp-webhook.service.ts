@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -14,6 +14,8 @@ import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
+import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
+import { DELIVERY_STATUS, DeliveryStatus } from '../notifications/notification.constants';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import type {
   WhatsappWebhookBody,
@@ -37,6 +39,8 @@ import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
  */
 @Injectable()
 export class WhatsappWebhookService {
+  private readonly logger = new Logger('WhatsappWebhookService');
+
   constructor(
     @InjectRepository(WhatsappWebhook)
     private readonly webhooks: Repository<WhatsappWebhook>,
@@ -44,6 +48,8 @@ export class WhatsappWebhookService {
     private readonly accounts: Repository<WhatsappAccount>,
     private readonly verifier: WebhookSignatureVerifier,
     private readonly config: ConfigService,
+    @Inject(forwardRef(() => NotificationDeliveryService))
+    private readonly notifDelivery: NotificationDeliveryService,
   ) {}
 
   /** GET verification handshake — returns the challenge to echo, or null. */
@@ -99,7 +105,40 @@ export class WhatsappWebhookService {
       processed: false,
     });
     const saved = await this.webhooks.save(row);
+
+    // Apply delivery-status callbacks to scheduled notifications (forward-only,
+    // matched by provider_ref = wamid). Single Meta webhook → no duplicate URL.
+    if (eventType === 'message_status') {
+      await this.applyDeliveryStatuses(body).catch((err) =>
+        this.logger.error(`delivery-status apply failed: ${(err as Error)?.message}`),
+      );
+    }
     return { accepted: true, id: saved.id };
+  }
+
+  /** Extract Meta statuses and forward each to the notification delivery axis. */
+  private async applyDeliveryStatuses(body: WhatsappWebhookBody): Promise<void> {
+    const value = this.firstChangeValue(body);
+    const statuses = (value?.statuses ?? []) as Array<{ id?: string; status?: string }>;
+    for (const st of statuses) {
+      const event = this.mapDeliveryStatus(st?.status);
+      if (event && st?.id) await this.notifDelivery.recordDelivery(st.id, event);
+    }
+  }
+
+  private mapDeliveryStatus(status?: string): DeliveryStatus | null {
+    switch (status) {
+      case 'sent':
+        return DELIVERY_STATUS.ACCEPTED;
+      case 'delivered':
+        return DELIVERY_STATUS.DELIVERED;
+      case 'read':
+        return DELIVERY_STATUS.READ;
+      case 'failed':
+        return DELIVERY_STATUS.FAILED;
+      default:
+        return null;
+    }
   }
 
   /** Authenticated manual create of a webhook log entry. */

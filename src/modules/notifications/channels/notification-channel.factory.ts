@@ -3,26 +3,30 @@ import {
   NOTIFICATION_CHANNELS,
   NotificationChannelProvider,
 } from './notification-channel.interface';
-import { NoopChannelProvider } from './noop-channel.provider';
+import { AppError, ErrorCode } from '../../../common/errors';
 
 /**
- * Factory that resolves the delivery provider for a channel (strategy
- * selection). Real providers are injected via the NOTIFICATION_CHANNELS token;
- * if none supports the requested channel, the no-op provider is used. This is
- * the single seam through which the dispatcher reaches a provider, keeping
- * delivery loosely coupled and trivially extensible.
+ * Resolves the delivery provider for a channel (strategy selection).
+ *
+ * STRICT resolution: if NO registered provider supports the channel, this THROWS
+ * — it never silently falls back to a no-op "success". A missing/misconfigured
+ * channel must surface as a hard failure, not a fake delivery.
  */
 @Injectable()
 export class NotificationChannelFactory {
   constructor(
     @Inject(NOTIFICATION_CHANNELS)
     private readonly providers: NotificationChannelProvider[],
-    private readonly fallback: NoopChannelProvider,
   ) {}
 
   resolve(channel?: string): NotificationChannelProvider {
-    return (
-      this.providers.find((p) => p.supports(channel)) ?? this.fallback
-    );
+    const provider = this.providers.find((p) => p.supports(channel));
+    if (!provider) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `No notification provider registered for channel "${channel ?? 'UNKNOWN'}"`,
+        context: { channel },
+      });
+    }
+    return provider;
   }
 }

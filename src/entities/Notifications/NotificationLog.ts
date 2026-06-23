@@ -34,6 +34,10 @@ export class NotificationLog {
   @Column({ length: 20, nullable: true })
   status?: string;
 
+  /** Provider message id for this attempt (correlates webhook delivery events). */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  provider_ref?: string;
+
   @Column({ type: 'text', nullable: true })
   error_message?: string;
 

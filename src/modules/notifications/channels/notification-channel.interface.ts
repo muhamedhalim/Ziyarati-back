@@ -12,20 +12,30 @@ export interface NotificationPayload {
   channel: string;
   recipientType?: string;
   recipientId?: string;
+  /** Resolved destination address (E.164 phone / wa_id) — set by the dispatcher
+   *  after a TENANT-SCOPED recipient lookup. Providers must not re-resolve it. */
+  recipientPhone?: string;
   templateId?: string;
   appointmentId?: string;
   /** Rendered/raw content for the message (provider decides how to use it). */
   contentAr?: string;
   contentEn?: string;
+  /** Preferred language (e.g. 'ar' | 'en'); selects which content to send. */
+  locale?: string;
   /** Arbitrary provider-specific data (no secrets). */
   metadata?: Record<string, unknown>;
 }
 
 export interface DeliveryResult {
   success: boolean;
-  /** Opaque provider reference (e.g. WhatsApp message id). */
+  /** Opaque provider reference (e.g. WhatsApp message id). Required on success. */
   providerRef?: string;
   error?: string;
+  /**
+   * Failure classification. `true` ⇒ TRANSIENT (retry with backoff), `false` ⇒
+   * PERMANENT (no retry). When omitted the dispatcher classifies heuristically.
+   */
+  transient?: boolean;
 }
 
 export interface NotificationChannelProvider {

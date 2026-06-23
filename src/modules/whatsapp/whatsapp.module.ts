@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
@@ -25,11 +26,16 @@ import { WhatsappAnalyticsController } from './whatsapp-analytics.controller';
 
 import { WhatsappProviderFactory } from './providers/whatsapp-provider.factory';
 import { NoopWhatsappProvider } from './providers/noop-whatsapp.provider';
-import { WHATSAPP_MESSAGE_PROVIDERS } from './providers/whatsapp-message.provider.interface';
+import { MetaWhatsappProvider } from './providers/meta-whatsapp.provider';
+import {
+  WHATSAPP_MESSAGE_PROVIDERS,
+  WhatsappMessageProvider,
+} from './providers/whatsapp-message.provider.interface';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 /**
  * WhatsApp Domain.
@@ -60,6 +66,9 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,
+    ConfigModule,
+    // Two-way: WhatsApp sends notifications; notification webhooks record delivery.
+    forwardRef(() => NotificationsModule),
   ],
   controllers: [
     WhatsappAccountController,
@@ -78,11 +87,18 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     WhatsappAnalyticsService,
     WhatsappProviderFactory,
     NoopWhatsappProvider,
+    MetaWhatsappProvider,
     WebhookSignatureVerifier,
     WhatsappAccountResolver,
     WhatsappMessageRouter,
-    // No real WhatsApp providers yet — the array is the registration point.
-    { provide: WHATSAPP_MESSAGE_PROVIDERS, useValue: [] },
+    // REAL provider registered into the strategy token (per-tenant credentials,
+    // approved template sends). NoopWhatsappProvider stays only as the factory's
+    // typed fallback dependency and is never resolved (Meta supports() === true).
+    {
+      provide: WHATSAPP_MESSAGE_PROVIDERS,
+      useFactory: (meta: MetaWhatsappProvider): WhatsappMessageProvider[] => [meta],
+      inject: [MetaWhatsappProvider],
+    },
   ],
   exports: [
     WhatsappAccountService,

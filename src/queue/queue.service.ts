@@ -16,6 +16,7 @@ import {
   CampaignLaunchJob,
   CampaignProcessRecipientJob,
   NotificationDispatchJob,
+  NotificationDlqJob,
   RefundsReapJob,
   SettlementsProcessJob,
   SubscriptionsRenewalCheckJob,
@@ -65,6 +66,26 @@ export class QueueService {
   async removeNotificationDispatch(notificationId: string): Promise<void> {
     const job = await this.queues[QUEUE.NOTIFICATIONS].getJob(`notification:${notificationId}`);
     if (job) await job.remove().catch(() => undefined);
+  }
+
+  /** Bulk-enqueue dispatch jobs (used by the maintenance sweep). Idempotent ids. */
+  enqueueNotificationDispatchBulk(items: NotificationDispatchJob[]) {
+    if (items.length === 0) return Promise.resolve([] as Job[]);
+    return this.queues[QUEUE.NOTIFICATIONS].addBulk(
+      items.map((data) => ({
+        name: JOB.NOTIFICATIONS_DISPATCH,
+        data: this.stamp(data),
+        opts: { jobId: `notification:${data.notificationId}` },
+      })),
+    );
+  }
+
+  /** Park an exhausted notification dispatch in the DLQ (never auto-processed). */
+  enqueueNotificationDlq(data: NotificationDlqJob, opts?: JobsOptions) {
+    return this.add(QUEUE.NOTIFICATIONS_DLQ, JOB.NOTIFICATIONS_DLQ, data, {
+      jobId: `notif-dlq:${data.notificationId}:${Date.now()}`,
+      ...opts,
+    });
   }
 
   enqueueWhatsappSend(data: WhatsappSendJob, opts?: JobsOptions) {

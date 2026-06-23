@@ -28,6 +28,17 @@ export class NotificationTemplate {
   @Column({ length: 20, nullable: true })
   channel?: string;
 
+  /**
+   * For channel=WHATSAPP: the approved WhatsappTemplate id to send (its own
+   * language IS the locale). Required to dispatch a WhatsApp notification.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  provider_template_id?: string;
+
+  /** Default template variable values (overridden per-notification). */
+  @Column({ type: 'jsonb', nullable: true })
+  variables?: Record<string, unknown>;
+
   @Column({ type: 'text', nullable: true })
   content_ar?: string;
 

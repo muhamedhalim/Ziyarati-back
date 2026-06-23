@@ -18,6 +18,18 @@ export interface NotificationDispatchJob extends BaseJobData {
   tenantId: string;
   notificationId: string;
 }
+/** Maintenance sweep: re-enqueue due-but-unsent + reclaim stale PROCESSING. */
+export type NotificationReapJob = BaseJobData;
+/** Dead-letter envelope for an exhausted transient dispatch. */
+export interface NotificationDlqJob extends BaseJobData {
+  notificationId: string;
+  sourceQueue: string;
+  sourceJobName: string;
+  originalJobId?: string;
+  failedReason: string;
+  attemptsMade: number;
+  diedAt: string;
+}
 
 // ── WhatsApp ───────────────────────────────────────────────────────────────
 export interface WhatsappSendJob extends BaseJobData {

@@ -141,10 +141,18 @@ export class NotificationSchedulerService {
     }
     if (dto.recipientType !== undefined) row.recipient_type = dto.recipientType;
     if (dto.recipientId !== undefined) row.recipient_id = dto.recipientId;
-    if (dto.scheduledAt !== undefined) row.scheduled_at = new Date(dto.scheduledAt);
-    if (dto.status !== undefined) row.status = dto.status;
+    const scheduleChanged = dto.scheduledAt !== undefined;
+    if (scheduleChanged) row.scheduled_at = new Date(dto.scheduledAt as string);
+    // NOTE: `status` is the worker-owned send lifecycle — it is intentionally NOT
+    // accepted from clients here (use schedule/cancel/reschedule/retry endpoints).
 
-    return this.scheduled.save(row);
+    const saved = await this.scheduled.save(row);
+    // Keep the delayed job in sync when the time moved.
+    if (scheduleChanged) {
+      await this.queue.removeNotificationDispatch(saved.id);
+      await this.enqueueDispatch(tenantId, saved.id, saved.scheduled_at);
+    }
+    return saved;
   }
 
   async cancel(tenantId: string, id: string): Promise<ScheduledNotification> {
@@ -195,6 +203,18 @@ export class NotificationSchedulerService {
         context: { currentStatus: row.status },
       });
     }
+    // Reset to SCHEDULED so the worker's atomic claim (SCHEDULED/PENDING only)
+    // will pick it up; clear the prior failure + provider_ref for a clean attempt.
+    // `findOne` above already verified tenant ownership, so update by id is safe.
+    await this.scheduled.update(
+      { id },
+      {
+        status: NOTIFICATION_STATUS.SCHEDULED,
+        processing_at: null,
+        failure_reason: null,
+        provider_ref: null,
+      },
+    );
     const job = await this.queue.retryNotificationDispatch({ tenantId, notificationId: id });
     return { queued: true, notificationId: id, jobId: job.id };
   }

@@ -4,6 +4,7 @@ import { DefaultJobOptions } from 'bullmq';
 /** Standardized queue names. Campaigns are split by stage for isolation. */
 export const QUEUE = {
   NOTIFICATIONS: 'notifications',
+  NOTIFICATIONS_DLQ: 'notifications.dlq',
   WHATSAPP: 'whatsapp',
   // Campaign execution pipeline (stage-isolated queues).
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
@@ -32,6 +33,8 @@ export const CAMPAIGN_QUEUES: QueueName[] = [
 /** Standardized job names — `<domain>.<action>`. */
 export const JOB = {
   NOTIFICATIONS_DISPATCH: 'notifications.dispatch',
+  NOTIFICATIONS_REAP: 'notifications.reap',
+  NOTIFICATIONS_DLQ: 'notifications.dlq',
   WHATSAPP_SEND: 'whatsapp.send',
   WHATSAPP_RETRY: 'whatsapp.retry',
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
@@ -64,7 +67,11 @@ export function defaultJobOptions(config: ConfigService): DefaultJobOptions {
       delay: config.get<number>('QUEUE_BACKOFF_MS', 3000) ?? 3000,
     },
     removeOnComplete: { age: 3600, count: 1000 },
-    removeOnFail: false,
+    // Cap failed-job retention so the failed set can't grow unbounded in Redis.
+    // The processors route exhausted failures to the DLQ in their `failed`
+    // handler (which fires before eviction), so a 7-day window is ample for
+    // inspection without leaking memory at millions/day.
+    removeOnFail: { age: 7 * 24 * 3600, count: 10_000 },
   };
 }
 

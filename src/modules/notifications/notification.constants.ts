@@ -3,12 +3,17 @@
  * free `varchar(20)` in the finalized schema, so these are app-defined (no DB
  * enum to change). Centralized here so the scheduler, dispatcher and DTOs agree.
  */
+/**
+ * PROCESSING/send lifecycle — owned by the WORKER. ("Did we hand it to the
+ * provider?") Delivery feedback from the carrier lives on the separate
+ * {@link DELIVERY_STATUS} axis so a webhook can't clobber the send state.
+ */
 export const NOTIFICATION_STATUS = {
   PENDING: 'PENDING',
   SCHEDULED: 'SCHEDULED',
   PROCESSING: 'PROCESSING',
-  SENT: 'SENT',
-  DELIVERED: 'DELIVERED',
+  SENT: 'SENT', // provider accepted the message (has provider_ref)
+  DELIVERED: 'DELIVERED', // legacy; delivery now tracked on DELIVERY_STATUS
   FAILED: 'FAILED',
   CANCELLED: 'CANCELLED',
 } as const;
@@ -18,6 +23,31 @@ export type NotificationStatus =
 
 export const NOTIFICATION_STATUSES: NotificationStatus[] =
   Object.values(NOTIFICATION_STATUS);
+
+/** States a worker may CLAIM for dispatch (atomic PROCESSING transition). */
+export const CLAIMABLE_STATUSES: NotificationStatus[] = [
+  NOTIFICATION_STATUS.PENDING,
+  NOTIFICATION_STATUS.SCHEDULED,
+];
+
+/**
+ * DELIVERY feedback — owned by provider WEBHOOKS. Forward-only:
+ * NONE < ACCEPTED < DELIVERED < READ. FAILED is a hard carrier failure.
+ */
+export const DELIVERY_STATUS = {
+  NONE: 'NONE',
+  ACCEPTED: 'ACCEPTED',
+  DELIVERED: 'DELIVERED',
+  READ: 'READ',
+  FAILED: 'FAILED',
+} as const;
+
+export type DeliveryStatus =
+  (typeof DELIVERY_STATUS)[keyof typeof DELIVERY_STATUS];
+
+/** A PROCESSING row older than this (no terminal transition) is considered
+ *  stuck (crashed worker) and is reclaimed by the maintenance sweep. */
+export const PROCESSING_STALE_MS = 5 * 60_000;
 
 /** States from which a notification can still be cancelled. */
 export const CANCELLABLE_STATUSES: NotificationStatus[] = [
