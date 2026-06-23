@@ -6,7 +6,7 @@ import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
-import { CampaignStatus } from '../../entities/enums';
+import { CampaignLifecycle } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { UsageService } from '../subscription-billing/usage.service';
@@ -15,7 +15,7 @@ import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { CampaignQueryDto } from './dto/campaign-query.dto';
-import { EDITABLE_STATUSES } from './campaign.constants';
+import { EDITABLE_LIFECYCLES } from './campaign.constants';
 
 /**
  * Campaign CRUD + archive + duplicate.
@@ -56,7 +56,7 @@ export class CampaignService {
       template: dto.templateId
         ? ({ id: dto.templateId } as WhatsappTemplate)
         : undefined,
-      status: CampaignStatus.DRAFT,
+      lifecycle: CampaignLifecycle.DRAFT,
       segment: dto.segment,
       scheduled_at: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
       throttle_per_minute: dto.throttlePerMinute ?? 30,
@@ -72,7 +72,7 @@ export class CampaignService {
   async findAll(tenantId: string, query: CampaignQueryDto) {
     const where: FindOptionsWhere<Campaign> = { tenant: { id: tenantId } };
     if (query.includeArchived !== 'true') where.deleted_at = IsNull();
-    if (query.status) where.status = query.status;
+    if (query.lifecycle) where.lifecycle = query.lifecycle;
     if (query.type) where.type = query.type;
     if (query.search) where.name = ILike(`%${query.search}%`);
 
@@ -106,9 +106,9 @@ export class CampaignService {
     dto: UpdateCampaignDto,
   ): Promise<Campaign> {
     const campaign = await this.findOne(tenantId, id);
-    if (!EDITABLE_STATUSES.includes(campaign.status)) {
+    if (!EDITABLE_LIFECYCLES.includes(campaign.lifecycle)) {
       throw new AppError(ErrorCode.CONFLICT, {
-        message: `A campaign in status "${campaign.status}" cannot be edited`,
+        message: `A campaign in lifecycle "${campaign.lifecycle}" cannot be edited`,
       });
     }
 
@@ -140,10 +140,11 @@ export class CampaignService {
     await this.campaigns.delete({ id });
   }
 
-  /** Soft-archive: set `deleted_at` so the campaign is hidden from default lists but retained. */
+  /** Soft-archive: set `deleted_at` + lifecycle ARCHIVED so it is hidden but retained. */
   async archive(tenantId: string, id: string): Promise<Campaign> {
     const campaign = await this.findOne(tenantId, id);
     campaign.deleted_at = new Date();
+    campaign.lifecycle = CampaignLifecycle.ARCHIVED;
     return this.campaigns.save(campaign);
   }
 
@@ -159,7 +160,7 @@ export class CampaignService {
       type: source.type,
       name: `${source.name} (Copy)`,
       template: source.template ? ({ id: source.template.id } as WhatsappTemplate) : undefined,
-      status: CampaignStatus.DRAFT,
+      lifecycle: CampaignLifecycle.DRAFT,
       segment: source.segment,
       scheduled_at: undefined,
       throttle_per_minute: source.throttle_per_minute,

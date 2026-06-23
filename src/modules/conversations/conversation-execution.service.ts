@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { Message } from '../../entities/Conversations/Message';
+import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -117,6 +118,57 @@ export class ConversationExecutionService {
   /** Marks a message as read (READ status log). */
   markRead(tenantId: string, messageId: string) {
     return this.status.markRead(tenantId, messageId);
+  }
+
+  /**
+   * Persist a non-agent channel message (CUSTOMER inbound, BOT/AI reply, or
+   * SYSTEM note) into the unified Conversation/Message timeline — the seam used
+   * by the AI engine to MIRROR each turn so agents, inbox, search and analytics
+   * all read one store. Reuses the same transactional pattern as `sendMessage`
+   * (message + initial SENT status + `last_message_at` bump). For a CUSTOMER
+   * message the conversation's customer is attached as the sender.
+   *
+   * Returns `null` (no-op) when the conversation isn't found for the tenant, so
+   * an AI session with no linked Conversation simply isn't mirrored. Accepts an
+   * optional `manager` to enlist in a caller's transaction.
+   */
+  async recordChannelMessage(
+    tenantId: string,
+    conversationId: string,
+    senderType: Extract<Message['sender_type'], 'CUSTOMER' | 'BOT' | 'SYSTEM'>,
+    content: string,
+    manager?: EntityManager,
+  ): Promise<Message | null> {
+    const exec = async (m: EntityManager): Promise<Message | null> => {
+      const convRepo = m.getRepository(Conversation);
+      const conversation = await convRepo.findOne({
+        where: { id: conversationId, tenant: { id: tenantId } },
+        relations: { customer: true },
+      });
+      if (!conversation) return null;
+
+      const repo = m.getRepository(Message);
+      const message = await repo.save(
+        repo.create({
+          conversation: { id: conversationId } as Conversation,
+          tenant: { id: tenantId } as Tenant,
+          sender_type: senderType,
+          sender_customer:
+            senderType === SENDER_TYPE.CUSTOMER && conversation.customer
+              ? ({ id: conversation.customer.id } as Customer)
+              : undefined,
+          content,
+          message_type: MESSAGE_TYPE.TEXT,
+        }),
+      );
+
+      await this.status.append(tenantId, message.id, MESSAGE_STATUS.SENT, m);
+      conversation.last_message_at = new Date();
+      await convRepo.save(conversation);
+      return message;
+    };
+
+    return manager ? exec(manager) : this.dataSource.transaction(exec);
   }
 
   private async reload(tenantId: string, id: string): Promise<Message> {

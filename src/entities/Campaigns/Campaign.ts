@@ -11,11 +11,11 @@ import {
 
 import { Tenant } from '../SaaS-Core/Tenant';
 import { WhatsappTemplate } from '../WhatsApp/WhatsappTemplate';
-import { CampaignStatus, CampaignType } from '../enums';
+import { CampaignLifecycle, CampaignType } from '../enums';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('campaigns')
-@Index(['tenant', 'status'])
+@Index(['tenant', 'lifecycle'])
 export class Campaign {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -37,12 +37,16 @@ export class Campaign {
   })
   template?: WhatsappTemplate;
 
+  /**
+   * BUSINESS state (operator intent). Execution/runtime state lives on
+   * {@link CampaignRun}, never here.
+   */
   @Column({
     type: 'enum',
-    enum: CampaignStatus,
-    default: CampaignStatus.DRAFT,
+    enum: CampaignLifecycle,
+    default: CampaignLifecycle.DRAFT,
   })
-  status!: CampaignStatus;
+  lifecycle!: CampaignLifecycle;
 
   @Column({
     type: 'jsonb',

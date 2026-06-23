@@ -3,95 +3,99 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
-import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
-import { RecipientStatus } from '../../entities/enums';
+import { CampaignRun } from '../../entities/Campaigns/CampaignRun';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { CampaignAnalyticsFilterDto } from './dto/campaign-analytics-filter.dto';
-import {
-  DELIVERED_RECIPIENT_STATUSES,
-  PROCESSED_RECIPIENT_STATUSES,
-} from './campaign.constants';
 
 /**
  * Campaign reporting & performance analytics.
  *
- * Tenant isolation: campaign queries filter `tenant: { id: tenantId }`;
- * recipient aggregates (no tenant column) join through `campaign.tenant`, so no
- * cross-tenant data is ever exposed.
+ * Reads the MATERIALIZED counters on `campaign_runs` (maintained atomically by
+ * the dispatcher) instead of scanning `campaign_recipients` with GROUP BY — so
+ * summaries are O(1)/O(#runs), not O(#recipients), and stay correct at millions
+ * of recipients.
+ *
+ * Tenant isolation: every query filters `tenant.id = :tenantId`.
  */
 @Injectable()
 export class CampaignAnalyticsService {
   constructor(
     @InjectRepository(Campaign)
     private readonly campaigns: Repository<Campaign>,
-    @InjectRepository(CampaignRecipient)
-    private readonly recipients: Repository<CampaignRecipient>,
+    @InjectRepository(CampaignRun)
+    private readonly runs: Repository<CampaignRun>,
   ) {}
 
-  /** Per-campaign performance: totals, delivered/failed, delivery & completion rates. */
+  /** Per-campaign performance from the latest run's counters. */
   async campaignSummary(tenantId: string, campaignId: string) {
     await this.assertCampaign(tenantId, campaignId);
 
-    const rows = await this.recipients
-      .createQueryBuilder('r')
-      .select('r.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where('r.campaign_id = :campaignId', { campaignId })
-      .groupBy('r.status')
-      .getRawMany<{ status: RecipientStatus; count: string }>();
+    const run = await this.runs.findOne({
+      where: { tenant: { id: tenantId }, campaign: { id: campaignId } },
+      order: { created_at: 'DESC' },
+    });
 
-    const byStatus: Record<string, number> = {};
-    let total = 0;
-    for (const r of rows) {
-      const c = Number(r.count);
-      byStatus[r.status] = c;
-      total += c;
+    if (!run) {
+      return {
+        campaignId,
+        runId: null,
+        execution: null,
+        totalRecipients: 0,
+        deliveredCount: 0,
+        failedCount: 0,
+        processedCount: 0,
+        deliveryRate: 0,
+        completionRate: 0,
+        counters: { queued: 0, sent: 0, delivered: 0, read: 0, failed: 0, skipped: 0 },
+      };
     }
 
-    const delivered = DELIVERED_RECIPIENT_STATUSES.reduce(
-      (sum, s) => sum + (byStatus[s] ?? 0),
-      0,
-    );
-    const failed = byStatus[RecipientStatus.FAILED] ?? 0;
-    const processed = PROCESSED_RECIPIENT_STATUSES.reduce(
-      (sum, s) => sum + (byStatus[s] ?? 0),
-      0,
-    );
-
+    const total = run.total_recipients;
+    const delivered = run.delivered + run.read;
+    const processed = run.sent + run.failed + run.skipped;
     const rate = (n: number) => (total === 0 ? 0 : +((n / total) * 100).toFixed(2));
 
     return {
       campaignId,
+      runId: run.id,
+      execution: run.execution,
       totalRecipients: total,
       deliveredCount: delivered,
-      failedCount: failed,
+      failedCount: run.failed,
       processedCount: processed,
       deliveryRate: rate(delivered),
       completionRate: rate(processed),
-      byStatus,
+      counters: {
+        queued: run.queued,
+        sent: run.sent,
+        delivered: run.delivered,
+        read: run.read,
+        failed: run.failed,
+        skipped: run.skipped,
+      },
     };
   }
 
-  /** Tenant-wide campaign counts grouped by status (with optional filters). */
+  /** Tenant-wide campaign counts grouped by lifecycle (with optional filters). */
   async statistics(tenantId: string, filter: CampaignAnalyticsFilterDto) {
     const qb = this.scopedCampaigns(tenantId, filter)
-      .select('campaign.status', 'status')
+      .select('campaign.lifecycle', 'lifecycle')
       .addSelect('COUNT(*)', 'count')
-      .groupBy('campaign.status');
+      .groupBy('campaign.lifecycle');
 
-    const rows = await qb.getRawMany<{ status: string; count: string }>();
-    const byStatus: Record<string, number> = {};
+    const rows = await qb.getRawMany<{ lifecycle: string; count: string }>();
+    const byLifecycle: Record<string, number> = {};
     let totalCampaigns = 0;
     for (const r of rows) {
       const c = Number(r.count);
-      byStatus[r.status] = c;
+      byLifecycle[r.lifecycle] = c;
       totalCampaigns += c;
     }
-    return { tenantId, totalCampaigns, byStatus };
+    return { tenantId, totalCampaigns, byLifecycle };
   }
 
-  /** Paginated campaign history with a recipient count per campaign. */
+  /** Paginated campaign history with the latest run's recipient total. */
   async history(tenantId: string, filter: CampaignAnalyticsFilterDto) {
     const [campaigns, total] = await this.scopedCampaigns(tenantId, filter)
       .leftJoinAndSelect('campaign.template', 'template')
@@ -100,83 +104,88 @@ export class CampaignAnalyticsService {
       .take(filter.limit)
       .getManyAndCount();
 
-    // Recipient counts per campaign in a single grouped query (no N+1).
     const ids = campaigns.map((c) => c.id);
-    const counts = new Map<string, number>();
+    const totals = new Map<string, number>();
     if (ids.length) {
-      const rows = await this.recipients
-        .createQueryBuilder('r')
-        .select('r.campaign_id', 'campaignId')
-        .addSelect('COUNT(*)', 'count')
-        .where('r.campaign_id IN (:...ids)', { ids })
-        .groupBy('r.campaign_id')
-        .getRawMany<{ campaignId: string; count: string }>();
-      for (const row of rows) counts.set(row.campaignId, Number(row.count));
+      // Total recipients across runs per campaign (single grouped query).
+      const rows = await this.runs
+        .createQueryBuilder('run')
+        .innerJoin('run.campaign', 'c')
+        .select('c.id', 'campaignId')
+        .addSelect('SUM(run.total_recipients)', 'recipients')
+        .where('c.id IN (:...ids)', { ids })
+        .groupBy('c.id')
+        .getRawMany<{ campaignId: string; recipients: string }>();
+      for (const row of rows) totals.set(row.campaignId, Number(row.recipients));
     }
 
     const data = campaigns.map((c) => ({
       ...c,
-      recipientCount: counts.get(c.id) ?? 0,
+      recipientCount: totals.get(c.id) ?? 0,
     }));
     return { data, total, page: filter.page, limit: filter.limit };
   }
 
-  /** Tenant dashboard: campaign counts by status + aggregate recipient outcomes. */
+  /** Tenant dashboard: campaigns by lifecycle + aggregate run outcomes. */
   async dashboard(tenantId: string) {
-    // Campaigns by status.
     const campaignRows = await this.campaigns
       .createQueryBuilder('campaign')
       .leftJoin('campaign.tenant', 'tenant')
-      .select('campaign.status', 'status')
+      .select('campaign.lifecycle', 'lifecycle')
       .addSelect('COUNT(*)', 'count')
       .where('tenant.id = :tenantId', { tenantId })
       .andWhere('campaign.deleted_at IS NULL')
-      .groupBy('campaign.status')
-      .getRawMany<{ status: string; count: string }>();
+      .groupBy('campaign.lifecycle')
+      .getRawMany<{ lifecycle: string; count: string }>();
 
-    const campaignsByStatus: Record<string, number> = {};
+    const campaignsByLifecycle: Record<string, number> = {};
     let totalCampaigns = 0;
     for (const r of campaignRows) {
       const c = Number(r.count);
-      campaignsByStatus[r.status] = c;
+      campaignsByLifecycle[r.lifecycle] = c;
       totalCampaigns += c;
     }
 
-    // Aggregate recipient outcomes across the tenant's campaigns.
-    const recipientRows = await this.recipients
-      .createQueryBuilder('r')
-      .leftJoin('r.campaign', 'c')
-      .leftJoin('c.tenant', 't')
-      .select('r.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where('t.id = :tenantId', { tenantId })
-      .andWhere('c.deleted_at IS NULL')
-      .groupBy('r.status')
-      .getRawMany<{ status: RecipientStatus; count: string }>();
+    // Aggregate run counters across the tenant (O(#runs), not O(#recipients)).
+    const agg = await this.runs
+      .createQueryBuilder('run')
+      .leftJoin('run.tenant', 'tenant')
+      .select('COALESCE(SUM(run.total_recipients),0)', 'total')
+      .addSelect('COALESCE(SUM(run.sent),0)', 'sent')
+      .addSelect('COALESCE(SUM(run.delivered),0)', 'delivered')
+      .addSelect('COALESCE(SUM(run.read),0)', 'read')
+      .addSelect('COALESCE(SUM(run.failed),0)', 'failed')
+      .addSelect('COALESCE(SUM(run.skipped),0)', 'skipped')
+      .where('tenant.id = :tenantId', { tenantId })
+      .getRawOne<{
+        total: string;
+        sent: string;
+        delivered: string;
+        read: string;
+        failed: string;
+        skipped: string;
+      }>();
 
-    const recipientsByStatus: Record<string, number> = {};
-    let totalRecipients = 0;
-    for (const r of recipientRows) {
-      const c = Number(r.count);
-      recipientsByStatus[r.status] = c;
-      totalRecipients += c;
-    }
-    const delivered = DELIVERED_RECIPIENT_STATUSES.reduce(
-      (sum, s) => sum + (recipientsByStatus[s] ?? 0),
-      0,
-    );
-    const failed = recipientsByStatus[RecipientStatus.FAILED] ?? 0;
+    const totalRecipients = Number(agg?.total ?? 0);
+    const delivered = Number(agg?.delivered ?? 0) + Number(agg?.read ?? 0);
+    const failed = Number(agg?.failed ?? 0);
 
     return {
       tenantId,
       totalCampaigns,
-      campaignsByStatus,
+      campaignsByLifecycle,
       totalRecipients,
       deliveredCount: delivered,
       failedCount: failed,
       deliveryRate:
         totalRecipients === 0 ? 0 : +((delivered / totalRecipients) * 100).toFixed(2),
-      recipientsByStatus,
+      counters: {
+        sent: Number(agg?.sent ?? 0),
+        delivered: Number(agg?.delivered ?? 0),
+        read: Number(agg?.read ?? 0),
+        failed,
+        skipped: Number(agg?.skipped ?? 0),
+      },
     };
   }
 
@@ -191,7 +200,7 @@ export class CampaignAnalyticsService {
       .leftJoin('campaign.tenant', 'tenant')
       .where('tenant.id = :tenantId', { tenantId })
       .andWhere('campaign.deleted_at IS NULL');
-    if (filter.status) qb.andWhere('campaign.status = :status', { status: filter.status });
+    if (filter.lifecycle) qb.andWhere('campaign.lifecycle = :lifecycle', { lifecycle: filter.lifecycle });
     if (filter.type) qb.andWhere('campaign.type = :type', { type: filter.type });
     if (filter.from) qb.andWhere('campaign.created_at >= :from', { from: new Date(filter.from) });
     if (filter.to) qb.andWhere('campaign.created_at < :to', { to: new Date(filter.to) });

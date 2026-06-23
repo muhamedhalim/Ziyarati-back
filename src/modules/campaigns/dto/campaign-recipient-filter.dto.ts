@@ -1,18 +1,18 @@
 import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, IsUUID, Max, Min } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { RecipientStatus } from '../../../entities/enums';
+import { RecipientProcessing } from '../../../entities/enums';
 
 /** Filter + pagination for a campaign's recipients (scoped via the campaign). */
 export class CampaignRecipientFilterDto {
   @ApiPropertyOptional({
-    description: 'Filter by recipient delivery status.',
-    enum: RecipientStatus,
-    example: RecipientStatus.FAILED,
+    description: 'Filter by recipient processing state.',
+    enum: RecipientProcessing,
+    example: RecipientProcessing.FAILED,
   })
   @IsOptional()
-  @IsEnum(RecipientStatus)
-  status?: RecipientStatus;
+  @IsEnum(RecipientProcessing)
+  processing?: RecipientProcessing;
 
   @ApiPropertyOptional({ description: 'Filter by a specific customer.', format: 'uuid' })
   @IsOptional()

@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
+import { CampaignRun } from '../../entities/Campaigns/CampaignRun';
 import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { Customer } from '../../entities/CRM/Customer';
 
@@ -10,65 +12,75 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
 
 import { CampaignService } from './campaign.service';
 import { CampaignRecipientService } from './campaign-recipient.service';
+import { CampaignRunService } from './campaign-run.service';
 import { CampaignExecutionService } from './campaign-execution.service';
+import { CampaignFanoutService } from './campaign-fanout.service';
+import { CampaignDispatchService } from './campaign-dispatch.service';
 import { CampaignAnalyticsService } from './campaign-analytics.service';
+import { CampaignDlqService } from './campaign-dlq.service';
 
 import { CampaignController } from './campaign.controller';
 import { CampaignRecipientController } from './campaign-recipient.controller';
 import { CampaignAnalyticsController } from './campaign-analytics.controller';
+import { CampaignDlqController } from './campaign-dlq.controller';
 
 import { CampaignDeliveryFactory } from './delivery/campaign-delivery.factory';
 import { NoopCampaignDeliveryProvider } from './delivery/noop-campaign-delivery.provider';
 import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provider.interface';
 
 /**
- * Campaigns Domain.
+ * Campaigns Domain — queue-native execution.
  *
- * Builds on existing infrastructure: RBAC (PermissionsGuard / @RequirePermissions),
- * ActiveTenantGuard + TenantContextService (tenant scope), and the global
- * JwtAuthGuard.
+ *  - Lifecycle (operator intent)        → CampaignExecutionService (+ outbox).
+ *  - Run aggregate + counters           → CampaignRun / CampaignRunService.
+ *  - Scalable fan-out (worker)          → CampaignFanoutService.
+ *  - Per-recipient send seam (worker)   → CampaignDispatchService.
+ *  - Analytics from materialized counts → CampaignAnalyticsService.
+ *  - Dead-letter admin                  → CampaignDlqService / Controller.
  *
- * Delivery is decoupled behind a strategy/factory: concrete providers
- * (WhatsApp/SMS/Email/Push/In-App) register into the CAMPAIGN_DELIVERY_PROVIDERS
- * multi-provider array (empty for now); CampaignDeliveryFactory resolves one per
- * dispatch, falling back to NoopCampaignDeliveryProvider. CampaignExecutionService
- * is the queue-ready seam (schedule/launch = produce; `dispatchRecipient` = the
- * per-recipient send a future BullMQ worker calls).
- *
- * Exports the services so other domains can enroll recipients / trigger
- * campaigns programmatically.
+ * Delivery stays decoupled behind the CAMPAIGN_DELIVERY_PROVIDERS strategy.
+ * QueueService + TenantRateLimiterService come from the @Global QueueModule.
  */
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       Campaign,
+      CampaignRun,
       CampaignRecipient,
+      OutboxJob,
       WhatsappTemplate,
       Customer,
     ]),
-    // Usage-quota enforcement (UsageService) for campaign creation.
     SubscriptionBillingModule,
   ],
   controllers: [
     CampaignController,
     CampaignRecipientController,
     CampaignAnalyticsController,
+    CampaignDlqController,
   ],
   providers: [
     CampaignService,
     CampaignRecipientService,
+    CampaignRunService,
     CampaignExecutionService,
+    CampaignFanoutService,
+    CampaignDispatchService,
     CampaignAnalyticsService,
+    CampaignDlqService,
     CampaignDeliveryFactory,
     NoopCampaignDeliveryProvider,
-    // No real delivery providers yet — the array is the registration point.
     { provide: CAMPAIGN_DELIVERY_PROVIDERS, useValue: [] },
   ],
   exports: [
     CampaignService,
     CampaignRecipientService,
+    CampaignRunService,
     CampaignExecutionService,
+    CampaignFanoutService,
+    CampaignDispatchService,
     CampaignAnalyticsService,
+    CampaignDlqService,
   ],
 })
 export class CampaignsModule {}

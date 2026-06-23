@@ -1,16 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
 import { Job, JobsOptions, Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
-import { ALL_QUEUES, JOB, QUEUE, QueueName } from './queue.constants';
+import { ProducerQueues } from './producer-queues';
+import { ALL_QUEUES, BACKOFF_EXPO_JITTER, JOB, QUEUE, QueueName } from './queue.constants';
 import {
   AiExecuteJob,
   AnalyticsAggregateJob,
   AnalyticsCleanupJob,
   AnalyticsGenerateReportJob,
   BaseJobData,
+  CampaignDlqJob,
+  CampaignFanoutChunkJob,
   CampaignLaunchJob,
   CampaignProcessRecipientJob,
   NotificationDispatchJob,
@@ -35,26 +37,11 @@ export class QueueService {
   private readonly queues: Record<QueueName, Queue>;
 
   constructor(
-    @InjectQueue(QUEUE.NOTIFICATIONS) notifications: Queue,
-    @InjectQueue(QUEUE.WHATSAPP) whatsapp: Queue,
-    @InjectQueue(QUEUE.CAMPAIGNS) campaigns: Queue,
-    @InjectQueue(QUEUE.AI) ai: Queue,
-    @InjectQueue(QUEUE.ANALYTICS) analytics: Queue,
-    @InjectQueue(QUEUE.SETTLEMENTS) settlements: Queue,
-    @InjectQueue(QUEUE.SUBSCRIPTIONS) subscriptions: Queue,
-    @InjectQueue(QUEUE.REFUNDS) refunds: Queue,
+    private readonly producers: ProducerQueues,
     private readonly ctx: TenantContextService,
   ) {
-    this.queues = {
-      [QUEUE.NOTIFICATIONS]: notifications,
-      [QUEUE.WHATSAPP]: whatsapp,
-      [QUEUE.CAMPAIGNS]: campaigns,
-      [QUEUE.AI]: ai,
-      [QUEUE.ANALYTICS]: analytics,
-      [QUEUE.SETTLEMENTS]: settlements,
-      [QUEUE.SUBSCRIPTIONS]: subscriptions,
-      [QUEUE.REFUNDS]: refunds,
-    };
+    // All enqueues go through the dedicated PRODUCER-profile Queue instances.
+    this.queues = producers.record();
   }
 
   // ── Typed producers ─────────────────────────────────────────────────────
@@ -88,16 +75,58 @@ export class QueueService {
     return this.add(QUEUE.WHATSAPP, JOB.WHATSAPP_RETRY, data, opts);
   }
 
+  // ── Campaign pipeline ────────────────────────────────────────────────────
+
+  /** Launch fan-out kick-off. Idempotent per run. */
   enqueueCampaignLaunch(data: CampaignLaunchJob, opts?: JobsOptions) {
-    return this.add(QUEUE.CAMPAIGNS, JOB.CAMPAIGNS_LAUNCH, data, {
-      jobId: `campaign-launch:${data.campaignId}`,
+    return this.add(QUEUE.CAMPAIGNS_LAUNCH, JOB.CAMPAIGNS_LAUNCH, data, {
+      jobId: `campaign-launch:${data.runId}`,
       ...opts,
     });
   }
 
+  /** One keyset window of a run's audience. Idempotent per (run, cursor). */
+  enqueueCampaignFanoutChunk(data: CampaignFanoutChunkJob, opts?: JobsOptions) {
+    return this.add(QUEUE.CAMPAIGNS_FANOUT, JOB.CAMPAIGNS_FANOUT_CHUNK, data, {
+      jobId: `campaign-fanout:${data.runId}:${data.cursor ?? 'start'}`,
+      ...opts,
+    });
+  }
+
+  /** Single recipient send. Idempotent per (run, recipient). */
   enqueueCampaignRecipient(data: CampaignProcessRecipientJob, opts?: JobsOptions) {
-    return this.add(QUEUE.CAMPAIGNS, JOB.CAMPAIGNS_PROCESS_RECIPIENT, data, {
-      jobId: `campaign-recipient:${data.recipientId}`, // idempotent per recipient
+    return this.add(QUEUE.CAMPAIGNS_PROCESS, JOB.CAMPAIGNS_PROCESS_RECIPIENT, data, {
+      jobId: `campaign-recipient:${data.runId}:${data.recipientId}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Bulk-enqueue recipient send jobs in ONE Redis round-trip. The fan-out uses
+   * this so millions of recipients become thousands of `addBulk` calls, not
+   * millions of sequential `add`s.
+   */
+  enqueueCampaignRecipientsBulk(
+    items: { data: CampaignProcessRecipientJob; opts?: JobsOptions }[],
+  ) {
+    if (items.length === 0) return Promise.resolve([] as Job[]);
+    return this.queues[QUEUE.CAMPAIGNS_PROCESS].addBulk(
+      items.map((it) => ({
+        name: JOB.CAMPAIGNS_PROCESS_RECIPIENT,
+        data: this.stamp(it.data),
+        opts: {
+          jobId: `campaign-recipient:${it.data.runId}:${it.data.recipientId}`,
+          backoff: { type: BACKOFF_EXPO_JITTER },
+          ...it.opts,
+        },
+      })),
+    );
+  }
+
+  /** Park a dead-letter job (never auto-processed; replayed by admin tooling). */
+  enqueueCampaignDlq(data: CampaignDlqJob, opts?: JobsOptions) {
+    return this.add(QUEUE.CAMPAIGNS_DLQ, JOB.CAMPAIGNS_DLQ, data, {
+      jobId: `dlq:${data.sourceQueue}:${data.originalJobId ?? Date.now()}`,
       ...opts,
     });
   }
@@ -130,6 +159,22 @@ export class QueueService {
     return this.add(QUEUE.REFUNDS, JOB.REFUNDS_REAP, data, opts);
   }
 
+  // ── Generic / relay primitives ───────────────────────────────────────────
+
+  /**
+   * Low-level publish used by the OUTBOX RELAY. `dedupeKey` becomes the jobId so
+   * an at-least-once relay is idempotent at the queue layer.
+   */
+  publish(
+    queue: QueueName,
+    name: string,
+    data: BaseJobData,
+    dedupeKey: string,
+    opts?: JobsOptions,
+  ): Promise<Job> {
+    return this.add(queue, name, data, { jobId: dedupeKey, ...opts });
+  }
+
   // ── Repeatable (scheduled) jobs ──────────────────────────────────────────
 
   /** Idempotent: BullMQ dedups repeatables by their {name, repeat} key. */
@@ -141,8 +186,6 @@ export class QueueService {
 
   // ── Health helpers (used by HealthController) ────────────────────────────
 
-  /** Small shared-Redis KV used for cross-process operational signals (e.g. the
-   *  reaper heartbeat read by the API's metrics endpoint). */
   async kvSet(key: string, value: string, ttlSec?: number): Promise<void> {
     const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
     if (ttlSec) await client.set(key, value, 'EX', ttlSec);
@@ -152,6 +195,11 @@ export class QueueService {
   async kvGet(key: string): Promise<string | null> {
     const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
     return client.get(key);
+  }
+
+  /** Shared ioredis client (used by the per-tenant rate limiter Lua script). */
+  async client(): Promise<Redis> {
+    return (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
   }
 
   async redisPing(): Promise<number> {
@@ -169,6 +217,12 @@ export class QueueService {
       ),
     );
     return Object.fromEntries(entries);
+  }
+
+  /** Current DLQ depth (waiting + delayed) — surfaced by monitoring/alerting. */
+  async dlqDepth(): Promise<number> {
+    const counts = await this.queues[QUEUE.CAMPAIGNS_DLQ].getJobCounts('waiting', 'delayed');
+    return (counts.waiting ?? 0) + (counts.delayed ?? 0);
   }
 
   queue(name: QueueName): Queue {

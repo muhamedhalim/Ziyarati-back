@@ -25,6 +25,8 @@ export class NoopCampaignDeliveryProvider implements CampaignDeliveryProvider {
       `Simulated ${payload.channel} campaign delivery to customer ` +
         `${payload.customerId} (campaign ${payload.campaignId}, tenant ${payload.tenantId})`,
     );
-    return { success: true, providerRef: 'noop' };
+    // provider_ref is UNIQUE in the DB — return a per-recipient deterministic ref
+    // so simulated sends don't collide on the idempotency guard.
+    return { success: true, providerRef: `noop:${payload.recipientId}` };
   }
 }

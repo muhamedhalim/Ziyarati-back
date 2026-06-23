@@ -9,19 +9,35 @@ import {
 } from 'typeorm';
 
 import { Campaign } from './Campaign';
+import { CampaignRun } from './CampaignRun';
 import { Customer } from '../CRM/Customer';
-import { RecipientStatus } from '../enums';
+import { RecipientProcessing, RecipientDelivery, FailureClass } from '../enums';
 
+/**
+ * One customer's slot in a single campaign run.
+ *
+ * The old single `status` column is split into two orthogonal axes:
+ *  - {@link RecipientProcessing} — owned by the WORKER ("did we hand it off?")
+ *  - {@link RecipientDelivery}   — owned by provider WEBHOOKS ("what did the
+ *    carrier say?"). The two never write the same column, so the worker and a
+ *    late-arriving delivery callback can't clobber each other.
+ *
+ * `provider_ref` is UNIQUE: it is the hard idempotency floor — a duplicate send
+ * that produces the same provider message id is rejected by the database.
+ */
 @Entity('campaign_recipients')
-@Unique(['campaign', 'customer'])
-@Index(['campaign', 'status'])
+@Unique('uq_recipient_run_customer', ['run', 'customer'])
+@Index('ix_recipient_run_processing', ['run', 'processing'])
+@Index('ix_recipient_campaign_customer', ['campaign', 'customer'])
 export class CampaignRecipient {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @ManyToOne(() => Campaign, {
-    onDelete: 'CASCADE',
-  })
+  @ManyToOne(() => CampaignRun, { onDelete: 'CASCADE' })
+  run!: CampaignRun;
+
+  /** Denormalized campaign link (kept for cross-run history / convenience). */
+  @ManyToOne(() => Campaign, { onDelete: 'CASCADE' })
   campaign!: Campaign;
 
   @ManyToOne(() => Customer)
@@ -29,16 +45,36 @@ export class CampaignRecipient {
 
   @Column({
     type: 'enum',
-    enum: RecipientStatus,
-    default: RecipientStatus.QUEUED,
+    enum: RecipientProcessing,
+    default: RecipientProcessing.PENDING,
   })
-  status!: RecipientStatus;
+  processing!: RecipientProcessing;
 
   @Column({
-    type: 'timestamptz',
-    nullable: true,
+    type: 'enum',
+    enum: RecipientDelivery,
+    default: RecipientDelivery.NONE,
   })
-  sent_at?: Date;
+  delivery!: RecipientDelivery;
+
+  /** Provider message id — UNIQUE so a duplicate dispatch cannot double-send. */
+  @Column({ type: 'varchar', length: 255, nullable: true, unique: true })
+  provider_ref?: string | null;
+
+  @Column({ type: 'enum', enum: FailureClass, nullable: true })
+  failure_class?: FailureClass | null;
+
+  @Column({ type: 'text', nullable: true })
+  failure_reason?: string | null;
+
+  @Column('int', { default: 0 })
+  attempts!: number;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  dispatched_at?: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  delivered_at?: Date | null;
 
   @CreateDateColumn()
   created_at!: Date;

@@ -10,14 +10,14 @@ import {
   Min,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { CampaignStatus, CampaignType } from '../../../entities/enums';
+import { CampaignLifecycle, CampaignType } from '../../../entities/enums';
 
 /** Filter + pagination for listing campaigns (always tenant-scoped). */
 export class CampaignFilterDto {
-  @ApiPropertyOptional({ description: 'Filter by status.', enum: CampaignStatus, example: CampaignStatus.RUNNING })
+  @ApiPropertyOptional({ description: 'Filter by lifecycle (business state).', enum: CampaignLifecycle, example: CampaignLifecycle.ACTIVE })
   @IsOptional()
-  @IsEnum(CampaignStatus)
-  status?: CampaignStatus;
+  @IsEnum(CampaignLifecycle)
+  lifecycle?: CampaignLifecycle;
 
   @ApiPropertyOptional({ description: 'Filter by campaign type.', enum: CampaignType, example: CampaignType.PROMOTION })
   @IsOptional()

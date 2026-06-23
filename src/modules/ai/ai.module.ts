@@ -48,6 +48,7 @@ import { AiToolCallsBootstrap } from './tools/ai-tool-calls.bootstrap';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 
 /**
  * AI / RAG Domain.
@@ -83,6 +84,9 @@ import { SchedulingModule } from '../scheduling/scheduling.module';
     // engines — the AI never duplicates booking logic.
     AppointmentModule,
     SchedulingModule,
+    // Timeline unification: mirror AI turns into the Conversation/Message store
+    // (ConversationExecutionService) so agents read a single history.
+    ConversationsModule,
   ],
   controllers: [
     AiAgentController,

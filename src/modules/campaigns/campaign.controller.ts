@@ -64,7 +64,7 @@ const S_CAMPAIGN = {
     id: { type: 'string', format: 'uuid' },
     type: { type: 'string', enum: ['BIRTHDAY', 'HOLIDAY', 'REACTIVATION', 'PROMOTION', 'CUSTOM'], example: 'PROMOTION' },
     name: { type: 'string', example: 'Summer Whitening Promo' },
-    status: { type: 'string', enum: ['DRAFT', 'SCHEDULED', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED'], example: 'DRAFT' },
+    lifecycle: { type: 'string', enum: ['DRAFT', 'SCHEDULED', 'ACTIVE', 'PAUSED', 'ARCHIVED'], example: 'DRAFT' },
     segment: { type: 'object', nullable: true, additionalProperties: true },
     scheduled_at: { type: 'string', format: 'date-time', nullable: true },
     throttle_per_minute: { type: 'number', example: 30 },

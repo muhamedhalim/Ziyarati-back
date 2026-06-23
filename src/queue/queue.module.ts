@@ -2,21 +2,31 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 
-import { redisConnectionOptions } from './redis.config';
-import { ALL_QUEUES, defaultJobOptions } from './queue.constants';
+import { blockingConnectionOptions } from './redis.config';
+import { defaultJobOptions } from './queue.constants';
 import { QueueService } from './queue.service';
+import { ProducerQueues } from './producer-queues';
+import { TenantRateLimiterService } from './tenant-rate-limiter.service';
 
 /**
- * Centralized background-job infrastructure (PRODUCER side).
+ * Centralized background-job infrastructure with THREE separated Redis roles.
  *
- * `@Global` so any service can inject `QueueService` to enqueue without
- * importing this module. It wires the single shared Redis connection (from
- * REDIS_URL only) and REGISTERS all queues — registering a queue creates a
- * producer (`Queue`), it does NOT start a worker. Workers live exclusively in
- * the separate WorkerModule (worker.ts), so the HTTP API never consumes jobs.
+ *  1. WORKERS — `BullModule.forRootAsync` sets the shared default connection to
+ *     the BLOCKING profile. The @nestjs/bullmq explorer derives every
+ *     `@Processor`'s `Worker` connection from this shared config (its fallback
+ *     when a queue isn't separately registered), so all workers get a blocking
+ *     connection with no per-processor wiring. Workers exist ONLY in
+ *     WorkerModule, so the API never consumes.
+ *  2. PRODUCERS — enqueues go through `ProducerQueues`: dedicated `Queue`
+ *     instances on the PRODUCER profile (own sockets, offline-queue buffering).
+ *     We intentionally do NOT use `BullModule.registerQueue` for producing,
+ *     because the explorer would couple that connection to the workers.
+ *  3. QUEUEEVENTS — created in QueueMonitorService on the EVENTS profile (its
+ *     own connection instance).
  *
- * Imported by BOTH process roots: AppModule (API → enqueue) and WorkerModule
- * (worker → also enqueues fan-out jobs).
+ * `@Global` so any service can inject `QueueService` / `TenantRateLimiterService`
+ * without importing this module. Imported by BOTH roots: AppModule (API →
+ * enqueue) and WorkerModule (worker → consume + fan-out enqueue).
  */
 @Global()
 @Module({
@@ -25,13 +35,14 @@ import { QueueService } from './queue.service';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        connection: redisConnectionOptions(config),
+        // Shared default = WORKER (blocking) profile. The explorer hands this to
+        // every @Processor's Worker. Producers use ProducerQueues instead.
+        connection: blockingConnectionOptions(config),
         defaultJobOptions: defaultJobOptions(config),
       }),
     }),
-    ...ALL_QUEUES.map((name) => BullModule.registerQueue({ name })),
   ],
-  providers: [QueueService],
-  exports: [QueueService, BullModule],
+  providers: [QueueService, ProducerQueues, TenantRateLimiterService],
+  exports: [QueueService, ProducerQueues, TenantRateLimiterService, BullModule],
 })
 export class QueueModule {}

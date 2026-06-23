@@ -54,8 +54,12 @@ const S_RECIPIENT = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    status: { type: 'string', enum: ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'SKIPPED'], example: 'QUEUED' },
-    sent_at: { type: 'string', format: 'date-time', nullable: true },
+    processing: { type: 'string', enum: ['PENDING', 'DISPATCHING', 'DISPATCHED', 'FAILED', 'SKIPPED'], example: 'PENDING' },
+    delivery: { type: 'string', enum: ['NONE', 'ACCEPTED', 'DELIVERED', 'READ', 'BOUNCED'], example: 'NONE' },
+    provider_ref: { type: 'string', nullable: true },
+    attempts: { type: 'number', example: 0 },
+    failure_class: { type: 'string', enum: ['TRANSIENT', 'PERMANENT'], nullable: true },
+    dispatched_at: { type: 'string', format: 'date-time', nullable: true },
     customer: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, full_name: { type: 'string', nullable: true }, phone: { type: 'string' } } },
     created_at: { type: 'string', format: 'date-time' },
   },
@@ -170,8 +174,9 @@ status).
       type: 'object',
       properties: {
         campaignId: { type: 'string', format: 'uuid' },
+        runId: { type: 'string', format: 'uuid', nullable: true },
         total: { type: 'number', example: 540 },
-        byStatus: { type: 'object', additionalProperties: { type: 'number' }, example: { QUEUED: 40, SENT: 480, FAILED: 20 } },
+        byProcessing: { type: 'object', additionalProperties: { type: 'number' }, example: { PENDING: 40, DISPATCHED: 480, FAILED: 20 } },
       },
     },
   })

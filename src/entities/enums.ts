@@ -72,6 +72,12 @@ export enum PayoutStatus {
   FAILED = 'FAILED',
 }
 
+/**
+ * @deprecated Legacy single-axis campaign status. Superseded by the two
+ * orthogonal axes {@link CampaignLifecycle} (business state, on Campaign) and
+ * {@link CampaignExecution} (system state, on CampaignRun). Kept exported so the
+ * migration can map old rows; no entity column uses it anymore.
+ */
 export enum CampaignStatus {
   DRAFT = 'DRAFT',
   SCHEDULED = 'SCHEDULED',
@@ -79,6 +85,31 @@ export enum CampaignStatus {
   PAUSED = 'PAUSED',
   COMPLETED = 'COMPLETED',
   CANCELLED = 'CANCELLED',
+}
+
+/**
+ * BUSINESS state — what the operator intends. Slow-changing, user-driven,
+ * audited. Lives on the `campaigns` table.
+ */
+export enum CampaignLifecycle {
+  DRAFT = 'DRAFT', // being edited
+  SCHEDULED = 'SCHEDULED', // approved, waiting for scheduled_at
+  ACTIVE = 'ACTIVE', // operator wants it sending
+  PAUSED = 'PAUSED', // operator hit pause
+  ARCHIVED = 'ARCHIVED', // soft-hidden / cancelled-and-closed
+}
+
+/**
+ * SYSTEM state — what the engine is doing for a single run. Fast-changing,
+ * worker-driven, derived. Lives on the `campaign_runs` table.
+ */
+export enum CampaignExecution {
+  IDLE = 'IDLE', // not started
+  ENQUEUEING = 'ENQUEUEING', // fan-out in progress
+  PROCESSING = 'PROCESSING', // recipients in flight
+  DRAINING = 'DRAINING', // paused/cancelled, finishing in-flight
+  COMPLETED = 'COMPLETED', // all recipients terminal
+  FAILED = 'FAILED', // aborted (tenant suspended, provider revoked, …)
 }
 
 export enum CampaignType {
@@ -89,6 +120,11 @@ export enum CampaignType {
   CUSTOM = 'CUSTOM',
 }
 
+/**
+ * @deprecated Legacy single-column recipient status. Replaced by the split
+ * {@link RecipientProcessing} (worker-owned) + {@link RecipientDelivery}
+ * (webhook-owned). Kept exported for migration mapping only.
+ */
 export enum RecipientStatus {
   QUEUED = 'QUEUED',
   SENT = 'SENT',
@@ -96,4 +132,39 @@ export enum RecipientStatus {
   READ = 'READ',
   FAILED = 'FAILED',
   SKIPPED = 'SKIPPED',
+}
+
+/**
+ * PROCESSING state — owned by the WORKER. "Did we hand it to the provider?"
+ */
+export enum RecipientProcessing {
+  PENDING = 'PENDING', // not yet picked up
+  DISPATCHING = 'DISPATCHING', // claimed by a worker, send in progress
+  DISPATCHED = 'DISPATCHED', // provider accepted (has provider_ref)
+  FAILED = 'FAILED', // permanent processing failure (after retries/DLQ)
+  SKIPPED = 'SKIPPED', // business rule excluded it (opt-out, cap, dedup)
+}
+
+/**
+ * DELIVERY state — owned by PROVIDER WEBHOOKS. "What did the carrier tell us?"
+ */
+export enum RecipientDelivery {
+  NONE = 'NONE', // no provider callback yet
+  ACCEPTED = 'ACCEPTED', // provider queued it
+  DELIVERED = 'DELIVERED', // reached the device
+  READ = 'READ', // opened
+  BOUNCED = 'BOUNCED', // hard delivery failure from carrier
+}
+
+/** Classification that drives retry behaviour for a failed dispatch. */
+export enum FailureClass {
+  TRANSIENT = 'TRANSIENT', // retry with backoff (429, 5xx, timeout, reset)
+  PERMANENT = 'PERMANENT', // do not retry (invalid number, opt-out, 4xx auth)
+}
+
+/** Lifecycle of a transactional-outbox row (state-change → queue publish). */
+export enum OutboxStatus {
+  PENDING = 'PENDING',
+  PUBLISHED = 'PUBLISHED',
+  FAILED = 'FAILED',
 }

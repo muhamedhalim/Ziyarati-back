@@ -1,73 +1,92 @@
-import { CampaignStatus, RecipientStatus } from '../../entities/enums';
+import {
+  CampaignLifecycle,
+  CampaignExecution,
+  RecipientProcessing,
+  RecipientDelivery,
+} from '../../entities/enums';
 
 /**
- * Campaign lifecycle state-machine.
+ * Two INDEPENDENT state machines.
  *
- * The finalized `CampaignStatus` enum is DRAFT | SCHEDULED | RUNNING | PAUSED |
- * COMPLETED | CANCELLED. There is intentionally NO `FAILED` or `ARCHIVED` value,
- * so (honoring "use existing fields only"):
- *  - campaign-level "failed" is not persisted (delivery failures live on
- *    recipients via RecipientStatus.FAILED);
- *  - "archive" is modelled with the existing `deleted_at` column (soft-hide),
- *    while "delete" is a hard delete.
+ *  - Lifecycle = operator intent, validated in the API (CampaignRunService).
+ *  - Execution = system state of a run, validated in the worker. Operators never
+ *    drive execution directly; the worker transitions it from queue events.
  */
-export const CAMPAIGN_STATUS_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
-  [CampaignStatus.DRAFT]: [
-    CampaignStatus.SCHEDULED,
-    CampaignStatus.RUNNING,
-    CampaignStatus.CANCELLED,
+export const LIFECYCLE_TRANSITIONS: Record<CampaignLifecycle, CampaignLifecycle[]> = {
+  [CampaignLifecycle.DRAFT]: [
+    CampaignLifecycle.SCHEDULED,
+    CampaignLifecycle.ACTIVE,
+    CampaignLifecycle.ARCHIVED,
   ],
-  [CampaignStatus.SCHEDULED]: [
-    CampaignStatus.RUNNING,
-    CampaignStatus.PAUSED,
-    CampaignStatus.CANCELLED,
+  [CampaignLifecycle.SCHEDULED]: [
+    CampaignLifecycle.ACTIVE,
+    CampaignLifecycle.PAUSED,
+    CampaignLifecycle.ARCHIVED,
   ],
-  [CampaignStatus.RUNNING]: [
-    CampaignStatus.PAUSED,
-    CampaignStatus.COMPLETED,
-    CampaignStatus.CANCELLED,
+  [CampaignLifecycle.ACTIVE]: [
+    CampaignLifecycle.PAUSED,
+    CampaignLifecycle.ARCHIVED,
   ],
-  [CampaignStatus.PAUSED]: [
-    CampaignStatus.RUNNING,
-    CampaignStatus.COMPLETED,
-    CampaignStatus.CANCELLED,
+  [CampaignLifecycle.PAUSED]: [
+    CampaignLifecycle.ACTIVE,
+    CampaignLifecycle.ARCHIVED,
   ],
-  [CampaignStatus.COMPLETED]: [],
-  [CampaignStatus.CANCELLED]: [],
+  [CampaignLifecycle.ARCHIVED]: [],
 };
 
-/** Statuses a campaign can be edited/configured in (recipients, fields). */
-export const EDITABLE_STATUSES: CampaignStatus[] = [
-  CampaignStatus.DRAFT,
-  CampaignStatus.SCHEDULED,
-  CampaignStatus.PAUSED,
+export const EXECUTION_TRANSITIONS: Record<CampaignExecution, CampaignExecution[]> = {
+  [CampaignExecution.IDLE]: [CampaignExecution.ENQUEUEING],
+  [CampaignExecution.ENQUEUEING]: [
+    CampaignExecution.PROCESSING,
+    CampaignExecution.FAILED,
+  ],
+  [CampaignExecution.PROCESSING]: [
+    CampaignExecution.DRAINING,
+    CampaignExecution.COMPLETED,
+    CampaignExecution.FAILED,
+  ],
+  [CampaignExecution.DRAINING]: [
+    CampaignExecution.IDLE,
+    CampaignExecution.COMPLETED,
+    CampaignExecution.FAILED,
+  ],
+  [CampaignExecution.COMPLETED]: [],
+  [CampaignExecution.FAILED]: [CampaignExecution.IDLE],
+};
+
+/** Lifecycle states in which the campaign config / recipients can be edited. */
+export const EDITABLE_LIFECYCLES: CampaignLifecycle[] = [
+  CampaignLifecycle.DRAFT,
+  CampaignLifecycle.SCHEDULED,
+  CampaignLifecycle.PAUSED,
 ];
 
-/** Terminal statuses (only archiving remains). */
-export const TERMINAL_CAMPAIGN_STATUSES: CampaignStatus[] = [
-  CampaignStatus.COMPLETED,
-  CampaignStatus.CANCELLED,
+/** Terminal lifecycle states. */
+export const TERMINAL_LIFECYCLES: CampaignLifecycle[] = [CampaignLifecycle.ARCHIVED];
+
+/** Execution states in which a run is actively producing work. */
+export const RUNNING_EXECUTIONS: CampaignExecution[] = [
+  CampaignExecution.ENQUEUEING,
+  CampaignExecution.PROCESSING,
 ];
 
-/** Recipient statuses considered a successful delivery for rate maths. */
-export const DELIVERED_RECIPIENT_STATUSES: RecipientStatus[] = [
-  RecipientStatus.DELIVERED,
-  RecipientStatus.READ,
+/** Processing states considered terminal (the recipient has left the pipeline). */
+export const TERMINAL_PROCESSING: RecipientProcessing[] = [
+  RecipientProcessing.DISPATCHED,
+  RecipientProcessing.FAILED,
+  RecipientProcessing.SKIPPED,
 ];
 
-/** Recipient statuses considered "processed" (left the queue) for completion. */
-export const PROCESSED_RECIPIENT_STATUSES: RecipientStatus[] = [
-  RecipientStatus.SENT,
-  RecipientStatus.DELIVERED,
-  RecipientStatus.READ,
-  RecipientStatus.FAILED,
-  RecipientStatus.SKIPPED,
+/** Delivery states that count as a confirmed delivery for rate maths. */
+export const DELIVERED_DELIVERY_STATES: RecipientDelivery[] = [
+  RecipientDelivery.DELIVERED,
+  RecipientDelivery.READ,
 ];
 
 /**
  * Logical delivery channels a campaign can target. The Campaign entity carries
- * a WhatsApp template, so WHATSAPP is the default; the abstraction is kept open
- * so SMS/Email/Push/In-App providers can be added without business changes.
+ * a WhatsApp template, so WHATSAPP is the default; the abstraction stays open so
+ * SMS/Email/Push/In-App providers can be added without business changes.
  */
 export const CAMPAIGN_CHANNEL = {
   WHATSAPP: 'WHATSAPP',
@@ -79,3 +98,6 @@ export const CAMPAIGN_CHANNEL = {
 
 export type CampaignChannel =
   (typeof CAMPAIGN_CHANNEL)[keyof typeof CAMPAIGN_CHANNEL];
+
+/** Fan-out batch size — keyset page + addBulk chunk. */
+export const FANOUT_BATCH_SIZE = 5000;

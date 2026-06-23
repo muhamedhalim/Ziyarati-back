@@ -15,6 +15,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { AiToolDispatchService } from './tools/ai-tool-dispatch.service';
 import { AI_TOOLS } from './tools/ai-tools.constants';
 import {
@@ -61,6 +62,7 @@ export class AiExecutionService {
     private readonly usage: UsageService,
     private readonly dispatch: AiToolDispatchService,
     private readonly ctx: TenantContextService,
+    private readonly timeline: ConversationExecutionService,
   ) {}
 
   async sendMessage(tenantId: string, aiConversationId: string, dto: SendMessageDto) {
@@ -77,6 +79,9 @@ export class AiExecutionService {
       });
     }
     const agent: AiAgent | undefined = aiConv.agent;
+    // When the AI session is linked to a messaging Conversation, every turn is
+    // mirrored into the unified Message timeline (see mirrorToTimeline).
+    const linkedConversationId = aiConv.conversation?.id;
 
     // Quota pre-check (blocks a tenant already over its monthly token cap).
     await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
@@ -91,6 +96,11 @@ export class AiExecutionService {
         tokens_used: 0,
       }),
     );
+    // Mirror the inbound customer turn into the unified timeline (real timestamp
+    // now, BEFORE the LLM call, so it sorts ahead of the bot reply).
+    if (linkedConversationId) {
+      await this.mirrorToTimeline(tenantId, linkedConversationId, 'CUSTOMER', dto.content);
+    }
 
     // 2) RAG retrieval (read-only).
     const chunks = agent ? await this.rag.retrieve(tenantId, agent.id, dto.content) : [];
@@ -177,12 +187,42 @@ export class AiExecutionService {
 
     await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens);
 
+    // Mirror the bot reply into the unified timeline (after the assistant row is
+    // committed, so its timestamp follows the customer turn).
+    if (linkedConversationId && finalContent) {
+      await this.mirrorToTimeline(tenantId, linkedConversationId, 'BOT', finalContent);
+    }
+
     return {
       message: assistant,
       retrievedChunks: chunks.length,
       usage: { promptTokens, completionTokens, totalTokens },
       fallback,
     };
+  }
+
+  /**
+   * Best-effort mirror of an AI turn into the unified Conversation/Message
+   * timeline (sender_type CUSTOMER or BOT). `ai_messages` remains the AI engine's
+   * own store; the `messages` mirror is what agents / inbox / search / analytics
+   * read. A mirror failure must NOT break the AI turn (the bot stays available),
+   * so it is logged rather than thrown.
+   */
+  private async mirrorToTimeline(
+    tenantId: string,
+    conversationId: string,
+    senderType: 'CUSTOMER' | 'BOT',
+    content: string,
+  ): Promise<void> {
+    try {
+      await this.timeline.recordChannelMessage(tenantId, conversationId, senderType, content);
+    } catch (err) {
+      this.logger.warn(
+        `timeline mirror (${senderType}) failed for conversation ${conversationId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

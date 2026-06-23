@@ -9,13 +9,13 @@ import { CampaignFilterDto } from './campaign-filter.dto';
 export class CampaignQueryDto extends CampaignFilterDto {
   @ApiPropertyOptional({
     description: 'Field to sort by.',
-    enum: ['created_at', 'scheduled_at', 'name', 'status'],
+    enum: ['created_at', 'scheduled_at', 'name', 'lifecycle'],
     example: 'created_at',
     default: 'created_at',
   })
   @IsOptional()
-  @IsIn(['created_at', 'scheduled_at', 'name', 'status'])
-  sortBy?: 'created_at' | 'scheduled_at' | 'name' | 'status';
+  @IsIn(['created_at', 'scheduled_at', 'name', 'lifecycle'])
+  sortBy?: 'created_at' | 'scheduled_at' | 'name' | 'lifecycle';
 
   @ApiPropertyOptional({
     description: 'Sort direction.',

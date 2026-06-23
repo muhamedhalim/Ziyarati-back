@@ -7,6 +7,7 @@ import { validate } from './config/env.validation';
 
 import { Tenant } from './entities/SaaS-Core/Tenant';
 import { Subscription } from './entities/SaaS-Core/Subscription';
+import { OutboxJob } from './entities/Campaigns/OutboxJob';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { QueueModule } from './queue/queue.module';
@@ -22,10 +23,15 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { WorkerTenantsService } from './worker/worker-tenants.service';
 import { QueueMonitorService } from './worker/queue-monitor.service';
 import { ScheduleRegistrarService } from './worker/schedule-registrar.service';
+import { OutboxRelayService } from './worker/outbox-relay.service';
 
 import { NotificationsProcessor } from './worker/processors/notifications.processor';
 import { WhatsappProcessor } from './worker/processors/whatsapp.processor';
-import { CampaignsProcessor } from './worker/processors/campaigns.processor';
+import {
+  CampaignLaunchProcessor,
+  CampaignFanoutProcessor,
+  CampaignDispatchProcessor,
+} from './worker/processors/campaigns.processor';
 import { AiProcessor } from './worker/processors/ai.processor';
 import { AnalyticsProcessor } from './worker/processors/analytics.processor';
 import { SettlementsProcessor } from './worker/processors/settlements.processor';
@@ -45,7 +51,7 @@ import { RefundsProcessor } from './worker/processors/refunds.processor';
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env', cache: true, validate }),
     TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: typeOrmFactory }),
-    TypeOrmModule.forFeature([Tenant, Subscription]),
+    TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob]),
     TenantContextModule,
     QueueModule,
     NotificationsModule,
@@ -59,9 +65,12 @@ import { RefundsProcessor } from './worker/processors/refunds.processor';
     WorkerTenantsService,
     QueueMonitorService,
     ScheduleRegistrarService,
+    OutboxRelayService,
     NotificationsProcessor,
     WhatsappProcessor,
-    CampaignsProcessor,
+    CampaignLaunchProcessor,
+    CampaignFanoutProcessor,
+    CampaignDispatchProcessor,
     AiProcessor,
     AnalyticsProcessor,
     SettlementsProcessor,

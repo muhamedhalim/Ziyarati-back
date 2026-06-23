@@ -21,9 +21,15 @@ export interface CampaignDeliveryPayload {
 
 export interface CampaignDeliveryResult {
   success: boolean;
-  /** Opaque provider reference (e.g. WhatsApp message id). */
+  /** Opaque provider reference (e.g. WhatsApp message id). Required on success. */
   providerRef?: string;
   error?: string;
+  /**
+   * Explicit retry classification for a failure. `true` ⇒ TRANSIENT (retry with
+   * backoff), `false` ⇒ PERMANENT (no retry). When omitted, the dispatcher
+   * heuristically classifies from the `error` text.
+   */
+  transient?: boolean;
 }
 
 export interface CampaignDeliveryProvider {

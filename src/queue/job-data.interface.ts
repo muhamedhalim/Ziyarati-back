@@ -38,10 +38,32 @@ export interface WhatsappSendJob extends BaseJobData {
 export interface CampaignLaunchJob extends BaseJobData {
   tenantId: string;
   campaignId: string;
+  runId: string;
+  idempotencyKey: string;
+}
+/** A single keyset window of a run's audience, fanned out independently. */
+export interface CampaignFanoutChunkJob extends BaseJobData {
+  tenantId: string;
+  campaignId: string;
+  runId: string;
+  /** Exclusive lower bound (recipient id) for keyset pagination; null = start. */
+  cursor: string | null;
 }
 export interface CampaignProcessRecipientJob extends BaseJobData {
   tenantId: string;
+  campaignId: string;
+  runId: string;
   recipientId: string;
+}
+/** Dead-letter envelope: the original payload plus failure forensics. */
+export interface CampaignDlqJob extends BaseJobData {
+  sourceQueue: string;
+  sourceJobName: string;
+  originalJobId?: string;
+  originalData: Record<string, unknown>;
+  failedReason: string;
+  attemptsMade: number;
+  diedAt: string;
 }
 
 // ── AI ─────────────────────────────────────────────────────────────────────

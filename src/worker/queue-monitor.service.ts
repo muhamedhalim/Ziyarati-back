@@ -3,23 +3,32 @@ import { ConfigService } from '@nestjs/config';
 import { QueueEvents } from 'bullmq';
 
 import { ALL_QUEUES } from '../queue/queue.constants';
-import { redisConnectionOptions } from '../queue/redis.config';
+import { eventsConnectionOptions } from '../queue/redis.config';
+import { QueueService } from '../queue/queue.service';
 
 /**
- * Centralized queue monitoring via BullMQ QueueEvents. One listener per queue
+ * Centralized queue observability via BullMQ QueueEvents. One listener per queue
  * logs completed / failed / stalled jobs (correlation ids are emitted by the
- * processors themselves on each attempt). Runs only in the worker process. Its
- * connections are closed on shutdown.
+ * processors themselves on each attempt). Also polls the DLQ depth on an
+ * interval and warns above a threshold — the hook point for alerting. Runs only
+ * in the worker process; its connections are closed on shutdown.
  */
 @Injectable()
 export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('QueueMonitor');
   private readonly events: QueueEvents[] = [];
+  private dlqTimer?: NodeJS.Timeout;
 
-  constructor(private readonly config: ConfigService) {}
+  private readonly dlqPollMs = Number(process.env.DLQ_POLL_MS ?? '30000');
+  private readonly dlqWarnAt = Number(process.env.DLQ_WARN_THRESHOLD ?? '100');
+
+  constructor(
+    private readonly config: ConfigService,
+    private readonly queue: QueueService,
+  ) {}
 
   onModuleInit(): void {
-    const connection = redisConnectionOptions(this.config);
+    const connection = eventsConnectionOptions(this.config); // dedicated events profile
     for (const name of ALL_QUEUES) {
       const qe = new QueueEvents(name, { connection });
       qe.on('completed', ({ jobId }) => this.logger.log(`[${name}] ✓ completed job=${jobId}`));
@@ -31,9 +40,25 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
       this.events.push(qe);
     }
     this.logger.log(`QueueEvents monitoring ${ALL_QUEUES.length} queues`);
+
+    this.dlqTimer = setInterval(() => void this.reportDlqDepth(), this.dlqPollMs);
+  }
+
+  private async reportDlqDepth(): Promise<void> {
+    try {
+      const depth = await this.queue.dlqDepth();
+      if (depth >= this.dlqWarnAt) {
+        this.logger.error(`[campaigns.dlq] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`);
+      } else if (depth > 0) {
+        this.logger.warn(`[campaigns.dlq] depth=${depth}`);
+      }
+    } catch (err) {
+      this.logger.error(`DLQ depth poll failed: ${(err as Error)?.message}`);
+    }
   }
 
   async onModuleDestroy(): Promise<void> {
+    if (this.dlqTimer) clearInterval(this.dlqTimer);
     await Promise.all(this.events.map((e) => e.close().catch(() => undefined)));
   }
 }
