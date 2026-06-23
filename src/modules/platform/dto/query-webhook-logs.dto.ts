@@ -54,4 +54,12 @@ export class QueryWebhookLogsDto {
   @Min(1)
   @Max(100)
   limit: number = 20;
+
+  @ApiPropertyOptional({
+    description:
+      'Keyset cursor (created_at of the last seen row, ISO-8601). When set, results are fetched WITHOUT a COUNT(*). Use `nextCursor` from the previous page.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  cursor?: string;
 }

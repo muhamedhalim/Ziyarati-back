@@ -34,7 +34,9 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // Notification durability sweep — every minute (reclaim stale PROCESSING +
       // re-enqueue due-but-unsent rows). Idempotent via deterministic jobId.
       await this.queue.addRepeatable(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_REAP, { tenantId: null }, '* * * * *');
-      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper)');
+      // Platform log retention purge — 03:30 UTC daily.
+      await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_LOG_CLEANUP, { tenantId: null }, '30 3 * * *');
+      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

@@ -26,3 +26,24 @@ export function generateApiKey(): { plaintext: string; hash: string } {
 export function hashApiKey(plaintext: string): string {
   return createHash('sha256').update(plaintext).digest('hex');
 }
+
+/** Keys whose values are redacted before a webhook payload is persisted. */
+const SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|signature|access[_-]?token|refresh[_-]?token|client[_-]?secret|card|cvv|pan|iban)/i;
+
+/**
+ * Deep-redacts secret-bearing fields from an arbitrary webhook payload so raw
+ * third-party credentials/PII are never stored in `webhook_logs`. Returns a new
+ * structure (does not mutate the input). Caps recursion depth to bound work.
+ */
+export function redactSecrets(value: unknown, depth = 0): unknown {
+  if (value == null || depth > 8) return value;
+  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, depth + 1));
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SENSITIVE_KEY.test(k) ? '[REDACTED]' : redactSecrets(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}

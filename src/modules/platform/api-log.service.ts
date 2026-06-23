@@ -65,6 +65,20 @@ export class ApiLogService {
       where.created_at = LessThan(new Date(query.to));
     }
 
+    // Keyset path: no COUNT, O(limit) — required at millions of rows.
+    if (query.cursor) {
+      where.created_at = LessThan(new Date(query.cursor));
+      const rows = await this.logs.find({
+        where,
+        order: { created_at: 'DESC' },
+        take: query.limit + 1,
+      });
+      const hasMore = rows.length > query.limit;
+      const data = hasMore ? rows.slice(0, query.limit) : rows;
+      const nextCursor = hasMore ? data[data.length - 1].created_at.toISOString() : null;
+      return { data, nextCursor, hasMore, limit: query.limit };
+    }
+
     const [data, total] = await this.logs.findAndCount({
       where,
       order: { created_at: query.sort === 'asc' ? 'ASC' : 'DESC' },

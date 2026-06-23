@@ -13,7 +13,7 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { QueryWebhookLogsDto } from './dto/query-webhook-logs.dto';
-import { WEBHOOK_LOG_STATUS } from './platform.constants';
+import { redactSecrets, WEBHOOK_LOG_STATUS } from './platform.constants';
 
 export interface WebhookLogInput {
   source?: string;
@@ -46,7 +46,7 @@ export class WebhookLogService {
         tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
         source: input.source,
         event_type: input.eventType,
-        payload: input.payload,
+        payload: redactSecrets(input.payload),
         status: input.status,
         error_message: input.errorMessage,
       }),
@@ -64,6 +64,20 @@ export class WebhookLogService {
       where.created_at = MoreThanOrEqual(new Date(query.from));
     } else if (query.to) {
       where.created_at = LessThan(new Date(query.to));
+    }
+
+    // Keyset path: no COUNT, O(limit) — required at tens of millions of rows.
+    if (query.cursor) {
+      where.created_at = LessThan(new Date(query.cursor));
+      const rows = await this.logs.find({
+        where,
+        order: { created_at: 'DESC' },
+        take: query.limit + 1,
+      });
+      const hasMore = rows.length > query.limit;
+      const data = hasMore ? rows.slice(0, query.limit) : rows;
+      const nextCursor = hasMore ? data[data.length - 1].created_at.toISOString() : null;
+      return { data, nextCursor, hasMore, limit: query.limit };
     }
 
     const [data, total] = await this.logs.findAndCount({

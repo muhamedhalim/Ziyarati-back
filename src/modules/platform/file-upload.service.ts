@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 
@@ -19,16 +20,43 @@ import { QueryFileUploadsDto } from './dto/query-file-uploads.dto';
  */
 @Injectable()
 export class FileUploadService {
+  private readonly maxFileBytes: number;
+  private readonly tenantQuotaBytes: number;
+  /** Hostnames a stored file_url may NOT point at (SSRF / cross-tenant guard). */
+  private static readonly BLOCKED_HOST =
+    /^(localhost|127\.|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i;
+
   constructor(
     @InjectRepository(FileUpload)
     private readonly files: Repository<FileUpload>,
-  ) {}
+    config: ConfigService,
+  ) {
+    this.maxFileBytes = Number(config.get<string>('PLATFORM_MAX_FILE_BYTES') ?? String(50 * 1024 * 1024));
+    this.tenantQuotaBytes = Number(config.get<string>('PLATFORM_STORAGE_QUOTA_BYTES') ?? String(5 * 1024 * 1024 * 1024));
+  }
 
-  register(
+  async register(
     tenantId: string,
     dto: CreateFileUploadDto,
     userId?: string,
   ): Promise<FileUpload> {
+    this.assertSafeUrl(dto.file_url);
+    const size = dto.file_size ?? 0;
+    if (size < 0 || size > this.maxFileBytes) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `File size exceeds the ${this.maxFileBytes}-byte limit`,
+      });
+    }
+    // Best-effort quota: size is client-claimed (no storage integration here), so
+    // this is an advisory cap until a real storage provider reports actual bytes.
+    const used = await this.usedBytes(tenantId);
+    if (used + size > this.tenantQuotaBytes) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Tenant storage quota exceeded',
+        context: { usedBytes: used, quotaBytes: this.tenantQuotaBytes },
+      });
+    }
+
     return this.files.save(
       this.files.create({
         tenant: { id: tenantId } as Tenant,
@@ -36,9 +64,35 @@ export class FileUploadService {
         file_name: dto.file_name,
         file_url: dto.file_url,
         file_type: dto.file_type,
-        file_size: dto.file_size,
+        file_size: size,
       }),
     );
+  }
+
+  /** Reject non-http(s) schemes and internal/link-local hosts (SSRF + cross-tenant). */
+  private assertSafeUrl(url: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'file_url must be a valid URL' });
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'file_url must be http(s)' });
+    }
+    if (FileUploadService.BLOCKED_HOST.test(parsed.hostname)) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'file_url host is not allowed' });
+    }
+  }
+
+  private async usedBytes(tenantId: string): Promise<number> {
+    const row = await this.files
+      .createQueryBuilder('f')
+      .innerJoin('f.tenant', 't')
+      .where('t.id = :tenantId', { tenantId })
+      .select('COALESCE(SUM(f.file_size), 0)', 'bytes')
+      .getRawOne<{ bytes: string }>();
+    return Number(row?.bytes ?? 0);
   }
 
   async remove(tenantId: string, id: string) {

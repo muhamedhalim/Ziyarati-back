@@ -8,10 +8,20 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import { QueryApiKeysDto } from './dto/query-api-keys.dto';
-import { generateApiKey } from './platform.constants';
+import { generateApiKey, hashApiKey } from './platform.constants';
 
 /** API key with the secret hash stripped — the shape returned to clients. */
 export type SafeApiKey = Omit<ApiKey, 'key_hash'>;
+
+/** The principal an authenticated API key resolves to. */
+export interface AuthenticatedApiKey {
+  keyId: string;
+  tenantId: string | null;
+  permissions: string[];
+}
+
+/** Only refresh last_used_at at most this often (avoid a write per request). */
+const LAST_USED_THROTTLE_MS = 60_000;
 
 /**
  * API keys for external (machine-to-machine) integrations — tenant-owned.
@@ -106,6 +116,39 @@ export class ApiKeyService {
       total,
       page: query.page,
       limit: query.limit,
+    };
+  }
+
+  /**
+   * Verify a PRESENTED plaintext key (the runtime auth path used by
+   * ApiKeyAuthGuard). Constant-work hash lookup → active → not expired. Updates
+   * `last_used_at` at most once per minute (throttled, fire-and-forget). Throws
+   * UNAUTHORIZED for any failure so callers can't distinguish reasons.
+   */
+  async authenticate(plaintext: string | undefined): Promise<AuthenticatedApiKey> {
+    if (!plaintext || typeof plaintext !== 'string') {
+      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'API key required' });
+    }
+    const key = await this.keys.findOne({
+      where: { key_hash: hashApiKey(plaintext) },
+      relations: { tenant: true },
+    });
+    if (!key || !key.is_active) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid or inactive API key' });
+    }
+    if (key.expires_at && key.expires_at.getTime() <= Date.now()) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'API key has expired' });
+    }
+
+    const now = Date.now();
+    if (!key.last_used_at || now - key.last_used_at.getTime() > LAST_USED_THROTTLE_MS) {
+      void this.keys.update({ id: key.id }, { last_used_at: new Date() }).catch(() => undefined);
+    }
+
+    return {
+      keyId: key.id,
+      tenantId: key.tenant?.id ?? null,
+      permissions: Array.isArray(key.permissions) ? (key.permissions as string[]) : [],
     };
   }
 

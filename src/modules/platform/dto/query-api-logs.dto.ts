@@ -51,6 +51,14 @@ export class QueryApiLogsDto {
   @IsEnum(['asc', 'desc'])
   sort?: 'asc' | 'desc';
 
+  @ApiPropertyOptional({
+    description:
+      'Keyset cursor (created_at of the last seen row, ISO-8601). When set, results are fetched WITHOUT a COUNT(*) — required for scale on large log tables. Use `nextCursor` from the previous page.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  cursor?: string;
+
   @ApiPropertyOptional({ description: 'Page number (1-based).', example: 1, minimum: 1, default: 1 })
   @IsOptional()
   @Type(() => Number)
