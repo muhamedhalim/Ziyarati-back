@@ -22,12 +22,18 @@ export class SchedulingRefService {
   ) {}
 
   async assertBranch(tenantId: string, branchId: string): Promise<void> {
+    await this.getBranch(tenantId, branchId);
+  }
+
+  /** Loads a tenant-owned branch (incl. `timezone`) or 404. */
+  async getBranch(tenantId: string, branchId: string): Promise<Branch> {
     const branch = await this.branches.findOne({
       where: { id: branchId, tenant: { id: tenantId } },
     });
     if (!branch) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
     }
+    return branch;
   }
 
   async assertStaff(tenantId: string, staffId: string): Promise<void> {

@@ -25,14 +25,18 @@ import {
   Interval,
   OCCUPYING_APPOINTMENT_STATUSES,
   chunkIntervals,
-  dayBoundsUtc,
   maxDate,
   mergeIntervals,
   minDate,
   subtractIntervals,
-  toYmd,
   totalMinutes,
 } from './scheduling.constants';
+import {
+  safeZone,
+  zonedDayBoundsUtc,
+  zonedHhmmToUtc,
+  zonedYmd,
+} from './timezone.util';
 
 export interface BookabilityConflicts {
   staffInactive: boolean;
@@ -162,11 +166,12 @@ export class AvailabilityService {
 
   async windows(tenantId: string, q: AvailabilityQueryDto) {
     this.requireFields(q, ['staffId', 'date']);
-    await this.refs.assertBranch(tenantId, q.branchId);
+    const branch = await this.refs.getBranch(tenantId, q.branchId);
+    const zone = safeZone(branch.timezone);
     await this.refs.getStaff(tenantId, q.staffId!);
 
-    const dateStr = q.date!;
-    const { dayStart, dayEnd } = dayBoundsUtc(dateStr);
+    const dateStr = q.date!; // interpreted as the branch's LOCAL calendar date
+    const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
     const [holidays, offToday] = await Promise.all([
       this.holidayService.findForDate(tenantId, q.branchId, dateStr),
@@ -190,6 +195,7 @@ export class AvailabilityService {
       dateStr,
       dayStart,
       dayEnd,
+      zone,
     );
     const busy = await this.busyIntervals(tenantId, q.branchId, q.staffId!, dayStart, dayEnd);
     let free = mergeIntervals(positive.flatMap((p) => subtractIntervals(p, busy)));
@@ -209,11 +215,12 @@ export class AvailabilityService {
 
   async summary(tenantId: string, q: AvailabilityQueryDto) {
     this.requireFields(q, ['date']);
-    await this.refs.assertBranch(tenantId, q.branchId);
+    const branch = await this.refs.getBranch(tenantId, q.branchId);
+    const zone = safeZone(branch.timezone);
     if (q.staffId) await this.refs.getStaff(tenantId, q.staffId);
 
-    const dateStr = q.date!;
-    const { dayStart, dayEnd } = dayBoundsUtc(dateStr);
+    const dateStr = q.date!; // branch LOCAL calendar date
+    const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
     const [holidays, blocked, occupying] = await Promise.all([
       this.holidayService.findForDate(tenantId, q.branchId, dateStr),
@@ -227,7 +234,7 @@ export class AvailabilityService {
       timeOff = await this.staffTimeOff.isOffOn(tenantId, q.staffId, dateStr);
       positive = timeOff
         ? []
-        : await this.computePositiveWindows(tenantId, q.branchId, q.staffId, dateStr, dayStart, dayEnd);
+        : await this.computePositiveWindows(tenantId, q.branchId, q.staffId, dateStr, dayStart, dayEnd, zone);
     } else {
       // Branch-level: recurring availability is per-staff, so use calendar slots.
       const slots = await this.slotService.findAvailableForDay(tenantId, q.branchId, dayStart, dayEnd);
@@ -274,15 +281,18 @@ export class AvailabilityService {
     end: Date,
     opts: AssertBookableOptions = {},
   ): Promise<BookabilityResult> {
-    await this.refs.assertBranch(tenantId, branchId);
+    const branch = await this.refs.getBranch(tenantId, branchId);
+    const zone = safeZone(branch.timezone);
     const staff = await this.refs.getStaff(tenantId, staffId);
     const staffInactive = !staff.is_available_for_booking;
 
-    const dateStr = toYmd(start);
-    const { dayStart, dayEnd } = dayBoundsUtc(dateStr);
+    // The LOCAL calendar day of the booking instant (in the branch's timezone)
+    // drives holiday/time-off matching and the working-hours window.
+    const dateStr = zonedYmd(start, zone);
+    const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
     const [holidays, blocked, timeOff, occupying, positive] = await Promise.all([
-      this.holidayService.findForDate(tenantId, branchId, start),
+      this.holidayService.findForDate(tenantId, branchId, dateStr),
       this.blockedService.findOverlapping(tenantId, branchId, start, end, staffId),
       this.staffTimeOff.isOffOn(tenantId, staffId, dateStr),
       this.findOccupying(tenantId, branchId, start, end, {
@@ -290,7 +300,7 @@ export class AvailabilityService {
         excludeAppointmentId: opts.excludeAppointmentId,
         manager: opts.manager,
       }),
-      this.computePositiveWindows(tenantId, branchId, staffId, dateStr, dayStart, dayEnd),
+      this.computePositiveWindows(tenantId, branchId, staffId, dateStr, dayStart, dayEnd, zone),
     ]);
 
     const holiday = holidays.length > 0;
@@ -330,9 +340,10 @@ export class AvailabilityService {
     dateStr: string,
     dayStart: Date,
     dayEnd: Date,
+    zone: string,
   ): Promise<Interval[]> {
     const [recurring, slots] = await Promise.all([
-      this.recurringWindows(tenantId, branchId, staffId, dateStr),
+      this.recurringWindows(tenantId, branchId, staffId, dateStr, zone),
       this.slotService.findAvailableForDay(tenantId, branchId, dayStart, dayEnd, staffId),
     ]);
     const slotWindows = slots.map((s) => ({
@@ -352,14 +363,17 @@ export class AvailabilityService {
     branchId: string,
     staffId: string,
     dateStr: string,
+    zone: string,
   ): Promise<Interval[]> {
     const avail: any = await this.staffSchedule.getAvailability(tenantId, branchId, dateStr);
     if (!avail?.open || !Array.isArray(avail.staff)) return [];
     const mine = avail.staff.find((s: any) => s.staffId === staffId);
     if (!mine) return [];
+    // Working-hours 'HH:MM' are LOCAL wall-clock for the branch; convert each to
+    // an absolute UTC instant on the local date (DST-correct).
     return mine.windows.map((w: { start: string; end: string }) => ({
-      start: this.hhmmToDate(dateStr, w.start),
-      end: this.hhmmToDate(dateStr, w.end),
+      start: zonedHhmmToUtc(dateStr, w.start, zone),
+      end: zonedHhmmToUtc(dateStr, w.end, zone),
     }));
   }
 
@@ -404,11 +418,6 @@ export class AvailabilityService {
     if (opts.staffId) where.staff = { id: opts.staffId };
     if (opts.excludeAppointmentId) where.id = Not(opts.excludeAppointmentId);
     return repo.find({ where });
-  }
-
-  /** 'HH:MM' on a UTC calendar day → absolute Date (matches getAvailability's UTC basis). */
-  private hhmmToDate(dateStr: string, hhmm: string): Date {
-    return new Date(`${dateStr}T${hhmm.slice(0, 5)}:00.000Z`);
   }
 
   private window(q: AvailabilityQueryDto): { start: Date; end: Date } {

@@ -34,7 +34,8 @@ export class Branch {
   @Column({ nullable: true })
   whatsapp_phone?: string;
 
-  @Column({ default: 'UTC' })
+  /** IANA timezone (e.g. 'Asia/Riyadh'). Drives local working-hours/holiday eval. */
+  @Column({ default: 'Asia/Riyadh' })
   timezone!: string;
 
   @Column({ default: true })

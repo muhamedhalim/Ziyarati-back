@@ -20,6 +20,7 @@ const PG = {
   FOREIGN_KEY_VIOLATION: '23503',
   NOT_NULL_VIOLATION: '23502',
   CHECK_VIOLATION: '23514',
+  EXCLUSION_VIOLATION: '23P01', // EXCLUDE constraint (e.g. overlapping appointment)
   INVALID_TEXT_REPRESENTATION: '22P02', // e.g. malformed uuid / bad enum value
 } as const;
 
@@ -32,6 +33,8 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   uq_user_tenant_email: 'Email already exists in this tenant',
   uq_superadmin_email: 'A super-admin with this email already exists',
   uq_role_tenant_slug: 'A role with this slug already exists',
+  appointments_no_overlap:
+    'This time slot was just booked for the selected staff member. Please choose another time.',
 };
 
 /**
@@ -48,6 +51,16 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
         message: driver.constraint
           ? CONSTRAINT_MESSAGES[driver.constraint]
           : undefined,
+        cause: error,
+      });
+
+    case PG.EXCLUSION_VIOLATION:
+      // Overlapping appointment caught by `appointments_no_overlap` (the race
+      // backstop). Surface a clean 409 so the client can re-pick a time.
+      return new AppError(ErrorCode.CONFLICT, {
+        message: driver.constraint
+          ? CONSTRAINT_MESSAGES[driver.constraint] ?? 'The selected time is no longer available'
+          : 'The selected time is no longer available',
         cause: error,
       });
 
