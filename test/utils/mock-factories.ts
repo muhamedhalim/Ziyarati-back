@@ -26,18 +26,29 @@ export interface MockQueryBuilder {
   leftJoin: jest.Mock;
   leftJoinAndSelect: jest.Mock;
   orderBy: jest.Mock;
+  addOrderBy: jest.Mock;
   groupBy: jest.Mock;
   skip: jest.Mock;
   take: jest.Mock;
   limit: jest.Mock;
+  offset: jest.Mock;
+  insert: jest.Mock;
+  into: jest.Mock;
+  values: jest.Mock;
+  orIgnore: jest.Mock;
   update: jest.Mock;
   set: jest.Mock;
+  setParameter: jest.Mock;
+  setParameters: jest.Mock;
   setLock: jest.Mock;
   setOnLocked: jest.Mock;
+  returning: jest.Mock;
   getOne: jest.Mock;
   getMany: jest.Mock;
+  getManyAndCount: jest.Mock;
   getRawOne: jest.Mock;
   getRawMany: jest.Mock;
+  getCount: jest.Mock;
   execute: jest.Mock;
 }
 
@@ -54,18 +65,29 @@ export const createMockQueryBuilder = (): MockQueryBuilder => {
   qb.leftJoin = jest.fn(chain);
   qb.leftJoinAndSelect = jest.fn(chain);
   qb.orderBy = jest.fn(chain);
+  qb.addOrderBy = jest.fn(chain);
   qb.groupBy = jest.fn(chain);
   qb.skip = jest.fn(chain);
   qb.take = jest.fn(chain);
   qb.limit = jest.fn(chain);
+  qb.offset = jest.fn(chain);
+  qb.insert = jest.fn(chain);
+  qb.into = jest.fn(chain);
+  qb.values = jest.fn(chain);
+  qb.orIgnore = jest.fn(chain);
   qb.update = jest.fn(chain);
   qb.set = jest.fn(chain);
+  qb.setParameter = jest.fn(chain);
+  qb.setParameters = jest.fn(chain);
   qb.setLock = jest.fn(chain);
   qb.setOnLocked = jest.fn(chain);
+  qb.returning = jest.fn(chain);
   qb.getOne = jest.fn(async () => null);
   qb.getMany = jest.fn(async () => []);
+  qb.getManyAndCount = jest.fn(async () => [[], 0]);
   qb.getRawOne = jest.fn(async () => undefined);
   qb.getRawMany = jest.fn(async () => []);
+  qb.getCount = jest.fn(async () => 0);
   qb.execute = jest.fn(async () => ({ affected: 1, raw: [] }));
   return qb;
 };
@@ -79,10 +101,15 @@ export interface MockRepository {
   create: jest.Mock;
   update: jest.Mock;
   delete: jest.Mock;
+  softDelete: jest.Mock;
+  restore: jest.Mock;
   count: jest.Mock;
   exists: jest.Mock;
+  existsBy: jest.Mock;
   softRemove: jest.Mock;
   remove: jest.Mock;
+  increment: jest.Mock;
+  decrement: jest.Mock;
   createQueryBuilder: jest.Mock;
 }
 
@@ -100,10 +127,15 @@ export const createMockRepository = (): MockRepository => ({
   create: jest.fn((data: any) => data),
   update: jest.fn(async () => ({ affected: 1 })),
   delete: jest.fn(async () => ({ affected: 1 })),
+  softDelete: jest.fn(async () => ({ affected: 1 })),
+  restore: jest.fn(async () => ({ affected: 1 })),
   count: jest.fn(async () => 0),
   exists: jest.fn(async () => false),
+  existsBy: jest.fn(async () => false),
   softRemove: jest.fn(async (entity: any) => entity),
   remove: jest.fn(async (entity: any) => entity),
+  increment: jest.fn(async () => ({ affected: 1 })),
+  decrement: jest.fn(async () => ({ affected: 1 })),
   createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
 });
 
