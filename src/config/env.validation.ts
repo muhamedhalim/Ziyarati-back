@@ -39,7 +39,10 @@ export const validate = (config: Record<string, unknown>) => {
     ANALYTICS_EVENT_RETENTION_DAYS: Joi.number().min(1).default(90),
 
     JWT_ACCESS_SECRET: Joi.string().required(),
-    JWT_EXPIRES_IN: Joi.string().default('7d'),
+    JWT_REFRESH_SECRET: Joi.string().required(),
+
+    JWT_ACCESS_TTL: Joi.string().default('15m'),
+    JWT_REFRESH_TTL: Joi.string().default('7d'),
 
     // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
     // Optional: when unset, the payment gateway factory falls back to the
