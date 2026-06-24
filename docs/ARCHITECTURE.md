@@ -367,7 +367,6 @@ graph TB
   Scheduled --> Q
   CP --> Q
   Q --> P[Processors] -->|fan-out per tenant| Q
-```
 
 **Uniform retry/DLQ semantics:** rate-limit → `moveToDelayed` (no attempt consumed);
 TRANSIENT → backoff → on exhaustion **reconcile terminal state THEN park in DLQ** (so
@@ -375,7 +374,7 @@ runs/sweeps never hang); PERMANENT (`UnrecoverableError`) → fail, no retry, no
 jobs (`tenantId: null`) fan out per active tenant. Defaults: 5 attempts, exponential 3s,
 `removeOnComplete {1h,1000}`, `removeOnFail {7d,10k}`.
 
----
+
 
 ## 7. Technical Debt
 
@@ -391,7 +390,7 @@ jobs (`tenantId: null`) fan out per active tenant. Defaults: 5 attempts, exponen
 | Provider IO | Real Moyasar/Meta paths reach `globalThis.fetch` via `any`, untested in dev (Noop) | Untested real path |
 | Tests | Only `app.controller.spec` + e2e scaffold; hardened money/queue logic has no unit tests | Regression risk |
 
----
+
 
 ## 8. Refactoring Recommendations (harden what exists; no redesign)
 
