@@ -4,12 +4,15 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { Appointment } from './Appointment';
 import { Service } from '../Services/Service';
 import { Tenant } from '../SaaS-Core/Tenant';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('appointment_services')
+@Index(['appointment'])
 export class AppointmentService {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -29,6 +32,7 @@ export class AppointmentService {
     type: 'decimal',
     precision: 14,
     scale: 2,
+    transformer: decimalTransformer,
   })
   price!: number;
 

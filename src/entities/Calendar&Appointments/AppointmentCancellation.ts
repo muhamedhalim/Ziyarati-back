@@ -4,13 +4,16 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
 import { Appointment } from './Appointment';
 import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('appointment_cancellations')
+@Index(['appointment'])
 export class AppointmentCancellation {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -39,6 +42,7 @@ export class AppointmentCancellation {
     precision: 14,
     scale: 2,
     nullable: true,
+    transformer: decimalTransformer,
   })
   refund_amount?: number;
 

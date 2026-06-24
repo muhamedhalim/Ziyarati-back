@@ -51,6 +51,20 @@ export enum AppointmentSource {
   MANUAL = 'MANUAL',
 }
 
+/**
+ * Payment lifecycle of an appointment — a SEPARATE axis from the scheduling
+ * `AppointmentStatus`, so "is it paid?" no longer leaks into "is it happening?".
+ * The legacy `AppointmentStatus.PENDING_PAYMENT` remains for back-compat but the
+ * authoritative payment signal is this field.
+ */
+export enum AppointmentPaymentStatus {
+  UNPAID = 'UNPAID',
+  DEPOSIT_PAID = 'DEPOSIT_PAID',
+  PAID = 'PAID',
+  REFUNDED = 'REFUNDED',
+  PARTIALLY_REFUNDED = 'PARTIALLY_REFUNDED',
+}
+
 export enum PaymentStatus {
   PENDING = 'PENDING',
   PAID = 'PAID',

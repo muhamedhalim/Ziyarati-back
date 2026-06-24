@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
 import { Appointment } from './Appointment';
@@ -12,6 +13,7 @@ import { Tenant } from '../SaaS-Core/Tenant';
 import { User } from '../Auth&RBAC/User';
 
 @Entity('appointment_reschedules')
+@Index(['appointment'])
 export class AppointmentReschedule {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

@@ -26,7 +26,11 @@ import { Service } from '../../entities/Services/Service';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
 
-import { AppointmentSource, AppointmentStatus } from '../../entities/enums';
+import {
+  AppointmentSource,
+  AppointmentStatus,
+  AppointmentPaymentStatus,
+} from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
@@ -216,6 +220,13 @@ export class AppointmentsService {
       const repo = manager.getRepository(Appointment);
       const status = AppointmentStatus.PENDING_PAYMENT;
 
+      // Snapshot the branch timezone so the booked local wall-time stays stable
+      // even if the branch timezone is later changed.
+      const branch = await manager.findOne(Branch, {
+        where: { id: dto.branchId, tenant: { id: tenantId } },
+        select: { id: true, timezone: true },
+      });
+
       const appointment = repo.create({
         tenant: { id: tenantId } as Tenant,
         branch: { id: dto.branchId } as Branch,
@@ -224,8 +235,10 @@ export class AppointmentsService {
         start_at: startAt,
         end_at: endAt,
         status,
+        payment_status: AppointmentPaymentStatus.UNPAID,
         total_amount: totalAmount,
-        currency: dto.currency ?? 'USD',
+        currency: dto.currency ?? 'SAR',
+        booked_timezone: branch?.timezone,
         notes: dto.notes,
         source: dto.source ?? AppointmentSource.MANUAL,
         booked_by: { id: userId } as User,
@@ -419,6 +432,13 @@ export class AppointmentsService {
 
       const previous = appointment.status;
       appointment.status = AppointmentStatus.CANCELLED;
+      // Reflect a recorded refund on the payment axis.
+      if (dto.refundAmount && dto.refundAmount > 0) {
+        appointment.payment_status =
+          appointment.total_amount && dto.refundAmount < appointment.total_amount
+            ? AppointmentPaymentStatus.PARTIALLY_REFUNDED
+            : AppointmentPaymentStatus.REFUNDED;
+      }
       await manager.getRepository(Appointment).save(appointment);
 
       await manager.getRepository(AppointmentCancellation).save(

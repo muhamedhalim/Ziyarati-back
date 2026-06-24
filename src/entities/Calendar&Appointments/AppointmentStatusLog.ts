@@ -4,6 +4,7 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
 import { Appointment } from './Appointment';
@@ -11,6 +12,7 @@ import { Tenant } from '../SaaS-Core/Tenant';
 import { AppointmentStatus } from '../enums';
 
 @Entity('appointment_status_logs')
+@Index(['appointment'])
 export class AppointmentStatusLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

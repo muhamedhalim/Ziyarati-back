@@ -7,7 +7,11 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { EntityNotFoundError, QueryFailedError } from 'typeorm';
+import {
+  EntityNotFoundError,
+  OptimisticLockVersionMismatchError,
+  QueryFailedError,
+} from 'typeorm';
 
 import { AppError } from '../errors/app-error';
 import { ErrorCode } from '../errors/error-code';
@@ -106,6 +110,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
         code: ErrorCode.NOT_FOUND,
         message: 'Resource not found',
         error: 'EntityNotFoundError',
+      };
+    }
+
+    if (exception instanceof OptimisticLockVersionMismatchError) {
+      // Concurrent edit to a versioned row (e.g. appointment) — surface a 409 so
+      // the client reloads and retries instead of silently losing an update.
+      return {
+        statusCode: HttpStatus.CONFLICT,
+        code: ErrorCode.CONFLICT,
+        message: 'This record was modified by someone else. Reload and try again.',
+        error: 'OptimisticLockVersionMismatchError',
       };
     }
 
