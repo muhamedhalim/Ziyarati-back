@@ -49,6 +49,7 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
 import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
 import { ConversationsModule } from '../conversations/conversations.module';
+import { PlatformModule } from '../platform/platform.module';
 
 /**
  * AI / RAG Domain.
@@ -87,6 +88,8 @@ import { ConversationsModule } from '../conversations/conversations.module';
     // Timeline unification: mirror AI turns into the Conversation/Message store
     // (ConversationExecutionService) so agents read a single history.
     ConversationsModule,
+    // Provides SystemSettingService for default model/temperature when creating agents.
+    PlatformModule,
   ],
   controllers: [
     AiAgentController,

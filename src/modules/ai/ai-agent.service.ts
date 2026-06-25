@@ -10,6 +10,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { CreateAiAgentDto } from './dto/create-ai-agent.dto';
 import { UpdateAiAgentDto } from './dto/update-ai-agent.dto';
 import { AiAgentFilterDto } from './dto/ai-agent-filter.dto';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 
 /**
  * AI agents.
@@ -26,17 +28,22 @@ export class AiAgentService {
   constructor(
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
+    private readonly platformSettings: SystemSettingService,
   ) {}
 
   async create(tenantId: string, dto: CreateAiAgentDto): Promise<AiAgent> {
     if (dto.branchId) await this.assertBranch(tenantId, dto.branchId);
+    const [defaultModel, defaultTemp] = await Promise.all([
+      this.platformSettings.getTyped<string>(SettingKey.AI_DEFAULT_MODEL),
+      this.platformSettings.getTyped<number>(SettingKey.AI_DEFAULT_TEMP),
+    ]);
     const agent = this.agents.create({
       tenant: { id: tenantId } as Tenant,
       branch: dto.branchId ? ({ id: dto.branchId } as Branch) : undefined,
       name: dto.name,
-      model: dto.model,
+      model: dto.model ?? defaultModel,
       system_prompt: dto.systemPrompt,
-      temperature: dto.temperature ?? 0.2,
+      temperature: dto.temperature ?? defaultTemp,
       is_active: dto.isActive ?? true,
     });
     const saved = await this.agents.save(agent);

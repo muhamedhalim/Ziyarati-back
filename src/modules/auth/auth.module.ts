@@ -30,6 +30,7 @@ import { RolesGuard } from './guards/roles.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
 
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { PlatformModule } from '../platform/platform.module';
 
 @Module({
   imports: [
@@ -54,6 +55,8 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     ConfigModule,
     // Provides UsageService for plan-limit enforcement (max_users).
     SubscriptionBillingModule,
+    // Provides SystemSettingService for registration gate (allow_tenant_registration).
+    PlatformModule,
   ],
   controllers: [AuthController, RolesController, PermissionsController],
   providers: [

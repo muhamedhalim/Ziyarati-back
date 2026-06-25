@@ -27,6 +27,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
@@ -83,6 +84,12 @@ import { validate } from './config/env.validation';
     {
       provide: APP_GUARD,
       useClass: CsrfGuard,
+    },
+    // Blocks all non-super-admin requests when platform.maintenance_mode is enabled.
+    // Runs after JWT so req.user is populated; super-admins bypass the gate.
+    {
+      provide: APP_GUARD,
+      useClass: MaintenanceGuard,
     },
     // Billing enforcement layer (runs after auth; reads request.user). Both are
     // no-ops unless a route carries @RequireActiveSubscription() / @RequireFeature():

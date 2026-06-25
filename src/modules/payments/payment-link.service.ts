@@ -10,11 +10,9 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreatePaymentLinkDto } from './dto/create-payment-link.dto';
 import { QueryPaymentLinksDto } from './dto/query-payment-links.dto';
-import {
-  DEFAULT_PAYMENT_LINK_TTL_HOURS,
-  PAYMENT_LINK_STATUS,
-  PAYMENT_LINK_TOKEN_BYTES,
-} from './payments.constants';
+import { PAYMENT_LINK_STATUS, PAYMENT_LINK_TOKEN_BYTES } from './payments.constants';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 
 /**
  * Shareable payment links (`payment_links`).
@@ -28,12 +26,14 @@ export class PaymentLinkService {
   constructor(
     @InjectRepository(PaymentLink)
     private readonly links: Repository<PaymentLink>,
+    private readonly platformSettings: SystemSettingService,
   ) {}
 
-  create(tenantId: string, dto: CreatePaymentLinkDto): Promise<PaymentLink> {
+  async create(tenantId: string, dto: CreatePaymentLinkDto): Promise<PaymentLink> {
+    const ttlHours = await this.platformSettings.getTyped<number>(SettingKey.PAYMENT_LINK_TTL);
     const expiresAt = dto.expiresAt
       ? new Date(dto.expiresAt)
-      : new Date(Date.now() + DEFAULT_PAYMENT_LINK_TTL_HOURS * 3_600_000);
+      : new Date(Date.now() + ttlHours * 3_600_000);
 
     return this.links.save(
       this.links.create({

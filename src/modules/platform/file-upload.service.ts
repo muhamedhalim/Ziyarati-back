@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 
@@ -10,6 +9,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreateFileUploadDto } from './dto/create-file-upload.dto';
 import { QueryFileUploadsDto } from './dto/query-file-uploads.dto';
+import { SystemSettingService } from './system-setting.service';
+import { SettingKey } from './settings.registry';
 
 /**
  * File upload METADATA tracking (`file_uploads`).
@@ -17,11 +18,12 @@ import { QueryFileUploadsDto } from './dto/query-file-uploads.dto';
  * Tenant-scoped via the `tenant` relation (required on this entity). NO storage
  * provider is implemented — `file_url` is an opaque storage reference produced
  * elsewhere. The uploader is taken from the principal, not from input.
+ *
+ * Limits (max file size, per-tenant quota) are read from the typed settings
+ * registry at call time so they can be changed without a restart.
  */
 @Injectable()
 export class FileUploadService {
-  private readonly maxFileBytes: number;
-  private readonly tenantQuotaBytes: number;
   /** Hostnames a stored file_url may NOT point at (SSRF / cross-tenant guard). */
   private static readonly BLOCKED_HOST =
     /^(localhost|127\.|0\.0\.0\.0|169\.254\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i;
@@ -29,31 +31,35 @@ export class FileUploadService {
   constructor(
     @InjectRepository(FileUpload)
     private readonly files: Repository<FileUpload>,
-    config: ConfigService,
-  ) {
-    this.maxFileBytes = Number(config.get<string>('PLATFORM_MAX_FILE_BYTES') ?? String(50 * 1024 * 1024));
-    this.tenantQuotaBytes = Number(config.get<string>('PLATFORM_STORAGE_QUOTA_BYTES') ?? String(5 * 1024 * 1024 * 1024));
-  }
+    private readonly platformSettings: SystemSettingService,
+  ) {}
 
   async register(
     tenantId: string,
     dto: CreateFileUploadDto,
     userId?: string,
   ): Promise<FileUpload> {
+    const [maxFileSizeMb, tenantQuotaGb] = await Promise.all([
+      this.platformSettings.getTyped<number>(SettingKey.MAX_FILE_SIZE_MB),
+      this.platformSettings.getTyped<number>(SettingKey.TENANT_QUOTA_GB),
+    ]);
+    const maxFileBytes = maxFileSizeMb * 1024 * 1024;
+    const tenantQuotaBytes = tenantQuotaGb * 1024 * 1024 * 1024;
+
     this.assertSafeUrl(dto.file_url);
     const size = dto.file_size ?? 0;
-    if (size < 0 || size > this.maxFileBytes) {
+    if (size < 0 || size > maxFileBytes) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: `File size exceeds the ${this.maxFileBytes}-byte limit`,
+        message: `File size exceeds the ${maxFileSizeMb} MB limit`,
       });
     }
     // Best-effort quota: size is client-claimed (no storage integration here), so
     // this is an advisory cap until a real storage provider reports actual bytes.
     const used = await this.usedBytes(tenantId);
-    if (used + size > this.tenantQuotaBytes) {
+    if (used + size > tenantQuotaBytes) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Tenant storage quota exceeded',
-        context: { usedBytes: used, quotaBytes: this.tenantQuotaBytes },
+        context: { usedBytes: used, quotaBytes: tenantQuotaBytes },
       });
     }
 

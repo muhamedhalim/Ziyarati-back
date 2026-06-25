@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { PlatformModule } from '../platform/platform.module';
 
 import { Payment } from '../../entities/Payments/Payment';
 import { PaymentGateway } from '../../entities/Payments/PaymentGateway';
@@ -72,6 +73,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
       Settlement,
       SettlementItem,
     ]),
+    // Provides SystemSettingService for payment link TTL and default currency.
+    PlatformModule,
   ],
   controllers: [
     PaymentGatewayController,

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { PlatformModule } from '../platform/platform.module';
+
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
@@ -53,6 +55,8 @@ import { StubPaymentProvider } from './payment/stub-payment.provider';
       FeatureFlag,
       SystemSetting,
     ]),
+    // Provides SystemSettingService for typed setting reads (trial duration, etc.)
+    PlatformModule,
   ],
   controllers: [
     SubscriptionController,

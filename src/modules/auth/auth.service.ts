@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -30,6 +30,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { ROLE, RoleSlug } from '../../rbac/rbac.constants';
 import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -48,6 +50,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     private readonly usage: UsageService,
+    private readonly platformSettings: SystemSettingService,
   ) {}
 
   // ----------------------------------------------------------------------- //
@@ -66,6 +69,15 @@ export class AuthService {
     dto: RegisterOwnerDto,
     context?: TokenContext,
   ): Promise<AuthResult> {
+    const allowRegistration = await this.platformSettings.getTyped<boolean>(
+      SettingKey.ALLOW_REGISTRATION,
+    );
+    if (!allowRegistration) {
+      throw new ForbiddenException(
+        'New registrations are currently closed. Please contact the platform administrator.',
+      );
+    }
+
     const slugTaken = await this.tenants.findOne({ where: { slug: dto.slug } });
     if (slugTaken) {
       throw new AppError(ErrorCode.CONFLICT, {

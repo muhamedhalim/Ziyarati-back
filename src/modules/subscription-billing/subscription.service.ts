@@ -13,6 +13,8 @@ import { AccessControlService } from './access-control.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { ChangePlanDto } from './dto/change-plan.dto';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 
 /** Effective (computed) status — adds the derived EXPIRED state on top of the enum. */
 export type EffectiveStatus = SubscriptionStatus | 'EXPIRED';
@@ -43,6 +45,7 @@ export class SubscriptionService {
     private readonly plans: Repository<SubscriptionPlan>,
     private readonly billing: BillingService,
     private readonly access: AccessControlService,
+    private readonly platformSettings: SystemSettingService,
   ) {}
 
   // ───────────────────────────── Plans ───────────────────────────────────── //
@@ -85,10 +88,17 @@ export class SubscriptionService {
     }
 
     const startsAt = new Date();
-    const endsAt = this.computeEnds(startsAt, plan.billing_cycle);
-    const status = dto.startTrial
-      ? SubscriptionStatus.TRIAL
-      : SubscriptionStatus.ACTIVE;
+    let endsAt: Date;
+    let status: SubscriptionStatus;
+
+    if (dto.startTrial) {
+      const trialDays = await this.platformSettings.getTyped<number>(SettingKey.TRIAL_DURATION_DAYS);
+      endsAt = new Date(startsAt.getTime() + trialDays * 86_400_000);
+      status = SubscriptionStatus.TRIAL;
+    } else {
+      endsAt = this.computeEnds(startsAt, plan.billing_cycle);
+      status = SubscriptionStatus.ACTIVE;
+    }
 
     const subscription = await this.subscriptions.save(
       this.subscriptions.create({

@@ -15,6 +15,7 @@ import { WebhookLogService } from './webhook-log.service';
 import { FileUploadService } from './file-upload.service';
 import { SystemSettingService } from './system-setting.service';
 import { PlatformMaintenanceService } from './platform-maintenance.service';
+import { MaintenanceGuard } from './guards/maintenance.guard';
 
 import { ApiKeyController } from './api-key.controller';
 import { ApiLogController } from './api-log.controller';
@@ -35,11 +36,14 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
  *    non-blocking, sampled.
  *  - Webhook audit — WebhookLogService.record (payloads redacted of secrets).
  *  - File-upload metadata — quota + URL safety enforced (storage external).
- *  - Platform settings — super-admin only.
+ *  - Platform settings — super-admin only, typed registry + raw KV fallback.
  *  - Retention — PlatformMaintenanceService purges aged logs (worker job).
  *
  * TWO ownership models: TENANT-OWNED (ApiKey/ApiLog/WebhookLog/FileUpload) and
  * PLATFORM-OWNED (SystemSetting, super-admin).
+ *
+ * SystemSettingService and MaintenanceGuard are exported so other modules can
+ * consume typed settings without duplicating the entity registration.
  */
 @Module({
   imports: [
@@ -60,6 +64,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     FileUploadService,
     SystemSettingService,
     PlatformMaintenanceService,
+    MaintenanceGuard,
     ApiKeyAuthGuard,
     { provide: APP_INTERCEPTOR, useClass: ApiLoggingInterceptor },
   ],
@@ -69,6 +74,8 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     WebhookLogService,
     PlatformMaintenanceService,
     ApiKeyAuthGuard,
+    SystemSettingService,
+    MaintenanceGuard,
   ],
 })
 export class PlatformModule {}
