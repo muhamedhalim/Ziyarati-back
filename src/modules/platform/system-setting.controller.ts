@@ -32,6 +32,7 @@ import { SystemSettingService } from './system-setting.service';
 import { CreateSystemSettingDto } from './dto/create-system-setting.dto';
 import { UpdateSystemSettingDto } from './dto/update-system-setting.dto';
 import { QuerySystemSettingsDto } from './dto/query-system-settings.dto';
+import { UpsertTypedSettingDto } from './dto/upsert-typed-setting.dto';
 import { KNOWN_SETTING_KEYS, SettingKey } from './settings.registry';
 
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -106,7 +107,7 @@ export class SystemSettingController {
   @ApiUnauthorizedResponse({ schema: S_ERROR })
   @ApiForbiddenResponse({ schema: S_ERROR })
   @Put('by-key/:key')
-  upsertByKey(@Param('key') key: string, @Body() dto: { value: unknown }) {
+  upsertByKey(@Param('key') key: string, @Body() dto: UpsertTypedSettingDto) {
     if (!KNOWN_SETTING_KEYS.has(key)) {
       throw new BadRequestException(
         `Unknown setting key: "${key}". Use POST /platform/settings for raw keys.`,

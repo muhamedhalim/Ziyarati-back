@@ -29,6 +29,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
+import { ServicesModule } from './modules/services/services.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -68,6 +69,7 @@ import { validate } from './config/env.validation';
     AnalyticsModule,
     PlatformModule,
     SchedulingModule,
+    ServicesModule,
     SeedModule,
   ],
 
