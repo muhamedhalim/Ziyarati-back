@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
@@ -13,6 +14,11 @@ import { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
+import {
+  PaymentFailedEvent,
+  PaymentRefundedEvent,
+  PaymentSucceededEvent,
+} from '../../events/payment.events';
 
 type TargetStatus = 'paid' | 'failed' | 'refunded' | 'pending';
 
@@ -49,6 +55,7 @@ export class PaymentWebhookService {
     private readonly verifier: MoyasarWebhookVerifier,
     private readonly transactions: TransactionService,
     private readonly adjustments: SettlementAdjustmentService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   async handleMoyasar(
@@ -74,7 +81,7 @@ export class PaymentWebhookService {
 
     const owner = await this.payments.findOne({
       where: { gateway_payment_id: gatewayPaymentId },
-      relations: { tenant: true },
+      relations: { tenant: true, customer: true },
     });
     if (!owner || !owner.tenant) {
       this.logger.warn(
@@ -84,7 +91,12 @@ export class PaymentWebhookService {
     }
 
     const tenantId = owner.tenant.id;
+    const customerId = owner.customer?.id;
     const target = this.mapEvent(event);
+
+    // Tracks which domain event (and its name) to emit after the transaction commits.
+    let pendingEventName: string | null = null;
+    let pendingEvent: PaymentSucceededEvent | PaymentRefundedEvent | PaymentFailedEvent | null = null;
 
     // 4. Apply state idempotently under a row lock.
     const result = await this.dataSource.transaction(async (manager) => {
@@ -137,6 +149,20 @@ export class PaymentWebhookService {
           event,
           eventId,
         );
+        if (
+          status === PaymentStatus.REFUNDED ||
+          status === PaymentStatus.PARTIALLY_REFUNDED
+        ) {
+          pendingEventName = PaymentRefundedEvent.eventName;
+          pendingEvent = new PaymentRefundedEvent(
+            tenantId,
+            payment.id,
+            Number(payment.amount),
+            payment.currency,
+            customerId,
+            status === PaymentStatus.PARTIALLY_REFUNDED,
+          );
+        }
         return { status, deduplicated: false };
       }
 
@@ -150,6 +176,14 @@ export class PaymentWebhookService {
           payment.status = PaymentStatus.PAID;
           payment.paid_at = new Date();
           changed = true;
+          pendingEventName = PaymentSucceededEvent.eventName;
+          pendingEvent = new PaymentSucceededEvent(
+            tenantId,
+            payment.id,
+            Number(payment.amount),
+            payment.currency,
+            customerId,
+          );
         } else {
           this.logger.error(
             `Webhook 'paid' for payment ${payment.id} rejected: captured amount/currency mismatch`,
@@ -161,11 +195,19 @@ export class PaymentWebhookService {
       ) {
         payment.status = PaymentStatus.FAILED;
         changed = true;
+        pendingEventName = PaymentFailedEvent.eventName;
+        pendingEvent = new PaymentFailedEvent(tenantId, payment.id, customerId);
       }
 
       if (changed) await repo.save(payment);
       return { status: payment.status, deduplicated: false };
     });
+
+    // Emit domain events after the transaction commits so listeners see
+    // a consistent DB state. Skip when the event was a harmless duplicate.
+    if (pendingEventName && pendingEvent && !result.deduplicated) {
+      this.emitter.emit(pendingEventName, pendingEvent);
+    }
 
     return {
       accepted: true,

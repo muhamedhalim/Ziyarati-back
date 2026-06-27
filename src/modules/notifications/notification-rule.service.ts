@@ -112,6 +112,24 @@ export class NotificationRuleService {
     await this.rules.delete({ id });
   }
 
+  /**
+   * Returns every active rule for a tenant that matches the given trigger event.
+   * Used by NotificationEventListener to evaluate rules without pagination.
+   */
+  findActiveByTrigger(
+    tenantId: string,
+    triggerEvent: string,
+  ): Promise<NotificationRule[]> {
+    return this.rules.find({
+      where: {
+        tenant: { id: tenantId },
+        trigger_event: triggerEvent,
+        is_active: true,
+      },
+      relations: { template: true },
+    });
+  }
+
   private async assertTemplate(tenantId: string, templateId: string): Promise<void> {
     const ok = await this.templates.exists({
       where: { id: templateId, tenant: { id: tenantId } },

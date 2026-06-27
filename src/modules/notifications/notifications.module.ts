@@ -13,6 +13,7 @@ import { NotificationSchedulerService } from './notification-scheduler.service';
 import { NotificationLogService } from './notification-log.service';
 import { NotificationDispatchService } from './notification-dispatch.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
+import { NotificationEventListener } from './notification-event.listener';
 
 import { NotificationTemplateController } from './notification-template.controller';
 import { NotificationRuleController } from './notification-rule.controller';
@@ -60,6 +61,7 @@ import { WhatsappModule } from '../whatsapp/whatsapp.module';
     NotificationLogService,
     NotificationDispatchService,
     NotificationDeliveryService,
+    NotificationEventListener,
   ],
   exports: [
     NotificationTemplateService,

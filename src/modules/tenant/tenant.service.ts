@@ -171,6 +171,21 @@ export class TenantService {
     });
   }
 
+  /**
+   * Transitions a tenant from PENDING_VERIFICATION to PENDING_APPROVAL.
+   * Called automatically by TenantVerificationService when all submitted
+   * documents for the tenant have been reviewed (approved or rejected).
+   * The admin can then take the final approve/reject action.
+   */
+  markPendingApproval(id: string, actorId: string): Promise<Tenant> {
+    return this.transition(id, {
+      status: TenantApprovalStatus.PENDING_APPROVAL,
+      isActive: false,
+      action: 'PENDING_APPROVAL',
+      actorId,
+    });
+  }
+
   async getApprovalEvents(id: string): Promise<TenantApprovalEvent[]> {
     await this.findById(id); // existence + (caller-enforced) scope
     return this.approvalEvents.find({
@@ -232,7 +247,11 @@ export class TenantService {
   ): Promise<Tenant> {
     // Allowed approval-status transitions (current → permitted next states).
     const ALLOWED: Record<TenantApprovalStatus, TenantApprovalStatus[]> = {
-      [TenantApprovalStatus.PENDING_VERIFICATION]: [TenantApprovalStatus.APPROVED, TenantApprovalStatus.REJECTED],
+      [TenantApprovalStatus.PENDING_VERIFICATION]: [
+        TenantApprovalStatus.PENDING_APPROVAL,
+        TenantApprovalStatus.APPROVED,
+        TenantApprovalStatus.REJECTED,
+      ],
       [TenantApprovalStatus.PENDING_APPROVAL]: [TenantApprovalStatus.APPROVED, TenantApprovalStatus.REJECTED],
       [TenantApprovalStatus.APPROVED]: [TenantApprovalStatus.SUSPENDED],
       [TenantApprovalStatus.REJECTED]: [TenantApprovalStatus.APPROVED],

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Not, Repository } from 'typeorm';
 
@@ -15,6 +16,13 @@ import { ChangePlanDto } from './dto/change-plan.dto';
 import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
+import {
+  SubscriptionActivatedEvent,
+  SubscriptionCancelledEvent,
+  SubscriptionPlanChangedEvent,
+  SubscriptionReactivatedEvent,
+  SubscriptionTrialStartedEvent,
+} from '../../events/subscription.events';
 
 /** Effective (computed) status — adds the derived EXPIRED state on top of the enum. */
 export type EffectiveStatus = SubscriptionStatus | 'EXPIRED';
@@ -46,6 +54,7 @@ export class SubscriptionService {
     private readonly billing: BillingService,
     private readonly access: AccessControlService,
     private readonly platformSettings: SystemSettingService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   // ───────────────────────────── Plans ───────────────────────────────────── //
@@ -116,7 +125,21 @@ export class SubscriptionService {
       await this.billing.generateInvoice(tenantId, subscription.id, Number(plan.price));
     }
 
-    return this.view(await this.loadWithPlan(tenantId, subscription.id));
+    const view = await this.view(await this.loadWithPlan(tenantId, subscription.id));
+
+    if (status === SubscriptionStatus.TRIAL) {
+      this.emitter.emit(
+        SubscriptionTrialStartedEvent.eventName,
+        new SubscriptionTrialStartedEvent(tenantId, subscription.id, plan.id, endsAt),
+      );
+    } else {
+      this.emitter.emit(
+        SubscriptionActivatedEvent.eventName,
+        new SubscriptionActivatedEvent(tenantId, subscription.id, plan.id),
+      );
+    }
+
+    return view;
   }
 
   /** The tenant's current subscription (most recent, non-deleted) + computed status. */
@@ -153,7 +176,12 @@ export class SubscriptionService {
     // Proration is abstracted: issue an invoice for the new plan price.
     await this.billing.generateInvoice(tenantId, current.id, Number(newPlan.price));
 
-    return this.view(await this.loadWithPlan(tenantId, current.id));
+    const view = await this.view(await this.loadWithPlan(tenantId, current.id));
+    this.emitter.emit(
+      SubscriptionPlanChangedEvent.eventName,
+      new SubscriptionPlanChangedEvent(tenantId, current.id, newPlan.id),
+    );
+    return view;
   }
 
   async cancel(
@@ -170,7 +198,12 @@ export class SubscriptionService {
     // If cancelAtPeriodEnd: keep status/access until ends_at; only auto-renew off.
     await this.subscriptions.save(current);
 
-    return this.view(await this.loadWithPlan(tenantId, current.id));
+    const view = await this.view(await this.loadWithPlan(tenantId, current.id));
+    this.emitter.emit(
+      SubscriptionCancelledEvent.eventName,
+      new SubscriptionCancelledEvent(tenantId, current.id, dto.cancelAtPeriodEnd ?? false),
+    );
+    return view;
   }
 
   async reactivate(tenantId: string): Promise<SubscriptionView> {
@@ -201,6 +234,10 @@ export class SubscriptionService {
     }
     await this.subscriptions.save(subscription);
 
+    this.emitter.emit(
+      SubscriptionReactivatedEvent.eventName,
+      new SubscriptionReactivatedEvent(tenantId, subscription.id),
+    );
     return this.view(subscription);
   }
 

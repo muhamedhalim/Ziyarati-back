@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AppController } from './app.controller';
@@ -43,6 +44,10 @@ import { validate } from './config/env.validation';
       cache: true,
       validate,
     }),
+
+    // Global event bus for domain events (appointment/payment/subscription).
+    // wildcard: false — exact string matching only (no glob patterns).
+    EventEmitterModule.forRoot({ global: true, wildcard: false }),
 
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

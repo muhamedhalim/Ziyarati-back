@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
@@ -44,6 +45,15 @@ import { CancelAppointmentDto } from './dto/cancel-appointment.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AddAppointmentNoteDto } from './dto/add-appointment-note.dto';
 import { SetAppointmentServicesDto } from './dto/set-appointment-services.dto';
+import {
+  AppointmentCancelledEvent,
+  AppointmentCompletedEvent,
+  AppointmentConfirmedEvent,
+  AppointmentCreatedEvent,
+  AppointmentInProgressEvent,
+  AppointmentNoShowEvent,
+  AppointmentRescheduledEvent,
+} from '../../events/appointment.events';
 
 /** Terminal statuses — no further lifecycle transitions are permitted. */
 const TERMINAL_STATUSES: AppointmentStatus[] = [
@@ -121,6 +131,7 @@ export class AppointmentsService {
     /** The single availability engine: every booking path validates through it. */
     private readonly availability: AvailabilityService,
     private readonly usage: UsageService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   // ───────────────────────────── Queries ─────────────────────────────────── //
@@ -263,7 +274,19 @@ export class AppointmentsService {
     // Count the booking against the tenant's monthly quota (best-effort).
     await this.usage.increment(tenantId, USAGE_METRIC.APPOINTMENTS, 1);
 
-    return this.findOne(tenantId, created.id);
+    const appointment = await this.findOne(tenantId, created.id);
+    this.emitter.emit(
+      AppointmentCreatedEvent.eventName,
+      new AppointmentCreatedEvent(
+        tenantId,
+        appointment.id,
+        appointment.customer!.id,
+        appointment.staff!.id,
+        appointment.branch!.id,
+        appointment.start_at,
+      ),
+    );
+    return appointment;
   }
 
   // ───────────────────────────── Update ──────────────────────────────────── //
@@ -410,7 +433,9 @@ export class AppointmentsService {
       );
     });
 
-    return this.findOne(tenantId, id);
+    const updated = await this.findOne(tenantId, id);
+    this.emitStatusEvent(tenantId, updated, dto.status);
+    return updated;
   }
 
   // ─────────────────────────── Cancellation ──────────────────────────────── //
@@ -469,7 +494,17 @@ export class AppointmentsService {
       );
     });
 
-    return this.findOne(tenantId, id);
+    const cancelled = await this.findOne(tenantId, id);
+    this.emitter.emit(
+      AppointmentCancelledEvent.eventName,
+      new AppointmentCancelledEvent(
+        tenantId,
+        cancelled.id,
+        cancelled.customer!.id,
+        dto.reason,
+      ),
+    );
+    return cancelled;
   }
 
   // ─────────────────────────── Reschedule ────────────────────────────────── //
@@ -532,7 +567,17 @@ export class AppointmentsService {
       );
     });
 
-    return this.findOne(tenantId, id);
+    const rescheduled = await this.findOne(tenantId, id);
+    this.emitter.emit(
+      AppointmentRescheduledEvent.eventName,
+      new AppointmentRescheduledEvent(
+        tenantId,
+        rescheduled.id,
+        rescheduled.customer!.id,
+        rescheduled.start_at,
+      ),
+    );
+    return rescheduled;
   }
 
   // ───────────────────────────── Notes ───────────────────────────────────── //
@@ -871,5 +916,43 @@ export class AppointmentsService {
         note,
       }),
     );
+  }
+
+  private emitStatusEvent(
+    tenantId: string,
+    appointment: Appointment,
+    status: AppointmentStatus,
+  ): void {
+    const customerId = appointment.customer!.id;
+    const id = appointment.id;
+
+    switch (status) {
+      case AppointmentStatus.CONFIRMED:
+        this.emitter.emit(
+          AppointmentConfirmedEvent.eventName,
+          new AppointmentConfirmedEvent(tenantId, id, customerId, appointment.start_at),
+        );
+        break;
+      case AppointmentStatus.COMPLETED:
+        this.emitter.emit(
+          AppointmentCompletedEvent.eventName,
+          new AppointmentCompletedEvent(tenantId, id, customerId),
+        );
+        break;
+      case AppointmentStatus.NO_SHOW:
+        this.emitter.emit(
+          AppointmentNoShowEvent.eventName,
+          new AppointmentNoShowEvent(tenantId, id, customerId),
+        );
+        break;
+      case AppointmentStatus.IN_PROGRESS:
+        this.emitter.emit(
+          AppointmentInProgressEvent.eventName,
+          new AppointmentInProgressEvent(tenantId, id, customerId),
+        );
+        break;
+      default:
+        break;
+    }
   }
 }
