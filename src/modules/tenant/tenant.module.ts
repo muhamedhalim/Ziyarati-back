@@ -16,6 +16,9 @@ import { BranchController } from './branch.controller';
 import { TenantVerificationController } from './tenant-verification.controller';
 
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { StorageModule } from '../storage/storage.module';
+import { VerificationAuditModule } from '../verification-audit/verification-audit.module';
+import { AdminNotificationModule } from '../admin-notifications/admin-notification.module';
 
 /**
  * Tenant aggregate root: the clinic and everything it directly owns —
@@ -35,6 +38,11 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     ]),
     // Provides UsageService for plan-limit enforcement (max_branches).
     SubscriptionBillingModule,
+    // Provides StorageService so verification can validate/sign R2 objects.
+    StorageModule,
+    // Append-only audit trail + super-admin notifications for verification.
+    VerificationAuditModule,
+    AdminNotificationModule,
   ],
   controllers: [
     TenantController,

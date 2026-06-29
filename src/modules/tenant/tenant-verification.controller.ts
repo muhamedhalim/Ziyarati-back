@@ -2,10 +2,13 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
+  Ip,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -96,6 +99,16 @@ export class TenantVerificationController {
     private readonly ctx: TenantContextService,
   ) {}
 
+  /** Builds the request-derived audit actor (id, primary role, IP, user agent). */
+  private actor(id: string, ip: string, userAgent: string) {
+    return {
+      id,
+      role: this.ctx.getUser()?.roles?.[0],
+      ip,
+      userAgent,
+    };
+  }
+
   // ────────────────────── Tenant self-service (owner) ────────────────────── //
 
   @ApiOperation({
@@ -142,8 +155,96 @@ platform.
   })
   @Post('me')
   @Roles(ROLE.OWNER)
-  submit(@Body() dto: CreateVerificationDocumentDto) {
-    return this.verification.submit(this.ctx.requireTenantId(), dto);
+  submit(
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+    @Body() dto: CreateVerificationDocumentDto,
+  ) {
+    return this.verification.submit(
+      this.ctx.requireTenantId(),
+      this.actor(userId, ip, userAgent),
+      dto,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Submit verification for review (owner)',
+    description: `
+**Protected — \`owner\` role required.**
+
+Finalises document submission. The backend validates that **every required
+document type** has been uploaded; if any are missing it returns **400** with the
+exact missing types and does NOT advance the clinic. On success the clinic moves
+to \`PENDING_APPROVAL\` and platform admins are notified.
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Clinic advanced to PENDING_APPROVAL.',
+    schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', example: 'PENDING_APPROVAL' },
+        missing: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  })
+  @ApiBadRequestResponse({
+    description: 'Required documents are missing — see `context.missing`.',
+    schema: S_ERROR,
+  })
+  @Post('me/submit')
+  @Roles(ROLE.OWNER)
+  submitForReview(
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.verification.submitForReview(
+      this.ctx.requireTenantId(),
+      this.actor(userId, ip, userAgent),
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Get a viewable URL for a verification document',
+    description: `
+**Protected — \`owner\`/\`manager\` (own clinic) or \`super_admin\` (any).**
+
+Returns a short-lived signed URL for the document's file. Private R2 objects
+yield a presigned GET that expires in ~5 minutes; legacy externally-hosted
+documents return their stored URL. The bucket is never public, so clients must
+call this each time they need to view a file.
+    `.trim(),
+  })
+  @ApiParam({ name: 'documentId', description: 'UUID of the document', type: 'string', format: 'uuid' })
+  @ApiOkResponse({
+    description: 'A viewable URL (presigned for private objects).',
+    schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        expiresIn: { type: 'number', nullable: true, example: 300 },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks access to this document.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Document not found.', schema: S_ERROR })
+  @Get(':documentId/file-url')
+  @Roles(ROLE.OWNER, ROLE.MANAGER, ROLE.SUPER_ADMIN)
+  getFileUrl(
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    const scope = this.ctx.isSuperAdmin() ? null : this.ctx.requireTenantId();
+    return this.verification.getFileUrl(
+      documentId,
+      scope,
+      this.actor(userId, ip, userAgent),
+    );
   }
 
   @ApiOperation({
@@ -214,6 +315,27 @@ in the admin dashboard.
   }
 
   @ApiOperation({
+    summary: 'Verification audit trail for a tenant (platform admin)',
+    description:
+      '**Protected — `super_admin` role required.** Returns the immutable audit log (uploaded / replaced / deleted / viewed / approved / rejected / submitted) for a tenant, newest first, with actor, IP and user agent.',
+  })
+  @ApiParam({ name: 'tenantId', description: 'UUID of the tenant', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Audit entries, newest first.' })
+  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @Get('tenants/:tenantId/audit')
+  @Roles(ROLE.SUPER_ADMIN)
+  listAudit(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsed = limit ? Number(limit) : undefined;
+    return this.verification.listAudit(
+      tenantId,
+      Number.isFinite(parsed) ? (parsed as number) : undefined,
+    );
+  }
+
+  @ApiOperation({
     summary: 'Approve or reject a verification document (platform admin)',
     description: `
 **Protected — \`super_admin\` role required.**
@@ -258,8 +380,14 @@ approve the tenant — that requires a separate explicit action at
   review(
     @Param('documentId', ParseUUIDPipe) documentId: string,
     @CurrentUser('id') reviewerId: string,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
     @Body() dto: ReviewVerificationDocumentDto,
   ) {
-    return this.verification.review(documentId, reviewerId, dto);
+    return this.verification.review(
+      documentId,
+      this.actor(reviewerId, ip, userAgent),
+      dto,
+    );
   }
 }

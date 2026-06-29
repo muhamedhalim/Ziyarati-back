@@ -1,26 +1,83 @@
-import { IsString, MaxLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/**
+ * Submit a verification document.
+ *
+ * Two delivery modes are accepted (the service requires exactly one source):
+ *  - **R2 (preferred):** upload via `POST /uploads` first, then pass the
+ *    returned `storageKey` + metadata here. The file stays in a private bucket.
+ *  - **Legacy/external:** pass a `fileUrl` to an already-hosted document.
+ */
 export class CreateVerificationDocumentDto {
   @ApiProperty({
     description:
-      'Document category identifier. Common values: `commercial_registration` (CR certificate), `national_id` (owner ID), `license` (Ministry of Health license), `vat_certificate` (VAT registration), `medical_liability_insurance`.',
+      'Document category identifier. Common values: `commercial_registration`, `national_id`, `license`, `vat_certificate`, `medical_liability_insurance`.',
     example: 'commercial_registration',
     maxLength: 100,
   })
-  /** e.g. "commercial_registration", "national_id", "license". */
   @IsString()
   @MaxLength(100)
   docType!: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description:
-      'URL of the already-uploaded document file. **Upload the file to your storage provider first** (S3, Cloudflare R2, etc.), then pass the resulting public or signed URL here. Maximum 1000 characters.',
-    example: 'https://storage.example.com/tenant-docs/1010123456/cr-certificate.pdf',
+      'Private storage object key returned by `POST /uploads`. Preferred over `fileUrl`. The object must already exist and belong to the caller\'s tenant.',
+    example: 'a3f1.../commercial_registration/8c2e....pdf',
+    maxLength: 1024,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  storageKey?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Legacy/external URL of an already-hosted document. Use only when not uploading via `POST /uploads`.',
+    example: 'https://storage.example.com/tenant-docs/cr-certificate.pdf',
     maxLength: 1000,
   })
-  /** URL of the already-uploaded file (upload handled by the storage layer). */
+  @IsOptional()
   @IsString()
   @MaxLength(1000)
-  fileUrl!: string;
+  fileUrl?: string;
+
+  @ApiPropertyOptional({
+    description: 'Original filename, shown in the review UI.',
+    example: 'commercial-registration.pdf',
+    maxLength: 255,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  originalFilename?: string;
+
+  @ApiPropertyOptional({ example: 'application/pdf', maxLength: 150 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  mimeType?: string;
+
+  @ApiPropertyOptional({ description: 'File size in bytes.', example: 482133 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sizeBytes?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'SHA-256 hex digest returned by `POST /uploads` — enables same-type dedup. Server-computed; echo it back unchanged.',
+    example: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    maxLength: 64,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  sha256?: string;
 }

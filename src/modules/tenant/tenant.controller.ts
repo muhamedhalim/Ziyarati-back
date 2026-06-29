@@ -27,6 +27,7 @@ import {
 } from '@nestjs/swagger';
 
 import { TenantService } from './tenant.service';
+import { TenantVerificationService } from './tenant-verification.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { ListTenantsQueryDto } from './dto/list-tenants.query.dto';
@@ -153,6 +154,7 @@ export class TenantController {
   constructor(
     private readonly tenantService: TenantService,
     private readonly ctx: TenantContextService,
+    private readonly verification: TenantVerificationService,
   ) {}
 
   // ─────────────────────────── Platform admin ────────────────────────────── //
@@ -431,11 +433,14 @@ The optional \`reason\` is recorded in the audit trail.
   @Post(':id/approve')
   @HttpCode(HttpStatus.OK)
   @Roles(ROLE.SUPER_ADMIN)
-  approve(
+  async approve(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: TenantApprovalActionDto,
     @CurrentUser('id') actorId: string,
   ) {
+    // Source-of-truth gate: a clinic cannot be approved unless every required
+    // verification document has been supplied.
+    await this.verification.assertReadyForApproval(id);
     return this.tenantService.approve(id, actorId, dto.reason);
   }
 

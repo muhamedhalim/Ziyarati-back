@@ -23,8 +23,36 @@ export class TenantVerificationDocument {
   @Column()
   doc_type!: string;
 
-  @Column()
-  file_url!: string;
+  /**
+   * Legacy/external file URL. Nullable since the R2 flow stores `storage_key`
+   * instead and never exposes a public URL. Kept for back-compat with rows
+   * created before private storage and for externally-hosted documents.
+   */
+  @Column({ nullable: true })
+  file_url?: string;
+
+  /** Private R2 object key (`<tenantId>/<docType>/<uuid>.<ext>`). Never a URL. */
+  @Column({ nullable: true })
+  storage_key?: string;
+
+  /** Sanitised original filename, for display in the review UI. */
+  @Column({ nullable: true })
+  original_filename?: string;
+
+  @Column({ nullable: true })
+  mime_type?: string;
+
+  /** File size in bytes (capped well below 2^31, so `int` is safe). */
+  @Column({ type: 'int', nullable: true })
+  size_bytes?: number;
+
+  /** SHA-256 hex digest of the file content — drives same-type dedup. */
+  @Column({ nullable: true })
+  content_hash?: string;
+
+  /** User id that performed the upload (audit trail). */
+  @Column({ nullable: true })
+  uploaded_by?: string;
 
   @Column({
     type: 'enum',
