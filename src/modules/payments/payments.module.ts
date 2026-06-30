@@ -24,6 +24,7 @@ import { SettlementItemService } from './settlement-item.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { RefundRecoveryService } from './refund-recovery.service';
 import { FinancialMetricsService } from './financial-metrics.service';
+import { PaymentFinancialsService } from './payment-financials.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
@@ -100,6 +101,7 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     SettlementAdjustmentService,
     RefundRecoveryService,
     FinancialMetricsService,
+    PaymentFinancialsService,
     PaymentWebhookService,
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
     MoyasarProvider,

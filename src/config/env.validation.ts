@@ -52,6 +52,11 @@ export const validate = (config: Record<string, unknown>) => {
     MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
     MOYASAR_API_BASE: Joi.string().allow('', null),
 
+    // Marketplace platform commission frozen onto each payment at capture.
+    // Both default to 0 (platform takes no cut) until a fee policy is set.
+    PLATFORM_FEE_PERCENT: Joi.number().min(0).max(100).default(0),
+    PLATFORM_FEE_FIXED: Joi.number().min(0).default(0),
+
     // ── WhatsApp Cloud API / Meta (PLATFORM-level shared number) ──────────
     // Optional in the schema so the app boots without a live integration, BUT:
     //   • the webhook verifier fails CLOSED at request time if

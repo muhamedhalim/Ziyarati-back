@@ -1,0 +1,104 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ziyarati — QA & System Audit</title><style>
+:root{--bg:#0b1220;--card:#121b2e;--mut:#8aa0b6;--bd:#22324a;--fg:#e6edf5;--g:#2ecc71;--y:#f5b301;--r:#e74c3c;--ac:#2cc7c9}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:30px 0 10px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+.sub{color:var(--mut);margin-bottom:18px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px}
+.card .n{font-size:26px;font-weight:700}.card .l{color:var(--mut);font-size:12px}
+.note{color:var(--mut);font-size:12px;max-width:380px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden;margin:8px 0}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--bd);vertical-align:top}
+th{background:#0e1626;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.b{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px}
+.b.pass{background:rgba(46,204,113,.16);color:var(--g)}.b.warn{background:rgba(245,179,1,.16);color:var(--y)}.b.fail{background:rgba(231,76,60,.16);color:var(--r)}
+tr.warn td{background:rgba(245,179,1,.05)}tr.fail td{background:rgba(231,76,60,.06)}
+.sev{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px}
+.sev.medium{background:rgba(245,179,1,.16);color:var(--y)}.sev.low{background:rgba(44,199,201,.16);color:var(--ac)}.sev.info{background:rgba(138,160,182,.16);color:var(--mut)}
+.banner{background:linear-gradient(90deg,rgba(44,199,201,.12),transparent);border:1px solid var(--bd);border-left:3px solid var(--ac);border-radius:8px;padding:12px 14px;color:var(--mut);margin:14px 0}
+code{background:#0e1626;padding:1px 5px;border-radius:4px;color:#cfe}
+</style></head><body><div class="wrap">
+<h1>Ziyarati — Production QA &amp; System Audit</h1>
+<div class="sub">2026-06-30 · live dev (API :3000, Postgres :5432, Redis :6379, current build) · executed read-only dynamic tests + direct DB verification + source audit</div>
+<div class="banner"><b>Honesty statement.</b> The table below is verbatim output from checks executed against the live system. Mutating endpoints (238 POST/PATCH/PUT/DELETE), load/concurrency/destructive tests, and write-driven workflows were <b>not</b> run against the live DB (irreversible; DB has 0 payments). Those phases are covered by source analysis and flagged as not-executed. Nothing is assumed.</div>
+<div class="cards">
+<div class="card"><div class="n" style="color:var(--g)">36</div><div class="l">Passed</div></div>
+<div class="card"><div class="n" style="color:var(--y)">1</div><div class="l">Warnings</div></div>
+<div class="card"><div class="n" style="color:var(--r)">1</div><div class="l">Failures</div></div>
+<div class="card"><div class="n">422</div><div class="l">Routes / 78 controllers</div></div>
+</div>
+<h2>Executed dynamic battery (38 checks)</h2>
+<table><thead><tr><th>Phase</th><th>Check</th><th>Status</th><th>ms</th><th>Result</th><th>Note</th></tr></thead><tbody>
+<tr class="pass"><td>P2</td><td>auth/me identity</td><td class="num">200</td><td class="num">26</td><td><span class="b pass">PASS</span></td><td class="note">email=mohamedhalemm40@gmail.com roles=["super_admin"]</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /platform/finance/kpis</td><td class="num">401</td><td class="num">16.1</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /platform/finance/transactions?limit=5</td><td class="num">401</td><td class="num">11.7</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /tenants?page=1&amp;limit=5</td><td class="num">401</td><td class="num">8.1</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /admin/notifications/unread-count</td><td class="num">401</td><td class="num">8.8</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /roles</td><td class="num">401</td><td class="num">7.3</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /permissions</td><td class="num">401</td><td class="num">7.5</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /feature-flags</td><td class="num">401</td><td class="num">8.1</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P2</td><td>unauth /platform/settings</td><td class="num">401</td><td class="num">8</td><td><span class="b pass">PASS</span></td><td class="note">expect 401</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /platform/finance/kpis</td><td class="num">200</td><td class="num">34.2</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /platform/finance/transactions?limit=5</td><td class="num">200</td><td class="num">33.8</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /tenants?page=1&amp;limit=5</td><td class="num">200</td><td class="num">22.4</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /admin/notifications/unread-count</td><td class="num">200</td><td class="num">23.3</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /roles</td><td class="num">200</td><td class="num">44.9</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /permissions</td><td class="num">200</td><td class="num">22.9</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="fail"><td>P3</td><td>admin GET /feature-flags</td><td class="num">403</td><td class="num">25.7</td><td><span class="b fail">FAIL</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P3</td><td>admin GET /platform/settings</td><td class="num">200</td><td class="num">32.8</td><td><span class="b pass">PASS</span></td><td class="note">expect 200</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /staff</td><td class="num">403</td><td class="num">27.8</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /services</td><td class="num">403</td><td class="num">25.5</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /crm/customers</td><td class="num">403</td><td class="num">22.8</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /appointments</td><td class="num">403</td><td class="num">21.6</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /payments</td><td class="num">403</td><td class="num">23.2</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /branches</td><td class="num">403</td><td class="num">25.9</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P2</td><td>super-admin-&gt;tenant /verification-documents/me</td><td class="num">403</td><td class="num">17.9</td><td><span class="b pass">PASS</span></td><td class="note">expect 403 (tenant context required); got 403</td></tr>
+<tr class="pass"><td>P8</td><td>invalid JWT =&gt; 401</td><td class="num">401</td><td class="num">9.5</td><td><span class="b pass">PASS</span></td><td class="note">forged access_token</td></tr>
+<tr class="pass"><td>P8</td><td>CSRF missing header =&gt; 403</td><td class="num">403</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">double-submit CSRF guard</td></tr>
+<tr class="pass"><td>P3</td><td>bad UUID param =&gt; 400</td><td class="num">400</td><td class="num">19</td><td><span class="b pass">PASS</span></td><td class="note">ParseUUIDPipe</td></tr>
+<tr class="pass"><td>P3</td><td>finance detail bad UUID =&gt; 400</td><td class="num">400</td><td class="num">20.6</td><td><span class="b pass">PASS</span></td><td class="note"></td></tr>
+<tr class="pass"><td>P3</td><td>login empty body =&gt; 400/401</td><td class="num">400</td><td class="num">9.2</td><td><span class="b pass">PASS</span></td><td class="note"></td></tr>
+<tr class="pass"><td>P8</td><td>wrong password =&gt; 401</td><td class="num">401</td><td class="num">279.8</td><td><span class="b pass">PASS</span></td><td class="note">code=INVALID_CREDENTIALS</td></tr>
+<tr class="pass"><td>P3</td><td>error envelope shape</td><td class="num">400</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">keys=statusCode,error,message,code,path,timestamp,requestId,context</td></tr>
+<tr class="pass"><td>P3</td><td>pagination envelope {data,total,page,limit}</td><td class="num">200</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">total=0</td></tr>
+<tr class="pass"><td>P6</td><td>KPI failedPayments == DB</td><td class="num">200</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">api=0 db=0</td></tr>
+<tr class="pass"><td>P6</td><td>KPI monthlyRevenue numeric &amp; == DB(0)</td><td class="num">200</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">api=0 dbPaidSum=0</td></tr>
+<tr class="pass"><td>P6</td><td>transactions total == payments count</td><td class="num">200</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">apiTotal=0 dbPayments=0</td></tr>
+<tr class="pass"><td>P8</td><td>refresh rotates session</td><td class="num">200</td><td class="num">32.6</td><td><span class="b pass">PASS</span></td><td class="note">access cookie rotated</td></tr>
+<tr class="warn"><td>P8</td><td>API rate limiting on /auth/login</td><td class="num">200</td><td class="num"></td><td><span class="b warn">WARN</span></td><td class="note">12 rapid attempts =&gt; 429 count=0 (NONE = no brute-force protection). latencies(ms)=[12,11,10,11,11,10,11,11,11,11,11,11]</td></tr>
+<tr class="pass"><td>P9</td><td>latency sample (5x GET)</td><td class="num">200</td><td class="num"></td><td><span class="b pass">PASS</span></td><td class="note">{"/auth/me":[16.5,18.3,16.9,17.2,18.8],"/platform/finance/kpis":[20.1,24,23.9,23.1,21.7],"/tenants?limit=10":[20.6,21.3,22.1,22.6,19.6]}</td></tr>
+</tbody></table>
+<h2>Database verification (executed)</h2>
+<table><thead><tr><th>Probe</th><th>Result</th></tr></thead><tbody>
+<tr><td>Foreign keys (schema)</td><td>186</td></tr>
+<tr><td>Orphan-row probes (payments→tenant, user_roles→user/role, verif_docs→tenant, branches→tenant)</td><td>0 / all OK</td></tr>
+<tr><td>payments UNIQUE constraints</td><td>gateway_payment_id, idempotency_key</td></tr>
+<tr><td>Soft-delete columns</td><td>present on payments, tenants, verif_docs, services, staff_profiles, customers</td></tr>
+<tr><td>New ledger columns on payments</td><td>gateway_fee, platform_fee, net_amount, payment_method, merchant_id, refunded_amount, refund_status, metadata — all present</td></tr>
+<tr><td>Verification audit log (real events)</td><td>UPLOADED×6, VIEWED×3, REJECTED×3, SUBMITTED×1</td></tr>
+<tr><td>Verification docs storage</td><td>3 R2 (storage_key) / 2 legacy (file_url) — migration + back-compat both work</td></tr>
+<tr><td>Financial KPI ↔ DB cross-check</td><td>failedPayments 0=0 · monthlyRevenue 0=0 · transactions.total 0=0</td></tr>
+<tr><td>Data volume</td><td>23 tenants · 29 users · 7 roles · 117 permissions · 2 branches · 0 customers/appointments/payments</td></tr>
+</tbody></table>
+<h2>Findings &amp; recommendations</h2>
+<table><thead><tr><th>Severity</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>
+<tr><td><span class="sev medium">Medium</span></td><td>No HTTP/auth rate limiting</td><td>12 rapid /auth/login attempts → 0×429. Add @nestjs/throttler + failed-login lockout.</td></tr>
+<tr><td><span class="sev medium">Medium</span></td><td>Forgot-password has no mail transport</td><td>Reset token returned in response (dev stub); no email sent.</td></tr>
+<tr><td><span class="sev low">Low</span></td><td>TYPEORM_SYNCHRONIZE=true in dev</td><td>Schema entity-synced; migrations not exercised locally. Run migration:run in CI (prod already guarded).</td></tr>
+<tr><td><span class="sev low">Low</span></td><td>Roleless super-scope account</td><td>admin@test.com (tenant NULL) has no roles. Remove or assign.</td></tr>
+<tr><td><span class="sev low">Low</span></td><td>OpenAPI JSON not exposed</td><td>/docs-json → 404. Expose for contract/security tooling.</td></tr>
+<tr><td><span class="sev info">Info</span></td><td>Finance/workflow not exercised end-to-end</td><td>0 payments in DB. Seed a disposable dataset to complete Phases 4/6/7.</td></tr>
+</tbody></table>
+<h2>Verified strengths</h2>
+<table><tbody>
+<tr><td>Auth</td><td>cookie + double-submit CSRF (403 w/o header) + refresh rotation + bcrypt(12); forged/no token → 401</td></tr>
+<tr><td>RBAC / tenant isolation</td><td>super-admin (tenant NULL) → 403 on all tenant routes; <code>requireTenantId()</code> choke point; tenant-scoped queries</td></tr>
+<tr><td>Validation</td><td>global whitelist + transform; ParseUUIDPipe 400; canonical error envelope (no stack leak)</td></tr>
+<tr><td>Integrity</td><td>186 FKs, 0 orphans, idempotency unique keys, soft-deletes</td></tr>
+<tr><td>Performance</td><td>read endpoints 8–45 ms; finance KPI multi-CTE ~22 ms</td></tr>
+</tbody></table>
+<p class="sub" style="margin-top:24px">See <code>QA-AUDIT-REPORT.md</code> for the full phase-by-phase narrative and the §12 plan to complete the mutating / load / provider-dependent phases.</p>
+</div></body></html>

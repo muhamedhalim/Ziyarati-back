@@ -19,6 +19,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
+import { PaymentFinancialsService } from './payment-financials.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { QueryPaymentsDto } from './dto/query-payments.dto';
@@ -45,6 +46,7 @@ export class PaymentService {
     private readonly dataSource: DataSource,
     private readonly gateways: PaymentGatewayFactory,
     private readonly transactions: TransactionService,
+    private readonly financials: PaymentFinancialsService,
   ) {}
 
   async create(tenantId: string, dto: CreatePaymentDto) {
@@ -99,6 +101,8 @@ export class PaymentService {
       if (result.status === 'paid') {
         payment.status = PaymentStatus.PAID;
         payment.paid_at = new Date();
+        // Freeze the fee breakdown (gateway fee from raw if reported).
+        this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
       }
@@ -214,6 +218,7 @@ export class PaymentService {
         this.assertCapturedMatches(payment, result);
         payment.status = PaymentStatus.PAID;
         payment.paid_at = new Date();
+        this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
       }

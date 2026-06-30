@@ -156,10 +156,14 @@ export class RefundService {
         );
 
         const refundedC = await this.sumSucceededCents(m, payment.id);
-        payment.status =
-          refundedC >= toCents(payment.amount)
-            ? PaymentStatus.REFUNDED
-            : PaymentStatus.PARTIALLY_REFUNDED;
+        const fullyRefunded = refundedC >= toCents(payment.amount);
+        payment.status = fullyRefunded
+          ? PaymentStatus.REFUNDED
+          : PaymentStatus.PARTIALLY_REFUNDED;
+        // Denormalise refund aggregates for the admin financial dashboard.
+        payment.refunded_amount = fromCents(refundedC);
+        payment.refund_status = fullyRefunded ? 'FULL' : 'PARTIAL';
+        payment.refunded_at = new Date();
         await m.getRepository(Payment).save(payment);
       }
 

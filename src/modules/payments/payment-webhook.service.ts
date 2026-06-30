@@ -13,7 +13,8 @@ import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
-import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
+import { PaymentFinancialsService } from './payment-financials.service';
+import { REFUND_STATUS, TRANSACTION_TYPE, round2 } from './payments.constants';
 import {
   PaymentFailedEvent,
   PaymentRefundedEvent,
@@ -55,6 +56,7 @@ export class PaymentWebhookService {
     private readonly verifier: MoyasarWebhookVerifier,
     private readonly transactions: TransactionService,
     private readonly adjustments: SettlementAdjustmentService,
+    private readonly financials: PaymentFinancialsService,
     private readonly emitter: EventEmitter2,
   ) {}
 
@@ -175,6 +177,11 @@ export class PaymentWebhookService {
         if (this.capturedMatches(payment, event)) {
           payment.status = PaymentStatus.PAID;
           payment.paid_at = new Date();
+          // Freeze the fee breakdown from the gateway-reported figures.
+          this.financials.applyOnPaid(
+            payment,
+            this.financials.extractFromRaw(event as unknown as Record<string, unknown>),
+          );
           changed = true;
           pendingEventName = PaymentSucceededEvent.eventName;
           pendingEvent = new PaymentSucceededEvent(
@@ -194,6 +201,10 @@ export class PaymentWebhookService {
         payment.status === PaymentStatus.PENDING
       ) {
         payment.status = PaymentStatus.FAILED;
+        payment.failure_reason =
+          event.data?.source?.message ??
+          event.data?.status ??
+          'Gateway reported failure';
         changed = true;
         pendingEventName = PaymentFailedEvent.eventName;
         pendingEvent = new PaymentFailedEvent(tenantId, payment.id, customerId);
@@ -299,8 +310,18 @@ export class PaymentWebhookService {
           ? PaymentStatus.REFUNDED
           : PaymentStatus.PARTIALLY_REFUNDED;
     }
-    if (newStatus !== payment.status) {
+    // Denormalise refund aggregates onto the payment ledger row for fast
+    // admin filtering (the authoritative source remains the refunds table).
+    if (newStatus !== payment.status || deltaCents > 0) {
       payment.status = newStatus;
+      payment.refunded_amount = round2(succeededCents / 100);
+      payment.refund_status =
+        newStatus === PaymentStatus.REFUNDED
+          ? 'FULL'
+          : succeededCents > 0
+            ? 'PARTIAL'
+            : payment.refund_status;
+      payment.refunded_at = new Date();
       await manager.getRepository(Payment).save(payment);
     }
     return newStatus;

@@ -34,6 +34,7 @@ import { ServicesModule } from './modules/services/services.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { VerificationAuditModule } from './modules/verification-audit/verification-audit.module';
 import { AdminNotificationModule } from './modules/admin-notifications/admin-notification.module';
+import { PlatformFinanceModule } from './modules/platform-finance/platform-finance.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -81,6 +82,7 @@ import { validate } from './config/env.validation';
     StorageModule,
     VerificationAuditModule,
     AdminNotificationModule,
+    PlatformFinanceModule,
     SeedModule,
   ],
 

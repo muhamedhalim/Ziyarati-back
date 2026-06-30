@@ -8,11 +8,6 @@ import { TenantContextService } from './core/tenant-context/tenant-context.servi
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
-  // `rawBody: true` makes Nest preserve the unparsed request body as a Buffer on
-  // `req.rawBody` (in ADDITION to the normal JSON parsing). This is REQUIRED for
-  // provider webhook signature verification (Meta WhatsApp `X-Hub-Signature-256`,
-  // and any other HMAC-over-raw-bytes scheme): the signature must be computed
-  // over the exact bytes the provider sent, never over a re-serialized DTO.
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // ---------------- Request correlation id ----------------
