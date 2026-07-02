@@ -20,6 +20,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { EmailModule } from './modules/email/email.module';
 
 import { WorkerTenantsService } from './worker/worker-tenants.service';
 import { QueueMonitorService } from './worker/queue-monitor.service';
@@ -39,6 +40,7 @@ import { SettlementsProcessor } from './worker/processors/settlements.processor'
 import { SubscriptionsProcessor } from './worker/processors/subscriptions.processor';
 import { RefundsProcessor } from './worker/processors/refunds.processor';
 import { PlatformProcessor } from './worker/processors/platform.processor';
+import { EmailProcessor } from './worker/processors/email.processor';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -63,6 +65,7 @@ import { PlatformProcessor } from './worker/processors/platform.processor';
     AnalyticsModule,
     PaymentsModule,
     PlatformModule,
+    EmailModule,
   ],
   providers: [
     WorkerTenantsService,
@@ -80,6 +83,7 @@ import { PlatformProcessor } from './worker/processors/platform.processor';
     SubscriptionsProcessor,
     RefundsProcessor,
     PlatformProcessor,
+    EmailProcessor,
   ],
 })
 export class WorkerModule {}

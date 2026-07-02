@@ -36,6 +36,7 @@ import { VerificationAuditModule } from './modules/verification-audit/verificati
 import { AdminNotificationModule } from './modules/admin-notifications/admin-notification.module';
 import { PlatformFinanceModule } from './modules/platform-finance/platform-finance.module';
 import { PlatformMonitoringModule } from './modules/platform-monitoring/platform-monitoring.module';
+import { EmailModule } from './modules/email/email.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -85,6 +86,7 @@ import { validate } from './config/env.validation';
     AdminNotificationModule,
     PlatformFinanceModule,
     PlatformMonitoringModule,
+    EmailModule,
     SeedModule,
   ],
 

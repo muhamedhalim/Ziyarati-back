@@ -238,7 +238,7 @@ export class MonitoringService {
       { name: 'AI (OpenAI)', status: has('OPENAI_API_KEY') ? 'configured' : 'not_configured', detail: 'Chat + embeddings' },
       { name: 'Payment Gateway (Moyasar)', status: has('MOYASAR_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },
       { name: 'Object Storage (R2)', status: this.storage.isConfigured() ? 'configured' : 'not_configured', detail: 'Verification documents' },
-      { name: 'Email Provider', status: 'not_configured', detail: 'No mail transport wired (password reset returns token)' },
+      { name: 'Email Provider (Resend)', status: has('RESEND_API_KEY') ? 'configured' : 'not_configured', detail: 'Transactional email via EmailService' },
       { name: 'SMS Provider', status: 'not_configured', detail: 'Not integrated' },
     ];
   }

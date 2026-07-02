@@ -17,6 +17,7 @@ export const QUEUE = {
   SUBSCRIPTIONS: 'subscriptions',
   REFUNDS: 'refunds',
   PLATFORM: 'platform',
+  EMAIL: 'email',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -50,6 +51,7 @@ export const JOB = {
   SUBSCRIPTIONS_RENEWAL_CHECK: 'subscriptions.renewalCheck',
   REFUNDS_REAP: 'refunds.reap',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
+  EMAIL_SEND: 'email.send',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

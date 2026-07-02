@@ -13,6 +13,20 @@ export interface BaseJobData {
 // ── Refunds (R2 reaper sweep — platform-level, tenantId null) ───────────────
 export type RefundsReapJob = BaseJobData;
 
+// ── Email (transactional send) ─────────────────────────────────────────────
+export interface EmailSendJob extends BaseJobData {
+  /** Recipient address(es). */
+  to: string | string[];
+  /** Template key (see EMAIL_TEMPLATES). */
+  template: string;
+  /** Template variables (no secrets). */
+  variables?: Record<string, unknown>;
+  locale?: string;
+  /** Idempotency key — dedupes at the queue AND the email-log level. */
+  idempotencyKey?: string;
+  replyTo?: string;
+}
+
 // ── Notifications ──────────────────────────────────────────────────────────
 export interface NotificationDispatchJob extends BaseJobData {
   tenantId: string;

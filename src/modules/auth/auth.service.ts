@@ -32,6 +32,7 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
+import { EmailService } from '../email/email.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -51,7 +52,18 @@ export class AuthService {
     private readonly dataSource: DataSource,
     private readonly usage: UsageService,
     private readonly platformSettings: SystemSettingService,
+    private readonly email: EmailService,
   ) {}
+
+  /** Base URL for links embedded in emails (APP_URL, else first FRONTEND_ORIGIN). */
+  private appUrl(): string {
+    return (
+      this.config.get<string>('APP_URL') ??
+      (this.config.get<string>('FRONTEND_ORIGIN') ?? 'http://localhost:3000')
+        .split(',')[0]
+        .trim()
+    );
+  }
 
   // ----------------------------------------------------------------------- //
   // Registration & login
@@ -110,6 +122,13 @@ export class AuthService {
       // Owner ALWAYS gets the owner role; if this fails the tenant+user roll back.
       await this.assignRoleBySlug(manager, user, ROLE.OWNER);
       return user.id;
+    });
+
+    // Welcome the new clinic owner (best-effort; never blocks onboarding).
+    await this.email.sendWelcome({
+      to: dto.email,
+      name: dto.fullName,
+      clinicName: dto.clinicName,
     });
 
     return this.issueAuthResult(userId, context);
@@ -324,7 +343,18 @@ export class AuthService {
       }),
     );
 
-    // In production this is emailed; returned here for the delivery layer.
+    // Deliver the reset link by email (best-effort; never blocks the response).
+    const resetUrl = `${this.appUrl()}/auth/reset-password?token=${rawToken}`;
+    await this.email.sendPasswordReset({
+      to: dto.email,
+      name: user.full_name ?? undefined,
+      resetUrl,
+      token: rawToken,
+      tenantId: tenantId ?? undefined,
+    });
+
+    // The raw token is still returned so non-email deployments keep working; the
+    // frontend treats a returned token as a dev convenience only.
     return { resetToken: rawToken };
   }
 

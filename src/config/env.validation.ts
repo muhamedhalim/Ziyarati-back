@@ -57,6 +57,21 @@ export const validate = (config: Record<string, unknown>) => {
     PLATFORM_FEE_PERCENT: Joi.number().min(0).max(100).default(0),
     PLATFORM_FEE_FIXED: Joi.number().min(0).default(0),
 
+    // ── Email (Resend by default; provider behind an abstraction) ─────────
+    // `enabled` defaults to ON in production, OFF in dev (no-op provider) unless
+    // EMAIL_ENABLED is set explicitly. EMAIL_SYNC=true delivers inline instead of
+    // via the worker (for API-only deployments).
+    EMAIL_PROVIDER: Joi.string().valid('resend', 'noop').default('resend'),
+    EMAIL_ENABLED: Joi.string().valid('true', 'false'),
+    EMAIL_SYNC: Joi.string().valid('true', 'false').default('false'),
+    RESEND_API_KEY: Joi.string().allow('', null),
+    EMAIL_FROM: Joi.string().allow('', null),
+    EMAIL_FROM_NAME: Joi.string().allow('', null),
+    EMAIL_REPLY_TO: Joi.string().allow('', null),
+    EMAIL_DEFAULT_LOCALE: Joi.string().default('en'),
+    // Base URL used to build links inside emails (falls back to FRONTEND_ORIGIN).
+    APP_URL: Joi.string().allow('', null),
+
     // ── WhatsApp Cloud API / Meta (PLATFORM-level shared number) ──────────
     // Optional in the schema so the app boots without a live integration, BUT:
     //   • the webhook verifier fails CLOSED at request time if

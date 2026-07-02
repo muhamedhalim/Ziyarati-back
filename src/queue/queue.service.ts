@@ -15,6 +15,7 @@ import {
   CampaignFanoutChunkJob,
   CampaignLaunchJob,
   CampaignProcessRecipientJob,
+  EmailSendJob,
   NotificationDispatchJob,
   NotificationDlqJob,
   RefundsReapJob,
@@ -178,6 +179,18 @@ export class QueueService {
 
   enqueueRefundsReap(data: RefundsReapJob, opts?: JobsOptions) {
     return this.add(QUEUE.REFUNDS, JOB.REFUNDS_REAP, data, opts);
+  }
+
+  /**
+   * Enqueue a transactional email. The `idempotencyKey` becomes the jobId so a
+   * duplicate enqueue is a no-op at the queue layer (and again at the email-log
+   * layer in the delivery service).
+   */
+  enqueueEmail(data: EmailSendJob, opts?: JobsOptions) {
+    return this.add(QUEUE.EMAIL, JOB.EMAIL_SEND, data, {
+      ...(data.idempotencyKey ? { jobId: `email:${data.idempotencyKey}` } : {}),
+      ...opts,
+    });
   }
 
   // ── Generic / relay primitives ───────────────────────────────────────────
