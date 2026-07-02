@@ -43,6 +43,7 @@ import { PlatformProcessor } from './worker/processors/platform.processor';
 import { EmailProcessor } from './worker/processors/email.processor';
 import { UsageReportProcessor } from './worker/processors/usage-report.processor';
 import { PlatformUsageModule } from './modules/platform-usage/platform-usage.module';
+import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -69,6 +70,7 @@ import { PlatformUsageModule } from './modules/platform-usage/platform-usage.mod
     PlatformModule,
     EmailModule,
     PlatformUsageModule,
+    AiMemoryModule,
   ],
   providers: [
     WorkerTenantsService,

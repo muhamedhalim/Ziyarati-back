@@ -24,6 +24,11 @@ import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
 import { AiModule } from './modules/ai/ai.module';
+import { AiOrchestratorModule } from './modules/ai-orchestrator/ai-orchestrator.module';
+import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
+import { AiRealtimeModule } from './modules/ai-realtime/ai-realtime.module';
+import { PlatformAiMonitoringModule } from './modules/platform-ai-monitoring/platform-ai-monitoring.module';
+import { PublicDiscoveryModule } from './modules/public-discovery/public-discovery.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -76,6 +81,11 @@ import { validate } from './config/env.validation';
     WhatsappModule,
     ConversationsModule,
     AiModule,
+    AiOrchestratorModule,
+    AiMemoryModule,
+    AiRealtimeModule,
+    PlatformAiMonitoringModule,
+    PublicDiscoveryModule,
     PaymentsModule,
     CrmModule,
     AnalyticsModule,

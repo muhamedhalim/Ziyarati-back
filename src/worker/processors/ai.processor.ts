@@ -2,11 +2,12 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
-import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { AiExecuteJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AiExecutionService } from '../../modules/ai/ai-execution.service';
+import { AiMemoryService } from '../../modules/ai-memory/ai-memory.service';
 
 /**
  * Consumes the `ai` queue (`ai.execute`). Reuses AiExecutionService.sendMessage —
@@ -21,11 +22,19 @@ export class AiProcessor extends WorkerHost {
   constructor(
     private readonly exec: AiExecutionService,
     private readonly ctx: TenantContextService,
+    private readonly memory: AiMemoryService,
   ) {
     super();
   }
 
   async process(job: Job<AiExecuteJob>) {
+    // Long-term memory expiry purge (platform-wide sweep, tenantId null).
+    if (job.name === JOB.AI_MEMORY_CLEANUP) {
+      const { deleted } = await this.memory.cleanupExpired();
+      this.logger.log(`ai.memoryCleanup purged ${deleted} expired memories`);
+      return { deleted };
+    }
+
     const data = job.data;
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} conv=${data.aiConversationId} attempt=${job.attemptsMade + 1}`,

@@ -38,6 +38,8 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_LOG_CLEANUP, { tenantId: null }, '30 3 * * *');
       // Scheduled usage-report tick — hourly (runs schedules that are due).
       await this.queue.addRepeatable(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_TICK, { tenantId: null }, '5 * * * *');
+      // Long-term AI memory expiry purge — 04:00 UTC daily.
+      await this.queue.addRepeatable(QUEUE.AI, JOB.AI_MEMORY_CLEANUP, { tenantId: null }, '0 4 * * *');
       this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);

@@ -202,6 +202,117 @@ export class AiExecutionService {
   }
 
   /**
+   * Streaming variant of a turn (Feature 2). Reuses the SAME RAG retrieval,
+   * prompt assembly and — crucially — the SAME persistence + usage/cost metering
+   * + timeline mirroring helpers as `sendMessage` (this method lives in the same
+   * class), so no business logic is duplicated. It streams the assistant answer
+   * token-by-token via `provider.stream()` (falling back to `complete()` when a
+   * provider has no streaming), invoking `onToken` per delta — the caller (the
+   * WebSocket gateway, via the orchestrator) forwards deltas to the client.
+   *
+   * The streaming path serves conversational answers; tool-driven turns (booking
+   * etc.) continue to use the synchronous `sendMessage` loop, so booking logic is
+   * never re-implemented here.
+   */
+  async streamMessage(
+    tenantId: string,
+    aiConversationId: string,
+    dto: SendMessageDto,
+    onToken: (delta: string) => void,
+  ) {
+    const aiConv = await this.aiConversations.findOne({
+      where: { id: aiConversationId, tenant: { id: tenantId } },
+      relations: { agent: true, conversation: true },
+    });
+    if (!aiConv) throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
+    if (aiConv.status !== AI_CONVERSATION_STATUS.ACTIVE) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Cannot send to a conversation in status "${aiConv.status}"`,
+      });
+    }
+    const agent = aiConv.agent;
+    const linkedConversationId = aiConv.conversation?.id;
+
+    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+
+    await this.messages.save(
+      this.messages.create({
+        ai_conversation_id: aiConversationId,
+        tenant: { id: tenantId } as Tenant,
+        role: AI_MESSAGE_ROLE.USER,
+        content: dto.content,
+        tokens_used: 0,
+      }),
+    );
+    if (linkedConversationId) {
+      await this.mirrorToTimeline(tenantId, linkedConversationId, 'CUSTOMER', dto.content);
+    }
+
+    const chunks = agent ? await this.rag.retrieve(tenantId, agent.id, dto.content) : [];
+    const context = this.rag.assembleContext(chunks);
+    const recent = await this.messages.find({
+      where: { ai_conversation_id: aiConversationId, tenant: { id: tenantId } },
+      order: { created_at: 'DESC' },
+      take: 20,
+    });
+    const messages: AiChatMessage[] = [];
+    if (agent?.system_prompt) messages.push({ role: 'system', content: agent.system_prompt });
+    if (context) messages.push({ role: 'system', content: `Relevant knowledge:\n${context}` });
+    for (const m of recent.reverse()) messages.push({ role: this.mapRole(m.role), content: m.content });
+
+    const provider = this.providers.resolve(agent?.model);
+    const model = agent?.model;
+    let full = '';
+    let streamed = false;
+    if (provider.stream) {
+      streamed = true;
+      for await (const chunk of provider.stream({ tenantId, model, temperature: agent ? Number(agent.temperature) : undefined, messages })) {
+        if (chunk.delta) {
+          full += chunk.delta;
+          onToken(chunk.delta);
+        }
+      }
+    } else {
+      const completion = await provider.complete({ tenantId, model, temperature: agent ? Number(agent.temperature) : undefined, messages });
+      full = completion.content;
+      if (full) onToken(full);
+    }
+
+    // Streaming APIs don't always return a usage object, so token counts here are
+    // char-based estimates (~4 chars/token) — used only for metering deltas.
+    const completionTokens = full ? Math.max(1, Math.ceil(full.length / 4)) : 0;
+    const promptTokens = Math.ceil(JSON.stringify(messages).length / 4);
+    const totalTokens = promptTokens + completionTokens;
+
+    const assistant = await this.dataSource.transaction(async (manager) => {
+      const saved = await manager.getRepository(AiMessage).save(
+        manager.getRepository(AiMessage).create({
+          ai_conversation_id: aiConversationId,
+          tenant: { id: tenantId } as Tenant,
+          role: AI_MESSAGE_ROLE.ASSISTANT,
+          content: full,
+          tokens_used: completionTokens,
+        }),
+      );
+      if (agent) await this.recordUsage(manager, tenantId, agent.id, totalTokens);
+      await this.recordCost(manager, tenantId, promptTokens, completionTokens, model ?? 'noop');
+      return saved;
+    });
+
+    await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens);
+    if (linkedConversationId && full) {
+      await this.mirrorToTimeline(tenantId, linkedConversationId, 'BOT', full);
+    }
+
+    return {
+      message: assistant,
+      retrievedChunks: chunks.length,
+      usage: { promptTokens, completionTokens, totalTokens },
+      streamed,
+    };
+  }
+
+  /**
    * Best-effort mirror of an AI turn into the unified Conversation/Message
    * timeline (sender_type CUSTOMER or BOT). `ai_messages` remains the AI engine's
    * own store; the `messages` mirror is what agents / inbox / search / analytics

@@ -45,6 +45,7 @@ export const JOB = {
   CAMPAIGNS_PROCESS_RECIPIENT: 'campaigns.processRecipient',
   CAMPAIGNS_DLQ: 'campaigns.dlq',
   AI_EXECUTE: 'ai.execute',
+  AI_MEMORY_CLEANUP: 'ai.memoryCleanup',
   ANALYTICS_AGGREGATE: 'analytics.aggregate',
   ANALYTICS_GENERATE_REPORT: 'analytics.generateReport',
   ANALYTICS_CLEANUP: 'analytics.cleanup',

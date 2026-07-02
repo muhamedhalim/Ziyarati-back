@@ -6,6 +6,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
 import cookieParser from 'cookie-parser';
+import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -118,6 +119,13 @@ async function bootstrap() {
     }
     next();
   });
+
+  // ---------------- Realtime AI gateway (Socket.IO + Redis adapter) ----------------
+  // Enables horizontal scaling of the /ai WebSocket namespace across instances.
+  // Soft: falls back to the in-memory adapter when REDIS_URL is absent/unreachable.
+  const redisIoAdapter = new RedisIoAdapter(app);
+  await redisIoAdapter.connectToRedis();
+  app.useWebSocketAdapter(redisIoAdapter);
 
   // ---------------- Start Server ----------------
   const port = process.env.PORT ?? 3000;

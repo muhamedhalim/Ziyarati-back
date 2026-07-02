@@ -27,6 +27,14 @@ export class AiAgent {
   @Column({ length: 100, nullable: true })
   model?: string;
 
+  /**
+   * Specialized role for multi-agent routing (RECEPTION/BOOKING/MEDICAL_FAQ/…).
+   * Nullable — legacy single-agent tenants keep null and are used as the default.
+   * Added by migration 1730002300000.
+   */
+  @Column({ length: 32, nullable: true })
+  role?: string;
+
   @Column({ type: 'text', nullable: true })
   system_prompt?: string;
 
