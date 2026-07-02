@@ -18,6 +18,7 @@ export const QUEUE = {
   REFUNDS: 'refunds',
   PLATFORM: 'platform',
   EMAIL: 'email',
+  USAGE_REPORT: 'usage-report',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -52,6 +53,8 @@ export const JOB = {
   REFUNDS_REAP: 'refunds.reap',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
   EMAIL_SEND: 'email.send',
+  USAGE_REPORT_TICK: 'usageReport.tick',
+  USAGE_REPORT_RUN: 'usageReport.run',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

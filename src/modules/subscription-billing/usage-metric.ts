@@ -66,6 +66,61 @@ export const COUNT_LIMIT = {
 
 export type CountLimitColumn = (typeof COUNT_LIMIT)[keyof typeof COUNT_LIMIT];
 
+/**
+ * Count-based resource caps: an ABSOLUTE limit on the number of a resource,
+ * compared against a LIVE count from the resource's own table (there is no
+ * per-month accumulator). Every entry maps a stable metric key to its
+ * `subscription_plans` column — the ONLY place these limits are defined, so the
+ * plan stays the single source of truth. A null plan column = unlimited.
+ *
+ * `max_branches` / `max_users` predate this map (see COUNT_LIMIT) and are folded
+ * in here so `UsageService` can resolve every count limit through one registry.
+ * Metered metrics (USAGE_METRIC) are intentionally NOT included — they resolve
+ * via `subscription_usage` + getBreakdown instead.
+ */
+export const RESOURCE_LIMIT_MAP = {
+  aiRequests: 'max_ai_requests',
+  customers: 'max_customers',
+  crmContacts: 'max_crm_contacts',
+  conversations: 'max_conversations',
+  employees: 'max_users',
+  branches: 'max_branches',
+  storageBytes: 'max_storage_bytes',
+  uploadedFiles: 'max_uploaded_files',
+  apiCalls: 'max_api_calls',
+  emails: 'max_emails',
+  invoices: 'max_invoices',
+  payments: 'max_payments',
+  transactions: 'max_transactions',
+  knowledgeBaseFiles: 'max_knowledge_base_files',
+  trainingFiles: 'max_training_files',
+} as const;
+
+export type ResourceMetric = keyof typeof RESOURCE_LIMIT_MAP;
+export type ResourceLimitColumn = (typeof RESOURCE_LIMIT_MAP)[ResourceMetric];
+
+/** Metered metric → its getBreakdown key (used by the unified breakdown). */
+export const METERED_BREAKDOWN_KEY = {
+  aiTokens: 'aiTokens',
+  whatsappMessages: 'whatsappMessages',
+  appointments: 'appointments',
+  campaigns: 'campaigns',
+} as const;
+
+export type MeteredMetric = keyof typeof METERED_BREAKDOWN_KEY;
+
+/** A single unified usage line — the shape every metric resolves to. */
+export interface UnifiedUsageLine {
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  percentUsed: number | null;
+  exceeded: boolean;
+  unlimited: boolean;
+  /** Enforced AND exceeded — a write of this resource would be rejected. */
+  blocked: boolean;
+}
+
 /** Current billing period key, e.g. "2026-06". */
 export function currentPeriodMonth(date: Date = new Date()): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;

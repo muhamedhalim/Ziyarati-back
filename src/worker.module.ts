@@ -41,6 +41,8 @@ import { SubscriptionsProcessor } from './worker/processors/subscriptions.proces
 import { RefundsProcessor } from './worker/processors/refunds.processor';
 import { PlatformProcessor } from './worker/processors/platform.processor';
 import { EmailProcessor } from './worker/processors/email.processor';
+import { UsageReportProcessor } from './worker/processors/usage-report.processor';
+import { PlatformUsageModule } from './modules/platform-usage/platform-usage.module';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -66,6 +68,7 @@ import { EmailProcessor } from './worker/processors/email.processor';
     PaymentsModule,
     PlatformModule,
     EmailModule,
+    PlatformUsageModule,
   ],
   providers: [
     WorkerTenantsService,
@@ -84,6 +87,7 @@ import { EmailProcessor } from './worker/processors/email.processor';
     RefundsProcessor,
     PlatformProcessor,
     EmailProcessor,
+    UsageReportProcessor,
   ],
 })
 export class WorkerModule {}

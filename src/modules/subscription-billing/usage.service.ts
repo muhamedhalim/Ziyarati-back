@@ -9,7 +9,10 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
 import {
   CountLimitColumn,
+  RESOURCE_LIMIT_MAP,
+  ResourceMetric,
   USAGE_METRIC_MAP,
+  UnifiedUsageLine,
   UsageMetric,
   currentPeriodMonth,
 } from './usage-metric';
@@ -181,15 +184,11 @@ export class UsageService {
     const usage = await this.getUsage(tenantId, periodMonth);
     const plan = subscription.plan as unknown as Record<string, unknown>;
 
+    // Public shape is unchanged — the historical 5 fields, derived from the same
+    // single line formula used everywhere (buildLine).
     const line = (used: number, limitRaw: unknown) => {
-      const limit = limitRaw === null || limitRaw === undefined ? null : Number(limitRaw);
-      return {
-        used,
-        limit,
-        remaining: limit === null ? null : Math.max(limit - used, 0),
-        percentUsed: limit === null || limit === 0 ? null : +((used / limit) * 100).toFixed(1),
-        exceeded: limit === null ? false : used > limit,
-      };
+      const l = this.buildLine(used, limitRaw);
+      return { used: l.used, limit: l.limit, remaining: l.remaining, percentUsed: l.percentUsed, exceeded: l.exceeded };
     };
 
     return {
@@ -204,6 +203,74 @@ export class UsageService {
         campaigns: line(usage.campaignsUsed, plan.max_campaigns),
       },
     };
+  }
+
+  /**
+   * The SINGLE authoritative breakdown for EVERY metric (metered + count-based).
+   *
+   * Resolves the tenant's subscription + plan ONCE, reads the metered usage row
+   * ONCE, and checks enforcement ONCE, then produces a uniform
+   * {used,limit,remaining,percentUsed,exceeded,unlimited,blocked} line per metric.
+   * Metered metrics read `subscription_usage`; count-based metrics use the LIVE
+   * `counts` supplied by the caller (whose own repositories own those tables)
+   * combined with the plan limit resolved via `RESOURCE_LIMIT_MAP`. Every limit
+   * therefore still comes from `SubscriptionPlan` — this method never hardcodes
+   * one. Non-throwing: a tenant with no subscription yields all-unlimited lines
+   * with `used` from the live counts.
+   */
+  async getUnifiedBreakdown(
+    tenantId: string,
+    counts: Partial<Record<ResourceMetric, number>> = {},
+    periodMonth?: string,
+  ): Promise<Record<string, UnifiedUsageLine>> {
+    const enforced = await this.access.isEnforced(tenantId).catch(() => true);
+    const subscription = await this.findCurrentSubscriptionWithPlan(tenantId);
+    const plan = subscription?.plan as unknown as Record<string, unknown> | undefined;
+    const period = periodMonth ?? currentPeriodMonth();
+    const usageRow = subscription
+      ? await this.usage.findOne({ where: { subscription_id: subscription.id, period_month: period } })
+      : null;
+    const uv = (col: string): number =>
+      usageRow ? Number((usageRow as unknown as Record<string, unknown>)[col]) : 0;
+
+    const out: Record<string, UnifiedUsageLine> = {
+      aiTokens: this.buildLine(uv('ai_tokens_used'), plan?.max_ai_tokens, enforced),
+      whatsappMessages: this.buildLine(uv('whatsapp_messages_used'), plan?.max_whatsapp_messages, enforced),
+      appointments: this.buildLine(uv('appointments_used'), plan?.max_appointments, enforced),
+      campaigns: this.buildLine(uv('campaigns_used'), plan?.max_campaigns, enforced),
+    };
+    for (const [metric, col] of Object.entries(RESOURCE_LIMIT_MAP)) {
+      out[metric] = this.buildLine(counts[metric as ResourceMetric] ?? 0, plan?.[col], enforced);
+    }
+    return out;
+  }
+
+  /** The one line formula — used by getBreakdown and getUnifiedBreakdown. */
+  private buildLine(used: number, limitRaw: unknown, enforced = false): UnifiedUsageLine {
+    const limit = limitRaw === null || limitRaw === undefined ? null : Number(limitRaw);
+    const exceeded = limit === null ? false : used > limit;
+    return {
+      used,
+      limit,
+      remaining: limit === null ? null : Math.max(limit - used, 0),
+      percentUsed: limit === null || limit === 0 ? null : +((used / limit) * 100).toFixed(1),
+      exceeded,
+      unlimited: limit === null,
+      blocked: exceeded && enforced,
+    };
+  }
+
+  /** Non-throwing current subscription WITH plan (for the unified breakdown). */
+  private findCurrentSubscriptionWithPlan(tenantId: string): Promise<Subscription | null> {
+    return this.subscriptions.findOne({
+      where: {
+        tenant: { id: tenantId },
+        status: Not(SubscriptionStatus.CANCELLED),
+        deleted_at: IsNull(),
+      },
+      relations: { plan: true },
+      order: { created_at: 'DESC' },
+    });
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

@@ -27,6 +27,14 @@ export interface EmailSendJob extends BaseJobData {
   replyTo?: string;
 }
 
+// ── Usage reports (scheduled) ──────────────────────────────────────────────
+/** Tick sweep (tenantId null) — evaluates + runs due schedules. */
+export type UsageReportTickJob = BaseJobData;
+/** Run one schedule now. */
+export interface UsageReportRunJob extends BaseJobData {
+  scheduleId: string;
+}
+
 // ── Notifications ──────────────────────────────────────────────────────────
 export interface NotificationDispatchJob extends BaseJobData {
   tenantId: string;

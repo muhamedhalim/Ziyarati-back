@@ -21,6 +21,7 @@ import {
   RefundsReapJob,
   SettlementsProcessJob,
   SubscriptionsRenewalCheckJob,
+  UsageReportRunJob,
   WhatsappSendJob,
 } from './job-data.interface';
 
@@ -189,6 +190,15 @@ export class QueueService {
   enqueueEmail(data: EmailSendJob, opts?: JobsOptions) {
     return this.add(QUEUE.EMAIL, JOB.EMAIL_SEND, data, {
       ...(data.idempotencyKey ? { jobId: `email:${data.idempotencyKey}` } : {}),
+      ...opts,
+    });
+  }
+
+  /** Enqueue a single scheduled-report run. Idempotent per (schedule, minute). */
+  enqueueUsageReportRun(data: UsageReportRunJob, opts?: JobsOptions) {
+    const minute = Math.floor(Date.now() / 60_000);
+    return this.add(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_RUN, data, {
+      jobId: `usage-report:${data.scheduleId}:${minute}`,
       ...opts,
     });
   }
