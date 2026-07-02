@@ -1,0 +1,270 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
+import * as os from 'node:os';
+
+import { ApiLog } from '../../entities/System/ApiLog';
+import { WebhookLog } from '../../entities/System/WebhookLog';
+import { QueueService } from '../../queue/queue.service';
+import { StorageService } from '../storage/storage.service';
+
+const n = (v: unknown): number => {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+};
+const mb = (bytes: number): number => Math.round((bytes / 1024 / 1024) * 10) / 10;
+
+/** Worker-liveness heartbeat written by the refunds reaper (reused as a proxy). */
+const WORKER_HEARTBEAT_KEY = 'payments:reaper:heartbeat';
+
+type ServiceStatus = 'configured' | 'not_configured';
+type Health = 'up' | 'down' | 'degraded' | 'unknown';
+type AlertLevel = 'critical' | 'warning' | 'healthy';
+
+/**
+ * Read-only platform monitoring aggregator for super-admins. Composes existing
+ * infrastructure primitives — `QueueService` (Redis/BullMQ), the SQL logs
+ * (`api_logs`, `webhook_logs`), `StorageService` (R2), and process/OS metrics —
+ * into one dashboard snapshot. It introduces NO new health checks and never
+ * mutates state.
+ */
+@Injectable()
+export class MonitoringService {
+  private readonly logger = new Logger(MonitoringService.name);
+
+  constructor(
+    @InjectRepository(ApiLog) private readonly apiLogs: Repository<ApiLog>,
+    @InjectRepository(WebhookLog) private readonly webhookLogs: Repository<WebhookLog>,
+    private readonly dataSource: DataSource,
+    private readonly queues: QueueService,
+    private readonly config: ConfigService,
+    private readonly storage: StorageService,
+  ) {}
+
+  async overview() {
+    const [system, traffic, webhooks, queueList] = await Promise.all([
+      this.systemHealth(),
+      this.traffic(),
+      this.webhooks(),
+      this.queues.queueCounts().catch(() => ({})),
+    ]);
+
+    const queueRows = Object.entries(queueList).map(([name, c]) => ({
+      name,
+      waiting: n(c.waiting),
+      active: n(c.active),
+      delayed: n(c.delayed),
+      completed: n(c.completed),
+      failed: n(c.failed),
+    }));
+    const activeJobs = queueRows.reduce((s, q) => s + q.active, 0);
+    const failedJobs = queueRows.reduce((s, q) => s + q.failed, 0);
+
+    const infrastructure = await this.infrastructure();
+    const externalServices = this.externalServices();
+    const alerts = this.alerts({ system, failedJobs, traffic, webhooks });
+
+    return {
+      system: { ...system, activeJobs, failedJobs },
+      traffic,
+      infrastructure,
+      externalServices,
+      queues: queueRows,
+      webhooks,
+      alerts,
+      collectedAt: new Date().toISOString(),
+    };
+  }
+
+  // ── System health (reuses QueueService + a DB ping) ─────────────────────
+  private async systemHealth() {
+    let db: { status: Health; latencyMs: number | null } = { status: 'unknown', latencyMs: null };
+    const t0 = Date.now();
+    try {
+      await this.dataSource.query('SELECT 1');
+      db = { status: 'up', latencyMs: Date.now() - t0 };
+    } catch (err) {
+      this.logger.error(`DB ping failed: ${(err as Error)?.message}`);
+      db = { status: 'down', latencyMs: null };
+    }
+
+    let redis: { status: Health; latencyMs: number | null } = { status: 'unknown', latencyMs: null };
+    try {
+      redis = { status: 'up', latencyMs: await this.queues.redisPing() };
+    } catch {
+      redis = { status: 'down', latencyMs: null };
+    }
+
+    // Worker liveness via the shared reaper heartbeat (age in seconds).
+    let workers: { status: Health; heartbeatAgeSeconds: number | null } = {
+      status: 'unknown',
+      heartbeatAgeSeconds: null,
+    };
+    try {
+      const hb = await this.queues.kvGet(WORKER_HEARTBEAT_KEY);
+      if (hb) {
+        const parsed = JSON.parse(hb) as { at: string };
+        const age = Math.round((Date.now() - new Date(parsed.at).getTime()) / 1000);
+        workers = { status: age < 3600 ? 'up' : 'degraded', heartbeatAgeSeconds: age };
+      }
+    } catch {
+      /* heartbeat absent → unknown */
+    }
+
+    return {
+      api: { status: 'up' as Health },
+      database: db,
+      redis,
+      bullmq: { status: (redis.status === 'up' ? 'up' : 'down') as Health },
+      workers,
+    };
+  }
+
+  // ── Traffic (api_logs) ──────────────────────────────────────────────────
+  private async traffic() {
+    const [row] = await this.dataSource.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE created_at >= now() - interval '1 hour')::int AS last_hour,
+        COUNT(*) FILTER (WHERE created_at >= date_trunc('day', now()))::int AS today,
+        COALESCE(AVG(response_time_ms) FILTER (WHERE created_at >= now() - interval '1 hour'), 0) AS avg_ms,
+        COALESCE(
+          100.0 * COUNT(*) FILTER (WHERE status_code >= 500 AND created_at >= now() - interval '1 hour')
+          / NULLIF(COUNT(*) FILTER (WHERE created_at >= now() - interval '1 hour'), 0), 0
+        ) AS error_rate
+      FROM api_logs
+    `);
+    const slow = await this.dataSource.query(`
+      SELECT endpoint, method, ROUND(AVG(response_time_ms))::int AS avg_ms, COUNT(*)::int AS count
+      FROM api_logs
+      WHERE created_at >= now() - interval '24 hours' AND response_time_ms IS NOT NULL AND endpoint IS NOT NULL
+      GROUP BY endpoint, method
+      ORDER BY avg_ms DESC
+      LIMIT 8
+    `);
+    return {
+      requestsLastHour: n(row.last_hour),
+      requestsToday: n(row.today),
+      avgResponseTimeMs: Math.round(n(row.avg_ms)),
+      errorRatePct: Math.round(n(row.error_rate) * 100) / 100,
+      slowEndpoints: slow.map((s: Record<string, unknown>) => ({
+        endpoint: s.endpoint as string,
+        method: (s.method as string) ?? null,
+        avgMs: n(s.avg_ms),
+        count: n(s.count),
+      })),
+    };
+  }
+
+  // ── Webhooks (webhook_logs) ─────────────────────────────────────────────
+  private async webhooks() {
+    const byStatus = await this.dataSource.query(
+      `SELECT COALESCE(status, 'unknown') AS status, COUNT(*)::int AS count FROM webhook_logs GROUP BY status`,
+    );
+    const isFail = (s: string) => /fail|error/i.test(s);
+    const isOk = (s: string) => /success|ok|process|deliver/i.test(s);
+    let success = 0;
+    let failed = 0;
+    for (const r of byStatus) {
+      if (isFail(r.status)) failed += n(r.count);
+      else if (isOk(r.status)) success += n(r.count);
+    }
+    const [last] = await this.dataSource.query(`
+      SELECT
+        MAX(created_at) FILTER (WHERE status ~* 'success|ok|process|deliver') AS last_success,
+        MAX(created_at) FILTER (WHERE status ~* 'fail|error') AS last_failure,
+        COUNT(*)::int AS total
+      FROM webhook_logs
+    `);
+    return {
+      total: n(last.total),
+      success,
+      failed,
+      lastSuccessAt: last.last_success ? new Date(last.last_success).toISOString() : null,
+      lastFailureAt: last.last_failure ? new Date(last.last_failure).toISOString() : null,
+      byStatus: byStatus.map((r: Record<string, unknown>) => ({
+        status: r.status as string,
+        count: n(r.count),
+      })),
+    };
+  }
+
+  // ── Infrastructure (process + OS + storage proxy) ───────────────────────
+  private async infrastructure() {
+    const mem = process.memoryUsage();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+
+    let storage: {
+      r2Configured: boolean;
+      verificationDocs: number;
+      verificationBytes: number;
+    } = { r2Configured: this.storage.isConfigured(), verificationDocs: 0, verificationBytes: 0 };
+    try {
+      const [s] = await this.dataSource.query(
+        `SELECT COUNT(*)::int AS docs, COALESCE(SUM(size_bytes),0)::bigint AS bytes
+           FROM tenant_verification_documents WHERE storage_key IS NOT NULL`,
+      );
+      storage = { ...storage, verificationDocs: n(s.docs), verificationBytes: n(s.bytes) };
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      memory: {
+        rssMb: mb(mem.rss),
+        heapUsedMb: mb(mem.heapUsed),
+        heapTotalMb: mb(mem.heapTotal),
+        systemTotalMb: mb(totalMem),
+        systemUsedPct: Math.round((1 - freeMem / totalMem) * 1000) / 10,
+      },
+      cpu: { loadAvg1: Math.round(os.loadavg()[0] * 100) / 100, cores: os.cpus().length },
+      uptimeSeconds: Math.round(process.uptime()),
+      // Disk usage is intentionally omitted (no cross-platform primitive without
+      // extra deps). Object storage is reported via the R2 verification-doc proxy.
+      storage,
+    };
+  }
+
+  // ── External services (config presence, not live probes) ────────────────
+  private externalServices(): { name: string; status: ServiceStatus; detail: string }[] {
+    const has = (k: string) => !!this.config.get<string>(k);
+    return [
+      {
+        name: 'WhatsApp (Meta Cloud)',
+        status: has('WHATSAPP_ACCESS_TOKEN') && has('WHATSAPP_PHONE_NUMBER_ID') ? 'configured' : 'not_configured',
+        detail: 'Platform number token + phone id',
+      },
+      { name: 'AI (OpenAI)', status: has('OPENAI_API_KEY') ? 'configured' : 'not_configured', detail: 'Chat + embeddings' },
+      { name: 'Payment Gateway (Moyasar)', status: has('MOYASAR_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },
+      { name: 'Object Storage (R2)', status: this.storage.isConfigured() ? 'configured' : 'not_configured', detail: 'Verification documents' },
+      { name: 'Email Provider', status: 'not_configured', detail: 'No mail transport wired (password reset returns token)' },
+      { name: 'SMS Provider', status: 'not_configured', detail: 'Not integrated' },
+    ];
+  }
+
+  // ── Alerts (derived) ────────────────────────────────────────────────────
+  private alerts(input: {
+    system: Awaited<ReturnType<MonitoringService['systemHealth']>>;
+    failedJobs: number;
+    traffic: Awaited<ReturnType<MonitoringService['traffic']>>;
+    webhooks: Awaited<ReturnType<MonitoringService['webhooks']>>;
+  }): { level: AlertLevel; message: string }[] {
+    const out: { level: AlertLevel; message: string }[] = [];
+    if (input.system.database.status === 'down') out.push({ level: 'critical', message: 'Database is unreachable' });
+    if (input.system.redis.status === 'down') out.push({ level: 'critical', message: 'Redis is unreachable' });
+    if (input.system.workers.status === 'degraded') {
+      out.push({ level: 'warning', message: `Worker heartbeat is stale (${input.system.workers.heartbeatAgeSeconds}s)` });
+    }
+    if (input.system.workers.status === 'unknown') {
+      out.push({ level: 'warning', message: 'No worker heartbeat detected' });
+    }
+    if (input.failedJobs > 0) out.push({ level: 'warning', message: `${input.failedJobs} failed background job(s)` });
+    if (input.traffic.errorRatePct > 5) {
+      out.push({ level: 'warning', message: `5xx error rate is ${input.traffic.errorRatePct}% in the last hour` });
+    }
+    if (input.webhooks.failed > 0) out.push({ level: 'warning', message: `${input.webhooks.failed} failed webhook(s)` });
+    if (out.length === 0) out.push({ level: 'healthy', message: 'All systems operational' });
+    return out;
+  }
+}

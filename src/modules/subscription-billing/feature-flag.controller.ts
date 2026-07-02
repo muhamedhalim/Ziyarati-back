@@ -11,6 +11,7 @@ import {
 } from '@nestjs/swagger';
 
 import { FeatureFlagService } from './feature-flag.service';
+import { FeatureCatalogService } from './feature-catalog.service';
 import { SetFeatureFlagDto } from './dto/set-feature-flag.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -51,8 +52,21 @@ const S_FLAG = {
 export class FeatureFlagController {
   constructor(
     private readonly features: FeatureFlagService,
+    private readonly catalog: FeatureCatalogService,
     private readonly ctx: TenantContextService,
   ) {}
+
+  @ApiOperation({
+    summary: 'Resolve my effective features (read-only)',
+    description:
+      "**Requires `featureflag.read`.** Full resolution for the caller's own tenant — subscription state, plan inclusion, dependencies and usage quota → what's actually available. Read-only: tenants cannot enable features their subscription does not include.",
+  })
+  @ApiOkResponse({ description: 'Subscription context + resolved feature list.' })
+  @Get('effective')
+  @RequirePermissions(PERMISSION.FEATUREFLAG_READ)
+  effective() {
+    return this.catalog.getTenantFeatures(this.ctx.requireTenantId());
+  }
 
   @ApiOperation({
     summary: 'List the tenant\'s feature flags',
