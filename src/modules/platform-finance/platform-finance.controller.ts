@@ -11,6 +11,7 @@ import {
   ApiBearerAuth,
   ApiOkResponse,
   ApiOperation,
+  ApiParam,
   ApiTags,
 } from '@nestjs/swagger';
 
@@ -80,6 +81,25 @@ export class PlatformFinanceController {
   ) {
     const result = await this.finance.getTransaction(id);
     await this.audit.record(FINANCIAL_AUDIT_ACTION.VIEW, userId, ip, id);
+    return result;
+  }
+
+  @ApiOperation({
+    summary: 'KPI drill-down (super-admin)',
+    description:
+      'Rich drill-down for a dashboard KPI (`:metric` from the finance metric registry): summary, totals, statistics, charts (daily/monthly/status), breakdowns (clinic/branch/gateway/method/service) and the underlying transactions — all server-side filtered/sorted/paginated. Reuses the transactions filter DTO.',
+  })
+  @ApiParam({ name: 'metric', description: 'KPI key, e.g. platformRevenue, refunds, moneyWaitingPayout.' })
+  @ApiOkResponse({ description: 'Metric drill-down payload.' })
+  @Get('metrics/:metric')
+  async metricDrilldown(
+    @Param('metric') metric: string,
+    @Query() query: QueryMarketplaceTransactionsDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    const result = await this.finance.metricDrilldown(metric, query);
+    await this.audit.record(FINANCIAL_AUDIT_ACTION.VIEW, userId, ip, undefined, { metric });
     return result;
   }
 
