@@ -55,7 +55,7 @@ main.ts
         ▼          ▼          ▼
    Producer    Worker     QueueEvents
   Connection  Connection   Connection
-
+=======
                       Queue Constants
                            │
           ┌────────────────┴────────────────┐
@@ -85,6 +85,29 @@ main.ts
                            │
                            ▼
                     Dead Letter Queue
+                    ============
+
+                                      UserService
+                       │
+                       │
+                  NotificationService
+                       │
+                       │
+                  AIService
+                       │
+                       ▼
+                 QueueService
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+   Email Queue    AI Queue    Notification Queue
+        │              │              │
+        └──────────────┼──────────────┘
+                       ▼
+                     Redis
+                       │
+                       ▼
+                    Worker
     
 > **Status:** derived directly from the implementation (`src/**`) and the committed
 > migrations (`src/migrations/*`), not from any prior AI-generated catalogue.

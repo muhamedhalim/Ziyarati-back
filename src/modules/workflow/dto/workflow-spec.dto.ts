@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsIn,
   IsInt,
   IsObject,
@@ -53,4 +54,17 @@ export class WorkflowActionDto {
   @Min(0)
   @Max(43200)
   delayMinutes?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Per-action gate (ALL must match, AND) — evaluated against the run context before this SPECIFIC action ' +
+      'executes (independent of the workflow-level `conditions`). Two actions with mutually-exclusive conditions ' +
+      'give IF/ELSE branching without a second execution engine. Absent/empty = always run.',
+    type: [WorkflowConditionDto],
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkflowConditionDto)
+  conditions?: WorkflowConditionDto[];
 }

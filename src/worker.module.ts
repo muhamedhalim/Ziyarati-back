@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { typeOrmFactory } from './config/typeorm.config';
@@ -59,6 +60,10 @@ import { WorkflowProcessor } from './worker/processors/workflow.processor';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env', cache: true, validate }),
+    // Several reused services (e.g. SubscriptionService) inject EventEmitter2.
+    // The API root registers this; the worker root must too, or DI fails at
+    // boot — discovered by actually starting the worker process, not `tsc`.
+    EventEmitterModule.forRoot({ global: true, wildcard: false }),
     TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: typeOrmFactory }),
     TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob]),
     TenantContextModule,

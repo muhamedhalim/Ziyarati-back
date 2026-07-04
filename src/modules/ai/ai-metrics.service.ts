@@ -1,0 +1,221 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
+
+import { AiExecutionMetric } from '../../entities/AI Agent/AiExecutionMetric';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { AiAnalyticsFilterDto } from './dto/ai-analytics-filter.dto';
+
+export interface RecordMetricInput {
+  tenantId: string;
+  aiConversationId?: string;
+  channel: string;
+  model: string;
+  streamed: boolean;
+  fallback: boolean;
+  success: boolean;
+  errorMessage?: string;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+  ragRetrievalMs?: number;
+  embeddingMs?: number;
+  toolCallsCount: number;
+  toolSuccessCount: number;
+  toolFailureCount: number;
+  toolExecMs: number;
+  firstTokenMs?: number;
+  streamingDurationMs?: number;
+  totalLatencyMs: number;
+}
+
+const n = (v: unknown): number => {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+};
+
+/**
+ * Advanced AI Monitoring — the write side (`record`) is called by
+ * `AiExecutionService` after every turn (best-effort, never throws so a metrics
+ * failure can never break an AI reply). The read side computes real percentiles
+ * (Postgres `percentile_cont`, not fabricated) tenant-scoped for the dashboard's
+ * own "AI Monitoring" tab; the platform-wide equivalent lives in
+ * `platform-ai-monitoring` (raw queries over the SAME table — no duplication).
+ */
+@Injectable()
+export class AiMetricsService {
+  private readonly logger = new Logger('AiMetricsService');
+
+  constructor(
+    @InjectRepository(AiExecutionMetric)
+    private readonly metrics: Repository<AiExecutionMetric>,
+    private readonly dataSource: DataSource,
+  ) {}
+
+  /** Best-effort insert — a metrics failure must never break the AI turn. */
+  async record(input: RecordMetricInput): Promise<void> {
+    try {
+      await this.metrics.save(
+        this.metrics.create({
+          tenant: { id: input.tenantId } as Tenant,
+          ai_conversation_id: input.aiConversationId,
+          channel: input.channel,
+          model: input.model,
+          streamed: input.streamed,
+          fallback: input.fallback,
+          success: input.success,
+          error_message: input.errorMessage,
+          prompt_tokens: input.promptTokens,
+          completion_tokens: input.completionTokens,
+          total_tokens: input.promptTokens + input.completionTokens,
+          cost_usd: input.costUsd,
+          rag_retrieval_ms: input.ragRetrievalMs,
+          embedding_ms: input.embeddingMs,
+          tool_calls_count: input.toolCallsCount,
+          tool_success_count: input.toolSuccessCount,
+          tool_failure_count: input.toolFailureCount,
+          tool_exec_ms: input.toolExecMs,
+          first_token_ms: input.firstTokenMs,
+          streaming_duration_ms: input.streamingDurationMs,
+          total_latency_ms: input.totalLatencyMs,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`metric record failed: ${(err as Error)?.message}`);
+    }
+  }
+
+  /** Tenant-scoped aggregate summary: latency percentiles, tokens, cost, tool/error rates. */
+  async summary(tenantId: string, filter: AiAnalyticsFilterDto) {
+    const { where, params } = this.scope(tenantId, filter);
+    const [row] = await this.dataSource.query(
+      `SELECT
+         count(*)::int AS n,
+         count(*) FILTER (WHERE success = false)::int AS error_count,
+         count(*) FILTER (WHERE streamed = true)::int AS streamed_count,
+         COALESCE(avg(total_latency_ms), 0) AS avg_latency_ms,
+         COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY total_latency_ms), 0) AS p50_latency_ms,
+         COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY total_latency_ms), 0) AS p95_latency_ms,
+         COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY total_latency_ms), 0) AS p99_latency_ms,
+         COALESCE(avg(first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL), 0) AS avg_first_token_ms,
+         COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL), 0) AS p50_first_token_ms,
+         COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL), 0) AS p95_first_token_ms,
+         COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY first_token_ms) FILTER (WHERE first_token_ms IS NOT NULL), 0) AS p99_first_token_ms,
+         COALESCE(avg(streaming_duration_ms) FILTER (WHERE streaming_duration_ms IS NOT NULL), 0) AS avg_streaming_duration_ms,
+         COALESCE(avg(rag_retrieval_ms) FILTER (WHERE rag_retrieval_ms IS NOT NULL), 0) AS avg_rag_retrieval_ms,
+         COALESCE(avg(embedding_ms) FILTER (WHERE embedding_ms IS NOT NULL), 0) AS avg_embedding_ms,
+         COALESCE(avg(tool_exec_ms) FILTER (WHERE tool_calls_count > 0), 0) AS avg_tool_exec_ms,
+         COALESCE(sum(tool_calls_count), 0)::int AS tool_calls,
+         COALESCE(sum(tool_success_count), 0)::int AS tool_success,
+         COALESCE(sum(tool_failure_count), 0)::int AS tool_failure,
+         COALESCE(sum(prompt_tokens), 0)::bigint AS prompt_tokens,
+         COALESCE(sum(completion_tokens), 0)::bigint AS completion_tokens,
+         COALESCE(sum(total_tokens), 0)::bigint AS total_tokens,
+         COALESCE(sum(cost_usd), 0) AS total_cost_usd,
+         COALESCE(sum(total_latency_ms), 0)::bigint AS total_latency_ms_sum
+       FROM ai_execution_metrics
+       ${where}`,
+      params,
+    );
+
+    const byModel = await this.dataSource.query(
+      `SELECT model,
+              count(*)::int AS requests,
+              COALESCE(sum(total_tokens), 0)::bigint AS tokens,
+              COALESCE(sum(cost_usd), 0) AS cost_usd,
+              COALESCE(avg(total_latency_ms), 0) AS avg_latency_ms
+         FROM ai_execution_metrics
+         ${where}
+        GROUP BY model
+        ORDER BY cost_usd DESC`,
+      params,
+    );
+
+    const total = n(row?.n);
+    const completionTokens = n(row?.completion_tokens);
+    const totalLatencySumSec = n(row?.total_latency_ms_sum) / 1000;
+
+    return {
+      tenantId,
+      requests: total,
+      errorRate: total > 0 ? n(row?.error_count) / total : 0,
+      streamedRate: total > 0 ? n(row?.streamed_count) / total : 0,
+      latencyMs: {
+        avg: n(row?.avg_latency_ms),
+        p50: n(row?.p50_latency_ms),
+        p95: n(row?.p95_latency_ms),
+        p99: n(row?.p99_latency_ms),
+      },
+      firstTokenMs: {
+        avg: n(row?.avg_first_token_ms),
+        p50: n(row?.p50_first_token_ms),
+        p95: n(row?.p95_first_token_ms),
+        p99: n(row?.p99_first_token_ms),
+      },
+      streamingDurationAvgMs: n(row?.avg_streaming_duration_ms),
+      ragRetrievalAvgMs: n(row?.avg_rag_retrieval_ms),
+      embeddingAvgMs: n(row?.avg_embedding_ms),
+      toolExecAvgMs: n(row?.avg_tool_exec_ms),
+      tools: {
+        calls: n(row?.tool_calls),
+        succeeded: n(row?.tool_success),
+        failed: n(row?.tool_failure),
+        successRate: n(row?.tool_calls) > 0 ? n(row?.tool_success) / n(row?.tool_calls) : null,
+      },
+      tokens: {
+        prompt: n(row?.prompt_tokens),
+        completion: completionTokens,
+        total: n(row?.total_tokens),
+        perSecond: totalLatencySumSec > 0 ? +(completionTokens / totalLatencySumSec).toFixed(2) : 0,
+      },
+      costUsd: +n(row?.total_cost_usd).toFixed(6),
+      byModel: byModel.map((m: Record<string, unknown>) => ({
+        model: m.model as string,
+        requests: n(m.requests),
+        tokens: n(m.tokens),
+        costUsd: +n(m.cost_usd).toFixed(6),
+        avgLatencyMs: n(m.avg_latency_ms),
+      })),
+    };
+  }
+
+  /** Daily time series for charts: requests, avg latency, tokens, cost, errors. */
+  async timeSeries(tenantId: string, filter: AiAnalyticsFilterDto) {
+    const { where, params } = this.scope(tenantId, filter);
+    const rows = await this.dataSource.query(
+      `SELECT date_trunc('day', created_at) AS day,
+              count(*)::int AS requests,
+              COALESCE(avg(total_latency_ms), 0) AS avg_latency_ms,
+              COALESCE(sum(total_tokens), 0)::bigint AS tokens,
+              COALESCE(sum(cost_usd), 0) AS cost_usd,
+              count(*) FILTER (WHERE success = false)::int AS errors
+         FROM ai_execution_metrics
+         ${where}
+        GROUP BY day
+        ORDER BY day ASC`,
+      params,
+    );
+    return rows.map((r: Record<string, unknown>) => ({
+      date: (r.day as Date).toISOString().slice(0, 10),
+      requests: n(r.requests),
+      avgLatencyMs: n(r.avg_latency_ms),
+      tokens: n(r.tokens),
+      costUsd: +n(r.cost_usd).toFixed(6),
+      errors: n(r.errors),
+    }));
+  }
+
+  private scope(tenantId: string, filter: AiAnalyticsFilterDto): { where: string; params: unknown[] } {
+    const params: unknown[] = [tenantId];
+    let where = `WHERE "tenantId" = $1`;
+    if (filter.from) {
+      params.push(filter.from);
+      where += ` AND created_at >= $${params.length}`;
+    }
+    if (filter.to) {
+      params.push(filter.to);
+      where += ` AND created_at < $${params.length}`;
+    }
+    return { where, params };
+  }
+}

@@ -72,6 +72,20 @@ export class WorkflowProcessor extends WorkerHost {
       const action = (workflow.actions ?? [])[actionIndex];
       if (!action) return { skipped: true };
 
+      // Per-action gate (IF/ELSE branching in the visual builder): reuses the
+      // SAME evaluator the workflow-level `conditions` use — no second engine.
+      if (!this.workflows.evaluateConditions(action.conditions, run.context ?? {})) {
+        await this.workflows.appendResult(runId, {
+          index: actionIndex,
+          type: action.type,
+          status: 'SKIPPED',
+          detail: 'Action conditions did not match the run context.',
+          at: new Date().toISOString(),
+        });
+        await this.workflows.finalizeRun(runId, (workflow.actions ?? []).length);
+        return { skipped: true };
+      }
+
       const outcome = await this.executor.execute(tenantId, runId, action, run.context ?? {});
       await this.workflows.appendResult(runId, {
         index: actionIndex,

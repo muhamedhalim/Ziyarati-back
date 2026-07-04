@@ -9,6 +9,7 @@ import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
+import { User } from '../../entities/Auth&RBAC/User';
 
 import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
@@ -17,6 +18,7 @@ import { WhatsappContactService } from './whatsapp-contact.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
+import { WhatsappBotActorService } from './whatsapp-bot-actor.service';
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
 
 import { WhatsappAccountController } from './whatsapp-account.controller';
@@ -38,6 +40,8 @@ import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
+import { AuthModule } from '../auth/auth.module';
+import { CrmModule } from '../crm/crm.module';
 
 /**
  * WhatsApp Domain.
@@ -65,6 +69,7 @@ import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module'
       NotificationLog,
       Branch,
       Customer,
+      User,
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,
@@ -74,6 +79,11 @@ import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module'
     // Inbound automation: reuse the single cross-channel AI orchestrator (no AI
     // logic duplicated here — the bridge only maps WhatsApp ⇄ orchestrator).
     AiOrchestratorModule,
+    // Bot Actor identity: reuses RolesService/AuthService (real users + RBAC,
+    // no parallel auth) and CustomerService (CRM customer linkage) — no new
+    // business logic, just composing the existing services.
+    AuthModule,
+    CrmModule,
   ],
   controllers: [
     WhatsappAccountController,
@@ -90,6 +100,7 @@ import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module'
     WhatsappMessagingService,
     WhatsappExecutionService,
     WhatsappInboundAiService,
+    WhatsappBotActorService,
     WhatsappAnalyticsService,
     WhatsappProviderFactory,
     NoopWhatsappProvider,
@@ -112,6 +123,9 @@ import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module'
     WhatsappContactService,
     WhatsappMessagingService,
     WhatsappExecutionService,
+    // Needed by WorkflowActionExecutor (WHATSAPP action) to resolve the
+    // sending account the same way WhatsappInboundAiService does.
+    WhatsappMessageRouter,
   ],
 })
 export class WhatsappModule {}

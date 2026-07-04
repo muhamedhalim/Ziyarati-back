@@ -1,11 +1,17 @@
-import { IsBooleanString, IsIn, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsBooleanString, IsIn, IsInt, IsOptional, IsString, MaxLength, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 import { WORKFLOW_TRIGGERS } from '../workflow.constants';
 
-/** List/paginate workflows, optionally filtered by trigger / active flag. */
+/** List/paginate workflows, optionally filtered by trigger / active flag / name search. */
 export class WorkflowFilterDto {
+  @ApiPropertyOptional({ description: 'Search by name (partial, case-insensitive).', example: 'reminder' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  q?: string;
+
   @ApiPropertyOptional({ description: 'Filter by trigger event.', enum: WORKFLOW_TRIGGERS })
   @IsOptional()
   @IsIn(WORKFLOW_TRIGGERS)

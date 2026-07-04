@@ -23,6 +23,15 @@ export interface WorkflowActionSpec {
   config: Record<string, unknown>;
   /** Minutes to wait before this action runs (BullMQ delay). */
   delayMinutes?: number;
+  /**
+   * Per-action gate (ALL must match, AND) — evaluated against the SAME run
+   * context as the workflow-level `conditions`, via the SAME
+   * `WorkflowService.evaluateConditions`. This is how the visual builder
+   * expresses IF/ELSE branching on the existing flat action list: two actions
+   * with mutually-exclusive conditions behave as an IF/ELSE pair without any
+   * new execution engine. Absent/empty = always run (unchanged behaviour).
+   */
+  conditions?: WorkflowConditionSpec[];
 }
 
 /**

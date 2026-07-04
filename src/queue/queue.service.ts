@@ -206,11 +206,18 @@ export class QueueService {
   }
 
   // ── Workflow engine ──────────────────────────────────────────────────────
+  //
+  // Job ids below use DASHES only (never `:`) — BullMQ's custom-id validator
+  // rejects any id containing `:` unless it splits into EXACTLY 3 parts (a
+  // legacy compatibility rule for its own repeatable-job ids; see
+  // node_modules/bullmq/dist/cjs/classes/job.js `validateOptions`). Discovered
+  // by actually booting the app and test-running a workflow — `tsc`/`nest build`
+  // cannot catch this class of runtime-only failure.
 
   /** Kick off a workflow run. Idempotent per run (one fan-out job per run). */
   enqueueWorkflowRun(data: WorkflowRunJob, opts?: JobsOptions) {
     return this.add(QUEUE.WORKFLOW, JOB.WORKFLOW_RUN, data, {
-      jobId: `wf-run:${data.runId}`,
+      jobId: `wf-run-${data.runId}`,
       ...opts,
     });
   }
@@ -221,7 +228,19 @@ export class QueueService {
    */
   enqueueWorkflowAction(data: WorkflowActionJob, opts?: JobsOptions) {
     return this.add(QUEUE.WORKFLOW, JOB.WORKFLOW_ACTION, data, {
-      jobId: `wf-action:${data.runId}:${data.actionIndex}`,
+      jobId: `wf-action-${data.runId}-${data.actionIndex}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Manual retry of one FAILED action. Unique job id (unlike
+   * `enqueueWorkflowAction`) so it re-runs even though the original attempt's
+   * job still exists in BullMQ's failed set (`removeOnFail: false`).
+   */
+  retryWorkflowAction(data: WorkflowActionJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WORKFLOW, JOB.WORKFLOW_ACTION, data, {
+      jobId: `wf-action-${data.runId}-${data.actionIndex}-retry-${Date.now()}`,
       ...opts,
     });
   }

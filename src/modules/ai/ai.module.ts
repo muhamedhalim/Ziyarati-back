@@ -10,6 +10,7 @@ import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { AiUsageLog } from '../../entities/AI Agent/AiUsageLog';
 import { AiCostLog } from '../../entities/AI Agent/AiCostLog';
 import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
+import { AiExecutionMetric } from '../../entities/AI Agent/AiExecutionMetric';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { User } from '../../entities/Auth&RBAC/User';
@@ -23,6 +24,7 @@ import { AiMessageService } from './ai-message.service';
 import { AiRagService } from './ai-rag.service';
 import { AiExecutionService } from './ai-execution.service';
 import { AiAnalyticsService } from './ai-analytics.service';
+import { AiMetricsService } from './ai-metrics.service';
 import { HandoverRequestService } from './handover-request.service';
 
 import { AiAgentController } from './ai-agent.controller';
@@ -31,6 +33,8 @@ import { AiTrainingFileController } from './ai-training-file.controller';
 import { AiPromptController } from './ai-prompt.controller';
 import { AiConversationController } from './ai-conversation.controller';
 import { AiAnalyticsController } from './ai-analytics.controller';
+import { AiMetricsController } from './ai-metrics.controller';
+import { AiToolCatalogController } from './ai-tool-catalog.controller';
 import { HandoverRequestController } from './handover-request.controller';
 
 import { AiProviderFactory } from './providers/ai-provider.factory';
@@ -51,6 +55,9 @@ import { SchedulingModule } from '../scheduling/scheduling.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { PlatformModule } from '../platform/platform.module';
 import { PublicDiscoveryModule } from '../public-discovery/public-discovery.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
+import { StaffModule } from '../staff/staff.module';
+import { CrmModule } from '../crm/crm.module';
 
 /**
  * AI / RAG Domain.
@@ -76,6 +83,7 @@ import { PublicDiscoveryModule } from '../public-discovery/public-discovery.modu
       AiUsageLog,
       AiCostLog,
       HandoverRequest,
+      AiExecutionMetric,
       Branch,
       Conversation,
       User,
@@ -94,6 +102,12 @@ import { PublicDiscoveryModule } from '../public-discovery/public-discovery.modu
     // Public discovery tools: the model can search clinics / branches / doctors /
     // services / free slots in-conversation (reuses PublicDiscoveryService).
     PublicDiscoveryModule,
+    // Dashboard Assistant admin toolset: reuses the tenant's own read services —
+    // no duplicated queries. Every call is additionally permission-gated in
+    // AiToolDispatchService against the acting user's real permissions.
+    AnalyticsModule,
+    StaffModule,
+    CrmModule,
   ],
   controllers: [
     AiAgentController,
@@ -102,6 +116,8 @@ import { PublicDiscoveryModule } from '../public-discovery/public-discovery.modu
     AiPromptController,
     AiConversationController,
     AiAnalyticsController,
+    AiMetricsController,
+    AiToolCatalogController,
     HandoverRequestController,
   ],
   providers: [
@@ -114,6 +130,7 @@ import { PublicDiscoveryModule } from '../public-discovery/public-discovery.modu
     AiRagService,
     AiExecutionService,
     AiAnalyticsService,
+    AiMetricsService,
     HandoverRequestService,
     AiToolDispatchService,
     AiToolCallsBootstrap,
@@ -138,6 +155,7 @@ import { PublicDiscoveryModule } from '../public-discovery/public-discovery.modu
     AiConversationService,
     AiExecutionService,
     AiRagService,
+    AiMetricsService,
     HandoverRequestService,
   ],
 })

@@ -19,6 +19,7 @@ export const APPOINTMENT_EVENT = {
   RESCHEDULED: 'appointment.rescheduled',
   NO_SHOW: 'appointment.no_show',
   IN_PROGRESS: 'appointment.in_progress',
+  UPDATED: 'appointment.updated',
 } as const;
 
 export type AppointmentEventName =
@@ -90,5 +91,16 @@ export class AppointmentInProgressEvent {
     readonly tenantId: string,
     readonly appointmentId: string,
     readonly customerId: string,
+  ) {}
+}
+
+/** Branch/staff reassignment or notes edit — NOT a status transition (see the others above). */
+export class AppointmentUpdatedEvent {
+  static readonly eventName = APPOINTMENT_EVENT.UPDATED;
+  constructor(
+    readonly tenantId: string,
+    readonly appointmentId: string,
+    readonly customerId: string,
+    readonly changes: string,
   ) {}
 }

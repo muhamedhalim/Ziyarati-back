@@ -53,6 +53,7 @@ import {
   AppointmentInProgressEvent,
   AppointmentNoShowEvent,
   AppointmentRescheduledEvent,
+  AppointmentUpdatedEvent,
 } from '../../events/appointment.events';
 
 /** Terminal statuses — no further lifecycle transitions are permitted. */
@@ -298,6 +299,7 @@ export class AppointmentsService {
     id: string,
     dto: UpdateAppointmentDto,
   ): Promise<Appointment> {
+    let madeChanges = false;
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
       this.assertNotTerminal(appointment, 'updated');
@@ -341,6 +343,7 @@ export class AppointmentsService {
       await manager.getRepository(Appointment).save(appointment);
 
       if (changes.length) {
+        madeChanges = true;
         await this.writeHistory(
           manager,
           tenantId,
@@ -353,7 +356,14 @@ export class AppointmentsService {
       }
     });
 
-    return this.findOne(tenantId, id);
+    const appointment = await this.findOne(tenantId, id);
+    if (madeChanges) {
+      this.emitter.emit(
+        AppointmentUpdatedEvent.eventName,
+        new AppointmentUpdatedEvent(tenantId, appointment.id, appointment.customer!.id, 'details updated'),
+      );
+    }
+    return appointment;
   }
 
   /** Replace the appointment's services and recompute duration + total. */

@@ -169,6 +169,40 @@ export class WorkflowController {
     return { enqueued: true, runId: created.id };
   }
 
+  @ApiOperation({
+    summary: 'Duplicate a workflow',
+    description: 'Copies name/trigger/conditions/actions into a NEW, inactive workflow so it can be reviewed before enabling.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @ApiCreatedResponse({ description: 'Duplicated workflow.', schema: S_WORKFLOW })
+  @ApiNotFoundResponse({ description: 'Workflow not found.', schema: S_ERROR })
+  @Post(':id/duplicate')
+  duplicate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.workflows.duplicate(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: 'Retry a run\'s failed actions',
+    description: 'Re-enqueues every action whose last outcome was FAILED (SUCCEEDED/SKIPPED actions are left untouched).',
+  })
+  @ApiParam({ name: 'runId', format: 'uuid' })
+  @ApiOkResponse({ description: 'Retry enqueued.' })
+  @ApiNotFoundResponse({ description: 'Run not found.', schema: S_ERROR })
+  @Post('runs/:runId/retry')
+  @HttpCode(HttpStatus.OK)
+  async retryRun(@Param('runId', ParseUUIDPipe) runId: string) {
+    const tenantId = this.ctx.requireTenantId();
+    const run = await this.workflows.getOwnedRun(tenantId, runId);
+    const failedIndices = this.workflows.failedActionIndices(run);
+    if (!failedIndices.length) return { retried: 0, reason: 'no_failed_actions' };
+
+    await this.workflows.reopenForRetry(runId);
+    for (const actionIndex of failedIndices) {
+      await this.queue.retryWorkflowAction({ tenantId, runId, actionIndex });
+    }
+    return { retried: failedIndices.length };
+  }
+
   @ApiOperation({ summary: 'Delete a workflow' })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ description: 'Workflow deleted.' })

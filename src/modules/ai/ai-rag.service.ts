@@ -43,18 +43,24 @@ export class AiRagService {
     private readonly config: ConfigService,
   ) {}
 
-  /** Retrieves the most relevant knowledge chunks for an agent + query. */
+  /**
+   * Retrieves the most relevant knowledge chunks for an agent + query.
+   *
+   * `timing`, when passed, is populated with `embeddingMs` (Advanced AI
+   * Monitoring) — an optional out-param so existing callers are unaffected.
+   */
   async retrieve(
     tenantId: string,
     agentId: string,
     query: string,
     limit?: number,
+    timing?: { embeddingMs?: number },
   ): Promise<RetrievedChunk[]> {
     const topK = limit ?? Number(this.config.get<number>('RAG_TOP_K', 5));
 
     if (this.embedder.isConfigured() && this.pgvector.isAvailable()) {
       try {
-        return await this.vectorSearch(tenantId, agentId, query, topK);
+        return await this.vectorSearch(tenantId, agentId, query, topK, timing);
       } catch (err) {
         this.logger.warn(
           `Vector search failed (${(err as Error).message}) — using keyword fallback`,
@@ -79,8 +85,11 @@ export class AiRagService {
     agentId: string,
     query: string,
     topK: number,
+    timing?: { embeddingMs?: number },
   ): Promise<RetrievedChunk[]> {
+    const embedStart = Date.now();
     const { vectors } = await this.embedder.embed(tenantId, [query]);
+    if (timing) timing.embeddingMs = Date.now() - embedStart;
     const queryVec = vectors[0];
     if (!queryVec) return [];
 

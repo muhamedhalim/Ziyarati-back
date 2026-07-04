@@ -9,6 +9,7 @@ import {
   AppointmentCreatedEvent,
   AppointmentNoShowEvent,
   AppointmentRescheduledEvent,
+  AppointmentUpdatedEvent,
 } from '../../events/appointment.events';
 import {
   PAYMENT_EVENT,
@@ -101,6 +102,15 @@ export class WorkflowEventListener {
     return this.trigger(e.tenantId, APPOINTMENT_EVENT.NO_SHOW, {
       appointmentId: e.appointmentId,
       customerId: e.customerId,
+    });
+  }
+
+  @OnEvent(APPOINTMENT_EVENT.UPDATED)
+  onAppointmentUpdated(e: AppointmentUpdatedEvent) {
+    return this.trigger(e.tenantId, APPOINTMENT_EVENT.UPDATED, {
+      appointmentId: e.appointmentId,
+      customerId: e.customerId,
+      changes: e.changes,
     });
   }
 

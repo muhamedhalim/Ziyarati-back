@@ -211,6 +211,8 @@ export const ROLE = {
   MANAGER: 'manager',
   RECEPTIONIST: 'receptionist',
   CUSTOMER: 'customer',
+  /** Per-tenant system actor driving AI-initiated bookings (e.g. WhatsApp). */
+  AI_BOT: 'ai-bot',
 } as const;
 
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
@@ -403,6 +405,24 @@ export const ROLES: RoleDef[] = [
 
 /** Sentinel meaning "every permission in the catalogue" (resolved dynamically). */
 export const ALL_PERMISSIONS = '*' as const;
+
+/**
+ * The AI Bot Actor's permission set — intentionally minimal (least privilege):
+ * only what its tool calls actually need (booking + the customer lookup that
+ * resolves a WhatsApp contact to a bookable person). No financial, AI-config,
+ * staff, or analytics permissions. Shared by `ROLE_PERMISSIONS` (below, for
+ * type completeness) and `WhatsappBotActorService` (the actual grant), so
+ * both always agree.
+ */
+export const AI_BOT_PERMISSIONS: PermissionSlug[] = [
+  PERMISSION.APPOINTMENTS_CREATE,
+  PERMISSION.APPOINTMENTS_READ,
+  PERMISSION.APPOINTMENTS_RESCHEDULE,
+  PERMISSION.APPOINTMENTS_CANCEL,
+  PERMISSION.SCHEDULING_AVAILABILITY_READ,
+  PERMISSION.CUSTOMERS_READ,
+  PERMISSION.CUSTOMERS_CREATE,
+];
 
 export const ROLE_PERMISSIONS: Record<
   RoleSlug,
@@ -679,4 +699,11 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.REVIEWS_CREATE,
     PERMISSION.PROFILE_UPDATE_OWN,
   ],
+
+  // AI Bot Actor: least-privilege, booking-only (see AI_BOT_PERMISSIONS below).
+  // Not a global system role — created per-tenant, lazily, by
+  // WhatsappBotActorService via RolesService.create(); the role-permissions
+  // seeder only reconciles GLOBAL (tenant-less) roles, so it harmlessly skips
+  // this entry (it exists only to satisfy the exhaustive `RoleSlug` mapping).
+  [ROLE.AI_BOT]: AI_BOT_PERMISSIONS,
 };

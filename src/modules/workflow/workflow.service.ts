@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 
 import { Workflow, WorkflowConditionSpec } from '../../entities/Workflows/Workflow';
 import { WorkflowRun, WorkflowActionResult } from '../../entities/Workflows/WorkflowRun';
@@ -43,6 +43,7 @@ export class WorkflowService {
     const where: FindOptionsWhere<Workflow> = { tenant: { id: tenantId } };
     if (filter.triggerEvent) where.trigger_event = filter.triggerEvent;
     if (filter.isActive !== undefined) where.is_active = filter.isActive === 'true';
+    if (filter.q) where.name = ILike(`%${filter.q}%`);
 
     const [data, total] = await this.workflows.findAndCount({
       where,
@@ -51,6 +52,21 @@ export class WorkflowService {
       take: filter.limit,
     });
     return { data, total, page: filter.page, limit: filter.limit };
+  }
+
+  /** Copies a workflow (name suffixed, starts INACTIVE so it can be reviewed first). */
+  async duplicate(tenantId: string, id: string): Promise<Workflow> {
+    const source = await this.findOne(tenantId, id);
+    const copy = this.workflows.create({
+      tenant: { id: tenantId } as Tenant,
+      name: `${source.name} (copy)`,
+      description: source.description,
+      trigger_event: source.trigger_event,
+      is_active: false,
+      conditions: source.conditions,
+      actions: source.actions,
+    });
+    return this.workflows.save(copy);
   }
 
   async findOne(tenantId: string, id: string): Promise<Workflow> {
@@ -155,6 +171,23 @@ export class WorkflowService {
       take: limit,
     });
     return { data, total, page, limit };
+  }
+
+  /** Tenant-scoped single run fetch (ownership enforced via the run's own tenant relation). */
+  async getOwnedRun(tenantId: string, runId: string): Promise<WorkflowRun> {
+    const run = await this.runs.findOne({ where: { id: runId, tenant: { id: tenantId } } });
+    if (!run) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Workflow run not found' });
+    return run;
+  }
+
+  /** The action indices whose last recorded outcome was FAILED (candidates for retry). */
+  failedActionIndices(run: WorkflowRun): number[] {
+    return (run.results ?? []).filter((r) => r.status === 'FAILED').map((r) => r.index);
+  }
+
+  /** Reopens a run for retry (RUNNING) — the caller re-enqueues the failed action indices. */
+  async reopenForRetry(runId: string): Promise<void> {
+    await this.runs.update({ id: runId }, { status: WORKFLOW_RUN_STATUS.RUNNING, completed_at: undefined });
   }
 
   /**

@@ -12,6 +12,8 @@ import { Server, Socket } from 'socket.io';
 
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
 import { AiChannel } from '../ai-orchestrator/ai-channel.constants';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { WsAuthService } from './ws-auth.service';
 import { AI_EVENT, room } from './ai-events.constants';
 
@@ -44,16 +46,21 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
   constructor(
     private readonly wsAuth: WsAuthService,
     private readonly orchestrator: AiOrchestratorService,
+    private readonly ctx: TenantContextService,
   ) {}
 
   async handleConnection(client: Socket): Promise<void> {
     try {
-      const principal = await this.wsAuth.authenticate(client);
-      client.data.userId = principal.userId;
-      client.data.tenantId = principal.tenantId;
-      client.join(room.tenant(principal.tenantId));
-      client.emit(AI_EVENT.CONNECTED, { userId: principal.userId, tenantId: principal.tenantId });
-      client.to(room.tenant(principal.tenantId)).emit(AI_EVENT.PRESENCE, { userId: principal.userId, online: true });
+      const user = await this.wsAuth.authenticate(client);
+      // Keep the flat ids for the existing room-naming code, but also stash the
+      // FULL principal so `onMessage` can restore a real TenantContextService
+      // scope (roles/permissions) for the AI turn — see WsAuthService docblock.
+      client.data.userId = user.id;
+      client.data.tenantId = user.tenantId;
+      client.data.user = user;
+      client.join(room.tenant(user.tenantId!));
+      client.emit(AI_EVENT.CONNECTED, { userId: user.id, tenantId: user.tenantId });
+      client.to(room.tenant(user.tenantId!)).emit(AI_EVENT.PRESENCE, { userId: user.id, online: true });
     } catch (err) {
       client.emit(AI_EVENT.ERROR, { message: (err as Error)?.message ?? 'Unauthorized' });
       client.disconnect(true);
@@ -119,6 +126,17 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
       client.emit(AI_EVENT.ERROR, { message: 'Empty message or unauthenticated socket' });
       return;
     }
+    const user = client.data.user as AuthenticatedUser | undefined;
+    // Restore the authenticated principal for this turn — every downstream
+    // service (booking tools, admin tools, usage metering) reads it via
+    // TenantContextService exactly as it would under an HTTP request.
+    return this.ctx.run(() => {
+      if (user) this.ctx.setPrincipal(user);
+      return this.runMessage(client, body, tenantId);
+    });
+  }
+
+  private async runMessage(client: Socket, body: MessagePayload, tenantId: string): Promise<void> {
     client.emit(AI_EVENT.DELIVERED, { at: new Date().toISOString() });
     client.emit(AI_EVENT.THINKING, { aiConversationId: body.aiConversationId ?? null });
 

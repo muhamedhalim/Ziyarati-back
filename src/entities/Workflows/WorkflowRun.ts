@@ -14,7 +14,8 @@ import { Workflow } from './Workflow';
 export interface WorkflowActionResult {
   index: number;
   type: string;
-  status: 'SUCCEEDED' | 'FAILED';
+  /** SKIPPED = the action's own `conditions` didn't match (IF/ELSE branching). */
+  status: 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
   detail?: string;
   at: string;
 }

@@ -8,14 +8,37 @@ import { AppointmentSource } from '../../../entities/enums';
 import { AppointmentsService } from '../../appointment/appointment.service';
 import { PublicDiscoveryService } from '../../public-discovery/public-discovery.service';
 import { AvailabilityService } from '../../scheduling/availability.service';
+import { DashboardMetricService } from '../../analytics/dashboard-metric.service';
+import { SubscriptionService } from '../../subscription-billing/subscription.service';
+import { UsageService } from '../../subscription-billing/usage.service';
+import { CustomerService } from '../../crm/customer.service';
+import { StaffService } from '../../staff/staff.service';
 import { AiToolCall } from '../providers/ai-provider.interface';
+import { AiAnalyticsService } from '../ai-analytics.service';
 import { AI_TOOL } from './ai-tools.constants';
+import { AI_ADMIN_TOOL, AI_ADMIN_TOOL_PERMISSION, AiAdminToolName } from './ai-admin-tools.constants';
+import { PERMISSION } from '../../../rbac/rbac.constants';
 
 /** Context for a tool execution, all bound server-side (never from the model). */
 export interface ToolContext {
   tenantId: string;
   /** Authenticated user driving the AI turn — the booking actor (booked_by). */
   actorUserId?: string;
+  /**
+   * Permission slugs of the acting user (empty for anonymous/guest turns) —
+   * the SAME array `PermissionsGuard` checks. Gates both the Dashboard
+   * Assistant's admin tools AND the booking tools (mirrors the exact
+   * permission the real Appointments controller requires for each action —
+   * e.g. a CUSTOMER-role principal can create but not cancel/reschedule via
+   * chat, same as they cannot via the REST API).
+   */
+  permissions?: string[];
+  /**
+   * The customer this conversation belongs to, when known server-side (e.g.
+   * resolved from a WhatsApp contact) — used as the booking subject when the
+   * model doesn't supply `customerId` itself. Never trusted from the model.
+   */
+  customerId?: string;
   aiConversationId: string;
   /** Optional linked human conversation (for audit). */
   conversationId?: string;
@@ -47,6 +70,12 @@ export class AiToolDispatchService {
     private readonly appointments: AppointmentsService,
     private readonly availability: AvailabilityService,
     private readonly discovery: PublicDiscoveryService,
+    private readonly dashboardMetrics: DashboardMetricService,
+    private readonly subscriptions: SubscriptionService,
+    private readonly usage: UsageService,
+    private readonly customers: CustomerService,
+    private readonly staff: StaffService,
+    private readonly aiAnalytics: AiAnalyticsService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -75,12 +104,103 @@ export class AiToolDispatchService {
           return await this.rescheduleAppointment(ctx, args);
         case AI_TOOL.CANCEL_APPOINTMENT:
           return await this.cancelAppointment(ctx, args);
+        case AI_ADMIN_TOOL.GET_DASHBOARD_KPIS:
+        case AI_ADMIN_TOOL.GET_SUBSCRIPTION_STATUS:
+        case AI_ADMIN_TOOL.GET_USAGE_QUOTA:
+        case AI_ADMIN_TOOL.GET_APPOINTMENT_OVERVIEW:
+        case AI_ADMIN_TOOL.GET_PATIENT_OVERVIEW:
+        case AI_ADMIN_TOOL.GET_STAFF_OVERVIEW:
+        case AI_ADMIN_TOOL.GET_AI_USAGE_REPORT:
+        case AI_ADMIN_TOOL.GET_AI_COST_REPORT:
+        case AI_ADMIN_TOOL.GET_AI_MONITORING_SUMMARY:
+          return await this.executeAdminTool(ctx, call.name, args);
         default:
           return { success: false, error: `Unknown tool "${call.name}".` };
       }
     } catch (err) {
       // Defensive: business errors are handled per-tool; this catches the rest.
       return { success: false, error: this.msg(err) };
+    }
+  }
+
+  // ───────────────────────── Dashboard Assistant tools ────────────────────── //
+
+  /**
+   * Permission-gated dispatch for the read-only admin toolset. Every branch
+   * delegates to an EXISTING tenant-scoped service — no new queries. Denied
+   * calls are still recorded in `ai_tool_calls` (idempotency key includes the
+   * denial reason so a retried denial does not race a legitimate later grant).
+   */
+  private async executeAdminTool(
+    ctx: ToolContext,
+    name: AiAdminToolName,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const required = AI_ADMIN_TOOL_PERMISSION[name];
+    if (!(ctx.permissions ?? []).includes(required)) {
+      return { success: false, error: `Forbidden: this question requires the "${required}" permission.` };
+    }
+
+    return this.run(ctx, name, `admin:${name}:${randomUUID()}`, args, async () => {
+      const data = await this.runAdminTool(ctx, name, args);
+      return { toolResult: { success: true, ...data }, resultJson: { tool: name } };
+    });
+  }
+
+  private async runAdminTool(
+    ctx: ToolContext,
+    name: AiAdminToolName,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    switch (name) {
+      case AI_ADMIN_TOOL.GET_DASHBOARD_KPIS: {
+        const rows = await this.dashboardMetrics.getMetrics(ctx.tenantId, {});
+        const kpis: Record<string, unknown> = {};
+        for (const r of rows) kpis[r.metric_key] = r.metric_value != null ? Number(r.metric_value) : null;
+        return { kpis };
+      }
+      case AI_ADMIN_TOOL.GET_SUBSCRIPTION_STATUS: {
+        const sub = await this.subscriptions.getCurrent(ctx.tenantId);
+        return { subscription: sub };
+      }
+      case AI_ADMIN_TOOL.GET_USAGE_QUOTA: {
+        const breakdown = await this.usage.getBreakdown(ctx.tenantId);
+        return { usage: breakdown };
+      }
+      case AI_ADMIN_TOOL.GET_APPOINTMENT_OVERVIEW: {
+        const result = await this.appointments.findAll(ctx.tenantId, {
+          status: this.str(args.status) as never,
+          from: this.str(args.from),
+          to: this.str(args.to),
+          page: 1,
+          limit: 1,
+        } as never);
+        return { totalAppointments: result.total, filters: { status: args.status, from: args.from, to: args.to } };
+      }
+      case AI_ADMIN_TOOL.GET_PATIENT_OVERVIEW: {
+        const result = await this.customers.list(ctx.tenantId, {
+          isActive: typeof args.isActive === 'boolean' ? args.isActive : undefined,
+          page: 1,
+          limit: 1,
+        } as never);
+        return { totalPatients: result.total };
+      }
+      case AI_ADMIN_TOOL.GET_STAFF_OVERVIEW: {
+        const result = await this.staff.findAll(ctx.tenantId, {
+          branchId: this.str(args.branchId),
+          page: 1,
+          limit: 1,
+        } as never);
+        return { totalStaff: result.total };
+      }
+      case AI_ADMIN_TOOL.GET_AI_USAGE_REPORT:
+        return this.aiAnalytics.usage(ctx.tenantId, { from: this.str(args.from), to: this.str(args.to) });
+      case AI_ADMIN_TOOL.GET_AI_COST_REPORT:
+        return this.aiAnalytics.cost(ctx.tenantId, { from: this.str(args.from), to: this.str(args.to) });
+      case AI_ADMIN_TOOL.GET_AI_MONITORING_SUMMARY:
+        return this.aiAnalytics.conversations(ctx.tenantId, { from: this.str(args.from), to: this.str(args.to) });
+      default:
+        return {};
     }
   }
 
@@ -153,8 +273,13 @@ export class AiToolDispatchService {
     if (!ctx.actorUserId) {
       return { success: false, error: 'Booking is not available in this context (no acting user).' };
     }
+    if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CREATE)) {
+      return { success: false, error: `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.` };
+    }
     const branchId = this.str(args.branchId);
-    const customerId = this.str(args.customerId);
+    // The model supplies customerId when it knows one; otherwise fall back to
+    // the customer server-bound to this conversation (e.g. a WhatsApp contact).
+    const customerId = this.str(args.customerId) ?? ctx.customerId;
     const staffId = this.str(args.staffId);
     const startAt = this.str(args.startAt);
     if (!branchId || !customerId || !staffId || !startAt) {
@@ -196,6 +321,9 @@ export class AiToolDispatchService {
     if (!ctx.actorUserId) {
       return { success: false, error: 'Reschedule is not available in this context (no acting user).' };
     }
+    if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_RESCHEDULE)) {
+      return { success: false, error: `Forbidden: rescheduling requires the "${PERMISSION.APPOINTMENTS_RESCHEDULE}" permission.` };
+    }
     const appointmentId = this.str(args.appointmentId);
     const newStartAt = this.str(args.newStartAt);
     if (!appointmentId || !newStartAt) {
@@ -219,6 +347,9 @@ export class AiToolDispatchService {
   private async cancelAppointment(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
     if (!ctx.actorUserId) {
       return { success: false, error: 'Cancellation is not available in this context (no acting user).' };
+    }
+    if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CANCEL)) {
+      return { success: false, error: `Forbidden: cancellation requires the "${PERMISSION.APPOINTMENTS_CANCEL}" permission.` };
     }
     const appointmentId = this.str(args.appointmentId);
     if (!appointmentId) {

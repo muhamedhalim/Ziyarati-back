@@ -55,10 +55,21 @@ export interface AiCompletionResult {
   fallback?: boolean;
 }
 
-/** A single streamed delta (SSE). `done` marks the terminal chunk. */
+/**
+ * A single streamed delta (SSE). `done` marks the terminal chunk, which MAY also
+ * carry accumulated `toolCalls` (reassembled from streamed function-call
+ * fragments) and real `usage`/`model` when the provider's streaming API returns
+ * them — enabling tool-calling on the streaming path, not just `complete()`.
+ */
 export interface AiCompletionChunk {
   delta: string;
   done: boolean;
+  /** Present on the terminal chunk when the model requested tool calls. */
+  toolCalls?: AiToolCall[];
+  /** Present on the terminal chunk when the provider reports real token usage. */
+  usage?: { promptTokens: number; completionTokens: number };
+  /** Present on the terminal chunk (the resolved model id). */
+  model?: string;
 }
 
 export interface AiCompletionProvider {

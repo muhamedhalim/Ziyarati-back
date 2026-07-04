@@ -70,6 +70,7 @@ export class AiOrchestratorService {
       usage: result.usage,
       retrievedChunks: result.retrievedChunks,
       fallback: result.fallback,
+      lastTool: result.lastTool,
     };
   }
 
@@ -96,6 +97,7 @@ export class AiOrchestratorService {
       usage: result.usage,
       retrievedChunks: result.retrievedChunks,
       streamed: result.streamed,
+      lastTool: result.lastTool,
     };
   }
 

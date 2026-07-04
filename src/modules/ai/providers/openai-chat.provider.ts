@@ -100,17 +100,60 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     });
   }
 
+  /**
+   * Streams the answer token-by-token. Also supports tool calling: the model
+   * may stream `tool_calls` deltas instead of (or alongside) content — these
+   * arrive as partial fragments keyed by index, which are reassembled here and
+   * surfaced on the terminal chunk so the execution layer can run the SAME
+   * tool-dispatch loop as `complete()` without duplicating that logic.
+   */
   async *stream(request: AiCompletionRequest): AsyncIterable<AiCompletionChunk> {
+    const model = request.model ?? this.defaultModel;
     const stream = await this.client!.chat.completions.create({
-      model: request.model ?? this.defaultModel,
+      model,
       temperature: request.temperature ?? 0.2,
       messages: this.toOpenAiMessages(request.messages),
+      ...(request.tools && request.tools.length
+        ? {
+            tools: request.tools.map((t) => ({
+              type: 'function' as const,
+              function: { name: t.name, description: t.description, parameters: t.parameters },
+            })),
+            tool_choice: 'auto' as const,
+          }
+        : {}),
       stream: true,
+      stream_options: { include_usage: true },
     });
+
+    // Reassemble streamed tool_call fragments by index (OpenAI splits each call's
+    // id/name/arguments across multiple chunks).
+    const pending = new Map<number, { id: string; name: string; arguments: string }>();
+    let resolvedModel = model;
+    let usage: { promptTokens: number; completionTokens: number } | undefined;
+
     for await (const part of stream) {
-      const delta = part.choices[0]?.delta?.content ?? '';
+      resolvedModel = part.model ?? resolvedModel;
+      if (part.usage) {
+        usage = { promptTokens: part.usage.prompt_tokens ?? 0, completionTokens: part.usage.completion_tokens ?? 0 };
+      }
+      const choice = part.choices[0];
+      const delta = choice?.delta?.content ?? '';
       if (delta) yield { delta, done: false };
+
+      for (const tc of choice?.delta?.tool_calls ?? []) {
+        const entry = pending.get(tc.index) ?? { id: '', name: '', arguments: '' };
+        if (tc.id) entry.id = tc.id;
+        if (tc.function?.name) entry.name += tc.function.name;
+        if (tc.function?.arguments) entry.arguments += tc.function.arguments;
+        pending.set(tc.index, entry);
+      }
     }
-    yield { delta: '', done: true };
+
+    const toolCalls = Array.from(pending.values())
+      .filter((t) => t.id && t.name)
+      .map((t) => ({ id: t.id, name: t.name, arguments: t.arguments }));
+
+    yield { delta: '', done: true, toolCalls: toolCalls.length ? toolCalls : undefined, usage, model: resolvedModel };
   }
 }
