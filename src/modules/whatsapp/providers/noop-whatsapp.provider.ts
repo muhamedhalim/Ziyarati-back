@@ -3,6 +3,7 @@ import {
   WhatsappMessageProvider,
   WhatsappSendPayload,
   WhatsappSendResult,
+  WhatsappSessionPayload,
 } from './whatsapp-message.provider.interface';
 
 /**
@@ -25,5 +26,18 @@ export class NoopWhatsappProvider implements WhatsappMessageProvider {
         `"${payload.templateName}" (${payload.language}), tenant ${payload.tenantId}`,
     );
     return { success: true, providerMessageId: `noop_wamid_${Date.now()}` };
+  }
+
+  async sendSession(payload: WhatsappSessionPayload): Promise<WhatsappSendResult> {
+    const kind = payload.interactive?.list
+      ? 'list'
+      : payload.interactive?.buttons?.length
+        ? 'buttons'
+        : 'text';
+    this.logger.log(
+      `Simulated WhatsApp session (${kind}) to ${payload.to}, tenant ${payload.tenantId}: ` +
+        `"${payload.text.slice(0, 80)}"`,
+    );
+    return { success: true, providerMessageId: `noop_session_${Date.now()}` };
   }
 }

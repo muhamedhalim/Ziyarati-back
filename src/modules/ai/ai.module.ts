@@ -50,6 +50,7 @@ import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { PlatformModule } from '../platform/platform.module';
+import { PublicDiscoveryModule } from '../public-discovery/public-discovery.module';
 
 /**
  * AI / RAG Domain.
@@ -90,6 +91,9 @@ import { PlatformModule } from '../platform/platform.module';
     ConversationsModule,
     // Provides SystemSettingService for default model/temperature when creating agents.
     PlatformModule,
+    // Public discovery tools: the model can search clinics / branches / doctors /
+    // services / free slots in-conversation (reuses PublicDiscoveryService).
+    PublicDiscoveryModule,
   ],
   controllers: [
     AiAgentController,

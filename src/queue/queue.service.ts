@@ -23,6 +23,8 @@ import {
   SubscriptionsRenewalCheckJob,
   UsageReportRunJob,
   WhatsappSendJob,
+  WorkflowActionJob,
+  WorkflowRunJob,
 } from './job-data.interface';
 
 /**
@@ -199,6 +201,27 @@ export class QueueService {
     const minute = Math.floor(Date.now() / 60_000);
     return this.add(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_RUN, data, {
       jobId: `usage-report:${data.scheduleId}:${minute}`,
+      ...opts,
+    });
+  }
+
+  // ── Workflow engine ──────────────────────────────────────────────────────
+
+  /** Kick off a workflow run. Idempotent per run (one fan-out job per run). */
+  enqueueWorkflowRun(data: WorkflowRunJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WORKFLOW, JOB.WORKFLOW_RUN, data, {
+      jobId: `wf-run:${data.runId}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Execute one action of a run. Idempotent per (run, action); `delay` carries
+   * the action's configured delay and the default job options add retry/backoff.
+   */
+  enqueueWorkflowAction(data: WorkflowActionJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WORKFLOW, JOB.WORKFLOW_ACTION, data, {
+      jobId: `wf-action:${data.runId}:${data.actionIndex}`,
       ...opts,
     });
   }

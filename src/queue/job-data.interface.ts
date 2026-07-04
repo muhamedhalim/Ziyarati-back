@@ -130,3 +130,17 @@ export interface SettlementsProcessJob extends BaseJobData {
 
 // ── Subscriptions ──────────────────────────────────────────────────────────
 export interface SubscriptionsRenewalCheckJob extends BaseJobData {}
+
+// ── Workflow engine ─────────────────────────────────────────────────────────
+/** Kick off a workflow run: fan the run's actions out into delayed action jobs. */
+export interface WorkflowRunJob extends BaseJobData {
+  tenantId: string;
+  runId: string;
+}
+/** Execute ONE action of a workflow run (delay + retry handled at the queue). */
+export interface WorkflowActionJob extends BaseJobData {
+  tenantId: string;
+  runId: string;
+  /** Index of the action within the workflow's action list. */
+  actionIndex: number;
+}

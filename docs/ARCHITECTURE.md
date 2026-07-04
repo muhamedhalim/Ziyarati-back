@@ -1,5 +1,91 @@
 # Ziyarati Backend — Architecture (Code-Derived)
+main.ts
+│
+├── NestFactory
+│      ↓
+│   إنشاء التطبيق
+│
+├── AppModule
+│      ↓
+│   تحميل كل Modules
+│
+├── ValidationPipe
+│      ↓
+│   التحقق من كل Requests
+│
+├── cookieParser
+│      ↓
+│   قراءة Cookies من الطلب
+│
+├── requestContext
+│      ↓
+│   إنشاء Context خاص بالطلب الحالي (مثل Request ID أو Tenant)
+│
+├── TenantContextService
+│      ↓
+│   تحديد المستأجر (Tenant) الحالي في مشاريع Multi-Tenant
+│
+├── AllExceptionsFilter
+│      ↓
+│   توحيد شكل الأخطاء الصادرة من التطبيق
+│
+└── SwaggerModule
+       ↓
+    إنشاء وتقديم توثيق الـ API على /docs
 
+
+                      NestJS
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+        ▼                         ▼
+      API                    Worker Process
+        │                         │
+        ▼                         ▼
+ QueueService               @Processor(...)
+        │                         │
+        ▼                         ▼
+ ProducerQueues          Worker Connection
+        │                         │
+        └────────────┬────────────┘
+                     ▼
+                  Redis
+        ┌──────────┼──────────┐
+        │          │          │
+        ▼          ▼          ▼
+   Producer    Worker     QueueEvents
+  Connection  Connection   Connection
+
+                      Queue Constants
+                           │
+          ┌────────────────┴────────────────┐
+          │                                 │
+          ▼                                 ▼
+      QUEUE Names                     JOB Names
+          │                                 │
+          └────────────────┬────────────────┘
+                           ▼
+                  Queue.add(jobName)
+                           │
+                           ▼
+                         Redis
+                           │
+                           ▼
+                      BullMQ Worker
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+          ▼                ▼                ▼
+     Retry Logic      Concurrency      Rate Limiter
+          │                │                │
+          └────────────────┼────────────────┘
+                           ▼
+                   Exponential Backoff
+                    + Random Jitter
+                           │
+                           ▼
+                    Dead Letter Queue
+    
 > **Status:** derived directly from the implementation (`src/**`) and the committed
 > migrations (`src/migrations/*`), not from any prior AI-generated catalogue.
 > Where a prior document and the code disagreed, the code won. Physical schema:

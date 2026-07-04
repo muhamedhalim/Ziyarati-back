@@ -4,6 +4,7 @@ import { WhatsappProviderFactory } from './providers/whatsapp-provider.factory';
 import {
   WhatsappSendPayload,
   WhatsappSendResult,
+  WhatsappSessionPayload,
 } from './providers/whatsapp-message.provider.interface';
 
 /**
@@ -19,5 +20,22 @@ export class WhatsappMessagingService {
   send(payload: WhatsappSendPayload): Promise<WhatsappSendResult> {
     const provider = this.factory.resolve(payload);
     return provider.send(payload);
+  }
+
+  /**
+   * Sends a free-form session (text / interactive) message — the reply channel
+   * for inbound AI conversations. Resolves the same provider strategy; if the
+   * resolved provider does not implement session sends, returns a clear error
+   * instead of throwing (the caller logs it).
+   */
+  sendSession(payload: WhatsappSessionPayload): Promise<WhatsappSendResult> {
+    const provider = this.factory.resolve();
+    if (!provider.sendSession) {
+      return Promise.resolve({
+        success: false,
+        error: `Provider "${provider.name}" does not support session messages`,
+      });
+    }
+    return provider.sendSession(payload);
   }
 }

@@ -16,6 +16,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
 import { DELIVERY_STATUS, DeliveryStatus } from '../notifications/notification.constants';
+import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import type {
   WhatsappWebhookBody,
@@ -50,6 +51,7 @@ export class WhatsappWebhookService {
     private readonly config: ConfigService,
     @Inject(forwardRef(() => NotificationDeliveryService))
     private readonly notifDelivery: NotificationDeliveryService,
+    private readonly inboundAi: WhatsappInboundAiService,
   ) {}
 
   /** GET verification handshake — returns the challenge to echo, or null. */
@@ -113,6 +115,19 @@ export class WhatsappWebhookService {
         this.logger.error(`delivery-status apply failed: ${(err as Error)?.message}`),
       );
     }
+
+    // Inbound customer message → drive it through the AI pipeline (discovery +
+    // booking tools, memory, agent routing) and reply on WhatsApp. Fire-and-forget
+    // so Meta gets a fast 200; the bridge fails soft and never breaks ingestion.
+    if (eventType === 'messages' && tenant) {
+      const value = this.firstChangeValue(body);
+      if (value) {
+        void this.inboundAi
+          .handleInboundValue(tenant, value)
+          .catch((err) => this.logger.error(`inbound AI dispatch failed: ${(err as Error)?.message}`));
+      }
+    }
+
     return { accepted: true, id: saved.id };
   }
 

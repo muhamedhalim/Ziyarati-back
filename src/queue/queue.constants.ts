@@ -19,6 +19,7 @@ export const QUEUE = {
   PLATFORM: 'platform',
   EMAIL: 'email',
   USAGE_REPORT: 'usage-report',
+  WORKFLOW: 'workflow',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -56,6 +57,8 @@ export const JOB = {
   EMAIL_SEND: 'email.send',
   USAGE_REPORT_TICK: 'usageReport.tick',
   USAGE_REPORT_RUN: 'usageReport.run',
+  WORKFLOW_RUN: 'workflow.run',
+  WORKFLOW_ACTION: 'workflow.action',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

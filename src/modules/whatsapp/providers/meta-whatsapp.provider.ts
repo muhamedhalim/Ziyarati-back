@@ -4,6 +4,7 @@ import {
   WhatsappMessageProvider,
   WhatsappSendPayload,
   WhatsappSendResult,
+  WhatsappSessionPayload,
 } from './whatsapp-message.provider.interface';
 import { WhatsappAccountResolver } from '../routing/whatsapp-account.resolver';
 
@@ -31,14 +32,107 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
   }
 
   async send(payload: WhatsappSendPayload): Promise<WhatsappSendResult> {
-    // Re-resolve the account to obtain the (secret) access token — payloads carry
-    // no secrets, so credentials are fetched here, tenant-scoped.
-    let phoneNumberId = payload.phoneNumberId;
+    return this.dispatch(payload.tenantId, payload.accountId, payload.phoneNumberId, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: this.normalize(payload.to),
+      type: 'template',
+      template: {
+        name: payload.templateName,
+        language: { code: payload.language || 'ar' },
+        components: this.buildComponents(payload.variables),
+      },
+    });
+  }
+
+  /**
+   * Free-form session reply (text or interactive) inside the 24h service window —
+   * the message type the AI uses to answer inbound WhatsApp turns. Interactive
+   * buttons (≤3) render as reply buttons; a list renders as a selectable menu.
+   */
+  async sendSession(payload: WhatsappSessionPayload): Promise<WhatsappSendResult> {
+    return this.dispatch(
+      payload.tenantId,
+      payload.accountId,
+      payload.phoneNumberId,
+      this.buildSessionBody(payload),
+    );
+  }
+
+  /** Build the Meta message body for a text / interactive session reply. */
+  private buildSessionBody(payload: WhatsappSessionPayload): Record<string, unknown> {
+    const base = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: this.normalize(payload.to),
+    };
+    const inter = payload.interactive;
+    const buttons = inter?.buttons?.slice(0, 3) ?? [];
+    const list = inter?.list;
+
+    if (list && list.sections.length > 0) {
+      return {
+        ...base,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          ...(inter?.header ? { header: { type: 'text', text: inter.header.slice(0, 60) } } : {}),
+          body: { text: payload.text.slice(0, 1024) },
+          ...(inter?.footer ? { footer: { text: inter.footer.slice(0, 60) } } : {}),
+          action: {
+            button: (list.buttonText || 'Select').slice(0, 20),
+            sections: list.sections.slice(0, 10).map((s) => ({
+              ...(s.title ? { title: s.title.slice(0, 24) } : {}),
+              rows: s.rows.slice(0, 10).map((r) => ({
+                id: r.id.slice(0, 200),
+                title: r.title.slice(0, 24),
+                ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+              })),
+            })),
+          },
+        },
+      };
+    }
+
+    if (buttons.length > 0) {
+      return {
+        ...base,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          ...(inter?.header ? { header: { type: 'text', text: inter.header.slice(0, 60) } } : {}),
+          body: { text: payload.text.slice(0, 1024) },
+          ...(inter?.footer ? { footer: { text: inter.footer.slice(0, 60) } } : {}),
+          action: {
+            buttons: buttons.map((b) => ({
+              type: 'reply',
+              reply: { id: b.id.slice(0, 256), title: b.title.slice(0, 20) },
+            })),
+          },
+        },
+      };
+    }
+
+    return { ...base, type: 'text', text: { preview_url: false, body: payload.text.slice(0, 4096) } };
+  }
+
+  /**
+   * Resolve tenant-scoped credentials, POST the message body to the Cloud API,
+   * and normalize the response. Shared by template + session sends. Never throws
+   * for expected failures — returns `{ success:false, error }` for the executor.
+   */
+  private async dispatch(
+    tenantId: string,
+    accountId: string,
+    phoneNumberIdHint: string | undefined,
+    body: Record<string, unknown>,
+  ): Promise<WhatsappSendResult> {
+    let phoneNumberId = phoneNumberIdHint;
     let accessToken: string | undefined;
     try {
       const account =
-        payload.accountId && payload.accountId !== 'platform-env'
-          ? await this.resolver.byId(payload.tenantId, payload.accountId)
+        accountId && accountId !== 'platform-env'
+          ? await this.resolver.byId(tenantId, accountId)
           : this.resolver.envPlatform();
       if (account) {
         phoneNumberId = account.phoneNumberId ?? phoneNumberId;
@@ -59,17 +153,7 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
       const res = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          recipient_type: 'individual',
-          to: this.normalize(payload.to),
-          type: 'template',
-          template: {
-            name: payload.templateName,
-            language: { code: payload.language || 'ar' },
-            components: this.buildComponents(payload.variables),
-          },
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       const json = (await res.json().catch(() => ({}))) as MetaResponse;
@@ -80,7 +164,7 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
           : { success: false, error: 'Meta accepted but returned no message id' };
       }
       const errMsg = json.error?.message ?? `Meta API HTTP ${res.status}`;
-      this.logger.warn(`Meta template send failed (${res.status}): ${errMsg}`);
+      this.logger.warn(`Meta send failed (${res.status}): ${errMsg}`);
       return { success: false, error: `${res.status}: ${errMsg}` };
     } catch (err) {
       const message = (err as Error)?.name === 'AbortError' ? 'Meta API timeout' : (err as Error)?.message;

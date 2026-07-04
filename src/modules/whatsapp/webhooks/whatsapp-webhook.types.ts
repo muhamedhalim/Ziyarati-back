@@ -17,7 +17,27 @@ export interface MetaWebhookMessage {
   id?: string; // wamid — used for idempotency
   from?: string;
   timestamp?: string;
+  /** text | interactive | button | image | document | audio | video | location | ... */
   type?: string;
+  text?: { body?: string };
+  /** Reply from a tapped button / selected list row. */
+  interactive?: {
+    type?: string;
+    button_reply?: { id?: string; title?: string };
+    list_reply?: { id?: string; title?: string; description?: string };
+  };
+  /** Legacy quick-reply button payload. */
+  button?: { text?: string; payload?: string };
+  image?: { id?: string; mime_type?: string; caption?: string };
+  document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
+  audio?: { id?: string; mime_type?: string; voice?: boolean };
+  video?: { id?: string; mime_type?: string; caption?: string };
+  location?: { latitude?: number; longitude?: number; name?: string; address?: string };
+}
+
+export interface MetaWebhookContact {
+  wa_id?: string;
+  profile?: { name?: string };
 }
 
 export interface MetaWebhookStatus {
@@ -30,6 +50,7 @@ export interface MetaWebhookStatus {
 export interface MetaWebhookChangeValue {
   messaging_product?: string;
   metadata?: MetaWebhookValueMetadata;
+  contacts?: MetaWebhookContact[];
   messages?: MetaWebhookMessage[];
   statuses?: MetaWebhookStatus[];
 }

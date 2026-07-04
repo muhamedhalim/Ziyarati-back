@@ -45,9 +45,11 @@ export class WsAuthService {
     if (header?.startsWith('Bearer ')) return header.slice(7);
     const q = client.handshake.query?.token;
     if (typeof q === 'string' && q) return q;
-    // The web app authenticates via the HttpOnly `access_token` cookie, which the
-    // browser sends on the WS handshake when the client uses `withCredentials`.
-    return this.readCookie(client.handshake.headers?.cookie, 'access_token');
+    // The web app authenticates via the HttpOnly `access_token` cookie; anonymous
+    // visitors use a `guest_token` cookie (path `/` so it reaches the handshake).
+    // Both are the browser's own cookies, sent when the client uses withCredentials.
+    const cookie = client.handshake.headers?.cookie;
+    return this.readCookie(cookie, 'access_token') ?? this.readCookie(cookie, 'guest_token');
   }
 
   private readCookie(header: string | undefined, name: string): string | null {

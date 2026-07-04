@@ -6,6 +6,7 @@ import { DataSource } from 'typeorm';
 import { AppError } from '../../../common/errors';
 import { AppointmentSource } from '../../../entities/enums';
 import { AppointmentsService } from '../../appointment/appointment.service';
+import { PublicDiscoveryService } from '../../public-discovery/public-discovery.service';
 import { AvailabilityService } from '../../scheduling/availability.service';
 import { AiToolCall } from '../providers/ai-provider.interface';
 import { AI_TOOL } from './ai-tools.constants';
@@ -45,6 +46,7 @@ export class AiToolDispatchService {
   constructor(
     private readonly appointments: AppointmentsService,
     private readonly availability: AvailabilityService,
+    private readonly discovery: PublicDiscoveryService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -59,6 +61,12 @@ export class AiToolDispatchService {
 
     try {
       switch (call.name) {
+        case AI_TOOL.SEARCH_CLINICS:
+          return await this.searchClinics(ctx, args);
+        case AI_TOOL.GET_CLINIC_DETAILS:
+          return await this.getClinicDetails(ctx, args);
+        case AI_TOOL.SEARCH_PUBLIC_AVAILABILITY:
+          return await this.searchPublicAvailability(ctx, args);
         case AI_TOOL.CHECK_AVAILABILITY:
           return await this.checkAvailability(ctx, args);
         case AI_TOOL.BOOK_APPOINTMENT:
@@ -74,6 +82,50 @@ export class AiToolDispatchService {
       // Defensive: business errors are handled per-tool; this catches the rest.
       return { success: false, error: this.msg(err) };
     }
+  }
+
+  // ───────────────────────── Public discovery tools ──────────────────────── //
+
+  /** Cross-tenant public clinic search — read-only, safe for anonymous chats. */
+  private async searchClinics(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+    const query = this.str(args.query);
+    const limit = typeof args.limit === 'number' ? args.limit : undefined;
+    return this.run(ctx, AI_TOOL.SEARCH_CLINICS, `search_clinics:${randomUUID()}`, args, async () => {
+      const clinics = await this.discovery.searchClinics(query, limit);
+      return {
+        toolResult: { success: true, count: clinics.length, clinics },
+        resultJson: { count: clinics.length },
+      };
+    });
+  }
+
+  /** Branches, doctors and services (with prices) for a chosen clinic. */
+  private async getClinicDetails(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+    const clinicId = this.str(args.clinicId);
+    if (!clinicId) return { success: false, error: 'clinicId is required.' };
+    return this.run(ctx, AI_TOOL.GET_CLINIC_DETAILS, `clinic_details:${randomUUID()}`, args, async () => {
+      const detail = await this.discovery.clinicDetail(clinicId);
+      return { toolResult: { success: true, ...detail }, resultJson: { clinicId } };
+    });
+  }
+
+  /** Free slots for a publicly-discovered clinic's branch + doctor on a day. */
+  private async searchPublicAvailability(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+    const branchId = this.str(args.branchId);
+    const staffId = this.str(args.staffId);
+    const date = this.str(args.date);
+    if (!branchId || !staffId || !date) {
+      return { success: false, error: 'branchId, staffId and date are required.' };
+    }
+    return this.run(ctx, AI_TOOL.SEARCH_PUBLIC_AVAILABILITY, `pub_avail:${randomUUID()}`, args, async () => {
+      const result = await this.discovery.publicAvailability(
+        branchId,
+        staffId,
+        date,
+        typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
+      );
+      return { toolResult: { success: true, ...result }, resultJson: result };
+    });
   }
 
   // ─────────────────────────────── Tools ─────────────────────────────────── //

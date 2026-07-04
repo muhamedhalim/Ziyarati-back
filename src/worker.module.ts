@@ -44,6 +44,8 @@ import { EmailProcessor } from './worker/processors/email.processor';
 import { UsageReportProcessor } from './worker/processors/usage-report.processor';
 import { PlatformUsageModule } from './modules/platform-usage/platform-usage.module';
 import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
+import { WorkflowModule } from './modules/workflow/workflow.module';
+import { WorkflowProcessor } from './worker/processors/workflow.processor';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -71,6 +73,7 @@ import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
     EmailModule,
     PlatformUsageModule,
     AiMemoryModule,
+    WorkflowModule,
   ],
   providers: [
     WorkerTenantsService,
@@ -90,6 +93,7 @@ import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
     PlatformProcessor,
     EmailProcessor,
     UsageReportProcessor,
+    WorkflowProcessor,
   ],
 })
 export class WorkerModule {}

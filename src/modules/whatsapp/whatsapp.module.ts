@@ -16,6 +16,7 @@ import { WhatsappWebhookService } from './whatsapp-webhook.service';
 import { WhatsappContactService } from './whatsapp-contact.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
+import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
 
 import { WhatsappAccountController } from './whatsapp-account.controller';
@@ -36,6 +37,7 @@ import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
 
 /**
  * WhatsApp Domain.
@@ -69,6 +71,9 @@ import { NotificationsModule } from '../notifications/notifications.module';
     ConfigModule,
     // Two-way: WhatsApp sends notifications; notification webhooks record delivery.
     forwardRef(() => NotificationsModule),
+    // Inbound automation: reuse the single cross-channel AI orchestrator (no AI
+    // logic duplicated here — the bridge only maps WhatsApp ⇄ orchestrator).
+    AiOrchestratorModule,
   ],
   controllers: [
     WhatsappAccountController,
@@ -84,6 +89,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     WhatsappContactService,
     WhatsappMessagingService,
     WhatsappExecutionService,
+    WhatsappInboundAiService,
     WhatsappAnalyticsService,
     WhatsappProviderFactory,
     NoopWhatsappProvider,

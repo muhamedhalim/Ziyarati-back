@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
+import { AvailabilityService } from '../scheduling/availability.service';
 
 const n = (v: unknown): number => {
   const x = Number(v);
@@ -20,7 +21,10 @@ const n = (v: unknown): number => {
  */
 @Injectable()
 export class PublicDiscoveryService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly availability: AvailabilityService,
+  ) {}
 
   /** Search public clinics by name/slug or an offered service (e.g. "dentist"). */
   async searchClinics(query: string | undefined, limit = 12) {
@@ -95,5 +99,34 @@ export class PublicDiscoveryService {
         title: (d.title as string) ?? null,
       })),
     };
+  }
+
+  /**
+   * Public free-slot lookup for a chosen clinic's branch + doctor on a day.
+   *
+   * The owning tenant is resolved SERVER-SIDE from the branch (only APPROVED +
+   * active clinics), never trusted from the caller — so this stays a safe,
+   * read-only cross-tenant query. Slot computation is delegated to the existing
+   * AvailabilityService (no scheduling logic is duplicated here).
+   */
+  async publicAvailability(branchId: string, staffId: string, date: string, slotMinutes?: number) {
+    const rows = await this.dataSource.query(
+      `SELECT b."tenantId" AS tenant_id
+         FROM branches b
+         JOIN tenants t ON t.id = b."tenantId"
+        WHERE b.id = $1 AND b.is_active = true
+          AND t.approval_status = 'APPROVED' AND t.is_active = true AND t.deleted_at IS NULL`,
+      [branchId],
+    );
+    const tenantId: string | undefined = rows[0]?.tenant_id;
+    if (!tenantId) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
+
+    // Reuse the tenant's own availability engine with the server-resolved tenant.
+    return this.availability.windows(tenantId, {
+      branchId,
+      staffId,
+      date,
+      slotMinutes,
+    } as never);
   }
 }
