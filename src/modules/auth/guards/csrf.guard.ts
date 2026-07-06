@@ -4,8 +4,10 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { CookieService } from '../cookie.service';
+import { IS_SKIP_CSRF_KEY } from '../decorators/skip-csrf.decorator';
 
 /**
  * Double-submit-cookie CSRF guard for cookie-based auth.
@@ -24,6 +26,15 @@ import { CookieService } from '../cookie.service';
  * The check itself: the SPA-readable `csrf_token` cookie must equal the
  * `X-CSRF-Token` request header. An attacker's cross-site request cannot read
  * the victim's cookie to forge the header (same-origin policy), so it fails.
+ *
+ * Cookie SCOPING nuance: `access_token` is scoped to `/api/v1` and
+ * `refresh_token` to `/api/v1/auth`, so the browser still attaches them to
+ * `/api/v1/auth/*` requests — including login/register — whenever a stale
+ * cookie from a previous/expired session happens to still be present. Those
+ * genesis endpoints never read the incoming cookie to authorize anything (they
+ * only issue brand-new credentials for whatever the request body proves), so
+ * that stale cookie is not a real CSRF signal there. `@SkipCsrf()` opts a
+ * handler out of this check for exactly that reason — see its docstring.
  */
 @Injectable()
 export class CsrfGuard implements CanActivate {
@@ -33,10 +44,18 @@ export class CsrfGuard implements CanActivate {
     'OPTIONS',
   ]);
 
+  constructor(private readonly reflector: Reflector) {}
+
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
 
     if (CsrfGuard.SAFE_METHODS.has(req.method)) return true;
+
+    const skipCsrf = this.reflector.getAllAndOverride<boolean>(
+      IS_SKIP_CSRF_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (skipCsrf) return true;
 
     const cookies = (req.cookies ?? {}) as Record<string, string | undefined>;
 

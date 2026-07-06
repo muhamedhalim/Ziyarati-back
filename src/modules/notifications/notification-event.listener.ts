@@ -25,6 +25,13 @@ import {
   SubscriptionReactivatedEvent,
   SubscriptionTrialStartedEvent,
 } from '../../events/subscription.events';
+import {
+  HANDOVER_EVENT,
+  HandoverAssignedEvent,
+  HandoverCustomerRepliedEvent,
+  HandoverRequestedEvent,
+  HandoverTransferredEvent,
+} from '../../events/handover.events';
 
 import { NotificationRuleService } from './notification-rule.service';
 import { NotificationSchedulerService } from './notification-scheduler.service';
@@ -176,6 +183,37 @@ export class NotificationEventListener {
     });
   }
 
+  // ────────────────────── Live Agent Handover events ──────────────────────── //
+  // Same reuse pattern as every other domain above: a tenant only gets
+  // notified once they've configured a NotificationRule whose trigger_event
+  // matches one of these strings with a template — no rule/template means no
+  // dispatch, by design (see `dispatch()` below). The realtime WS push (see
+  // HandoverRealtimeListener in ai-realtime module) is the immediate,
+  // always-on delivery an online agent actually sees; this is the durable,
+  // configurable, multi-channel (WhatsApp/SMS/Email) notification path for
+  // when they aren't.
+
+  @OnEvent(HANDOVER_EVENT.REQUESTED)
+  async onHandoverRequested(event: HandoverRequestedEvent): Promise<void> {
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.REQUESTED, { tenantId: event.tenantId });
+  }
+
+  @OnEvent(HANDOVER_EVENT.ASSIGNED)
+  async onHandoverAssigned(event: HandoverAssignedEvent): Promise<void> {
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.ASSIGNED, { userId: event.assignedToUserId });
+  }
+
+  @OnEvent(HANDOVER_EVENT.TRANSFERRED)
+  async onHandoverTransferred(event: HandoverTransferredEvent): Promise<void> {
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.TRANSFERRED, { userId: event.toUserId });
+  }
+
+  @OnEvent(HANDOVER_EVENT.CUSTOMER_REPLIED)
+  async onHandoverCustomerReplied(event: HandoverCustomerRepliedEvent): Promise<void> {
+    if (!event.assignedToUserId) return; // nobody to notify — still Waiting/unassigned
+    await this.dispatch(event.tenantId, HANDOVER_EVENT.CUSTOMER_REPLIED, { userId: event.assignedToUserId });
+  }
+
   // ─────────────────────────── Core dispatch ─────────────────────────────── //
 
   /**
@@ -193,6 +231,7 @@ export class NotificationEventListener {
       customerId?: string;
       appointmentId?: string;
       tenantId?: string;
+      userId?: string;
     },
   ): Promise<void> {
     let activeRules;
@@ -212,10 +251,12 @@ export class NotificationEventListener {
         Date.now() + (rule.delay_minutes ?? 0) * 60_000,
       ).toISOString();
 
-      const recipientType = context.customerId
-        ? RECIPIENT_TYPE.CUSTOMER
-        : RECIPIENT_TYPE.TENANT;
-      const recipientId = context.customerId ?? context.tenantId ?? tenantId;
+      const recipientType = context.userId
+        ? RECIPIENT_TYPE.USER
+        : context.customerId
+          ? RECIPIENT_TYPE.CUSTOMER
+          : RECIPIENT_TYPE.TENANT;
+      const recipientId = context.userId ?? context.customerId ?? context.tenantId ?? tenantId;
 
       try {
         await this.scheduler.schedule(tenantId, {

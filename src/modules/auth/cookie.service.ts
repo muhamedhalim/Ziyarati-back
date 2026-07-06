@@ -8,7 +8,10 @@ import { ttlToMs } from '../../common/utils/ttl';
  * Centralises all auth cookie handling so the controller never hand-rolls
  * cookie attributes. Three cookies are issued:
  *
- *  - access_token  : HttpOnly, scoped to the API prefix, short-lived.
+ *  - access_token  : HttpOnly, root-scoped (`/`), short-lived. Must reach the
+ *                    Socket.IO gateway's handshake at /socket.io/, which sits
+ *                    outside the Nest global prefix — a narrower path would
+ *                    silently never be sent there (mirrors guest_token).
  *  - refresh_token : HttpOnly, scoped to /api/v1/auth ONLY (so it is sent to
  *                    the refresh/logout endpoints and nowhere else).
  *  - csrf_token    : NON-HttpOnly (readable by the SPA) for the double-submit
@@ -25,7 +28,6 @@ export class CookieService {
   static readonly REFRESH_COOKIE = 'refresh_token';
   static readonly CSRF_COOKIE = 'csrf_token';
 
-  private static readonly API_PATH = '/api/v1';
   private static readonly AUTH_PATH = '/api/v1/auth';
 
   constructor(private readonly config: ConfigService) {}
@@ -62,7 +64,7 @@ export class CookieService {
   ): void {
     res.cookie(CookieService.ACCESS_COOKIE, tokens.accessToken, {
       ...this.httpOnlyBase(),
-      path: CookieService.API_PATH,
+      path: '/',
       maxAge: ttlToMs(this.config.get<string>('JWT_ACCESS_TTL', '15m')),
     });
 
@@ -95,7 +97,7 @@ export class CookieService {
   clearAuthCookies(res: Response): void {
     res.clearCookie(CookieService.ACCESS_COOKIE, {
       ...this.httpOnlyBase(),
-      path: CookieService.API_PATH,
+      path: '/',
     });
     res.clearCookie(CookieService.REFRESH_COOKIE, {
       ...this.httpOnlyBase(),

@@ -225,6 +225,22 @@ export class AuthService {
         tenant: tenantId ? { id: tenantId } : IsNull(),
       },
       relations: { tenant: true },
+      // password_hash is `select: false` on the entity (never leak it in normal
+      // reads) — re-select it explicitly here since this is the one legitimate
+      // site that needs to compare it.
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        password_hash: true,
+        full_name: true,
+        avatar_url: true,
+        is_active: true,
+        last_login_at: true,
+        created_at: true,
+        updated_at: true,
+        deleted_at: true,
+      },
     });
 
     if (!user || !user.password_hash || !user.is_active) {
@@ -387,7 +403,12 @@ export class AuthService {
 
   /** Changes the password for an authenticated user after re-verifying it. */
   async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {
-    const user = await this.users.findOne({ where: { id: userId } });
+    // password_hash is `select: false` on the entity — re-select it explicitly
+    // since this is a legitimate site that needs to compare it.
+    const user = await this.users.findOne({
+      where: { id: userId },
+      select: { id: true, password_hash: true },
+    });
     if (!user || !user.password_hash) {
       throw new AppError(ErrorCode.INVALID_CREDENTIALS);
     }

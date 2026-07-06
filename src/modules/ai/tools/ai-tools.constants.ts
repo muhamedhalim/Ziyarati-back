@@ -11,6 +11,9 @@ export const AI_TOOL = {
   BOOK_APPOINTMENT: 'book_appointment',
   RESCHEDULE_APPOINTMENT: 'reschedule_appointment',
   CANCEL_APPOINTMENT: 'cancel_appointment',
+  // Live Agent Handover — channel-agnostic escalation (works over WhatsApp,
+  // which has no socket connection to emit `ai:handover` directly).
+  REQUEST_HUMAN_HANDOVER: 'request_human_handover',
 } as const;
 
 export type AiToolName = (typeof AI_TOOL)[keyof typeof AI_TOOL];
@@ -140,6 +143,19 @@ export const AI_TOOLS: AiToolDefinition[] = [
         reason: { type: 'string', description: 'Optional cancellation reason (stored in the audit trail).' },
       },
       required: ['appointmentId'],
+    },
+  },
+  {
+    name: AI_TOOL.REQUEST_HUMAN_HANDOVER,
+    description:
+      'Escalate this conversation to a human agent. Call this whenever the visitor explicitly asks to speak to a person/human/agent/support, or when you cannot help with their request. Works over every channel (website, WhatsApp, dashboard) — you will stop responding after this call; a human will take over.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reason: { type: 'string', description: 'Brief reason for the escalation, for the agent\'s context.' },
+      },
+      required: [],
     },
   },
 ];

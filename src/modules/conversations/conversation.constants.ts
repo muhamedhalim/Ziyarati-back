@@ -32,6 +32,15 @@ export const RESOLVED_CONVERSATION_STATUSES: ConversationStatus[] = [
   CONVERSATION_STATUS.CLOSED,
 ];
 
+/** Live Agent Handover ownership. `Conversation.owner_type` default 'AI'. */
+export const CONVERSATION_OWNER_TYPE = {
+  AI: 'AI',
+  HUMAN: 'HUMAN',
+} as const;
+
+export type ConversationOwnerType =
+  (typeof CONVERSATION_OWNER_TYPE)[keyof typeof CONVERSATION_OWNER_TYPE];
+
 /** Conversation kind. `Conversation.type` is a free `varchar`. */
 export const CONVERSATION_TYPE = {
   DIRECT: 'direct',

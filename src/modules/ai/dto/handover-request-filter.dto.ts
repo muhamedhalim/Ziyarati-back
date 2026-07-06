@@ -15,6 +15,11 @@ export class HandoverRequestFilterDto {
   @IsUUID()
   assignedToUserId?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by messaging conversation — the full handover history (requests/transfers) for a Timeline view.', format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string;
+
   @ApiPropertyOptional({ description: 'Page number (1-based).', example: 1, minimum: 1, default: 1 })
   @IsOptional()
   @Type(() => Number)

@@ -15,6 +15,7 @@ import { CustomerService } from '../../crm/customer.service';
 import { StaffService } from '../../staff/staff.service';
 import { AiToolCall } from '../providers/ai-provider.interface';
 import { AiAnalyticsService } from '../ai-analytics.service';
+import { HandoverRequestService } from '../handover-request.service';
 import { AI_TOOL } from './ai-tools.constants';
 import { AI_ADMIN_TOOL, AI_ADMIN_TOOL_PERMISSION, AiAdminToolName } from './ai-admin-tools.constants';
 import { PERMISSION } from '../../../rbac/rbac.constants';
@@ -77,6 +78,7 @@ export class AiToolDispatchService {
     private readonly staff: StaffService,
     private readonly aiAnalytics: AiAnalyticsService,
     private readonly dataSource: DataSource,
+    private readonly handovers: HandoverRequestService,
   ) {}
 
   /** Parse + route one tool call. Never throws — returns a result for the model. */
@@ -104,6 +106,8 @@ export class AiToolDispatchService {
           return await this.rescheduleAppointment(ctx, args);
         case AI_TOOL.CANCEL_APPOINTMENT:
           return await this.cancelAppointment(ctx, args);
+        case AI_TOOL.REQUEST_HUMAN_HANDOVER:
+          return await this.requestHumanHandover(ctx, args);
         case AI_ADMIN_TOOL.GET_DASHBOARD_KPIS:
         case AI_ADMIN_TOOL.GET_SUBSCRIPTION_STATUS:
         case AI_ADMIN_TOOL.GET_USAGE_QUOTA:
@@ -365,6 +369,34 @@ export class AiToolDispatchService {
         appointmentId: appt.id,
         resultJson: { appointmentId: appt.id, status: appt.status },
         toolResult: { success: true, appointmentId: appt.id, status: appt.status },
+      };
+    });
+  }
+
+  /**
+   * Channel-agnostic Live Agent Handover trigger — the only tool that works
+   * identically whether the model decided to call it because the customer
+   * typed "I want a human" over WhatsApp (no socket to emit `ai:handover`
+   * from), the web widget, or the dashboard. Delegates entirely to
+   * `HandoverRequestService.create` (same service the socket path and the
+   * REST endpoint use) — no duplicated escalation logic.
+   */
+  private async requestHumanHandover(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+    const reason = this.str(args.reason) ?? 'Requested by the customer during an AI conversation.';
+    const key = `handover:${ctx.aiConversationId}`;
+
+    return this.run(ctx, AI_TOOL.REQUEST_HUMAN_HANDOVER, key, args, async () => {
+      const handover = await this.handovers.create(ctx.tenantId, {
+        aiConversationId: ctx.aiConversationId,
+        reason,
+      });
+      return {
+        toolResult: {
+          success: true,
+          handoverId: handover.id,
+          message: 'A human agent has been notified and will join this conversation shortly.',
+        },
+        resultJson: { handoverId: handover.id },
       };
     });
   }

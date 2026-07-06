@@ -67,6 +67,9 @@ import { CustomerFileController } from './customer-file.controller';
     CustomerTagRelationService,
     CustomerFileService,
   ],
-  exports: [CustomerService],
+  // `CustomerNoteService` is reused (not duplicated) by the Live Agent Handover
+  // feature's internal notes — a note added during a handover is a first-class
+  // CRM note against the conversation's customer.
+  exports: [CustomerService, CustomerNoteService],
 })
 export class CrmModule {}

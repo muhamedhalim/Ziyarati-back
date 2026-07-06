@@ -182,8 +182,8 @@ then \`created_at\`).
   @ApiForbiddenResponse({ description: 'Caller lacks `conversations.read`, or clinic inactive.', schema: S_ERROR })
   @Get()
   @RequirePermissions(PERMISSION.CONVERSATIONS_READ)
-  findAll(@Query() filter: ConversationFilterDto) {
-    return this.conversations.findAll(this.ctx.requireTenantId(), filter);
+  findAll(@Query() filter: ConversationFilterDto, @CurrentUser('id') userId: string) {
+    return this.conversations.findAll(this.ctx.requireTenantId(), filter, userId);
   }
 
   @ApiOperation({ summary: 'Get conversation details', description: `**Protected — \`conversations.read\`. Clinic active.** Foreign-tenant conversation returns 404.` })

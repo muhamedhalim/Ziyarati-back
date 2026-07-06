@@ -32,6 +32,13 @@ export class HandoverRequest {
   @ManyToOne(() => User, { nullable: true })
   assigned_to?: User;
 
+  /** Set when this request was created by transferring from another agent. */
+  @ManyToOne(() => User, { nullable: true })
+  transferred_from?: User;
+
+  @Column({ type: 'text', nullable: true })
+  notes?: string;
+
   @CreateDateColumn()
   created_at!: Date;
 

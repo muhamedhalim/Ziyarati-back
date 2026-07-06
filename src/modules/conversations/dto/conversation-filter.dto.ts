@@ -4,8 +4,10 @@ import {
   IsInt,
   IsISO8601,
   IsOptional,
+  IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
@@ -14,12 +16,41 @@ import {
   CONVERSATION_TYPES,
 } from '../conversation.constants';
 
+/** Agent Inbox tabs (Live Agent Handover). Each maps to a derived WHERE clause
+ *  over `owner_type`/`assigned_to`/`status`/`transfer_count` — see ConversationService.findAll. */
+export const INBOX_TABS = ['waiting', 'assigned', 'mine', 'closed', 'transferred', 'all'] as const;
+export type InboxTab = (typeof INBOX_TABS)[number];
+
+export const INBOX_SORTS = ['newest', 'oldest', 'priority'] as const;
+export type InboxSort = (typeof INBOX_SORTS)[number];
+
 /** Filter + pagination for listing conversations (always tenant-scoped). */
 export class ConversationFilterDto {
   @ApiPropertyOptional({ description: 'Filter by status.', enum: CONVERSATION_STATUSES })
   @IsOptional()
   @IsIn(CONVERSATION_STATUSES)
   status?: string;
+
+  @ApiPropertyOptional({ description: 'Agent Inbox tab.', enum: INBOX_TABS })
+  @IsOptional()
+  @IsIn(INBOX_TABS)
+  inboxTab?: InboxTab;
+
+  @ApiPropertyOptional({ description: 'Free-text search over customer name/phone/email.', maxLength: 200 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
+
+  @ApiPropertyOptional({ description: 'Only conversations unread by the current agent.' })
+  @IsOptional()
+  @Type(() => Boolean)
+  unreadOnly?: boolean;
+
+  @ApiPropertyOptional({ description: 'Sort order.', enum: INBOX_SORTS, default: 'newest' })
+  @IsOptional()
+  @IsIn(INBOX_SORTS)
+  sort?: InboxSort;
 
   @ApiPropertyOptional({ description: 'Filter by type.', enum: CONVERSATION_TYPES })
   @IsOptional()

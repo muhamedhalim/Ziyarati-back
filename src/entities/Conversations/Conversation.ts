@@ -44,6 +44,37 @@ export class Conversation {
   @Column({ type: 'timestamptz', nullable: true })
   last_message_at?: Date;
 
+  /**
+   * Live Agent Handover ownership. Who is currently responsible for replying:
+   * the AI (default) or a human agent. This is the single flag the WhatsApp/
+   * widget inbound path checks to decide whether the AI is allowed to answer —
+   * it is NOT a duplicate of `AiConversation.status`, it drives the human-facing
+   * timeline/inbox, while `AiConversation.status` (HANDED_OVER) is what actually
+   * gates `AiExecutionService`. Both are flipped together by HandoverRequestService.
+   */
+  @Column({ length: 10, default: 'AI' })
+  owner_type!: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  assigned_at?: Date;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  released_at?: Date;
+
+  @Column({ type: 'text', nullable: true })
+  handover_reason?: string;
+
+  @Column({ type: 'text', nullable: true })
+  handover_notes?: string;
+
+  /** Incremented on every transfer — powers the Inbox's "Transferred" tab. */
+  @Column({ default: 0 })
+  transfer_count!: number;
+
+  /** Last time the currently-assigned agent viewed this conversation (unread tracking). */
+  @Column({ type: 'timestamptz', nullable: true })
+  agent_last_read_at?: Date;
+
   @CreateDateColumn()
   created_at!: Date;
 }

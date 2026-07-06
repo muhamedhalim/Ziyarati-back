@@ -135,6 +135,13 @@ export class WhatsappInboundAiService {
       await this.contacts.save(contact);
     }
 
+    // Live Agent Handover: the conversation is owned by a human agent — the
+    // customer's message was already persisted (AI history + unified timeline)
+    // by the orchestrator, but the bot must NOT reply. The assigned agent
+    // replies through the Agent Inbox, which dispatches over WhatsApp itself
+    // (HandoverChatService.sendAgentReply) — same channel, no duplicated send.
+    if (result.handedOver) return;
+
     const reply = result.reply?.content?.trim();
     if (!reply) return;
     const interactive = this.buildInteractive(result.lastTool);

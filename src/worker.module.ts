@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bullmq';
 
 import { typeOrmFactory } from './config/typeorm.config';
 import { validate } from './config/env.validation';
@@ -12,6 +13,8 @@ import { OutboxJob } from './entities/Campaigns/OutboxJob';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { QueueModule } from './queue/queue.module';
+import { ALL_QUEUES } from './queue/queue.constants';
+import { blockingConnectionOptions } from './queue/redis.config';
 
 // Domain modules whose EXISTING services the processors reuse (no logic copied).
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -68,6 +71,29 @@ import { WorkflowProcessor } from './worker/processors/workflow.processor';
     TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob]),
     TenantContextModule,
     QueueModule,
+    // `QueueModule` only calls `BullModule.forRootAsync` (shared config, no
+    // per-queue registration — see its docstring). That alone never activates
+    // `@nestjs/bullmq`'s `BullRegistrar`/`BullExplorer`: those are provided by
+    // `BullModule`'s internal `coreModuleDefinition`, which is ONLY pulled in
+    // by `registerQueue`/`registerQueueAsync`. Without it, `@Processor`-decorated
+    // classes instantiate fine (plain DI) but NEVER become real BullMQ `Worker`s
+    // — no `onModuleInit` ever runs `registerWorkers()`, so no job is ever
+    // dequeued, regardless of Redis health. Confirmed by instrumenting
+    // `BullExplorer.registerWorkers` directly: it was never invoked.
+    // Fix: explicitly register every queue name here (worker process only —
+    // the API's `QueueModule` import stays untouched, so producers keep using
+    // `ProducerQueues`'s own connections, unaffected). Same shared blocking
+    // connection factory the module doc already describes as the intended design.
+    BullModule.registerQueueAsync(
+      ...ALL_QUEUES.map((name) => ({
+        name,
+        imports: [ConfigModule],
+        inject: [ConfigService],
+        useFactory: (config: ConfigService) => ({
+          connection: blockingConnectionOptions(config),
+        }),
+      })),
+    ),
     NotificationsModule,
     WhatsappModule,
     CampaignsModule,

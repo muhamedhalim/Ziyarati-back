@@ -29,7 +29,12 @@ export class User {
   @Column({ nullable: true })
   phone?: string;
 
-  @Column({ nullable: true })
+  // Never included in a default SELECT (`findOne`/`find` without an explicit
+  // `select` naming it) — callers that legitimately need it for a bcrypt
+  // compare must opt in explicitly (see AuthService.validateCredentials /
+  // changePassword). Prevents it leaking into any response that serializes a
+  // loaded User, directly or via a relation (e.g. HandoverRequest.assigned_to).
+  @Column({ nullable: true, select: false })
   password_hash?: string;
 
   @Column({ nullable: true })

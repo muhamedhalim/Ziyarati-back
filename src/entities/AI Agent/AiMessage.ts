@@ -30,6 +30,17 @@ export class AiMessage {
   @Column({ default: 0 })
   tokens_used!: number;
 
+  /**
+   * Set ONLY when this `role: 'assistant'` row was actually authored by a human
+   * agent during a live handover (see `HandoverChatService.sendAgentReply`) —
+   * never by the model. The AI's history-loading code (`AiExecutionService`)
+   * treats every row identically regardless of this column, so a returned-to-AI
+   * conversation sees the human's replies as prior context with zero special
+   * handling — the timeline/UI use this column to attribute authorship.
+   */
+  @Column({ nullable: true })
+  agent_user_id?: string;
+
   @CreateDateColumn()
   created_at!: Date;
 }

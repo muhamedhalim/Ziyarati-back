@@ -1,14 +1,21 @@
 import { ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 
 import { CsrfGuard } from './csrf.guard';
 import { CookieService } from '../cookie.service';
-import { createMockExecutionContext } from '../../../../test/utils/mock-factories';
+import {
+  createMockExecutionContext,
+  createMockReflector,
+} from '../../../../test/utils/mock-factories';
 
 describe('CsrfGuard (double-submit cookie)', () => {
   let guard: CsrfGuard;
+  let reflector: ReturnType<typeof createMockReflector>;
 
   beforeEach(() => {
-    guard = new CsrfGuard();
+    reflector = createMockReflector();
+    reflector.getAllAndOverride.mockReturnValue(false);
+    guard = new CsrfGuard(reflector as unknown as Reflector);
   });
 
   const ctx = (req: {
@@ -71,5 +78,19 @@ describe('CsrfGuard (double-submit cookie)', () => {
       headers: {},
     });
     expect(() => guard.canActivate(req)).toThrow(ForbiddenException);
+  });
+
+  it('allows a @SkipCsrf() route (e.g. login) even with a stale auth cookie and no CSRF header', () => {
+    // Reproduces the real bug: browser still carries a stale access_token
+    // cookie (path overlap with /api/v1/auth/*) from an expired session, and
+    // the readable csrf_token cookie was cleared client-side — login must
+    // still succeed because the handler never reads that stale cookie.
+    reflector.getAllAndOverride.mockReturnValue(true);
+    const req = ctx({
+      method: 'POST',
+      cookies: { [CookieService.ACCESS_COOKIE]: 'stale-access-token' },
+      headers: {},
+    });
+    expect(guard.canActivate(req)).toBe(true);
   });
 });

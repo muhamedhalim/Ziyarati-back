@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
@@ -27,6 +28,7 @@ import {
   currentPeriodMonth,
   priceFor,
 } from './ai.constants';
+import { HandoverCustomerRepliedEvent } from '../../events/handover.events';
 
 /** Bounds the tool-calling loop so a misbehaving model can't spin indefinitely. */
 const MAX_TOOL_ITERATIONS = 4;
@@ -71,6 +73,7 @@ export class AiExecutionService {
     private readonly ctx: TenantContextService,
     private readonly timeline: ConversationExecutionService,
     private readonly metrics: AiMetricsService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   async sendMessage(tenantId: string, aiConversationId: string, dto: SendMessageDto) {
@@ -271,6 +274,58 @@ export class AiExecutionService {
       });
       throw err;
     }
+  }
+
+  /**
+   * Live Agent Handover: persist an inbound customer message WITHOUT calling the
+   * model. Used by `AiOrchestratorService` when a conversation is HANDED_OVER —
+   * the customer's message must still land in the AI's own history (so nothing
+   * is lost when the conversation is returned to AI) and in the unified
+   * Conversation/Message timeline (so the assigned agent sees it), but the AI
+   * must not answer. Reuses the exact same persistence + mirror helpers as a
+   * normal turn — no parallel storage path.
+   */
+  async recordInboundWhileHandedOver(
+    tenantId: string,
+    aiConversationId: string,
+    content: string,
+  ): Promise<{ handedOver: true }> {
+    const aiConv = await this.aiConversations.findOne({
+      where: { id: aiConversationId, tenant: { id: tenantId } },
+      relations: { conversation: { assigned_to: true } },
+    });
+    if (!aiConv) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
+    }
+
+    await this.messages.save(
+      this.messages.create({
+        ai_conversation_id: aiConversationId,
+        tenant: { id: tenantId } as Tenant,
+        role: AI_MESSAGE_ROLE.USER,
+        content,
+        tokens_used: 0,
+      }),
+    );
+
+    const linkedConversationId = aiConv.conversation?.id;
+    if (linkedConversationId) {
+      await this.mirrorToTimeline(tenantId, linkedConversationId, 'CUSTOMER', content);
+      // Requirement #10 (notifications): let the assigned agent's channels
+      // (WhatsApp/SMS/email, per their NotificationRule) know the customer
+      // replied — the realtime WS push only reaches an already-online agent.
+      this.emitter.emit(
+        HandoverCustomerRepliedEvent.eventName,
+        new HandoverCustomerRepliedEvent(
+          tenantId,
+          linkedConversationId,
+          aiConversationId,
+          aiConv.conversation?.assigned_to?.id,
+        ),
+      );
+    }
+
+    return { handedOver: true };
   }
 
   /** Times a single tool-dispatch call for Advanced AI Monitoring. */

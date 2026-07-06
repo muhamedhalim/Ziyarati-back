@@ -22,8 +22,13 @@ export const AI_EVENT = {
   DONE: 'ai:done', // server → client: final assistant message + usage
   // ── conversation / handover ────────────────────────────────────────────
   CONVERSATION_UPDATE: 'ai:conversation:update',
-  HANDOVER: 'ai:handover',
+  HANDOVER: 'ai:handover', // client → server: request; server → client: lifecycle broadcast ({type})
   AGENT_JOINED: 'ai:agent:joined',
+  // ── live agent chat (Live Agent Handover) ──────────────────────────────
+  AGENT_REPLY: 'ai:agent:reply', // client (agent) → server: send a reply while HANDED_OVER
+  AGENT_MESSAGE: 'ai:agent:message', // server → client (customer + inbox): agent's message
+  PRESENCE_UPDATE: 'ai:presence:update', // client (agent) → server: set my own status
+  PRESENCE_SNAPSHOT: 'ai:presence:snapshot', // server → client: full tenant presence map on demand
 } as const;
 
 export type AiEvent = (typeof AI_EVENT)[keyof typeof AI_EVENT];

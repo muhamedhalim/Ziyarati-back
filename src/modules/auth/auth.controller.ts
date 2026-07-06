@@ -36,6 +36,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
 import { Public } from './decorators/public.decorator';
+import { SkipCsrf } from './decorators/skip-csrf.decorator';
 import { RequirePermissions } from './decorators/permissions.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
@@ -188,6 +189,7 @@ public clinic sign-up page.
     schema: S_ERROR,
   })
   @Public()
+  @SkipCsrf()
   @Post('register-owner')
   async registerOwner(
     @Body() dto: RegisterOwnerDto,
@@ -314,6 +316,7 @@ patient-facing mobile app or booking portal.
     schema: S_ERROR,
   })
   @Public()
+  @SkipCsrf()
   @Post('register-patient')
   registerPatient(@Body() dto: RegisterPatientDto) {
     return this.patientService.registerPatient(dto);
@@ -362,6 +365,7 @@ token row for security audit purposes.
     schema: S_ERROR,
   })
   @Public()
+  @SkipCsrf()
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -508,6 +512,7 @@ For staff/owner accounts, provide \`tenantSlug\` to scope the lookup
   })
   @ApiBadRequestResponse({ description: 'Invalid email format.', schema: S_ERROR })
   @Public()
+  @SkipCsrf()
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   forgotPassword(@Body() dto: ForgotPasswordDto) {
@@ -546,6 +551,7 @@ with the same token will fail on the second call.
     schema: S_ERROR,
   })
   @Public()
+  @SkipCsrf()
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   resetPassword(@Body() dto: ResetPasswordDto) {

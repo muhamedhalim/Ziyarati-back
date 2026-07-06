@@ -14,7 +14,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { UpdateConversationDto } from './dto/update-conversation.dto';
 import { ConversationFilterDto } from './dto/conversation-filter.dto';
-import { CONVERSATION_STATUS } from './conversation.constants';
+import { CONVERSATION_OWNER_TYPE, CONVERSATION_STATUS } from './conversation.constants';
 
 /**
  * Conversation lifecycle (create / list / get / update / assign / archive /
@@ -64,7 +64,12 @@ export class ConversationService {
     return this.findOne(tenantId, saved.id);
   }
 
-  async findAll(tenantId: string, filter: ConversationFilterDto) {
+  /**
+   * `currentUserId` is only needed for the "mine" Inbox tab (and unread, which
+   * is defined relative to the current agent's `agent_last_read_at`) — REST
+   * callers outside the Inbox never pass it, so those filters simply no-op.
+   */
+  async findAll(tenantId: string, filter: ConversationFilterDto, currentUserId?: string) {
     // Resolve the participant filter to conversation ids (avoids raw FK SQL).
     let participantConversationIds: string[] | undefined;
     if (filter.participantUserId) {
@@ -92,9 +97,60 @@ export class ConversationService {
     if (filter.to) qb.andWhere('c.created_at < :to', { to: new Date(filter.to) });
     if (participantConversationIds) qb.andWhere({ id: In(participantConversationIds) });
 
+    // ── Live Agent Handover — Agent Inbox tabs ──────────────────────────────
+    switch (filter.inboxTab) {
+      case 'waiting':
+        qb.andWhere('c.owner_type = :ownerType', { ownerType: CONVERSATION_OWNER_TYPE.HUMAN });
+        qb.andWhere('c.assigned_to IS NULL');
+        qb.andWhere('c.status != :closed', { closed: CONVERSATION_STATUS.CLOSED });
+        break;
+      case 'assigned':
+        qb.andWhere('c.owner_type = :ownerType', { ownerType: CONVERSATION_OWNER_TYPE.HUMAN });
+        qb.andWhere('c.assigned_to IS NOT NULL');
+        qb.andWhere('c.status != :closed', { closed: CONVERSATION_STATUS.CLOSED });
+        break;
+      case 'mine':
+        if (currentUserId) qb.andWhere('assignee.id = :meId', { meId: currentUserId });
+        qb.andWhere('c.status != :closed', { closed: CONVERSATION_STATUS.CLOSED });
+        break;
+      case 'closed':
+        qb.andWhere('c.status = :closedStatus', { closedStatus: CONVERSATION_STATUS.CLOSED });
+        break;
+      case 'transferred':
+        qb.andWhere('c.transfer_count > 0');
+        break;
+      default:
+        break;
+    }
+
+    if (filter.search) {
+      qb.andWhere(
+        '(customer.full_name ILIKE :q OR customer.phone ILIKE :q OR customer.email ILIKE :q)',
+        { q: `%${filter.search}%` },
+      );
+    }
+
+    if (filter.unreadOnly) {
+      qb.andWhere(
+        '(c.last_message_at IS NOT NULL AND (c.agent_last_read_at IS NULL OR c.last_message_at > c.agent_last_read_at))',
+      );
+    }
+
+    if (filter.sort === 'oldest') {
+      qb.orderBy('c.created_at', 'ASC');
+    } else if (filter.sort === 'priority') {
+      // Waiting (unassigned, human-owned) conversations surface first, then by longest-waiting.
+      qb.addSelect(
+        `CASE WHEN c.owner_type = 'HUMAN' AND c.assigned_to IS NULL THEN 0 ELSE 1 END`,
+        'priority_rank',
+      )
+        .orderBy('priority_rank', 'ASC')
+        .addOrderBy('c.created_at', 'ASC');
+    } else {
+      qb.orderBy('c.last_message_at', 'DESC', 'NULLS LAST').addOrderBy('c.created_at', 'DESC');
+    }
+
     const [data, total] = await qb
-      .orderBy('c.last_message_at', 'DESC', 'NULLS LAST')
-      .addOrderBy('c.created_at', 'DESC')
       .skip((filter.page - 1) * filter.limit)
       .take(filter.limit)
       .getManyAndCount();

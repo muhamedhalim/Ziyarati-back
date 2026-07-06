@@ -14,6 +14,7 @@ import { AiExecutionMetric } from '../../entities/AI Agent/AiExecutionMetric';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { User } from '../../entities/Auth&RBAC/User';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 
 import { AiAgentService } from './ai-agent.service';
 import { AiKnowledgeBaseService } from './ai-knowledge-base.service';
@@ -87,6 +88,7 @@ import { CrmModule } from '../crm/crm.module';
       Branch,
       Conversation,
       User,
+      UserRole,
     ]),
     // Usage-quota enforcement (UsageService) for AI token metering.
     SubscriptionBillingModule,

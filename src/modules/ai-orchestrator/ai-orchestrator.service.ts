@@ -6,6 +6,7 @@ import { ConversationSessionService } from './conversation-session.service';
 import { AgentRouterService } from './agent-router.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
 import { AiChannel, AiSession } from './ai-channel.constants';
+import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 
 export interface OrchestrateInput {
   channel: AiChannel;
@@ -54,7 +55,11 @@ export class AiOrchestratorService {
 
   /** Synchronous turn (REST). Delegates to the engine's sendMessage. */
   async handle(tenantId: string, input: OrchestrateInput) {
-    const { conversationId, session, routedRole } = await this.prepare(tenantId, input);
+    const { conversationId, session, routedRole, handedOver } = await this.prepare(tenantId, input);
+    if (handedOver) {
+      await this.execution.recordInboundWhileHandedOver(tenantId, conversationId, input.content);
+      return this.handedOverEnvelope(input.channel, conversationId, session, routedRole);
+    }
     const result = await this.execution.sendMessage(tenantId, conversationId, { content: input.content });
     return {
       channel: input.channel,
@@ -71,6 +76,7 @@ export class AiOrchestratorService {
       retrievedChunks: result.retrievedChunks,
       fallback: result.fallback,
       lastTool: result.lastTool,
+      handedOver: false as const,
     };
   }
 
@@ -79,9 +85,20 @@ export class AiOrchestratorService {
    * routing/memory) as `handle`, but delegates to the engine's `streamMessage`
    * so tokens flow to `onToken` as they are produced. The gateway calls THIS —
    * it never touches AiExecutionService directly.
+   *
+   * Live Agent Handover (#12 AI Pause): when the conversation is HANDED_OVER,
+   * neither `sendMessage` nor `streamMessage` is called — the model must not
+   * execute tools or answer. The inbound message is still persisted (both into
+   * the AI's own history and the unified timeline) via
+   * `AiExecutionService.recordInboundWhileHandedOver`, so nothing is lost and a
+   * later "Return to AI" sees the full conversation with zero gaps.
    */
   async handleStream(tenantId: string, input: OrchestrateInput, onToken: (delta: string) => void) {
-    const { conversationId, session, routedRole } = await this.prepare(tenantId, input);
+    const { conversationId, session, routedRole, handedOver } = await this.prepare(tenantId, input);
+    if (handedOver) {
+      await this.execution.recordInboundWhileHandedOver(tenantId, conversationId, input.content);
+      return this.handedOverEnvelope(input.channel, conversationId, session, routedRole);
+    }
     const result = await this.execution.streamMessage(tenantId, conversationId, { content: input.content }, onToken);
     return {
       channel: input.channel,
@@ -98,6 +115,28 @@ export class AiOrchestratorService {
       retrievedChunks: result.retrievedChunks,
       streamed: result.streamed,
       lastTool: result.lastTool,
+      handedOver: false as const,
+    };
+  }
+
+  /** Shared envelope for a turn that was persisted but NOT answered (handed over). */
+  private handedOverEnvelope(
+    channel: AiChannel,
+    conversationId: string,
+    session: AiSession,
+    routedRole: string | null,
+  ) {
+    return {
+      channel,
+      aiConversationId: conversationId,
+      agentRole: session.currentAgentRole ?? routedRole ?? null,
+      session,
+      reply: null,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      retrievedChunks: 0,
+      streamed: false,
+      lastTool: undefined,
+      handedOver: true as const,
     };
   }
 
@@ -156,6 +195,11 @@ export class AiOrchestratorService {
     }
 
     const session = await this.sessions.get(tenantId, conv.id);
-    return { conversationId: conv.id, session, routedRole };
+    return {
+      conversationId: conv.id,
+      session,
+      routedRole,
+      handedOver: conv.status === AI_CONVERSATION_STATUS.HANDED_OVER,
+    };
   }
 }

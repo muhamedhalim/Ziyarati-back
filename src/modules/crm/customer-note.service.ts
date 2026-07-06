@@ -6,6 +6,7 @@ import { CustomerNote } from '../../entities/CRM/CustomerNote';
 import { Customer } from '../../entities/CRM/Customer';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
+import { Conversation } from '../../entities/Conversations/Conversation';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { CustomerService } from './customer.service';
@@ -31,6 +32,7 @@ export class CustomerNoteService {
     customerId: string,
     dto: CreateCustomerNoteDto,
     userId?: string,
+    conversationId?: string,
   ): Promise<CustomerNote> {
     await this.customers.findOneOrThrow(tenantId, customerId);
     return this.notes.save(
@@ -38,9 +40,19 @@ export class CustomerNoteService {
         customer: { id: customerId } as Customer,
         tenant: { id: tenantId } as Tenant,
         user: userId ? ({ id: userId } as User) : undefined,
+        conversation: conversationId ? ({ id: conversationId } as Conversation) : undefined,
         content: dto.content,
       }),
     );
+  }
+
+  /** Internal notes attached to a specific Live Agent Handover conversation. */
+  async listByConversation(tenantId: string, conversationId: string): Promise<CustomerNote[]> {
+    return this.notes.find({
+      where: { conversation: { id: conversationId }, tenant: { id: tenantId } },
+      relations: { user: true },
+      order: { created_at: 'DESC' },
+    });
   }
 
   async update(
