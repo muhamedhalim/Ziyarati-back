@@ -370,8 +370,12 @@ export class AuthService {
     });
 
     // The raw token is still returned so non-email deployments keep working; the
-    // frontend treats a returned token as a dev convenience only.
-    return { resetToken: rawToken };
+      if (this.config.get<string>('NODE_ENV') !== 'production') {
+          return {
+              resetToken: rawToken,
+          };
+      }
+      return {};
   }
 
   /** Consumes a reset token, sets the new password and kills all sessions. */

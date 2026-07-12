@@ -108,6 +108,14 @@ main.ts
                        │
                        ▼
                     Worker
+
+                    Role
+                      \
+                      \
+                    RolePermission
+                      /
+                      /
+                Permission
     
 > **Status:** derived directly from the implementation (`src/**`) and the committed
 > migrations (`src/migrations/*`), not from any prior AI-generated catalogue.
