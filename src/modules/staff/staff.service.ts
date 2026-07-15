@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, ILike, In, Repository } from 'typeorm';
+import { randomBytes } from 'crypto';
+import { DataSource, ILike, In, Not, Repository } from 'typeorm';
 
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { StaffService as StaffServiceEntity } from '../../entities/Staff/StaffService';
@@ -16,6 +17,14 @@ import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto } from './dto/query-staff.dto';
 import { AssignServicesDto } from './dto/assign-services.dto';
 import { AssignBranchesDto } from './dto/assign-branches.dto';
+import { EligibleUsersQueryDto } from './dto/eligible-users-query.dto';
+import { CreateStaffWithNewUserDto } from './dto/create-staff-with-new-user.dto';
+
+import { AuthService } from '../auth/auth.service';
+import { ASSIGNABLE_STAFF_ROLES } from '../auth/dto/register-user.dto';
+import { UsageService } from '../subscription-billing/usage.service';
+import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
+import { ROLE } from '../../rbac/rbac.constants';
 
 /**
  * Staff profile lifecycle + service/branch assignment.
@@ -39,6 +48,8 @@ export class StaffService {
     @InjectRepository(Service) private readonly services: Repository<Service>,
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
     private readonly dataSource: DataSource,
+    private readonly authService: AuthService,
+    private readonly usage: UsageService,
   ) {}
 
   // ───────────────────────────── Profile CRUD ────────────────────────────── //
@@ -69,10 +80,120 @@ export class StaffService {
       bio: dto.bio,
       avatar_url: dto.avatarUrl,
       booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
-      is_available_for_booking: true,
+      is_available_for_booking: dto.isAvailableForBooking ?? true,
     });
     const saved = await this.staff.save(profile);
     return this.findOne(tenantId, saved.id);
+  }
+
+  /**
+   * "Create new staff user" — the Add Staff Member path that provisions the
+   * User account AND the StaffProfile together, atomically. Reuses
+   * `AuthService.createUserWithRole` for the account/role half so the exact
+   * same hashing, role-assignment and tenant-scoping logic that
+   * `POST /auth/register-user` uses applies here too — no duplicated
+   * business logic.
+   *
+   * The temporary password is generated server-side and returned ONCE in the
+   * response; it is never stored in plaintext and can't be retrieved again
+   * (mirrors how every other credential in this codebase is handled — see
+   * AuthService.validateCredentials).
+   */
+  async createWithNewUser(
+    tenantId: string,
+    dto: CreateStaffWithNewUserDto,
+  ): Promise<{ profile: StaffProfile; temporaryPassword: string }> {
+    const roleSlug = dto.roleSlug ?? ROLE.RECEPTIONIST;
+    if (!ASSIGNABLE_STAFF_ROLES.includes(roleSlug)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Role "${roleSlug}" cannot be assigned to staff`,
+      });
+    }
+
+    if (
+      dto.primaryBranchId &&
+      !(dto.branchIds ?? []).includes(dto.primaryBranchId)
+    ) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'primaryBranchId must be one of branchIds',
+      });
+    }
+
+    const email = dto.email.trim().toLowerCase();
+    const existing = await this.users.findOne({
+      where: { email, tenant: { id: tenantId } },
+    });
+    if (existing) {
+      throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
+    }
+
+    // Plan limit: max_users — same rule POST /auth/register-user enforces.
+    const currentUsers = await this.users.count({
+      where: { tenant: { id: tenantId } },
+    });
+    await this.usage.assertCountWithinLimit(
+      tenantId,
+      COUNT_LIMIT.USERS,
+      currentUsers,
+    );
+
+    const temporaryPassword = randomBytes(9).toString('base64url'); // 12 chars
+
+    const profileId = await this.dataSource.transaction(async (manager) => {
+      const user = await this.authService.createUserWithRole(
+        manager,
+        {
+          email,
+          password: temporaryPassword,
+          fullName: dto.fullName,
+          phone: dto.phone,
+        },
+        roleSlug,
+        tenantId,
+      );
+
+      const profile = await manager.save(
+        manager.getRepository(StaffProfile).create({
+          tenant: { id: tenantId } as Tenant,
+          user: { id: user.id } as User,
+          title: dto.title,
+          bio: dto.bio,
+          avatar_url: dto.avatarUrl,
+          booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
+          is_available_for_booking: dto.isAvailableForBooking ?? true,
+        }),
+      );
+
+      if (dto.branchIds?.length) {
+        const found = await manager.getRepository(Branch).find({
+          where: { id: In(dto.branchIds), tenant: { id: tenantId } },
+        });
+        if (found.length !== dto.branchIds.length) {
+          throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+            message: 'One or more branches were not found in this clinic',
+          });
+        }
+
+        const primary = dto.primaryBranchId ?? dto.branchIds[0];
+        await manager.getRepository(BranchUser).save(
+          dto.branchIds.map((branchId) =>
+            manager.getRepository(BranchUser).create({
+              tenant: { id: tenantId } as Tenant,
+              branch: { id: branchId } as Branch,
+              user: { id: user.id } as User,
+              is_primary: branchId === primary,
+            }),
+          ),
+        );
+      }
+
+      return profile.id;
+    });
+
+    return {
+      profile: await this.findOne(tenantId, profileId),
+      temporaryPassword,
+    };
   }
 
   async findAll(tenantId: string, query: QueryStaffDto) {
@@ -105,6 +226,57 @@ export class StaffService {
     });
 
     return { data, total, page: query.page, limit: query.limit };
+  }
+
+  /**
+   * Users this tenant can turn into staff via "Link existing user": active,
+   * belong to the tenant, and don't already have a (non-deleted) staff
+   * profile. Two plain queries rather than a NOT EXISTS/anti-join — simple,
+   * fully typed, and staff/user counts per clinic are small enough that this
+   * never becomes a bottleneck.
+   */
+  async findEligibleUsers(tenantId: string, query: EligibleUsersQueryDto) {
+    const linked = await this.staff.find({
+      where: { tenant: { id: tenantId } },
+      relations: { user: true },
+      select: { id: true, user: { id: true } },
+    });
+    const linkedIds = linked.map((sp) => sp.user.id);
+
+    const base: Record<string, unknown> = {
+      tenant: { id: tenantId },
+      is_active: true,
+      ...(linkedIds.length ? { id: Not(In(linkedIds)) } : {}),
+    };
+
+    const where = query.search
+      ? [
+          { ...base, full_name: ILike(`%${query.search}%`) },
+          { ...base, email: ILike(`%${query.search}%`) },
+        ]
+      : base;
+
+    const [data, total] = await this.users.findAndCount({
+      where,
+      relations: { userRoles: { role: true } },
+      order: { full_name: 'ASC' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+    });
+
+    return {
+      data: data.map((user) => ({
+        id: user.id,
+        fullName: user.full_name ?? null,
+        email: user.email ?? null,
+        role: user.userRoles?.[0]?.role
+          ? { slug: user.userRoles[0].role.slug, name: user.userRoles[0].role.name }
+          : null,
+      })),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
 
   async findOne(tenantId: string, id: string): Promise<StaffProfile> {

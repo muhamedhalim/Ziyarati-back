@@ -9,7 +9,10 @@ import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { User } from '../../entities/Auth&RBAC/User';
 import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
-import { ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode } from '../../common/errors';
+import { AuthService } from '../auth/auth.service';
+import { UsageService } from '../subscription-billing/usage.service';
+import { ROLE } from '../../rbac/rbac.constants';
 import {
   createMockRepository,
   createMockEntityManager,
@@ -29,6 +32,8 @@ describe('StaffService', () => {
   let users: MockRepository;
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
+  let authService: { createUserWithRole: jest.Mock };
+  let usage: { assertCountWithinLimit: jest.Mock };
 
   beforeEach(async () => {
     staff = createMockRepository();
@@ -37,6 +42,8 @@ describe('StaffService', () => {
     users = createMockRepository();
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
+    authService = { createUserWithRole: jest.fn() };
+    usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -48,6 +55,8 @@ describe('StaffService', () => {
         { provide: getRepositoryToken(Service), useValue: createMockRepository() },
         { provide: getRepositoryToken(Branch), useValue: createMockRepository() },
         { provide: DataSource, useValue: dataSource },
+        { provide: AuthService, useValue: authService },
+        { provide: UsageService, useValue: usage },
       ],
     }).compile();
     service = moduleRef.get(StaffService);
@@ -158,6 +167,136 @@ describe('StaffService', () => {
       const res = await service.assignBranches(TENANT, 'staff-1', { branchIds: ['b1'] } as any);
       expect(repo(BranchUser).delete).toHaveBeenCalled();
       expect(res).toEqual([{ id: 'bu1' }]);
+    });
+  });
+
+  describe('findEligibleUsers', () => {
+    it('excludes users who already have a staff profile and maps role info', async () => {
+      staff.find.mockResolvedValueOnce([{ id: 'sp1', user: { id: 'u-linked' } }]);
+      users.findAndCount.mockResolvedValueOnce([
+        [
+          {
+            id: 'u1',
+            full_name: 'Sara',
+            email: 's@x.com',
+            userRoles: [{ role: { slug: 'receptionist', name: 'Receptionist' } }],
+          },
+          { id: 'u2', full_name: 'No Role', email: 'n@x.com', userRoles: [] },
+        ],
+        2,
+      ]);
+
+      const res = await service.findEligibleUsers(TENANT, { page: 1, limit: 10 } as any);
+
+      expect(res.total).toBe(2);
+      expect(res.data[0]).toEqual({
+        id: 'u1',
+        fullName: 'Sara',
+        email: 's@x.com',
+        role: { slug: 'receptionist', name: 'Receptionist' },
+      });
+      expect(res.data[1].role).toBeNull();
+    });
+
+    it('adds a name/email OR filter when search is provided', async () => {
+      staff.find.mockResolvedValueOnce([]);
+      users.findAndCount.mockResolvedValueOnce([[], 0]);
+
+      await service.findEligibleUsers(TENANT, { page: 1, limit: 10, search: 'sara' } as any);
+
+      const [{ where }] = users.findAndCount.mock.calls[0];
+      expect(Array.isArray(where)).toBe(true);
+      expect(where).toHaveLength(2);
+    });
+  });
+
+  describe('createWithNewUser', () => {
+    const dto = {
+      email: 'New.Staff@Clinic.com',
+      fullName: 'New Staff',
+      title: 'Nurse',
+      bookingBufferMinutes: 15,
+    } as any;
+
+    it('rejects a privileged role', async () => {
+      await expect(
+        service.createWithNewUser(TENANT, { ...dto, roleSlug: ROLE.OWNER } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    });
+
+    it('rejects a primaryBranchId not in branchIds', async () => {
+      await expect(
+        service.createWithNewUser(TENANT, {
+          ...dto,
+          branchIds: ['b1'],
+          primaryBranchId: 'b2',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+    });
+
+    it('rejects a duplicate email within the tenant', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'existing' });
+
+      await expect(service.createWithNewUser(TENANT, dto)).rejects.toMatchObject({
+        code: ErrorCode.EMAIL_ALREADY_EXISTS,
+      });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('propagates the plan user-limit failure from UsageService', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(10);
+      usage.assertCountWithinLimit.mockRejectedValueOnce(
+        new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'user limit reached' }),
+      );
+
+      await expect(service.createWithNewUser(TENANT, dto)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('creates the user, role and profile atomically and returns a one-time temporary password', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(2);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-1' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-1' });
+
+      const result = await service.createWithNewUser(TENANT, dto);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(authService.createUserWithRole).toHaveBeenCalledWith(
+        manager,
+        expect.objectContaining({ email: 'new.staff@clinic.com', fullName: 'New Staff' }),
+        ROLE.RECEPTIONIST,
+        TENANT,
+      );
+      expect(result.profile).toEqual({ id: 'staff-1' });
+      expect(typeof result.temporaryPassword).toBe('string');
+      expect(result.temporaryPassword.length).toBeGreaterThanOrEqual(8);
+    });
+
+    it('validates and assigns branches within the same transaction', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-2' });
+      repo(Branch).find.mockResolvedValueOnce([{ id: 'b1' }]);
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-2' });
+
+      await service.createWithNewUser(TENANT, { ...dto, branchIds: ['b1'] } as any);
+
+      expect(repo(BranchUser).save).toHaveBeenCalled();
+    });
+
+    it('rejects a branch that does not belong to the clinic', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-3' });
+      repo(Branch).find.mockResolvedValueOnce([]);
+
+      await expect(
+        service.createWithNewUser(TENANT, { ...dto, branchIds: ['b1'] } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
   });
 });

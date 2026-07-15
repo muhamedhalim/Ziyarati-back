@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -65,4 +66,13 @@ export class CreateStaffDto {
   @Min(0)
   @Max(240)
   bookingBufferMinutes?: number;
+
+  @ApiPropertyOptional({
+    description: 'Whether the staff member is bookable immediately. Defaults to true.',
+    example: true,
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  isAvailableForBooking?: boolean;
 }

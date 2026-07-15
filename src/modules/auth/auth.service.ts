@@ -112,19 +112,13 @@ export class AuthService {
         }),
       );
 
-      const user = await manager.save(
-        manager.create(User, {
-          email,
-          phone: dto.phone,
-          full_name: dto.fullName,
-          password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
-          is_active: true,
-          tenant,
-        }),
-      );
-
       // Owner ALWAYS gets the owner role; if this fails the tenant+user roll back.
-      await this.assignRoleBySlug(manager, user, ROLE.OWNER);
+      const user = await this.createUserWithRole(
+        manager,
+        { email, password: dto.password, fullName: dto.fullName, phone: dto.phone },
+        ROLE.OWNER,
+        tenant.id,
+      );
       return user.id;
     });
 
@@ -182,21 +176,47 @@ export class AuthService {
     );
 
     const userId = await this.dataSource.transaction(async (manager) => {
-      const user = await manager.save(
-        manager.create(User, {
-          email,
-          phone: dto.phone,
-          full_name: dto.fullName,
-          password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
-          is_active: true,
-          tenant: { id: actorTenantId } as Tenant,
-        }),
+      const user = await this.createUserWithRole(
+        manager,
+        { email, password: dto.password, fullName: dto.fullName, phone: dto.phone },
+        roleSlug,
+        actorTenantId,
       );
-      await this.assignRoleBySlug(manager, user, roleSlug);
       return user.id;
     });
 
     return this.buildAuthenticatedUser(userId);
+  }
+
+  /**
+   * Creates a User row and assigns it the given role, inside the CALLER's
+   * transaction (a bare `manager`, not `this.dataSource`) — so a caller can
+   * compose it with further writes (e.g. StaffService creating a StaffProfile
+   * in the same transaction) and have everything roll back together.
+   *
+   * Shared by registerOwner, createTenantUser, and StaffService's "create new
+   * staff user" flow. Does NOT check email uniqueness or plan limits — those
+   * checks are scoped differently per caller (a brand-new tenant can never
+   * collide; an existing tenant must pre-check) and are the caller's job.
+   */
+  async createUserWithRole(
+    manager: EntityManager,
+    input: { email: string; password: string; fullName: string; phone?: string },
+    roleSlug: RoleSlug,
+    tenantId: string,
+  ): Promise<User> {
+    const user = await manager.save(
+      manager.create(User, {
+        email: input.email,
+        phone: input.phone,
+        full_name: input.fullName,
+        password_hash: await bcrypt.hash(input.password, BCRYPT_ROUNDS),
+        is_active: true,
+        tenant: { id: tenantId } as Tenant,
+      }),
+    );
+    await this.assignRoleBySlug(manager, user, roleSlug);
+    return user;
   }
 
   /** Verifies credentials and returns a token pair on success. */

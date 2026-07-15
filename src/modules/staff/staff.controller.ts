@@ -38,6 +38,8 @@ import { StaffRatingService } from './staff-rating.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto } from './dto/query-staff.dto';
+import { EligibleUsersQueryDto } from './dto/eligible-users-query.dto';
+import { CreateStaffWithNewUserDto } from './dto/create-staff-with-new-user.dto';
 
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { AssignServicesDto } from './dto/assign-services.dto';
@@ -107,6 +109,42 @@ const S_STAFF_LIST = {
     total: { type: 'number', example: 23 },
     page: { type: 'number', example: 1 },
     limit: { type: 'number', example: 20 },
+  },
+};
+
+const S_ELIGIBLE_USER = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    fullName: { type: 'string', nullable: true, example: 'Sara Al-Amin' },
+    email: { type: 'string', nullable: true, example: 'sara@al-noor.com' },
+    role: {
+      type: 'object',
+      nullable: true,
+      properties: { slug: { type: 'string', example: 'receptionist' }, name: { type: 'string', example: 'Receptionist' } },
+    },
+  },
+};
+
+const S_ELIGIBLE_USER_LIST = {
+  type: 'object',
+  properties: {
+    data: { type: 'array', items: S_ELIGIBLE_USER },
+    total: { type: 'number', example: 4 },
+    page: { type: 'number', example: 1 },
+    limit: { type: 'number', example: 10 },
+  },
+};
+
+const S_STAFF_WITH_CREDENTIALS = {
+  type: 'object',
+  properties: {
+    profile: S_STAFF,
+    temporaryPassword: {
+      type: 'string',
+      description: 'Generated once — never retrievable again. Share it with the new staff member out of band.',
+      example: 'aZ3f9Qk2mN7p',
+    },
   },
 };
 
@@ -273,6 +311,64 @@ user first via the auth flow (\`POST /auth/register-user\`), then link it here.
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   create(@Body() dto: CreateStaffDto) {
     return this.staff.create(this.ctx.requireTenantId(), dto);
+  }
+
+  @ApiOperation({
+    summary: 'Create a staff member with a brand-new user account',
+    description: `
+**Protected — requires \`staff.create\`. Clinic must be active.**
+
+The "Create new user" Add Staff Member path: provisions the User account, its
+role, and the StaffProfile together, atomically — if any step fails, nothing
+is created. Replaces the old two-step "create a user via another screen, copy
+its UUID, paste it here" flow.
+
+No password field: a temporary password is generated server-side and
+returned **once** in the response (\`temporaryPassword\`) — share it with the
+new staff member out of band. It cannot be retrieved again.
+
+**Business rules**
+- Email must be unique within the clinic.
+- \`roleSlug\` is restricted to \`manager\`/\`receptionist\` (defaults to
+  \`receptionist\`), identical to \`POST /auth/register-user\`.
+- Subject to the plan's \`max_users\` limit.
+- Optional \`branchIds\` are validated and assigned in the same transaction.
+
+**Who can call this:** Owner, Manager (\`staff.create\`).
+    `.trim(),
+  })
+  @ApiCreatedResponse({ description: 'User + staff profile created.', schema: S_STAFF_WITH_CREDENTIALS })
+  @ApiBadRequestResponse({ description: 'Validation failed, or primaryBranchId not in branchIds.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, attempted a privileged role, or clinic inactive.', schema: S_ERROR })
+  @ApiConflictResponse({ description: 'Email address already exists within this clinic.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({ description: 'Plan user limit reached, or a branch was not found in this clinic.', schema: S_ERROR })
+  @Post('from-new-user')
+  @RequirePermissions(PERMISSION.STAFF_CREATE)
+  createFromNewUser(@Body() dto: CreateStaffWithNewUserDto) {
+    return this.staff.createWithNewUser(this.ctx.requireTenantId(), dto);
+  }
+
+  @ApiOperation({
+    summary: 'Search users eligible to become staff ("Link existing user")',
+    description: `
+**Protected — requires \`staff.create\`. Clinic must be active.**
+
+Returns clinic users that can be turned into a staff profile: active,
+belonging to the caller's clinic, and without a staff profile already. Never
+exposes anything beyond \`id\`/\`fullName\`/\`email\`/\`role\` — the frontend
+never displays or lets the admin type a UUID.
+
+**Who can call this:** Owner, Manager (\`staff.create\`).
+    `.trim(),
+  })
+  @ApiOkResponse({ description: 'Eligible users.', schema: S_ELIGIBLE_USER_LIST })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
+  @Get('eligible-users')
+  @RequirePermissions(PERMISSION.STAFF_CREATE)
+  findEligibleUsers(@Query() query: EligibleUsersQueryDto) {
+    return this.staff.findEligibleUsers(this.ctx.requireTenantId(), query);
   }
 
   @ApiOperation({

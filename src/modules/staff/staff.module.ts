@@ -26,6 +26,9 @@ import { StaffRatingService } from './staff-rating.service';
 import { StaffController } from './staff.controller';
 import { WorkingHoursController } from './working-hours.controller';
 
+import { AuthModule } from '../auth/auth.module';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+
 /**
  * Staff Domain.
  *
@@ -39,6 +42,11 @@ import { WorkingHoursController } from './working-hours.controller';
  *
  * Services are split by concern (SRP): profiles, scheduling/working-hours/
  * availability, time off, commissions, ratings.
+ *
+ * Imports AuthModule (StaffService.createWithNewUser reuses
+ * AuthService.createUserWithRole — the same account/role creation logic
+ * `POST /auth/register-user` uses) and SubscriptionBillingModule (UsageService,
+ * for the same `max_users` plan-limit check).
  */
 @Module({
   imports: [
@@ -56,6 +64,8 @@ import { WorkingHoursController } from './working-hours.controller';
       Branch,
       Appointment,
     ]),
+    AuthModule,
+    SubscriptionBillingModule,
   ],
   controllers: [StaffController, WorkingHoursController],
   providers: [
