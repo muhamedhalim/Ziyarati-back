@@ -12,6 +12,8 @@ import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { UsageService } from '../subscription-billing/usage.service';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { EmailService } from '../email/email.service';
 import { AppError } from '../../common/errors';
 import { ErrorCode } from '../../common/errors';
 import { ROLE } from '../../rbac/rbac.constants';
@@ -66,6 +68,8 @@ describe('AuthService', () => {
   let dataSource: MockDataSource;
   let jwt: ReturnType<typeof createMockJwtService>;
   let usage: { assertCountWithinLimit: jest.Mock };
+  let platformSettings: { getTyped: jest.Mock };
+  let email: { sendWelcome: jest.Mock; sendPasswordReset: jest.Mock };
   const bcryptHash = bcrypt.hash as unknown as jest.Mock;
   const bcryptCompare = bcrypt.compare as unknown as jest.Mock;
 
@@ -77,6 +81,11 @@ describe('AuthService', () => {
     dataSource = createMockDataSource();
     jwt = createMockJwtService();
     usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
+    platformSettings = { getTyped: jest.fn().mockResolvedValue(true) };
+    email = {
+      sendWelcome: jest.fn().mockResolvedValue(undefined),
+      sendPasswordReset: jest.fn().mockResolvedValue(undefined),
+    };
 
     bcryptHash.mockResolvedValue('hashed-password');
     bcryptCompare.mockResolvedValue(true);
@@ -92,6 +101,8 @@ describe('AuthService', () => {
         { provide: ConfigService, useValue: createMockConfigService() },
         { provide: DataSource, useValue: dataSource },
         { provide: UsageService, useValue: usage },
+        { provide: SystemSettingService, useValue: platformSettings },
+        { provide: EmailService, useValue: email },
       ],
     }).compile();
 
@@ -226,9 +237,8 @@ describe('AuthService', () => {
         is_active: true,
         tenant: { id: 'tenant-1' },
       };
-      users.findOne
-        .mockResolvedValueOnce(credUser) // validateCredentials
-        .mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
+      users.find.mockResolvedValueOnce([credUser]); // validateCredentials
+      users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
       bcryptCompare.mockResolvedValueOnce(true);
 
       const result = await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
@@ -250,20 +260,40 @@ describe('AuthService', () => {
     };
 
     it('returns the user on a correct super-admin (no tenant) login', async () => {
-      users.findOne.mockResolvedValueOnce(activeUser);
+      users.find.mockResolvedValueOnce([activeUser]);
       bcryptCompare.mockResolvedValueOnce(true);
 
       await expect(service.validateCredentials('a@b.com', 'pw')).resolves.toBe(activeUser);
     });
 
+    it('resolves a tenant owner by email WITHOUT a tenantSlug (unified login form)', async () => {
+      // Regression: the web login form sends only email + password. A
+      // tenant-scoped owner must resolve without a slug — previously this
+      // matched `tenant IS NULL` and always failed.
+      const owner = { ...activeUser, tenant: { id: 'tenant-1' } };
+      users.find.mockResolvedValueOnce([owner]);
+      bcryptCompare.mockResolvedValueOnce(true);
+
+      await expect(service.validateCredentials('OWNER@Clinic.com ', 'pw')).resolves.toBe(owner);
+      // Email is normalised (lower-cased + trimmed) before the lookup.
+      expect(users.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { email: 'owner@clinic.com' } }),
+      );
+    });
+
     it('resolves the tenant when a tenantSlug is supplied', async () => {
       tenants.findOne.mockResolvedValueOnce({ id: 'tenant-9' });
-      users.findOne.mockResolvedValueOnce(activeUser);
+      users.find.mockResolvedValueOnce([activeUser]);
       bcryptCompare.mockResolvedValueOnce(true);
 
       await service.validateCredentials('a@b.com', 'pw', 'clinic-slug');
 
       expect(tenants.findOne).toHaveBeenCalledWith({ where: { slug: 'clinic-slug' } });
+      expect(users.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { email: 'a@b.com', tenant: { id: 'tenant-9' } },
+        }),
+      );
     });
 
     it('throws INVALID_CREDENTIALS for an unknown tenant slug (no enumeration leak)', async () => {
@@ -275,28 +305,28 @@ describe('AuthService', () => {
     });
 
     it('throws INVALID_CREDENTIALS when the user does not exist', async () => {
-      users.findOne.mockResolvedValueOnce(null);
+      users.find.mockResolvedValueOnce([]);
       await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
 
     it('throws INVALID_CREDENTIALS when the user has no password hash', async () => {
-      users.findOne.mockResolvedValueOnce({ ...activeUser, password_hash: null });
+      users.find.mockResolvedValueOnce([{ ...activeUser, password_hash: null }]);
       await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
 
     it('throws INVALID_CREDENTIALS for an inactive user', async () => {
-      users.findOne.mockResolvedValueOnce({ ...activeUser, is_active: false });
+      users.find.mockResolvedValueOnce([{ ...activeUser, is_active: false }]);
       await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
 
     it('throws INVALID_CREDENTIALS on a wrong password', async () => {
-      users.findOne.mockResolvedValueOnce(activeUser);
+      users.find.mockResolvedValueOnce([activeUser]);
       bcryptCompare.mockResolvedValueOnce(false);
       await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
@@ -618,14 +648,15 @@ describe('AuthService', () => {
       );
 
     const primeLogin = () => {
-      users.findOne
-        .mockResolvedValueOnce({
+      users.find.mockResolvedValueOnce([
+        {
           id: 'user-1',
           password_hash: 'hashed-password',
           is_active: true,
           tenant: { id: 'tenant-1' },
-        })
-        .mockResolvedValueOnce(principalRow());
+        },
+      ]); // validateCredentials
+      users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
       bcryptCompare.mockResolvedValueOnce(true);
     };
 

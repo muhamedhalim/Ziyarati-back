@@ -331,14 +331,13 @@ patient-facing mobile app or booking portal.
 
 Validates credentials and issues an access + refresh token pair.
 
-**Staff / Owner login:** Provide \`tenantSlug\` to identify the clinic.
-Email uniqueness is scoped per-tenant, so the same email address can
-exist in multiple clinics; \`tenantSlug\` disambiguates which account
-is meant.
+**Everyone (staff, owner, super-admin):** normally send only \`email\`
++ \`password\`. The account is resolved by email across all clinics (and
+the platform scope) and the password selects it.
 
-**Super-admin login:** Omit \`tenantSlug\` entirely. The system looks
-for a user with \`tenant_id IS NULL\`. Super-admin accounts are created
-only via the seeder.
+**\`tenantSlug\` (optional):** email uniqueness is scoped per-tenant, so
+the same email can exist in multiple clinics. Provide \`tenantSlug\` only
+to disambiguate that case; otherwise omit it.
 
 **Token lifetimes (configurable):**
 - Access token: ~15 min (\`JWT_EXPIRES_IN\`)

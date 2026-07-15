@@ -97,12 +97,16 @@ export class AuthService {
       });
     }
 
+    // Canonicalise the email so the stored login identifier matches what login
+    // will normalise it to (see normalizeEmail / validateCredentials).
+    const email = this.normalizeEmail(dto.email);
+
     const userId = await this.dataSource.transaction(async (manager) => {
       const tenant = await manager.save(
         manager.create(Tenant, {
           name: dto.clinicName,
           slug: dto.slug,
-          contact_email: dto.email,
+          contact_email: email,
           contact_phone: dto.phone,
           commercial_registration_number: dto.commercialRegistrationNumber,
         }),
@@ -110,7 +114,7 @@ export class AuthService {
 
       const user = await manager.save(
         manager.create(User, {
-          email: dto.email,
+          email,
           phone: dto.phone,
           full_name: dto.fullName,
           password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
@@ -126,7 +130,7 @@ export class AuthService {
 
     // Welcome the new clinic owner (best-effort; never blocks onboarding).
     await this.email.sendWelcome({
-      to: dto.email,
+      to: email,
       name: dto.fullName,
       clinicName: dto.clinicName,
     });
@@ -156,8 +160,9 @@ export class AuthService {
     const roleSlug = dto.roleSlug ?? ROLE.RECEPTIONIST;
     this.assertAssignableStaffRole(roleSlug);
 
+    const email = this.normalizeEmail(dto.email);
     const existing = await this.users.findOne({
-      where: { email: dto.email, tenant: { id: actorTenantId } },
+      where: { email, tenant: { id: actorTenantId } },
     });
     if (existing) {
       throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
@@ -179,7 +184,7 @@ export class AuthService {
     const userId = await this.dataSource.transaction(async (manager) => {
       const user = await manager.save(
         manager.create(User, {
-          email: dto.email,
+          email,
           phone: dto.phone,
           full_name: dto.fullName,
           password_hash: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
@@ -211,47 +216,78 @@ export class AuthService {
   /**
    * Resolves a user from email (+ optional tenant slug) and verifies the
    * password. Throws a uniform error so callers can't probe which part failed.
+   *
+   * Tenant resolution:
+   *  - With an explicit `tenantSlug`, the lookup is scoped strictly to that
+   *    clinic — this is also how an email reused across clinics is disambiguated.
+   *  - Without one, the account is matched by email across EVERY scope
+   *    (platform super-admin + all tenants) and the password picks the account.
+   *    The login form only collects email + password, so a tenant owner/staff
+   *    must be resolvable without knowing their slug; scoping to `tenant IS NULL`
+   *    (the old behaviour) could only ever find super-admins and made every
+   *    tenant login fail. Soft-deleted users are excluded by TypeORM.
    */
   async validateCredentials(
     email: string,
     password: string,
     tenantSlug?: string,
   ): Promise<User> {
-    const tenantId = await this.resolveTenantId(tenantSlug);
+    const normalizedEmail = this.normalizeEmail(email);
 
-    const user = await this.users.findOne({
-      where: {
-        email,
-        tenant: tenantId ? { id: tenantId } : IsNull(),
-      },
-      relations: { tenant: true },
-      // password_hash is `select: false` on the entity (never leak it in normal
-      // reads) — re-select it explicitly here since this is the one legitimate
-      // site that needs to compare it.
-      select: {
-        id: true,
-        email: true,
-        phone: true,
-        password_hash: true,
-        full_name: true,
-        avatar_url: true,
-        is_active: true,
-        last_login_at: true,
-        created_at: true,
-        updated_at: true,
-        deleted_at: true,
-      },
-    });
+    // password_hash is `select: false` on the entity (never leak it in normal
+    // reads) — re-select it explicitly here since this is the one legitimate
+    // site that needs to compare it.
+    const select = {
+      id: true,
+      email: true,
+      phone: true,
+      password_hash: true,
+      full_name: true,
+      avatar_url: true,
+      is_active: true,
+      last_login_at: true,
+      created_at: true,
+      updated_at: true,
+      deleted_at: true,
+    } as const;
 
-    if (!user || !user.password_hash || !user.is_active) {
-      throw new AppError(ErrorCode.INVALID_CREDENTIALS);
+    let candidates: User[];
+    if (tenantSlug) {
+      const tenantId = await this.resolveTenantId(tenantSlug); // throws INVALID_CREDENTIALS if unknown
+      if (!tenantId) {
+        throw new AppError(ErrorCode.INVALID_CREDENTIALS);
+      }
+      candidates = await this.users.find({
+        where: { email: normalizedEmail, tenant: { id: tenantId } },
+        relations: { tenant: true },
+        select,
+      });
+    } else {
+      candidates = await this.users.find({
+        where: { email: normalizedEmail },
+        relations: { tenant: true },
+        select,
+      });
     }
 
-    const matches = await bcrypt.compare(password, user.password_hash);
-    if (!matches) {
-      throw new AppError(ErrorCode.INVALID_CREDENTIALS);
+    // Uniform failure — never reveal whether the email, tenant, activation state
+    // or password was the mismatch. The password disambiguates when more than
+    // one account shares the email across clinics.
+    for (const user of candidates) {
+      if (!user.password_hash || !user.is_active) continue;
+      if (await bcrypt.compare(password, user.password_hash)) {
+        return user;
+      }
     }
-    return user;
+    throw new AppError(ErrorCode.INVALID_CREDENTIALS);
+  }
+
+  /**
+   * Canonical email form used everywhere a user is created or looked up, so
+   * creation and login always agree regardless of the client's casing/whitespace.
+   */
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
   }
 
   // ----------------------------------------------------------------------- //
@@ -336,10 +372,11 @@ export class AuthService {
    */
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ resetToken?: string }> {
     const tenantId = await this.resolveTenantId(dto.tenantSlug).catch(() => null);
+    const email = this.normalizeEmail(dto.email);
 
     const user = await this.users.findOne({
       where: {
-        email: dto.email,
+        email,
         tenant: tenantId ? { id: tenantId } : IsNull(),
       },
     });

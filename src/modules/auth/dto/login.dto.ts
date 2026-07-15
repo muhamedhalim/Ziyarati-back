@@ -22,7 +22,7 @@ export class LoginDto {
 
   @ApiPropertyOptional({
     description:
-      'Slug of the clinic this user belongs to. **Required for staff and owner accounts.** Omit only when logging in as a platform super-admin (whose account has no tenant).',
+      'Slug of the clinic this user belongs to. **Optional** — normally omit it: the account is resolved by email + password across all clinics. Provide it only to disambiguate when the same email is registered at more than one clinic.',
     example: 'al-noor-clinic',
     maxLength: 100,
   })
