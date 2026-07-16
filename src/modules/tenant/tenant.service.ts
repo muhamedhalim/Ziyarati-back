@@ -5,6 +5,7 @@ import { DataSource, FindOptionsWhere, ILike, Repository } from 'typeorm';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { TenantApprovalEvent } from '../../entities/SaaS-Core/TenantApprovalEvent';
+import { Branch } from '../../entities/SaaS-Core/Branch';
 import { TenantApprovalStatus } from '../../entities/enums';
 
 import { CreateTenantDto } from './dto/create-tenant.dto';
@@ -273,6 +274,28 @@ export class TenantService {
       tenant.approval_status = opts.status;
       tenant.is_active = opts.isActive;
       await manager.save(tenant);
+
+      // Auto-provision a default branch the first time a tenant becomes
+      // APPROVED — no manual action required from the clinic owner. Guarded by
+      // a count check (not just "on first approval") because APPROVED is
+      // reachable multiple times per tenant (e.g. re-approval after
+      // SUSPENDED), so this must stay idempotent rather than assume a single
+      // approval event per tenant.
+      if (opts.status === TenantApprovalStatus.APPROVED) {
+        const existingBranches = await manager.count(Branch, {
+          where: { tenant: { id: tenant.id } },
+        });
+        if (existingBranches === 0) {
+          await manager.save(
+            manager.create(Branch, {
+              tenant,
+              name: 'Main Branch',
+              timezone: tenant.default_timezone || 'UTC',
+              is_active: true,
+            }),
+          );
+        }
+      }
 
       await manager.save(
         manager.create(TenantApprovalEvent, {

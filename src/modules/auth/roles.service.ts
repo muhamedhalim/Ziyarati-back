@@ -11,7 +11,7 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { AppError, ErrorCode } from '../../common/errors';
-import { ROLE } from '../../rbac/rbac.constants';
+import { NON_STAFF_ROLE_SLUGS, ROLE, RoleSlug } from '../../rbac/rbac.constants';
 
 /**
  * Privileged roles that must NEVER be grantable through the roles API.
@@ -157,6 +157,52 @@ export class RolesService {
     }
     await this.replaceRolePermissions(role, permissionIds);
     return this.findOne(roleId, tenantId);
+  }
+
+  // ------------------------ staff assignability --------------------------- //
+
+  /**
+   * Roles a tenant may assign to a STAFF member: the tenant's own custom
+   * roles plus system roles, minus {@link NON_STAFF_ROLE_SLUGS}. Backs the Add
+   * Staff Member role selector — reuses the exact same tenant/system role
+   * query as {@link findAll}, so a tenant's custom roles show up with no code
+   * change, while founding/platform/non-staff roles never do.
+   */
+  async findAssignableForStaff(tenantId: string): Promise<Role[]> {
+    const roles = await this.findAll(tenantId);
+    return roles.filter(
+      (r) => !NON_STAFF_ROLE_SLUGS.includes(r.slug as RoleSlug),
+    );
+  }
+
+  /**
+   * Resolves + validates a role slug for STAFF assignment: must exist as
+   * either one of the tenant's own custom roles or a shared system role, and
+   * must not be one of {@link NON_STAFF_ROLE_SLUGS}. Throws otherwise — this
+   * is the backend enforcement mirror of {@link findAssignableForStaff}, so a
+   * forced/direct API call can't smuggle in a role the selector never offered.
+   */
+  async findAssignableRoleBySlug(
+    slug: string,
+    tenantId: string,
+  ): Promise<Role> {
+    if (NON_STAFF_ROLE_SLUGS.includes(slug as RoleSlug)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Role "${slug}" cannot be assigned to staff`,
+      });
+    }
+    const role = await this.roles.findOne({
+      where: [
+        { slug, tenant: { id: tenantId } },
+        { slug, tenant: IsNull(), is_system: true },
+      ],
+    });
+    if (!role) {
+      throw new AppError(ErrorCode.ROLE_NOT_FOUND, {
+        message: `Role "${slug}" not found`,
+      });
+    }
+    return role;
   }
 
   // --------------------------- user assignments -------------------------- //

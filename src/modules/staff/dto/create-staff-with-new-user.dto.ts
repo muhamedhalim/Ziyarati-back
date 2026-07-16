@@ -3,7 +3,6 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
-  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -15,8 +14,6 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { ROLE } from '../../../rbac/rbac.constants';
-import type { RoleSlug } from '../../../rbac/rbac.constants';
-import { ASSIGNABLE_STAFF_ROLES } from '../../auth/dto/register-user.dto';
 
 /**
  * "Create new staff user" — the second Add Staff Member path. Creates the
@@ -62,13 +59,13 @@ export class CreateStaffWithNewUserDto {
 
   @ApiPropertyOptional({
     description:
-      'Role to assign to the new user. Only `manager` and `receptionist` are allowed — privileged roles (`owner`, `super_admin`) are blocked. Defaults to `receptionist` when omitted.',
-    enum: ASSIGNABLE_STAFF_ROLES,
+      'Slug of the role to assign — any of the tenant\'s own custom roles or a shared system role, fetched from `GET /staff/assignable-roles`. Founding/platform roles (`owner`, `super_admin`) and non-staff system roles (`customer`, `ai-bot`) are rejected, re-validated server-side regardless of what the client sends. Defaults to `receptionist` when omitted.',
     example: ROLE.RECEPTIONIST,
   })
   @IsOptional()
-  @IsIn(ASSIGNABLE_STAFF_ROLES)
-  roleSlug?: RoleSlug;
+  @IsString()
+  @MaxLength(100)
+  roleSlug?: string;
 
   // ── Professional profile ─────────────────────────────────────────────── //
 
@@ -90,12 +87,15 @@ export class CreateStaffWithNewUserDto {
   bio?: string;
 
   @ApiPropertyOptional({
-    description: 'Avatar image URL (already uploaded to storage).',
-    example: 'https://cdn.example.com/staff/avatar-1.png',
+    description:
+      'Storage key of an avatar already uploaded via `POST /uploads` (docType `staff-avatar`) — not a URL.',
+    example: 'a1b2c3d4-0000-.../staff-avatar/8c2e0000-....jpg',
+    maxLength: 1024,
   })
   @IsOptional()
   @IsString()
-  avatarUrl?: string;
+  @MaxLength(1024)
+  avatarStorageKey?: string;
 
   // ── Booking settings ─────────────────────────────────────────────────── //
 

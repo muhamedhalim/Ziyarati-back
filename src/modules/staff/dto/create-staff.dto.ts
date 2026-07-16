@@ -46,12 +46,15 @@ export class CreateStaffDto {
   bio?: string;
 
   @ApiPropertyOptional({
-    description: 'Avatar image URL (already uploaded to storage).',
-    example: 'https://cdn.example.com/staff/avatar-1.png',
+    description:
+      'Storage key of an avatar already uploaded via `POST /uploads` (docType `staff-avatar`) — not a URL. Arbitrary external URLs are rejected; only a key this tenant actually uploaded is accepted.',
+    example: 'a1b2c3d4-0000-.../staff-avatar/8c2e0000-....jpg',
+    maxLength: 1024,
   })
   @IsOptional()
   @IsString()
-  avatarUrl?: string;
+  @MaxLength(1024)
+  avatarStorageKey?: string;
 
   @ApiPropertyOptional({
     description:

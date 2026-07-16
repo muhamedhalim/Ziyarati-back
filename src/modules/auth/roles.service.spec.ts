@@ -206,6 +206,51 @@ describe('RolesService', () => {
     });
   });
 
+  describe('findAssignableForStaff', () => {
+    it('excludes owner/super_admin/customer/ai-bot but keeps everything else', async () => {
+      roles.find.mockResolvedValueOnce([
+        { id: 'r1', slug: ROLE.MANAGER },
+        { id: 'r2', slug: ROLE.RECEPTIONIST },
+        { id: 'r3', slug: ROLE.OWNER },
+        { id: 'r4', slug: ROLE.SUPER_ADMIN },
+        { id: 'r5', slug: ROLE.CUSTOMER },
+        { id: 'r6', slug: ROLE.AI_BOT },
+        { id: 'r7', slug: 'front-desk' }, // tenant custom role
+      ]);
+
+      const result = await service.findAssignableForStaff(TENANT);
+
+      expect(result.map((r) => r.slug)).toEqual([
+        ROLE.MANAGER,
+        ROLE.RECEPTIONIST,
+        'front-desk',
+      ]);
+    });
+  });
+
+  describe('findAssignableRoleBySlug', () => {
+    it('rejects super_admin/owner/customer/ai-bot without a DB lookup', async () => {
+      await expect(
+        service.findAssignableRoleBySlug(ROLE.OWNER, TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(roles.findOne).not.toHaveBeenCalled();
+    });
+
+    it('resolves a tenant custom role or a system role', async () => {
+      roles.findOne.mockResolvedValueOnce({ id: 'r1', slug: 'front-desk' });
+      await expect(
+        service.findAssignableRoleBySlug('front-desk', TENANT),
+      ).resolves.toEqual({ id: 'r1', slug: 'front-desk' });
+    });
+
+    it('throws ROLE_NOT_FOUND for an unknown slug', async () => {
+      roles.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.findAssignableRoleBySlug('nonexistent', TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.ROLE_NOT_FOUND });
+    });
+  });
+
   describe('user-role assignments', () => {
     it('lists a user roles', async () => {
       users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });

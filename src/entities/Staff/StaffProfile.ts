@@ -41,11 +41,26 @@ export class StaffProfile {
   })
   bio?: string;
 
-  @Column({
-    type: 'text',
-    nullable: true,
-  })
-  avatar_url?: string;
+  /**
+   * Legacy/external avatar URL for rows created before private storage, OR a
+   * short-lived signed URL resolved in-memory from `avatar_storage_key` for
+   * API responses (see `StaffService.withResolvedAvatar`) — never both
+   * meaningfully at once. The R2 upload flow never accepts an arbitrary
+   * external URL going forward; the app only ever clears this column
+   * (`StaffService.update` nulls it whenever `avatarStorageKey` changes), it
+   * never writes a new URL into it.
+   */
+  @Column({ type: 'text', nullable: true })
+  avatar_url?: string | null;
+
+  /**
+   * Private R2 object key (`<tenantId>/staff-avatar/<uuid>.<ext>`). Never a
+   * URL. Typed as `| null` (not just optional) because TypeORM's `save()`
+   * skips `undefined` properties on UPDATE — clearing this column requires
+   * assigning `null` explicitly, not `undefined`.
+   */
+  @Column({ type: 'varchar', nullable: true })
+  avatar_storage_key?: string | null;
 
   @Column({
     default: 0,

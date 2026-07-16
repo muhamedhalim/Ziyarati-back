@@ -14,6 +14,7 @@ import {
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNoContentResponse,
@@ -228,9 +229,10 @@ can be updated.
     description: `
 **Protected — \`owner\` role required. Tenant must be active.**
 
-Permanently deletes a branch. Before deletion, ensure the branch has
-no upcoming appointments or active staff assignments — these should be
-migrated to another branch first.
+Soft-deletes a branch — rejected with 409 unless deletion is safe:
+- it is not the clinic's only branch (at least one must always remain),
+- no staff are currently assigned to it (reassign them first), and
+- it has no upcoming, non-cancelled appointments (cancel/reschedule them first).
 
 For a softer option that preserves history, consider setting
 \`isActive: false\` via \`PATCH /branches/:id\` instead.
@@ -249,6 +251,11 @@ can be deleted.
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({ description: 'Branch not found.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description:
+      'Deletion is unsafe: it is the only branch, has assigned staff, or has upcoming appointments.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @Roles(ROLE.OWNER)

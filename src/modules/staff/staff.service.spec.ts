@@ -11,6 +11,8 @@ import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AuthService } from '../auth/auth.service';
+import { RolesService } from '../auth/roles.service';
+import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { ROLE } from '../../rbac/rbac.constants';
 import {
@@ -33,6 +35,12 @@ describe('StaffService', () => {
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
   let authService: { createUserWithRole: jest.Mock };
+  let rolesService: { findAssignableForStaff: jest.Mock; findAssignableRoleBySlug: jest.Mock };
+  let storage: {
+    assertKeyBelongsToTenant: jest.Mock;
+    getSignedDownloadUrl: jest.Mock;
+    deleteObject: jest.Mock;
+  };
   let usage: { assertCountWithinLimit: jest.Mock };
 
   beforeEach(async () => {
@@ -43,7 +51,18 @@ describe('StaffService', () => {
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
     authService = { createUserWithRole: jest.fn() };
+    rolesService = {
+      findAssignableForStaff: jest.fn().mockResolvedValue([]),
+      findAssignableRoleBySlug: jest
+        .fn()
+        .mockResolvedValue({ id: 'role-receptionist', slug: ROLE.RECEPTIONIST, name: 'Receptionist' }),
+    };
     usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
+    storage = {
+      assertKeyBelongsToTenant: jest.fn(),
+      getSignedDownloadUrl: jest.fn().mockResolvedValue('https://signed.example.com/avatar'),
+      deleteObject: jest.fn().mockResolvedValue(undefined),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -56,6 +75,8 @@ describe('StaffService', () => {
         { provide: getRepositoryToken(Branch), useValue: createMockRepository() },
         { provide: DataSource, useValue: dataSource },
         { provide: AuthService, useValue: authService },
+        { provide: RolesService, useValue: rolesService },
+        { provide: StorageService, useValue: storage },
         { provide: UsageService, useValue: usage },
       ],
     }).compile();
@@ -123,6 +144,99 @@ describe('StaffService', () => {
       staff.findOne.mockResolvedValueOnce({ id: 'staff-1' });
       await service.remove(TENANT, 'staff-1');
       expect(staff.softRemove).toHaveBeenCalled();
+    });
+  });
+
+  describe('avatar handling', () => {
+    it('findOne resolves a signed URL when avatar_storage_key is set', async () => {
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 't1/staff-avatar/x.jpg' });
+      const result = await service.findOne(TENANT, 'staff-1');
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('t1/staff-avatar/x.jpg');
+      expect(result.avatar_url).toBe('https://signed.example.com/avatar');
+    });
+
+    it('findOne leaves avatar_url untouched when there is no storage key', async () => {
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-1', avatar_url: 'https://legacy.example.com/a.png' });
+      const result = await service.findOne(TENANT, 'staff-1');
+      expect(storage.getSignedDownloadUrl).not.toHaveBeenCalled();
+      expect(result.avatar_url).toBe('https://legacy.example.com/a.png');
+    });
+
+    it('create validates the uploaded key belongs to the tenant', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1' });
+      staff.findOne.mockResolvedValueOnce(null);
+      staff.save.mockResolvedValueOnce({ id: 'staff-1' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-1' });
+
+      await service.create(TENANT, { userId: 'u1', avatarStorageKey: `${TENANT}/staff-avatar/x.jpg` } as any);
+
+      expect(storage.assertKeyBelongsToTenant).toHaveBeenCalledWith(`${TENANT}/staff-avatar/x.jpg`, TENANT);
+    });
+
+    it('update replaces the avatar and best-effort deletes the old object', async () => {
+      staff.findOne
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'old-key.jpg' }) // initial load
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'new-key.jpg' }); // reload
+
+      await service.update(TENANT, 'staff-1', { avatarStorageKey: 'new-key.jpg' } as any);
+
+      expect(storage.assertKeyBelongsToTenant).toHaveBeenCalledWith('new-key.jpg', TENANT);
+      expect(staff.save).toHaveBeenCalledWith(expect.objectContaining({ avatar_storage_key: 'new-key.jpg' }));
+      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg');
+    });
+
+    it('update(null) removes the avatar and best-effort deletes the old object', async () => {
+      staff.findOne
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'old-key.jpg' })
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: null });
+
+      await service.update(TENANT, 'staff-1', { avatarStorageKey: null } as any);
+
+      // Must be an explicit `null`, NOT `undefined` — TypeORM's save() skips
+      // `undefined` properties on UPDATE, which would silently fail to clear
+      // the column (the actual bug this test guards against).
+      expect(staff.save).toHaveBeenCalledWith(expect.objectContaining({ avatar_storage_key: null }));
+      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg');
+    });
+
+    it('update leaves the avatar untouched when avatarStorageKey is omitted', async () => {
+      staff.findOne.mockResolvedValue({ id: 'staff-1', avatar_storage_key: 'kept-key.jpg' });
+
+      await service.update(TENANT, 'staff-1', { title: 'New' } as any);
+
+      expect(storage.assertKeyBelongsToTenant).not.toHaveBeenCalled();
+      expect(storage.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('never persists a resolved signed URL back into avatar_url (regression)', async () => {
+      // Regression guard: `update`/`setAvailability` must load the profile
+      // WITHOUT resolving its avatar (loadProfile), not via `findOne` (which
+      // mutates avatar_url into a signed URL) — otherwise that presentation-
+      // only value gets written to the DB on save. A real repository returns
+      // a FRESH object per call, so each mock call gets its own object too
+      // (a shared `mockResolvedValue` object would falsely cross-contaminate
+      // between the pre-save load and the post-save response resolution).
+      staff.findOne
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'kept-key.jpg' }) // loadProfile (update)
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'kept-key.jpg' }); // findOne (update's response)
+
+      await service.update(TENANT, 'staff-1', { title: 'New' } as any);
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledTimes(1);
+
+      const updateSavedArg = staff.save.mock.calls.at(-1)?.[0];
+      expect(updateSavedArg.avatar_url).toBeUndefined();
+
+      storage.getSignedDownloadUrl.mockClear();
+      staff.save.mockClear();
+      staff.findOne
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'kept-key.jpg' }) // loadProfile (setAvailability)
+        .mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 'kept-key.jpg' }); // findOne (response)
+
+      await service.setAvailability(TENANT, 'staff-1', false);
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledTimes(1);
+
+      const availabilitySavedArg = staff.save.mock.calls.at(-1)?.[0];
+      expect(availabilitySavedArg.avatar_url).toBeUndefined();
     });
   });
 
@@ -218,10 +332,15 @@ describe('StaffService', () => {
       bookingBufferMinutes: 15,
     } as any;
 
-    it('rejects a privileged role', async () => {
+    it('rejects a privileged role (delegates to RolesService, which throws FORBIDDEN)', async () => {
+      rolesService.findAssignableRoleBySlug.mockRejectedValueOnce(
+        new AppError(ErrorCode.FORBIDDEN, { message: 'Role "owner" cannot be assigned to staff' }),
+      );
+
       await expect(
         service.createWithNewUser(TENANT, { ...dto, roleSlug: ROLE.OWNER } as any),
       ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(rolesService.findAssignableRoleBySlug).toHaveBeenCalledWith(ROLE.OWNER, TENANT);
     });
 
     it('rejects a primaryBranchId not in branchIds', async () => {
@@ -265,10 +384,11 @@ describe('StaffService', () => {
       const result = await service.createWithNewUser(TENANT, dto);
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(rolesService.findAssignableRoleBySlug).toHaveBeenCalledWith(ROLE.RECEPTIONIST, TENANT);
       expect(authService.createUserWithRole).toHaveBeenCalledWith(
         manager,
         expect.objectContaining({ email: 'new.staff@clinic.com', fullName: 'New Staff' }),
-        ROLE.RECEPTIONIST,
+        { id: 'role-receptionist', slug: ROLE.RECEPTIONIST, name: 'Receptionist' },
         TENANT,
       );
       expect(result.profile).toEqual({ id: 'staff-1' });
@@ -297,6 +417,16 @@ describe('StaffService', () => {
       await expect(
         service.createWithNewUser(TENANT, { ...dto, branchIds: ['b1'] } as any),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    });
+  });
+
+  describe('findAssignableRoles', () => {
+    it('delegates to RolesService.findAssignableForStaff', async () => {
+      const roles = [{ id: 'r1', slug: 'receptionist', name: 'Receptionist' }];
+      rolesService.findAssignableForStaff.mockResolvedValueOnce(roles);
+
+      await expect(service.findAssignableRoles(TENANT)).resolves.toEqual(roles);
+      expect(rolesService.findAssignableForStaff).toHaveBeenCalledWith(TENANT);
     });
   });
 });

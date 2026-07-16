@@ -6,6 +6,7 @@ import { TenantService } from './tenant.service';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { TenantApprovalEvent } from '../../entities/SaaS-Core/TenantApprovalEvent';
+import { Branch } from '../../entities/SaaS-Core/Branch';
 import { TenantApprovalStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
 import {
@@ -118,6 +119,46 @@ describe('TenantService', () => {
       await expect(service.suspend('nope', 'admin-1')).rejects.toMatchObject({
         code: ErrorCode.TENANT_NOT_FOUND,
       });
+    });
+  });
+
+  describe('default branch provisioning on approval', () => {
+    it('creates one default branch when a tenant is approved with none yet', async () => {
+      manager.findOne.mockResolvedValueOnce({
+        id: 'ten-1',
+        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
+        is_active: false,
+        default_timezone: 'Asia/Riyadh',
+      });
+      manager.count.mockResolvedValueOnce(0); // no branches yet
+
+      await service.approve('ten-1', 'admin-1');
+
+      expect(manager.count).toHaveBeenCalledWith(Branch, {
+        where: { tenant: { id: 'ten-1' } },
+      });
+      expect(manager.create).toHaveBeenCalledWith(
+        Branch,
+        expect.objectContaining({
+          name: 'Main Branch',
+          timezone: 'Asia/Riyadh',
+          is_active: true,
+        }),
+      );
+    });
+
+    it('does not create a second default branch on re-approval (idempotent)', async () => {
+      manager.findOne.mockResolvedValueOnce({
+        id: 'ten-1',
+        approval_status: TenantApprovalStatus.SUSPENDED,
+        is_active: false,
+        default_timezone: 'UTC',
+      });
+      manager.count.mockResolvedValueOnce(1); // already has a branch
+
+      await service.approve('ten-1', 'admin-1');
+
+      expect(manager.create).not.toHaveBeenCalledWith(Branch, expect.anything());
     });
   });
 

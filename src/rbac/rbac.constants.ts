@@ -222,6 +222,22 @@ export const ROLE = {
 
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
 
+/**
+ * System roles that can never be assigned as a clinic STAFF role:
+ * `super_admin`/`owner` are founding/platform roles (granted only via the
+ * seeder / `POST /auth/register-owner`), and `customer`/`ai-bot` are not
+ * human-staff roles at all (end-user self-service and a system automation
+ * actor, respectively). Everything else — the remaining system roles plus any
+ * of the tenant's own custom roles — is fair game, so a tenant's custom roles
+ * appear in the staff role selector automatically, with no code change.
+ */
+export const NON_STAFF_ROLE_SLUGS: readonly RoleSlug[] = [
+  ROLE.SUPER_ADMIN,
+  ROLE.OWNER,
+  ROLE.CUSTOMER,
+  ROLE.AI_BOT,
+];
+
 // ---------------------------------------------------------------------------
 // Catalogue metadata (consumed by the permissions seeder)
 // ---------------------------------------------------------------------------

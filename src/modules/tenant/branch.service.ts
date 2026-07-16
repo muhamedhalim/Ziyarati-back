@@ -1,9 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Not, Repository } from 'typeorm';
 
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { BranchUser } from '../../entities/Multi Branch/BranchUser';
+import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { AppointmentStatus } from '../../entities/enums';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -19,6 +22,10 @@ import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 export class BranchService {
   constructor(
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
+    @InjectRepository(BranchUser)
+    private readonly branchUsers: Repository<BranchUser>,
+    @InjectRepository(Appointment)
+    private readonly appointments: Repository<Appointment>,
     private readonly usage: UsageService,
   ) {}
 
@@ -79,8 +86,52 @@ export class BranchService {
     return this.branches.save(branch);
   }
 
+  /**
+   * Deletion is only safe when: (1) it isn't the clinic's last remaining
+   * branch — the appointment flow assumes at least one always exists; (2) no
+   * staff are currently assigned to it (via `branch_users`) — they must be
+   * reassigned first; (3) it has no upcoming, non-cancelled appointments.
+   * Historical (past) appointments never block deletion — the soft-delete
+   * preserves the branch row for their audit trail.
+   */
   async remove(tenantId: string, id: string): Promise<void> {
     const branch = await this.findOne(tenantId, id);
+
+    const totalBranches = await this.branches.count({
+      where: { tenant: { id: tenantId } },
+    });
+    if (totalBranches <= 1) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message:
+          'Cannot delete the only branch. A clinic must have at least one branch.',
+      });
+    }
+
+    const assignedStaff = await this.branchUsers.count({
+      where: { branch: { id }, tenant: { id: tenantId } },
+    });
+    if (assignedStaff > 0) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message:
+          'Cannot delete a branch with staff assigned to it. Reassign staff to another branch first.',
+      });
+    }
+
+    const upcomingAppointments = await this.appointments.count({
+      where: {
+        branch: { id },
+        tenant: { id: tenantId },
+        start_at: MoreThan(new Date()),
+        status: Not(AppointmentStatus.CANCELLED),
+      },
+    });
+    if (upcomingAppointments > 0) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message:
+          'Cannot delete a branch with upcoming appointments. Cancel or reschedule them first.',
+      });
+    }
+
     await this.branches.softRemove(branch);
   }
 }

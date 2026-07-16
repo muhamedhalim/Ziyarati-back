@@ -144,6 +144,7 @@ export interface MockEntityManager {
   save: jest.Mock;
   findOne: jest.Mock;
   find: jest.Mock;
+  count: jest.Mock;
   update: jest.Mock;
   delete: jest.Mock;
   getRepository: jest.Mock;
@@ -172,6 +173,7 @@ export const createMockEntityManager = (
   ),
   findOne: jest.fn(async () => null),
   find: jest.fn(async () => []),
+  count: jest.fn(async () => 0),
   update: jest.fn(async () => ({ affected: 1 })),
   delete: jest.fn(async () => ({ affected: 1 })),
   getRepository: jest.fn((entity: unknown) => {

@@ -113,10 +113,11 @@ export class AuthService {
       );
 
       // Owner ALWAYS gets the owner role; if this fails the tenant+user roll back.
+      const ownerRole = await this.resolveSystemRole(manager, ROLE.OWNER);
       const user = await this.createUserWithRole(
         manager,
         { email, password: dto.password, fullName: dto.fullName, phone: dto.phone },
-        ROLE.OWNER,
+        ownerRole,
         tenant.id,
       );
       return user.id;
@@ -176,10 +177,11 @@ export class AuthService {
     );
 
     const userId = await this.dataSource.transaction(async (manager) => {
+      const role = await this.resolveSystemRole(manager, roleSlug);
       const user = await this.createUserWithRole(
         manager,
         { email, password: dto.password, fullName: dto.fullName, phone: dto.phone },
-        roleSlug,
+        role,
         actorTenantId,
       );
       return user.id;
@@ -189,20 +191,25 @@ export class AuthService {
   }
 
   /**
-   * Creates a User row and assigns it the given role, inside the CALLER's
-   * transaction (a bare `manager`, not `this.dataSource`) — so a caller can
-   * compose it with further writes (e.g. StaffService creating a StaffProfile
-   * in the same transaction) and have everything roll back together.
+   * Creates a User row and links it to an ALREADY-RESOLVED role, inside the
+   * CALLER's transaction (a bare `manager`, not `this.dataSource`) — so a
+   * caller can compose it with further writes (e.g. StaffService creating a
+   * StaffProfile in the same transaction) and have everything roll back
+   * together.
    *
    * Shared by registerOwner, createTenantUser, and StaffService's "create new
-   * staff user" flow. Does NOT check email uniqueness or plan limits — those
-   * checks are scoped differently per caller (a brand-new tenant can never
-   * collide; an existing tenant must pre-check) and are the caller's job.
+   * staff user" flow. Callers resolve the role themselves first — via
+   * {@link resolveSystemRole} (strictly a seeded system role, for
+   * registerOwner/createTenantUser) or via `RolesService.findAssignableRoleBySlug`
+   * (tenant custom roles + system roles, for the staff flow) — because the two
+   * have different scoping rules. This method also does NOT check email
+   * uniqueness or plan limits — those checks differ per caller too and are the
+   * caller's job.
    */
   async createUserWithRole(
     manager: EntityManager,
     input: { email: string; password: string; fullName: string; phone?: string },
-    roleSlug: RoleSlug,
+    role: Role,
     tenantId: string,
   ): Promise<User> {
     const user = await manager.save(
@@ -215,7 +222,7 @@ export class AuthService {
         tenant: { id: tenantId } as Tenant,
       }),
     );
-    await this.assignRoleBySlug(manager, user, roleSlug);
+    await manager.save(manager.create(UserRole, { user, role }));
     return user;
   }
 
@@ -532,14 +539,16 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
 
   /**
-   * Links a user to a seeded SYSTEM role (tenant IS NULL) inside a transaction.
+   * Resolves a seeded SYSTEM role (tenant IS NULL) inside a transaction.
    * Throws if the role isn't seeded, so a user is never left without a role.
+   * Used by registerOwner (always `owner`) and createTenantUser
+   * (manager/receptionist only) — both need strictly the shared system role,
+   * never a tenant's own custom role that happens to share the slug.
    */
-  private async assignRoleBySlug(
+  private async resolveSystemRole(
     manager: EntityManager,
-    user: User,
     slug: RoleSlug,
-  ): Promise<void> {
+  ): Promise<Role> {
     const role = await manager.findOne(Role, {
       where: { slug, tenant: IsNull() },
     });
@@ -548,7 +557,7 @@ export class AuthService {
         message: `System role "${slug}" is not seeded`,
       });
     }
-    await manager.save(manager.create(UserRole, { user, role }));
+    return role;
   }
 
   /** Guards against assigning privileged roles through the staff flow. */

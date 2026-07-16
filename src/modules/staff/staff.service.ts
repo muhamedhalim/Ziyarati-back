@@ -21,7 +21,8 @@ import { EligibleUsersQueryDto } from './dto/eligible-users-query.dto';
 import { CreateStaffWithNewUserDto } from './dto/create-staff-with-new-user.dto';
 
 import { AuthService } from '../auth/auth.service';
-import { ASSIGNABLE_STAFF_ROLES } from '../auth/dto/register-user.dto';
+import { RolesService } from '../auth/roles.service';
+import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import { ROLE } from '../../rbac/rbac.constants';
@@ -49,8 +50,36 @@ export class StaffService {
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
     private readonly dataSource: DataSource,
     private readonly authService: AuthService,
+    private readonly rolesService: RolesService,
+    private readonly storage: StorageService,
     private readonly usage: UsageService,
   ) {}
+
+  /** Roles this tenant may assign to staff — backs the Add Staff role selector. */
+  async findAssignableRoles(
+    tenantId: string,
+  ): Promise<{ id: string; slug: string; name: string }[]> {
+    const roles = await this.rolesService.findAssignableForStaff(tenantId);
+    // Slim projection for the dropdown — the full Role (with its permission
+    // set) is more than this endpoint needs to expose.
+    return roles.map((r) => ({ id: r.id, slug: r.slug, name: r.name }));
+  }
+
+  /**
+   * Resolves `avatar_storage_key` into a short-lived signed URL for the
+   * response's `avatar_url` field (private bucket — never a stored/public
+   * URL). Falls back to the legacy `avatar_url` column for rows created
+   * before private storage. Mutates the loaded entity in place; nothing is
+   * persisted back to the DB.
+   */
+  private async withResolvedAvatar<T extends StaffProfile>(profile: T): Promise<T> {
+    if (profile.avatar_storage_key) {
+      profile.avatar_url = await this.storage.getSignedDownloadUrl(
+        profile.avatar_storage_key,
+      );
+    }
+    return profile;
+  }
 
   // ───────────────────────────── Profile CRUD ────────────────────────────── //
 
@@ -73,12 +102,16 @@ export class StaffService {
       });
     }
 
+    if (dto.avatarStorageKey) {
+      this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
+    }
+
     const profile = this.staff.create({
       tenant: { id: tenantId } as Tenant,
       user: { id: dto.userId } as User,
       title: dto.title,
       bio: dto.bio,
-      avatar_url: dto.avatarUrl,
+      avatar_storage_key: dto.avatarStorageKey,
       booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
       is_available_for_booking: dto.isAvailableForBooking ?? true,
     });
@@ -103,12 +136,15 @@ export class StaffService {
     tenantId: string,
     dto: CreateStaffWithNewUserDto,
   ): Promise<{ profile: StaffProfile; temporaryPassword: string }> {
-    const roleSlug = dto.roleSlug ?? ROLE.RECEPTIONIST;
-    if (!ASSIGNABLE_STAFF_ROLES.includes(roleSlug)) {
-      throw new AppError(ErrorCode.FORBIDDEN, {
-        message: `Role "${roleSlug}" cannot be assigned to staff`,
-      });
-    }
+    // Dynamic + backend-enforced: any of the tenant's own custom roles or a
+    // system role works, EXCEPT founding/platform/non-staff roles (see
+    // RolesService.findAssignableRoleBySlug) — never a static manager/
+    // receptionist allow-list, so a forced API call can't smuggle one in
+    // either.
+    const role = await this.rolesService.findAssignableRoleBySlug(
+      dto.roleSlug ?? ROLE.RECEPTIONIST,
+      tenantId,
+    );
 
     if (
       dto.primaryBranchId &&
@@ -137,6 +173,10 @@ export class StaffService {
       currentUsers,
     );
 
+    if (dto.avatarStorageKey) {
+      this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
+    }
+
     const temporaryPassword = randomBytes(9).toString('base64url'); // 12 chars
 
     const profileId = await this.dataSource.transaction(async (manager) => {
@@ -148,7 +188,7 @@ export class StaffService {
           fullName: dto.fullName,
           phone: dto.phone,
         },
-        roleSlug,
+        role,
         tenantId,
       );
 
@@ -158,7 +198,7 @@ export class StaffService {
           user: { id: user.id } as User,
           title: dto.title,
           bio: dto.bio,
-          avatar_url: dto.avatarUrl,
+          avatar_storage_key: dto.avatarStorageKey,
           booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
           is_available_for_booking: dto.isAvailableForBooking ?? true,
         }),
@@ -225,6 +265,7 @@ export class StaffService {
       take: query.limit,
     });
 
+    await Promise.all(data.map((profile) => this.withResolvedAvatar(profile)));
     return { data, total, page: query.page, limit: query.limit };
   }
 
@@ -279,7 +320,18 @@ export class StaffService {
     };
   }
 
-  async findOne(tenantId: string, id: string): Promise<StaffProfile> {
+  /**
+   * Raw load — no avatar resolution. `withResolvedAvatar` mutates
+   * `avatar_url` into a presentation-only signed URL; if that mutated
+   * instance were ever passed to `.save()` (as `update`/`setAvailability`/
+   * `remove` need to, to persist OTHER field changes), the fake signed URL
+   * would get written into the `avatar_url` column. Every write path must
+   * load through here, never through `findOne`.
+   */
+  private async loadProfile(
+    tenantId: string,
+    id: string,
+  ): Promise<StaffProfile> {
     const profile = await this.staff.findOne({
       where: { id, tenant: { id: tenantId } },
       relations: {
@@ -295,16 +347,20 @@ export class StaffService {
     return profile;
   }
 
+  async findOne(tenantId: string, id: string): Promise<StaffProfile> {
+    const profile = await this.loadProfile(tenantId, id);
+    return this.withResolvedAvatar(profile);
+  }
+
   async update(
     tenantId: string,
     id: string,
     dto: UpdateStaffDto,
   ): Promise<StaffProfile> {
-    const profile = await this.findOne(tenantId, id);
+    const profile = await this.loadProfile(tenantId, id);
 
     if (dto.title !== undefined) profile.title = dto.title;
     if (dto.bio !== undefined) profile.bio = dto.bio;
-    if (dto.avatarUrl !== undefined) profile.avatar_url = dto.avatarUrl;
     if (dto.bookingBufferMinutes !== undefined) {
       profile.booking_buffer_minutes = dto.bookingBufferMinutes;
     }
@@ -312,7 +368,39 @@ export class StaffService {
       profile.is_available_for_booking = dto.isAvailableForBooking;
     }
 
+    // Tri-state: omitted = unchanged, null = remove, string = replace. Either
+    // way the OLD object (if any) is best-effort deleted from R2 so replacing
+    // or removing an avatar doesn't leak orphaned objects.
+    //
+    // IMPORTANT: TypeORM's `save()` SKIPS `undefined` properties on UPDATE —
+    // only an explicit `null` actually clears the column. Assigning
+    // `undefined` here would silently no-op and leave the old key in place.
+    let previousKey: string | null | undefined;
+    if (dto.avatarStorageKey !== undefined) {
+      previousKey = profile.avatar_storage_key;
+      // The legacy `avatar_url` column must be cleared too — otherwise a
+      // stale value left over from before this row adopted the storage-key
+      // flow (or from a bug — see the regression test above this one) keeps
+      // being returned as a fallback even after the avatar is replaced/removed.
+      profile.avatar_url = null;
+      if (dto.avatarStorageKey === null) {
+        profile.avatar_storage_key = null;
+      } else {
+        this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
+        profile.avatar_storage_key = dto.avatarStorageKey;
+      }
+    }
+
     await this.staff.save(profile);
+
+    if (previousKey && previousKey !== profile.avatar_storage_key) {
+      try {
+        await this.storage.deleteObject(previousKey);
+      } catch {
+        /* best-effort cleanup — never fail the update over a stale R2 object */
+      }
+    }
+
     return this.findOne(tenantId, id);
   }
 
@@ -322,14 +410,14 @@ export class StaffService {
     id: string,
     active: boolean,
   ): Promise<StaffProfile> {
-    const profile = await this.findOne(tenantId, id);
+    const profile = await this.loadProfile(tenantId, id);
     profile.is_available_for_booking = active;
     await this.staff.save(profile);
     return this.findOne(tenantId, id);
   }
 
   async remove(tenantId: string, id: string): Promise<void> {
-    const profile = await this.findOne(tenantId, id);
+    const profile = await this.loadProfile(tenantId, id);
     await this.staff.softRemove(profile);
   }
 

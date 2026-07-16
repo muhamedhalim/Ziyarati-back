@@ -77,7 +77,11 @@ const S_STAFF = {
     id: { type: 'string', format: 'uuid' },
     title: { type: 'string', nullable: true, example: 'Senior Dermatologist' },
     bio: { type: 'string', nullable: true },
-    avatar_url: { type: 'string', nullable: true },
+    avatar_url: {
+      type: 'string',
+      nullable: true,
+      description: 'Short-lived signed URL when an avatar was uploaded via `POST /uploads`; re-fetch the resource once it expires.',
+    },
     booking_buffer_minutes: { type: 'number', example: 10 },
     is_available_for_booking: { type: 'boolean', example: true },
     user: {
@@ -329,8 +333,10 @@ new staff member out of band. It cannot be retrieved again.
 
 **Business rules**
 - Email must be unique within the clinic.
-- \`roleSlug\` is restricted to \`manager\`/\`receptionist\` (defaults to
-  \`receptionist\`), identical to \`POST /auth/register-user\`.
+- \`roleSlug\` may be any role \`GET /staff/assignable-roles\` returns (the
+  tenant's own custom roles or a system role); defaults to \`receptionist\`.
+  Founding/platform roles (\`owner\`, \`super_admin\`) and non-staff system
+  roles (\`customer\`, \`ai-bot\`) are rejected even if forced directly.
 - Subject to the plan's \`max_users\` limit.
 - Optional \`branchIds\` are validated and assigned in the same transaction.
 
@@ -369,6 +375,44 @@ never displays or lets the admin type a UUID.
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   findEligibleUsers(@Query() query: EligibleUsersQueryDto) {
     return this.staff.findEligibleUsers(this.ctx.requireTenantId(), query);
+  }
+
+  @ApiOperation({
+    summary: 'List roles assignable to a staff member ("Create new user")',
+    description: `
+**Protected — requires \`staff.create\`. Clinic must be active.**
+
+Returns the roles this tenant may assign when creating a new staff user:
+the tenant's own custom roles plus shared system roles — EXCLUDING founding/
+platform roles (\`owner\`, \`super_admin\`) and roles that aren't for human
+staff (\`customer\`, \`ai-bot\`). Dynamic: a newly created custom tenant role
+appears here automatically, with no code change. The same exclusion is
+re-enforced server-side on \`POST /staff/from-new-user\` — this endpoint only
+drives the dropdown.
+
+**Who can call this:** Owner, Manager (\`staff.create\`).
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Assignable roles.',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          slug: { type: 'string', example: 'receptionist' },
+          name: { type: 'string', example: 'Receptionist' },
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
+  @Get('assignable-roles')
+  @RequirePermissions(PERMISSION.STAFF_CREATE)
+  findAssignableRoles() {
+    return this.staff.findAssignableRoles(this.ctx.requireTenantId());
   }
 
   @ApiOperation({

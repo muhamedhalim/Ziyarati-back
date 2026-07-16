@@ -6,6 +6,8 @@ import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { TenantVerificationDocument } from '../../entities/SaaS-Core/TenantVerificationDocument';
 import { TenantApprovalEvent } from '../../entities/SaaS-Core/TenantApprovalEvent';
 import { Branch } from '../../entities/SaaS-Core/Branch';
+import { BranchUser } from '../../entities/Multi Branch/BranchUser';
+import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 
 import { TenantService } from './tenant.service';
 import { BranchService } from './branch.service';
@@ -35,6 +37,11 @@ import { AdminNotificationModule } from '../admin-notifications/admin-notificati
       TenantVerificationDocument,
       TenantApprovalEvent,
       Branch,
+      // Read-only here: BranchService only counts these to enforce safe
+      // deletion (staff assignments / upcoming appointments), it never
+      // mutates them — StaffModule/AppointmentModule own the write paths.
+      BranchUser,
+      Appointment,
     ]),
     // Provides UsageService for plan-limit enforcement (max_branches).
     SubscriptionBillingModule,

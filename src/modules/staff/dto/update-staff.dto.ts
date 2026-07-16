@@ -6,6 +6,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -26,10 +27,18 @@ export class UpdateStaffDto {
   @IsString()
   bio?: string;
 
-  @ApiPropertyOptional({ description: 'Avatar image URL.', example: 'https://cdn.example.com/staff/avatar-1.png' })
+  @ApiPropertyOptional({
+    description:
+      'Storage key of a new/replacement avatar from `POST /uploads` (docType `staff-avatar`), or `null` to remove the current avatar. Omit entirely to leave it unchanged.',
+    example: 'a1b2c3d4-0000-.../staff-avatar/8c2e0000-....jpg',
+    maxLength: 1024,
+    nullable: true,
+  })
   @IsOptional()
+  @ValidateIf((_object, value) => value !== null)
   @IsString()
-  avatarUrl?: string;
+  @MaxLength(1024)
+  avatarStorageKey?: string | null;
 
   @ApiPropertyOptional({
     description: 'Post-appointment buffer in minutes.',

@@ -28,6 +28,7 @@ import { WorkingHoursController } from './working-hours.controller';
 
 import { AuthModule } from '../auth/auth.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { StorageModule } from '../storage/storage.module';
 
 /**
  * Staff Domain.
@@ -45,8 +46,10 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
  *
  * Imports AuthModule (StaffService.createWithNewUser reuses
  * AuthService.createUserWithRole — the same account/role creation logic
- * `POST /auth/register-user` uses) and SubscriptionBillingModule (UsageService,
- * for the same `max_users` plan-limit check).
+ * `POST /auth/register-user` uses — and RolesService for dynamic staff-role
+ * assignability), SubscriptionBillingModule (UsageService, for the same
+ * `max_users` plan-limit check), and StorageModule (StorageService, to
+ * validate/resolve R2-backed avatar uploads via `POST /uploads`).
  */
 @Module({
   imports: [
@@ -66,6 +69,7 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
     ]),
     AuthModule,
     SubscriptionBillingModule,
+    StorageModule,
   ],
   controllers: [StaffController, WorkingHoursController],
   providers: [
