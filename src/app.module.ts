@@ -33,6 +33,7 @@ import { GuestChatModule } from './modules/guest-chat/guest-chat.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
+import { SupportTicketsModule } from './modules/support-tickets/support-tickets.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
@@ -93,6 +94,7 @@ import { validate } from './config/env.validation';
     WorkflowModule,
     PaymentsModule,
     CrmModule,
+    SupportTicketsModule,
     AnalyticsModule,
     PlatformModule,
     SchedulingModule,
