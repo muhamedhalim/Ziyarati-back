@@ -7,6 +7,7 @@ import { AppError, ErrorCode } from '../../../common/errors';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
 import {
   WHATSAPP_ACCOUNT_MODE,
+  WHATSAPP_CONNECTION_STATUS,
   WhatsappAccountMode,
 } from '../whatsapp.constants';
 
@@ -66,9 +67,15 @@ export class WhatsappAccountResolver {
         message: 'WhatsApp account is not active',
       });
     }
+    if (account.connection_status !== WHATSAPP_CONNECTION_STATUS.CONNECTED) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: this.disconnectedMessage(account.connection_status),
+      });
+    }
     if (this.isTokenExpired(account)) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'WhatsApp account access token has expired',
+        message:
+          'This WhatsApp connection has expired. Reauthorize your Meta connection to resume sending.',
       });
     }
     return this.fromEntity(account);
@@ -141,22 +148,56 @@ export class WhatsappAccountResolver {
 
   /**
    * The tenant's live accounts that could actually send, oldest first.
-   * "Usable" means: active, not soft-deleted, credential present and unexpired,
-   * and a phone number to send from.
+   *
+   * PUBLIC because it is the single definition of "sendable", shared by the
+   * send path and by the eligible-accounts endpoint the campaign UI reads. If
+   * the UI derived eligibility separately it would inevitably drift, and offer
+   * the user a number the sender then refuses.
    */
-  private async usableAccounts(tenantId: string): Promise<WhatsappAccount[]> {
+  async usableAccounts(tenantId: string): Promise<WhatsappAccount[]> {
     const candidates = await this.accounts.find({
       where: { tenant: { id: tenantId }, is_active: true, deleted_at: IsNull() },
       order: { created_at: 'ASC' },
     });
 
-    return candidates.filter((account) => {
-      if (this.isTokenExpired(account)) {
-        this.logger.warn(`Skipping WhatsApp account ${account.id}: access token expired`);
-        return false;
-      }
-      return !!account.phone_number_id && !!account.access_token;
-    });
+    return candidates.filter((account) => this.isSendable(account));
+  }
+
+  /**
+   * Whether this row may send RIGHT NOW.
+   *
+   * `connection_status` is checked here, not just `is_active`: they answer
+   * different questions (Meta's view vs. the operator's switch). Without this a
+   * DISCONNECTED or REVOKED account whose credentials are still on the row —
+   * and disconnect deliberately keeps them, so a reconnect is cheap — would
+   * keep sending, which is exactly what "disconnect" must prevent.
+   */
+  private isSendable(account: WhatsappAccount): boolean {
+    if (!account.is_active) return false;
+    if (account.connection_status !== WHATSAPP_CONNECTION_STATUS.CONNECTED) {
+      this.logger.warn(
+        `Skipping WhatsApp account ${account.id}: connection is ${account.connection_status}`,
+      );
+      return false;
+    }
+    if (this.isTokenExpired(account)) {
+      this.logger.warn(`Skipping WhatsApp account ${account.id}: access token expired`);
+      return false;
+    }
+    return !!account.phone_number_id && !!account.access_token;
+  }
+
+  /** Clinic-facing wording for a non-CONNECTED account (no provider internals). */
+  private disconnectedMessage(status: string): string {
+    switch (status) {
+      case WHATSAPP_CONNECTION_STATUS.EXPIRED:
+      case WHATSAPP_CONNECTION_STATUS.REVOKED:
+        return 'This WhatsApp connection is no longer authorized. Reauthorize your Meta connection to resume sending.';
+      case WHATSAPP_CONNECTION_STATUS.DISCONNECTED:
+        return 'This WhatsApp account is disconnected. Reconnect it to resume sending.';
+      default:
+        return 'This WhatsApp account is not connected yet. Complete the WhatsApp connection to start sending.';
+    }
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -176,13 +217,9 @@ export class WhatsappAccountResolver {
       },
     });
     if (!account) return null;
-    if (this.isTokenExpired(account)) {
-      this.logger.warn(
-        `Skipping ${mode} WhatsApp account ${account.id}: access token expired`,
-      );
-      return null;
-    }
-    return account;
+    // Same sendability rules as every other path — a disconnected branch number
+    // must fall through to the tenant default, not silently fail the send.
+    return this.isSendable(account) ? account : null;
   }
 
   private isTokenExpired(account: WhatsappAccount): boolean {

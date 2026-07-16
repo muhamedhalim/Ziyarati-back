@@ -5,8 +5,11 @@ import { DefaultJobOptions } from 'bullmq';
 export const QUEUE = {
   NOTIFICATIONS: 'notifications',
   NOTIFICATIONS_DLQ: 'notifications.dlq',
-  /** Outbound sends (template + session). Historically just `whatsapp`. */
-  WHATSAPP: 'whatsapp',
+  /**
+   * Outbound sends (template + session). Named for its DIRECTION so it reads as
+   * a peer of the inbound queues below rather than the catch-all "whatsapp".
+   */
+  WHATSAPP_OUTBOUND: 'whatsapp-outbound',
   /**
    * Inbound Meta events. Separate from outbound on purpose: a backlog of
    * inbound traffic must never delay appointment reminders going out, and the

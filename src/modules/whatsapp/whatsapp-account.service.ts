@@ -1,12 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, IsNull, Not, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, In, IsNull, Not, Repository } from 'typeorm';
 
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
+import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
 import { CreateWhatsappAccountDto } from './dto/create-whatsapp-account.dto';
 import { UpdateWhatsappAccountDto } from './dto/update-whatsapp-account.dto';
 import { WhatsappAccountFilterDto } from './dto/whatsapp-account-filter.dto';
@@ -32,10 +33,13 @@ import {
  */
 @Injectable()
 export class WhatsappAccountService {
+  private readonly logger = new Logger('WhatsappAccountService');
+
   constructor(
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
+    private readonly resolver: WhatsappAccountResolver,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -80,6 +84,27 @@ export class WhatsappAccountService {
   async findOne(tenantId: string, id: string) {
     const account = await this.loadEntity(tenantId, id);
     return this.toView(account);
+  }
+
+  /**
+   * The tenant's accounts that can actually send right now — what a campaign's
+   * "send from" picker must offer.
+   *
+   * Delegates to WhatsappAccountResolver.usableAccounts rather than re-deriving
+   * eligibility: if the UI applied its own rules they would drift, and the user
+   * would be offered a number the sender then rejects. One definition, two
+   * readers.
+   */
+  async findEligible(tenantId: string) {
+    const usable = await this.resolver.usableAccounts(tenantId);
+    // `usableAccounts` doesn't join the branch (the send path doesn't need it),
+    // but the picker shows branch labels — so reload with the relation.
+    const withBranch = await this.accounts.find({
+      where: { id: In(usable.map((a) => a.id)) },
+      relations: { branch: true },
+      order: { is_default: 'DESC', created_at: 'ASC' },
+    });
+    return withBranch.map((a) => this.toView(a));
   }
 
   async update(tenantId: string, id: string, dto: UpdateWhatsappAccountDto) {
@@ -135,6 +160,35 @@ export class WhatsappAccountService {
       );
       await mgr.update(WhatsappAccount, { id }, { is_default: true });
     });
+    return this.findOne(tenantId, id);
+  }
+
+  /**
+   * Disconnects a number: it stops sending immediately, but nothing is lost.
+   *
+   * What this deliberately does NOT do:
+   *  - it does not delete the row, so conversations, messages, campaigns and
+   *    audit history that reference this account stay intact and readable;
+   *  - it does not clear `access_token`. Reconnecting re-runs Embedded Signup
+   *    and overwrites the credential anyway, so wiping it here would buy no
+   *    security while making a "did the disconnect work?" diagnosis harder.
+   *    Sending is blocked by `connection_status`, not by the absence of a token
+   *    (WhatsappAccountResolver.isSendable) — the credential is encrypted at
+   *    rest either way.
+   *
+   * It DOES clear `is_default`: a number that cannot send must never be the one
+   * everything else silently falls back to.
+   *
+   * Idempotent — disconnecting an already-disconnected account is a no-op.
+   */
+  async disconnect(tenantId: string, id: string) {
+    const account = await this.loadEntity(tenantId, id);
+
+    account.connection_status = WHATSAPP_CONNECTION_STATUS.DISCONNECTED;
+    account.is_default = false;
+    await this.accounts.save(account);
+
+    this.logger.log(`Tenant ${tenantId} disconnected WhatsApp account ${id}`);
     return this.findOne(tenantId, id);
   }
 

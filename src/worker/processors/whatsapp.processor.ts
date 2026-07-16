@@ -15,7 +15,7 @@ import { SendTemplateMessageDto } from '../../modules/whatsapp/dto/send-template
  * validates account/template/recipient and records the outcome on notification
  * logs. Retries are driven by BullMQ attempts/backoff.
  */
-@Processor(QUEUE.WHATSAPP, { concurrency: workerConcurrency() })
+@Processor(QUEUE.WHATSAPP_OUTBOUND, { concurrency: workerConcurrency() })
 export class WhatsappProcessor extends WorkerHost {
   private readonly logger = new Logger('WhatsappProcessor');
 

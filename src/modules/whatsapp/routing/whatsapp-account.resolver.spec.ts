@@ -5,7 +5,7 @@ import { WhatsappAccountResolver } from './whatsapp-account.resolver';
 import { WhatsappAccount } from '../../../entities/WhatsApp/WhatsappAccount';
 import { ErrorCode } from '../../../common/errors';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
-import { WHATSAPP_ACCOUNT_MODE } from '../whatsapp.constants';
+import { WHATSAPP_ACCOUNT_MODE, WHATSAPP_CONNECTION_STATUS } from '../whatsapp.constants';
 import { createMockRepository, MockRepository } from '../../../../test/utils/mock-factories';
 
 const TENANT = 't1';
@@ -19,6 +19,7 @@ function account(overrides: Partial<WhatsappAccount> = {}): WhatsappAccount {
     waba_id: 'waba-1',
     access_token: 'enc(token-1)',
     is_active: true,
+    connection_status: WHATSAPP_CONNECTION_STATUS.CONNECTED,
     ...overrides,
   } as WhatsappAccount;
 }
@@ -199,6 +200,91 @@ describe('WhatsappAccountResolver', () => {
         tenant: { id: TENANT },
         is_active: true,
       });
+    });
+  });
+
+  describe('disconnect is enforced on the SEND path', () => {
+    it.each([
+      WHATSAPP_CONNECTION_STATUS.DISCONNECTED,
+      WHATSAPP_CONNECTION_STATUS.REVOKED,
+      WHATSAPP_CONNECTION_STATUS.EXPIRED,
+      WHATSAPP_CONNECTION_STATUS.PENDING,
+    ])('refuses to send from a %s account', async (status) => {
+      // Disconnect deliberately KEEPS the credentials on the row, so blocking
+      // must come from connection_status — not from a missing token.
+      accounts.findOne.mockResolvedValueOnce(account({ connection_status: status }));
+
+      await expect(resolver.byId(TENANT, 'acc-1')).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+    });
+
+    it('excludes a disconnected account from the tenant\'s usable set', async () => {
+      accounts.find.mockResolvedValueOnce([
+        account({ id: 'disconnected', connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED }),
+        account({ id: 'live' }),
+      ]);
+
+      expect((await resolver.forTenant(TENANT)).id).toBe('live');
+    });
+
+    it('ignores a disconnected DEFAULT rather than sending through it', async () => {
+      accounts.find.mockResolvedValueOnce([
+        account({
+          id: 'default-but-dead',
+          is_default: true,
+          connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED,
+        }),
+        account({ id: 'live' }),
+      ]);
+
+      expect((await resolver.forTenant(TENANT)).id).toBe('live');
+    });
+
+    it('falls through to the tenant default when the BRANCH number is disconnected', async () => {
+      accounts.findOne
+        .mockResolvedValueOnce(
+          account({ connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED }),
+        )
+        .mockResolvedValueOnce(null);
+      accounts.find.mockResolvedValueOnce([account({ id: 'tenant-default' })]);
+
+      expect((await resolver.forBranch(TENANT, 'b-1')).id).toBe('tenant-default');
+    });
+
+    it('throws when every account is disconnected', async () => {
+      accounts.find.mockResolvedValueOnce([
+        account({ connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED }),
+      ]);
+
+      await expect(resolver.forTenant(TENANT)).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+    });
+
+    it('tells the clinic to reconnect, without exposing provider internals', async () => {
+      accounts.findOne.mockResolvedValueOnce(
+        account({ connection_status: WHATSAPP_CONNECTION_STATUS.REVOKED }),
+      );
+
+      await expect(resolver.byId(TENANT, 'acc-1')).rejects.toThrow(/reauthorize/i);
+    });
+  });
+
+  describe('usableAccounts (shared with the eligible-accounts endpoint)', () => {
+    it('returns only accounts that can actually send', async () => {
+      accounts.find.mockResolvedValueOnce([
+        account({ id: 'live' }),
+        account({ id: 'inactive', is_active: false }),
+        account({ id: 'disconnected', connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED }),
+        account({ id: 'expired', token_expires_at: new Date(Date.now() - 1000) }),
+        account({ id: 'no-token', access_token: undefined }),
+      ]);
+
+      const usable = await resolver.usableAccounts(TENANT);
+
+      // The campaign picker reads this, so it must agree with the sender exactly.
+      expect(usable.map((a) => a.id)).toEqual(['live']);
     });
   });
 

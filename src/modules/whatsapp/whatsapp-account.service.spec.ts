@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
 import { WhatsappAccountService } from './whatsapp-account.service';
+import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { ErrorCode } from '../../common/errors';
@@ -23,12 +24,16 @@ describe('WhatsappAccountService', () => {
   let service: WhatsappAccountService;
   let accounts: MockRepository;
   let branches: MockRepository;
+  let resolver: { usableAccounts: jest.Mock };
   let dataSource: ReturnType<typeof createMockDataSource>;
 
   beforeEach(async () => {
     accounts = createMockRepository();
     branches = createMockRepository();
     branches.exists.mockResolvedValue(true);
+    // `findEligible` delegates here so eligibility has ONE definition shared
+    // with the send path.
+    resolver = { usableAccounts: jest.fn().mockResolvedValue([]) };
     dataSource = createMockDataSource();
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -36,6 +41,7 @@ describe('WhatsappAccountService', () => {
         WhatsappAccountService,
         { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
         { provide: getRepositoryToken(Branch), useValue: branches },
+        { provide: WhatsappAccountResolver, useValue: resolver },
         { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
@@ -208,6 +214,110 @@ describe('WhatsappAccountService', () => {
       });
 
       expect((await service.connectionStatus(TENANT, 'acc-1')).connected).toBe(false);
+    });
+  });
+
+  describe('disconnect', () => {
+    const connected = () => ({
+      id: 'acc-1',
+      branch: null,
+      is_active: true,
+      is_default: true,
+      access_token: 'enc:v1:secret',
+      connection_status: WHATSAPP_CONNECTION_STATUS.CONNECTED,
+    });
+
+    it('marks the account DISCONNECTED so the sender refuses it', async () => {
+      accounts.findOne.mockResolvedValue(connected());
+
+      await service.disconnect(TENANT, 'acc-1');
+
+      expect(accounts.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED,
+        }),
+      );
+    });
+
+    it('stops the account being the default', async () => {
+      accounts.findOne.mockResolvedValue(connected());
+
+      await service.disconnect(TENANT, 'acc-1');
+
+      // A number that cannot send must not be what everything falls back to.
+      expect(accounts.save).toHaveBeenCalledWith(
+        expect.objectContaining({ is_default: false }),
+      );
+    });
+
+    it('PRESERVES the row and its history — it is not a delete', async () => {
+      accounts.findOne.mockResolvedValue(connected());
+
+      await service.disconnect(TENANT, 'acc-1');
+
+      // Conversations/campaigns/audit rows reference this account.
+      expect(accounts.softRemove).not.toHaveBeenCalled();
+      expect(accounts.delete).not.toHaveBeenCalled();
+    });
+
+    it('keeps the credential (blocking comes from status, not a wiped token)', async () => {
+      accounts.findOne.mockResolvedValue(connected());
+
+      await service.disconnect(TENANT, 'acc-1');
+
+      // Reconnect overwrites it anyway; wiping here buys nothing and makes
+      // diagnosing a failed disconnect harder. It stays encrypted at rest.
+      expect(accounts.save).toHaveBeenCalledWith(
+        expect.objectContaining({ access_token: 'enc:v1:secret' }),
+      );
+    });
+
+    it('is tenant-scoped — another tenant\'s account is a 404', async () => {
+      accounts.findOne.mockResolvedValueOnce(null);
+      await expect(service.disconnect(TENANT, 'foreign')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+    });
+
+    it('is idempotent for an already-disconnected account', async () => {
+      accounts.findOne.mockResolvedValue({
+        ...connected(),
+        is_default: false,
+        connection_status: WHATSAPP_CONNECTION_STATUS.DISCONNECTED,
+      });
+
+      await expect(service.disconnect(TENANT, 'acc-1')).resolves.toBeDefined();
+    });
+  });
+
+  describe('findEligible', () => {
+    it('delegates eligibility to the resolver — one definition, two readers', async () => {
+      resolver.usableAccounts.mockResolvedValueOnce([{ id: 'acc-1' }]);
+      accounts.find.mockResolvedValueOnce([{ id: 'acc-1', branch: null }]);
+
+      await service.findEligible(TENANT);
+
+      // If the UI applied its own rules they would drift from the sender's.
+      expect(resolver.usableAccounts).toHaveBeenCalledWith(TENANT);
+    });
+
+    it('returns SAFE views only (no access token)', async () => {
+      resolver.usableAccounts.mockResolvedValueOnce([{ id: 'acc-1' }]);
+      accounts.find.mockResolvedValueOnce([
+        { id: 'acc-1', branch: null, access_token: 'enc:v1:secret' },
+      ]);
+
+      const [view] = (await service.findEligible(TENANT)) as Record<string, unknown>[];
+
+      expect(view.access_token).toBeUndefined();
+      expect(view.hasCredentials).toBe(true);
+    });
+
+    it('returns an empty list when nothing can send', async () => {
+      resolver.usableAccounts.mockResolvedValueOnce([]);
+      accounts.find.mockResolvedValueOnce([]);
+
+      await expect(service.findEligible(TENANT)).resolves.toEqual([]);
     });
   });
 

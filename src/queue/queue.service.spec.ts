@@ -90,8 +90,8 @@ describe('QueueService (producer facade)', () => {
 
   describe('typed producers route to the correct queue', () => {
     it.each<[string, () => Promise<unknown>, QueueName]>([
-      ['whatsapp send', () => service.enqueueWhatsappSend({ tenantId: 't1' } as any), QUEUE.WHATSAPP],
-      ['whatsapp retry', () => service.enqueueWhatsappRetry({ tenantId: 't1' } as any), QUEUE.WHATSAPP],
+      ['whatsapp send', () => service.enqueueWhatsappSend({ tenantId: 't1' } as any), QUEUE.WHATSAPP_OUTBOUND],
+      ['whatsapp retry', () => service.enqueueWhatsappRetry({ tenantId: 't1' } as any), QUEUE.WHATSAPP_OUTBOUND],
       ['campaign launch', () => service.enqueueCampaignLaunch({ runId: 'r1' } as any), QUEUE.CAMPAIGNS_LAUNCH],
       ['campaign fanout', () => service.enqueueCampaignFanoutChunk({ runId: 'r1' } as any), QUEUE.CAMPAIGNS_FANOUT],
       ['ai execute', () => service.enqueueAiExecute({ tenantId: 't1' } as any), QUEUE.AI],

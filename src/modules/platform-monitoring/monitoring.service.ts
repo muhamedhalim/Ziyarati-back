@@ -231,9 +231,18 @@ export class MonitoringService {
     const has = (k: string) => !!this.config.get<string>(k);
     return [
       {
-        name: 'WhatsApp (Meta Cloud)',
-        status: has('WHATSAPP_ACCESS_TOKEN') && has('WHATSAPP_PHONE_NUMBER_ID') ? 'configured' : 'not_configured',
-        detail: 'Platform number token + phone id',
+        name: 'WhatsApp (Meta Tech Provider)',
+        // Checks the platform META APP, which is all that is configurable here:
+        // clinics connect their own WABA/number/token via Embedded Signup, and
+        // those live on whatsapp_accounts, not in env. (This previously probed
+        // WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID — the shared-number
+        // vars removed with the PLATFORM_ENV fallback — so it always reported
+        // "not_configured" regardless of the real state.)
+        status:
+          has('META_APP_ID') && (has('META_APP_SECRET') || has('WHATSAPP_APP_SECRET'))
+            ? 'configured'
+            : 'not_configured',
+        detail: 'Platform Meta App (tenants connect their own WABA via Embedded Signup)',
       },
       { name: 'AI (OpenAI)', status: has('OPENAI_API_KEY') ? 'configured' : 'not_configured', detail: 'Chat + embeddings' },
       { name: 'Payment Gateway (Moyasar)', status: has('MOYASAR_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },

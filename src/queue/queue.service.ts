@@ -95,11 +95,11 @@ export class QueueService {
   }
 
   enqueueWhatsappSend(data: WhatsappSendJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WHATSAPP, JOB.WHATSAPP_SEND, data, opts);
+    return this.add(QUEUE.WHATSAPP_OUTBOUND, JOB.WHATSAPP_SEND, data, opts);
   }
 
   enqueueWhatsappRetry(data: WhatsappSendJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WHATSAPP, JOB.WHATSAPP_RETRY, data, opts);
+    return this.add(QUEUE.WHATSAPP_OUTBOUND, JOB.WHATSAPP_RETRY, data, opts);
   }
 
   /**

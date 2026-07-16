@@ -134,6 +134,36 @@ against the tenant.
   }
 
   @ApiOperation({
+    summary: 'List accounts eligible to send right now',
+    description: `
+**Protected — requires \`whatsapp.accounts.read\`. Clinic active.**
+
+Returns only the clinic's numbers that can actually send: connected, active,
+credentialed and unexpired. This is what a campaign's "send from" picker offers.
+
+**Why a dedicated endpoint:** eligibility is decided by the SAME rule the sender
+uses (\`WhatsappAccountResolver.usableAccounts\`). If the UI filtered
+\`GET /whatsapp/accounts\` with its own rules the two would drift, and the user
+would be offered a number the send path then rejects.
+
+**Tenant scoping:** only the caller's own accounts. Access tokens never returned.
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Accounts that can send. Empty when nothing is connected.',
+    schema: { type: 'array', items: S_ACCOUNT },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.', schema: S_ERROR })
+  // MUST stay above `@Get(':id')`: Nest matches in declaration order, so a
+  // literal route declared after the param route would be parsed as a UUID.
+  @Get('eligible')
+  @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_READ)
+  findEligible() {
+    return this.accounts.findEligible(this.ctx.requireTenantId());
+  }
+
+  @ApiOperation({
     summary: 'Get account details',
     description: `**Protected — requires \`whatsapp.accounts.read\`. Clinic must be active.** A foreign-tenant account returns 404. Token omitted.`,
   })
@@ -216,6 +246,38 @@ against the tenant.
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
   deactivate(@Param('id', ParseUUIDPipe) id: string) {
     return this.accounts.setActive(this.ctx.requireTenantId(), id, false);
+  }
+
+  @ApiOperation({
+    summary: 'Disconnect this WhatsApp number',
+    description: `
+**Protected — \`whatsapp.accounts.manage\`. Clinic active.**
+
+Stops this number sending immediately: outgoing messages and campaign dispatch
+through it are refused, and it stops being the clinic's default.
+
+**Nothing is lost.** Conversations, messages, campaigns and audit history that
+reference the account are preserved — the row is not deleted. Reconnecting is a
+single Embedded Signup run (\`POST /whatsapp/onboarding/complete\` with the same
+number), which re-validates the WABA with Meta, re-subscribes the webhook and
+replaces the credential.
+
+To remove the account entirely instead, use \`DELETE /whatsapp/accounts/:id\`
+(soft-delete), which also frees the phone number to be connected elsewhere.
+
+Idempotent: disconnecting an already-disconnected account succeeds.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Account disconnected.', schema: S_ACCOUNT })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
+  @Post(':id/disconnect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
+  disconnect(@Param('id', ParseUUIDPipe) id: string) {
+    return this.accounts.disconnect(this.ctx.requireTenantId(), id);
   }
 
   @ApiOperation({
