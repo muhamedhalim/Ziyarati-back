@@ -218,7 +218,37 @@ against the tenant.
     return this.accounts.setActive(this.ctx.requireTenantId(), id, false);
   }
 
-  @ApiOperation({ summary: 'Delete account (soft)', description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Soft-deletes the account (sets \`deleted_at\`).` })
+  @ApiOperation({
+    summary: 'Make this the clinic\'s default sending number',
+    description: `
+**Protected — \`whatsapp.accounts.manage\`. Clinic active.**
+
+Sets this account as the clinic's default: the number used whenever nothing more
+specific applies (no explicit account on the request, and no branch-specific
+number for the branch in play).
+
+A clinic has AT MOST ONE default — setting a new one clears the previous, in a
+single transaction. Making the choice explicit is what replaced the platform
+implicitly guessing (oldest row wins) which number a clinic messages patients
+from.
+
+**Failure:** 422 if the account is inactive — a switched-off number cannot be
+the one everything else falls back to.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Account is now the default.', schema: S_ACCOUNT })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
+  @Post(':id/default')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
+  setDefault(@Param('id', ParseUUIDPipe) id: string) {
+    return this.accounts.setDefault(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({ summary: 'Delete account (soft)', description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Soft-deletes the account (sets \`deleted_at\`). Frees the phone number for reconnection.` })
   @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
   @ApiNoContentResponse({ description: 'Account deleted.' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })

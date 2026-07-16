@@ -15,6 +15,12 @@ export interface CampaignDeliveryPayload {
   customerId: string;
   /** Reference to the WhatsApp/notification template, if any. */
   templateId?: string;
+  /**
+   * The account/number to send FROM, when the campaign names one. Omitted for
+   * campaigns created before that binding existed — the provider then falls
+   * back to the tenant's default account.
+   */
+  accountId?: string;
   /** Campaign segment/personalization data (no secrets). */
   metadata?: Record<string, unknown>;
 }

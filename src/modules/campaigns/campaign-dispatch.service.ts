@@ -117,7 +117,17 @@ export class CampaignDispatchService {
     });
     if (!recipient) return { status: 'noop', reason: 'recipient-vanished' };
 
-    // 2b. Per-tenant rate limit + daily/monthly caps.
+    // 2b. CONSENT — checked here, immediately before the send, not (only) when
+    // the audience was built. A customer who opts out after launch must not
+    // receive the message still sitting in the queue, and WhatsApp marketing
+    // rules make sending anyway a compliance problem, not just a UX one.
+    const consent = this.checkConsent(recipient.customer);
+    if (!consent.allowed) {
+      await this.markSkipped(runId, recipientId, consent.reason);
+      return { status: 'skipped', reason: consent.reason };
+    }
+
+    // 2c. Per-tenant rate limit + daily/monthly caps.
     const campaign = await this.campaigns.findOne({
       where: { id: recipient.campaign.id },
       select: {
@@ -126,6 +136,8 @@ export class CampaignDispatchService {
         daily_cap: true,
         monthly_cap: true,
       },
+      // The number this campaign sends from — validated at launch, honoured here.
+      relations: { whatsapp_account: true },
     });
     const decision = await this.rateLimiter.consume(tenantId, recipient.campaign.id, {
       ratePerMinute: campaign?.throttle_per_minute ?? 30,
@@ -155,6 +167,7 @@ export class CampaignDispatchService {
         recipientId: recipient.id,
         customerId: recipient.customer.id,
         templateId: recipient.campaign.template?.id,
+        accountId: campaign?.whatsapp_account?.id,
       });
     } catch (err) {
       // Unexpected throw from the provider → treat as transient.
@@ -207,6 +220,31 @@ export class CampaignDispatchService {
   ): Promise<void> {
     await this.markTerminalFailed(runId, recipientId, FailureClass.TRANSIENT, reason);
     await this.checkCompletion(runId);
+  }
+
+  /**
+   * Whether this customer may receive a campaign message right now.
+   *
+   * Campaigns are business-INITIATED marketing, so WhatsApp's rules (and basic
+   * decency) require prior opt-in. Skipping is deliberately a terminal SKIPPED
+   * outcome rather than a failure: not-consenting is a correct, expected result
+   * that should complete the run, not retry against it.
+   *
+   * A missing phone is treated the same way — there is nothing to send to, and
+   * retrying cannot conjure a number.
+   */
+  private checkConsent(customer?: {
+    marketing_opt_in?: boolean;
+    is_active?: boolean;
+    phone?: string;
+  }): { allowed: true } | { allowed: false; reason: string } {
+    if (!customer) return { allowed: false, reason: 'customer-missing' };
+    if (customer.marketing_opt_in !== true) {
+      return { allowed: false, reason: 'no-marketing-consent' };
+    }
+    if (customer.is_active === false) return { allowed: false, reason: 'customer-inactive' };
+    if (!customer.phone) return { allowed: false, reason: 'customer-has-no-phone' };
+    return { allowed: true };
   }
 
   // ──────────────────────────── persistence steps ─────────────────────────── //

@@ -1,36 +1,40 @@
-import {
-  IsBoolean,
-  IsISO8601,
-  IsIn,
-  IsOptional,
-  IsString,
-  IsUUID,
-  MaxLength,
-} from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsBoolean, IsIn, IsOptional, IsUUID } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   WHATSAPP_ACCOUNT_MODE,
   WHATSAPP_ACCOUNT_MODES,
 } from '../whatsapp.constants';
 
 /**
- * Creates a WhatsApp business account for one branch of the caller's tenant.
- * The tenant comes from the authenticated principal — there is no tenantId
- * field. One account per branch (unique), validated against the tenant.
+ * Creates a placeholder WhatsApp account slot for the caller's clinic.
+ *
+ * SECURITY — what this DTO deliberately does NOT accept:
+ *   `accessToken`, `wabaId`, `phoneNumberId`.
+ *
+ * Those are established EXCLUSIVELY by Meta Embedded Signup
+ * (`POST /whatsapp/onboarding/complete`), where the backend mints the credential
+ * from a short-lived code and verifies with Meta that the token really controls
+ * the WABA and number being claimed. Accepting them here would mean trusting the
+ * client's word for both the credential and the ownership of a phone number —
+ * the number that inbound webhooks use to decide which tenant a patient's
+ * message belongs to. A permanent Meta token must never transit the frontend.
+ *
+ * The tenant comes from the authenticated principal — there is no tenantId.
  */
 export class CreateWhatsappAccountDto {
-  @ApiProperty({
-    description: 'Branch this WhatsApp account belongs to. Must belong to the caller\'s tenant. One account per branch.',
+  @ApiPropertyOptional({
+    description:
+      'Bind this account to a branch. Omit for a TENANT-LEVEL account usable by every branch.',
     format: 'uuid',
     example: 'c1d2e3f4-0000-0000-0000-000000000010',
   })
+  @IsOptional()
   @IsUUID()
-  branchId!: string;
+  branchId?: string;
 
   @ApiPropertyOptional({
     description:
-      'Account mode. `CUSTOM` = the clinic\'s own WhatsApp number (default). ' +
-      '`PLATFORM` = bind the branch to the shared SaaS number. A branch may have one of each.',
+      'Account mode. `CUSTOM` = the clinic\'s own WhatsApp number (default). `PLATFORM` = a platform-provisioned account for this tenant (still tenant-owned; the platform operates no shared number).',
     enum: WHATSAPP_ACCOUNT_MODES,
     default: WHATSAPP_ACCOUNT_MODE.CUSTOM,
     example: WHATSAPP_ACCOUNT_MODE.CUSTOM,
@@ -40,42 +44,13 @@ export class CreateWhatsappAccountDto {
   mode?: string;
 
   @ApiPropertyOptional({
-    description: 'Meta phone number id for this WhatsApp number.',
-    example: '1234567890',
-    maxLength: 100,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  phoneNumberId?: string;
-
-  @ApiPropertyOptional({
-    description: 'WhatsApp Business Account (WABA) id.',
-    example: '9876543210',
-    maxLength: 100,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  wabaId?: string;
-
-  @ApiPropertyOptional({
     description:
-      'Provider access token (write-only secret). It is stored encrypted-at-rest by infrastructure, NEVER returned in responses, and redacted in logs.',
-    example: 'EAAG...redacted',
+      'Make this the clinic\'s default sending number. At most one default per clinic — setting this unsets the previous one.',
+    example: false,
   })
   @IsOptional()
-  @IsString()
-  accessToken?: string;
-
-  @ApiPropertyOptional({
-    description:
-      'Access-token expiry (ISO-8601). Recommended for rotated System User tokens so the platform can detect/replace expiring credentials.',
-    example: '2026-12-31T00:00:00Z',
-  })
-  @IsOptional()
-  @IsISO8601()
-  tokenExpiresAt?: string;
+  @IsBoolean()
+  isDefault?: boolean;
 
   @ApiPropertyOptional({
     description: 'Whether the account is active. Defaults to true.',

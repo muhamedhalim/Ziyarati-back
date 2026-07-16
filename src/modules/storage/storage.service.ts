@@ -13,10 +13,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AppError, ErrorCode } from '../../common/errors';
 import {
   DEFAULT_SIGNED_URL_TTL_SECONDS,
-  assertMagicBytes,
-  extensionForMime,
+  DOCUMENT_UPLOAD_POLICY,
+  UploadPolicy,
+  assertPolicyContent,
   extensionMatchesMime,
-  isAllowedMime,
+  policyAllowsMime,
+  policyExtensionForMime,
   sha256Hex,
 } from './storage.constants';
 
@@ -129,13 +131,19 @@ export class StorageService {
     return cleaned.slice(0, 200) || 'file';
   }
 
-  private buildKey(tenantId: string, docType: string, mimeType: string): string {
-    const ext = extensionForMime(mimeType);
+  private buildKey(
+    tenantId: string,
+    docType: string,
+    mimeType: string,
+    policy: UploadPolicy = DOCUMENT_UPLOAD_POLICY,
+  ): string {
+    const ext = policyExtensionForMime(policy, mimeType);
     if (!ext) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: `Unsupported file type "${mimeType}".`,
       });
     }
+    // The tenant prefix is the isolation boundary — see assertKeyBelongsToTenant.
     return `${tenantId}/${this.slug(docType)}/${randomUUID()}.${ext}`;
   }
 
@@ -155,13 +163,30 @@ export class StorageService {
 
   // ─────────────────────────── Operations ────────────────────────────────── //
 
-  async upload(input: PutObjectInput): Promise<StoredObject> {
-    if (!isAllowedMime(input.mimeType)) {
+  /**
+   * Stores an object under the tenant's prefix.
+   *
+   * `policy` decides what the object is ALLOWED to be. It defaults to
+   * DOCUMENT_UPLOAD_POLICY, so every existing caller (verification documents)
+   * keeps exactly its previous behaviour — four formats, magic-byte verified,
+   * extension must match. WhatsApp media passes WHATSAPP_MEDIA_UPLOAD_POLICY
+   * instead of loosening the document rules for everyone. See the policy
+   * docs in storage.constants.ts for why the two differ.
+   */
+  async upload(
+    input: PutObjectInput,
+    policy: UploadPolicy = DOCUMENT_UPLOAD_POLICY,
+  ): Promise<StoredObject> {
+    if (!policyAllowsMime(policy, input.mimeType)) {
+      const allowed = policy.allowedTypes.map((t) => t.mime).join(', ');
       throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: `Unsupported file type "${input.mimeType}". Allowed: PDF, PNG, JPEG, WEBP.`,
+        message: `Unsupported ${policy.name} type "${input.mimeType}". Allowed: ${allowed}.`,
       });
     }
-    if (!extensionMatchesMime(input.originalName, input.mimeType)) {
+    if (
+      policy.requireExtensionMatch &&
+      !extensionMatchesMime(input.originalName, input.mimeType)
+    ) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: 'File extension does not match its content type.',
       });
@@ -171,11 +196,11 @@ export class StorageService {
         message: 'Uploaded file is empty or corrupted.',
       });
     }
-    // Defeat content-type spoofing & corruption: the bytes must actually start
-    // with the declared format's signature.
-    assertMagicBytes(input.buffer, input.mimeType);
+    // Defeat content-type spoofing & corruption: where we know the format's
+    // signature the bytes must match it, under every policy.
+    assertPolicyContent(input.buffer, input.mimeType, policy);
 
-    const key = this.buildKey(input.tenantId, input.docType, input.mimeType);
+    const key = this.buildKey(input.tenantId, input.docType, input.mimeType, policy);
     const sha256 = sha256Hex(input.buffer);
 
     await this.getClient().send(

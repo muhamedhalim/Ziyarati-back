@@ -4,6 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { CampaignService } from './campaign.service';
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
+import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { UsageService } from '../subscription-billing/usage.service';
 import { CampaignLifecycle } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
@@ -16,12 +17,15 @@ describe('CampaignService', () => {
   let service: CampaignService;
   let campaigns: MockRepository;
   let templates: MockRepository;
+  let accounts: MockRepository;
   let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock };
 
   beforeEach(async () => {
     campaigns = createMockRepository();
     templates = createMockRepository();
     templates.exists.mockResolvedValue(true);
+    accounts = createMockRepository();
+    accounts.exists.mockResolvedValue(true);
     usage = {
       assertWithinLimit: jest.fn().mockResolvedValue(undefined),
       increment: jest.fn().mockResolvedValue(undefined),
@@ -31,6 +35,7 @@ describe('CampaignService', () => {
         CampaignService,
         { provide: getRepositoryToken(Campaign), useValue: campaigns },
         { provide: getRepositoryToken(WhatsappTemplate), useValue: templates },
+        { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
         { provide: UsageService, useValue: usage },
       ],
     }).compile();

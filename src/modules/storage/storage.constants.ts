@@ -55,6 +55,125 @@ export function isAllowedMime(mime: string): boolean {
   return ALLOWED_MIME_TYPES.includes(mime);
 }
 
+// ─── Upload policies ────────────────────────────────────────────────────────
+
+/**
+ * An upload policy: what a given KIND of object is allowed to be.
+ *
+ * The bucket serves two very different populations of file, and collapsing them
+ * into one allow-list would mean loosening the strict one:
+ *
+ *  - DOCUMENT — tenant verification artefacts (CR, national ID, MoH licence).
+ *    Uploaded by users, legally significant, so: four formats only, every one
+ *    magic-byte verified, extension must agree with the MIME.
+ *
+ *  - WHATSAPP_MEDIA — files a patient sent to the clinic over WhatsApp.
+ *    Fetched by us from Meta's API over TLS with the tenant's bearer token, so
+ *    the file never transits an anonymous uploader and the declared MIME comes
+ *    from Meta, not from a client. The realistic threat is "a patient sent
+ *    something weird", not "an attacker is spoofing a content type at us".
+ *    The allow-list therefore covers the media WhatsApp actually carries, and
+ *    magic bytes are verified for every format we have a signature for
+ *    (`requireMagicBytes: false` means "verify when known", not "never check").
+ *    There is no filename/extension rule because WhatsApp media routinely
+ *    arrives with no filename at all.
+ */
+export interface UploadPolicy {
+  /** Human-readable name, used in error messages. */
+  readonly name: string;
+  readonly allowedTypes: readonly AllowedUploadType[];
+  /** When true, an unverifiable format is rejected outright. */
+  readonly requireMagicBytes: boolean;
+  /** When true, the original filename's extension must match the MIME. */
+  readonly requireExtensionMatch: boolean;
+}
+
+export const DOCUMENT_UPLOAD_POLICY: UploadPolicy = {
+  name: 'document',
+  allowedTypes: ALLOWED_UPLOAD_TYPES,
+  requireMagicBytes: true,
+  requireExtensionMatch: true,
+};
+
+/** Media types WhatsApp can deliver inbound. Executables/archives are absent by design. */
+export const WHATSAPP_MEDIA_UPLOAD_TYPES: readonly AllowedUploadType[] = [
+  { mime: 'image/jpeg', extensions: ['jpg', 'jpeg'] },
+  { mime: 'image/png', extensions: ['png'] },
+  { mime: 'image/webp', extensions: ['webp'] },
+  { mime: 'image/gif', extensions: ['gif'] },
+  { mime: 'application/pdf', extensions: ['pdf'] },
+  { mime: 'audio/aac', extensions: ['aac'] },
+  { mime: 'audio/mp4', extensions: ['m4a'] },
+  { mime: 'audio/mpeg', extensions: ['mp3'] },
+  { mime: 'audio/amr', extensions: ['amr'] },
+  { mime: 'audio/ogg', extensions: ['ogg'] },
+  { mime: 'video/mp4', extensions: ['mp4'] },
+  { mime: 'video/3gpp', extensions: ['3gp'] },
+  { mime: 'text/plain', extensions: ['txt'] },
+  { mime: 'application/msword', extensions: ['doc'] },
+  {
+    mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    extensions: ['docx'],
+  },
+  { mime: 'application/vnd.ms-excel', extensions: ['xls'] },
+  {
+    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    extensions: ['xlsx'],
+  },
+] as const;
+
+export const WHATSAPP_MEDIA_UPLOAD_POLICY: UploadPolicy = {
+  name: 'WhatsApp media',
+  allowedTypes: WHATSAPP_MEDIA_UPLOAD_TYPES,
+  requireMagicBytes: false,
+  requireExtensionMatch: false,
+};
+
+export function policyAllowsMime(policy: UploadPolicy, mime: string): boolean {
+  return policy.allowedTypes.some((t) => t.mime === mime);
+}
+
+/** Preferred storage extension for a MIME under a policy. */
+export function policyExtensionForMime(policy: UploadPolicy, mime: string): string | null {
+  return policy.allowedTypes.find((t) => t.mime === mime)?.extensions[0] ?? null;
+}
+
+/**
+ * Enforces a policy's content rules on a buffer.
+ *
+ * Magic bytes are checked whenever a signature is KNOWN, under every policy —
+ * a relaxed policy only decides what happens for formats we cannot verify
+ * (reject vs. accept), never whether to skip a check we could have made.
+ */
+export function assertPolicyContent(
+  buffer: Buffer,
+  mime: string,
+  policy: UploadPolicy,
+): void {
+  if (hasSignature(mime)) {
+    assertMagicBytes(buffer, mime);
+    return;
+  }
+  if (policy.requireMagicBytes) {
+    throw new AppError(ErrorCode.BAD_REQUEST, {
+      message: `File type "${mime}" cannot be content-verified and is not accepted.`,
+    });
+  }
+}
+
+/** True when `matchesSignature` knows this MIME's magic number. */
+export function hasSignature(mime: string): boolean {
+  return SIGNED_MIMES.has(mime);
+}
+
+const SIGNED_MIMES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+
 export function normalizeExtension(ext: string): string {
   return ext.toLowerCase().replace(/^\.+/, '');
 }
@@ -135,6 +254,16 @@ function matchesSignature(buf: Buffer, mime: string): boolean {
         buf[9] === 0x45 &&
         buf[10] === 0x42 &&
         buf[11] === 0x50
+      );
+    case 'image/gif':
+      // "GIF87a" / "GIF89a"
+      return (
+        buf[0] === 0x47 &&
+        buf[1] === 0x49 &&
+        buf[2] === 0x46 &&
+        buf[3] === 0x38 &&
+        (buf[4] === 0x37 || buf[4] === 0x39) &&
+        buf[5] === 0x61
       );
     default:
       return false;

@@ -22,7 +22,7 @@ describe('WhatsappMessageRouter', () => {
     expect(resolver.byId).not.toHaveBeenCalled();
   });
 
-  it('falls back to the platform number when neither account nor branch is given', async () => {
+  it('resolves the tenant default when neither account nor branch is given', async () => {
     await router.resolveForSend('tenant-1');
     expect(resolver.forBranch).toHaveBeenCalledWith('tenant-1', undefined);
   });

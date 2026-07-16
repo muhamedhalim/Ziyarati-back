@@ -25,6 +25,15 @@ export interface OrchestrateInput {
   useMemory?: boolean;
   /** Client-provided session updates (e.g. user picked a clinic in the UI). */
   sessionPatch?: Partial<AiSession>;
+  /**
+   * Provider facts about the inbound message, when it arrived over a real
+   * messaging channel (currently WhatsApp): the `wamid` and the media type.
+   *
+   * Set ONLY by trusted server-side bridges (the WhatsApp webhook worker) — it
+   * is not part of any HTTP-bound DTO, because `waMessageId` is a uniqueness /
+   * de-duplication key that a client must not be able to assert.
+   */
+  origin?: { waMessageId?: string; messageType?: string };
 }
 
 /**
@@ -99,7 +108,13 @@ export class AiOrchestratorService {
       await this.execution.recordInboundWhileHandedOver(tenantId, conversationId, input.content);
       return this.handedOverEnvelope(input.channel, conversationId, session, routedRole);
     }
-    const result = await this.execution.streamMessage(tenantId, conversationId, { content: input.content }, onToken);
+    const result = await this.execution.streamMessage(
+      tenantId,
+      conversationId,
+      { content: input.content },
+      onToken,
+      input.origin,
+    );
     return {
       channel: input.channel,
       aiConversationId: conversationId,

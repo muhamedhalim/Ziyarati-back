@@ -48,6 +48,18 @@ export class CreateCampaignDto {
   templateId?: string;
 
   @ApiPropertyOptional({
+    description:
+      'WhatsApp account (number) this campaign sends FROM. Must belong to the caller\'s tenant, ' +
+      'and the chosen template must live on the same WhatsApp Business Account. ' +
+      'Omit to use the clinic\'s default number at launch.',
+    format: 'uuid',
+    example: 'a1b2c3d4-0000-0000-0000-000000000500',
+  })
+  @IsOptional()
+  @IsUUID()
+  whatsappAccountId?: string;
+
+  @ApiPropertyOptional({
     description: 'Audience segmentation filter (JSON), e.g. `{ "tags": ["vip"], "lastVisitBeforeDays": 90 }`. Free-form, stored as JSONB.',
     type: 'object',
     additionalProperties: true,

@@ -4,6 +4,7 @@ import { FindOptionsWhere, ILike, IsNull, Repository } from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
+import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
 import { CampaignLifecycle } from '../../entities/enums';
@@ -35,6 +36,8 @@ export class CampaignService {
     private readonly campaigns: Repository<Campaign>,
     @InjectRepository(WhatsappTemplate)
     private readonly templates: Repository<WhatsappTemplate>,
+    @InjectRepository(WhatsappAccount)
+    private readonly accounts: Repository<WhatsappAccount>,
     private readonly usage: UsageService,
   ) {}
 
@@ -48,6 +51,7 @@ export class CampaignService {
     await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.CAMPAIGNS, 1);
 
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
+    if (dto.whatsappAccountId) await this.assertAccount(tenantId, dto.whatsappAccountId);
 
     const campaign = this.campaigns.create({
       tenant: { id: tenantId } as Tenant,
@@ -55,6 +59,9 @@ export class CampaignService {
       name: dto.name,
       template: dto.templateId
         ? ({ id: dto.templateId } as WhatsappTemplate)
+        : undefined,
+      whatsapp_account: dto.whatsappAccountId
+        ? ({ id: dto.whatsappAccountId } as WhatsappAccount)
         : undefined,
       lifecycle: CampaignLifecycle.DRAFT,
       segment: dto.segment,
@@ -179,6 +186,23 @@ export class CampaignService {
     if (!ok) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'WhatsApp template not found in this tenant',
+      });
+    }
+  }
+
+  /**
+   * Tenant-scoped existence check for the sending number. Whether the account
+   * is actually usable, and whether its WABA matches the template's, is decided
+   * at LAUNCH (CampaignExecutionService.assertSendable) — a draft may legitimately
+   * name a number that is not connected yet.
+   */
+  private async assertAccount(tenantId: string, accountId: string): Promise<void> {
+    const ok = await this.accounts.exists({
+      where: { id: accountId, tenant: { id: tenantId } },
+    });
+    if (!ok) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'WhatsApp account not found in this tenant',
       });
     }
   }

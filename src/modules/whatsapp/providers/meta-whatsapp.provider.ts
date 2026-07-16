@@ -130,14 +130,13 @@ export class MetaWhatsappProvider implements WhatsappMessageProvider {
     let phoneNumberId = phoneNumberIdHint;
     let accessToken: string | undefined;
     try {
-      const account =
-        accountId && accountId !== 'platform-env'
-          ? await this.resolver.byId(tenantId, accountId)
-          : this.resolver.envPlatform();
-      if (account) {
-        phoneNumberId = account.phoneNumberId ?? phoneNumberId;
-        accessToken = account.accessToken;
-      }
+      // Always re-resolve the account by id: the caller's phoneNumberId hint is
+      // only a fallback for logging/diagnostics, never a credential source. An
+      // account id is mandatory — there is no shared platform number to fall
+      // back to (see WhatsappAccountResolver).
+      const account = await this.resolver.byId(tenantId, accountId);
+      phoneNumberId = account.phoneNumberId ?? phoneNumberId;
+      accessToken = account.accessToken;
     } catch (err) {
       return { success: false, error: `account resolution failed: ${(err as Error)?.message}` };
     }

@@ -52,6 +52,47 @@ export const WHATSAPP_ACCOUNT_MODES: WhatsappAccountMode[] = Object.values(
   WHATSAPP_ACCOUNT_MODE,
 );
 
+/**
+ * Delivery provider backing a WhatsApp account. Only Meta's Cloud API is
+ * implemented; the column exists so a future BSP (Twilio / 360dialog) can be
+ * added without another migration, and so the provider strategy has something
+ * concrete to switch on.
+ */
+export const WHATSAPP_PROVIDER = {
+  META_CLOUD: 'META_CLOUD',
+} as const;
+
+export type WhatsappProvider =
+  (typeof WHATSAPP_PROVIDER)[keyof typeof WHATSAPP_PROVIDER];
+
+export const WHATSAPP_PROVIDERS: WhatsappProvider[] = Object.values(WHATSAPP_PROVIDER);
+
+/**
+ * Lifecycle of a tenant's connection to Meta. Distinct from `is_active` (the
+ * operator's on/off switch): a connection can be CONNECTED but switched off, or
+ * left active but become EXPIRED/REVOKED behind our back. Keeping the two apart
+ * is what lets the UI say "reconnect" instead of "enable".
+ */
+export const WHATSAPP_CONNECTION_STATUS = {
+  /** Embedded Signup started but never completed. */
+  PENDING: 'PENDING',
+  /** Token valid, WABA subscribed to the platform webhook — usable. */
+  CONNECTED: 'CONNECTED',
+  /** Token expired — the clinic must reconnect. */
+  EXPIRED: 'EXPIRED',
+  /** Token rejected by Meta (revoked/invalidated) — the clinic must reconnect. */
+  REVOKED: 'REVOKED',
+  /** Explicitly disconnected by the clinic or the platform. */
+  DISCONNECTED: 'DISCONNECTED',
+} as const;
+
+export type WhatsappConnectionStatus =
+  (typeof WHATSAPP_CONNECTION_STATUS)[keyof typeof WHATSAPP_CONNECTION_STATUS];
+
+export const WHATSAPP_CONNECTION_STATUSES: WhatsappConnectionStatus[] = Object.values(
+  WHATSAPP_CONNECTION_STATUS,
+);
+
 /** Channel marker written to `notification_logs.channel` for WhatsApp sends. */
 export const WHATSAPP_CHANNEL = 'WHATSAPP';
 

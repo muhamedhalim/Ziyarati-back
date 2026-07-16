@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
+import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
@@ -11,6 +12,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { WhatsappBotActorService } from './whatsapp-bot-actor.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
+import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import type {
   WhatsappListSection,
   WhatsappSessionPayload,
@@ -58,6 +60,9 @@ export class WhatsappInboundAiService {
   constructor(
     @InjectRepository(WhatsappContact)
     private readonly contacts: Repository<WhatsappContact>,
+    @InjectRepository(Message)
+    private readonly messages: Repository<Message>,
+    private readonly media: WhatsappMediaService,
     private readonly orchestrator: AiOrchestratorService,
     private readonly messaging: WhatsappMessagingService,
     private readonly router: WhatsappMessageRouter,
@@ -126,9 +131,18 @@ export class WhatsappInboundAiService {
         autoRoute: Boolean(contact.ai_conversation_id),
         useMemory: true,
         sessionPatch: contact.customer?.id ? { context: { customerId: contact.customer.id } } : undefined,
+        // Record the provider facts on the mirrored timeline message: the
+        // `wamid` (which finally makes the messages(tenantId, wa_message_id)
+        // dedupe index effective, and is how media is matched back to its
+        // message) and the real message type instead of a blanket "text".
+        origin: { waMessageId: message.id, messageType: message.type },
       },
       () => undefined,
     );
+
+    // Fetch any attached media on its own queue — see WhatsappMediaService for
+    // why this cannot happen inline. Never blocks or fails the AI turn.
+    await this.attachMedia(tenantId, message);
 
     if (!contact.ai_conversation_id && result.aiConversationId) {
       contact.ai_conversation_id = result.aiConversationId;
@@ -148,6 +162,38 @@ export class WhatsappInboundAiService {
     await this.sendReply(tenantId, waId, reply, interactive);
   }
 
+  /**
+   * Queue downloads for any media on this inbound message.
+   *
+   * Resolves the persisted timeline message by its `wamid` — the mirror wrote
+   * it as part of this same turn. Best-effort throughout: media is an
+   * enrichment, and losing a photo must never cost the patient their reply.
+   */
+  private async attachMedia(tenantId: string, message: MetaWebhookMessage): Promise<void> {
+    if (!WhatsappMediaService.isMediaMessage(message) || !message.id) return;
+
+    try {
+      const stored = await this.messages.findOne({
+        where: { tenant: { id: tenantId }, wa_message_id: message.id },
+        relations: { conversation: { whatsapp_account: true } },
+      });
+      if (!stored) return;
+
+      // Prefer the account the conversation actually arrived on; fall back to
+      // the tenant's default. A media id is only readable with the token of the
+      // WABA that received it, so the right account matters.
+      const accountId =
+        stored.conversation?.whatsapp_account?.id ??
+        (await this.router.resolveForSend(tenantId, {})).id;
+
+      await this.media.enqueueForMessage(tenantId, accountId, stored.id, message);
+    } catch (err) {
+      this.logger.warn(
+        `Could not queue inbound media for message ${message.id}: ${(err as Error)?.message}`,
+      );
+    }
+  }
+
   /** Send the AI reply back over WhatsApp as a free-form session message. */
   private async sendReply(
     tenantId: string,
@@ -155,19 +201,28 @@ export class WhatsappInboundAiService {
     text: string,
     interactive?: WhatsappSessionPayload['interactive'],
   ): Promise<void> {
-    let accountId = 'platform-env';
-    let phoneNumberId: string | undefined;
-    let mode: string | undefined;
+    // A reply can only go out from THIS clinic's own connected number — there is
+    // no shared platform number to fall back to. If the tenant has no usable
+    // account, abort loudly rather than attempting a send that cannot succeed.
+    let account;
     try {
-      const account = await this.router.resolveForSend(tenantId, {});
-      accountId = account.id ?? 'platform-env';
-      phoneNumberId = account.phoneNumberId;
-      mode = account.mode;
+      account = await this.router.resolveForSend(tenantId, {});
     } catch (err) {
-      this.logger.warn(`reply account resolution failed, using env fallback: ${(err as Error)?.message}`);
+      this.logger.warn(
+        `Cannot send AI reply for tenant ${tenantId}: ${(err as Error)?.message}`,
+      );
+      return;
     }
 
-    const res = await this.messaging.sendSession({ tenantId, accountId, phoneNumberId, mode, to, text, interactive });
+    const res = await this.messaging.sendSession({
+      tenantId,
+      accountId: account.id,
+      phoneNumberId: account.phoneNumberId,
+      mode: account.mode,
+      to,
+      text,
+      interactive,
+    });
     if (!res.success) this.logger.warn(`WhatsApp reply send failed: ${res.error}`);
   }
 
@@ -319,6 +374,8 @@ export class WhatsappInboundAiService {
         return message.audio?.voice ? '[The user sent a voice message.]' : '[The user sent an audio message.]';
       case 'video':
         return message.video?.caption?.trim() || '[The user sent a video.]';
+      case 'sticker':
+        return '[The user sent a sticker.]';
       case 'location': {
         const l = message.location;
         if (l?.latitude == null || l?.longitude == null) return '[The user shared a location.]';

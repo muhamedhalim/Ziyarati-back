@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, IsNull, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, IsNull, Not, Repository } from 'typeorm';
 
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Branch } from '../../entities/SaaS-Core/Branch';
@@ -10,17 +10,25 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { CreateWhatsappAccountDto } from './dto/create-whatsapp-account.dto';
 import { UpdateWhatsappAccountDto } from './dto/update-whatsapp-account.dto';
 import { WhatsappAccountFilterDto } from './dto/whatsapp-account-filter.dto';
-import { WHATSAPP_ACCOUNT_MODE } from './whatsapp.constants';
+import {
+  WHATSAPP_ACCOUNT_MODE,
+  WHATSAPP_CONNECTION_STATUS,
+  WHATSAPP_PROVIDER,
+} from './whatsapp.constants';
 
 /**
- * WhatsApp business accounts (one per branch).
+ * WhatsApp accounts — a tenant's connected (or to-be-connected) numbers.
+ *
+ * SCOPE OF THIS SERVICE: lifecycle and settings only. It deliberately cannot
+ * write credentials — `access_token` / `waba_id` / `phone_number_id` are set
+ * exclusively by MetaEmbeddedSignupService, which proves ownership with Meta
+ * first. That split is why no client-supplied token can ever reach the DB.
  *
  * Tenant isolation: every query filters `tenant: { id: tenantId }`, every create
- * stamps it, and the referenced branch is re-validated against the tenant.
+ * stamps it, and a referenced branch is re-validated against the tenant.
  *
- * SECURITY: `access_token` is a write-only secret. Read methods return a SAFE
- * VIEW that omits the token (exposing only `hasCredentials`); the raw entity is
- * accessed internally via `findEntityForSend` for the provider layer only.
+ * SECURITY: reads return a SAFE VIEW that omits `access_token` entirely,
+ * exposing only `hasCredentials`.
  */
 @Injectable()
 export class WhatsappAccountService {
@@ -28,35 +36,27 @@ export class WhatsappAccountService {
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
+    private readonly dataSource: DataSource,
   ) {}
 
+  /**
+   * Creates an UNCONNECTED account slot (connection_status = PENDING). It
+   * cannot send until Embedded Signup attaches a real credential to it.
+   */
   async create(tenantId: string, dto: CreateWhatsappAccountDto) {
-    await this.assertBranch(tenantId, dto.branchId);
-
-    const mode = dto.mode ?? WHATSAPP_ACCOUNT_MODE.CUSTOM;
-
-    // Uniqueness is per (branch, mode): a branch may hold one PLATFORM and one
-    // CUSTOM account, but not two of the same mode.
-    const existing = await this.accounts.findOne({
-      where: { branch: { id: dto.branchId }, tenant: { id: tenantId }, mode },
-    });
-    if (existing) {
-      throw new AppError(ErrorCode.CONFLICT, {
-        message: `This branch already has a ${mode} WhatsApp account`,
-      });
-    }
+    if (dto.branchId) await this.assertBranch(tenantId, dto.branchId);
 
     const account = this.accounts.create({
       tenant: { id: tenantId } as Tenant,
-      branch: { id: dto.branchId } as Branch,
-      mode,
-      phone_number_id: dto.phoneNumberId,
-      waba_id: dto.wabaId,
-      access_token: dto.accessToken,
-      token_expires_at: dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : undefined,
+      branch: dto.branchId ? ({ id: dto.branchId } as Branch) : null,
+      mode: dto.mode ?? WHATSAPP_ACCOUNT_MODE.CUSTOM,
+      provider: WHATSAPP_PROVIDER.META_CLOUD,
+      connection_status: WHATSAPP_CONNECTION_STATUS.PENDING,
       is_active: dto.isActive ?? true,
     });
     const saved = await this.accounts.save(account);
+
+    if (dto.isDefault) await this.setDefault(tenantId, saved.id);
     return this.findOne(tenantId, saved.id);
   }
 
@@ -69,7 +69,8 @@ export class WhatsappAccountService {
     const [rows, total] = await this.accounts.findAndCount({
       where,
       relations: { branch: true },
-      order: { created_at: 'DESC' },
+      // Default first: it is the answer to "which number does this clinic use?"
+      order: { is_default: 'DESC', created_at: 'DESC' },
       skip: (filter.page - 1) * filter.limit,
       take: filter.limit,
     });
@@ -83,71 +84,93 @@ export class WhatsappAccountService {
 
   async update(tenantId: string, id: string, dto: UpdateWhatsappAccountDto) {
     const account = await this.loadEntity(tenantId, id);
-    if (dto.phoneNumberId !== undefined) account.phone_number_id = dto.phoneNumberId;
-    if (dto.wabaId !== undefined) account.waba_id = dto.wabaId;
-    if (dto.accessToken !== undefined) account.access_token = dto.accessToken;
-    if (dto.tokenExpiresAt !== undefined) {
-      account.token_expires_at = dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : undefined;
+
+    if (dto.branchId !== undefined) {
+      if (dto.branchId) {
+        await this.assertBranch(tenantId, dto.branchId);
+        account.branch = { id: dto.branchId } as Branch;
+      } else {
+        // Explicit null ⇒ promote to a tenant-level number.
+        account.branch = null;
+      }
     }
+    if (dto.mode !== undefined) account.mode = dto.mode;
     if (dto.isActive !== undefined) account.is_active = dto.isActive;
     await this.accounts.save(account);
+
+    if (dto.isDefault === true) await this.setDefault(tenantId, id);
     return this.findOne(tenantId, id);
   }
 
   async setActive(tenantId: string, id: string, active: boolean) {
     const account = await this.loadEntity(tenantId, id);
     account.is_active = active;
+    // A deactivated number must not remain the default others fall back to.
+    if (!active) account.is_default = false;
     await this.accounts.save(account);
+    return this.findOne(tenantId, id);
+  }
+
+  /**
+   * Makes `id` the tenant's default sending number.
+   *
+   * Transactional and unset-then-set: the DB enforces at most one live default
+   * per tenant (partial unique index), so setting a new one without clearing the
+   * old in the same transaction would violate it. This is the explicit answer to
+   * "which number?" that replaced Phase 1's implicit oldest-row guess.
+   */
+  async setDefault(tenantId: string, id: string) {
+    const account = await this.loadEntity(tenantId, id);
+    if (!account.is_active) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'An inactive WhatsApp account cannot be the default.',
+      });
+    }
+
+    await this.dataSource.transaction(async (mgr) => {
+      await mgr.update(
+        WhatsappAccount,
+        { tenant: { id: tenantId }, is_default: true, deleted_at: IsNull(), id: Not(id) },
+        { is_default: false },
+      );
+      await mgr.update(WhatsappAccount, { id }, { is_default: true });
+    });
     return this.findOne(tenantId, id);
   }
 
   async remove(tenantId: string, id: string): Promise<void> {
     const account = await this.loadEntity(tenantId, id);
+    // Soft-delete frees the phone number for reconnection (the unique index is
+    // partial on deleted_at IS NULL) and preserves history.
     await this.accounts.softRemove(account);
   }
 
-  /** Derived connection status (no real provider call). */
+  /** Connection health for the UI. Reflects Meta's view + the operator's switch. */
   async connectionStatus(tenantId: string, id: string) {
     const a = await this.loadEntity(tenantId, id);
     const hasCredentials = !!a.access_token;
+    const expired = !!a.token_expires_at && a.token_expires_at.getTime() <= Date.now();
     return {
       accountId: a.id,
       isActive: a.is_active,
+      connectionStatus: expired
+        ? WHATSAPP_CONNECTION_STATUS.EXPIRED
+        : a.connection_status,
       phoneNumberConfigured: !!a.phone_number_id,
       wabaConfigured: !!a.waba_id,
       hasCredentials,
-      connected: a.is_active && hasCredentials && !!a.phone_number_id && !!a.waba_id,
+      displayPhoneNumber: a.display_phone_number,
+      verifiedName: a.verified_name,
+      isDefault: a.is_default,
+      connectedAt: a.connected_at,
+      lastSyncedAt: a.last_synced_at,
+      tokenExpiresAt: a.token_expires_at,
+      connected:
+        a.is_active &&
+        hasCredentials &&
+        !expired &&
+        a.connection_status === WHATSAPP_CONNECTION_STATUS.CONNECTED,
     };
-  }
-
-  /**
-   * INTERNAL: returns the raw account entity (incl. access_token) for the
-   * provider/messaging layer. If `accountId` is omitted, the tenant's first
-   * active account is used. Never expose the result directly in a response.
-   */
-  async findEntityForSend(
-    tenantId: string,
-    accountId?: string,
-  ): Promise<WhatsappAccount> {
-    const account = accountId
-      ? await this.accounts.findOne({
-          where: { id: accountId, tenant: { id: tenantId }, deleted_at: IsNull() },
-        })
-      : await this.accounts.findOne({
-          where: { tenant: { id: tenantId }, is_active: true, deleted_at: IsNull() },
-          order: { created_at: 'ASC' },
-        });
-    if (!account) {
-      throw new AppError(ErrorCode.NOT_FOUND, {
-        message: accountId ? 'WhatsApp account not found' : 'No active WhatsApp account for this tenant',
-      });
-    }
-    if (!account.is_active) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'WhatsApp account is not active',
-      });
-    }
-    return account;
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

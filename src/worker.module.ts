@@ -12,6 +12,7 @@ import { Subscription } from './entities/SaaS-Core/Subscription';
 import { OutboxJob } from './entities/Campaigns/OutboxJob';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
+import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
 import { ALL_QUEUES } from './queue/queue.constants';
 import { blockingConnectionOptions } from './queue/redis.config';
@@ -33,6 +34,8 @@ import { OutboxRelayService } from './worker/outbox-relay.service';
 
 import { NotificationsProcessor } from './worker/processors/notifications.processor';
 import { WhatsappProcessor } from './worker/processors/whatsapp.processor';
+import { WhatsappWebhookProcessor } from './worker/processors/whatsapp-webhook.processor';
+import { WhatsappMediaProcessor } from './worker/processors/whatsapp-media.processor';
 import {
   CampaignLaunchProcessor,
   CampaignFanoutProcessor,
@@ -70,6 +73,9 @@ import { WorkflowProcessor } from './worker/processors/workflow.processor';
     TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: typeOrmFactory }),
     TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob]),
     TenantContextModule,
+    // Workers decrypt tenant provider credentials on the send path, so the
+    // worker root needs this exactly as much as the API root does.
+    CryptoModule,
     QueueModule,
     // `QueueModule` only calls `BullModule.forRootAsync` (shared config, no
     // per-queue registration — see its docstring). That alone never activates
@@ -113,6 +119,10 @@ import { WorkflowProcessor } from './worker/processors/workflow.processor';
     OutboxRelayService,
     NotificationsProcessor,
     WhatsappProcessor,
+    // Inbound Meta events + media, on their own queues so neither can stall
+    // outbound sends (see QUEUE.WHATSAPP_WEBHOOK / WHATSAPP_MEDIA).
+    WhatsappWebhookProcessor,
+    WhatsappMediaProcessor,
     CampaignLaunchProcessor,
     CampaignFanoutProcessor,
     CampaignDispatchProcessor,

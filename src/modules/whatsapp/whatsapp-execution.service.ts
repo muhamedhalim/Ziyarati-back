@@ -77,7 +77,7 @@ export class WhatsappExecutionService {
     try {
       result = await this.messaging.send({
         tenantId,
-        accountId: account.id ?? 'platform-env',
+        accountId: account.id,
         mode: account.mode,
         phoneNumberId: account.phoneNumberId,
         to: recipient.to,
@@ -108,6 +108,11 @@ export class WhatsappExecutionService {
     return {
       status,
       providerMessageId: result.success ? result.providerMessageId : undefined,
+      // Surfaced (not just logged) so callers can classify the failure —
+      // CampaignDispatchService needs the provider's text to decide
+      // TRANSIENT (retry) vs PERMANENT (don't). Safe to expose: provider error
+      // strings carry no credentials.
+      error: result.success ? undefined : result.error,
       recipient: { type: recipient.recipientType, id: recipient.recipientId, to: recipient.to },
       logId: log.id,
     };

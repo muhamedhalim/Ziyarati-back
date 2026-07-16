@@ -106,25 +106,23 @@ export class WorkflowActionExecutor {
     const text = this.str(cfg.text);
     if (!to || !text) return { status: 'FAILED', detail: 'WHATSAPP action requires `to` and `text`' };
 
-    let accountId = 'platform-env';
-    let phoneNumberId: string | undefined;
-    let mode: string | undefined;
+    // The action can only send from this tenant's own connected number — there
+    // is no shared platform number to fall back to, so an unresolvable account
+    // is a failed action, not a silent downgrade.
+    let account;
     try {
-      const account = await this.whatsappRouter.resolveForSend(tenantId, {});
-      accountId = account.id ?? 'platform-env';
-      phoneNumberId = account.phoneNumberId;
-      mode = account.mode;
-    } catch {
-      /* fall back to env/noop provider */
+      account = await this.whatsappRouter.resolveForSend(tenantId, {});
+    } catch (err) {
+      return { status: 'FAILED', detail: (err as Error)?.message ?? 'no usable WhatsApp account' };
     }
 
     const buttons = this.buttons(cfg.buttons);
     const list = this.list(cfg.list);
     const res = await this.whatsappMessaging.sendSession({
       tenantId,
-      accountId,
-      phoneNumberId,
-      mode,
+      accountId: account.id,
+      phoneNumberId: account.phoneNumberId,
+      mode: account.mode,
       to,
       text,
       ...(buttons || list ? { interactive: { ...(buttons ? { buttons } : {}), ...(list ? { list } : {}) } } : {}),

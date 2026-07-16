@@ -68,6 +68,39 @@ export interface WhatsappSendJob extends BaseJobData {
   };
 }
 
+/**
+ * Process one persisted inbound Meta webhook event.
+ *
+ * Carries only the event's id — never the payload. The row is the source of
+ * truth (and can be replayed/inspected), the payload can be large, and Redis is
+ * not where patient message content should live.
+ *
+ * `tenantId` is nullable (matching BaseJobData): an event whose phone_number_id
+ * matches no live account is still stored for diagnostics, and the worker must
+ * be able to recognise and skip it rather than guess an owner.
+ */
+export interface WhatsappWebhookProcessJob extends BaseJobData {
+  webhookEventId: string;
+  tenantId: string | null;
+}
+
+/**
+ * Download one inbound media object from Meta and attach it to a message.
+ *
+ * Meta's media URLs expire within minutes, so the job stores the media ID and
+ * re-resolves the URL at run time — persisting a URL would guarantee a dead
+ * link by the time a retry fires.
+ */
+export interface WhatsappMediaDownloadJob extends BaseJobData {
+  tenantId: string;
+  accountId: string;
+  messageId: string;
+  mediaId: string;
+  mediaType: string;
+  filename?: string;
+  mimeType?: string;
+}
+
 // ── Campaigns ──────────────────────────────────────────────────────────────
 export interface CampaignLaunchJob extends BaseJobData {
   tenantId: string;

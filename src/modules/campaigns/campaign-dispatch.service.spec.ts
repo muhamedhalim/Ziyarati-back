@@ -57,7 +57,14 @@ describe('CampaignDispatchService.dispatch', () => {
     recipients.findOne.mockResolvedValue({
       id: RECIPIENT,
       campaign: { id: 'camp-1', template: { id: 'tmpl-1' } },
-      customer: { id: 'cust-1' },
+      // A consenting, reachable customer — the precondition for any campaign
+      // send (see the consent block for the non-consenting paths).
+      customer: {
+        id: 'cust-1',
+        marketing_opt_in: true,
+        is_active: true,
+        phone: '+966500000000',
+      },
     });
     campaigns.findOne.mockResolvedValue({
       id: 'camp-1',
@@ -132,6 +139,87 @@ describe('CampaignDispatchService.dispatch', () => {
     const res = await service.dispatch(TENANT, RUN, RECIPIENT);
     expect(res).toEqual({ status: 'dispatched', providerRef: 'wamid-1' });
     expect(manager.update).toHaveBeenCalled(); // markDispatched within a transaction
+  });
+
+  describe('customer consent (WhatsApp marketing rules)', () => {
+    /** Re-point the recipient at a customer with the given attributes. */
+    const withCustomer = (customer: Record<string, unknown> | undefined) =>
+      recipients.findOne.mockResolvedValue({
+        id: RECIPIENT,
+        campaign: { id: 'camp-1', template: { id: 'tmpl-1' } },
+        customer,
+      });
+
+    it('does NOT send to a customer who has not opted in', async () => {
+      withCustomer({ id: 'cust-1', marketing_opt_in: false, is_active: true, phone: '+9665' });
+
+      const res = await service.dispatch(TENANT, RUN, RECIPIENT);
+
+      expect(res).toMatchObject({ status: 'skipped', reason: 'no-marketing-consent' });
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('treats a missing opt-in flag as NO consent (fails closed)', async () => {
+      withCustomer({ id: 'cust-1', is_active: true, phone: '+9665' });
+
+      const res = await service.dispatch(TENANT, RUN, RECIPIENT);
+
+      expect(res).toMatchObject({ status: 'skipped', reason: 'no-marketing-consent' });
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('checks consent at SEND time, so an opt-out after launch is honoured', async () => {
+      // The recipient was queued while consenting and revoked before its turn.
+      withCustomer({ id: 'cust-1', marketing_opt_in: false, is_active: true, phone: '+9665' });
+
+      await service.dispatch(TENANT, RUN, RECIPIENT);
+
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('skips an inactive customer', async () => {
+      withCustomer({ id: 'cust-1', marketing_opt_in: true, is_active: false, phone: '+9665' });
+
+      await expect(service.dispatch(TENANT, RUN, RECIPIENT)).resolves.toMatchObject({
+        status: 'skipped',
+        reason: 'customer-inactive',
+      });
+    });
+
+    it('skips a customer with no phone number', async () => {
+      withCustomer({ id: 'cust-1', marketing_opt_in: true, is_active: true, phone: '' });
+
+      await expect(service.dispatch(TENANT, RUN, RECIPIENT)).resolves.toMatchObject({
+        status: 'skipped',
+        reason: 'customer-has-no-phone',
+      });
+    });
+
+    it('counts a non-consenting recipient as SKIPPED (terminal), so the run can complete', async () => {
+      withCustomer({ id: 'cust-1', marketing_opt_in: false, is_active: true, phone: '+9665' });
+
+      await service.dispatch(TENANT, RUN, RECIPIENT);
+
+      // Not a failure and not a retry: declining to send is a correct outcome
+      // that must settle the recipient, or the run's counters never sum.
+      expect(manager.update).toHaveBeenCalled();
+    });
+  });
+
+  it('sends from the campaign\'s own WhatsApp account when one is bound', async () => {
+    campaigns.findOne.mockResolvedValueOnce({
+      id: 'camp-1',
+      throttle_per_minute: 30,
+      daily_cap: null,
+      monthly_cap: null,
+      whatsapp_account: { id: 'acc-9' },
+    });
+    send.mockResolvedValueOnce({ success: true, providerRef: 'wamid-1' });
+
+    await service.dispatch(TENANT, RUN, RECIPIENT);
+
+    // A re-run must not silently switch identity because the tenant default moved.
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'acc-9' }));
   });
 
   it('records a PERMANENT failure without retrying (no throw)', async () => {

@@ -14,6 +14,8 @@ import {
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { QUEUE, JOB } from '../../queue/queue.constants';
+import { WhatsappMessageRouter } from '../whatsapp/routing/whatsapp-message.router';
+import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
 import { CampaignRunService } from './campaign-run.service';
 import { ScheduleCampaignDto } from './dto/schedule-campaign.dto';
 import { LaunchCampaignDto } from './dto/launch-campaign.dto';
@@ -41,6 +43,8 @@ export class CampaignExecutionService {
     private readonly recipients: Repository<CampaignRecipient>,
     private readonly runs: CampaignRunService,
     private readonly dataSource: DataSource,
+    private readonly whatsappRouter: WhatsappMessageRouter,
+    private readonly templates: WhatsappTemplateService,
   ) {}
 
   async schedule(
@@ -67,12 +71,20 @@ export class CampaignExecutionService {
    * Launch immediately. In one DB transaction: flip lifecycle → ACTIVE, take the
    * current IDLE run to ENQUEUEING with a frozen audience size, and write the
    * launch OutboxJob. The relay publishes it to the launch queue.
+   *
+   * Preflight (outside the transaction, so it fails fast and cheaply) asserts
+   * the tenant can actually send: a connected WhatsApp number and an APPROVED
+   * template. Both are re-checked per recipient at dispatch, but discovering a
+   * bad template only there would fan out and fail the whole audience one job
+   * at a time instead of rejecting the launch outright.
    */
   async launch(
     tenantId: string,
     id: string,
     dto: LaunchCampaignDto,
   ): Promise<Campaign> {
+    await this.assertSendable(tenantId, id);
+
     await this.dataSource.transaction(async (mgr) => {
       const campaign = await mgr.findOne(Campaign, {
         where: { id, tenant: { id: tenantId }, deleted_at: IsNull() },
@@ -255,6 +267,70 @@ export class CampaignExecutionService {
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
+
+  /**
+   * Launch preflight: can this campaign actually deliver?
+   *
+   * Validates the full ownership chain the Tech Provider model requires:
+   *
+   *   Campaign → WhatsappAccount → Template → same WABA
+   *
+   *  - the campaign must resolve to a connected, usable number — either the one
+   *    explicitly bound to it, or (for campaigns predating that column) the
+   *    tenant's default. There is no shared platform number to fall back on;
+   *  - the campaign must carry a template, and Meta only accepts APPROVED
+   *    templates for business-initiated sends;
+   *  - the template must live on the SAME WABA as the sending number. Meta
+   *    rejects a cross-WABA template at send time, which would otherwise fail
+   *    the entire audience one recipient at a time.
+   *
+   * Reuses the same router + template seam the dispatcher uses, so "launchable"
+   * and "sendable" can't drift into two different definitions.
+   */
+  private async assertSendable(tenantId: string, campaignId: string): Promise<void> {
+    const campaign = await this.loadOwned(tenantId, campaignId);
+
+    if (!campaign.template) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          'Campaign has no WhatsApp template. Business-initiated WhatsApp messages require an approved template.',
+      });
+    }
+
+    // Explicit account when bound; otherwise the tenant default (throws 404 when
+    // the clinic has not connected a number yet).
+    const account = await this.whatsappRouter.resolveForSend(
+      tenantId,
+      campaign.whatsapp_account ? { accountId: campaign.whatsapp_account.id } : {},
+    );
+
+    // Throws 422 unless the template is APPROVED (and tenant-owned).
+    const template = await this.templates.getSendableTemplate(tenantId, campaign.template.id);
+
+    this.assertSameWaba(account, template);
+  }
+
+  /**
+   * A template belongs to a WABA. Sending it from a number on a DIFFERENT WABA
+   * is rejected by Meta, so catch it at launch rather than per recipient.
+   *
+   * Only enforced when both sides know their WABA: templates authored locally
+   * before template-sync existed carry no `waba_id`, and failing those would
+   * break campaigns that work today. Once synced, the check is exact.
+   */
+  private assertSameWaba(
+    account: { wabaId?: string },
+    template: { waba_id?: string; name: string },
+  ): void {
+    if (!account.wabaId || !template.waba_id) return;
+    if (account.wabaId === template.waba_id) return;
+
+    throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+      message:
+        `Template "${template.name}" belongs to a different WhatsApp Business Account than the ` +
+        'number this campaign sends from. Pick a template from the sending number\'s account.',
+    });
+  }
 
   private async loadOwned(tenantId: string, id: string): Promise<Campaign> {
     const campaign = await this.campaigns.findOne({

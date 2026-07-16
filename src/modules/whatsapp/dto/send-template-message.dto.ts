@@ -16,7 +16,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 export class SendTemplateMessageDto {
   @ApiPropertyOptional({
     description:
-      'Explicit WhatsApp account to send from. Takes precedence over branch routing. If omitted, the router resolves by branch (CUSTOM → PLATFORM → env platform).',
+      'Explicit WhatsApp account to send from. Takes precedence over branch routing. If omitted, the router resolves by branch (CUSTOM → PLATFORM), then falls back to the clinic\'s default connected account.',
     format: 'uuid',
   })
   @IsOptional()
@@ -25,7 +25,7 @@ export class SendTemplateMessageDto {
 
   @ApiPropertyOptional({
     description:
-      'Branch context for routing. When set (and no accountId), the router uses the branch\'s CUSTOM account, else its PLATFORM account, else the env platform number.',
+      'Branch context for routing. When set (and no accountId), the router uses the branch\'s CUSTOM account, else its PLATFORM account, else the clinic\'s default connected account.',
     format: 'uuid',
   })
   @IsOptional()

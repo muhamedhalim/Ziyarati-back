@@ -23,6 +23,8 @@ import {
   SubscriptionsRenewalCheckJob,
   UsageReportRunJob,
   WhatsappSendJob,
+  WhatsappWebhookProcessJob,
+  WhatsappMediaDownloadJob,
   WorkflowActionJob,
   WorkflowRunJob,
 } from './job-data.interface';
@@ -98,6 +100,32 @@ export class QueueService {
 
   enqueueWhatsappRetry(data: WhatsappSendJob, opts?: JobsOptions) {
     return this.add(QUEUE.WHATSAPP, JOB.WHATSAPP_RETRY, data, opts);
+  }
+
+  /**
+   * Process a persisted inbound webhook event.
+   *
+   * The jobId is the event id, so Meta redelivering the same event (or a manual
+   * retry) collapses onto one job instead of processing a patient's message
+   * twice. Ingestion already de-duplicates on the `wamid`; this is the second,
+   * queue-level floor.
+   */
+  enqueueWhatsappWebhook(data: WhatsappWebhookProcessJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WHATSAPP_WEBHOOK, JOB.WHATSAPP_WEBHOOK_PROCESS, data, {
+      jobId: `wa-webhook:${data.webhookEventId}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Download one inbound media object. Deduped per (message, media) so a
+   * retried webhook cannot attach the same file twice.
+   */
+  enqueueWhatsappMediaDownload(data: WhatsappMediaDownloadJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WHATSAPP_MEDIA, JOB.WHATSAPP_MEDIA_DOWNLOAD, data, {
+      jobId: `wa-media:${data.messageId}:${data.mediaId}`,
+      ...opts,
+    });
   }
 
   // ── Campaign pipeline ────────────────────────────────────────────────────

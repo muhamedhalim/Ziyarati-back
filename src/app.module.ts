@@ -48,6 +48,7 @@ import { RbacAuditModule } from './modules/rbac-audit/rbac-audit.module';
 import { PlatformUsageModule } from './modules/platform-usage/platform-usage.module';
 import { EmailModule } from './modules/email/email.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
+import { CryptoModule } from './common/crypto/crypto.module';
 import { SeedModule } from './seed/seed.module';
 
 import { validate } from './config/env.validation';
@@ -71,6 +72,9 @@ import { validate } from './config/env.validation';
     }),
 
     TenantContextModule,
+    // Encrypt-at-rest for third-party provider credentials. Global — any module
+    // storing a provider secret needs it, and it must never be optional.
+    CryptoModule,
     // Background-job producers (BullMQ): registers the queues so any service can
     // enqueue. The HTTP API NEVER runs workers — processors live in WorkerModule.
     QueueModule,

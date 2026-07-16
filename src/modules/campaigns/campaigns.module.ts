@@ -6,9 +6,11 @@ import { CampaignRun } from '../../entities/Campaigns/CampaignRun';
 import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
 import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
+import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Customer } from '../../entities/CRM/Customer';
 
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { WhatsappModule } from '../whatsapp/whatsapp.module';
 
 import { CampaignService } from './campaign.service';
 import { CampaignRecipientService } from './campaign-recipient.service';
@@ -28,7 +30,11 @@ import { RecipientDeliveryController } from './recipient-delivery.controller';
 
 import { CampaignDeliveryFactory } from './delivery/campaign-delivery.factory';
 import { NoopCampaignDeliveryProvider } from './delivery/noop-campaign-delivery.provider';
-import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provider.interface';
+import { WhatsappCampaignDeliveryProvider } from './delivery/whatsapp-campaign-delivery.provider';
+import {
+  CAMPAIGN_DELIVERY_PROVIDERS,
+  CampaignDeliveryProvider,
+} from './delivery/campaign-delivery.provider.interface';
 
 /**
  * Campaigns Domain — queue-native execution.
@@ -51,9 +57,15 @@ import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provid
       CampaignRecipient,
       OutboxJob,
       WhatsappTemplate,
+      // Read-only here: campaigns validate the number they send FROM belongs to
+      // the tenant. Account lifecycle stays in WhatsappModule.
+      WhatsappAccount,
       Customer,
     ]),
     SubscriptionBillingModule,
+    // Real WhatsApp delivery: WhatsappCampaignDeliveryProvider delegates to
+    // WhatsappExecutionService rather than re-implementing the send path.
+    WhatsappModule,
   ],
   controllers: [
     CampaignController,
@@ -74,7 +86,18 @@ import { CAMPAIGN_DELIVERY_PROVIDERS } from './delivery/campaign-delivery.provid
     RecipientDeliveryService,
     CampaignDeliveryFactory,
     NoopCampaignDeliveryProvider,
-    { provide: CAMPAIGN_DELIVERY_PROVIDERS, useValue: [] },
+    WhatsappCampaignDeliveryProvider,
+    // REAL provider registered into the strategy token. Previously this was an
+    // empty array, which silently routed EVERY campaign send to the no-op
+    // provider — runs completed "successfully" having sent nothing. The noop
+    // now only serves channels with no real adapter yet (SMS/EMAIL/PUSH/IN_APP).
+    {
+      provide: CAMPAIGN_DELIVERY_PROVIDERS,
+      useFactory: (whatsapp: WhatsappCampaignDeliveryProvider): CampaignDeliveryProvider[] => [
+        whatsapp,
+      ],
+      inject: [WhatsappCampaignDeliveryProvider],
+    },
   ],
   exports: [
     CampaignService,

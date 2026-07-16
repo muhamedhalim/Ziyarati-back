@@ -5,7 +5,20 @@ import { DefaultJobOptions } from 'bullmq';
 export const QUEUE = {
   NOTIFICATIONS: 'notifications',
   NOTIFICATIONS_DLQ: 'notifications.dlq',
+  /** Outbound sends (template + session). Historically just `whatsapp`. */
   WHATSAPP: 'whatsapp',
+  /**
+   * Inbound Meta events. Separate from outbound on purpose: a backlog of
+   * inbound traffic must never delay appointment reminders going out, and the
+   * two have completely different retry/latency characteristics.
+   */
+  WHATSAPP_WEBHOOK: 'whatsapp-webhook',
+  /**
+   * Inbound media downloads. Separate again because media is slow, large and
+   * failure-prone (Meta's URLs expire in minutes) — mixing it into the webhook
+   * queue would let one big video stall message processing.
+   */
+  WHATSAPP_MEDIA: 'whatsapp-media',
   // Campaign execution pipeline (stage-isolated queues).
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
   CAMPAIGNS_FANOUT: 'campaigns.fanout',
@@ -41,6 +54,8 @@ export const JOB = {
   NOTIFICATIONS_DLQ: 'notifications.dlq',
   WHATSAPP_SEND: 'whatsapp.send',
   WHATSAPP_RETRY: 'whatsapp.retry',
+  WHATSAPP_WEBHOOK_PROCESS: 'whatsapp.webhookProcess',
+  WHATSAPP_MEDIA_DOWNLOAD: 'whatsapp.mediaDownload',
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
   CAMPAIGNS_FANOUT_CHUNK: 'campaigns.fanoutChunk',
   CAMPAIGNS_PROCESS_RECIPIENT: 'campaigns.processRecipient',

@@ -131,6 +131,15 @@ export class ConversationExecutionService {
    * Returns `null` (no-op) when the conversation isn't found for the tenant, so
    * an AI session with no linked Conversation simply isn't mirrored. Accepts an
    * optional `manager` to enlist in a caller's transaction.
+   *
+   * `origin` carries provider facts about an inbound channel message:
+   *  - `waMessageId` — the WhatsApp `wamid`. Recording it is what makes the
+   *    partial UNIQUE `messages(tenantId, wa_message_id)` actually do its job
+   *    (it existed before this but nothing populated the column, so inbound
+   *    de-duplication silently never happened), and it is how inbound media is
+   *    later matched back to its message.
+   *  - `messageType` — image/document/audio/… so the timeline can render the
+   *    message as what it really was instead of labelling everything `text`.
    */
   async recordChannelMessage(
     tenantId: string,
@@ -138,6 +147,7 @@ export class ConversationExecutionService {
     senderType: Extract<Message['sender_type'], 'CUSTOMER' | 'BOT' | 'SYSTEM'>,
     content: string,
     manager?: EntityManager,
+    origin?: { waMessageId?: string; messageType?: string },
   ): Promise<Message | null> {
     const exec = async (m: EntityManager): Promise<Message | null> => {
       const convRepo = m.getRepository(Conversation);
@@ -158,7 +168,8 @@ export class ConversationExecutionService {
               ? ({ id: conversation.customer.id } as Customer)
               : undefined,
           content,
-          message_type: MESSAGE_TYPE.TEXT,
+          message_type: origin?.messageType ?? MESSAGE_TYPE.TEXT,
+          wa_message_id: origin?.waMessageId,
         }),
       );
 

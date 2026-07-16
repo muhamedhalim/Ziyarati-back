@@ -1,9 +1,9 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
   FindOptionsWhere,
+  IsNull,
   LessThan,
   MoreThanOrEqual,
   Repository,
@@ -18,6 +18,8 @@ import { NotificationDeliveryService } from '../notifications/notification-deliv
 import { DELIVERY_STATUS, DeliveryStatus } from '../notifications/notification.constants';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
+import { MetaConfig } from './meta/meta.config';
+import { QueueService } from '../../queue/queue.service';
 import type {
   WhatsappWebhookBody,
   MetaWebhookEntry,
@@ -48,10 +50,11 @@ export class WhatsappWebhookService {
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
     private readonly verifier: WebhookSignatureVerifier,
-    private readonly config: ConfigService,
+    private readonly meta: MetaConfig,
     @Inject(forwardRef(() => NotificationDeliveryService))
     private readonly notifDelivery: NotificationDeliveryService,
     private readonly inboundAi: WhatsappInboundAiService,
+    private readonly queue: QueueService,
   ) {}
 
   /** GET verification handshake — returns the challenge to echo, or null. */
@@ -60,12 +63,17 @@ export class WhatsappWebhookService {
     verifyToken?: string,
     challenge?: string,
   ): string | null {
-    const expected = this.config.get<string>('WHATSAPP_VERIFY_TOKEN');
-    return this.verifier.resolveChallenge(mode, verifyToken, challenge, expected);
+    return this.verifier.resolveChallenge(
+      mode,
+      verifyToken,
+      challenge,
+      this.meta.webhookVerifyToken,
+    );
   }
 
   /**
-   * Public ingestion (called by Meta). Steps:
+   * Public ingestion (called by Meta). Does the MINIMUM required to accept the
+   * event safely, then hands off:
    *  1. Verify the `X-Hub-Signature-256` over the EXACT raw bytes (Buffer) — the
    *     parsed body is NEVER used for the signature.
    *  2. Derive the event type (messages / message_status) and an idempotency key
@@ -74,7 +82,14 @@ export class WhatsappWebhookService {
    *  3. De-duplicate redelivered events on the idempotency key.
    *  4. Resolve the tenant from the payload (`phone_number_id` → account) — never
    *     trusted from the request.
-   *  5. Persist the raw payload (`processed = false`) for the worker to handle.
+   *  5. Persist the raw payload (`processed = false`).
+   *  6. Enqueue processing and return immediately.
+   *
+   * Nothing is processed inline. Meta requires a fast 200 and retries the event
+   * if we are slow — doing AI turns or media downloads here would both risk that
+   * timeout and lose work on a crash (the old fire-and-forget `void` call had no
+   * retry and no record of having failed). The persisted row + queue job give
+   * durability, retries and back-pressure instead.
    */
   async ingest(
     body: WhatsappWebhookBody,
@@ -108,27 +123,28 @@ export class WhatsappWebhookService {
     });
     const saved = await this.webhooks.save(row);
 
-    // Apply delivery-status callbacks to scheduled notifications (forward-only,
-    // matched by provider_ref = wamid). Single Meta webhook → no duplicate URL.
-    if (eventType === 'message_status') {
-      await this.applyDeliveryStatuses(body).catch((err) =>
-        this.logger.error(`delivery-status apply failed: ${(err as Error)?.message}`),
+    await this.enqueueProcessing(saved.id, tenant);
+    return { accepted: true, id: saved.id };
+  }
+
+  /**
+   * Hand the persisted event to the worker.
+   *
+   * Enqueue failure is logged, NOT thrown: the event is already durably stored,
+   * so failing the request would make Meta redeliver something we already have.
+   * The row stays `processed = false` and can be re-queued via `retry`.
+   */
+  private async enqueueProcessing(
+    webhookEventId: string,
+    tenantId: string | undefined,
+  ): Promise<void> {
+    try {
+      await this.queue.enqueueWhatsappWebhook({ webhookEventId, tenantId: tenantId ?? null });
+    } catch (err) {
+      this.logger.error(
+        `Failed to enqueue webhook event ${webhookEventId} (stored, unprocessed): ${(err as Error)?.message}`,
       );
     }
-
-    // Inbound customer message → drive it through the AI pipeline (discovery +
-    // booking tools, memory, agent routing) and reply on WhatsApp. Fire-and-forget
-    // so Meta gets a fast 200; the bridge fails soft and never breaks ingestion.
-    if (eventType === 'messages' && tenant) {
-      const value = this.firstChangeValue(body);
-      if (value) {
-        void this.inboundAi
-          .handleInboundValue(tenant, value)
-          .catch((err) => this.logger.error(`inbound AI dispatch failed: ${(err as Error)?.message}`));
-      }
-    }
-
-    return { accepted: true, id: saved.id };
   }
 
   /** Extract Meta statuses and forward each to the notification delivery axis. */
@@ -213,29 +229,102 @@ export class WhatsappWebhookService {
   }
 
   /**
-   * Re-queues a webhook event for processing (architecture seam): sets
-   * `processed = false`. A future worker scans unprocessed events and handles
-   * them with backoff.
+   * Re-queues a webhook event for processing: marks it unprocessed and enqueues
+   * a real job. (Before the worker existed this only flipped the flag, and
+   * nothing ever consumed it — the "retry" silently did nothing.)
+   *
+   * The queue de-dupes on the event id, so a burst of retry clicks collapses
+   * onto one job rather than replaying a patient's message repeatedly.
    */
   async retry(tenantId: string, id: string): Promise<WhatsappWebhook> {
     const row = await this.findOne(tenantId, id);
     row.processed = false;
-    return this.webhooks.save(row);
+    const saved = await this.webhooks.save(row);
+    await this.queue.enqueueWhatsappWebhook({ webhookEventId: id, tenantId });
+    return saved;
+  }
+
+  /**
+   * WORKER ENTRY POINT: process one stored event.
+   *
+   * Loaded by id rather than trusting the job payload, so the row remains the
+   * source of truth and a replayed job can't smuggle different content.
+   * Idempotent: an already-processed event is skipped, and the underlying
+   * handlers are themselves idempotent (delivery status is forward-only; the AI
+   * turn is keyed on the wamid).
+   */
+  async processEvent(webhookEventId: string): Promise<{ processed: boolean; reason?: string }> {
+    const event = await this.webhooks.findOne({
+      where: { id: webhookEventId },
+      relations: { tenant: true },
+    });
+    if (!event) return { processed: false, reason: 'event-missing' };
+    if (event.processed) return { processed: false, reason: 'already-processed' };
+
+    const tenantId = event.tenant?.id;
+    if (!tenantId) {
+      // Unresolvable events are kept for diagnostics but must never be guessed
+      // at — without a tenant there is no safe place to put the message.
+      await this.markProcessed(event.id);
+      return { processed: false, reason: 'no-tenant' };
+    }
+
+    const body = event.payload as WhatsappWebhookBody;
+
+    switch (event.event_type) {
+      case 'message_status':
+        await this.applyDeliveryStatuses(body);
+        break;
+      case 'messages': {
+        const value = this.firstChangeValue(body);
+        if (value) await this.inboundAi.handleInboundValue(tenantId, value);
+        break;
+      }
+      default:
+        this.logger.debug(`Webhook event ${event.id} has no handler for "${event.event_type}"`);
+    }
+
+    await this.markProcessed(event.id);
+    return { processed: true };
+  }
+
+  /** Guarded so a concurrent duplicate job can't double-count the transition. */
+  private async markProcessed(id: string): Promise<void> {
+    await this.webhooks.update({ id, processed: false }, { processed: true });
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
-  /** Best-effort tenant resolution from a Meta webhook payload. */
+  /**
+   * Resolves the owning tenant from a Meta webhook payload.
+   *
+   * This is THE trusted mapping (`metadata.phone_number_id` → WhatsappAccount →
+   * tenant) — the only thing deciding whose conversation an inbound patient
+   * message belongs to. It must therefore be exact, not best-effort:
+   *  - soft-deleted accounts are excluded (a disconnected number must not keep
+   *    routing a clinic's messages to its former owner);
+   *  - `phone_number_id` is unique among live accounts (partial unique index),
+   *    so this lookup resolves to at most one tenant rather than an arbitrary
+   *    row among several claimants.
+   * Unresolvable events are still stored (tenant-less) for diagnostics, and
+   * never guessed at.
+   */
   private async resolveTenantFromPayload(
     payload: Record<string, unknown> | undefined,
   ): Promise<string | undefined> {
     const phoneNumberId = this.extractPhoneNumberId(payload);
     if (!phoneNumberId) return undefined;
     const account = await this.accounts.findOne({
-      where: { phone_number_id: phoneNumberId },
+      where: { phone_number_id: phoneNumberId, deleted_at: IsNull() },
       relations: { tenant: true },
     });
-    return account?.tenant?.id;
+    if (!account) {
+      this.logger.warn(
+        `Inbound webhook for unknown/disconnected phone_number_id — event stored without a tenant`,
+      );
+      return undefined;
+    }
+    return account.tenant?.id;
   }
 
   private extractPhoneNumberId(

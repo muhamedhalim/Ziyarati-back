@@ -10,6 +10,8 @@ import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
+import { Message } from '../../entities/Conversations/Message';
+import { MessageAttachment } from '../../entities/Conversations/MessageAttachment';
 
 import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
@@ -37,6 +39,13 @@ import {
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
+import { MetaConfig } from './meta/meta.config';
+import { MetaGraphClient } from './meta/meta-graph.client';
+import { MetaEmbeddedSignupService } from './meta/meta-embedded-signup.service';
+import { WhatsappTemplateSyncService } from './meta/whatsapp-template-sync.service';
+import { WhatsappMediaService } from './meta/whatsapp-media.service';
+import { WhatsappOnboardingController } from './meta/whatsapp-onboarding.controller';
+import { StorageModule } from '../storage/storage.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
@@ -70,6 +79,11 @@ import { CrmModule } from '../crm/crm.module';
       Branch,
       Customer,
       User,
+      // Inbound media attaches to the unified timeline. Read/write is confined
+      // to WhatsappMediaService — conversation business logic stays in
+      // ConversationsModule.
+      Message,
+      MessageAttachment,
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,
@@ -84,6 +98,10 @@ import { CrmModule } from '../crm/crm.module';
     // business logic, just composing the existing services.
     AuthModule,
     CrmModule,
+    // Inbound media is stored in the SAME private R2 bucket as verification
+    // documents (tenant-prefixed keys, signed-URL reads) — no second storage
+    // implementation, just a different upload policy.
+    StorageModule,
   ],
   controllers: [
     WhatsappAccountController,
@@ -91,6 +109,7 @@ import { CrmModule } from '../crm/crm.module';
     WhatsappWebhookController,
     WhatsappContactController,
     WhatsappAnalyticsController,
+    WhatsappOnboardingController,
   ],
   providers: [
     WhatsappAccountService,
@@ -108,6 +127,13 @@ import { CrmModule } from '../crm/crm.module';
     WebhookSignatureVerifier,
     WhatsappAccountResolver,
     WhatsappMessageRouter,
+    // Meta Tech Provider layer: platform app config, the single Graph API
+    // transport, Embedded Signup onboarding, and the template mirror.
+    MetaConfig,
+    MetaGraphClient,
+    MetaEmbeddedSignupService,
+    WhatsappTemplateSyncService,
+    WhatsappMediaService,
     // REAL provider registered into the strategy token (per-tenant credentials,
     // approved template sends). NoopWhatsappProvider stays only as the factory's
     // typed fallback dependency and is never resolved (Meta supports() === true).
@@ -126,6 +152,12 @@ import { CrmModule } from '../crm/crm.module';
     // Needed by WorkflowActionExecutor (WHATSAPP action) to resolve the
     // sending account the same way WhatsappInboundAiService does.
     WhatsappMessageRouter,
+    // Campaigns validate template↔account WABA matching against the resolver.
+    WhatsappAccountResolver,
+    WhatsappTemplateSyncService,
+    // Consumed by the worker's whatsapp-webhook / whatsapp-media processors.
+    WhatsappWebhookService,
+    WhatsappMediaService,
   ],
 })
 export class WhatsappModule {}

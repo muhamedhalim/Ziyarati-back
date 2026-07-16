@@ -369,6 +369,13 @@ export class AiExecutionService {
     aiConversationId: string,
     dto: SendMessageDto,
     onToken: (delta: string) => void,
+    /**
+     * Provider facts about the inbound message (WhatsApp `wamid`, media type).
+     * Internal-only: deliberately NOT part of SendMessageDto, because that DTO
+     * is bound from HTTP request bodies and a client must never be able to
+     * assert someone else's `wa_message_id` (it is a uniqueness/dedup key).
+     */
+    origin?: { waMessageId?: string; messageType?: string },
   ) {
     const turnStart = Date.now();
     let channel = 'API';
@@ -400,7 +407,13 @@ export class AiExecutionService {
         }),
       );
       if (linkedConversationId) {
-        await this.mirrorToTimeline(tenantId, linkedConversationId, 'CUSTOMER', dto.content);
+        await this.mirrorToTimeline(
+          tenantId,
+          linkedConversationId,
+          'CUSTOMER',
+          dto.content,
+          origin,
+        );
       }
 
       const ragStart = Date.now();
@@ -608,9 +621,17 @@ export class AiExecutionService {
     conversationId: string,
     senderType: 'CUSTOMER' | 'BOT',
     content: string,
+    origin?: { waMessageId?: string; messageType?: string },
   ): Promise<void> {
     try {
-      await this.timeline.recordChannelMessage(tenantId, conversationId, senderType, content);
+      await this.timeline.recordChannelMessage(
+        tenantId,
+        conversationId,
+        senderType,
+        content,
+        undefined,
+        origin,
+      );
     } catch (err) {
       this.logger.warn(
         `timeline mirror (${senderType}) failed for conversation ${conversationId}: ${

@@ -72,18 +72,39 @@ export const validate = (config: Record<string, unknown>) => {
     // Base URL used to build links inside emails (falls back to FRONTEND_ORIGIN).
     APP_URL: Joi.string().allow('', null),
 
-    // ── WhatsApp Cloud API / Meta (PLATFORM-level shared number) ──────────
-    // Optional in the schema so the app boots without a live integration, BUT:
-    //   • the webhook verifier fails CLOSED at request time if
-    //     WHATSAPP_APP_SECRET / WHATSAPP_VERIFY_TOKEN are unset (no dev bypass);
-    //   • the message router only falls back to the env PLATFORM number when
-    //     WHATSAPP_PHONE_NUMBER_ID + WHATSAPP_ACCESS_TOKEN are present.
-    // A clinic's own (CUSTOM) number lives on the WhatsappAccount entity instead.
+    // ── Meta App (PLATFORM APP config only — Independent Tech Provider) ───
+    // These configure ZiyaraTech's single Meta App — they are NOT a sending
+    // identity. Every clinic's own WABA / phone number / access token lives on
+    // the WhatsappAccount entity (encrypted), never in env: this platform is an
+    // Independent Tech Provider, not the owner of a shared number. Adding a
+    // tenant credential here would re-create the shared-number model.
+    //
+    // Optional in the schema so the app boots without a live integration, but:
+    //   • the webhook verifier fails CLOSED when the app secret / verify token
+    //     are unset (no dev bypass);
+    //   • Embedded Signup returns 422 until APP_ID + CONFIG_ID + SECRET are set.
+    // Read exclusively through MetaConfig — never `config.get()` directly.
+    META_APP_ID: Joi.string().allow('', null),
+    META_APP_SECRET: Joi.string().allow('', null),
+    META_EMBEDDED_SIGNUP_CONFIG_ID: Joi.string().allow('', null),
+    META_GRAPH_API_VERSION: Joi.string()
+      .pattern(/^v\d+\.\d+$/)
+      .default('v21.0'),
+    META_WEBHOOK_VERIFY_TOKEN: Joi.string().allow('', null),
+    META_HTTP_TIMEOUT_MS: Joi.number().min(1000).default(10000),
+
+    // Legacy aliases for the two webhook secrets, still honoured by MetaConfig
+    // so this change doesn't break a live webhook on deploy. Remove once every
+    // environment has migrated to the META_* names.
     WHATSAPP_APP_SECRET: Joi.string().allow('', null),
     WHATSAPP_VERIFY_TOKEN: Joi.string().allow('', null),
-    WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null),
-    WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null),
-    WHATSAPP_WABA_ID: Joi.string().allow('', null),
+
+    // ── Credential encryption (encrypt-at-rest for provider secrets) ──────
+    // 32 bytes, base64 or hex: `openssl rand -base64 32`. Optional so the app
+    // boots without it, but EncryptionService throws on any encrypt/decrypt of
+    // a real secret while it is unset — an unset key cannot silently downgrade
+    // storage back to plaintext.
+    CREDENTIALS_ENCRYPTION_KEY: Joi.string().allow('', null),
 
     // ── AI / OpenAI + pgvector RAG ────────────────────────────────────────
     // All optional: with no key the AI falls back to the Noop provider and RAG

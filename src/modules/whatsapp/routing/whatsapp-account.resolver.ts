@@ -1,27 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 
 import { WhatsappAccount } from '../../../entities/WhatsApp/WhatsappAccount';
 import { AppError, ErrorCode } from '../../../common/errors';
+import { EncryptionService } from '../../../common/crypto/encryption.service';
 import {
   WHATSAPP_ACCOUNT_MODE,
   WhatsappAccountMode,
 } from '../whatsapp.constants';
 
 /** Where the resolved sending identity came from. */
-export type WhatsappAccountSource = 'CUSTOM' | 'PLATFORM' | 'PLATFORM_ENV';
+export type WhatsappAccountSource = 'CUSTOM' | 'PLATFORM';
 
 /**
- * A normalized, ready-to-send WhatsApp identity. `id` is absent for the env
- * PLATFORM fallback (no DB row). `accessToken` is included for the delivery
- * adapter ONLY — it must never be serialized into an API response or a log.
+ * A normalized, ready-to-send WhatsApp identity.
+ *
+ * `accessToken` is DECRYPTED here for the delivery adapter ONLY — it must never
+ * be serialized into an API response or a log.
  */
 export interface ResolvedWhatsappAccount {
   source: WhatsappAccountSource;
   mode: WhatsappAccountMode;
-  id?: string;
+  id: string;
   phoneNumberId?: string;
   wabaId?: string;
   accessToken?: string;
@@ -30,8 +31,15 @@ export interface ResolvedWhatsappAccount {
 
 /**
  * Resolves which WhatsApp account a tenant/branch should send from. This is the
- * ONLY place that knows the hybrid CUSTOM→PLATFORM precedence and the env-level
- * shared number — keeping that decision out of the messaging/execution services.
+ * ONLY place that knows the CUSTOM→PLATFORM precedence — keeping that decision
+ * out of the messaging/execution services.
+ *
+ * TECH PROVIDER MODEL: every sending identity is a per-tenant WhatsappAccount
+ * row. There is deliberately NO env-level shared number: ZiyaraTech owns one
+ * Meta App, not a WhatsApp Business Account, so a tenant with no connected
+ * account cannot send — it must complete Embedded Signup first. (`PLATFORM`
+ * mode here means "a platform-provisioned account row for this tenant", still a
+ * real per-tenant row, NOT a number shared across clinics.)
  *
  * Tenant isolation: every DB lookup is scoped by `tenant: { id: tenantId }`.
  */
@@ -42,7 +50,7 @@ export class WhatsappAccountResolver {
   constructor(
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
-    private readonly config: ConfigService,
+    private readonly encryption: EncryptionService,
   ) {}
 
   /** Explicit selection by account id (tenant-scoped, must be active & usable). */
@@ -67,10 +75,11 @@ export class WhatsappAccountResolver {
   }
 
   /**
-   * Hybrid resolution for a branch:
-   *   1. branch's active CUSTOM account, else
-   *   2. branch's active PLATFORM account, else
-   *   3. the env-configured PLATFORM (shared SaaS) number.
+   * Resolution for a branch:
+   *   1. the branch's active CUSTOM account, else
+   *   2. the branch's active PLATFORM account, else
+   *   3. the tenant's default account (branch-agnostic — covers tenants that
+   *      have connected a number but not bound it to this branch).
    * Throws if none is usable.
    */
   async forBranch(tenantId: string, branchId?: string): Promise<ResolvedWhatsappAccount> {
@@ -90,26 +99,64 @@ export class WhatsappAccountResolver {
       if (platform) return this.fromEntity(platform);
     }
 
-    const envPlatform = this.envPlatform();
-    if (envPlatform) return envPlatform;
+    return this.forTenant(tenantId);
+  }
+
+  /**
+   * The tenant's default sending identity, ignoring branch. Used by flows that
+   * carry no branch context (campaigns) and as `forBranch`'s final fallback.
+   *
+   * Selection order — most explicit wins:
+   *   1. the account flagged `is_default` (the operator's stated choice; the DB
+   *      guarantees at most one live default per tenant);
+   *   2. the only usable account, when there is exactly one (nothing to choose);
+   *   3. oldest active CUSTOM, else oldest usable — a LAST RESORT for tenants
+   *      that have several numbers but never named a default. It is logged,
+   *      because silently guessing which number a clinic messages patients from
+   *      is a decision that deserves to be visible.
+   */
+  async forTenant(tenantId: string): Promise<ResolvedWhatsappAccount> {
+    const usable = await this.usableAccounts(tenantId);
+
+    const explicitDefault = usable.find((a) => a.is_default);
+    if (explicitDefault) return this.fromEntity(explicitDefault);
+
+    if (usable.length === 1) return this.fromEntity(usable[0]);
+
+    if (usable.length > 1) {
+      const fallback =
+        usable.find((a) => a.mode === WHATSAPP_ACCOUNT_MODE.CUSTOM) ?? usable[0];
+      this.logger.warn(
+        `Tenant ${tenantId} has ${usable.length} usable WhatsApp numbers but no default; ` +
+          `falling back to account ${fallback.id}. Set a default to make this explicit.`,
+      );
+      return this.fromEntity(fallback);
+    }
 
     throw new AppError(ErrorCode.NOT_FOUND, {
-      message: 'No usable WhatsApp account (no CUSTOM/PLATFORM account and no platform number configured)',
+      message:
+        'This clinic has no connected WhatsApp number. Connect a WhatsApp Business account before sending.',
     });
   }
 
-  /** The shared SaaS number from configuration, or null if not configured. */
-  envPlatform(): ResolvedWhatsappAccount | null {
-    const phoneNumberId = this.config.get<string>('WHATSAPP_PHONE_NUMBER_ID');
-    const accessToken = this.config.get<string>('WHATSAPP_ACCESS_TOKEN');
-    if (!phoneNumberId || !accessToken) return null;
-    return {
-      source: 'PLATFORM_ENV',
-      mode: WHATSAPP_ACCOUNT_MODE.PLATFORM,
-      phoneNumberId,
-      accessToken,
-      wabaId: this.config.get<string>('WHATSAPP_WABA_ID') ?? undefined,
-    };
+  /**
+   * The tenant's live accounts that could actually send, oldest first.
+   * "Usable" means: active, not soft-deleted, credential present and unexpired,
+   * and a phone number to send from.
+   */
+  private async usableAccounts(tenantId: string): Promise<WhatsappAccount[]> {
+    const candidates = await this.accounts.find({
+      where: { tenant: { id: tenantId }, is_active: true, deleted_at: IsNull() },
+      order: { created_at: 'ASC' },
+    });
+
+    return candidates.filter((account) => {
+      if (this.isTokenExpired(account)) {
+        this.logger.warn(`Skipping WhatsApp account ${account.id}: access token expired`);
+        return false;
+      }
+      return !!account.phone_number_id && !!account.access_token;
+    });
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -142,6 +189,7 @@ export class WhatsappAccountResolver {
     return !!account.token_expires_at && account.token_expires_at.getTime() <= Date.now();
   }
 
+  /** Maps the row to a send-ready identity, DECRYPTING the stored credential. */
   private fromEntity(account: WhatsappAccount): ResolvedWhatsappAccount {
     return {
       source: account.mode === WHATSAPP_ACCOUNT_MODE.PLATFORM ? 'PLATFORM' : 'CUSTOM',
@@ -149,7 +197,7 @@ export class WhatsappAccountResolver {
       id: account.id,
       phoneNumberId: account.phone_number_id,
       wabaId: account.waba_id,
-      accessToken: account.access_token,
+      accessToken: this.encryption.decrypt(account.access_token),
       tokenExpiresAt: account.token_expires_at,
     };
   }

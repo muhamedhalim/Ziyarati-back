@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+
+import { MetaConfig } from '../meta/meta.config';
 
 /**
  * WhatsApp Cloud API webhook security.
@@ -14,10 +15,12 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  *     only when `hub.mode === 'subscribe'` and `hub.verify_token` matches the
  *     configured token (constant-time compare).
  *
- * Secrets come from configuration ONLY (`WHATSAPP_APP_SECRET`,
- * `WHATSAPP_VERIFY_TOKEN`) — never from the DB or the request. There is NO
- * dev "accept everything" bypass: a missing secret fails closed (rejects), which
- * is the correct posture for a production multi-tenant ingestion layer.
+ * Secrets come from the PLATFORM Meta App config only (via MetaConfig:
+ * `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`) — never from the DB, the
+ * request, or a tenant's row. One Meta App signs every tenant's events, so
+ * these are correctly app-level, not tenant-level. There is NO dev
+ * "accept everything" bypass: a missing secret fails closed (rejects), which is
+ * the correct posture for a production multi-tenant ingestion layer.
  *
  * This class is intentionally a thin, single-responsibility security seam so it
  * stays trivially unit-testable and can be swapped for a per-provider adapter
@@ -27,7 +30,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 export class WebhookSignatureVerifier {
   private readonly logger = new Logger('WebhookSignatureVerifier');
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly meta: MetaConfig) {}
 
   /**
    * @param signatureHeader value of `X-Hub-Signature-256`, e.g. `sha256=<hex>`
@@ -36,11 +39,11 @@ export class WebhookSignatureVerifier {
    *          matches the header. Fails closed on any missing/malformed input.
    */
   verify(signatureHeader: string | undefined, rawBody: Buffer | undefined): boolean {
-    const secret = this.config.get<string>('WHATSAPP_APP_SECRET');
+    const secret = this.meta.appSecret;
     if (!secret) {
       // Fail closed — do NOT accept unverified webhooks just because the secret
       // is unset. (No environment/secret values are logged.)
-      this.logger.error('WHATSAPP_APP_SECRET is not configured — rejecting webhook');
+      this.logger.error('META_APP_SECRET is not configured — rejecting webhook');
       return false;
     }
 
@@ -83,7 +86,7 @@ export class WebhookSignatureVerifier {
   ): string | null {
     const expected = expectedToken?.trim();
     if (!expected) {
-      this.logger.error('WHATSAPP_VERIFY_TOKEN is not configured — rejecting handshake');
+      this.logger.error('META_WEBHOOK_VERIFY_TOKEN is not configured — rejecting handshake');
       return null;
     }
 
