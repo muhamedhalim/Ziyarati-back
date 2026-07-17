@@ -38,7 +38,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { VerificationAuditService } from '../verification-audit/verification-audit.service';
 
 /** Minimal shape of a multer in-memory file (avoids a hard @types/multer dep). */
-interface UploadedFileLike {
+export interface UploadedFileLike {
   originalname: string;
   mimetype: string;
   size: number;

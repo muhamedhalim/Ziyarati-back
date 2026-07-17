@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { StorageModule } from '../storage/storage.module';
+
 import { Customer } from '../../entities/CRM/Customer';
 import { CustomerProfile } from '../../entities/CRM/CustomerProfile';
 import { CustomerAddress } from '../../entities/CRM/CustomerAddress';
@@ -48,6 +50,7 @@ import { CustomerFileController } from './customer-file.controller';
       CustomerTagRelation,
       CustomerFile,
     ]),
+    StorageModule,
   ],
   controllers: [
     CustomerController,

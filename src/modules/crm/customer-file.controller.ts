@@ -10,9 +10,14 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
@@ -24,7 +29,7 @@ import {
 } from '@nestjs/swagger';
 
 import { CustomerFileService } from './customer-file.service';
-import { CreateCustomerFileDto } from './dto/create-customer-file.dto';
+import { UploadCustomerFileDto } from './dto/upload-customer-file.dto';
 import { PaginationQueryDto } from './dto/pagination-query.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -33,6 +38,9 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { MAX_UPLOAD_BYTES } from '../storage/storage.constants';
+import { UploadedFileLike } from '../storage/uploads.controller';
+import { AppError, ErrorCode } from '../../common/errors';
 
 const S_ERROR = {
   type: 'object',
@@ -60,22 +68,58 @@ export class CustomerFileController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Register an uploaded file (metadata)', description: '**Protected — `crm.files.manage`. Clinic active.** Stores file metadata (name/url/type) + uploader; binary lives in external storage.' })
+  @ApiOperation({
+    summary: 'Upload a file for a customer',
+    description:
+      '**Protected — `crm.files.manage`. Clinic active.** Streams a `multipart/form-data` file to private R2 storage (same allow-list/magic-byte validation as staff avatars and verification documents: PDF, PNG, JPEG, WEBP, 10 MB max) and stores its metadata against the customer. The binary is never stored locally or in the database.',
+  })
   @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'File metadata stored.' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        fileName: { type: 'string', example: 'Lab result — 2026-06-01' },
+      },
+    },
+  })
+  @ApiCreatedResponse({ description: 'File uploaded and linked to the customer.' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller lacks `crm.files.manage`, or clinic inactive.', schema: S_ERROR })
   @ApiNotFoundResponse({ description: 'Customer not found in this tenant.', schema: S_ERROR })
   @Post()
   @RequirePermissions(PERMISSION.CRM_FILES_MANAGE)
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }),
+  )
   upload(
     @Param('customerId', ParseUUIDPipe) customerId: string,
-    @Body() dto: CreateCustomerFileDto,
+    @UploadedFile() file: UploadedFileLike | undefined,
+    @Body() dto: UploadCustomerFileDto,
   ) {
+    if (!file) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'No file uploaded. Send the file under the field name "file".',
+      });
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: `File exceeds the ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB limit.`,
+      });
+    }
+
     return this.files.upload(
       this.ctx.requireTenantId(),
       customerId,
-      dto,
+      {
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        buffer: file.buffer,
+        fileName: dto.fileName,
+      },
       this.ctx.getUser()?.id,
     );
   }
@@ -111,7 +155,7 @@ export class CustomerFileController {
     return this.files.getMetadata(this.ctx.requireTenantId(), customerId, fileId);
   }
 
-  @ApiOperation({ summary: 'Delete a file', description: '**Protected — `crm.files.manage`. Clinic active.** Removes the metadata record.' })
+  @ApiOperation({ summary: 'Delete a file', description: '**Protected — `crm.files.manage`. Clinic active.** Removes the metadata record and best-effort deletes the underlying R2 object.' })
   @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
   @ApiParam({ name: 'fileId', description: 'File UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'File deleted.' })
