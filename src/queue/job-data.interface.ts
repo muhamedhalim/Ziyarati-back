@@ -101,6 +101,22 @@ export interface WhatsappMediaDownloadJob extends BaseJobData {
   mimeType?: string;
 }
 
+/**
+ * Dead-letter envelope for the inbound `whatsapp-webhook`/`whatsapp-media`
+ * queues, once a job exhausts its retries. Same shape as `CampaignDlqJob` —
+ * unlike campaign dispatch there are no counters to reconcile, so replay here
+ * is just "re-enqueue `originalData` onto `sourceQueue`".
+ */
+export interface WhatsappDlqJob extends BaseJobData {
+  sourceQueue: string;
+  sourceJobName: string;
+  originalJobId?: string;
+  originalData: Record<string, unknown>;
+  failedReason: string;
+  attemptsMade: number;
+  diedAt: string;
+}
+
 // ── Campaigns ──────────────────────────────────────────────────────────────
 export interface CampaignLaunchJob extends BaseJobData {
   tenantId: string;

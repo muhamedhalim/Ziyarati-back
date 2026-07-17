@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { QueueEvents } from 'bullmq';
 
-import { ALL_QUEUES } from '../queue/queue.constants';
+import { ALL_QUEUES, QUEUE } from '../queue/queue.constants';
 import { eventsConnectionOptions } from '../queue/redis.config';
 import { QueueService } from '../queue/queue.service';
 
@@ -41,19 +41,28 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
     }
     this.logger.log(`QueueEvents monitoring ${ALL_QUEUES.length} queues`);
 
-    this.dlqTimer = setInterval(() => void this.reportDlqDepth(), this.dlqPollMs);
+    this.dlqTimer = setInterval(() => void this.reportDlqDepths(), this.dlqPollMs);
   }
 
-  private async reportDlqDepth(): Promise<void> {
-    try {
-      const depth = await this.queue.dlqDepth();
-      if (depth >= this.dlqWarnAt) {
-        this.logger.error(`[campaigns.dlq] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`);
-      } else if (depth > 0) {
-        this.logger.warn(`[campaigns.dlq] depth=${depth}`);
+  /**
+   * Polls every DLQ this worker parks jobs into. Previously only
+   * `campaigns.dlq` was watched, so an exhausted `whatsapp-webhook`/
+   * `whatsapp-media` job (see WhatsappWebhookProcessor/WhatsappMediaProcessor)
+   * could accumulate there with nothing ever surfacing it above a per-job
+   * `failed` log line.
+   */
+  private async reportDlqDepths(): Promise<void> {
+    for (const dlq of [QUEUE.CAMPAIGNS_DLQ, QUEUE.WHATSAPP_DLQ] as const) {
+      try {
+        const depth = await this.queue.dlqDepth(dlq);
+        if (depth >= this.dlqWarnAt) {
+          this.logger.error(`[${dlq}] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`);
+        } else if (depth > 0) {
+          this.logger.warn(`[${dlq}] depth=${depth}`);
+        }
+      } catch (err) {
+        this.logger.error(`DLQ depth poll failed for ${dlq}: ${(err as Error)?.message}`);
       }
-    } catch (err) {
-      this.logger.error(`DLQ depth poll failed: ${(err as Error)?.message}`);
     }
   }
 

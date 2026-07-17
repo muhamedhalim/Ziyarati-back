@@ -4,12 +4,17 @@ import {
   Column,
   ManyToOne,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
 import { Customer } from '../CRM/Customer';
 
 @Entity('whatsapp_contacts')
+@Index('UQ_whatsapp_contact_tenant_wa_id', ['tenant', 'wa_id'], {
+  unique: true,
+  where: '"wa_id" IS NOT NULL',
+})
 export class WhatsappContact {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

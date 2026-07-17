@@ -25,6 +25,7 @@ import {
   WhatsappSendJob,
   WhatsappWebhookProcessJob,
   WhatsappMediaDownloadJob,
+  WhatsappDlqJob,
   WorkflowActionJob,
   WorkflowRunJob,
 } from './job-data.interface';
@@ -124,6 +125,18 @@ export class QueueService {
   enqueueWhatsappMediaDownload(data: WhatsappMediaDownloadJob, opts?: JobsOptions) {
     return this.add(QUEUE.WHATSAPP_MEDIA, JOB.WHATSAPP_MEDIA_DOWNLOAD, data, {
       jobId: `wa-media-${data.messageId}-${data.mediaId}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Park an exhausted whatsapp-webhook/whatsapp-media job (never
+   * auto-processed; inspected/replayed by admin tooling, same pattern as
+   * `enqueueCampaignDlq`).
+   */
+  enqueueWhatsappDlq(data: WhatsappDlqJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WHATSAPP_DLQ, JOB.WHATSAPP_DLQ, data, {
+      jobId: `dlq-${data.sourceQueue}-${data.originalJobId ?? Date.now()}`,
       ...opts,
     });
   }
@@ -340,8 +353,8 @@ export class QueueService {
   }
 
   /** Current DLQ depth (waiting + delayed) — surfaced by monitoring/alerting. */
-  async dlqDepth(): Promise<number> {
-    const counts = await this.queues[QUEUE.CAMPAIGNS_DLQ].getJobCounts('waiting', 'delayed');
+  async dlqDepth(queue: QueueName = QUEUE.CAMPAIGNS_DLQ): Promise<number> {
+    const counts = await this.queues[queue].getJobCounts('waiting', 'delayed');
     return (counts.waiting ?? 0) + (counts.delayed ?? 0);
   }
 

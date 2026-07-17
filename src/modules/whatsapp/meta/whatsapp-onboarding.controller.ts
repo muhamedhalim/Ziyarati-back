@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
   ApiConflictResponse,
@@ -20,6 +21,15 @@ import { PermissionsGuard } from '../../auth/guards/permissions.guard';
 import { PERMISSION } from '../../../rbac/rbac.constants';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.guard';
+
+// `complete` and `templates/sync` each trigger several outbound Meta Graph
+// API calls per request. Authenticated (unlike the webhook endpoints), but a
+// malicious or malfunctioning tenant client could still hammer either one to
+// burn the shared platform app's Graph API quota. Relaxed under Jest for the
+// same reason as the app-wide default in app.module.ts.
+const META_GRAPH_THROTTLE = {
+  default: { limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 20, ttl: 60_000 },
+};
 
 const S_ERROR = {
   type: 'object',
@@ -185,6 +195,7 @@ response then lists the numbers so the user can choose).
       'Invalid/expired code, missing scopes, no phone number on the WABA, or several numbers and none selected.',
     schema: S_ERROR,
   })
+  @Throttle(META_GRAPH_THROTTLE)
   @Post('complete')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
@@ -244,6 +255,7 @@ Runs automatically after onboarding; call this to refresh on demand.
     description: 'No connected WhatsApp account, or Meta rejected the request.',
     schema: S_ERROR,
   })
+  @Throttle(META_GRAPH_THROTTLE)
   @Post('templates/sync')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)

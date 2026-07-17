@@ -27,6 +27,8 @@ const n = (v: unknown): number => {
   return Number.isFinite(x) ? x : 0;
 };
 
+const PG_UNIQUE_VIOLATION = '23505';
+
 /**
  * WhatsApp inbound → AI automation bridge (Feature 3), driven by the tenant's
  * dedicated AI Bot Actor (Feature: WhatsApp Bot Actor).
@@ -319,14 +321,30 @@ export class WhatsappInboundAiService {
     }
 
     const customer = await this.findOrCreateCustomer(tenantId, waId, displayName);
-    return this.contacts.save(
-      this.contacts.create({
-        tenant: { id: tenantId } as Tenant,
-        wa_id: waId,
-        display_name: displayName,
-        customer,
-      }),
-    );
+    try {
+      return await this.contacts.save(
+        this.contacts.create({
+          tenant: { id: tenantId } as Tenant,
+          wa_id: waId,
+          display_name: displayName,
+          customer,
+        }),
+      );
+    } catch (err) {
+      // Two inbound messages from the same contact can be picked up by
+      // different worker jobs concurrently (webhook worker concurrency > 1);
+      // both can find no existing contact and both attempt to create one.
+      // `UQ_whatsapp_contact_tenant_wa_id` lets exactly one insert win — the
+      // loser re-fetches rather than erroring the whole AI turn.
+      if ((err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
+        const winner = await this.contacts.findOne({
+          where: { wa_id: waId, tenant: { id: tenantId } },
+          relations: { customer: true },
+        });
+        if (winner) return winner;
+      }
+      throw err;
+    }
   }
 
   private async findOrCreateCustomer(tenantId: string, waId: string, displayName?: string) {

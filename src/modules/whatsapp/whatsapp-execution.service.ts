@@ -9,6 +9,7 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { QueueService } from '../../queue/queue.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
@@ -52,6 +53,7 @@ export class WhatsappExecutionService {
     private readonly messaging: WhatsappMessagingService,
     private readonly queue: QueueService,
     private readonly usage: UsageService,
+    private readonly ctx: TenantContextService,
   ) {}
 
   /** Sends a template message immediately and records the outcome. */
@@ -87,7 +89,13 @@ export class WhatsappExecutionService {
         variables: dto.variables,
       });
     } catch (err) {
-      this.logger.error('WhatsApp provider threw during send', err as Error);
+      // cid lets this be traced back to the originating HTTP request or queue
+      // job — this send path is shared by immediate, scheduled and campaign
+      // sends, so a bare message alone can't be correlated to any of them.
+      this.logger.error(
+        `[cid=${this.ctx.getCorrelationId() ?? '-'}] WhatsApp provider threw during send (account=${account.id})`,
+        err as Error,
+      );
       result = { success: false, error: (err as Error)?.message ?? 'provider error' };
     }
 

@@ -16,6 +16,7 @@ import {
 } from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import type { WhatsappWebhookBody } from './webhooks/whatsapp-webhook.types';
 import {
   ApiBearerAuth,
@@ -40,6 +41,17 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+
+// These two endpoints are @Public() — reachable by anyone, not just Meta —
+// so they get their own, tighter budget than the app-wide default. 60/min
+// per IP comfortably covers a real clinic's inbound WhatsApp volume while
+// bounding the cost of a flood (signature verification + a DB write) before
+// it reaches either. Relaxed under Jest for the same reason as the app-wide
+// default in app.module.ts — a single e2e spec file's requests all land in
+// one in-memory bucket.
+const PUBLIC_WEBHOOK_THROTTLE = {
+  default: { limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 60, ttl: 60_000 },
+};
 
 const S_ERROR = {
   type: 'object',
@@ -95,6 +107,7 @@ export class WhatsappWebhookController {
 
   @ApiExcludeEndpoint()
   @Public()
+  @Throttle(PUBLIC_WEBHOOK_THROTTLE)
   @Get('verify')
   verify(@Query() query: Record<string, string>, @Res() res: Response) {
     const challenge = this.webhooks.resolveChallenge(
@@ -136,6 +149,7 @@ JWT; the tenant is NEVER taken from the request body.
   })
   @ApiUnauthorizedResponse({ description: 'Invalid webhook signature.', schema: S_ERROR })
   @Public()
+  @Throttle(PUBLIC_WEBHOOK_THROTTLE)
   @Post('events')
   @HttpCode(HttpStatus.OK)
   ingest(

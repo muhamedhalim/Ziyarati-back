@@ -12,6 +12,8 @@ import { UpdateWhatsappContactDto } from './dto/update-whatsapp-contact.dto';
 import { WhatsappContactFilterDto } from './dto/whatsapp-contact-filter.dto';
 import { BulkImportWhatsappContactsDto } from './dto/bulk-import-whatsapp-contacts.dto';
 
+const PG_UNIQUE_VIOLATION = '23505';
+
 /**
  * WhatsApp contacts.
  *
@@ -20,6 +22,11 @@ import { BulkImportWhatsappContactsDto } from './dto/bulk-import-whatsapp-contac
  *
  * Schema note: `whatsapp_contacts` has no status / opt-in column, so contact
  * status & subscription tracking are NOT persisted by this module.
+ *
+ * Uniqueness: `UQ_whatsapp_contact_tenant_wa_id` (partial, per tenant) is the
+ * real backstop against duplicate contacts from concurrent inbound webhooks —
+ * every write path below treats the resulting 23505 as "already exists", not
+ * as a failure.
  */
 @Injectable()
 export class WhatsappContactService {
@@ -38,7 +45,16 @@ export class WhatsappContactService {
       wa_id: dto.waId,
       display_name: dto.displayName,
     });
-    return this.contacts.save(contact);
+    try {
+      return await this.contacts.save(contact);
+    } catch (err) {
+      if (dto.waId && (err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: 'A contact with this WhatsApp ID already exists for this tenant',
+        });
+      }
+      throw err;
+    }
   }
 
   /** Idempotent bulk import — existing wa_ids for the tenant are skipped. */
@@ -56,7 +72,11 @@ export class WhatsappContactService {
       }
     }
 
-    // Skip wa_ids already present for the tenant (no unique constraint exists).
+    // Fast-path skip of wa_ids already present for the tenant. This is a
+    // pre-check, not the guarantee — `UQ_whatsapp_contact_tenant_wa_id`
+    // (partial unique per tenant) is what actually prevents a duplicate row
+    // if a concurrent inbound webhook creates the same contact between this
+    // check and the insert below.
     const waIds = dto.contacts.map((c) => c.waId);
     const existing = await this.contacts.find({
       where: { tenant: { id: tenantId }, wa_id: In(waIds) },
@@ -65,23 +85,38 @@ export class WhatsappContactService {
     const existingSet = new Set(existing.map((e) => e.wa_id));
 
     const toInsert = dto.contacts.filter((c) => !existingSet.has(c.waId));
+    let imported = 0;
     if (toInsert.length) {
-      await this.contacts.save(
-        toInsert.map((c) =>
-          this.contacts.create({
-            tenant: { id: tenantId } as Tenant,
-            customer: c.customerId ? ({ id: c.customerId } as Customer) : undefined,
-            wa_id: c.waId,
-            display_name: c.displayName,
-          }),
-        ),
+      const rows = toInsert.map((c) =>
+        this.contacts.create({
+          tenant: { id: tenantId } as Tenant,
+          customer: c.customerId ? ({ id: c.customerId } as Customer) : undefined,
+          wa_id: c.waId,
+          display_name: c.displayName,
+        }),
       );
+      try {
+        await this.contacts.save(rows);
+        imported = rows.length;
+      } catch (err) {
+        if ((err as { code?: string })?.code !== PG_UNIQUE_VIOLATION) throw err;
+        // One row in the batch lost the uniqueness race — fall back to
+        // per-row inserts so the rest of the batch still lands.
+        for (const row of rows) {
+          try {
+            await this.contacts.save(row);
+            imported += 1;
+          } catch (rowErr) {
+            if ((rowErr as { code?: string })?.code !== PG_UNIQUE_VIOLATION) throw rowErr;
+          }
+        }
+      }
     }
 
     return {
       requested: dto.contacts.length,
-      imported: toInsert.length,
-      skipped: dto.contacts.length - toInsert.length,
+      imported,
+      skipped: dto.contacts.length - imported,
     };
   }
 

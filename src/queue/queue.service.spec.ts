@@ -157,6 +157,14 @@ describe('QueueService (producer facade)', () => {
       await expect(service.redisPing()).resolves.toEqual(expect.any(Number));
     });
 
+    it('dlqDepth defaults to the campaigns DLQ but accepts any queue', async () => {
+      record[QUEUE.CAMPAIGNS_DLQ].getJobCounts.mockResolvedValueOnce({ waiting: 1, delayed: 0 });
+      await expect(service.dlqDepth()).resolves.toBe(1);
+
+      record[QUEUE.WHATSAPP_DLQ].getJobCounts.mockResolvedValueOnce({ waiting: 2, delayed: 1 });
+      await expect(service.dlqDepth(QUEUE.WHATSAPP_DLQ)).resolves.toBe(3);
+    });
+
     it('kvSet / kvGet proxy the shared redis client', async () => {
       await service.kvSet('k', 'v', 60);
       await expect(service.kvGet('k')).resolves.toBe('v');

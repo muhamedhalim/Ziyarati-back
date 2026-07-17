@@ -16,6 +16,7 @@ import { MessageAttachment } from '../../entities/Conversations/MessageAttachmen
 import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappWebhookService } from './whatsapp-webhook.service';
+import { WhatsappDlqService } from './whatsapp-dlq.service';
 import { WhatsappContactService } from './whatsapp-contact.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
@@ -26,6 +27,7 @@ import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
 import { WhatsappAccountController } from './whatsapp-account.controller';
 import { WhatsappTemplateController } from './whatsapp-template.controller';
 import { WhatsappWebhookController } from './whatsapp-webhook.controller';
+import { WhatsappDlqController } from './whatsapp-dlq.controller';
 import { WhatsappContactController } from './whatsapp-contact.controller';
 import { WhatsappAnalyticsController } from './whatsapp-analytics.controller';
 
@@ -113,6 +115,7 @@ import { RecipientDeliveryService } from '../campaigns/recipient-delivery.servic
     WhatsappAccountController,
     WhatsappTemplateController,
     WhatsappWebhookController,
+    WhatsappDlqController,
     WhatsappContactController,
     WhatsappAnalyticsController,
     WhatsappOnboardingController,
@@ -121,6 +124,7 @@ import { RecipientDeliveryService } from '../campaigns/recipient-delivery.servic
     WhatsappAccountService,
     WhatsappTemplateService,
     WhatsappWebhookService,
+    WhatsappDlqService,
     WhatsappContactService,
     WhatsappMessagingService,
     WhatsappExecutionService,

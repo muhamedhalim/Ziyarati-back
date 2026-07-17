@@ -22,6 +22,7 @@ import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { MetaConfig } from './meta/meta.config';
 import { QueueService } from '../../queue/queue.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import type {
   WhatsappWebhookBody,
   MetaWebhookEntry,
@@ -29,6 +30,8 @@ import type {
 import { CreateWhatsappWebhookDto } from './dto/create-whatsapp-webhook.dto';
 import { UpdateWhatsappWebhookDto } from './dto/update-whatsapp-webhook.dto';
 import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
+
+const PG_UNIQUE_VIOLATION = '23505';
 
 /**
  * WhatsApp inbound webhook events.
@@ -58,6 +61,7 @@ export class WhatsappWebhookService {
     private readonly recipientDelivery: RecipientDeliveryService,
     private readonly inboundAi: WhatsappInboundAiService,
     private readonly queue: QueueService,
+    private readonly ctx: TenantContextService,
   ) {}
 
   /** GET verification handshake — returns the challenge to echo, or null. */
@@ -124,7 +128,21 @@ export class WhatsappWebhookService {
       idempotency_key: idempotencyKey,
       processed: false,
     });
-    const saved = await this.webhooks.save(row);
+
+    let saved: WhatsappWebhook;
+    try {
+      saved = await this.webhooks.save(row);
+    } catch (err) {
+      // The `findOne` check above is a fast-path only — it cannot see a
+      // concurrent redelivery still mid-insert. `UQ_whatsapp_webhook_idempotency_key`
+      // is what actually serializes that race; a 23505 here means another
+      // request just won it, so this is a duplicate, not a failure.
+      if (idempotencyKey && (err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
+        const existing = await this.webhooks.findOne({ where: { idempotency_key: idempotencyKey } });
+        if (existing) return { accepted: true, id: existing.id, deduplicated: true };
+      }
+      throw err;
+    }
 
     await this.enqueueProcessing(saved.id, tenant);
     return { accepted: true, id: saved.id };
@@ -142,10 +160,12 @@ export class WhatsappWebhookService {
     tenantId: string | undefined,
   ): Promise<void> {
     try {
+      // correlationId is auto-stamped from the current context by
+      // QueueService if omitted — no need to pass it explicitly here.
       await this.queue.enqueueWhatsappWebhook({ webhookEventId, tenantId: tenantId ?? null });
     } catch (err) {
       this.logger.error(
-        `Failed to enqueue webhook event ${webhookEventId} (stored, unprocessed): ${(err as Error)?.message}`,
+        `[cid=${this.ctx.getCorrelationId() ?? '-'}] Failed to enqueue webhook event ${webhookEventId} (stored, unprocessed): ${(err as Error)?.message}`,
       );
     }
   }
@@ -321,7 +341,9 @@ export class WhatsappWebhookService {
         break;
       }
       default:
-        this.logger.debug(`Webhook event ${event.id} has no handler for "${event.event_type}"`);
+        this.logger.debug(
+          `[cid=${this.ctx.getCorrelationId() ?? '-'}] Webhook event ${event.id} has no handler for "${event.event_type}"`,
+        );
     }
 
     await this.markProcessed(event.id);
@@ -360,7 +382,7 @@ export class WhatsappWebhookService {
     });
     if (!account) {
       this.logger.warn(
-        `Inbound webhook for unknown/disconnected phone_number_id — event stored without a tenant`,
+        `[cid=${this.ctx.getCorrelationId() ?? '-'}] Inbound webhook for unknown/disconnected phone_number_id — event stored without a tenant`,
       );
       return undefined;
     }

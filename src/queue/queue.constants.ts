@@ -22,6 +22,8 @@ export const QUEUE = {
    * queue would let one big video stall message processing.
    */
   WHATSAPP_MEDIA: 'whatsapp-media',
+  /** Dead-letter park for exhausted whatsapp-webhook/whatsapp-media jobs. */
+  WHATSAPP_DLQ: 'whatsapp.dlq',
   // Campaign execution pipeline (stage-isolated queues).
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
   CAMPAIGNS_FANOUT: 'campaigns.fanout',
@@ -59,6 +61,7 @@ export const JOB = {
   WHATSAPP_RETRY: 'whatsapp.retry',
   WHATSAPP_WEBHOOK_PROCESS: 'whatsapp.webhookProcess',
   WHATSAPP_MEDIA_DOWNLOAD: 'whatsapp.mediaDownload',
+  WHATSAPP_DLQ: 'whatsapp.dlq',
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
   CAMPAIGNS_FANOUT_CHUNK: 'campaigns.fanoutChunk',
   CAMPAIGNS_PROCESS_RECIPIENT: 'campaigns.processRecipient',

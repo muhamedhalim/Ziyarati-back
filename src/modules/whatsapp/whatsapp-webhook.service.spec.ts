@@ -11,6 +11,7 @@ import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
 import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
 import { QueueService } from '../../queue/queue.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ErrorCode } from '../../common/errors';
 import { DELIVERY_STATUS } from '../notifications/notification.constants';
 import {
@@ -85,6 +86,7 @@ describe('WhatsappWebhookService', () => {
         { provide: RecipientDeliveryService, useValue: recipientDelivery },
         { provide: WhatsappInboundAiService, useValue: inboundAi },
         { provide: QueueService, useValue: queue },
+        { provide: TenantContextService, useValue: new TenantContextService() },
         {
           provide: MetaConfig,
           useValue: new MetaConfig(
@@ -146,6 +148,31 @@ describe('WhatsappWebhookService', () => {
       expect(res).toMatchObject({ accepted: true, id: 'existing', deduplicated: true });
       expect(webhooks.save).not.toHaveBeenCalled();
       expect(queue.enqueueWhatsappWebhook).not.toHaveBeenCalled();
+    });
+
+    it('treats a concurrent-insert unique violation as a dedup, not a failure', async () => {
+      // Two Meta redeliveries race past the findOne check simultaneously; the
+      // DB unique index on idempotency_key is what actually serializes them —
+      // the loser's save() throws 23505, and it must recover, not 500.
+      webhooks.save.mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), { code: '23505' }),
+      );
+      webhooks.findOne.mockResolvedValueOnce(undefined); // pre-insert check: not found yet
+      webhooks.findOne.mockResolvedValueOnce({ id: 'winner-row' }); // post-conflict re-fetch
+
+      const res = await service.ingest(inboundBody(), RAW, 'sha256=ok');
+
+      expect(res).toMatchObject({ accepted: true, id: 'winner-row', deduplicated: true });
+      expect(queue.enqueueWhatsappWebhook).not.toHaveBeenCalled();
+    });
+
+    it('rethrows a unique violation that is not actually a dedup race', async () => {
+      const err = Object.assign(new Error('duplicate key'), { code: '23505' });
+      webhooks.save.mockRejectedValueOnce(err);
+      webhooks.findOne.mockResolvedValueOnce(undefined);
+      webhooks.findOne.mockResolvedValueOnce(undefined); // re-fetch finds nothing — not our dedup case
+
+      await expect(service.ingest(inboundBody(), RAW, 'sha256=ok')).rejects.toBe(err);
     });
 
     it('still accepts (200) when enqueueing fails — the event is already stored', async () => {

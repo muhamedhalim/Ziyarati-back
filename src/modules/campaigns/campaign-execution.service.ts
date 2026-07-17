@@ -14,6 +14,7 @@ import {
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { QUEUE, JOB } from '../../queue/queue.constants';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WhatsappMessageRouter } from '../whatsapp/routing/whatsapp-message.router';
 import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
 import { CampaignRunService } from './campaign-run.service';
@@ -45,6 +46,7 @@ export class CampaignExecutionService {
     private readonly dataSource: DataSource,
     private readonly whatsappRouter: WhatsappMessageRouter,
     private readonly templates: WhatsappTemplateService,
+    private readonly ctx: TenantContextService,
   ) {}
 
   async schedule(
@@ -125,11 +127,17 @@ export class CampaignExecutionService {
             campaignId: id,
             runId: run.id,
             idempotencyKey: run.idempotency_key,
+            // Captured NOW, not left to auto-stamping at relay time: the
+            // outbox relay runs on its own poll loop with no HTTP request or
+            // job in flight, so `ctx.getCorrelationId()` there would just be
+            // null — without this, every outbox-relayed job would silently
+            // lose the trace back to the request that triggered it.
+            correlationId: this.ctx.getCorrelationId() ?? undefined,
           },
         }),
       );
       this.logger.log(
-        `Campaign ${id} launched (run=${run.id}, total=${total}) — outbox queued`,
+        `[cid=${this.ctx.getCorrelationId() ?? '-'}] Campaign ${id} launched (run=${run.id}, total=${total}) — outbox queued`,
       );
     });
     return this.loadOwned(tenantId, id);
@@ -170,7 +178,13 @@ export class CampaignExecutionService {
             queue: QUEUE.CAMPAIGNS_FANOUT,
             job_name: JOB.CAMPAIGNS_FANOUT_CHUNK,
             dedupe_key: `campaign-fanout-${run.id}-resume-${Date.now()}`,
-            payload: { tenantId, campaignId: id, runId: run.id, cursor: null },
+            payload: {
+              tenantId,
+              campaignId: id,
+              runId: run.id,
+              cursor: null,
+              correlationId: this.ctx.getCorrelationId() ?? undefined,
+            },
           }),
         );
       }
@@ -259,6 +273,7 @@ export class CampaignExecutionService {
             campaignId: id,
             runId: run.id,
             idempotencyKey: run.idempotency_key,
+            correlationId: this.ctx.getCorrelationId() ?? undefined,
           },
         }),
       );

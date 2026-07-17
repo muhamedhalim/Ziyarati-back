@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -66,6 +67,19 @@ import { validate } from './config/env.validation';
     // wildcard: false — exact string matching only (no glob patterns).
     EventEmitterModule.forRoot({ global: true, wildcard: false }),
 
+    // Baseline abuse protection for every route, including the @Public()
+    // webhook/health endpoints that carry no auth at all. A generous default
+    // (normal dashboard polling must never trip it); routes with a real DoS/
+    // abuse profile (webhook ingestion, Embedded Signup) set a tighter
+    // per-route limit via @Throttle(). Relaxed to a no-op ceiling under Jest
+    // (NODE_ENV=test) so the e2e suite's request bursts against one shared
+    // in-memory store never fail on request volume rather than assertions.
+    ThrottlerModule.forRoot({
+      throttlers: [
+        { name: 'default', ttl: 60_000, limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 300 },
+      ],
+    }),
+
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: typeOrmFactory,
@@ -118,6 +132,12 @@ import { validate } from './config/env.validation';
 
   providers: [
     AppService,
+    // Runs first: cheap IP-bucketed rejection before any auth/DB work, and the
+    // only guard that also applies to @Public() routes.
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
