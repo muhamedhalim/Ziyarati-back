@@ -190,6 +190,51 @@ status).
   }
 
   @ApiOperation({
+    summary: 'Non-delivery reason breakdown',
+    description: `
+**Protected — requires \`campaign_recipients.read\`. Clinic must be active.**
+
+Groups SKIPPED/FAILED recipients of the latest run by the exact reason the
+dispatcher recorded (e.g. \`no-marketing-consent\`, \`run-stopped\`, \`daily-cap\`,
+or a provider error string). Powers labels like "opted out" or "cancelled" in
+the campaign metrics UI — these are not separate backend states, just readable
+names for specific reason strings.
+
+**Who can call this:** Owner, Manager, Receptionist (\`campaign_recipients.read\`).
+    `.trim(),
+  })
+  @ApiParam({ name: 'campaignId', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({
+    description: 'Reason breakdown.',
+    schema: {
+      type: 'object',
+      properties: {
+        campaignId: { type: 'string', format: 'uuid' },
+        runId: { type: 'string', format: 'uuid', nullable: true },
+        reasons: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              processing: { type: 'string', enum: ['SKIPPED', 'FAILED'] },
+              reason: { type: 'string', example: 'no-marketing-consent' },
+              count: { type: 'number', example: 12 },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
+  @Get('reasons')
+  @RequirePermissions(PERMISSION.CAMPAIGN_RECIPIENTS_READ)
+  reasons(@Param('campaignId', ParseUUIDPipe) campaignId: string) {
+    return this.recipients.reasonBreakdown(this.ctx.requireTenantId(), campaignId);
+  }
+
+  @ApiOperation({
     summary: 'Remove recipients',
     description: `
 **Protected — requires \`campaign_recipients.manage\`. Clinic must be active.**

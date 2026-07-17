@@ -51,6 +51,12 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
 import { AuthModule } from '../auth/auth.module';
 import { CrmModule } from '../crm/crm.module';
+// Not imported via CampaignsModule (which itself imports WhatsappModule —
+// that would make it circular). RecipientDeliveryService depends only on
+// DataSource, so providing the same stateless class here too is the minimal
+// way to close the "campaign delivery status never updates from the real
+// Meta webhook" gap without restructuring module boundaries.
+import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
 
 /**
  * WhatsApp Domain.
@@ -134,6 +140,7 @@ import { CrmModule } from '../crm/crm.module';
     MetaEmbeddedSignupService,
     WhatsappTemplateSyncService,
     WhatsappMediaService,
+    RecipientDeliveryService,
     // REAL provider registered into the strategy token (per-tenant credentials,
     // approved template sends). NoopWhatsappProvider stays only as the factory's
     // typed fallback dependency and is never resolved (Meta supports() === true).

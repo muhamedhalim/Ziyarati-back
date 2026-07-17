@@ -47,7 +47,7 @@ describe('QueueService (producer facade)', () => {
     expect(record[QUEUE.NOTIFICATIONS].add).toHaveBeenCalledWith(
       JOB.NOTIFICATIONS_DISPATCH,
       expect.objectContaining({ notificationId: 'n1', tenantId: 't1', correlationId: 'cid-1', actorId: 'actor-1' }),
-      expect.objectContaining({ jobId: 'notification:n1' }),
+      expect.objectContaining({ jobId: 'notification-n1' }),
     );
   });
 
@@ -62,7 +62,7 @@ describe('QueueService (producer facade)', () => {
     expect(record[QUEUE.CAMPAIGNS_PROCESS].add).toHaveBeenCalledWith(
       JOB.CAMPAIGNS_PROCESS_RECIPIENT,
       expect.any(Object),
-      expect.objectContaining({ jobId: 'campaign-recipient:r1:rec1' }),
+      expect.objectContaining({ jobId: 'campaign-recipient-r1-rec1' }),
     );
   });
 
@@ -79,7 +79,7 @@ describe('QueueService (producer facade)', () => {
     const remove = jest.fn().mockResolvedValue(undefined);
     record[QUEUE.NOTIFICATIONS].getJob.mockResolvedValueOnce({ remove });
     await service.removeNotificationDispatch('n1');
-    expect(record[QUEUE.NOTIFICATIONS].getJob).toHaveBeenCalledWith('notification:n1');
+    expect(record[QUEUE.NOTIFICATIONS].getJob).toHaveBeenCalledWith('notification-n1');
     expect(remove).toHaveBeenCalled();
   });
 
@@ -108,13 +108,25 @@ describe('QueueService (producer facade)', () => {
   });
 
   describe('campaign launch / fanout idempotent ids', () => {
-    it('builds campaign-launch:<runId>', async () => {
+    it('builds campaign-launch-<runId>', async () => {
       await service.enqueueCampaignLaunch({ runId: 'r9' } as any);
       expect(record[QUEUE.CAMPAIGNS_LAUNCH].add).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
-        expect.objectContaining({ jobId: 'campaign-launch:r9' }),
+        expect.objectContaining({ jobId: 'campaign-launch-r9' }),
       );
+    });
+
+    it('never builds a jobId containing ":" — BullMQ rejects custom ids with a colon unless they split into exactly 3 parts', async () => {
+      await service.enqueueNotificationDispatch({ notificationId: 'n1', tenantId: 't1' } as any);
+      await service.enqueueCampaignLaunch({ runId: 'r9' } as any);
+      await service.enqueueCampaignRecipient({ runId: 'r1', recipientId: 'rec1', tenantId: 't1' } as any);
+      for (const queue of [QUEUE.NOTIFICATIONS, QUEUE.CAMPAIGNS_LAUNCH, QUEUE.CAMPAIGNS_PROCESS]) {
+        for (const call of record[queue].add.mock.calls) {
+          const jobId = (call[2] as { jobId?: string })?.jobId;
+          if (jobId) expect(jobId).not.toContain(':');
+        }
+      }
     });
 
     it('bulk-enqueues recipient jobs in one round trip', async () => {

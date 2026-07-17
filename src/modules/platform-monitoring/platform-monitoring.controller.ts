@@ -1,4 +1,5 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -33,5 +34,17 @@ export class PlatformMonitoringController {
   @Get('overview')
   overview() {
     return this.monitoring.overview();
+  }
+
+  @ApiOperation({
+    summary: 'WhatsApp / Meta App readiness (super-admin)',
+    description:
+      'Per-value configured/missing status for the platform Meta App (App ID, Embedded Signup Config ID, App Secret, Webhook Verify Token, Graph API version), whether the Embedded Signup flow and webhook ingestion are actually ready, Redis reachability, worker liveness, and the webhook callback URL as reachable from this request. Never returns secret values — configured/missing only.',
+  })
+  @ApiOkResponse({ description: 'WhatsApp readiness snapshot.' })
+  @Get('whatsapp-readiness')
+  whatsappReadiness(@Req() req: Request) {
+    const origin = `${req.protocol}://${req.get('host')}`;
+    return this.monitoring.whatsappReadiness(origin);
   }
 }

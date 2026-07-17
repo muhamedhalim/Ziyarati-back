@@ -4,6 +4,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -17,6 +18,11 @@ export class WhatsappTemplateFilterDto {
   @IsOptional()
   @IsIn(WHATSAPP_TEMPLATE_STATUSES)
   status?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by the connected WhatsApp account this template is synced under.', format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  accountId?: string;
 
   @ApiPropertyOptional({ description: 'Filter by category.', example: 'UTILITY', maxLength: 50 })
   @IsOptional()

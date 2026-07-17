@@ -98,6 +98,35 @@ the browser has no use for them and no way to obtain them.
   }
 
   @ApiOperation({
+    summary: 'Whether Meta WhatsApp onboarding is configured',
+    description: `
+**Protected — requires \`whatsapp.accounts.manage\`. Clinic must be active.**
+
+A single boolean the frontend uses to disable the "Connect WhatsApp" button and
+show a clear message, without treating an unconfigured platform as an error to
+retry (which \`GET config\` does, by design — it must fail loudly for the dialog
+that actually depends on those values).
+
+**Security:** returns \`configured\` only. Never the app id, config id, or any
+secret — this endpoint exists purely so the UI has a stable value to branch on.
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Onboarding configuration status.',
+    schema: { type: 'object', properties: { configured: { type: 'boolean', example: false } } },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or the clinic is not active.',
+    schema: S_ERROR,
+  })
+  @Get('status')
+  @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
+  status() {
+    return this.signup.status();
+  }
+
+  @ApiOperation({
     summary: 'Complete Embedded Signup and connect the clinic\'s WhatsApp number',
     description: `
 **Protected — requires \`whatsapp.accounts.manage\`. Clinic must be active.**

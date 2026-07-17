@@ -119,7 +119,7 @@ export class CampaignExecutionService {
         mgr.create(OutboxJob, {
           queue: QUEUE.CAMPAIGNS_LAUNCH,
           job_name: JOB.CAMPAIGNS_LAUNCH,
-          dedupe_key: `campaign-launch:${run.id}`,
+          dedupe_key: `campaign-launch-${run.id}`,
           payload: {
             tenantId,
             campaignId: id,
@@ -169,7 +169,7 @@ export class CampaignExecutionService {
           mgr.create(OutboxJob, {
             queue: QUEUE.CAMPAIGNS_FANOUT,
             job_name: JOB.CAMPAIGNS_FANOUT_CHUNK,
-            dedupe_key: `campaign-fanout:${run.id}:resume:${Date.now()}`,
+            dedupe_key: `campaign-fanout-${run.id}-resume-${Date.now()}`,
             payload: { tenantId, campaignId: id, runId: run.id, cursor: null },
           }),
         );
@@ -253,7 +253,7 @@ export class CampaignExecutionService {
         mgr.create(OutboxJob, {
           queue: QUEUE.CAMPAIGNS_LAUNCH,
           job_name: JOB.CAMPAIGNS_LAUNCH,
-          dedupe_key: `campaign-launch:${run.id}`,
+          dedupe_key: `campaign-launch-${run.id}`,
           payload: {
             tenantId,
             campaignId: id,

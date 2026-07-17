@@ -153,6 +153,46 @@ export class CampaignRecipientService {
     return { campaignId, runId: run.id, total, byProcessing };
   }
 
+  /**
+   * Non-delivery reasons for the campaign's latest run, grouped by the
+   * `failure_reason` CampaignDispatchService actually recorded (e.g.
+   * `no-marketing-consent`, `run-stopped`, `daily-cap`, or a provider error
+   * string for FAILED rows). This is what the metrics UI groups under labels
+   * like "opted out" / "cancelled" — those are not separate backend states
+   * (see RecipientProcessing), just readable names for specific reason
+   * strings, so the UI must not invent totals beyond what is grouped here.
+   */
+  async reasonBreakdown(tenantId: string, campaignId: string) {
+    await this.assertCampaign(tenantId, campaignId);
+    const run = await this.runs.latest(tenantId, campaignId);
+    if (!run) return { campaignId, runId: null, reasons: [] };
+
+    const rows = await this.recipients
+      .createQueryBuilder('r')
+      .select('r.processing', 'processing')
+      .addSelect('r.failure_reason', 'reason')
+      .addSelect('COUNT(*)', 'count')
+      .where('r."runId" = :runId', { runId: run.id })
+      .andWhere('r.processing IN (:...terminal)', {
+        terminal: [RecipientProcessing.SKIPPED, RecipientProcessing.FAILED],
+      })
+      .andWhere('r.failure_reason IS NOT NULL')
+      .groupBy('r.processing')
+      .addGroupBy('r.failure_reason')
+      .orderBy('count', 'DESC')
+      .getRawMany<{ processing: RecipientProcessing; reason: string; count: string }>();
+
+    return {
+      campaignId,
+      runId: run.id,
+      reasons: rows.map((r) => ({
+        processing: r.processing,
+        reason: r.reason,
+        count: Number(r.count),
+      })),
+    };
+  }
+
   /** Verifies the campaign exists and belongs to the tenant (404 otherwise). */
   private async assertCampaign(tenantId: string, campaignId: string): Promise<Campaign> {
     const campaign = await this.campaigns.findOne({

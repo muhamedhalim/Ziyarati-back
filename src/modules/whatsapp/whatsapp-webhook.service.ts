@@ -16,6 +16,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
 import { DELIVERY_STATUS, DeliveryStatus } from '../notifications/notification.constants';
+import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
+import { RecipientDelivery } from '../../entities/enums';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { MetaConfig } from './meta/meta.config';
@@ -53,6 +55,7 @@ export class WhatsappWebhookService {
     private readonly meta: MetaConfig,
     @Inject(forwardRef(() => NotificationDeliveryService))
     private readonly notifDelivery: NotificationDeliveryService,
+    private readonly recipientDelivery: RecipientDeliveryService,
     private readonly inboundAi: WhatsappInboundAiService,
     private readonly queue: QueueService,
   ) {}
@@ -147,13 +150,31 @@ export class WhatsappWebhookService {
     }
   }
 
-  /** Extract Meta statuses and forward each to the notification delivery axis. */
+  /**
+   * Extract Meta statuses and forward each to BOTH delivery axes that key off
+   * `provider_ref`/`wamid`:
+   *  - NotificationDeliveryService (`notification_logs` — template sends via
+   *    WhatsappTemplateController/ExecutionService);
+   *  - RecipientDeliveryService (`campaign_recipients` — campaign sends).
+   * A given `wamid` only ever matches rows in ONE of the two tables, so calling
+   * both unconditionally is safe: the non-matching one is a cheap, harmless
+   * no-op (`recipient-not-found`). Without this second call campaign delivery/
+   * read counters never move past `sent`, no matter how many Meta status
+   * events arrive — this was the actual gap ("delivered"/"read" in the
+   * campaign metrics UI would stay 0 forever for real WhatsApp sends).
+   */
   private async applyDeliveryStatuses(body: WhatsappWebhookBody): Promise<void> {
     const value = this.firstChangeValue(body);
     const statuses = (value?.statuses ?? []) as Array<{ id?: string; status?: string }>;
     for (const st of statuses) {
-      const event = this.mapDeliveryStatus(st?.status);
-      if (event && st?.id) await this.notifDelivery.recordDelivery(st.id, event);
+      if (!st?.id) continue;
+      const notifEvent = this.mapDeliveryStatus(st.status);
+      if (notifEvent) await this.notifDelivery.recordDelivery(st.id, notifEvent);
+
+      const recipientEvent = this.mapRecipientDelivery(st.status);
+      if (recipientEvent) {
+        await this.recipientDelivery.recordDelivery({ providerRef: st.id, event: recipientEvent });
+      }
     }
   }
 
@@ -167,6 +188,25 @@ export class WhatsappWebhookService {
         return DELIVERY_STATUS.READ;
       case 'failed':
         return DELIVERY_STATUS.FAILED;
+      default:
+        return null;
+    }
+  }
+
+  /** Meta's status string -> the campaign recipient's delivery axis (see RecipientDeliveryService). */
+  private mapRecipientDelivery(status?: string): RecipientDelivery | null {
+    switch (status) {
+      case 'sent':
+        return RecipientDelivery.ACCEPTED;
+      case 'delivered':
+        return RecipientDelivery.DELIVERED;
+      case 'read':
+        return RecipientDelivery.READ;
+      case 'failed':
+        // A carrier-reported failure after the send succeeded — a hard
+        // bounce, not a dispatch failure (that's `processing`, owned by the
+        // worker). Terminal; see RecipientDeliveryService.
+        return RecipientDelivery.BOUNCED;
       default:
         return null;
     }

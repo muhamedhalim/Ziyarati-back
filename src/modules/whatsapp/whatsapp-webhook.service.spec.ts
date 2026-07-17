@@ -9,6 +9,7 @@ import { MetaConfig } from './meta/meta.config';
 import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
+import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
 import { QueueService } from '../../queue/queue.service';
 import { ErrorCode } from '../../common/errors';
 import { DELIVERY_STATUS } from '../notifications/notification.constants';
@@ -58,6 +59,7 @@ describe('WhatsappWebhookService', () => {
   let verifier: { verify: jest.Mock; resolveChallenge: jest.Mock };
   let inboundAi: { handleInboundValue: jest.Mock };
   let notifDelivery: { recordDelivery: jest.Mock };
+  let recipientDelivery: { recordDelivery: jest.Mock };
   let queue: { enqueueWhatsappWebhook: jest.Mock };
 
   beforeEach(async () => {
@@ -70,6 +72,7 @@ describe('WhatsappWebhookService', () => {
     verifier = { verify: jest.fn().mockReturnValue(true), resolveChallenge: jest.fn() };
     inboundAi = { handleInboundValue: jest.fn().mockResolvedValue(undefined) };
     notifDelivery = { recordDelivery: jest.fn().mockResolvedValue(undefined) };
+    recipientDelivery = { recordDelivery: jest.fn().mockResolvedValue({ updated: false, reason: 'recipient-not-found' }) };
     queue = { enqueueWhatsappWebhook: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -79,6 +82,7 @@ describe('WhatsappWebhookService', () => {
         { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
         { provide: WebhookSignatureVerifier, useValue: verifier },
         { provide: NotificationDeliveryService, useValue: notifDelivery },
+        { provide: RecipientDeliveryService, useValue: recipientDelivery },
         { provide: WhatsappInboundAiService, useValue: inboundAi },
         { provide: QueueService, useValue: queue },
         {
@@ -211,6 +215,51 @@ describe('WhatsappWebhookService', () => {
         'wamid.9',
         DELIVERY_STATUS.DELIVERED,
       );
+    });
+
+    it('also forwards the status to campaign recipient delivery (the previously-missing seam)', async () => {
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-2',
+        processed: false,
+        event_type: 'message_status',
+        payload: statusBody('wamid.9', 'delivered'),
+        tenant: { id: TENANT },
+      });
+
+      await service.processEvent('evt-2');
+
+      expect(recipientDelivery.recordDelivery).toHaveBeenCalledWith({
+        providerRef: 'wamid.9',
+        event: 'DELIVERED',
+      });
+    });
+
+    it('maps "read" and "failed" to the recipient delivery axis (READ / BOUNCED)', async () => {
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-4',
+        processed: false,
+        event_type: 'message_status',
+        payload: statusBody('wamid.10', 'read'),
+        tenant: { id: TENANT },
+      });
+      await service.processEvent('evt-4');
+      expect(recipientDelivery.recordDelivery).toHaveBeenCalledWith({
+        providerRef: 'wamid.10',
+        event: 'READ',
+      });
+
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-5',
+        processed: false,
+        event_type: 'message_status',
+        payload: statusBody('wamid.11', 'failed'),
+        tenant: { id: TENANT },
+      });
+      await service.processEvent('evt-5');
+      expect(recipientDelivery.recordDelivery).toHaveBeenCalledWith({
+        providerRef: 'wamid.11',
+        event: 'BOUNCED',
+      });
     });
 
     it('marks the event processed, guarded against a concurrent duplicate', async () => {

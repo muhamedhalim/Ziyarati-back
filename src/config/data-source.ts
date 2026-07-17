@@ -13,7 +13,8 @@ import { join } from 'node:path';
 export default new DataSource({
   type: 'postgres',
   url: process.env.DATABASE_URL,
-  entities: [join(__dirname, '..', 'entities', '**', '*.{ts,js}')],
+  // See typeorm.config.ts for why this excludes *.spec — same loader, same gotcha.
+  entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
   migrations: [join(__dirname, '..', 'migrations', '*.{ts,js}')],
   synchronize: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,

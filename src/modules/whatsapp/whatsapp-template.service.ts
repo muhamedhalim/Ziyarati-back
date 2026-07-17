@@ -60,9 +60,14 @@ export class WhatsappTemplateService {
     if (filter.category) where.category = filter.category;
     if (filter.language) where.language = filter.language;
     if (filter.search) where.name = ILike(`%${filter.search}%`);
+    if (filter.accountId) where.whatsapp_account = { id: filter.accountId };
 
     const [data, total] = await this.templates.findAndCount({
       where,
+      // The templates screen shows which connected account/number each
+      // template is synced under — load it rather than making the frontend
+      // guess from `waba_id` alone.
+      relations: { whatsapp_account: true },
       order: { created_at: 'DESC' },
       skip: (filter.page - 1) * filter.limit,
       take: filter.limit,

@@ -77,6 +77,19 @@ export class MetaEmbeddedSignupService {
   }
 
   /**
+   * Lightweight, always-200 status check for the frontend to gate the Connect
+   * button WITHOUT treating "not configured yet" as an error to retry.
+   * `publicConfig()` above throws 422 when incomplete (correct for the
+   * onboarding dialog itself, which genuinely cannot proceed); this exists
+   * because a boolean is a cleaner signal for a UI decision than parsing an
+   * error response. Never returns a secret — `embeddedSignupConfigured` is a
+   * derived boolean, not a value.
+   */
+  status(): { configured: boolean } {
+    return { configured: this.config.embeddedSignupConfigured };
+  }
+
+  /**
    * Completes onboarding for the authenticated tenant and returns the connected
    * account (safe view — no token).
    */

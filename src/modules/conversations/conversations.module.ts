@@ -11,6 +11,7 @@ import { Customer } from '../../entities/CRM/Customer';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { User } from '../../entities/Auth&RBAC/User';
 import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
+import { StorageModule } from '../storage/storage.module';
 
 import { ConversationService } from './conversation.service';
 import { ConversationParticipantService } from './conversation-participant.service';
@@ -57,6 +58,7 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
       // pattern (each module gets its own repository instance).
       HandoverRequest,
     ]),
+    StorageModule,
   ],
   controllers: [
     ConversationController,

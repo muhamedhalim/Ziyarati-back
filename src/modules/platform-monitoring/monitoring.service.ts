@@ -252,6 +252,68 @@ export class MonitoringService {
     ];
   }
 
+  // ── WhatsApp / Meta readiness (dev + admin diagnostics) ─────────────────
+  /**
+   * Per-value configured/missing breakdown for the platform Meta App, plus
+   * Redis and worker health (reused from `systemHealth`). Deliberately does
+   * NOT read via `MetaConfig` — that class is scoped to the WhatsApp module
+   * and pulling it in here would wire a cross-module dependency for what is
+   * just a handful of `ConfigService.get` presence checks; the trimming logic
+   * is mirrored, not duplicated in spirit; MetaConfig stays the sole place
+   * that decides public vs. secret and how those values are actually used.
+   *
+   * `webhookCallbackUrl` is derived from the request that called this
+   * endpoint (protocol + host), not a new env var — this API and the webhook
+   * endpoint are served by the same app, so the admin's own request tells us
+   * exactly what a publicly reachable base URL looks like for them.
+   */
+  async whatsappReadiness(requestOrigin?: string) {
+    const has = (k: string): boolean => !!this.config.get<string>(k)?.trim();
+
+    const values = {
+      appId: has('META_APP_ID'),
+      embeddedSignupConfigId: has('META_EMBEDDED_SIGNUP_CONFIG_ID'),
+      appSecret: has('META_APP_SECRET') || has('WHATSAPP_APP_SECRET'),
+      webhookVerifyToken: has('META_WEBHOOK_VERIFY_TOKEN') || has('WHATSAPP_VERIFY_TOKEN'),
+      graphApiVersion: has('META_GRAPH_API_VERSION'), // false = using the v21.0 default, not "broken"
+    };
+
+    let redis: Health = 'unknown';
+    try {
+      await this.queues.redisPing();
+      redis = 'up';
+    } catch {
+      redis = 'down';
+    }
+
+    let workers: Health = 'unknown';
+    try {
+      const hb = await this.queues.kvGet(WORKER_HEARTBEAT_KEY);
+      if (hb) {
+        const parsed = JSON.parse(hb) as { at: string };
+        const age = Math.round((Date.now() - new Date(parsed.at).getTime()) / 1000);
+        workers = age < 3600 ? 'up' : 'degraded';
+      }
+    } catch {
+      /* heartbeat absent → unknown */
+    }
+
+    return {
+      values: {
+        appId: values.appId ? 'configured' : 'missing',
+        embeddedSignupConfigId: values.embeddedSignupConfigId ? 'configured' : 'missing',
+        appSecret: values.appSecret ? 'configured' : 'missing',
+        webhookVerifyToken: values.webhookVerifyToken ? 'configured' : 'missing',
+        graphApiVersion: values.graphApiVersion ? 'configured' : 'missing',
+      },
+      embeddedSignupReady: values.appId && values.embeddedSignupConfigId && values.appSecret,
+      webhookReady: values.appSecret && values.webhookVerifyToken,
+      webhookCallbackUrl: requestOrigin ? `${requestOrigin}/api/v1/whatsapp/webhooks/events` : null,
+      redis,
+      workers,
+    };
+  }
+
   // ── Alerts (derived) ────────────────────────────────────────────────────
   private alerts(input: {
     system: Awaited<ReturnType<MonitoringService['systemHealth']>>;

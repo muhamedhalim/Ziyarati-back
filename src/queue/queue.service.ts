@@ -55,7 +55,7 @@ export class QueueService {
 
   enqueueNotificationDispatch(data: NotificationDispatchJob, opts?: JobsOptions) {
     return this.add(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_DISPATCH, data, {
-      jobId: `notification:${data.notificationId}`, // idempotent (1 job per notification)
+      jobId: `notification-${data.notificationId}`, // idempotent (1 job per notification)
       ...opts,
     });
   }
@@ -63,14 +63,14 @@ export class QueueService {
   /** Manual retry: unique job id so it re-runs even if the prior job lingers. */
   retryNotificationDispatch(data: NotificationDispatchJob, opts?: JobsOptions) {
     return this.add(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_DISPATCH, data, {
-      jobId: `notification:${data.notificationId}:retry:${Date.now()}`,
+      jobId: `notification-${data.notificationId}-retry-${Date.now()}`,
       ...opts,
     });
   }
 
   /** Best-effort removal of a scheduled (delayed) notification job. */
   async removeNotificationDispatch(notificationId: string): Promise<void> {
-    const job = await this.queues[QUEUE.NOTIFICATIONS].getJob(`notification:${notificationId}`);
+    const job = await this.queues[QUEUE.NOTIFICATIONS].getJob(`notification-${notificationId}`);
     if (job) await job.remove().catch(() => undefined);
   }
 
@@ -81,7 +81,7 @@ export class QueueService {
       items.map((data) => ({
         name: JOB.NOTIFICATIONS_DISPATCH,
         data: this.stamp(data),
-        opts: { jobId: `notification:${data.notificationId}` },
+        opts: { jobId: `notification-${data.notificationId}` },
       })),
     );
   }
@@ -89,7 +89,7 @@ export class QueueService {
   /** Park an exhausted notification dispatch in the DLQ (never auto-processed). */
   enqueueNotificationDlq(data: NotificationDlqJob, opts?: JobsOptions) {
     return this.add(QUEUE.NOTIFICATIONS_DLQ, JOB.NOTIFICATIONS_DLQ, data, {
-      jobId: `notif-dlq:${data.notificationId}:${Date.now()}`,
+      jobId: `notif-dlq-${data.notificationId}-${Date.now()}`,
       ...opts,
     });
   }
@@ -112,7 +112,7 @@ export class QueueService {
    */
   enqueueWhatsappWebhook(data: WhatsappWebhookProcessJob, opts?: JobsOptions) {
     return this.add(QUEUE.WHATSAPP_WEBHOOK, JOB.WHATSAPP_WEBHOOK_PROCESS, data, {
-      jobId: `wa-webhook:${data.webhookEventId}`,
+      jobId: `wa-webhook-${data.webhookEventId}`,
       ...opts,
     });
   }
@@ -123,7 +123,7 @@ export class QueueService {
    */
   enqueueWhatsappMediaDownload(data: WhatsappMediaDownloadJob, opts?: JobsOptions) {
     return this.add(QUEUE.WHATSAPP_MEDIA, JOB.WHATSAPP_MEDIA_DOWNLOAD, data, {
-      jobId: `wa-media:${data.messageId}:${data.mediaId}`,
+      jobId: `wa-media-${data.messageId}-${data.mediaId}`,
       ...opts,
     });
   }
@@ -133,7 +133,7 @@ export class QueueService {
   /** Launch fan-out kick-off. Idempotent per run. */
   enqueueCampaignLaunch(data: CampaignLaunchJob, opts?: JobsOptions) {
     return this.add(QUEUE.CAMPAIGNS_LAUNCH, JOB.CAMPAIGNS_LAUNCH, data, {
-      jobId: `campaign-launch:${data.runId}`,
+      jobId: `campaign-launch-${data.runId}`,
       ...opts,
     });
   }
@@ -141,7 +141,7 @@ export class QueueService {
   /** One keyset window of a run's audience. Idempotent per (run, cursor). */
   enqueueCampaignFanoutChunk(data: CampaignFanoutChunkJob, opts?: JobsOptions) {
     return this.add(QUEUE.CAMPAIGNS_FANOUT, JOB.CAMPAIGNS_FANOUT_CHUNK, data, {
-      jobId: `campaign-fanout:${data.runId}:${data.cursor ?? 'start'}`,
+      jobId: `campaign-fanout-${data.runId}-${data.cursor ?? 'start'}`,
       ...opts,
     });
   }
@@ -149,7 +149,7 @@ export class QueueService {
   /** Single recipient send. Idempotent per (run, recipient). */
   enqueueCampaignRecipient(data: CampaignProcessRecipientJob, opts?: JobsOptions) {
     return this.add(QUEUE.CAMPAIGNS_PROCESS, JOB.CAMPAIGNS_PROCESS_RECIPIENT, data, {
-      jobId: `campaign-recipient:${data.runId}:${data.recipientId}`,
+      jobId: `campaign-recipient-${data.runId}-${data.recipientId}`,
       ...opts,
     });
   }
@@ -168,7 +168,7 @@ export class QueueService {
         name: JOB.CAMPAIGNS_PROCESS_RECIPIENT,
         data: this.stamp(it.data),
         opts: {
-          jobId: `campaign-recipient:${it.data.runId}:${it.data.recipientId}`,
+          jobId: `campaign-recipient-${it.data.runId}-${it.data.recipientId}`,
           backoff: { type: BACKOFF_EXPO_JITTER },
           ...it.opts,
         },
@@ -179,7 +179,7 @@ export class QueueService {
   /** Park a dead-letter job (never auto-processed; replayed by admin tooling). */
   enqueueCampaignDlq(data: CampaignDlqJob, opts?: JobsOptions) {
     return this.add(QUEUE.CAMPAIGNS_DLQ, JOB.CAMPAIGNS_DLQ, data, {
-      jobId: `dlq:${data.sourceQueue}:${data.originalJobId ?? Date.now()}`,
+      jobId: `dlq-${data.sourceQueue}-${data.originalJobId ?? Date.now()}`,
       ...opts,
     });
   }
@@ -219,7 +219,7 @@ export class QueueService {
    */
   enqueueEmail(data: EmailSendJob, opts?: JobsOptions) {
     return this.add(QUEUE.EMAIL, JOB.EMAIL_SEND, data, {
-      ...(data.idempotencyKey ? { jobId: `email:${data.idempotencyKey}` } : {}),
+      ...(data.idempotencyKey ? { jobId: `email-${data.idempotencyKey}` } : {}),
       ...opts,
     });
   }
@@ -228,19 +228,25 @@ export class QueueService {
   enqueueUsageReportRun(data: UsageReportRunJob, opts?: JobsOptions) {
     const minute = Math.floor(Date.now() / 60_000);
     return this.add(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_RUN, data, {
-      jobId: `usage-report:${data.scheduleId}:${minute}`,
+      jobId: `usage-report-${data.scheduleId}-${minute}`,
       ...opts,
     });
   }
 
   // ── Workflow engine ──────────────────────────────────────────────────────
   //
-  // Job ids below use DASHES only (never `:`) — BullMQ's custom-id validator
-  // rejects any id containing `:` unless it splits into EXACTLY 3 parts (a
-  // legacy compatibility rule for its own repeatable-job ids; see
-  // node_modules/bullmq/dist/cjs/classes/job.js `validateOptions`). Discovered
-  // by actually booting the app and test-running a workflow — `tsc`/`nest build`
-  // cannot catch this class of runtime-only failure.
+  // Every job id in this file uses DASHES only (never `:`) — BullMQ's
+  // custom-id validator rejects any id containing `:` unless it splits into
+  // EXACTLY 3 parts (a legacy compatibility rule for its own repeatable-job
+  // ids; see node_modules/bullmq/dist/cjs/classes/job.js `validateOptions`).
+  // The 2- and 4-part colon ids that used to live throughout this file threw
+  // "Custom Id cannot contain :" on every real (non-mocked) enqueue call —
+  // caught and swallowed by each caller's try/catch, so webhook/notification/
+  // campaign-launch/email jobs were silently never queued against real Redis.
+  // Found by an HTTP e2e test that actually boots the app against real
+  // Postgres + Redis; unit tests mock QueueService entirely and can't catch
+  // this class of runtime-only failure — same as the workflow-engine
+  // discovery below.
 
   /** Kick off a workflow run. Idempotent per run (one fan-out job per run). */
   enqueueWorkflowRun(data: WorkflowRunJob, opts?: JobsOptions) {
