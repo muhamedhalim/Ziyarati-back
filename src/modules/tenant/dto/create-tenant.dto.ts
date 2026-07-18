@@ -14,10 +14,10 @@ export class CreateTenantDto {
   @ApiProperty({
     description: 'Display name of the clinic.',
     example: 'Al-Noor Medical Clinic',
-    maxLength: 255,
+    maxLength: 100,
   })
   @IsString()
-  @MaxLength(255)
+  @MaxLength(100)
   name!: string;
 
   @ApiProperty({

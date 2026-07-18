@@ -10,10 +10,10 @@ export class CreateBranchDto {
   @ApiProperty({
     description: 'Display name for this branch location.',
     example: 'Riyadh - Olaya Branch',
-    maxLength: 255,
+    maxLength: 100,
   })
   @IsString()
-  @MaxLength(255)
+  @MaxLength(100)
   name!: string;
 
   @ApiPropertyOptional({

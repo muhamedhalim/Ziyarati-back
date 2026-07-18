@@ -116,6 +116,24 @@ main.ts
                       /
                       /
                 Permission
+
+                Request
+  ↓
+AuthGuard('jwt')
+  ↓
+JwtStrategy
+  ↓
+استخراج Access Token
+  ↓
+التحقق من التوقيع والصلاحية
+  ↓
+validate(payload)
+  ↓
+تحميل المستخدم الحالي من قاعدة البيانات
+  ↓
+وضع المستخدم في request.user
+  ↓
+السماح للـ Controller بالعمل
     
 > **Status:** derived directly from the implementation (`src/**`) and the committed
 > migrations (`src/migrations/*`), not from any prior AI-generated catalogue.
