@@ -34,6 +34,8 @@ export const QUEUE = {
   SETTLEMENTS: 'settlements',
   SUBSCRIPTIONS: 'subscriptions',
   REFUNDS: 'refunds',
+  /** Payment reconciliation sweep (stale PENDING ⇄ gateway truth). */
+  PAYMENTS: 'payments',
   PLATFORM: 'platform',
   EMAIL: 'email',
   USAGE_REPORT: 'usage-report',
@@ -74,6 +76,7 @@ export const JOB = {
   SETTLEMENTS_PROCESS: 'settlements.process',
   SUBSCRIPTIONS_RENEWAL_CHECK: 'subscriptions.renewalCheck',
   REFUNDS_REAP: 'refunds.reap',
+  PAYMENTS_RECONCILE: 'payments.reconcile',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
   EMAIL_SEND: 'email.send',
   USAGE_REPORT_TICK: 'usageReport.tick',

@@ -45,17 +45,33 @@ export const validate = (config: Record<string, unknown>) => {
     JWT_REFRESH_TTL: Joi.string().default('7d'),
 
     // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
-    // Optional: when unset, the payment gateway factory falls back to the
-    // Noop provider so the app boots and runs without a live integration.
+    // PAYMENT_PROVIDER is the single, central gateway selection. In dev/test
+    // the keys may stay unset (the factory falls back to the Noop provider so
+    // the app boots and runs without a live integration); in PRODUCTION a real
+    // provider with missing essential keys fails the boot — see the explicit
+    // check after schema validation below.
+    PAYMENT_PROVIDER: Joi.string().valid('moyasar', 'noop').default('moyasar'),
     MOYASAR_SECRET_KEY: Joi.string().allow('', null),
     MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
     MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
     MOYASAR_API_BASE: Joi.string().allow('', null),
+    // Split payments (Moyasar `splits`) require a commercial Marketplace /
+    // Platforms contract + per-clinic recipient ids. OFF until enabled by
+    // Moyasar — a technically-supported feature is never assumed active.
+    MOYASAR_MARKETPLACE_ENABLED: Joi.string().valid('true', 'false').default('false'),
 
     // Marketplace platform commission frozen onto each payment at capture.
     // Both default to 0 (platform takes no cut) until a fee policy is set.
     PLATFORM_FEE_PERCENT: Joi.number().min(0).max(100).default(0),
     PLATFORM_FEE_FIXED: Joi.number().min(0).default(0),
+
+    // Refund reaper (R2) sweep thresholds, minutes.
+    REFUND_REAPER_STALE_MIN: Joi.number().min(1).default(10),
+    REFUND_REAPER_HARDFAIL_MIN: Joi.number().min(1).default(120),
+    // Payment reconciliation sweep thresholds, minutes (stale PENDING payments
+    // re-verified against the gateway; hard threshold pages an operator).
+    PAYMENTS_RECON_STALE_MIN: Joi.number().min(1).default(15),
+    PAYMENTS_RECON_HARDFAIL_MIN: Joi.number().min(1).default(240),
 
     // ── Email (Resend by default; provider behind an abstraction) ─────────
     // `enabled` defaults to ON in production, OFF in dev (no-op provider) unless
@@ -150,6 +166,26 @@ export const validate = (config: Record<string, unknown>) => {
     throw new Error(
       `❌ Env validation error: ${error.message}`,
     );
+  }
+
+  // ── Payments fail-fast (production only) ─────────────────────────────────
+  // A real gateway with missing essential credentials must never boot in
+  // production: the factory would fall back to the Noop provider, which
+  // SIMULATES successful payments — silently faking revenue. Dev/test keep the
+  // keyless Noop flow. The message names only the missing VARIABLES, never
+  // values. Opting out is explicit: PAYMENT_PROVIDER=noop.
+  if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER !== 'noop') {
+    const missing: string[] = [];
+    if (!String(value.MOYASAR_SECRET_KEY ?? '').trim()) missing.push('MOYASAR_SECRET_KEY');
+    if (!String(value.MOYASAR_WEBHOOK_SECRET ?? '').trim()) missing.push('MOYASAR_WEBHOOK_SECRET');
+    if (missing.length > 0) {
+      throw new Error(
+        `❌ Env validation error: PAYMENT_PROVIDER is "${value.PAYMENT_PROVIDER}" but ` +
+          `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
+          `Payments cannot run in production without gateway credentials. ` +
+          `Set the missing variable(s), or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
+      );
+    }
   }
 
   return value;

@@ -22,6 +22,7 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
 
 import { AppointmentsService } from './appointment.service';
 import { AppointmentReviewService } from './appointment-review.service';
+import { AppointmentPaymentListener } from './appointment-payment.listener';
 import { AppointmentController } from './appointment.controller';
 import { ReviewController } from './review.controller';
 
@@ -59,7 +60,9 @@ import { ReviewController } from './review.controller';
     SubscriptionBillingModule,
   ],
   controllers: [AppointmentController, ReviewController],
-  providers: [AppointmentsService, AppointmentReviewService],
+  // AppointmentPaymentListener bridges verified payment events → booking
+  // confirmation (the ONLY payment-driven confirmation path; no redirects).
+  providers: [AppointmentsService, AppointmentReviewService, AppointmentPaymentListener],
   exports: [AppointmentsService, AppointmentReviewService],
 })
 export class AppointmentModule {}

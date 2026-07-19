@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'node:crypto';
+
+import { PaymentsConfig } from '../payments.config';
 
 /**
  * Moyasar webhook authenticity check.
@@ -22,15 +23,15 @@ import { timingSafeEqual } from 'node:crypto';
 export class MoyasarWebhookVerifier {
   private readonly logger = new Logger('MoyasarWebhookVerifier');
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: PaymentsConfig) {}
 
   verify(providedToken: string | undefined): boolean {
-    const expected = this.config.get<string>('MOYASAR_WEBHOOK_SECRET') ?? '';
+    const expected = this.config.moyasarWebhookSecret ?? '';
 
     if (!expected) {
       // H3: fail CLOSED in production — an unconfigured secret must never accept
       // unauthenticated webhooks (forgery → fake "paid" payments).
-      if (this.config.get<string>('NODE_ENV') === 'production') {
+      if (this.config.isProduction) {
         this.logger.error(
           'MOYASAR_WEBHOOK_SECRET not configured — rejecting webhook in production',
         );

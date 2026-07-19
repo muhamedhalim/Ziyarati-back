@@ -27,6 +27,8 @@ export class PaymentSucceededEvent {
     readonly amount: number,
     readonly currency: string,
     readonly customerId: string | undefined,
+    /** The booking this payment settles — drives appointment confirmation. */
+    readonly appointmentId?: string,
   ) {}
 }
 
@@ -40,6 +42,8 @@ export class PaymentRefundedEvent {
     readonly customerId: string | undefined,
     /** True when the refund is partial (PARTIALLY_REFUNDED status). */
     readonly isPartial: boolean,
+    /** The booking this payment settles — drives appointment payment status. */
+    readonly appointmentId?: string,
   ) {}
 }
 
@@ -49,5 +53,6 @@ export class PaymentFailedEvent {
     readonly tenantId: string,
     readonly paymentId: string,
     readonly customerId: string | undefined,
+    readonly appointmentId?: string,
   ) {}
 }

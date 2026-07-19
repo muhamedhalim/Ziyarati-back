@@ -31,6 +31,8 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_CHECK, { tenantId: null }, '0 2 * * *');
       // Refund recovery / reaper sweep — every 5 minutes (R2).
       await this.queue.addRepeatable(QUEUE.REFUNDS, JOB.REFUNDS_REAP, { tenantId: null }, '*/5 * * * *');
+      // Payment reconciliation sweep — every 10 minutes (webhook-loss recovery).
+      await this.queue.addRepeatable(QUEUE.PAYMENTS, JOB.PAYMENTS_RECONCILE, { tenantId: null }, '*/10 * * * *');
       // Notification durability sweep — every minute (reclaim stale PROCESSING +
       // re-enqueue due-but-unsent rows). Idempotent via deterministic jobId.
       await this.queue.addRepeatable(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_REAP, { tenantId: null }, '* * * * *');

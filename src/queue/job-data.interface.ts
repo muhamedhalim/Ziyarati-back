@@ -13,6 +13,9 @@ export interface BaseJobData {
 // ── Refunds (R2 reaper sweep — platform-level, tenantId null) ───────────────
 export type RefundsReapJob = BaseJobData;
 
+// ── Payments (reconciliation sweep — platform-level, tenantId null) ─────────
+export type PaymentsReconcileJob = BaseJobData;
+
 // ── Email (transactional send) ─────────────────────────────────────────────
 export interface EmailSendJob extends BaseJobData {
   /** Recipient address(es). */

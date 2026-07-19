@@ -693,6 +693,74 @@ export class AppointmentsService {
     return entries.sort((a, b) => a.at.getTime() - b.at.getTime());
   }
 
+  // ─────────────────── Payment outcome (system-triggered) ────────────────── //
+
+  /**
+   * Reflect a VERIFIED payment outcome on the booking. Invoked by the payment
+   * domain events (webhook / verify / reconciliation) — never from client
+   * input, and never from a browser redirect. Idempotent: redelivering an
+   * outcome the booking already reflects is a no-op.
+   *
+   * 'paid' → payment axis PAID and, while the scheduling status is still
+   * PENDING_PAYMENT, it advances to CONFIRMED — a booking is confirmed ONLY by
+   * verified payment. Refund outcomes touch the payment axis alone (the
+   * scheduling status is a business decision handled via cancel/status APIs).
+   */
+  async applyPaymentOutcome(
+    tenantId: string,
+    appointmentId: string,
+    outcome: 'paid' | 'refunded' | 'partially_refunded',
+    triggeredBy = 'system:payment',
+  ): Promise<void> {
+    const confirmed = await this.dataSource.transaction(async (manager) => {
+      const appointment = await this.loadForWrite(manager, tenantId, appointmentId);
+
+      const targetPayment =
+        outcome === 'paid'
+          ? AppointmentPaymentStatus.PAID
+          : outcome === 'refunded'
+            ? AppointmentPaymentStatus.REFUNDED
+            : AppointmentPaymentStatus.PARTIALLY_REFUNDED;
+
+      const paymentChanged = appointment.payment_status !== targetPayment;
+      const shouldConfirm =
+        outcome === 'paid' &&
+        appointment.status === AppointmentStatus.PENDING_PAYMENT;
+
+      if (!paymentChanged && !shouldConfirm) return false;
+
+      appointment.payment_status = targetPayment;
+      const previous = appointment.status;
+      if (shouldConfirm) appointment.status = AppointmentStatus.CONFIRMED;
+      await manager.getRepository(Appointment).save(appointment);
+
+      if (shouldConfirm) {
+        await this.writeStatusLog(
+          manager,
+          tenantId,
+          appointment,
+          AppointmentStatus.CONFIRMED,
+          triggeredBy,
+        );
+        await this.writeHistory(
+          manager,
+          tenantId,
+          appointment,
+          previous,
+          AppointmentStatus.CONFIRMED,
+          triggeredBy,
+          'Confirmed by verified payment',
+        );
+      }
+      return shouldConfirm;
+    });
+
+    if (confirmed) {
+      const updated = await this.findOne(tenantId, appointmentId);
+      this.emitStatusEvent(tenantId, updated, AppointmentStatus.CONFIRMED);
+    }
+  }
+
   // ───────────────────────────── Delete ──────────────────────────────────── //
 
   /**

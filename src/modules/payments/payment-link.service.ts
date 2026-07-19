@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'node:crypto';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, Repository } from 'typeorm';
 
 import { PaymentLink } from '../../entities/Payments/PaymentLink';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
@@ -10,7 +10,12 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreatePaymentLinkDto } from './dto/create-payment-link.dto';
 import { QueryPaymentLinksDto } from './dto/query-payment-links.dto';
-import { PAYMENT_LINK_STATUS, PAYMENT_LINK_TOKEN_BYTES } from './payments.constants';
+import {
+  PAYMENT_LINK_STATUS,
+  PAYMENT_LINK_TOKEN_BYTES,
+  round2,
+} from './payments.constants';
+import { MerchantAccountService } from './merchant-account.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 
@@ -27,9 +32,43 @@ export class PaymentLinkService {
     @InjectRepository(PaymentLink)
     private readonly links: Repository<PaymentLink>,
     private readonly platformSettings: SystemSettingService,
+    private readonly merchants: MerchantAccountService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(tenantId: string, dto: CreatePaymentLinkDto): Promise<PaymentLink> {
+    // Marketplace gate: no live payment collection for an unapproved clinic.
+    await this.merchants.assertChargeable(tenantId);
+
+    // Booking-linked links take the SERVER-side booking price; a differing
+    // client amount is rejected (same authority rule as PaymentService).
+    let amount = dto.amount;
+    if (dto.appointmentId) {
+      const appointment = await this.dataSource.getRepository(Appointment).findOne({
+        where: { id: dto.appointmentId, tenant: { id: tenantId } },
+      });
+      if (!appointment) {
+        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Appointment not found' });
+      }
+      const bookingAmount = round2(Number(appointment.total_amount ?? 0));
+      if (!(bookingAmount > 0)) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: 'Appointment has no payable total amount',
+        });
+      }
+      if (
+        dto.amount != null &&
+        Math.round(Number(dto.amount) * 100) !== Math.round(bookingAmount * 100)
+      ) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message:
+            'Provided amount does not match the booking price. The booking price is read from the server.',
+          context: { expected: bookingAmount, provided: dto.amount },
+        });
+      }
+      amount = bookingAmount;
+    }
+
     const ttlHours = await this.platformSettings.getTyped<number>(SettingKey.PAYMENT_LINK_TTL);
     const expiresAt = dto.expiresAt
       ? new Date(dto.expiresAt)
@@ -41,7 +80,7 @@ export class PaymentLinkService {
         appointment: dto.appointmentId
           ? ({ id: dto.appointmentId } as Appointment)
           : undefined,
-        amount: dto.amount,
+        amount,
         link_token: this.generateToken(),
         status: PAYMENT_LINK_STATUS.ACTIVE,
         expires_at: expiresAt,

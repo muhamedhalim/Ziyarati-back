@@ -1,11 +1,14 @@
 import { ConfigService } from '@nestjs/config';
 
 import { MoyasarWebhookVerifier } from './moyasar-webhook.verifier';
+import { PaymentsConfig } from '../payments.config';
 import { createMockConfigService } from '../../../../test/utils/mock-factories';
 
 describe('MoyasarWebhookVerifier', () => {
   const build = (overrides: Record<string, unknown>) =>
-    new MoyasarWebhookVerifier(createMockConfigService(overrides) as unknown as ConfigService);
+    new MoyasarWebhookVerifier(
+      new PaymentsConfig(createMockConfigService(overrides) as unknown as ConfigService),
+    );
 
   it('accepts a token matching the configured secret', () => {
     expect(build({ MOYASAR_WEBHOOK_SECRET: 'shh' }).verify('shh')).toBe(true);

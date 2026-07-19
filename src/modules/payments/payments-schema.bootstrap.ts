@@ -78,6 +78,16 @@ export class PaymentsSchemaBootstrap implements OnApplicationBootstrap {
       ON payments ("tenantId", status, settlement_status, paid_at)
     `);
 
+    // Marketplace: DB-level double-charge protection for booking payments —
+    // at most ONE live (PENDING) payment per appointment. Partial so
+    // failed/paid/refunded history is unaffected. Mirrored in the
+    // MarketplacePayments migration for migrations-first prod.
+    await this.run('one pending payment per appointment', `
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_appointment_pending
+      ON payments ("appointmentId")
+      WHERE status = 'PENDING' AND "appointmentId" IS NOT NULL
+    `);
+
     // R1: clawback / settlement-adjustment ledger. A refund landing on an
     // already-claimed/settled payment records an OPEN adjustment here; the next
     // settlement run claims (OPEN → APPLIED) and nets it out — keeping total

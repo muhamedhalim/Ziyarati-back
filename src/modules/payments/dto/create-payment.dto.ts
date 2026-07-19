@@ -8,12 +8,25 @@ import {
   MaxLength,
 } from 'class-validator';
 
-/** Create a payment for the caller's tenant. Tenant is NEVER taken from here. */
+/**
+ * Create a payment for the caller's tenant. Tenant is NEVER taken from here.
+ *
+ * Financial-authority rule: when `appointmentId` is set, the booking price is
+ * read from the DATABASE — `amount`/`currency` here are optional cross-checks
+ * and any mismatch is rejected. Without an appointment (staff POS flow), an
+ * explicit `amount` is required.
+ */
 export class CreatePaymentDto {
-  @ApiProperty({ description: 'Amount in major currency units.', example: 150.0 })
+  @ApiProperty({
+    description:
+      'Amount in major currency units. Optional (cross-check only) when appointmentId is set — the booking price comes from the server.',
+    example: 150.0,
+    required: false,
+  })
+  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @IsPositive()
-  amount!: number;
+  amount?: number;
 
   @ApiPropertyOptional({
     description: 'ISO currency code. Defaults to SAR (Moyasar).',

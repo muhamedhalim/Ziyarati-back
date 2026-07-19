@@ -1,9 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { AccessControlService } from './access-control.service';
+import { SystemSettingService } from '../platform/system-setting.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { BillingCycle, SubscriptionStatus } from '../../entities/enums';
@@ -36,6 +38,11 @@ describe('SubscriptionService', () => {
         { provide: getRepositoryToken(SubscriptionPlan), useValue: plans },
         { provide: BillingService, useValue: billing },
         { provide: AccessControlService, useValue: access },
+        {
+          provide: SystemSettingService,
+          useValue: { getTyped: jest.fn().mockResolvedValue(14) },
+        },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(SubscriptionService);

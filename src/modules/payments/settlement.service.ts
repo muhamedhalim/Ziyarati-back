@@ -79,11 +79,15 @@ export class SettlementService {
       if (dto.periodEnd) {
         qb.andWhere('paid_at < :periodEnd', { periodEnd: new Date(dto.periodEnd) });
       }
-      const claimedRes = await qb.returning(['id', 'amount', 'currency']).execute();
+      const claimedRes = await qb
+        .returning(['id', 'amount', 'currency', 'gateway_fee', 'platform_fee'])
+        .execute();
       const claimed = claimedRes.raw as Array<{
         id: string;
         amount: string;
         currency: string;
+        gateway_fee: string | null;
+        platform_fee: string | null;
       }>;
 
       // Claim OPEN clawbacks (refunds that landed after a prior settlement).
@@ -100,16 +104,28 @@ export class SettlementService {
         (c, p) => c + Math.round(Number(p.amount) * 100),
         0,
       );
+      // Fees FROZEN on each payment at capture (gateway fee + platform
+      // commission) — the clinic is owed NET of these, so the batch deducts
+      // them. Zero on legacy/dev data (no fee data recorded ⇒ net = gross).
+      const frozenFeesC = claimed.reduce(
+        (c, p) =>
+          c +
+          Math.round(Number(p.gateway_fee ?? 0) * 100) +
+          Math.round(Number(p.platform_fee ?? 0) * 100),
+        0,
+      );
       const refundedC = claimed.length
         ? await this.sumSucceededRefundsCents(manager, claimed.map((p) => p.id))
         : 0;
       // net collectible = collected − refunds-on-claimed − prior-settlement clawbacks.
       const netCollectibleC = grossC - refundedC - claw.totalCents;
-      // Fee only on positive collectible; never on a clawback-negative batch.
-      const feeC =
+      // Extra batch-level percent fee only on positive collectible; never on a
+      // clawback-negative batch.
+      const percentFeeC =
         netCollectibleC > 0
           ? Math.round((netCollectibleC * (dto.feePercent ?? 0)) / 100)
           : 0;
+      const feeC = frozenFeesC + percentFeeC;
       const netC = netCollectibleC - feeC;
       const currency =
         dto.currency ?? claimed[0]?.currency ?? DEFAULT_PAYMENT_CURRENCY;

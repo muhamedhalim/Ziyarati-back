@@ -11,6 +11,7 @@ import { Invoice } from '../../entities/Payments/Invoice';
 import { InvoiceItem } from '../../entities/Payments/InvoiceItem';
 import { Settlement } from '../../entities/Payments/Settlement';
 import { SettlementItem } from '../../entities/Payments/SettlementItem';
+import { MerchantAccount } from '../../entities/Payments/MerchantAccount';
 
 import { PaymentGatewayService } from './payment-gateway.service';
 import { PaymentService } from './payment.service';
@@ -26,6 +27,9 @@ import { RefundRecoveryService } from './refund-recovery.service';
 import { FinancialMetricsService } from './financial-metrics.service';
 import { PaymentFinancialsService } from './payment-financials.service';
 import { PaymentWebhookService } from './payment-webhook.service';
+import { PaymentReconciliationService } from './payment-reconciliation.service';
+import { MerchantAccountService } from './merchant-account.service';
+import { PaymentsConfig } from './payments.config';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
 import { PaymentsOpsController } from './payments-ops.controller';
@@ -36,6 +40,8 @@ import { RefundController } from './refund.controller';
 import { InvoiceController } from './invoice.controller';
 import { SettlementController } from './settlement.controller';
 import { PaymentWebhookController } from './payment-webhook.controller';
+import { MerchantAccountController } from './merchant-account.controller';
+import { MerchantAccountAdminController } from './merchant-account-admin.controller';
 
 import { MoyasarProvider } from './providers/moyasar.provider';
 import { NoopGatewayProvider } from './providers/noop-gateway.provider';
@@ -73,6 +79,7 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
       InvoiceItem,
       Settlement,
       SettlementItem,
+      MerchantAccount,
     ]),
     // Provides SystemSettingService for payment link TTL and default currency.
     PlatformModule,
@@ -87,6 +94,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     InvoiceController,
     SettlementController,
     PaymentWebhookController,
+    MerchantAccountController,
+    MerchantAccountAdminController,
   ],
   providers: [
     PaymentGatewayService,
@@ -103,6 +112,10 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     FinancialMetricsService,
     PaymentFinancialsService,
     PaymentWebhookService,
+    PaymentReconciliationService,
+    MerchantAccountService,
+    // Central typed payments config (provider selection, Moyasar keys, knobs).
+    PaymentsConfig,
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
     MoyasarProvider,
     NoopGatewayProvider,
@@ -122,6 +135,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     SettlementService,
     // Exposed so the background worker's refunds reaper can reuse it.
     RefundRecoveryService,
+    // Exposed so the background worker's reconciliation sweep can reuse it.
+    PaymentReconciliationService,
     // Exposed so the worker can write the reaper heartbeat.
     FinancialMetricsService,
   ],

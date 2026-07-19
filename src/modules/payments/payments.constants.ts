@@ -37,5 +37,25 @@ export const PAYMENT_LINK_STATUS = {
   EXPIRED: 'EXPIRED',
 } as const;
 
+/**
+ * MerchantAccount.status values (free-form string column, Refund precedent).
+ * The financial-onboarding state of a clinic. A clinic can accept LIVE payments
+ * only in APPROVED; every other state fails `assertChargeable` with a clear
+ * domain message. Transitions are enforced by MerchantAccountService.
+ */
+export const MERCHANT_ACCOUNT_STATUS = {
+  NOT_STARTED: 'NOT_STARTED',
+  PENDING_DOCUMENTS: 'PENDING_DOCUMENTS',
+  SUBMITTED: 'SUBMITTED',
+  UNDER_REVIEW: 'UNDER_REVIEW',
+  REQUIRES_ACTION: 'REQUIRES_ACTION',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+  SUSPENDED: 'SUSPENDED',
+} as const;
+
+export type MerchantAccountStatusValue =
+  (typeof MERCHANT_ACCOUNT_STATUS)[keyof typeof MERCHANT_ACCOUNT_STATUS];
+
 /** Round monetary values to 2 decimal places (avoids float drift in totals). */
 export const round2 = (n: number): number => Math.round(Number(n) * 100) / 100;

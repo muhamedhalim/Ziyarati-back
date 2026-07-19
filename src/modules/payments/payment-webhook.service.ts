@@ -83,7 +83,7 @@ export class PaymentWebhookService {
 
     const owner = await this.payments.findOne({
       where: { gateway_payment_id: gatewayPaymentId },
-      relations: { tenant: true, customer: true },
+      relations: { tenant: true, customer: true, appointment: true },
     });
     if (!owner || !owner.tenant) {
       this.logger.warn(
@@ -94,6 +94,7 @@ export class PaymentWebhookService {
 
     const tenantId = owner.tenant.id;
     const customerId = owner.customer?.id;
+    const appointmentId = owner.appointment?.id;
     const target = this.mapEvent(event);
 
     // Tracks which domain event (and its name) to emit after the transaction commits.
@@ -163,6 +164,7 @@ export class PaymentWebhookService {
             payment.currency,
             customerId,
             status === PaymentStatus.PARTIALLY_REFUNDED,
+            appointmentId,
           );
         }
         return { status, deduplicated: false };
@@ -190,6 +192,7 @@ export class PaymentWebhookService {
             Number(payment.amount),
             payment.currency,
             customerId,
+            appointmentId,
           );
         } else {
           this.logger.error(
@@ -207,7 +210,12 @@ export class PaymentWebhookService {
           'Gateway reported failure';
         changed = true;
         pendingEventName = PaymentFailedEvent.eventName;
-        pendingEvent = new PaymentFailedEvent(tenantId, payment.id, customerId);
+        pendingEvent = new PaymentFailedEvent(
+          tenantId,
+          payment.id,
+          customerId,
+          appointmentId,
+        );
       }
 
       if (changed) await repo.save(payment);

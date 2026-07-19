@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
@@ -47,7 +48,14 @@ describe('AppointmentsService', () => {
   let cancellationsRepo: MockRepository;
 
   /** A fully-hydrated appointment returned by the trailing `findOne` reload. */
-  const reloaded = { id: 'appt-1', status: AppointmentStatus.PENDING_PAYMENT };
+  const reloaded = {
+    id: 'appt-1',
+    status: AppointmentStatus.PENDING_PAYMENT,
+    customer: { id: 'cust-1' },
+    staff: { id: 'staff-1' },
+    branch: { id: 'b1' },
+    start_at: new Date('2026-08-01T10:00:00Z'),
+  };
 
   beforeEach(async () => {
     appointments = createMockRepository();
@@ -77,6 +85,7 @@ describe('AppointmentsService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: AvailabilityService, useValue: availability },
         { provide: UsageService, useValue: usage },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(AppointmentsService);
@@ -205,6 +214,57 @@ describe('AppointmentsService', () => {
       await expect(
         service.changeStatus(TENANT, USER, 'appt-1', { status: AppointmentStatus.CONFIRMED } as any),
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+    });
+  });
+
+  describe('applyPaymentOutcome (verified-payment bridge)', () => {
+    const booked = () => ({
+      id: 'appt-1',
+      status: AppointmentStatus.PENDING_PAYMENT,
+      payment_status: AppointmentPaymentStatus.UNPAID,
+      customer: { id: 'cust-1' },
+      staff: { id: 'staff-1' },
+      branch: { id: 'b1' },
+    });
+
+    it('confirms a PENDING_PAYMENT booking on a verified paid outcome', async () => {
+      const appt: any = booked();
+      repo(Appointment).findOne.mockResolvedValueOnce(appt);
+      await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid');
+      expect(appt.status).toBe(AppointmentStatus.CONFIRMED);
+      expect(appt.payment_status).toBe(AppointmentPaymentStatus.PAID);
+      expect(repo(Appointment).save).toHaveBeenCalledWith(appt);
+    });
+
+    it('is idempotent: an outcome already reflected is a no-op', async () => {
+      const appt: any = {
+        ...booked(),
+        status: AppointmentStatus.CONFIRMED,
+        payment_status: AppointmentPaymentStatus.PAID,
+      };
+      repo(Appointment).findOne.mockResolvedValueOnce(appt);
+      await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid');
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+    });
+
+    it('does NOT resurrect a CANCELLED booking on paid — payment axis only', async () => {
+      const appt: any = { ...booked(), status: AppointmentStatus.CANCELLED };
+      repo(Appointment).findOne.mockResolvedValueOnce(appt);
+      await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid');
+      expect(appt.status).toBe(AppointmentStatus.CANCELLED);
+      expect(appt.payment_status).toBe(AppointmentPaymentStatus.PAID);
+    });
+
+    it('reflects a refund on the payment axis without touching scheduling', async () => {
+      const appt: any = {
+        ...booked(),
+        status: AppointmentStatus.CONFIRMED,
+        payment_status: AppointmentPaymentStatus.PAID,
+      };
+      repo(Appointment).findOne.mockResolvedValueOnce(appt);
+      await service.applyPaymentOutcome(TENANT, 'appt-1', 'partially_refunded');
+      expect(appt.status).toBe(AppointmentStatus.CONFIRMED);
+      expect(appt.payment_status).toBe(AppointmentPaymentStatus.PARTIALLY_REFUNDED);
     });
   });
 

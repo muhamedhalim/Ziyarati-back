@@ -26,6 +26,22 @@ export interface GatewayCreatePaymentRequest {
   metadata?: Record<string, string>;
   /** Makes the create call safe to retry without double-charging. */
   idempotencyKey?: string;
+  /**
+   * Marketplace split instructions (documented Moyasar `splits`): route part of
+   * the charge to a provider-issued recipient (the clinic's sub-merchant).
+   * Amounts are in MAJOR units. Only attached when the marketplace feature is
+   * contractually enabled AND the clinic has a `provider_recipient_id`;
+   * adapters for gateways without split support MUST ignore this field (the
+   * internal ledger still records the clinic's net for manual settlement).
+   */
+  splits?: Array<{
+    recipientId: string;
+    amount: number;
+    reference?: string;
+    /** Marks the split as the platform's fee/commission (provider semantics). */
+    feeSource?: boolean;
+    refundable?: boolean;
+  }>;
 }
 
 /** Normalized gateway status — the domain never sees provider-specific strings. */

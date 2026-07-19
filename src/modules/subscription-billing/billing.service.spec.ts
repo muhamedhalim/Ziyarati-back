@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 
 import { BillingService } from './billing.service';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
@@ -9,7 +10,12 @@ import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
   createMockQueryBuilder,
+  createMockEntityManager,
+  createMockDataSource,
   MockRepository,
+  MockDataSource,
+  MockEntityManager,
+  MockQueryBuilder,
 } from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
@@ -18,15 +24,27 @@ describe('BillingService', () => {
   let service: BillingService;
   let invoices: MockRepository;
   let payment: { charge: jest.Mock };
+  let dataSource: MockDataSource;
+  let manager: MockEntityManager;
+  let claimQb: MockQueryBuilder;
+
+  const lockedRepo = () =>
+    manager.getRepository(SubscriptionInvoice) as unknown as MockRepository;
 
   beforeEach(async () => {
     invoices = createMockRepository();
     payment = { charge: jest.fn() };
+    manager = createMockEntityManager();
+    dataSource = createMockDataSource(manager);
+    claimQb = createMockQueryBuilder();
+    invoices.createQueryBuilder.mockReturnValue(claimQb);
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         BillingService,
         { provide: getRepositoryToken(SubscriptionInvoice), useValue: invoices },
         { provide: PAYMENT_PROVIDER, useValue: payment },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
     service = moduleRef.get(BillingService);
@@ -45,30 +63,67 @@ describe('BillingService', () => {
     await expect(service.getInvoice(TENANT, 'x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
   });
 
-  describe('payInvoice', () => {
-    it('charges the provider and marks the invoice PAID on success', async () => {
+  describe('payInvoice (atomic charge claim)', () => {
+    it('claims the invoice, charges the provider, and finalizes PAID with the provider reference', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
       invoices.findOne.mockResolvedValueOnce({ id: 'inv1', status: InvoiceStatus.OPEN, amount: '100' });
-      payment.charge.mockResolvedValueOnce({ success: true });
-      invoices.save.mockImplementationOnce(async (i: any) => i);
+      payment.charge.mockResolvedValueOnce({ success: true, reference: 'gw-ref-1' });
+      lockedRepo().findOne.mockResolvedValueOnce({ id: 'inv1', status: InvoiceStatus.OPEN, amount: '100' });
+
       const res = await service.payInvoice(TENANT, 'inv1');
       expect(res.status).toBe(InvoiceStatus.PAID);
       expect(res.paid_at).toBeInstanceOf(Date);
+      expect(res.provider_reference).toBe('gw-ref-1');
     });
 
-    it('rejects an already-paid invoice', async () => {
+    it('rejects an already-paid invoice (409, no charge attempted)', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
       invoices.findOne.mockResolvedValueOnce({ id: 'inv1', status: InvoiceStatus.PAID });
       await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(payment.charge).not.toHaveBeenCalled();
     });
 
-    it('rejects a void/refunded invoice with 422', async () => {
+    it('rejects a void/refunded invoice with 422 (no charge attempted)', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
       invoices.findOne.mockResolvedValueOnce({ id: 'inv1', status: InvoiceStatus.VOID });
       await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(payment.charge).not.toHaveBeenCalled();
     });
 
-    it('surfaces a provider decline as 422', async () => {
+    it('returns 409 when another charge attempt holds a fresh claim (double-charge protection)', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
+      invoices.findOne.mockResolvedValueOnce({
+        id: 'inv1',
+        status: InvoiceStatus.OPEN,
+        charge_started_at: new Date(),
+      });
+      await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(payment.charge).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a provider decline as 422, records the reason, and releases the claim', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
       invoices.findOne.mockResolvedValueOnce({ id: 'inv1', status: InvoiceStatus.OPEN, amount: '100' });
       payment.charge.mockResolvedValueOnce({ success: false, failureReason: 'card declined' });
+      const locked: any = { id: 'inv1', status: InvoiceStatus.OPEN, amount: '100', charge_started_at: new Date() };
+      lockedRepo().findOne.mockResolvedValueOnce(locked);
+
       await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(locked.failure_reason).toBe('card declined');
+      expect(locked.charge_started_at).toBeNull();
+      expect(lockedRepo().save).toHaveBeenCalledWith(locked);
+    });
+
+    it('is idempotent: an invoice already PAID at finalize is returned untouched', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
+      invoices.findOne.mockResolvedValueOnce({ id: 'inv1', status: InvoiceStatus.OPEN, amount: '100' });
+      payment.charge.mockResolvedValueOnce({ success: true, reference: 'gw-ref-2' });
+      const alreadyPaid = { id: 'inv1', status: InvoiceStatus.PAID, provider_reference: 'gw-ref-1' };
+      lockedRepo().findOne.mockResolvedValueOnce(alreadyPaid);
+
+      const res = await service.payInvoice(TENANT, 'inv1');
+      expect(res).toBe(alreadyPaid);
+      expect(lockedRepo().save).not.toHaveBeenCalled();
     });
   });
 

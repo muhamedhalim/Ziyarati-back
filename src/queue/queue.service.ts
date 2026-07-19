@@ -19,6 +19,7 @@ import {
   NotificationDispatchJob,
   NotificationDlqJob,
   RefundsReapJob,
+  PaymentsReconcileJob,
   SettlementsProcessJob,
   SubscriptionsRenewalCheckJob,
   UsageReportRunJob,
@@ -223,6 +224,10 @@ export class QueueService {
 
   enqueueRefundsReap(data: RefundsReapJob, opts?: JobsOptions) {
     return this.add(QUEUE.REFUNDS, JOB.REFUNDS_REAP, data, opts);
+  }
+
+  enqueuePaymentsReconcile(data: PaymentsReconcileJob, opts?: JobsOptions) {
+    return this.add(QUEUE.PAYMENTS, JOB.PAYMENTS_RECONCILE, data, opts);
   }
 
   /**

@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 
 import { MoyasarProvider } from './moyasar.provider';
+import { PaymentsConfig } from '../payments.config';
 import { createMockConfigService } from '../../../../test/utils/mock-factories';
 
 describe('MoyasarProvider', () => {
@@ -8,7 +9,9 @@ describe('MoyasarProvider', () => {
   let fetchMock: jest.Mock;
 
   const build = (overrides: Record<string, unknown> = { MOYASAR_SECRET_KEY: 'sk_test' }) =>
-    new MoyasarProvider(createMockConfigService(overrides) as unknown as ConfigService);
+    new MoyasarProvider(
+      new PaymentsConfig(createMockConfigService(overrides) as unknown as ConfigService),
+    );
 
   const okResponse = (json: unknown) => ({ ok: true, status: 200, json: async () => json });
   const errResponse = (json: unknown) => ({ ok: false, status: 400, json: async () => json });

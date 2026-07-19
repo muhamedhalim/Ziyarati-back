@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
   DataSource,
   FindOptionsWhere,
+  In,
   LessThan,
   MoreThanOrEqual,
   Repository,
@@ -16,14 +18,20 @@ import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Customer } from '../../entities/CRM/Customer';
 import { PaymentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
+import { PaymentSucceededEvent } from '../../events/payment.events';
 
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
 import { PaymentFinancialsService } from './payment-financials.service';
+import { MerchantAccountService } from './merchant-account.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { QueryPaymentsDto } from './dto/query-payments.dto';
-import { DEFAULT_PAYMENT_CURRENCY, TRANSACTION_TYPE } from './payments.constants';
+import {
+  DEFAULT_PAYMENT_CURRENCY,
+  TRANSACTION_TYPE,
+  round2,
+} from './payments.constants';
 
 /**
  * Payment lifecycle: PENDING → PAID / FAILED → (REFUNDED via RefundService).
@@ -47,11 +55,11 @@ export class PaymentService {
     private readonly gateways: PaymentGatewayFactory,
     private readonly transactions: TransactionService,
     private readonly financials: PaymentFinancialsService,
+    private readonly merchants: MerchantAccountService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   async create(tenantId: string, dto: CreatePaymentDto) {
-    const currency = dto.currency ?? DEFAULT_PAYMENT_CURRENCY;
-
     // Idempotent create: a retry with the same key returns the existing payment.
     if (dto.idempotencyKey) {
       const existing = await this.payments.findOne({
@@ -62,23 +70,79 @@ export class PaymentService {
       }
     }
 
+    // Marketplace gate: a clinic whose merchant account is not APPROVED cannot
+    // collect live money (no-op in the dev/test Noop flow).
+    await this.merchants.assertChargeable(tenantId);
+
+    // Server-authoritative pricing: a payment that settles a booking takes its
+    // amount/currency from the appointment row — NEVER from the client. A
+    // client-supplied figure is only accepted as a cross-check.
+    const authoritative = await this.resolveBookingPrice(tenantId, dto);
+
+    // Refresh/double-click safety: an in-flight PENDING attempt for the same
+    // booking is returned (with its stored hosted-page URL) — never re-charged.
+    if (authoritative?.reusable) {
+      const reused = authoritative.reusable;
+      return {
+        payment: reused,
+        status: reused.status,
+        redirectUrl: reused.metadata?.redirect_url as string | undefined,
+      };
+    }
+
+    const amount = authoritative?.amount ?? dto.amount!;
+    const currency =
+      authoritative?.currency ?? dto.currency ?? DEFAULT_PAYMENT_CURRENCY;
+    const customerId = dto.customerId ?? authoritative?.customerId;
+
     const provider = this.gateways.resolve(dto.gateway);
 
-    const payment = await this.payments.save(
-      this.payments.create({
-        tenant: { id: tenantId } as Tenant,
-        branch: dto.branchId ? ({ id: dto.branchId } as Branch) : undefined,
-        appointment: dto.appointmentId
-          ? ({ id: dto.appointmentId } as Appointment)
-          : undefined,
-        customer: dto.customerId ? ({ id: dto.customerId } as Customer) : undefined,
-        amount: dto.amount,
-        currency,
-        status: PaymentStatus.PENDING,
-        gateway: provider.name,
-        idempotency_key: dto.idempotencyKey,
-      }),
-    );
+    // Marketplace split context (null unless the feature is contractually
+    // enabled AND the clinic is approved with a gateway recipient id).
+    const split = await this.merchants.splitContext(tenantId);
+
+    let payment: Payment;
+    try {
+      payment = await this.payments.save(
+        this.payments.create({
+          tenant: { id: tenantId } as Tenant,
+          branch: dto.branchId ? ({ id: dto.branchId } as Branch) : undefined,
+          appointment: dto.appointmentId
+            ? ({ id: dto.appointmentId } as Appointment)
+            : undefined,
+          customer: customerId ? ({ id: customerId } as Customer) : undefined,
+          amount,
+          currency,
+          status: PaymentStatus.PENDING,
+          gateway: provider.name,
+          idempotency_key: dto.idempotencyKey,
+          sub_merchant_id: split?.recipientId,
+        }),
+      );
+    } catch (err) {
+      // Lost the one-PENDING-per-appointment unique race (double click /
+      // concurrent tabs): return the winner instead of a second charge.
+      if (
+        dto.appointmentId &&
+        (err as { code?: string })?.code === '23505'
+      ) {
+        const winner = await this.payments.findOne({
+          where: {
+            tenant: { id: tenantId },
+            appointment: { id: dto.appointmentId },
+            status: PaymentStatus.PENDING,
+          },
+        });
+        if (winner) {
+          return {
+            payment: winner,
+            status: winner.status,
+            redirectUrl: winner.metadata?.redirect_url as string | undefined,
+          };
+        }
+      }
+      throw err;
+    }
 
     let redirectUrl: string | undefined;
     try {
@@ -91,6 +155,21 @@ export class PaymentService {
         callbackUrl: dto.callbackUrl,
         metadata: { tenantId, paymentId: payment.id },
         idempotencyKey: dto.idempotencyKey,
+        // Single split routing the clinic's net (gross − platform fee) to its
+        // gateway recipient; the platform fee stays with the platform account.
+        splits: split
+          ? [
+              {
+                recipientId: split.recipientId,
+                amount: round2(
+                  Number(payment.amount) -
+                    this.financials.platformFeeFor(Number(payment.amount)),
+                ),
+                reference: payment.id,
+                refundable: true,
+              },
+            ]
+          : undefined,
       });
       redirectUrl = result.redirectUrl;
 
@@ -105,6 +184,12 @@ export class PaymentService {
         this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
+      }
+
+      // Persist the hosted-page URL so a refresh/retry can REUSE the active
+      // payment attempt instead of creating a second gateway charge.
+      if (redirectUrl) {
+        payment.metadata = { ...(payment.metadata ?? {}), redirect_url: redirectUrl };
       }
 
       // Ledger atomicity: the status change and its CHARGE audit row commit
@@ -133,6 +218,105 @@ export class PaymentService {
     }
 
     return { payment, status: payment.status, redirectUrl };
+  }
+
+  /**
+   * Booking-linked payments: resolve the authoritative price from the DATABASE.
+   *
+   * - The appointment must exist in the caller's tenant with a positive total.
+   * - A client-supplied amount/currency is accepted only as a cross-check: any
+   *   mismatch is rejected (anti amount/currency tampering) — the booking price
+   *   is never adjusted to match what a client offers to pay.
+   * - A payment with no appointment keeps the explicit-amount flow (staff POS
+   *   style, `payments.manage` guarded), which then REQUIRES an amount.
+   *
+   * Returns null for non-booking payments.
+   */
+  private async resolveBookingPrice(
+    tenantId: string,
+    dto: CreatePaymentDto,
+  ): Promise<{
+    amount: number;
+    currency: string;
+    customerId?: string;
+    /** An in-flight PENDING attempt to reuse instead of charging again. */
+    reusable?: Payment;
+  } | null> {
+    if (!dto.appointmentId) {
+      if (dto.amount == null) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: 'amount is required for a payment not linked to an appointment',
+        });
+      }
+      return null;
+    }
+
+    const appointment = await this.dataSource.getRepository(Appointment).findOne({
+      where: { id: dto.appointmentId, tenant: { id: tenantId } },
+      relations: { customer: true },
+    });
+    if (!appointment) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Appointment not found' });
+    }
+
+    const amount = round2(Number(appointment.total_amount ?? 0));
+    if (!(amount > 0)) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Appointment has no payable total amount',
+      });
+    }
+    const currency = appointment.currency || DEFAULT_PAYMENT_CURRENCY;
+
+    if (
+      dto.amount != null &&
+      Math.round(Number(dto.amount) * 100) !== Math.round(amount * 100)
+    ) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          'Provided amount does not match the booking price. The booking price is read from the server.',
+        context: { expected: amount, provided: dto.amount },
+      });
+    }
+    if (dto.currency && dto.currency.toUpperCase() !== currency.toUpperCase()) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          'Provided currency does not match the booking currency. The booking currency is read from the server.',
+        context: { expected: currency, provided: dto.currency },
+      });
+    }
+
+    // One financial obligation → one live charge. ANY existing PAID (or
+    // partially refunded) payment blocks a second charge — regardless of later
+    // FAILED attempts; an in-flight PENDING attempt is RETURNED for reuse
+    // instead of creating a new gateway charge. (Backed by a partial UNIQUE
+    // index on payments(appointmentId) WHERE status='PENDING' so a concurrent
+    // race cannot slip a duplicate through.)
+    const live = await this.payments.find({
+      where: {
+        tenant: { id: tenantId },
+        appointment: { id: dto.appointmentId },
+        status: In([
+          PaymentStatus.PAID,
+          PaymentStatus.PARTIALLY_REFUNDED,
+          PaymentStatus.PENDING,
+        ]),
+      },
+      order: { created_at: 'DESC' },
+    });
+    const paid = live.find((p) => p.status !== PaymentStatus.PENDING);
+    if (paid) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'This booking is already paid',
+        context: { paymentId: paid.id },
+      });
+    }
+
+    return {
+      amount,
+      currency,
+      customerId: appointment.customer?.id,
+      reusable: live.find((p) => p.status === PaymentStatus.PENDING),
+    };
   }
 
   async confirm(tenantId: string, id: string, dto: ConfirmPaymentDto) {
@@ -185,45 +369,73 @@ export class PaymentService {
       .verifyPayment(prep.gatewayPaymentId);
 
     // ── Phase 3: short tx — re-lock and finalize idempotently.
-    return this.dataSource.transaction(async (manager) => {
-      const repo = manager.getRepository(Payment);
-      const payment = await repo.findOne({
-        where: { id, tenant: { id: tenantId } },
-        lock: { mode: 'pessimistic_write' },
+    const { payment: finalized, becamePaid } = await this.dataSource.transaction(
+      async (manager) => {
+        const repo = manager.getRepository(Payment);
+        const payment = await repo.findOne({
+          where: { id, tenant: { id: tenantId } },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!payment) {
+          throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
+        }
+
+        await this.transactions.record(
+          tenantId,
+          payment.id,
+          {
+            type: TRANSACTION_TYPE.VERIFY,
+            amount: Number(payment.amount),
+            status: result.status,
+            gatewayTransactionId: prep.gatewayPaymentId,
+            raw: result.raw,
+          },
+          manager,
+        );
+
+        // A webhook may have settled it between phases — don't regress a terminal state.
+        if (payment.status === PaymentStatus.PAID) {
+          return { payment, becamePaid: false };
+        }
+        if (result.status === 'paid') {
+          // Anti under/over-payment & amount tampering: when the gateway reports
+          // what it actually captured, it MUST match our expected amount/currency
+          // before we book it PAID. No-op when the provider can't report it, so the
+          // Noop/dev flow is unaffected.
+          this.assertCapturedMatches(payment, result);
+          payment.status = PaymentStatus.PAID;
+          payment.paid_at = new Date();
+          this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
+          return { payment: await repo.save(payment), becamePaid: true };
+        }
+        if (result.status === 'failed') {
+          payment.status = PaymentStatus.FAILED;
+        }
+        return { payment: await repo.save(payment), becamePaid: false };
+      },
+    );
+
+    // Same domain event the webhook path emits, AFTER the commit — so booking
+    // confirmation / notifications fire exactly once whichever signal lands
+    // first (the webhook path skips its emit when the status is already PAID).
+    if (becamePaid) {
+      const withRels = await this.payments.findOne({
+        where: { id: finalized.id },
+        relations: { customer: true, appointment: true },
       });
-      if (!payment) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
-      }
-
-      await this.transactions.record(
-        tenantId,
-        payment.id,
-        {
-          type: TRANSACTION_TYPE.VERIFY,
-          amount: Number(payment.amount),
-          status: result.status,
-          gatewayTransactionId: prep.gatewayPaymentId,
-          raw: result.raw,
-        },
-        manager,
+      this.emitter.emit(
+        PaymentSucceededEvent.eventName,
+        new PaymentSucceededEvent(
+          tenantId,
+          finalized.id,
+          Number(finalized.amount),
+          finalized.currency,
+          withRels?.customer?.id,
+          withRels?.appointment?.id,
+        ),
       );
-
-      // A webhook may have settled it between phases — don't regress a terminal state.
-      if (payment.status === PaymentStatus.PAID) return payment;
-      if (result.status === 'paid') {
-        // Anti under/over-payment & amount tampering: when the gateway reports
-        // what it actually captured, it MUST match our expected amount/currency
-        // before we book it PAID. No-op when the provider can't report it, so the
-        // Noop/dev flow is unaffected.
-        this.assertCapturedMatches(payment, result);
-        payment.status = PaymentStatus.PAID;
-        payment.paid_at = new Date();
-        this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
-      } else if (result.status === 'failed') {
-        payment.status = PaymentStatus.FAILED;
-      }
-      return repo.save(payment);
-    });
+    }
+    return finalized;
   }
 
   /**

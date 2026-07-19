@@ -46,6 +46,7 @@ import { AnalyticsProcessor } from './worker/processors/analytics.processor';
 import { SettlementsProcessor } from './worker/processors/settlements.processor';
 import { SubscriptionsProcessor } from './worker/processors/subscriptions.processor';
 import { RefundsProcessor } from './worker/processors/refunds.processor';
+import { PaymentsProcessor } from './worker/processors/payments.processor';
 import { PlatformProcessor } from './worker/processors/platform.processor';
 import { EmailProcessor } from './worker/processors/email.processor';
 import { UsageReportProcessor } from './worker/processors/usage-report.processor';
@@ -131,6 +132,7 @@ import { WorkflowProcessor } from './worker/processors/workflow.processor';
     SettlementsProcessor,
     SubscriptionsProcessor,
     RefundsProcessor,
+    PaymentsProcessor,
     PlatformProcessor,
     EmailProcessor,
     UsageReportProcessor,

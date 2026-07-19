@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
@@ -9,6 +10,7 @@ import { PaymentStatus } from '../../entities/enums';
 import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
+import { PaymentFinancialsService } from './payment-financials.service';
 import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
@@ -28,6 +30,8 @@ describe('PaymentWebhookService.handleMoyasar', () => {
   let verifier: { verify: jest.Mock };
   let transactions: { recordWebhookOnce: jest.Mock; record: jest.Mock };
   let adjustments: { recordClawbackIfSettled: jest.Mock };
+  let financials: { applyOnPaid: jest.Mock; extractFromRaw: jest.Mock };
+  let emitter: { emit: jest.Mock };
 
   const ownerPayment = () => ({ id: 'pay-1', status: PaymentStatus.PENDING, tenant: { id: 't1' } });
   const lockedPayment = () => ({
@@ -48,6 +52,11 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       record: jest.fn().mockResolvedValue(undefined),
     };
     adjustments = { recordClawbackIfSettled: jest.fn().mockResolvedValue(undefined) };
+    financials = {
+      applyOnPaid: jest.fn(),
+      extractFromRaw: jest.fn().mockReturnValue({}),
+    };
+    emitter = { emit: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -57,6 +66,8 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         { provide: MoyasarWebhookVerifier, useValue: verifier },
         { provide: TransactionService, useValue: transactions },
         { provide: SettlementAdjustmentService, useValue: adjustments },
+        { provide: PaymentFinancialsService, useValue: financials },
+        { provide: EventEmitter2, useValue: emitter },
       ],
     }).compile();
     service = moduleRef.get(PaymentWebhookService);

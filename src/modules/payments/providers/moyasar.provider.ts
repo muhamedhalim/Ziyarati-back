@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 
+import { PaymentsConfig } from '../payments.config';
 import {
   GatewayCreatePaymentRequest,
   GatewayPaymentResult,
@@ -31,16 +31,14 @@ export class MoyasarProvider implements PaymentGatewayProvider {
   readonly name = 'moyasar';
   private readonly logger = new Logger('MoyasarProvider');
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: PaymentsConfig) {}
 
   private get secretKey(): string {
-    return this.config.get<string>('MOYASAR_SECRET_KEY') ?? '';
+    return this.config.moyasarSecretKey ?? '';
   }
 
   private get apiBase(): string {
-    return (
-      this.config.get<string>('MOYASAR_API_BASE') || 'https://api.moyasar.com/v1'
-    );
+    return this.config.moyasarApiBase;
   }
 
   /** Handle 'moyasar' (or an unspecified gateway) only when credentials exist. */
@@ -52,13 +50,25 @@ export class MoyasarProvider implements PaymentGatewayProvider {
   async createPayment(
     request: GatewayCreatePaymentRequest,
   ): Promise<GatewayPaymentResult> {
-    const body = {
+    const body: Record<string, unknown> = {
       amount: this.toMinorUnits(request.amount),
       currency: request.currency,
       description: request.description ?? `Payment ${request.paymentId}`,
       callback_url: request.callbackUrl,
       metadata: { ...request.metadata, paymentId: request.paymentId },
     };
+    // Documented Moyasar marketplace splits (snake_case wire format). Attached
+    // only when the caller supplies them — PaymentService gates this on the
+    // marketplace feature being contractually enabled + an approved recipient.
+    if (request.splits?.length) {
+      body.splits = request.splits.map((s) => ({
+        recipient_id: s.recipientId,
+        amount: this.toMinorUnits(s.amount),
+        ...(s.reference ? { reference: s.reference } : {}),
+        ...(s.feeSource != null ? { fee_source: s.feeSource } : {}),
+        ...(s.refundable != null ? { refundable: s.refundable } : {}),
+      }));
+    }
 
     const { ok, json } = await this.request('POST', '/payments', body);
     if (!ok) {

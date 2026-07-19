@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { PlatformModule } from '../platform/platform.module';
@@ -39,6 +40,7 @@ import { SubscriptionAccessGuard } from './guards/subscription-access.guard';
 import { PlatformBillingBootstrap } from './platform-billing.bootstrap';
 import { PAYMENT_PROVIDER } from './payment/payment-provider.interface';
 import { StubPaymentProvider } from './payment/stub-payment.provider';
+import { RecurringUnavailableProvider } from './payment/recurring-unavailable.provider';
 
 /**
  * Subscription & Billing Domain (SaaS-Core).
@@ -95,7 +97,22 @@ import { StubPaymentProvider } from './payment/stub-payment.provider';
     FeatureGuard,
     SubscriptionAccessGuard,
     PlatformBillingBootstrap,
-    { provide: PAYMENT_PROVIDER, useClass: StubPaymentProvider },
+    // Subscription charges are PLATFORM revenue — deliberately NOT routed
+    // through the tenant payments ledger (separate financial stream). Dev/test
+    // keep the always-succeeds stub so the billing flow is runnable; a LIVE
+    // deployment (production + real PAYMENT_PROVIDER) binds the honest
+    // provider that DECLINES with a clear domain message until tokenization /
+    // recurring is enabled — an invoice is never marked PAID with no money moved.
+    {
+      provide: PAYMENT_PROVIDER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const live =
+          config.get<string>('NODE_ENV') === 'production' &&
+          (config.get<string>('PAYMENT_PROVIDER') ?? 'moyasar') !== 'noop';
+        return live ? new RecurringUnavailableProvider() : new StubPaymentProvider();
+      },
+    },
   ],
   exports: [
     SubscriptionService,
