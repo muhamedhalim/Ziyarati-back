@@ -7,6 +7,7 @@ import { AgentRouterService } from './agent-router.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
 import { AiChannel, AiSession } from './ai-channel.constants';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
+import { ConfigService } from '@nestjs/config';
 
 export interface OrchestrateInput {
   channel: AiChannel;
@@ -34,6 +35,7 @@ export interface OrchestrateInput {
    * de-duplication key that a client must not be able to assert.
    */
   origin?: { waMessageId?: string; messageType?: string };
+  idempotencyKey?: string;
 }
 
 /**
@@ -60,16 +62,21 @@ export class AiOrchestratorService {
     private readonly sessions: ConversationSessionService,
     private readonly router: AgentRouterService,
     private readonly memory: AiMemoryService,
+    private readonly config: ConfigService,
   ) {}
 
   /** Synchronous turn (REST). Delegates to the engine's sendMessage. */
   async handle(tenantId: string, input: OrchestrateInput) {
-    const { conversationId, session, routedRole, handedOver } = await this.prepare(tenantId, input);
+    const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'REST';
+    const { conversationId, session, routedRole, handedOver, memoryLoader } = await this.prepare(tenantId, input, transport);
     if (handedOver) {
       await this.execution.recordInboundWhileHandedOver(tenantId, conversationId, input.content);
       return this.handedOverEnvelope(input.channel, conversationId, session, routedRole);
     }
-    const result = await this.execution.sendMessage(tenantId, conversationId, { content: input.content });
+    const result = await this.execution.sendMessage(tenantId, conversationId, {
+      content: input.content,
+      idempotencyKey: input.idempotencyKey,
+    }, transport, memoryLoader);
     return {
       channel: input.channel,
       aiConversationId: conversationId,
@@ -103,7 +110,8 @@ export class AiOrchestratorService {
    * later "Return to AI" sees the full conversation with zero gaps.
    */
   async handleStream(tenantId: string, input: OrchestrateInput, onToken: (delta: string) => void) {
-    const { conversationId, session, routedRole, handedOver } = await this.prepare(tenantId, input);
+    const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'WEBSOCKET';
+    const { conversationId, session, routedRole, handedOver, memoryLoader } = await this.prepare(tenantId, input, transport);
     if (handedOver) {
       await this.execution.recordInboundWhileHandedOver(tenantId, conversationId, input.content);
       return this.handedOverEnvelope(input.channel, conversationId, session, routedRole);
@@ -111,9 +119,11 @@ export class AiOrchestratorService {
     const result = await this.execution.streamMessage(
       tenantId,
       conversationId,
-      { content: input.content },
+      { content: input.content, idempotencyKey: input.idempotencyKey ?? input.origin?.waMessageId },
       onToken,
       input.origin,
+      transport,
+      memoryLoader,
     );
     return {
       channel: input.channel,
@@ -161,7 +171,11 @@ export class AiOrchestratorService {
    * optional per-turn re-routing, and opt-in long-term memory recall (Feature 5).
    * Returns the conversation id + merged session. No provider/RAG/booking here.
    */
-  private async prepare(tenantId: string, input: OrchestrateInput) {
+  private async prepare(
+    tenantId: string,
+    input: OrchestrateInput,
+    transport: 'REST' | 'WEBSOCKET' | 'WHATSAPP',
+  ) {
     let routedRole: string | null = null;
     let conv;
     if (input.aiConversationId) {
@@ -194,27 +208,39 @@ export class AiOrchestratorService {
       }
     }
 
-    if (input.useMemory) {
-      const current = await this.sessions.get(tenantId, conv.id);
-      const recalled = await this.memory
-        .recall(tenantId, { query: input.content, limit: 5, customerId: current.context?.customerId as string | undefined })
-        .catch(() => []);
-      if (recalled.length) {
-        await this.sessions.patch(tenantId, conv.id, {
-          context: {
-            ...(current.context ?? {}),
-            recalledMemories: recalled.map((m) => ({ type: m.type, content: m.content, score: m.score })),
-          },
-        });
-      }
-    }
-
+    const current = await this.sessions.get(tenantId, conv.id);
+    const memoryEnabled = input.useMemory
+      && String(this.config.get('AI_MEMORY_RECALL_ENABLED', 'false')) === 'true'
+      && current.context?.memoryConsent === true;
+    await this.sessions.patch(tenantId, conv.id, {
+      context: { ...(current.context ?? {}), recalledMemories: [] },
+    });
     const session = await this.sessions.get(tenantId, conv.id);
+    const memoryLoader = memoryEnabled ? async () => {
+      const recalled = await this.memory
+        .recall(
+          tenantId,
+          { query: input.content, limit: 5, customerId: current.context?.customerId as string | undefined },
+          {
+            channel: transport,
+            aiConversationId: conv.id,
+            idempotencyKey: input.idempotencyKey ? `${input.idempotencyKey}:memory` : undefined,
+          },
+        )
+        .catch(() => []);
+      const items = recalled.map((m) => ({ type: m.type, content: m.content, score: m.score }));
+      await this.sessions.patch(tenantId, conv.id, {
+        context: { ...(current.context ?? {}), recalledMemories: items },
+      });
+      session.context = { ...(session.context ?? {}), recalledMemories: items };
+      return items;
+    } : undefined;
     return {
       conversationId: conv.id,
       session,
       routedRole,
       handedOver: conv.status === AI_CONVERSATION_STATUS.HANDED_OVER,
+      memoryLoader,
     };
   }
 }

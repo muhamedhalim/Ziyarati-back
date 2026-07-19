@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
+import { DataSource, In, LessThan, Repository } from 'typeorm';
 
 import { AiMemory } from '../../entities/AI Agent/AiMemory';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
@@ -65,12 +65,21 @@ export class AiMemoryService {
    * Falls back to keyword overlap when embeddings/pgvector are unavailable, so
    * callers always get a ranked result. Expired memories are excluded.
    */
-  async recall(tenantId: string, dto: RecallDto): Promise<RecalledMemory[]> {
+  async recall(
+    tenantId: string,
+    dto: RecallDto,
+    attribution: { channel?: string; aiConversationId?: string; idempotencyKey?: string } = {},
+  ): Promise<RecalledMemory[]> {
     const topK = dto.limit ?? 5;
 
     if (this.embedder.isConfigured() && this.vector.isAvailable()) {
       try {
-        const { vectors } = await this.embedder.embed(tenantId, [dto.query]);
+        const { vectors } = await this.embedder.embed(tenantId, [dto.query], {
+          kind: 'QUERY', feature: 'memory_recall', route: 'ai.memory.recall',
+          channel: attribution.channel ?? 'INTERNAL',
+          aiConversationId: attribution.aiConversationId,
+          idempotencyKey: attribution.idempotencyKey,
+        });
         const queryVec = vectors[0];
         if (queryVec) {
           const matches = await this.vector.search(tenantId, queryVec, topK, dto.customerId);
@@ -155,7 +164,10 @@ export class AiMemoryService {
 
   private async embedMemory(tenantId: string, memory: AiMemory): Promise<void> {
     if (!this.embedder.isConfigured() || !this.vector.isAvailable()) return;
-    const { vectors } = await this.embedder.embed(tenantId, [memory.content]);
+    const { vectors } = await this.embedder.embed(tenantId, [memory.content], {
+      kind: 'MEMORY', feature: 'memory_write', route: 'ai.memory.remember', channel: 'INTERNAL',
+      idempotencyKey: `memory:${tenantId}:${memory.id}`,
+    });
     const vec = vectors[0];
     if (vec) await this.vector.upsert(memory.id, tenantId, vec, memory.customer_id);
   }
@@ -186,14 +198,13 @@ export class AiMemoryService {
         dto.query.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((t) => t.length > 2),
       ),
     );
-    const candidates = await this.memories.find({
-      where: [
-        { tenant: { id: tenantId }, customer_id: dto.customerId, expires_at: IsNull() },
-        ...(dto.customerId ? [] : [{ tenant: { id: tenantId }, expires_at: IsNull() }]),
-      ],
-      order: { importance: 'DESC', created_at: 'DESC' },
-      take: 200,
-    });
+    const qb = this.memories.createQueryBuilder('m')
+      .leftJoin('m.tenant', 't')
+      .where('t.id=:tenantId', { tenantId })
+      .andWhere('(m.expires_at IS NULL OR m.expires_at > now())');
+    if (dto.customerId) qb.andWhere('(m.customer_id=:customerId OR m.customer_id IS NULL)', { customerId: dto.customerId });
+    else qb.andWhere('m.customer_id IS NULL');
+    const candidates = await qb.orderBy('m.importance', 'DESC').addOrderBy('m.created_at', 'DESC').take(200).getMany();
     return candidates
       .map((m) => {
         const lc = m.content.toLowerCase();

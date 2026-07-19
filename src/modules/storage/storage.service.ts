@@ -16,7 +16,7 @@ import {
   DOCUMENT_UPLOAD_POLICY,
   UploadPolicy,
   assertPolicyContent,
-  extensionMatchesMime,
+  extensionMatchesMimeForPolicy,
   policyAllowsMime,
   policyExtensionForMime,
   sha256Hex,
@@ -185,7 +185,7 @@ export class StorageService {
     }
     if (
       policy.requireExtensionMatch &&
-      !extensionMatchesMime(input.originalName, input.mimeType)
+      !extensionMatchesMimeForPolicy(input.originalName, input.mimeType, policy)
     ) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: 'File extension does not match its content type.',
@@ -255,6 +255,22 @@ export class StorageService {
         cause: err,
       });
     }
+  }
+
+  /** Server-side private read used by trusted ingestion pipelines. */
+  async downloadObject(key: string, tenantId: string, maxBytes: number): Promise<Buffer> {
+    this.assertKeyBelongsToTenant(key, tenantId);
+    const head = await this.getClient().send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+    if ((head.ContentLength ?? 0) <= 0 || (head.ContentLength ?? 0) > maxBytes) {
+      throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Stored file is empty or exceeds the indexing size limit.' });
+    }
+    const result = await this.getClient().send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    if (!result.Body) throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Stored file has no readable body.' });
+    const bytes = await result.Body.transformToByteArray();
+    if (bytes.byteLength > maxBytes) {
+      throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Stored file exceeds the indexing size limit.' });
+    }
+    return Buffer.from(bytes);
   }
 
   async deleteObject(key: string): Promise<void> {

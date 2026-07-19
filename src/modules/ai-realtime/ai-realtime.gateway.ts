@@ -23,6 +23,7 @@ import { AI_EVENT, room } from './ai-events.constants';
 
 interface MessagePayload {
   content: string;
+  idempotencyKey?: string;
   channel?: AiChannel;
   aiConversationId?: string;
   agentId?: string;
@@ -228,6 +229,7 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
         {
           channel: body.channel ?? 'WEBSITE',
           content: body.content,
+          idempotencyKey: body.idempotencyKey,
           aiConversationId: body.aiConversationId,
           agentId: body.agentId,
           language: body.language,

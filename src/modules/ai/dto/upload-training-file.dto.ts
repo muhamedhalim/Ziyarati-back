@@ -13,7 +13,7 @@ export class UploadTrainingFileDto {
   @MaxLength(255)
   fileName!: string;
 
-  @ApiProperty({ description: 'URL of the already-uploaded file.', example: 'https://storage.example.com/ai/clinic-faq.pdf' })
+  @ApiProperty({ description: 'Tenant-owned private R2 object key (external URLs are rejected).', example: 'tenant-uuid/ai_training/clinic-faq.txt' })
   @IsString()
   @MinLength(1)
   fileUrl!: string;

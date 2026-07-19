@@ -66,6 +66,14 @@ export class AiAnalyticsController {
     return this.analytics.cost(this.ctx.requireTenantId(), filter);
   }
 
+  @ApiOperation({ summary: 'Cost attribution by feature, route, channel, model, and request kind' })
+  @ApiOkResponse({ description: 'Tenant-isolated exact AI cost ledger aggregation.' })
+  @Get('cost-attribution')
+  @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
+  costAttribution(@Query() filter: AiAnalyticsFilterDto) {
+    return this.analytics.costAttribution(this.ctx.requireTenantId(), filter);
+  }
+
   @ApiOperation({ summary: 'Conversation analytics', description: `**Protected — \`ai.analytics.read\`. Clinic active.** Totals, status mix, total messages, handover & AI-resolution rates, active agents.` })
   @ApiOkResponse({ description: 'Conversation analytics.' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })

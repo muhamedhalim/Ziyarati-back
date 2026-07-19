@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Job, JobsOptions, Queue } from 'bullmq';
 import { Redis } from 'ioredis';
+import { createHash } from 'node:crypto';
 
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
 import { ProducerQueues } from './producer-queues';
@@ -199,7 +200,13 @@ export class QueueService {
   }
 
   enqueueAiExecute(data: AiExecuteJob, opts?: JobsOptions) {
-    return this.add(QUEUE.AI, JOB.AI_EXECUTE, data, opts);
+    return this.add(QUEUE.AI, JOB.AI_EXECUTE, data, {
+      jobId: `ai-${createHash('sha256').update(`${data.tenantId}:${data.idempotencyKey}`).digest('hex')}`,
+      // Provider retries are owned by the provider adapter. BullMQ must never
+      // replay a possibly-paid request or a completed tool side effect.
+      attempts: 1,
+      ...opts,
+    });
   }
 
   enqueueAnalyticsAggregate(data: AnalyticsAggregateJob, opts?: JobsOptions) {

@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 
 import { AiKnowledgeBase } from '../../../entities/AI Agent/AiKnowledgeBase';
 import { AiAgent } from '../../../entities/AI Agent/AiAgent';
@@ -30,6 +32,7 @@ export class AiKnowledgeIngestionService {
     private readonly embedder: AiEmbeddingProvider,
     private readonly pgvector: PgVectorBootstrapService,
     private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
   ) {}
 
   private canEmbed(): boolean {
@@ -43,18 +46,32 @@ export class AiKnowledgeIngestionService {
     content: string,
     source?: { type?: string; id?: string },
   ): Promise<AiKnowledgeBase> {
-    const row = await this.kb.save(
-      this.kb.create({
-        tenant: { id: tenantId } as Tenant,
-        agent: { id: agentId } as AiAgent,
-        content,
-        source_type: source?.type,
-        source_id: source?.id,
-      }),
-    );
+    const { hash, version } = this.hashContent(content);
+    const existing = await this.kb.findOne({
+      where: { tenant: { id: tenantId }, agent: { id: agentId }, content_hash: hash },
+    });
+    if (existing) return existing;
+
+    let row: AiKnowledgeBase;
+    try {
+      row = await this.kb.save(this.kb.create({
+        tenant: { id: tenantId } as Tenant, agent: { id: agentId } as AiAgent,
+        content, content_hash: hash, embedding_version: version,
+        source_type: source?.type, source_id: source?.id,
+      }));
+    } catch (err) {
+      if ((err as { code?: string }).code !== '23505') throw err;
+      const raced = await this.kb.findOneOrFail({
+        where: { tenant: { id: tenantId }, agent: { id: agentId }, content_hash: hash },
+      });
+      return raced;
+    }
     if (this.canEmbed()) {
       try {
-        const { vectors } = await this.embedder.embed(tenantId, [content]);
+        const { vectors } = await this.embedder.embed(tenantId, [content], {
+          kind: 'CONTENT', feature: 'knowledge_index', route: 'ai.knowledge.create',
+          idempotencyKey: `kb:${tenantId}:${agentId}:${hash}`,
+        });
         await this.upsertEmbedding(row.id, tenantId, agentId, vectors[0]);
       } catch (err) {
         this.logger.warn(`Embedding failed for chunk ${row.id}: ${(err as Error).message}`);
@@ -69,33 +86,77 @@ export class AiKnowledgeIngestionService {
     agentId: string,
     text: string,
     sourceId: string,
-  ): Promise<{ chunks: number; embedded: number }> {
+    options: { requireEmbedding?: boolean } = {},
+  ): Promise<{ chunks: number; embedded: number; deduplicated: number }> {
     const parts = splitIntoChunks(text, { maxTokens: 500, overlapTokens: 60 });
-    if (parts.length === 0) return { chunks: 0, embedded: 0 };
+    if (parts.length === 0) return { chunks: 0, embedded: 0, deduplicated: 0 };
 
-    const rows = await this.kb.save(
-      parts.map((c) =>
-        this.kb.create({
-          tenant: { id: tenantId } as Tenant,
-          agent: { id: agentId } as AiAgent,
-          content: c,
-          source_type: 'training_file',
-          source_id: sourceId,
-        }),
-      ),
-    );
+    const unique = [...new Map(parts.map((content) => {
+      const h = this.hashContent(content);
+      return [h.hash, { content, ...h }];
+    })).values()];
+    if (options.requireEmbedding && !this.canEmbed()) {
+      throw new Error('AI_EMBEDDING_UNAVAILABLE');
+    }
+    // Reuse a persisted vector for identical content owned by another source.
+    // A source is deliberately excluded because its rows are replaced below.
+    // This keeps source cleanup correct without paying to embed the same chunk.
+    const reusable = new Map<string, string>();
+    if (this.canEmbed()) {
+      const rows = await this.dataSource.query(
+        `SELECT DISTINCT ON (kb.content_hash) kb.content_hash, kb.id
+           FROM ai_knowledge_bases kb
+           JOIN ${AI_KB_EMBEDDINGS_TABLE} e ON e.kb_id=kb.id
+          WHERE kb."tenantId"=$1 AND kb."agentId"=$2
+            AND kb.source_id IS DISTINCT FROM $3
+            AND kb.content_hash = ANY($4::varchar[])
+          ORDER BY kb.content_hash, kb.created_at ASC`,
+        [tenantId, agentId, sourceId, unique.map((p) => p.hash)],
+      ) as Array<{ content_hash: string; id: string }>;
+      for (const row of rows) reusable.set(row.content_hash, row.id);
+    }
+    const toEmbed = unique.filter((part) => !reusable.has(part.hash));
+    const freshVectors = this.canEmbed() && toEmbed.length
+      ? (await this.embedder.embed(tenantId, toEmbed.map((p) => p.content), {
+          kind: 'CONTENT', feature: 'training_index', route: 'ai.training.process',
+          idempotencyKey: `training:${tenantId}:${sourceId}:${createHash('sha256').update(text).digest('hex')}`,
+        })).vectors
+      : [];
+    const vectorByHash = new Map(toEmbed.map((part, index) => [part.hash, freshVectors[index]]));
 
-    if (!this.canEmbed()) return { chunks: rows.length, embedded: 0 };
-
-    const { vectors } = await this.embedder.embed(tenantId, parts); // one batched call
-    let embedded = 0;
-    await this.dataSource.transaction(async (m) => {
-      for (let i = 0; i < rows.length; i++) {
-        await this.upsertEmbedding(rows[i].id, tenantId, agentId, vectors[i], m);
-        embedded++;
+    return this.dataSource.transaction(async (m) => {
+      // Reprocessing is a replace, never an append. The transaction guarantees
+      // a failed insert/vector write leaves the previous complete index intact.
+      await m.query(`DELETE FROM ai_kb_embeddings WHERE kb_id IN (SELECT id FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2)`, [tenantId, sourceId]);
+      await m.query(`DELETE FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2`, [tenantId, sourceId]);
+      let inserted = 0;
+      let embedded = 0;
+      for (let i = 0; i < unique.length; i += 1) {
+        const rows = await m.query(
+          `INSERT INTO ai_knowledge_bases ("tenantId","agentId",content,content_hash,embedding_version,source_type,source_id)
+           VALUES ($1,$2,$3,$4,$5,'training_file',$6)
+           ON CONFLICT DO NOTHING RETURNING id`,
+          [tenantId, agentId, unique[i].content, unique[i].hash, unique[i].version, sourceId],
+        );
+        if (!rows[0]?.id) continue;
+        inserted += 1;
+        const vector = vectorByHash.get(unique[i].hash);
+        if (vector) {
+          await this.upsertEmbedding(rows[0].id, tenantId, agentId, vector, m);
+          embedded += 1;
+        } else if (reusable.has(unique[i].hash)) {
+          const copied = await m.query(
+            `INSERT INTO ${AI_KB_EMBEDDINGS_TABLE} (kb_id,tenant_id,agent_id,embedding)
+             SELECT $1,$2,$3,embedding FROM ${AI_KB_EMBEDDINGS_TABLE} WHERE kb_id=$4
+             ON CONFLICT (kb_id) DO NOTHING RETURNING kb_id`,
+            [rows[0].id, tenantId, agentId, reusable.get(unique[i].hash)],
+          );
+          if (copied[0]?.kb_id) embedded += 1;
+        }
       }
+      if (options.requireEmbedding && embedded !== inserted) throw new Error('AI_EMBEDDING_INCOMPLETE');
+      return { chunks: inserted, embedded, deduplicated: parts.length - inserted };
     });
-    return { chunks: rows.length, embedded };
   }
 
   /** Re-embed all of an agent's chunks (rebuild). Returns counts. */
@@ -106,7 +167,10 @@ export class AiKnowledgeIngestionService {
     if (!this.canEmbed() || chunks.length === 0) {
       return { chunks: chunks.length, embedded: 0 };
     }
-    const { vectors } = await this.embedder.embed(tenantId, chunks.map((c) => c.content));
+    const { vectors } = await this.embedder.embed(tenantId, chunks.map((c) => c.content), {
+      kind: 'CONTENT', feature: 'knowledge_reindex', route: 'ai.knowledge.rebuild',
+      idempotencyKey: `reembed:${tenantId}:${agentId}:${this.embeddingVersion()}`,
+    });
     await this.dataSource.transaction(async (m) => {
       for (let i = 0; i < chunks.length; i++) {
         await this.upsertEmbedding(chunks[i].id, tenantId, agentId, vectors[i], m);
@@ -124,11 +188,33 @@ export class AiKnowledgeIngestionService {
   ): Promise<void> {
     if (!this.canEmbed()) return;
     try {
-      const { vectors } = await this.embedder.embed(tenantId, [content]);
+      const { hash, version } = this.hashContent(content);
+      await this.kb.update({ id: kbId, tenant: { id: tenantId } }, { content_hash: hash, embedding_version: version });
+      const { vectors } = await this.embedder.embed(tenantId, [content], {
+        kind: 'CONTENT', feature: 'knowledge_reindex', route: 'ai.knowledge.update',
+        idempotencyKey: `kb:${tenantId}:${agentId}:${hash}`,
+      });
       await this.upsertEmbedding(kbId, tenantId, agentId, vectors[0]);
     } catch (err) {
       this.logger.warn(`Re-embed failed for chunk ${kbId}: ${(err as Error).message}`);
     }
+  }
+
+  async cleanupSource(tenantId: string, sourceId: string): Promise<void> {
+    await this.dataSource.transaction(async (m) => {
+      await m.query(`DELETE FROM ai_kb_embeddings WHERE kb_id IN (SELECT id FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2)`, [tenantId, sourceId]);
+      await m.query(`DELETE FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2`, [tenantId, sourceId]);
+    });
+  }
+
+  hashContent(content: string): { hash: string; version: string } {
+    const normalized = content.normalize('NFKC').trim().replace(/\s+/g, ' ');
+    const version = this.embeddingVersion();
+    return { hash: createHash('sha256').update(`${version}\u0000${normalized}`).digest('hex'), version };
+  }
+
+  private embeddingVersion(): string {
+    return `openai:${this.config.get<string>('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')}:${this.config.get<string>('AI_EMBEDDING_VERSION', 'v1')}`;
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

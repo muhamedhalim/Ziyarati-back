@@ -59,6 +59,12 @@ import { PublicDiscoveryModule } from '../public-discovery/public-discovery.modu
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { StaffModule } from '../staff/staff.module';
 import { CrmModule } from '../crm/crm.module';
+import { StorageModule } from '../storage/storage.module';
+import { AiPriceCatalogService } from './cost/ai-price-catalog.service';
+import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
+import { AiPromptBudgetService } from './prompt/ai-prompt-budget.service';
+import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
+import { AiModelRouterService } from './routing/ai-model-router.service';
 
 /**
  * AI / RAG Domain.
@@ -110,6 +116,7 @@ import { CrmModule } from '../crm/crm.module';
     AnalyticsModule,
     StaffModule,
     CrmModule,
+    StorageModule,
   ],
   controllers: [
     AiAgentController,
@@ -141,6 +148,11 @@ import { CrmModule } from '../crm/crm.module';
     OpenAiChatProvider,
     PgVectorBootstrapService,
     AiKnowledgeIngestionService,
+    AiPriceCatalogService,
+    AiCostLedgerService,
+    AiPromptBudgetService,
+    AiRequestExecutionService,
+    AiModelRouterService,
     // Embedding backend (RAG + ingestion only). Falls back to keyword retrieval
     // when no API key is configured (provider.isConfigured() === false).
     { provide: AI_EMBEDDING_PROVIDER, useClass: OpenAiEmbeddingProvider },
@@ -159,6 +171,10 @@ import { CrmModule } from '../crm/crm.module';
     AiRagService,
     AiMetricsService,
     HandoverRequestService,
+    AI_EMBEDDING_PROVIDER,
+    AiCostLedgerService,
+    AiPromptBudgetService,
+    AiModelRouterService,
   ],
 })
 export class AiModule {}

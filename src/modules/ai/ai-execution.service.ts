@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { randomUUID } from 'node:crypto';
 
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
@@ -11,7 +12,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { AiRagService } from './ai-rag.service';
 import { AiProviderFactory } from './providers/ai-provider.factory';
-import { AiChatMessage } from './providers/ai-provider.interface';
+import { AiChatMessage, AiCompletionResult } from './providers/ai-provider.interface';
 import { SendMessageDto } from './dto/send-message.dto';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
@@ -19,23 +20,43 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { AiToolDispatchService, ToolContext } from './tools/ai-tool-dispatch.service';
 import { AI_TOOLS } from './tools/ai-tools.constants';
-import { AI_ADMIN_TOOLS } from './tools/ai-admin-tools.constants';
+import {
+  AI_ADMIN_TOOLS,
+  AI_ADMIN_TOOL_PERMISSION,
+  AiAdminToolName,
+} from './tools/ai-admin-tools.constants';
 import { AiMetricsService } from './ai-metrics.service';
 import { AiToolCall, AiToolDefinition } from './providers/ai-provider.interface';
 import {
   AI_CONVERSATION_STATUS,
   AI_MESSAGE_ROLE,
   currentPeriodMonth,
-  priceFor,
 } from './ai.constants';
 import { HandoverCustomerRepliedEvent } from '../../events/handover.events';
+import { AiPromptBudgetService, PromptBudgetTelemetry } from './prompt/ai-prompt-budget.service';
+import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
+import { PRICING_STATUS } from './cost/ai-price-catalog.service';
+import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
+import { AiModelRouterService } from './routing/ai-model-router.service';
 
 /** Bounds the tool-calling loop so a misbehaving model can't spin indefinitely. */
 const MAX_TOOL_ITERATIONS = 4;
 
-/** Every tool exposed to the model — booking/discovery (always) + read-only
- *  admin tools (permission-checked per call inside AiToolDispatchService). */
-const ALL_TOOLS: AiToolDefinition[] = [...AI_TOOLS, ...AI_ADMIN_TOOLS];
+interface TurnAccounting {
+  cachedInputTokens: number;
+  cachedRequestCount: number;
+  providerAttempts: number;
+  toolLoops: number;
+  costMicrousd: bigint | null;
+  pricingStatus: 'PRICED' | 'UNPRICED';
+}
+
+export type AiExecutionTransport = 'REST' | 'WEBSOCKET' | 'WHATSAPP' | 'BACKGROUND_JOB';
+export type AiMemoryContextLoader = () => Promise<Array<{
+  type?: string;
+  content: string;
+  score?: number;
+}>>;
 
 /**
  * AI turn orchestrator: persist user message → retrieve KB context (RAG) →
@@ -74,12 +95,28 @@ export class AiExecutionService {
     private readonly timeline: ConversationExecutionService,
     private readonly metrics: AiMetricsService,
     private readonly emitter: EventEmitter2,
+    private readonly budgets: AiPromptBudgetService,
+    private readonly costs: AiCostLedgerService,
+    private readonly requests: AiRequestExecutionService,
+    private readonly modelRouter: AiModelRouterService,
   ) {}
 
-  async sendMessage(tenantId: string, aiConversationId: string, dto: SendMessageDto) {
+  async sendMessage(
+    tenantId: string,
+    aiConversationId: string,
+    dto: SendMessageDto,
+    transport: AiExecutionTransport = 'REST',
+    memoryLoader?: AiMemoryContextLoader,
+  ) {
     const turnStart = Date.now();
-    let channel = 'API';
+    const requestKey = dto.idempotencyKey ?? randomUUID();
+    let requestClaimed = false;
+    let providerStarted = false;
+    let channel = transport;
+    let logicalChannel = 'API';
+    let routeForMetric = 'ai.chat.api';
     let modelForMetric = 'noop';
+    let providerForMetric = 'unknown';
     try {
       const aiConv = await this.aiConversations.findOne({
         where: { id: aiConversationId, tenant: { id: tenantId } },
@@ -93,7 +130,25 @@ export class AiExecutionService {
           message: `Cannot send to a conversation in status "${aiConv.status}"`,
         });
       }
-      channel = aiConv.channel ?? 'API';
+      logicalChannel = aiConv.channel ?? 'API';
+      routeForMetric = `ai.chat.${logicalChannel.toLowerCase()}`;
+      const claim = await this.requests.claim(tenantId, requestKey, 'chat', channel);
+      if (claim === 'COMPLETED') {
+        const replay = await this.requests.completedResponse<{
+          message: AiMessage; retrievedChunks: number;
+          usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+          fallback: boolean; lastTool?: { name: string; result: Record<string, unknown> };
+        }>(tenantId, requestKey);
+        if (replay) return replay;
+      }
+      if (claim !== 'CLAIMED') {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: claim === 'UNKNOWN'
+            ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
+            : 'The same AI request is already in progress.',
+        });
+      }
+      requestClaimed = true;
       const agent: AiAgent | undefined = aiConv.agent;
       // When the AI session is linked to a messaging Conversation, every turn is
       // mirrored into the unified Message timeline (see mirrorToTimeline).
@@ -101,6 +156,10 @@ export class AiExecutionService {
 
       // Quota pre-check (blocks a tenant already over its monthly token cap).
       await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      // From this point onward the turn can persist input, buy a RAG embedding,
+      // or execute a provider/tool. A crash has an unknown replay outcome.
+      await this.requests.markProviderStarted(tenantId, requestKey);
+      providerStarted = true;
 
       // 1) persist the user message (own write — not held across the LLM round-trips).
       await this.messages.save(
@@ -120,25 +179,41 @@ export class AiExecutionService {
 
       // 2) RAG retrieval (read-only) — timed for Advanced AI Monitoring.
       const ragStart = Date.now();
-      const embedTiming: { embeddingMs?: number } = {};
-      const chunks = agent ? await this.rag.retrieve(tenantId, agent.id, dto.content, undefined, embedTiming) : [];
+      const embedTiming: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number } = {};
+      const chunks = agent ? await this.rag.retrieve(
+        tenantId, agent.id, dto.content, undefined, embedTiming,
+        { channel, aiConversationId, idempotencyKey: requestKey },
+      ) : [];
       const ragRetrievalMs = Date.now() - ragStart;
-      const context = this.rag.assembleContext(chunks);
-
-      // 3) assemble the prompt from the latest-20 history (DESC+take then reverse).
+      // 3) Fetch a wider recent window, then let the centralized token budget
+      // retain complete recent turns rather than relying on a message count.
       const recent = await this.messages.find({
         where: { ai_conversation_id: aiConversationId, tenant: { id: tenantId } },
         order: { created_at: 'DESC' },
-        take: 20,
+        take: 50,
       });
-      const messages: AiChatMessage[] = [];
-      if (agent?.system_prompt) messages.push({ role: 'system', content: agent.system_prompt });
-      if (context) messages.push({ role: 'system', content: `Relevant knowledge:\n${context}` });
-      for (const m of recent.reverse()) messages.push({ role: this.mapRole(m.role), content: m.content });
+      const memories = memoryLoader ? await memoryLoader() : [];
+      const built = this.budgets.build({
+        systemPrompt: agent?.system_prompt,
+        ragChunks: chunks,
+        memories,
+        history: recent.reverse().map((m) => ({ role: this.mapRole(m.role), content: m.content })),
+        tools: this.availableTools(),
+      });
+      let messages: AiChatMessage[] = built.messages;
+      const tools = built.tools;
+      let truncatedPromptTokens = this.totalTruncated(built.telemetry);
 
       // 4) tool-calling loop: complete → execute tool calls → feed results → repeat
       //    until the model returns a plain answer (or the iteration cap is hit).
-      const provider = this.providers.resolve(agent?.model);
+      const route = routeForMetric;
+      const routed = this.modelRouter.resolve({
+        tenantId, conversationId: aiConversationId, legacyModel: agent?.model,
+        feature: 'chat', route,
+      });
+      const provider = this.providers.resolve(routed.model);
+      providerForMetric = provider.name;
+      modelForMetric = routed.model ?? provider.name;
       const toolCtx: ToolContext = {
         tenantId,
         actorUserId: this.ctx.getUser()?.id,
@@ -150,7 +225,7 @@ export class AiExecutionService {
 
       let promptTokens = 0;
       let completionTokens = 0;
-      let lastModel = agent?.model ?? 'noop';
+      let lastModel = routed.model ?? 'noop';
       let fallback = false;
       let finalContent = '';
       let toolCallsCount = 0;
@@ -158,25 +233,43 @@ export class AiExecutionService {
       let toolFailureCount = 0;
       let toolExecMs = 0;
       let lastTool: { name: string; result: Record<string, unknown> } | undefined;
+      const accounting: TurnAccounting = {
+        cachedInputTokens: 0, cachedRequestCount: 0, providerAttempts: 0, toolLoops: 0,
+        costMicrousd: 0n, pricingStatus: PRICING_STATUS.PRICED,
+      };
 
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
+        const fitted = this.budgets.fitRuntime(messages, tools);
+        messages = fitted.messages;
+        truncatedPromptTokens += fitted.truncatedTokens;
         const completion = await provider.complete({
           tenantId,
-          model: agent?.model,
+          model: routed.model,
           temperature: agent ? Number(agent.temperature) : undefined,
           messages,
-          tools: ALL_TOOLS,
+          tools,
+          maxOutputTokens: this.budgets.maxOutputTokens,
+          idempotencyKey: `${requestKey}:loop:${i}`,
+          feature: 'chat', route, channel,
         });
         promptTokens += completion.promptTokens;
         completionTokens += completion.completionTokens;
         lastModel = completion.model;
         fallback = completion.fallback ?? fallback;
+        accounting.cachedInputTokens += completion.cachedPromptTokens ?? 0;
+        if ((completion.cachedPromptTokens ?? 0) > 0) accounting.cachedRequestCount += 1;
+        accounting.providerAttempts += completion.providerAttempts ?? 1;
+        await this.recordCompletionCost(
+          tenantId, aiConversationId, requestKey, channel, route, i,
+          provider.name, completion, accounting,
+        );
 
         const calls = completion.toolCalls ?? [];
         if (calls.length === 0) {
           finalContent = completion.content;
           break;
         }
+        accounting.toolLoops += 1;
 
         // Record the assistant's tool-call turn, execute each call, feed results back.
         messages.push({ role: 'assistant', content: completion.content || null, tool_calls: calls });
@@ -187,11 +280,13 @@ export class AiExecutionService {
           if (result.success === false) toolFailureCount += 1;
           else toolSuccessCount += 1;
           lastTool = { name: call.name, result };
+          const toolOutput = this.budgets.truncateToolResult(result);
+          truncatedPromptTokens += toolOutput.truncatedTokens;
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
             name: call.name,
-            content: JSON.stringify(result),
+            content: toolOutput.content,
           });
         }
         if (i === MAX_TOOL_ITERATIONS - 1) {
@@ -202,7 +297,7 @@ export class AiExecutionService {
 
       // 5) persist the assistant message + meter usage/cost in one short transaction.
       const totalTokens = promptTokens + completionTokens;
-      const costUsd = this.computeCost(promptTokens, completionTokens, lastModel);
+      const costUsd = AiCostLedgerService.toUsdNumber(accounting.costMicrousd);
       const assistant = await this.dataSource.transaction(async (manager) => {
         const saved = await manager.getRepository(AiMessage).save(
           manager.getRepository(AiMessage).create({
@@ -214,7 +309,6 @@ export class AiExecutionService {
           }),
         );
         if (agent) await this.recordUsage(manager, tenantId, agent.id, totalTokens);
-        await this.recordCost(manager, tenantId, costUsd, promptTokens, completionTokens);
         return saved;
       });
 
@@ -231,12 +325,21 @@ export class AiExecutionService {
         aiConversationId,
         channel,
         model: lastModel,
+        feature: 'chat', route, idempotencyKey: requestKey,
         streamed: false,
         fallback,
         success: true,
         promptTokens,
         completionTokens,
+        cachedInputTokens: accounting.cachedInputTokens,
+        embeddingTokens: embedTiming.embeddingTokens,
         costUsd,
+        costMicrousd: accounting.costMicrousd,
+        pricingStatus: accounting.pricingStatus,
+        toolLoopCount: accounting.toolLoops,
+        providerAttempts: accounting.providerAttempts,
+        cachedRequestCount: accounting.cachedRequestCount + (embedTiming.embeddingCacheHits ?? 0),
+        truncatedPromptTokens,
         ragRetrievalMs,
         embeddingMs: embedTiming.embeddingMs,
         toolCallsCount,
@@ -246,14 +349,35 @@ export class AiExecutionService {
         totalLatencyMs: Date.now() - turnStart,
       });
 
-      return {
+      const response = {
         message: assistant,
         retrievedChunks: chunks.length,
         usage: { promptTokens, completionTokens, totalTokens },
         fallback,
         lastTool,
       };
+      await this.requests.complete(tenantId, requestKey, response);
+      return response;
     } catch (err) {
+      if (providerStarted) {
+        await this.costs.record({
+          tenantId, aiConversationId, idempotencyKey: `${requestKey}:failure`,
+          requestKind: 'CHAT', provider: providerForMetric, model: modelForMetric,
+          feature: 'chat', route: routeForMetric, channel,
+          success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
+          quote: {
+            status: PRICING_STATUS.UNPRICED, provider: providerForMetric,
+            requestedModel: modelForMetric, costMicrousd: null,
+          },
+        });
+      }
+      if (requestClaimed) {
+        await this.requests.fail(
+          tenantId, requestKey,
+          providerStarted ? 'UNKNOWN_OUTCOME' : (err instanceof AppError ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE'),
+          providerStarted ? 'PROVIDER_OR_POST_PROVIDER_FAILURE' : (err instanceof AppError ? 'PERMANENT_PRE_PROVIDER_FAILURE' : 'RETRYABLE_PRE_PROVIDER_FAILURE'),
+        ).catch(() => undefined);
+      }
       await this.metrics.record({
         tenantId,
         aiConversationId,
@@ -262,17 +386,21 @@ export class AiExecutionService {
         streamed: false,
         fallback: false,
         success: false,
-        errorMessage: err instanceof Error ? err.message : String(err),
+        errorMessage: providerStarted
+          ? 'AI_PROVIDER_OR_POST_PROVIDER_FAILURE'
+          : 'AI_PRE_PROVIDER_FAILURE',
         promptTokens: 0,
         completionTokens: 0,
-        costUsd: 0,
+        costUsd: null,
         toolCallsCount: 0,
         toolSuccessCount: 0,
         toolFailureCount: 0,
         toolExecMs: 0,
         totalLatencyMs: Date.now() - turnStart,
       });
-      throw err;
+      throw err instanceof AppError
+        ? err
+        : new AppError(ErrorCode.INTERNAL_ERROR, { message: 'The AI request could not be completed.' });
     }
   }
 
@@ -376,10 +504,18 @@ export class AiExecutionService {
      * assert someone else's `wa_message_id` (it is a uniqueness/dedup key).
      */
     origin?: { waMessageId?: string; messageType?: string },
+    transport: AiExecutionTransport = 'WEBSOCKET',
+    memoryLoader?: AiMemoryContextLoader,
   ) {
     const turnStart = Date.now();
-    let channel = 'API';
+    const requestKey = dto.idempotencyKey ?? origin?.waMessageId ?? randomUUID();
+    let requestClaimed = false;
+    let providerStarted = false;
+    let channel = transport;
+    let logicalChannel = 'API';
+    let routeForMetric = 'ai.chat.api';
     let modelForMetric = 'noop';
+    let providerForMetric = 'unknown';
     try {
       const aiConv = await this.aiConversations.findOne({
         where: { id: aiConversationId, tenant: { id: tenantId } },
@@ -391,11 +527,34 @@ export class AiExecutionService {
           message: `Cannot send to a conversation in status "${aiConv.status}"`,
         });
       }
-      channel = aiConv.channel ?? 'API';
+      logicalChannel = aiConv.channel ?? 'API';
+      routeForMetric = `ai.chat.${logicalChannel.toLowerCase()}`;
+      const claim = await this.requests.claim(tenantId, requestKey, 'chat', channel);
+      if (claim === 'COMPLETED') {
+        const replay = await this.requests.completedResponse<{
+          message: AiMessage; retrievedChunks: number;
+          usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+          streamed: boolean; lastTool?: { name: string; result: Record<string, unknown> };
+        }>(tenantId, requestKey);
+        if (replay) {
+          if (replay.message?.content) onToken(replay.message.content);
+          return replay;
+        }
+      }
+      if (claim !== 'CLAIMED') {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: claim === 'UNKNOWN'
+            ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
+            : 'The same AI request is already in progress.',
+        });
+      }
+      requestClaimed = true;
       const agent = aiConv.agent;
       const linkedConversationId = aiConv.conversation?.id;
 
       await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      await this.requests.markProviderStarted(tenantId, requestKey);
+      providerStarted = true;
 
       await this.messages.save(
         this.messages.create({
@@ -417,22 +576,38 @@ export class AiExecutionService {
       }
 
       const ragStart = Date.now();
-      const embedTiming: { embeddingMs?: number } = {};
-      const chunks = agent ? await this.rag.retrieve(tenantId, agent.id, dto.content, undefined, embedTiming) : [];
+      const embedTiming: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number } = {};
+      const chunks = agent ? await this.rag.retrieve(
+        tenantId, agent.id, dto.content, undefined, embedTiming,
+        { channel, aiConversationId, idempotencyKey: requestKey },
+      ) : [];
       const ragRetrievalMs = Date.now() - ragStart;
-      const context = this.rag.assembleContext(chunks);
       const recent = await this.messages.find({
         where: { ai_conversation_id: aiConversationId, tenant: { id: tenantId } },
         order: { created_at: 'DESC' },
-        take: 20,
+        take: 50,
       });
-      const messages: AiChatMessage[] = [];
-      if (agent?.system_prompt) messages.push({ role: 'system', content: agent.system_prompt });
-      if (context) messages.push({ role: 'system', content: `Relevant knowledge:\n${context}` });
-      for (const m of recent.reverse()) messages.push({ role: this.mapRole(m.role), content: m.content });
+      const memories = memoryLoader ? await memoryLoader() : [];
+      const built = this.budgets.build({
+        systemPrompt: agent?.system_prompt,
+        ragChunks: chunks,
+        memories,
+        history: recent.reverse().map((m) => ({ role: this.mapRole(m.role), content: m.content })),
+        tools: this.availableTools(),
+      });
+      let messages: AiChatMessage[] = built.messages;
+      const tools = built.tools;
+      let truncatedPromptTokens = this.totalTruncated(built.telemetry);
 
-      const provider = this.providers.resolve(agent?.model);
-      const model = agent?.model;
+      const route = routeForMetric;
+      const routed = this.modelRouter.resolve({
+        tenantId, conversationId: aiConversationId, legacyModel: agent?.model,
+        feature: 'chat', route,
+      });
+      const provider = this.providers.resolve(routed.model);
+      providerForMetric = provider.name;
+      const model = routed.model;
+      modelForMetric = model ?? provider.name;
       const temperature = agent ? Number(agent.temperature) : undefined;
       const toolCtx: ToolContext = {
         tenantId,
@@ -457,14 +632,27 @@ export class AiExecutionService {
       let toolFailureCount = 0;
       let toolExecMs = 0;
       let lastTool: { name: string; result: Record<string, unknown> } | undefined;
+      const accounting: TurnAccounting = {
+        cachedInputTokens: 0, cachedRequestCount: 0, providerAttempts: 0, toolLoops: 0,
+        costMicrousd: 0n, pricingStatus: PRICING_STATUS.PRICED,
+      };
 
       if (provider.stream) {
         streamed = true;
         const streamStart = Date.now();
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
+          const fitted = this.budgets.fitRuntime(messages, tools);
+          messages = fitted.messages;
+          truncatedPromptTokens += fitted.truncatedTokens;
           let turnContent = '';
           let sawToolCalls: AiToolCall[] = [];
-          for await (const chunk of provider.stream({ tenantId, model, temperature, messages, tools: ALL_TOOLS })) {
+          let turnUsage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; providerAttempts?: number } | undefined;
+          for await (const chunk of provider.stream({
+            tenantId, model, temperature, messages, tools,
+            maxOutputTokens: this.budgets.maxOutputTokens,
+            idempotencyKey: `${requestKey}:loop:${i}`,
+            feature: 'chat', route, channel,
+          })) {
             if (chunk.delta) {
               if (firstTokenMs === undefined) firstTokenMs = Date.now() - turnStart;
               turnContent += chunk.delta;
@@ -473,6 +661,7 @@ export class AiExecutionService {
             if (chunk.done) {
               if (chunk.toolCalls?.length) sawToolCalls = chunk.toolCalls;
               if (chunk.usage) {
+                turnUsage = chunk.usage;
                 promptTokens += chunk.usage.promptTokens;
                 completionTokens += chunk.usage.completionTokens;
                 usageFromProvider = true;
@@ -480,10 +669,28 @@ export class AiExecutionService {
               if (chunk.model) lastModel = chunk.model;
             }
           }
+          if (turnUsage) {
+            accounting.cachedInputTokens += turnUsage.cachedPromptTokens ?? 0;
+            if ((turnUsage.cachedPromptTokens ?? 0) > 0) accounting.cachedRequestCount += 1;
+            accounting.providerAttempts += turnUsage.providerAttempts ?? 1;
+            await this.recordCompletionCost(
+              tenantId, aiConversationId, requestKey, channel, route, i,
+              provider.name,
+              {
+                model: lastModel,
+                promptTokens: turnUsage.promptTokens,
+                completionTokens: turnUsage.completionTokens,
+                cachedPromptTokens: turnUsage.cachedPromptTokens,
+                providerAttempts: turnUsage.providerAttempts,
+              },
+              accounting,
+            );
+          }
           if (sawToolCalls.length === 0) {
             full = turnContent;
             break;
           }
+          accounting.toolLoops += 1;
           messages.push({ role: 'assistant', content: turnContent || null, tool_calls: sawToolCalls });
           for (const call of sawToolCalls) {
             const [result, ms] = await this.timedToolCall(toolCtx, call);
@@ -492,7 +699,9 @@ export class AiExecutionService {
             if (result.success === false) toolFailureCount += 1;
             else toolSuccessCount += 1;
             lastTool = { name: call.name, result };
-            messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(result) });
+            const toolOutput = this.budgets.truncateToolResult(result);
+            truncatedPromptTokens += toolOutput.truncatedTokens;
+            messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: toolOutput.content });
           }
           if (i === MAX_TOOL_ITERATIONS - 1) full = turnContent || 'I have processed your request.';
         }
@@ -500,18 +709,34 @@ export class AiExecutionService {
       } else {
         // No streaming support (Noop fallback) — SAME complete()-based tool loop as sendMessage.
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-          const completion = await provider.complete({ tenantId, model, temperature, messages, tools: ALL_TOOLS });
+          const fitted = this.budgets.fitRuntime(messages, tools);
+          messages = fitted.messages;
+          truncatedPromptTokens += fitted.truncatedTokens;
+          const completion = await provider.complete({
+            tenantId, model, temperature, messages, tools,
+            maxOutputTokens: this.budgets.maxOutputTokens,
+            idempotencyKey: `${requestKey}:loop:${i}`,
+            feature: 'chat', route, channel,
+          });
           promptTokens += completion.promptTokens;
           completionTokens += completion.completionTokens;
           usageFromProvider = true;
           lastModel = completion.model;
           fallback = completion.fallback ?? fallback;
+          accounting.cachedInputTokens += completion.cachedPromptTokens ?? 0;
+          if ((completion.cachedPromptTokens ?? 0) > 0) accounting.cachedRequestCount += 1;
+          accounting.providerAttempts += completion.providerAttempts ?? 1;
+          await this.recordCompletionCost(
+            tenantId, aiConversationId, requestKey, channel, route, i,
+            provider.name, completion, accounting,
+          );
 
           const calls = completion.toolCalls ?? [];
           if (calls.length === 0) {
             full = completion.content;
             break;
           }
+          accounting.toolLoops += 1;
           messages.push({ role: 'assistant', content: completion.content || null, tool_calls: calls });
           for (const call of calls) {
             const [result, ms] = await this.timedToolCall(toolCtx, call);
@@ -520,7 +745,9 @@ export class AiExecutionService {
             if (result.success === false) toolFailureCount += 1;
             else toolSuccessCount += 1;
             lastTool = { name: call.name, result };
-            messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: JSON.stringify(result) });
+            const toolOutput = this.budgets.truncateToolResult(result);
+            truncatedPromptTokens += toolOutput.truncatedTokens;
+            messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: toolOutput.content });
           }
           if (i === MAX_TOOL_ITERATIONS - 1) full = completion.content || 'I have processed your request.';
         }
@@ -536,7 +763,11 @@ export class AiExecutionService {
       const totalTokens = promptTokens + completionTokens;
       modelForMetric = lastModel;
 
-      const costUsd = this.computeCost(promptTokens, completionTokens, lastModel);
+      if (!usageFromProvider && lastModel !== 'noop') {
+        accounting.costMicrousd = null;
+        accounting.pricingStatus = PRICING_STATUS.UNPRICED;
+      }
+      const costUsd = AiCostLedgerService.toUsdNumber(accounting.costMicrousd);
       const assistant = await this.dataSource.transaction(async (manager) => {
         const saved = await manager.getRepository(AiMessage).save(
           manager.getRepository(AiMessage).create({
@@ -548,7 +779,6 @@ export class AiExecutionService {
           }),
         );
         if (agent) await this.recordUsage(manager, tenantId, agent.id, totalTokens);
-        await this.recordCost(manager, tenantId, costUsd, promptTokens, completionTokens);
         return saved;
       });
 
@@ -562,12 +792,21 @@ export class AiExecutionService {
         aiConversationId,
         channel,
         model: lastModel,
+        feature: 'chat', route, idempotencyKey: requestKey,
         streamed,
         fallback,
         success: true,
         promptTokens,
         completionTokens,
+        cachedInputTokens: accounting.cachedInputTokens,
+        embeddingTokens: embedTiming.embeddingTokens,
         costUsd,
+        costMicrousd: accounting.costMicrousd,
+        pricingStatus: accounting.pricingStatus,
+        toolLoopCount: accounting.toolLoops,
+        providerAttempts: accounting.providerAttempts,
+        cachedRequestCount: accounting.cachedRequestCount + (embedTiming.embeddingCacheHits ?? 0),
+        truncatedPromptTokens,
         ragRetrievalMs,
         embeddingMs: embedTiming.embeddingMs,
         toolCallsCount,
@@ -579,14 +818,35 @@ export class AiExecutionService {
         totalLatencyMs: Date.now() - turnStart,
       });
 
-      return {
+      const response = {
         message: assistant,
         retrievedChunks: chunks.length,
         usage: { promptTokens, completionTokens, totalTokens },
         streamed,
         lastTool,
       };
+      await this.requests.complete(tenantId, requestKey, response);
+      return response;
     } catch (err) {
+      if (providerStarted) {
+        await this.costs.record({
+          tenantId, aiConversationId, idempotencyKey: `${requestKey}:failure`,
+          requestKind: 'CHAT', provider: providerForMetric, model: modelForMetric,
+          feature: 'chat', route: routeForMetric, channel,
+          success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
+          quote: {
+            status: PRICING_STATUS.UNPRICED, provider: providerForMetric,
+            requestedModel: modelForMetric, costMicrousd: null,
+          },
+        });
+      }
+      if (requestClaimed) {
+        await this.requests.fail(
+          tenantId, requestKey,
+          providerStarted ? 'UNKNOWN_OUTCOME' : (err instanceof AppError ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE'),
+          providerStarted ? 'PROVIDER_OR_POST_PROVIDER_FAILURE' : (err instanceof AppError ? 'PERMANENT_PRE_PROVIDER_FAILURE' : 'RETRYABLE_PRE_PROVIDER_FAILURE'),
+        ).catch(() => undefined);
+      }
       await this.metrics.record({
         tenantId,
         aiConversationId,
@@ -595,17 +855,21 @@ export class AiExecutionService {
         streamed: false,
         fallback: false,
         success: false,
-        errorMessage: err instanceof Error ? err.message : String(err),
+        errorMessage: providerStarted
+          ? 'AI_PROVIDER_OR_POST_PROVIDER_FAILURE'
+          : 'AI_PRE_PROVIDER_FAILURE',
         promptTokens: 0,
         completionTokens: 0,
-        costUsd: 0,
+        costUsd: null,
         toolCallsCount: 0,
         toolSuccessCount: 0,
         toolFailureCount: 0,
         toolExecMs: 0,
         totalLatencyMs: Date.now() - turnStart,
       });
-      throw err;
+      throw err instanceof AppError
+        ? err
+        : new AppError(ErrorCode.INTERNAL_ERROR, { message: 'The AI request could not be completed.' });
     }
   }
 
@@ -650,6 +914,20 @@ export class AiExecutionService {
   }
 
   /**
+   * Never spend prompt tokens advertising dashboard tools the current actor is
+   * not authorized to execute. The dispatcher remains the enforcement point;
+   * this is defense-in-depth and keeps the authorized set within its budget.
+   */
+  private availableTools(): AiToolDefinition[] {
+    const permissions = new Set(this.ctx.getUser()?.permissions ?? []);
+    const admin = AI_ADMIN_TOOLS.filter((tool) => {
+      const required = AI_ADMIN_TOOL_PERMISSION[tool.name as AiAdminToolName];
+      return required ? permissions.has(required) : false;
+    });
+    return [...AI_TOOLS, ...admin];
+  }
+
+  /**
    * Atomically increment the monthly usage row for (tenant, agent).
    *
    * Was find-then-save, which lost updates under concurrent turns (two turns read
@@ -675,9 +953,54 @@ export class AiExecutionService {
   }
 
   /** Single pricing formula — shared by `recordCost` and the metrics recorder. */
-  private computeCost(inputTokens: number, outputTokens: number, model: string): number {
-    const price = priceFor(model);
-    return +((inputTokens / 1000) * price.input + (outputTokens / 1000) * price.output).toFixed(6);
+  private async recordCompletionCost(
+    tenantId: string,
+    aiConversationId: string,
+    requestKey: string,
+    channel: string,
+    route: string,
+    loop: number,
+    provider: string,
+    completion: Pick<AiCompletionResult, 'model' | 'promptTokens' | 'completionTokens' | 'cachedPromptTokens' | 'providerAttempts'>,
+    accounting: TurnAccounting,
+  ): Promise<void> {
+    const quote = this.costs.quoteChat(
+      completion.model, completion.promptTokens, completion.completionTokens,
+      completion.cachedPromptTokens ?? 0, provider,
+    );
+    await this.costs.record({
+      tenantId, aiConversationId, idempotencyKey: `${requestKey}:chat:${loop}`,
+      requestKind: 'CHAT', provider, model: completion.model,
+      feature: 'chat', route, channel,
+      inputTokens: completion.promptTokens,
+      cachedInputTokens: completion.cachedPromptTokens ?? 0,
+      outputTokens: completion.completionTokens,
+      cachedRequestCount: (completion.cachedPromptTokens ?? 0) > 0 ? 1 : 0,
+      toolLoopIndex: loop,
+      providerAttempts: completion.providerAttempts ?? 1,
+      success: true, quote,
+    });
+    if ((completion.providerAttempts ?? 1) > 1) {
+      await this.costs.record({
+        tenantId, aiConversationId, idempotencyKey: `${requestKey}:chat:${loop}:retry-uncertainty`,
+        requestKind: 'CHAT', provider, model: completion.model,
+        feature: 'chat', route, channel,
+        success: false, errorCode: 'RETRY_USAGE_UNKNOWN',
+        quote: { status: PRICING_STATUS.UNPRICED, provider, requestedModel: completion.model, costMicrousd: null },
+      });
+      accounting.pricingStatus = PRICING_STATUS.UNPRICED;
+    }
+    if (quote.costMicrousd === null) {
+      accounting.costMicrousd = null;
+      accounting.pricingStatus = PRICING_STATUS.UNPRICED;
+    } else if (accounting.costMicrousd !== null) {
+      accounting.costMicrousd += quote.costMicrousd;
+    }
+  }
+
+  private totalTruncated(t: PromptBudgetTelemetry): number {
+    return t.truncatedSystemTokens + t.truncatedHistoryTokens + t.truncatedRagTokens
+      + t.truncatedMemoryTokens + t.truncatedToolTokens + t.truncatedToolSchemaTokens;
   }
 
   /**
@@ -686,21 +1009,4 @@ export class AiExecutionService {
    * `cost` is pre-computed via `computeCost` (shared with the metrics recorder,
    * so both stores always agree on the same figure for the same turn).
    */
-  private async recordCost(
-    manager: EntityManager,
-    tenantId: string,
-    cost: number,
-    inputTokens: number,
-    outputTokens: number,
-  ): Promise<void> {
-    await manager.query(
-      `INSERT INTO ai_cost_logs ("tenantId", period_month, input_tokens, output_tokens, total_cost_usd)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT ("tenantId", period_month)
-       DO UPDATE SET input_tokens   = ai_cost_logs.input_tokens   + EXCLUDED.input_tokens,
-                     output_tokens  = ai_cost_logs.output_tokens  + EXCLUDED.output_tokens,
-                     total_cost_usd = ai_cost_logs.total_cost_usd + EXCLUDED.total_cost_usd`,
-      [tenantId, currentPeriodMonth(), inputTokens, outputTokens, cost],
-    );
-  }
 }

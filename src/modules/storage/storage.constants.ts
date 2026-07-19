@@ -95,6 +95,18 @@ export const DOCUMENT_UPLOAD_POLICY: UploadPolicy = {
   requireExtensionMatch: true,
 };
 
+export const AI_TRAINING_UPLOAD_POLICY: UploadPolicy = {
+  name: 'AI training text',
+  allowedTypes: [
+    { mime: 'text/plain', extensions: ['txt'] },
+    { mime: 'text/markdown', extensions: ['md', 'markdown'] },
+  ],
+  // Plain text has no reliable magic bytes; strict MIME + extension + UTF-8
+  // extraction validation is performed before indexing.
+  requireMagicBytes: false,
+  requireExtensionMatch: true,
+};
+
 /** Media types WhatsApp can deliver inbound. Executables/archives are absent by design. */
 export const WHATSAPP_MEDIA_UPLOAD_TYPES: readonly AllowedUploadType[] = [
   { mime: 'image/jpeg', extensions: ['jpg', 'jpeg'] },
@@ -194,6 +206,14 @@ export function extensionMatchesMime(filename: string, mime: string): boolean {
   if (dot === -1) return false;
   const ext = normalizeExtension(filename.slice(dot + 1));
   const type = ALLOWED_UPLOAD_TYPES.find((t) => t.mime === mime);
+  return !!type && type.extensions.includes(ext);
+}
+
+export function extensionMatchesMimeForPolicy(filename: string, mime: string, policy: UploadPolicy): boolean {
+  const dot = filename.lastIndexOf('.');
+  if (dot === -1) return false;
+  const ext = normalizeExtension(filename.slice(dot + 1));
+  const type = policy.allowedTypes.find((t) => t.mime === mime);
   return !!type && type.extensions.includes(ext);
 }
 

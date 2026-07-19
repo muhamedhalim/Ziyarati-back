@@ -40,7 +40,10 @@ export class AiProcessor extends WorkerHost {
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} conv=${data.aiConversationId} attempt=${job.attemptsMade + 1}`,
     );
     return runInTenantContext(this.ctx, data, () =>
-      this.exec.sendMessage(data.tenantId, data.aiConversationId, { content: data.content }),
+      this.exec.sendMessage(data.tenantId, data.aiConversationId, {
+        content: data.content,
+        idempotencyKey: data.idempotencyKey,
+      }, 'BACKGROUND_JOB'),
     );
   }
 

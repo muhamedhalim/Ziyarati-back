@@ -8,6 +8,7 @@ import {
   AiCompletionRequest,
   AiCompletionResult,
 } from './ai-provider.interface';
+import { OpenAiRequestPolicy } from './openai-request-policy';
 
 /**
  * OpenAI Chat Completions provider (GPT-4o / GPT-4.1 family).
@@ -22,11 +23,19 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   private readonly logger = new Logger('OpenAiChatProvider');
   private readonly client?: OpenAI;
   private readonly defaultModel: string;
+  private readonly policy: OpenAiRequestPolicy;
 
   constructor(private readonly config: ConfigService) {
     const apiKey = config.get<string>('OPENAI_API_KEY');
     this.defaultModel = config.get<string>('OPENAI_CHAT_MODEL', 'gpt-4o');
-    if (apiKey) this.client = new OpenAI({ apiKey });
+    const timeout = Number(config.get('OPENAI_REQUEST_TIMEOUT_MS', 30_000));
+    this.policy = new OpenAiRequestPolicy(
+      Number(config.get('OPENAI_PROVIDER_MAX_RETRIES', 2)),
+      Number(config.get('OPENAI_RETRY_BASE_MS', 500)),
+      this.logger,
+    );
+    // The SDK retry loop is disabled so this explicit policy is the sole owner.
+    if (apiKey) this.client = new OpenAI({ apiKey, timeout, maxRetries: 0 });
   }
 
   supports(model?: string): boolean {
@@ -36,24 +45,13 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
     const model = request.model ?? this.defaultModel;
 
-    const res = await this.client!.chat.completions.create({
-      model,
-      temperature: request.temperature ?? 0.2,
-      messages: this.toOpenAiMessages(request.messages),
-      ...(request.tools && request.tools.length
-        ? {
-            tools: request.tools.map((t) => ({
-              type: 'function' as const,
-              function: {
-                name: t.name,
-                description: t.description,
-                parameters: t.parameters,
-              },
-            })),
-            tool_choice: 'auto' as const,
-          }
-        : {}),
-    });
+    const { value: res, attempts } = await this.policy.execute(
+      () => this.client!.chat.completions.create(
+        this.requestBody(request, model),
+        this.requestOptions(request),
+      ),
+      'chat.completions',
+    );
 
     const message = res.choices[0]?.message;
     const toolCalls = (message?.tool_calls ?? [])
@@ -69,7 +67,36 @@ export class OpenAiChatProvider implements AiCompletionProvider {
       model: res.model,
       promptTokens: res.usage?.prompt_tokens ?? 0,
       completionTokens: res.usage?.completion_tokens ?? 0,
+      cachedPromptTokens: res.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      providerAttempts: attempts,
+      providerRequestId: res._request_id ?? undefined,
       toolCalls,
+    };
+  }
+
+  private requestBody(request: AiCompletionRequest, model: string): OpenAI.Chat.ChatCompletionCreateParamsNonStreaming {
+    return {
+      model,
+      temperature: request.temperature ?? 0.2,
+      messages: this.toOpenAiMessages(request.messages),
+      ...(request.maxOutputTokens ? { max_completion_tokens: request.maxOutputTokens } : {}),
+      ...(request.tools?.length
+        ? {
+            tools: request.tools.map((t) => ({
+              type: 'function' as const,
+              function: { name: t.name, description: t.description, parameters: t.parameters },
+            })),
+            tool_choice: 'auto' as const,
+          }
+        : {}),
+    };
+  }
+
+  private requestOptions(request: AiCompletionRequest): OpenAI.RequestOptions | undefined {
+    if (!request.idempotencyKey && !request.signal) return undefined;
+    return {
+      ...(request.idempotencyKey ? { headers: { 'Idempotency-Key': request.idempotencyKey } } : {}),
+      ...(request.signal ? { signal: request.signal } : {}),
     };
   }
 
@@ -109,33 +136,31 @@ export class OpenAiChatProvider implements AiCompletionProvider {
    */
   async *stream(request: AiCompletionRequest): AsyncIterable<AiCompletionChunk> {
     const model = request.model ?? this.defaultModel;
-    const stream = await this.client!.chat.completions.create({
-      model,
-      temperature: request.temperature ?? 0.2,
-      messages: this.toOpenAiMessages(request.messages),
-      ...(request.tools && request.tools.length
-        ? {
-            tools: request.tools.map((t) => ({
-              type: 'function' as const,
-              function: { name: t.name, description: t.description, parameters: t.parameters },
-            })),
-            tool_choice: 'auto' as const,
-          }
-        : {}),
-      stream: true,
-      stream_options: { include_usage: true },
-    });
+    // Retry only stream creation. Once any stream data is observed, replaying it
+    // could duplicate output/cost, so iteration failures propagate immediately.
+    const { value: stream, attempts } = await this.policy.execute(
+      () => this.client!.chat.completions.create(
+        { ...this.requestBody(request, model), stream: true, stream_options: { include_usage: true } },
+        this.requestOptions(request),
+      ),
+      'chat.completions.stream',
+    );
 
     // Reassemble streamed tool_call fragments by index (OpenAI splits each call's
     // id/name/arguments across multiple chunks).
     const pending = new Map<number, { id: string; name: string; arguments: string }>();
     let resolvedModel = model;
-    let usage: { promptTokens: number; completionTokens: number } | undefined;
+    let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; providerAttempts?: number } | undefined;
 
     for await (const part of stream) {
       resolvedModel = part.model ?? resolvedModel;
       if (part.usage) {
-        usage = { promptTokens: part.usage.prompt_tokens ?? 0, completionTokens: part.usage.completion_tokens ?? 0 };
+        usage = {
+          promptTokens: part.usage.prompt_tokens ?? 0,
+          completionTokens: part.usage.completion_tokens ?? 0,
+          cachedPromptTokens: part.usage.prompt_tokens_details?.cached_tokens ?? 0,
+          providerAttempts: attempts,
+        };
       }
       const choice = part.choices[0];
       const delta = choice?.delta?.content ?? '';

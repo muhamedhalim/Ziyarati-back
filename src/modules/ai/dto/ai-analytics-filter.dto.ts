@@ -1,4 +1,4 @@
-import { IsISO8601, IsOptional } from 'class-validator';
+import { IsISO8601, IsOptional, IsUUID } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
@@ -18,4 +18,9 @@ export class AiAnalyticsFilterDto {
   @IsOptional()
   @IsISO8601()
   to?: string;
+
+  @ApiPropertyOptional({ description: 'Limit cost attribution to one tenant-owned AI conversation.', format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string;
 }

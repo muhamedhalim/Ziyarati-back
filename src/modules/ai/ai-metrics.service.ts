@@ -11,13 +11,24 @@ export interface RecordMetricInput {
   aiConversationId?: string;
   channel: string;
   model: string;
+  feature?: string;
+  route?: string;
+  idempotencyKey?: string;
   streamed: boolean;
   fallback: boolean;
   success: boolean;
   errorMessage?: string;
   promptTokens: number;
   completionTokens: number;
-  costUsd: number;
+  cachedInputTokens?: number;
+  embeddingTokens?: number;
+  costUsd: number | null;
+  costMicrousd?: bigint | null;
+  pricingStatus?: string;
+  toolLoopCount?: number;
+  providerAttempts?: number;
+  cachedRequestCount?: number;
+  truncatedPromptTokens?: number;
   ragRetrievalMs?: number;
   embeddingMs?: number;
   toolCallsCount: number;
@@ -61,14 +72,26 @@ export class AiMetricsService {
           ai_conversation_id: input.aiConversationId,
           channel: input.channel,
           model: input.model,
+          feature: input.feature ?? 'chat',
+          route: input.route ?? 'ai.chat',
+          idempotency_key: input.idempotencyKey,
           streamed: input.streamed,
           fallback: input.fallback,
           success: input.success,
           error_message: input.errorMessage,
           prompt_tokens: input.promptTokens,
           completion_tokens: input.completionTokens,
+          cached_input_tokens: input.cachedInputTokens ?? 0,
+          embedding_tokens: input.embeddingTokens ?? 0,
           total_tokens: input.promptTokens + input.completionTokens,
           cost_usd: input.costUsd,
+          cost_microusd: input.costMicrousd?.toString(),
+          pricing_status: input.pricingStatus ?? 'UNPRICED',
+          tool_loop_count: input.toolLoopCount ?? 0,
+          provider_attempts: input.providerAttempts ?? 1,
+          provider_retry_count: Math.max(0, (input.providerAttempts ?? 1) - 1),
+          cached_request_count: input.cachedRequestCount ?? 0,
+          truncated_prompt_tokens: input.truncatedPromptTokens ?? 0,
           rag_retrieval_ms: input.ragRetrievalMs,
           embedding_ms: input.embeddingMs,
           tool_calls_count: input.toolCallsCount,

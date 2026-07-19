@@ -405,7 +405,8 @@ export class AiToolDispatchService {
 
   /**
    * Claim the idempotency key, run `executor`, and record the outcome. Replays a
-   * prior SUCCEEDED call, reports an in-flight PENDING, and retries a FAILED one.
+   * prior SUCCEEDED call and reports in-flight or terminal/unknown outcomes
+   * without replaying a potentially completed side effect.
    */
   private async run(
     ctx: ToolContext,
@@ -419,15 +420,11 @@ export class AiToolDispatchService {
       if (existing.status === 'SUCCEEDED') {
         return { ...(existing.result as ToolResult), idempotentReplay: true };
       }
-      if (existing.status === 'PENDING') {
+      if (existing.status === 'PENDING' || existing.status === 'EXECUTING') {
         return { success: false, error: 'A matching action is already in progress.' };
       }
       // FAILED → allow a retry by reopening the same ledger row.
-      await this.dataSource.query(
-        `UPDATE ai_tool_calls SET status='PENDING', error=NULL, completed_at=NULL WHERE id=$1`,
-        [existing.id],
-      );
-      return this.executeAndRecord(existing.id, executor);
+      return { success: false, error: 'This action was already attempted and requires manual verification.' };
     }
 
     // Claim atomically; on a concurrent race the conflicting row already owns it.
@@ -453,6 +450,10 @@ export class AiToolDispatchService {
     executor: () => Promise<{ toolResult: ToolResult; resultJson: unknown; appointmentId?: string }>,
   ): Promise<ToolResult> {
     try {
+      await this.dataSource.query(
+        `UPDATE ai_tool_calls SET status='EXECUTING' WHERE id=$1 AND status='PENDING'`,
+        [id],
+      );
       const { toolResult, resultJson, appointmentId } = await executor();
       await this.dataSource.query(
         `UPDATE ai_tool_calls
@@ -462,12 +463,15 @@ export class AiToolDispatchService {
       );
       return toolResult;
     } catch (err) {
-      const message = this.msg(err);
+      const state = err instanceof AppError ? 'FAILED_PERMANENT' : 'UNKNOWN_OUTCOME';
+      const message = err instanceof AppError
+        ? this.msg(err)
+        : 'Unknown execution outcome; manual verification is required.';
       await this.dataSource.query(
-        `UPDATE ai_tool_calls SET status='FAILED', error=$2, completed_at=now() WHERE id=$1`,
-        [id, message],
+        `UPDATE ai_tool_calls SET status=$2, error=$3, completed_at=now() WHERE id=$1`,
+        [id, state, message],
       );
-      this.logger.warn(`tool call ${id} FAILED: ${message}`);
+      this.logger.warn(`tool call ${id} ${state}`);
       // Returned to the model so it can apologize / offer an alternative.
       return { success: false, error: message };
     }

@@ -17,7 +17,7 @@ describe('CookieService', () => {
       expect(res.cookie).toHaveBeenCalledWith(
         CookieService.ACCESS_COOKIE,
         'AT',
-        expect.objectContaining({ httpOnly: true, path: '/api/v1', maxAge: expect.any(Number) }),
+        expect.objectContaining({ httpOnly: true, path: '/', maxAge: expect.any(Number) }),
       );
       // Refresh cookie is restricted to the auth path only.
       expect(res.cookie).toHaveBeenCalledWith(
@@ -91,7 +91,7 @@ describe('CookieService', () => {
 
       expect(res.clearCookie).toHaveBeenCalledWith(
         CookieService.ACCESS_COOKIE,
-        expect.objectContaining({ path: '/api/v1' }),
+        expect.objectContaining({ path: '/' }),
       );
       expect(res.clearCookie).toHaveBeenCalledWith(
         CookieService.REFRESH_COOKIE,

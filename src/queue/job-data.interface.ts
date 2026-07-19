@@ -157,6 +157,8 @@ export interface AiExecuteJob extends BaseJobData {
   tenantId: string;
   aiConversationId: string;
   content: string;
+  /** Stable across every enqueue/retry of the same logical paid request. */
+  idempotencyKey: string;
 }
 
 // ── Analytics ──────────────────────────────────────────────────────────────

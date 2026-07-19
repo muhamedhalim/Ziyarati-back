@@ -6,6 +6,7 @@ import { AiAgent } from '../../entities/AI Agent/AiAgent';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { ErrorCode } from '../../common/errors';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import { SystemSettingService } from '../platform/system-setting.service';
 
 const TENANT = 't1';
 
@@ -23,6 +24,10 @@ describe('AiAgentService', () => {
         AiAgentService,
         { provide: getRepositoryToken(AiAgent), useValue: agents },
         { provide: getRepositoryToken(Branch), useValue: branches },
+        {
+          provide: SystemSettingService,
+          useValue: { getTyped: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
     service = moduleRef.get(AiAgentService);

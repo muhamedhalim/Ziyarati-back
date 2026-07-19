@@ -42,6 +42,12 @@ export interface AiCompletionRequest {
   messages: AiChatMessage[];
   /** Tools the model may call. When present the provider enables tool calling. */
   tools?: AiToolDefinition[];
+  maxOutputTokens?: number;
+  idempotencyKey?: string;
+  feature?: string;
+  route?: string;
+  channel?: string;
+  signal?: AbortSignal;
 }
 
 export interface AiCompletionResult {
@@ -49,6 +55,9 @@ export interface AiCompletionResult {
   model: string;
   promptTokens: number;
   completionTokens: number;
+  cachedPromptTokens?: number;
+  providerAttempts?: number;
+  providerRequestId?: string;
   /** Tool calls the model requested this turn (empty/undefined → plain answer). */
   toolCalls?: AiToolCall[];
   /** True when produced by the no-op fallback (no real provider). */
@@ -67,7 +76,7 @@ export interface AiCompletionChunk {
   /** Present on the terminal chunk when the model requested tool calls. */
   toolCalls?: AiToolCall[];
   /** Present on the terminal chunk when the provider reports real token usage. */
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; providerAttempts?: number };
   /** Present on the terminal chunk (the resolved model id). */
   model?: string;
 }
@@ -96,6 +105,19 @@ export interface AiEmbeddingResult {
   model: string;
   /** Total embedding tokens billed (for cost accounting). */
   tokens: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+  providerAttempts?: number;
+}
+
+export interface AiEmbeddingContext {
+  kind?: 'QUERY' | 'CONTENT' | 'MEMORY';
+  feature?: string;
+  route?: string;
+  channel?: string;
+  aiConversationId?: string;
+  idempotencyKey?: string;
+  signal?: AbortSignal;
 }
 
 /**
@@ -109,7 +131,7 @@ export interface AiEmbeddingProvider {
   /** Embedding vector dimension (must match the pgvector column). */
   readonly dimension: number;
   /** Batch-embed texts. Throws if not configured — callers guard with isConfigured(). */
-  embed(tenantId: string, texts: string[]): Promise<AiEmbeddingResult>;
+  embed(tenantId: string, texts: string[], context?: AiEmbeddingContext): Promise<AiEmbeddingResult>;
 }
 
 /** Single-provider DI token for the embedding backend. */

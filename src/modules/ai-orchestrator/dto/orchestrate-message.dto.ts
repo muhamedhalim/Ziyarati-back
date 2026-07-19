@@ -23,6 +23,10 @@ export class OrchestrateMessageDto {
   @IsString() @MinLength(1) @MaxLength(8000)
   content!: string;
 
+  @ApiPropertyOptional({ description: 'Stable retry key for this logical AI turn.', maxLength: 120 })
+  @IsOptional() @IsString() @MinLength(8) @MaxLength(120)
+  idempotencyKey?: string;
+
   @ApiPropertyOptional({ format: 'uuid', description: 'Resume an existing AI conversation.' })
   @IsOptional() @IsUUID()
   aiConversationId?: string;

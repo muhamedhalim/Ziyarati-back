@@ -11,7 +11,10 @@ import {
   Post,
   Query,
   UseGuards,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -25,12 +28,17 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
   ApiUnprocessableEntityResponse,
+  ApiConsumes,
+  ApiBody,
 } from '@nestjs/swagger';
 
 import { AiTrainingFileService } from './ai-training-file.service';
 import { UploadTrainingFileDto } from './dto/upload-training-file.dto';
 import { UpdateTrainingFileDto } from './dto/update-training-file.dto';
 import { TrainingFileFilterDto } from './dto/training-file-filter.dto';
+import { UploadTrainingContentDto } from './dto/upload-training-content.dto';
+import { AppError, ErrorCode } from '../../common/errors';
+import { resolveMaxUploadBytes } from '../storage/storage.constants';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -58,16 +66,15 @@ const S_FILE = {
     file_name: { type: 'string', example: 'clinic-faq.pdf' },
     file_url: { type: 'string' },
     file_type: { type: 'string', nullable: true, example: 'PDF' },
-    status: { type: 'string', enum: ['UPLOADED', 'PROCESSING', 'INDEXED', 'FAILED'], example: 'UPLOADED' },
+    status: { type: 'string', enum: ['PENDING', 'PROCESSING', 'INDEXED', 'FAILED'], example: 'PENDING' },
     agent: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
 
 /**
- * AI training files (metadata + ingestion status). Guarded by PermissionsGuard +
- * ActiveTenantGuard; tenant id from TenantContext. No storage implementation —
- * processing is an abstraction seam.
+ * AI training files (private upload + physical ingestion status). Guarded by
+ * PermissionsGuard + ActiveTenantGuard; tenant id comes from TenantContext.
  */
 @ApiTags('AI Training Files')
 @ApiBearerAuth('JWT-auth')
@@ -81,7 +88,25 @@ export class AiTrainingFileController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Register a training file', description: `**Protected — \`ai.training.manage\`. Clinic active.** Stores file metadata (status UPLOADED). Agent validated tenant-scoped.` })
+  @ApiOperation({ summary: 'Upload a UTF-8 TXT/Markdown training file to private storage' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', required: ['file'], properties: {
+    file: { type: 'string', format: 'binary' }, agentId: { type: 'string', format: 'uuid' },
+  } } })
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: resolveMaxUploadBytes() },
+  }))
+  @RequirePermissions(PERMISSION.AI_TRAINING_MANAGE)
+  uploadContent(
+    @UploadedFile() file: { originalname: string; mimetype: string; size: number; buffer: Buffer } | undefined,
+    @Body() dto: UploadTrainingContentDto,
+  ) {
+    if (!file) throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Training file is required' });
+    return this.files.uploadContent(this.ctx.requireTenantId(), file, dto.agentId);
+  }
+
+  @ApiOperation({ summary: 'Register a training file', description: `**Protected — \`ai.training.manage\`. Clinic active.** Registers a tenant-owned private key in PENDING state.` })
   @ApiCreatedResponse({ description: 'Training file registered.', schema: S_FILE })
   @ApiBadRequestResponse({ description: 'Validation failed (unsupported file type).', schema: S_ERROR })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
@@ -115,7 +140,7 @@ export class AiTrainingFileController {
     return this.files.findOne(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Update a training file', description: `**Protected — \`ai.training.manage\`. Clinic active.** Update name/status.` })
+  @ApiOperation({ summary: 'Update a training file', description: `**Protected — \`ai.training.manage\`. Clinic active.** Update display metadata; status is server-owned.` })
   @ApiParam({ name: 'id', description: 'File UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'File updated.', schema: S_FILE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
@@ -128,7 +153,7 @@ export class AiTrainingFileController {
     return this.files.update(this.ctx.requireTenantId(), id, dto);
   }
 
-  @ApiOperation({ summary: 'Process a training file', description: `**Protected — \`ai.training.manage\`. Clinic active.** Ingestion seam — transitions the file to INDEXED. A real pipeline would extract text → knowledge chunks.` })
+  @ApiOperation({ summary: 'Process a training file', description: `**Protected — \`ai.training.manage\`. Clinic active.** Fetches, extracts, chunks, embeds, and persists before setting INDEXED.` })
   @ApiParam({ name: 'id', description: 'File UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'File processed (INDEXED).', schema: S_FILE })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
@@ -33,6 +33,7 @@ export class AiAnalyticsService {
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
     @InjectRepository(AiKnowledgeBase) private readonly kb: Repository<AiKnowledgeBase>,
     @InjectRepository(HandoverRequest) private readonly handovers: Repository<HandoverRequest>,
+    private readonly dataSource: DataSource,
   ) {}
 
   /** Token consumption, request counts, top agents, and monthly trends. */
@@ -76,7 +77,11 @@ export class AiAnalyticsService {
       .select('COALESCE(SUM(c.total_cost_usd), 0)', 'cost')
       .addSelect('COALESCE(SUM(c.input_tokens), 0)', 'input')
       .addSelect('COALESCE(SUM(c.output_tokens), 0)', 'output')
-      .getRawOne<{ cost: string; input: string; output: string }>();
+      .addSelect('COALESCE(SUM(c.cached_input_tokens), 0)', 'cached')
+      .addSelect('COALESCE(SUM(c.embedding_tokens), 0)', 'embedding')
+      .addSelect('COALESCE(SUM(c.cost_microusd), 0)', 'microusd')
+      .addSelect('COALESCE(SUM(c.unpriced_requests), 0)', 'unpriced')
+      .getRawOne<{ cost: string; input: string; output: string; cached: string; embedding: string; microusd: string; unpriced: string }>();
 
     const monthly = await this.scopedCost(tenantId, filter)
       .select('c.period_month', 'period')
@@ -90,7 +95,59 @@ export class AiAnalyticsService {
       totalSpendUsd: +Number(totals?.cost ?? 0).toFixed(6),
       inputTokens: Number(totals?.input ?? 0),
       outputTokens: Number(totals?.output ?? 0),
+      cachedInputTokens: Number(totals?.cached ?? 0),
+      embeddingTokens: Number(totals?.embedding ?? 0),
+      costMicrousd: totals?.microusd ?? '0',
+      unpricedRequests: Number(totals?.unpriced ?? 0),
+      pricingComplete: Number(totals?.unpriced ?? 0) === 0,
       monthly: monthly.map((m) => ({ period: m.period, spendUsd: +Number(m.cost).toFixed(6) })),
+    };
+  }
+
+  /** Exact tenant-scoped ledger aggregation by feature/channel/model/kind. */
+  async costAttribution(tenantId: string, filter: AiAnalyticsFilterDto) {
+    const params: unknown[] = [tenantId];
+    let where = 'WHERE tenant_id=$1';
+    if (filter.from) {
+      params.push(filter.from);
+      where += ` AND created_at >= $${params.length}`;
+    }
+    if (filter.to) {
+      params.push(filter.to);
+      where += ` AND created_at < $${params.length}`;
+    }
+    if (filter.conversationId) {
+      params.push(filter.conversationId);
+      where += ` AND ai_conversation_id = $${params.length}`;
+    }
+    const rows = await this.dataSource.query(
+      `SELECT feature, route, channel, request_kind, provider, model,
+              count(*)::int requests,
+              count(*) FILTER (WHERE success=false)::int failed_requests,
+              count(*) FILTER (WHERE cache_hit=true)::int cache_hits,
+              count(*) FILTER (WHERE pricing_status='UNPRICED')::int unpriced_requests,
+              COALESCE(sum(input_tokens),0)::bigint input_tokens,
+              COALESCE(sum(cached_input_tokens),0)::bigint cached_input_tokens,
+              COALESCE(sum(output_tokens),0)::bigint output_tokens,
+              COALESCE(sum(embedding_tokens),0)::bigint embedding_tokens,
+              COALESCE(sum(provider_attempts-1),0)::bigint provider_retries,
+              COALESCE(sum(cost_microusd),0)::bigint cost_microusd
+         FROM ai_cost_entries ${where}
+        GROUP BY feature,route,channel,request_kind,provider,model
+        ORDER BY cost_microusd DESC`,
+      params,
+    );
+    return {
+      tenantId,
+      items: rows.map((r: Record<string, unknown>) => ({
+        ...r,
+        requests: Number(r.requests), failedRequests: Number(r.failed_requests),
+        cacheHits: Number(r.cache_hits), unpricedRequests: Number(r.unpriced_requests),
+        inputTokens: Number(r.input_tokens), cachedInputTokens: Number(r.cached_input_tokens),
+        outputTokens: Number(r.output_tokens), embeddingTokens: Number(r.embedding_tokens),
+        providerRetries: Number(r.provider_retries), costMicrousd: String(r.cost_microusd),
+        costUsd: +(Number(r.cost_microusd) / 1_000_000).toFixed(6),
+      })),
     };
   }
 

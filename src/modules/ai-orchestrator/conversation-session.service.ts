@@ -38,7 +38,15 @@ export class ConversationSessionService {
     partial: Partial<AiSession>,
   ): Promise<AiSession> {
     const conv = await this.load(tenantId, aiConversationId);
-    const merged: AiSession = { ...(conv.session as AiSession), ...this.clean(partial) };
+    const current = (conv.session as AiSession) ?? {};
+    const cleaned = this.clean(partial);
+    const merged: AiSession = {
+      ...current,
+      ...cleaned,
+      ...(cleaned.context
+        ? { context: { ...(current.context ?? {}), ...cleaned.context } }
+        : {}),
+    };
     conv.session = merged as Record<string, unknown>;
     await this.conversations.save(conv);
     return merged;

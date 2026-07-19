@@ -66,6 +66,19 @@ describe('QueueService (producer facade)', () => {
     );
   });
 
+  it('forces paid AI jobs to one BullMQ attempt with a deterministic idempotent job id', async () => {
+    const data = {
+      tenantId: 't1', aiConversationId: 'c1', content: 'hello', idempotencyKey: 'request-12345678',
+    };
+    await service.enqueueAiExecute(data);
+    await service.enqueueAiExecute(data);
+    const first = record[QUEUE.AI].add.mock.calls[0];
+    const second = record[QUEUE.AI].add.mock.calls[1];
+    expect(first[2]).toEqual(expect.objectContaining({ attempts: 1, jobId: expect.stringMatching(/^ai-/) }));
+    expect(second[2].jobId).toBe(first[2].jobId);
+    expect(first[2].jobId).not.toContain(':');
+  });
+
   it('registers a repeatable job with a cron pattern', async () => {
     await service.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_AGGREGATE, { tenantId: null }, '0 * * * *');
     expect(record[QUEUE.ANALYTICS].add).toHaveBeenCalledWith(

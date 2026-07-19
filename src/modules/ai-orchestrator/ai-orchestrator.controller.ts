@@ -65,6 +65,7 @@ export class AiOrchestratorController {
     return this.orchestrator.handle(this.ctx.requireTenantId(), {
       channel: dto.channel,
       content: dto.content,
+      idempotencyKey: dto.idempotencyKey,
       aiConversationId: dto.aiConversationId,
       agentId: dto.agentId,
       conversationId: dto.conversationId,

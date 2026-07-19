@@ -36,6 +36,16 @@ export class AiExecutionMetric {
   @Column({ length: 60 })
   model!: string;
 
+  @Index()
+  @Column({ length: 80, default: 'chat' })
+  feature!: string;
+
+  @Column({ length: 160, default: 'ai.chat' })
+  route!: string;
+
+  @Column({ length: 120, nullable: true })
+  idempotency_key?: string;
+
   @Column({ default: false })
   streamed!: boolean;
 
@@ -55,10 +65,37 @@ export class AiExecutionMetric {
   completion_tokens!: number;
 
   @Column({ type: 'int', default: 0 })
+  cached_input_tokens!: number;
+
+  @Column({ type: 'int', default: 0 })
+  embedding_tokens!: number;
+
+  @Column({ type: 'int', default: 0 })
   total_tokens!: number;
 
-  @Column({ type: 'decimal', precision: 12, scale: 6, default: 0 })
-  cost_usd!: number;
+  @Column({ type: 'decimal', precision: 12, scale: 6, nullable: true })
+  cost_usd!: number | null;
+
+  @Column({ type: 'bigint', nullable: true })
+  cost_microusd?: string;
+
+  @Column({ length: 20, default: 'UNPRICED' })
+  pricing_status!: string;
+
+  @Column({ type: 'int', default: 0 })
+  tool_loop_count!: number;
+
+  @Column({ type: 'int', default: 1 })
+  provider_attempts!: number;
+
+  @Column({ type: 'int', default: 0 })
+  provider_retry_count!: number;
+
+  @Column({ type: 'int', default: 0 })
+  cached_request_count!: number;
+
+  @Column({ type: 'int', default: 0 })
+  truncated_prompt_tokens!: number;
 
   @Column({ type: 'int', nullable: true })
   rag_retrieval_ms?: number;

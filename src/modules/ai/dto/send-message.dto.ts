@@ -1,5 +1,5 @@
-import { IsString, MaxLength, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Sends a user message into an AI conversation and triggers the RAG execution
@@ -16,4 +16,8 @@ export class SendMessageDto {
   @MinLength(1)
   @MaxLength(8000)
   content!: string;
+
+  @ApiPropertyOptional({ description: 'Stable client retry key; reuse it only for the same logical turn.', maxLength: 120 })
+  @IsOptional() @IsString() @MinLength(8) @MaxLength(120)
+  idempotencyKey?: string;
 }

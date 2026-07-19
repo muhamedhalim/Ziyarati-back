@@ -99,6 +99,8 @@ export class AiMemoryVectorService implements OnApplicationBootstrap {
     if (customerId) {
       params.push(customerId);
       scope += ` AND (e.customer_id = $3 OR e.customer_id IS NULL)`;
+    } else {
+      scope += ' AND e.customer_id IS NULL';
     }
     params.push(topK);
     const limitParam = `$${params.length}`;

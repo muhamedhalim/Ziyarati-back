@@ -15,7 +15,7 @@
 
 /** Training-file ingestion status (free varchar; default replaced from 'PENDING'). */
 export const TRAINING_FILE_STATUS = {
-  UPLOADED: 'UPLOADED',
+  PENDING: 'PENDING',
   PROCESSING: 'PROCESSING',
   INDEXED: 'INDEXED',
   FAILED: 'FAILED',
@@ -70,18 +70,4 @@ export const TERMINAL_HANDOVER_STATUSES: HandoverStatus[] = [
 /** Current billing period key, e.g. "2026-06". */
 export function currentPeriodMonth(date: Date = new Date()): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-/**
- * Illustrative per-1K-token pricing by model (USD). Default 0 — no real provider
- * is implemented, so cost computation is structured but yields 0 unless a real
- * provider + rates are configured. (`ai_cost_logs` has no agent dimension; cost
- * is tracked at tenant+month granularity.)
- */
-export const MODEL_PRICING_PER_1K: Record<string, { input: number; output: number }> = {
-  default: { input: 0, output: 0 },
-};
-
-export function priceFor(model: string | undefined) {
-  return MODEL_PRICING_PER_1K[model ?? 'default'] ?? MODEL_PRICING_PER_1K.default;
 }

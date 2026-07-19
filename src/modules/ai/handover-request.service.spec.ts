@@ -5,7 +5,12 @@ import { HandoverRequestService } from './handover-request.service';
 import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { User } from '../../entities/Auth&RBAC/User';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConversationExecutionService } from '../conversations/conversation-execution.service';
+import { CustomerNoteService } from '../crm/customer-note.service';
 import { HANDOVER_STATUS } from './ai.constants';
 import { ErrorCode } from '../../common/errors';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
@@ -33,7 +38,12 @@ describe('HandoverRequestService', () => {
         { provide: getRepositoryToken(HandoverRequest), useValue: handovers },
         { provide: getRepositoryToken(Conversation), useValue: conversations },
         { provide: getRepositoryToken(AiConversation), useValue: aiConversations },
+        { provide: getRepositoryToken(AiMessage), useValue: createMockRepository() },
         { provide: getRepositoryToken(User), useValue: users },
+        { provide: getRepositoryToken(UserRole), useValue: createMockRepository() },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: ConversationExecutionService, useValue: {} },
+        { provide: CustomerNoteService, useValue: {} },
       ],
     }).compile();
     service = moduleRef.get(HandoverRequestService);
@@ -42,7 +52,12 @@ describe('HandoverRequestService', () => {
   afterEach(() => jest.clearAllMocks());
 
   const load = (status: string) =>
-    handovers.findOne.mockResolvedValue({ id: 'h1', status });
+    handovers.findOne.mockResolvedValue({
+      id: 'h1',
+      status,
+      conversation: { id: 'c1' },
+      assigned_to: { id: 'u1' },
+    });
 
   it('creates a handover and flips a linked AI conversation to HANDED_OVER', async () => {
     handovers.save.mockResolvedValueOnce({ id: 'h1' });

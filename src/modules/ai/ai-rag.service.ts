@@ -54,13 +54,14 @@ export class AiRagService {
     agentId: string,
     query: string,
     limit?: number,
-    timing?: { embeddingMs?: number },
+    timing?: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number },
+    attribution?: { channel?: string; aiConversationId?: string; idempotencyKey?: string },
   ): Promise<RetrievedChunk[]> {
-    const topK = limit ?? Number(this.config.get<number>('RAG_TOP_K', 5));
+    const topK = Math.max(1, Math.min(20, limit ?? Number(this.config.get<number>('RAG_TOP_K', 5))));
 
     if (this.embedder.isConfigured() && this.pgvector.isAvailable()) {
       try {
-        return await this.vectorSearch(tenantId, agentId, query, topK, timing);
+        return await this.vectorSearch(tenantId, agentId, query, topK, timing, attribution);
       } catch (err) {
         this.logger.warn(
           `Vector search failed (${(err as Error).message}) — using keyword fallback`,
@@ -85,11 +86,22 @@ export class AiRagService {
     agentId: string,
     query: string,
     topK: number,
-    timing?: { embeddingMs?: number },
+    timing?: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number },
+    attribution?: { channel?: string; aiConversationId?: string; idempotencyKey?: string },
   ): Promise<RetrievedChunk[]> {
     const embedStart = Date.now();
-    const { vectors } = await this.embedder.embed(tenantId, [query]);
+    const embedding = await this.embedder.embed(tenantId, [query], {
+      kind: 'QUERY', feature: 'rag_search', route: 'ai.chat.rag',
+      channel: attribution?.channel ?? 'INTERNAL',
+      aiConversationId: attribution?.aiConversationId,
+      idempotencyKey: attribution?.idempotencyKey ? `${attribution.idempotencyKey}:rag` : undefined,
+    });
+    const { vectors } = embedding;
     if (timing) timing.embeddingMs = Date.now() - embedStart;
+    if (timing) {
+      timing.embeddingTokens = embedding.tokens;
+      timing.embeddingCacheHits = embedding.cacheHits ?? 0;
+    }
     const queryVec = vectors[0];
     if (!queryVec) return [];
 
@@ -106,6 +118,7 @@ export class AiRagService {
         `
         SELECT k.id AS id,
                k.content AS content,
+               k.content_hash AS "contentHash",
                k.source_type AS "sourceType",
                k.source_id AS "sourceId",
                1 - (e.embedding <=> $1::vector) AS score
@@ -115,11 +128,16 @@ export class AiRagService {
         ORDER BY e.embedding <=> $1::vector
         LIMIT $4
         `,
-        [vec, tenantId, agentId, topK],
+        [vec, tenantId, agentId, Math.min(80, topK * 4)],
       );
     });
 
-    return rows.map((r: Record<string, unknown>) => ({
+    const uniqueRows = [...new Map(rows.map((row: Record<string, unknown>) => [
+      row.contentHash as string,
+      row,
+    ])).values()].slice(0, topK);
+
+    return uniqueRows.map((r: Record<string, unknown>) => ({
       id: r.id as string,
       content: r.content as string,
       sourceType: (r.sourceType as string) ?? undefined,
@@ -143,7 +161,12 @@ export class AiRagService {
       take: 200,
     });
 
-    return candidates
+    const uniqueCandidates = [...new Map(candidates.map((candidate) => [
+      candidate.content_hash || candidate.id,
+      candidate,
+    ])).values()];
+
+    return uniqueCandidates
       .map((c) => ({
         id: c.id,
         content: c.content,

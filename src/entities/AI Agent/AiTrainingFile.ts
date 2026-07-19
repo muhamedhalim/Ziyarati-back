@@ -32,6 +32,24 @@ export class AiTrainingFile {
   @Column({ length: 20, default: 'PENDING' })
   status!: string;
 
+  @Column({ length: 60, nullable: true })
+  error_code?: string;
+
+  @Column({ type: 'int', default: 0 })
+  attempts!: number;
+
+  @Column({ type: 'int', default: 0 })
+  chunk_count!: number;
+
+  @Column({ length: 64, nullable: true })
+  content_hash?: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  processing_started_at?: Date;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  indexed_at?: Date;
+
   @CreateDateColumn()
   created_at!: Date;
 }
