@@ -69,4 +69,32 @@ describe('AiExecutionPolicyService', () => {
       expect(policy.shouldBatchEmbeddings(1, true)).toBe(true);
     });
   });
+
+  describe('resolveEmbeddingExecution — batch-disabled behavior per feature', () => {
+    it('runs BATCH at/above threshold and STANDARD below it when enabled', () => {
+      const policy = make({ AI_BATCH_ENABLED: 'true', AI_BATCH_EMBEDDING_CHUNK_THRESHOLD: 200 });
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.FILE_INDEXING, 500)).toMatchObject({ mode: AI_EXECUTION_MODE.BATCH, action: 'RUN' });
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.FILE_INDEXING, 10)).toMatchObject({ mode: AI_EXECUTION_MODE.STANDARD, action: 'RUN' });
+    });
+
+    it('USE_STANDARD_IF_SMALL: small file runs STANDARD, large file FAILS (no huge sync job)', () => {
+      const policy = make({ AI_STANDARD_MAX_EMBED_CHUNKS: 100 }); // batch disabled
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.FILE_INDEXING, 50)).toMatchObject({ mode: AI_EXECUTION_MODE.STANDARD, action: 'RUN' });
+      const big = policy.resolveEmbeddingExecution(AI_FEATURE.FILE_INDEXING, 5000);
+      expect(big.action).toBe('FAIL');
+      expect(big.reason).toBe('batch_disabled_too_large_for_standard');
+    });
+
+    it('DEFER features (bulk embeddings / re-index) never convert to STANDARD when disabled', () => {
+      const policy = make({ AI_STANDARD_MAX_EMBED_CHUNKS: 100000 }); // even "small" must not convert
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.BULK_EMBEDDING, 5).action).toBe('DEFER');
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.REINDEX, 5).action).toBe('DEFER');
+    });
+
+    it('small reports/analytics may run STANDARD when below the safe size limit', () => {
+      const policy = make({ AI_STANDARD_MAX_EMBED_CHUNKS: 100 });
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.REPORT, 20)).toMatchObject({ mode: AI_EXECUTION_MODE.STANDARD, action: 'RUN' });
+      expect(policy.resolveEmbeddingExecution(AI_FEATURE.ANALYTICS, 5000).action).toBe('FAIL');
+    });
+  });
 });

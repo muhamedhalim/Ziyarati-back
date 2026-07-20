@@ -9,6 +9,7 @@ import {
   AiEmbeddingContext,
 } from './ai-provider.interface';
 import { OpenAiRequestPolicy } from './openai-request-policy';
+import { OpenAiClientProvider } from './openai-client.provider';
 import { QueueService } from '../../../queue/queue.service';
 import { AiCostLedgerService } from '../cost/ai-cost-ledger.service';
 
@@ -38,6 +39,9 @@ export class OpenAiEmbeddingProvider implements AiEmbeddingProvider {
     private readonly config: ConfigService,
     private readonly queue: QueueService,
     private readonly costs: AiCostLedgerService,
+    // Optional (unit tests set `.client` directly); Nest injects it. Resolves a
+    // per-tenant regional client when Data Residency is enforced.
+    private readonly clients?: OpenAiClientProvider,
   ) {
     const apiKey = config.get<string>('OPENAI_API_KEY');
     this.model = config.get<string>('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small');
@@ -65,11 +69,14 @@ export class OpenAiEmbeddingProvider implements AiEmbeddingProvider {
   }
 
   async embed(tenantId: string, texts: string[], context: AiEmbeddingContext = {}): Promise<AiEmbeddingResult> {
-    if (!this.client) {
-      throw new Error('OPENAI_API_KEY is not configured');
-    }
     if (texts.length === 0) {
       return { vectors: [], model: this.model, tokens: 0 };
+    }
+    // Regional client when Data Residency is enforced, else the global client.
+    // A fail-closed residency throw propagates (never falls back to global).
+    const client = (this.clients ? await this.clients.forTenant(tenantId) : undefined) ?? this.client;
+    if (!client) {
+      throw new Error('OPENAI_API_KEY is not configured');
     }
     const operationKey = context.idempotencyKey ?? `embedding:${createHash('sha256')
       .update(texts.join('\u0000')).digest('hex')}:${randomUUID()}`;
@@ -100,7 +107,7 @@ export class OpenAiEmbeddingProvider implements AiEmbeddingProvider {
       let attempts: number;
       try {
         const attempt = await this.policy.execute(
-          () => this.client!.embeddings.create(
+          () => client.embeddings.create(
             { model: this.model, input: uniqueMisses.map((m) => m.text) },
             context.signal ? { signal: context.signal } : undefined,
           ),

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
@@ -39,9 +40,14 @@ export interface AiCostRecordInput {
 export class AiCostLedgerService {
   private readonly logger = new Logger(AiCostLedgerService.name);
 
+  /** Emitted when a best-effort ledger write fails, so alerting can page an operator. */
+  static readonly LEDGER_FAILURE_EVENT = 'ai.cost.ledger_failure';
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly prices: AiPriceCatalogService,
+    // Optional so direct-construction unit tests keep working; Nest injects it.
+    private readonly emitter?: EventEmitter2,
   ) {}
 
   quoteChat(
@@ -69,10 +75,17 @@ export class AiCostLedgerService {
     try {
       return await this.dataSource.transaction((m) => this.write(m, input));
     } catch (err) {
-      // Telemetry is best-effort and must never break a patient-facing response.
-      // A ledger outage must be operationally visible even though it must not
-      // take down a patient-facing chat response. No prompt/response is logged.
-      this.logger.error(`AI cost ledger write failed: ${(err as Error).message}`);
+      // Best-effort path (interactive turns): never break a patient-facing
+      // response — but the failure must NOT be silent. Log at ERROR and emit an
+      // alert event so monitoring can page. No prompt/response/secret is logged.
+      // (The critical batch path uses `recordInTransaction`, which propagates.)
+      this.logger.error(
+        `AI cost ledger write failed (feature=${input.feature} mode=${input.executionMode ?? 'STANDARD'}): ${(err as Error).message}`,
+      );
+      this.emitter?.emit(AiCostLedgerService.LEDGER_FAILURE_EVENT, {
+        tenantId: input.tenantId, feature: input.feature, requestKind: input.requestKind,
+        executionMode: input.executionMode ?? AI_EXECUTION_MODE.STANDARD,
+      });
       return { inserted: false, costMicrousd: input.quote.costMicrousd };
     }
   }

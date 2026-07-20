@@ -75,6 +75,23 @@ describe('AiDataResidencyService', () => {
     await expect(service.resolve('tenant-1')).rejects.toBeDefined();
   });
 
+  it('FAILS CLOSED (SSRF) when the base URL points at an internal host', async () => {
+    const { service } = make({ AI_DATA_RESIDENCY_ENABLED: 'true' }, {
+      id: 'd1', enabled: true, region: 'eu', api_key_ciphertext: 'enc:key',
+      base_url: 'https://169.254.169.254/latest', allowed_regions: ['eu'],
+    });
+    await expect(service.resolve('tenant-1')).rejects.toThrow();
+  });
+
+  it('surfaces the AI_COMPLIANCE_ROUTE_UNAVAILABLE reason on fail-closed', async () => {
+    const { service } = make({ AI_DATA_RESIDENCY_ENABLED: 'true' }, {
+      id: 'd1', enabled: true, region: null, api_key_ciphertext: 'enc:key',
+    });
+    await expect(service.resolve('tenant-1')).rejects.toMatchObject({
+      context: { reason: 'AI_COMPLIANCE_ROUTE_UNAVAILABLE' },
+    });
+  });
+
   it('enforces a valid deployment and returns decrypted, region-pinned options', async () => {
     const { service } = make({ AI_DATA_RESIDENCY_ENABLED: 'true' }, {
       id: 'd1', enabled: true, region: 'eu', allowed_regions: ['eu', 'us'],

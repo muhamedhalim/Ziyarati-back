@@ -645,6 +645,8 @@ describe('AuthService', () => {
         createMockConfigService(overrides) as any,
         dataSource as any,
         usage as any,
+        platformSettings as any,
+        email as any,
       );
 
     const primeLogin = () => {

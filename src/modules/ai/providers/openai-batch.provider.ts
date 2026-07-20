@@ -3,7 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI, { toFile } from 'openai';
 
 import {
+  AiBatchCreateInput,
   AiBatchHandle,
+  AiBatchLineRequest,
   AiBatchLineResult,
   AiBatchProvider,
   AiBatchSubmitInput,
@@ -39,7 +41,10 @@ export class OpenAiBatchProvider implements AiBatchProvider {
     private readonly clients: OpenAiClientProvider,
   ) {
     const apiKey = config.get<string>('OPENAI_API_KEY');
-    this.defaultWindow = config.get<string>('AI_BATCH_COMPLETION_WINDOW', '24h');
+    this.defaultWindow = config.get<string>(
+      'AI_BATCH_COMPLETION_WINDOW',
+      '24h',
+    );
     this.policy = new OpenAiRequestPolicy(
       Number(config.get('OPENAI_PROVIDER_MAX_RETRIES', 2)),
       Number(config.get('OPENAI_RETRY_BASE_MS', 500)),
@@ -58,9 +63,14 @@ export class OpenAiBatchProvider implements AiBatchProvider {
     return !!this.client;
   }
 
-  async submit(input: AiBatchSubmitInput): Promise<AiBatchHandle> {
-    const client = await this.clientFor(input.tenantId);
-    const jsonl = buildBatchJsonl(input.requests);
+  async uploadInputFile(
+    tenantId: string,
+    requests: AiBatchLineRequest[],
+  ): Promise<{ inputFileId: string }> {
+    // Resolve (and thereby VERIFY) the tenant's regional deployment BEFORE any
+    // bytes leave our process — a fail-closed residency throw aborts here.
+    const client = await this.clientFor(tenantId);
+    const jsonl = buildBatchJsonl(requests);
     const uploaded = await this.policy.execute(
       async () =>
         client.files.create({
@@ -69,30 +79,72 @@ export class OpenAiBatchProvider implements AiBatchProvider {
         }),
       'files.create',
     );
-    const inputFileId = uploaded.value.id;
+    return { inputFileId: uploaded.value.id };
+  }
 
+  async createBatch(input: AiBatchCreateInput): Promise<AiBatchHandle> {
+    const client = await this.clientFor(input.tenantId);
     const created = await this.policy.execute(
       () =>
         client.batches.create({
-          input_file_id: inputFileId,
+          input_file_id: input.inputFileId,
           endpoint: input.endpoint as '/v1/embeddings' | '/v1/chat/completions',
-          completion_window: (input.completionWindow ?? this.defaultWindow) as '24h',
+          completion_window: (input.completionWindow ??
+            this.defaultWindow) as '24h',
           ...(input.metadata ? { metadata: input.metadata } : {}),
         }),
       'batches.create',
     );
-    return this.toHandle(created.value, inputFileId);
+    return this.toHandle(created.value, input.inputFileId);
+  }
+
+  async submit(input: AiBatchSubmitInput): Promise<AiBatchHandle> {
+    const { inputFileId } = await this.uploadInputFile(
+      input.tenantId,
+      input.requests,
+    );
+    return this.createBatch({
+      tenantId: input.tenantId,
+      inputFileId,
+      endpoint: input.endpoint,
+      completionWindow: input.completionWindow,
+      metadata: input.metadata,
+    });
+  }
+
+  async findByCorrelation(
+    tenantId: string,
+    correlationId: string,
+  ): Promise<AiBatchHandle | null> {
+    const client = await this.clientFor(tenantId);
+    // The Batch API has no server-side metadata filter, so list recent batches
+    // and match our correlation id. `limit` bounds the scan.
+    const page = await this.policy.execute(
+      () => client.batches.list({ limit: 100 }),
+      'batches.list',
+    );
+    for (const batch of page.value.data ?? []) {
+      const meta = (batch.metadata ?? {}) as Record<string, unknown>;
+      if (meta.correlation_id === correlationId) return this.toHandle(batch);
+    }
+    return null;
   }
 
   async poll(tenantId: string, externalId: string): Promise<AiBatchHandle> {
     const client = await this.clientFor(tenantId);
-    const batch = await this.policy.execute(() => client.batches.retrieve(externalId), 'batches.retrieve');
+    const batch = await this.policy.execute(
+      () => client.batches.retrieve(externalId),
+      'batches.retrieve',
+    );
     return this.toHandle(batch.value);
   }
 
   async cancel(tenantId: string, externalId: string): Promise<AiBatchHandle> {
     const client = await this.clientFor(tenantId);
-    const batch = await this.policy.execute(() => client.batches.cancel(externalId), 'batches.cancel');
+    const batch = await this.policy.execute(
+      () => client.batches.cancel(externalId),
+      'batches.cancel',
+    );
     return this.toHandle(batch.value);
   }
 
@@ -102,10 +154,14 @@ export class OpenAiBatchProvider implements AiBatchProvider {
   ): Promise<{ outputs: AiBatchLineResult[]; errors: AiBatchLineResult[] }> {
     const client = await this.clientFor(tenantId);
     const outputs = handle.outputFileId
-      ? parseBatchResultsJsonl(await this.downloadFile(client, handle.outputFileId))
+      ? parseBatchResultsJsonl(
+          await this.downloadFile(client, handle.outputFileId),
+        )
       : [];
     const errors = handle.errorFileId
-      ? parseBatchResultsJsonl(await this.downloadFile(client, handle.errorFileId))
+      ? parseBatchResultsJsonl(
+          await this.downloadFile(client, handle.errorFileId),
+        )
       : [];
     return { outputs, errors };
   }
@@ -122,12 +178,22 @@ export class OpenAiBatchProvider implements AiBatchProvider {
   }
 
   private async downloadFile(client: OpenAI, fileId: string): Promise<string> {
-    const res = await this.policy.execute(() => client.files.content(fileId), 'files.content');
+    const res = await this.policy.execute(
+      () => client.files.content(fileId),
+      'files.content',
+    );
     return res.value.text();
   }
 
   private toHandle(
-    batch: { id: string; status: string; input_file_id?: string; output_file_id?: string | null; error_file_id?: string | null; request_counts?: { total?: number; completed?: number; failed?: number } },
+    batch: {
+      id: string;
+      status: string;
+      input_file_id?: string;
+      output_file_id?: string | null;
+      error_file_id?: string | null;
+      request_counts?: { total?: number; completed?: number; failed?: number };
+    },
     inputFileId?: string,
   ): AiBatchHandle {
     return {

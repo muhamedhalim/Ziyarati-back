@@ -10,6 +10,7 @@ describe('AiProcessor cost attribution', () => {
       new TenantContextService(),
       { cleanupExpired: jest.fn() } as any,
       { sweep: jest.fn() } as any,
+      { reconcileProcessing: jest.fn() } as any,
     );
     await processor.process({
       name: JOB.AI_EXECUTE,

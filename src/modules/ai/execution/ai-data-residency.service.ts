@@ -6,6 +6,12 @@ import { Repository } from 'typeorm';
 import { TenantAiDeployment } from '../../../entities/AI Agent/TenantAiDeployment';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
 import { AppError, ErrorCode } from '../../../common/errors';
+import { AI_COMPLIANCE_ROUTE_UNAVAILABLE } from './ai-execution.constants';
+import {
+  assertSafeDeploymentBaseUrl,
+  isValidRegion,
+  isValidProject,
+} from './deployment-validation';
 
 /**
  * The connection options a per-tenant regional deployment must be dialed with.
@@ -64,7 +70,9 @@ export class AiDataResidencyService {
 
   /** Platform master switch. Default OFF. */
   isEnabled(): boolean {
-    return String(this.config.get('AI_DATA_RESIDENCY_ENABLED', 'false')) === 'true';
+    return (
+      String(this.config.get('AI_DATA_RESIDENCY_ENABLED', 'false')) === 'true'
+    );
   }
 
   /**
@@ -74,20 +82,49 @@ export class AiDataResidencyService {
   async resolve(tenantId: string): Promise<ResidencyDecision> {
     if (!this.isEnabled()) return NOT_ENFORCED;
 
-    const deployment = await this.deployments.findOne({ where: { tenant_id: tenantId } });
+    const deployment = await this.deployments.findOne({
+      where: { tenant_id: tenantId },
+    });
     // No row, or explicitly disabled ⇒ this tenant does not require residency.
     if (!deployment || !deployment.enabled) return NOT_ENFORCED;
 
     // From here the tenant REQUIRES a regional deployment — any gap fails closed.
     const region = deployment.region?.trim() || null;
-    if (!region) {
-      this.failClosed(tenantId, 'no region configured on the enabled deployment');
+    if (!region || !isValidRegion(region)) {
+      this.failClosed(
+        tenantId,
+        'no valid region configured on the enabled deployment',
+      );
     }
-    if (deployment.allowed_regions?.length && !deployment.allowed_regions.includes(region!)) {
-      this.failClosed(tenantId, `region "${region}" is not in the tenant allow-list`);
+    if (
+      deployment.allowed_regions?.length &&
+      !deployment.allowed_regions.includes(region!)
+    ) {
+      this.failClosed(
+        tenantId,
+        `region "${region}" is not in the tenant allow-list`,
+      );
     }
     if (!deployment.api_key_ciphertext) {
-      this.failClosed(tenantId, 'no API key configured on the enabled deployment');
+      this.failClosed(
+        tenantId,
+        'no API key configured on the enabled deployment',
+      );
+    }
+
+    // Defense-in-depth: validate the stored base URL at the point of use so even
+    // a maliciously-inserted row cannot drive an SSRF to an internal/metadata host.
+    const baseUrl = deployment.base_url?.trim() || undefined;
+    if (baseUrl) {
+      try {
+        assertSafeDeploymentBaseUrl(baseUrl);
+      } catch (err) {
+        this.failClosed(tenantId, `unsafe base URL: ${(err as Error).message}`);
+      }
+    }
+    const project = deployment.openai_project?.trim() || undefined;
+    if (project && !isValidProject(project)) {
+      this.failClosed(tenantId, 'invalid OpenAI project id on the deployment');
     }
 
     let apiKey: string;
@@ -95,7 +132,10 @@ export class AiDataResidencyService {
       apiKey = this.encryption.decrypt(deployment.api_key_ciphertext!);
     } catch {
       // Never echo the underlying crypto error (leaks key/config detail).
-      this.failClosed(tenantId, 'the deployment API key could not be decrypted');
+      this.failClosed(
+        tenantId,
+        'the deployment API key could not be decrypted',
+      );
     }
     if (!apiKey!.trim()) {
       this.failClosed(tenantId, 'the deployment API key is empty');
@@ -105,21 +145,20 @@ export class AiDataResidencyService {
       enforced: true,
       region,
       deploymentId: deployment.id,
-      options: {
-        apiKey: apiKey!,
-        baseURL: deployment.base_url?.trim() || undefined,
-        project: deployment.openai_project?.trim() || undefined,
-      },
+      options: { apiKey: apiKey!, baseURL: baseUrl, project },
     };
   }
 
   private failClosed(tenantId: string, reason: string): never {
-    this.logger.error(`AI data residency fail-closed for tenant ${tenantId}: ${reason}`);
+    // The reason names only configuration facts (never key material).
+    this.logger.error(
+      `AI data residency fail-closed for tenant ${tenantId}: ${reason}`,
+    );
     throw new AppError(ErrorCode.FORBIDDEN, {
       message:
         'AI data residency is required for this tenant but its regional deployment is unavailable. ' +
         'The request was refused rather than processed in the global region.',
-      context: { reason: 'DATA_RESIDENCY_UNAVAILABLE' },
+      context: { reason: AI_COMPLIANCE_ROUTE_UNAVAILABLE },
     });
   }
 }

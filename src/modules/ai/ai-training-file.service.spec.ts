@@ -21,12 +21,15 @@ describe('AiTrainingFileService physical indexing', () => {
       cleanupSource: jest.fn().mockResolvedValue(undefined),
     };
     const storage = { downloadObject: jest.fn().mockResolvedValue(Buffer.from('Arabic العربية\nEnglish FAQ')) };
-    // Batch OFF for these tests: exercises the synchronous STANDARD indexing path.
+    // Batch OFF + small file → the policy resolves to the synchronous STANDARD path.
     const batch = { isConfigured: jest.fn().mockReturnValue(false) };
-    const policy = { shouldBatchEmbeddings: jest.fn().mockReturnValue(false) };
+    const policy = {
+      resolveEmbeddingExecution: jest.fn().mockReturnValue({ mode: 'STANDARD', action: 'RUN', reason: 'test' }),
+    };
+    const batchJobs = { findOne: jest.fn().mockResolvedValue(null) };
     const service = new AiTrainingFileService(
       files as any, { exists: jest.fn().mockResolvedValue(true) } as any,
-      ingestion as any, batch as any, policy as any, storage as any,
+      batchJobs as any, ingestion as any, batch as any, policy as any, storage as any,
       new ConfigService({ AI_TRAINING_FILE_MAX_BYTES: 1024 }),
     );
     return { service, file, files, statuses, ingestion, storage };

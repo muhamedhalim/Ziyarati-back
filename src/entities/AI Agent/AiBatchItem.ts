@@ -33,26 +33,31 @@ export class AiBatchItem {
   @Column({ type: 'uuid' })
   tenant_id!: string;
 
-  @Column({ length: 120 })
+  /** Opaque UUID — carries no tenant/file/patient data; bound internally here. */
+  @Column({ length: 64 })
   custom_id!: string;
 
   @Column({ length: 20, default: 'PENDING' })
   status!: string;
 
-  @Column({ length: 40, nullable: true })
+  @Column({ type: 'varchar', length: 40, nullable: true })
   source_type?: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   source_id?: string | null;
 
+  /** Position of the chunk within its source (internal binding, not in custom_id). */
+  @Column({ type: 'int', nullable: true })
+  chunk_index?: number | null;
+
   /** Where the result is applied, e.g. an ai_knowledge_bases chunk id. */
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   target_ref?: string | null;
 
   @Column({ type: 'int', default: 0 })
   input_tokens!: number;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   error_code?: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })

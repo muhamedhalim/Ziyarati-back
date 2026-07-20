@@ -64,7 +64,7 @@ describe('RbacAuditService', () => {
   const has = (
     list: Awaited<ReturnType<RbacAuditService['buildFindings']>>,
     match: Partial<{ code: string; permissionSlug: string; roleId: string; permissionId: string }>,
-  ) => list.some((f) => Object.entries(match).every(([k, v]) => (f as Record<string, unknown>)[k] === v));
+  ) => list.some((f) => Object.entries(match).every(([k, v]) => (f as unknown as Record<string, unknown>)[k] === v));
 
   it('flags unassigned permissions', async () => {
     const f = await service.buildFindings();

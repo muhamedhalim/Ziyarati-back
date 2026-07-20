@@ -144,6 +144,33 @@ export class AiKnowledgeIngestionService {
     return rows[0]?.n ?? 0;
   }
 
+  /**
+   * Ids of a source's chunk rows that still lack an embedding, in a STABLE order
+   * (by id). Used by the batch submission reconciler to re-derive a job's pending
+   * items after a crash before items were persisted — deterministic order keeps
+   * the (job, source, chunk_index) mapping consistent across retries.
+   */
+  async unembeddedChunkIds(tenantId: string, sourceId: string): Promise<string[]> {
+    const rows = await this.dataSource.query(
+      `SELECT kb.id FROM ai_knowledge_bases kb
+        LEFT JOIN ${AI_KB_EMBEDDINGS_TABLE} e ON e.kb_id=kb.id
+       WHERE kb."tenantId"=$1 AND kb.source_id=$2 AND e.kb_id IS NULL
+       ORDER BY kb.id ASC`,
+      [tenantId, sourceId],
+    ) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  /** Load chunk contents by id (tenant-scoped), for building batch requests. */
+  async contentsByIds(tenantId: string, ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const rows = await this.dataSource.query(
+      `SELECT id, content FROM ai_knowledge_bases WHERE "tenantId"=$1 AND id = ANY($2::uuid[])`,
+      [tenantId, ids],
+    ) as Array<{ id: string; content: string }>;
+    return new Map(rows.map((r) => [r.id, r.content]));
+  }
+
   /** Create one chunk and (best-effort) embed it. */
   async ingestChunk(
     tenantId: string,

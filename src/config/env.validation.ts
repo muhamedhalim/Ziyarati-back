@@ -172,6 +172,21 @@ export const validate = (config: Record<string, unknown>) => {
     // Grace period before a PENDING job that never recorded a remote batch id
     // (submission crashed) is reaped as FAILED.
     AI_BATCH_SUBMIT_GRACE_MINUTES: Joi.number().integer().min(1).default(15),
+    // Max chunks a single workload may embed SYNCHRONOUSLY when batch is disabled.
+    AI_STANDARD_MAX_EMBED_CHUNKS: Joi.number().integer().min(1).default(512),
+    // Submission reconciliation: grace before revisiting a stuck submission, and
+    // the max reconcile attempts before a job is left FAILED (manual-recovery-safe).
+    AI_BATCH_SUBMIT_RECONCILE_GRACE_SECONDS: Joi.number().integer().min(10).default(120),
+    AI_BATCH_SUBMIT_MAX_ATTEMPTS: Joi.number().integer().min(1).default(5),
+    // Polling: page size per sweep, lease window (concurrency), backoff bounds,
+    // and the max age after which a non-terminal job is expired.
+    AI_BATCH_POLL_PAGE_SIZE: Joi.number().integer().min(1).max(500).default(25),
+    AI_BATCH_POLL_LEASE_SECONDS: Joi.number().integer().min(5).default(60),
+    AI_BATCH_POLL_BACKOFF_BASE_SECONDS: Joi.number().integer().min(1).default(30),
+    AI_BATCH_POLL_BACKOFF_MAX_SECONDS: Joi.number().integer().min(1).default(900),
+    AI_BATCH_MAX_AGE_HOURS: Joi.number().integer().min(1).default(26),
+    // Grace before the reconciler finalizes a training file left in PROCESSING.
+    AI_TRAINING_FINALIZE_GRACE_MINUTES: Joi.number().integer().min(0).default(1),
 
     // ── AI Data Residency (compliance policy — OFF by default) ────────────
     // Master switch for per-tenant regional OpenAI deployments. Default OFF: no

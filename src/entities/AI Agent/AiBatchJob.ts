@@ -25,7 +25,6 @@ import {
  */
 @Entity('ai_batch_jobs')
 @Unique('uq_ai_batch_job_idempotency', ['tenant_id', 'idempotency_key'])
-@Index('idx_ai_batch_jobs_active', ['tenant_id', 'status'])
 export class AiBatchJob {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -51,23 +50,37 @@ export class AiBatchJob {
   @Column({ length: 100 })
   model!: string;
 
-  @Column({ length: 30, default: 'PENDING' })
+  @Column({ length: 30, default: 'PREPARING' })
   status!: string;
 
   @Column({ length: 200 })
   idempotency_key!: string;
 
-  @Column({ length: 120, nullable: true })
+  /** Opaque correlation id echoed into remote batch metadata (crash reconciliation). */
+  @Column({ type: 'varchar', length: 80, nullable: true })
+  correlation_id?: string | null;
+
+  @Column({ type: 'varchar', length: 120, nullable: true })
   external_batch_id?: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   input_file_id?: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   output_file_id?: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   error_file_id?: string | null;
+
+  /** Next time this job is eligible for a status poll (backoff-scheduled). */
+  @Column({ type: 'timestamptz', nullable: true })
+  next_poll_at?: Date | null;
+
+  @Column({ type: 'int', default: 0 })
+  poll_attempts!: number;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  last_error?: string | null;
 
   @Column({ type: 'int', default: 0 })
   total_requests!: number;
@@ -94,11 +107,11 @@ export class AiBatchJob {
   @Column({ length: 20, default: 'UNPRICED' })
   pricing_status!: string;
 
-  @Column({ length: 80, nullable: true })
+  @Column({ type: 'varchar', length: 80, nullable: true })
   error_code?: string | null;
 
   /** Data-residency region the job was processed in (null = global default). */
-  @Column({ length: 40, nullable: true })
+  @Column({ type: 'varchar', length: 40, nullable: true })
   region?: string | null;
 
   /** Tenant AI deployment used (data residency), when applicable. */
@@ -110,11 +123,11 @@ export class AiBatchJob {
   agent_id?: string | null;
 
   /** Origin of the work, e.g. 'training_file'. */
-  @Column({ length: 40, nullable: true })
+  @Column({ type: 'varchar', length: 40, nullable: true })
   source_type?: string | null;
 
   /** Origin id, e.g. the training file id (used by completion finalizers). */
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   source_id?: string | null;
 
   @Column({ type: 'jsonb', nullable: true })

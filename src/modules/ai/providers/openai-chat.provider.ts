@@ -9,6 +9,7 @@ import {
   AiCompletionResult,
 } from './ai-provider.interface';
 import { OpenAiRequestPolicy } from './openai-request-policy';
+import { OpenAiClientProvider } from './openai-client.provider';
 
 /**
  * OpenAI Chat Completions provider (GPT-4o / GPT-4.1 family).
@@ -25,7 +26,13 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   private readonly defaultModel: string;
   private readonly policy: OpenAiRequestPolicy;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    // Optional so direct-construction unit tests (which set `.client`) keep
+    // working; Nest injects it. Resolves a per-tenant regional client when Data
+    // Residency is enforced (else undefined → the global client is used).
+    private readonly clients?: OpenAiClientProvider,
+  ) {
     const apiKey = config.get<string>('OPENAI_API_KEY');
     this.defaultModel = config.get<string>('OPENAI_CHAT_MODEL', 'gpt-4o');
     const timeout = Number(config.get('OPENAI_REQUEST_TIMEOUT_MS', 30_000));
@@ -42,11 +49,24 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     return !!this.client && (!model || model.startsWith('gpt-'));
   }
 
+  /**
+   * The client to dial for this request: a per-tenant regional client when Data
+   * Residency is enforced, else the global client. A fail-closed residency throw
+   * propagates (the request is refused, never sent to the global region).
+   */
+  private async resolveClient(tenantId: string): Promise<OpenAI> {
+    const override = this.clients ? await this.clients.forTenant(tenantId) : undefined;
+    const client = override ?? this.client;
+    if (!client) throw new Error('OPENAI_API_KEY is not configured');
+    return client;
+  }
+
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
     const model = request.model ?? this.defaultModel;
+    const client = await this.resolveClient(request.tenantId);
 
     const { value: res, attempts } = await this.policy.execute(
-      () => this.client!.chat.completions.create(
+      () => client.chat.completions.create(
         this.requestBody(request, model),
         this.requestOptions(request),
       ),
@@ -136,10 +156,11 @@ export class OpenAiChatProvider implements AiCompletionProvider {
    */
   async *stream(request: AiCompletionRequest): AsyncIterable<AiCompletionChunk> {
     const model = request.model ?? this.defaultModel;
+    const client = await this.resolveClient(request.tenantId);
     // Retry only stream creation. Once any stream data is observed, replaying it
     // could duplicate output/cost, so iteration failures propagate immediately.
     const { value: stream, attempts } = await this.policy.execute(
-      () => this.client!.chat.completions.create(
+      () => client.chat.completions.create(
         { ...this.requestBody(request, model), stream: true, stream_options: { include_usage: true } },
         this.requestOptions(request),
       ),

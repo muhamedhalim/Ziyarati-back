@@ -51,6 +51,23 @@ export function isRetryableOpenAiError(error: unknown): boolean {
     || ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(code);
 }
 
+/**
+ * True when a write's outcome is genuinely UNKNOWN: the request was likely sent
+ * but no HTTP response was received (connection reset/timeout/DNS mid-flight). A
+ * received HTTP status (4xx/5xx) is NOT ambiguous — the server processed and
+ * rejected it, so the remote object was not created. Used to decide whether a
+ * batch submission may have created a remote batch we didn't record.
+ */
+export function isAmbiguousOutcome(error: unknown): boolean {
+  const e = error as ProviderError;
+  if (typeof e?.status === 'number') return false; // got an HTTP response → not ambiguous
+  const name = e?.name ?? '';
+  const code = e?.code ?? '';
+  return name === 'APIConnectionError'
+    || name === 'APIConnectionTimeoutError'
+    || ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN'].includes(code);
+}
+
 export function retryAfterMs(error: unknown): number | undefined {
   const raw = (error as ProviderError)?.headers?.get?.('retry-after');
   if (!raw) return undefined;

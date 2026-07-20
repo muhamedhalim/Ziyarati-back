@@ -61,7 +61,9 @@ export type AiFeature = (typeof AI_FEATURE)[keyof typeof AI_FEATURE];
  * STANDARD (fail-safe: an unmapped feature is never silently sent to the async
  * batch route, which would strand a user-facing request behind a 24h window).
  */
-export const FEATURE_EXECUTION_MODE: Readonly<Record<AiFeature, AiExecutionMode>> = {
+export const FEATURE_EXECUTION_MODE: Readonly<
+  Record<AiFeature, AiExecutionMode>
+> = {
   [AI_FEATURE.BOOKING_CHAT]: AI_EXECUTION_MODE.STANDARD,
   [AI_FEATURE.WHATSAPP_CHAT]: AI_EXECUTION_MODE.STANDARD,
   [AI_FEATURE.LIVE_CHAT]: AI_EXECUTION_MODE.STANDARD,
@@ -80,6 +82,52 @@ export const FEATURE_EXECUTION_MODE: Readonly<Record<AiFeature, AiExecutionMode>
   [AI_FEATURE.REINDEX]: AI_EXECUTION_MODE.BATCH,
 } as const;
 
+/**
+ * What to do with a BATCH feature when the batch mode is disabled. Chosen so a
+ * disabled flag can NEVER silently fan a large workload out as thousands of
+ * synchronous requests or cause unexpected spend.
+ */
+export const BATCH_DISABLED_BEHAVIOR = {
+  /** Refuse outright with a clear error (no synchronous alternative). */
+  FAIL_CLOSED: 'FAIL_CLOSED',
+  /** Run synchronously only when the workload is below a safe size; else fail. */
+  USE_STANDARD_IF_SMALL: 'USE_STANDARD_IF_SMALL',
+  /** Keep deferred — never convert to synchronous (large bulk / re-index). */
+  DEFER: 'DEFER',
+} as const;
+export type BatchDisabledBehavior =
+  (typeof BATCH_DISABLED_BEHAVIOR)[keyof typeof BATCH_DISABLED_BEHAVIOR];
+
+/** Per-feature behavior when batch is disabled. Unmapped → USE_STANDARD_IF_SMALL. */
+export const FEATURE_BATCH_DISABLED_BEHAVIOR: Readonly<
+  Record<AiFeature, BatchDisabledBehavior>
+> = {
+  [AI_FEATURE.BOOKING_CHAT]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.WHATSAPP_CHAT]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.LIVE_CHAT]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.TOOL_CALL]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.RAG_QUERY]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.APPOINTMENT_MUTATION]:
+    BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.CHAT]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.FILE_INDEXING_STANDARD]:
+    BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  // Reports/analytics/evaluations MAY run synchronously when small enough.
+  [AI_FEATURE.REPORT]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.ANALYTICS]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.EVALUATION]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  // A single large file may still index synchronously if small enough.
+  [AI_FEATURE.FILE_INDEXING]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  [AI_FEATURE.KB_EMBEDDING]: BATCH_DISABLED_BEHAVIOR.USE_STANDARD_IF_SMALL,
+  // Bulk embeddings / re-index NEVER auto-convert to synchronous.
+  [AI_FEATURE.BULK_EMBEDDING]: BATCH_DISABLED_BEHAVIOR.DEFER,
+  [AI_FEATURE.REINDEX]: BATCH_DISABLED_BEHAVIOR.DEFER,
+} as const;
+
+/** Stable error reason surfaced when a required regional deployment is unavailable. */
+export const AI_COMPLIANCE_ROUTE_UNAVAILABLE =
+  'AI_COMPLIANCE_ROUTE_UNAVAILABLE';
+
 /** OpenAI Batch API endpoints a batch job may target. */
 export const AI_BATCH_ENDPOINT = {
   EMBEDDINGS: '/v1/embeddings',
@@ -94,8 +142,18 @@ export type AiBatchEndpoint =
  * crash-safe and idempotent.
  */
 export const AI_BATCH_STATUS = {
-  /** Row persisted; remote batch not yet created (pre-submission). */
-  PENDING: 'PENDING',
+  /** Row persisted; items not yet written (pre-submission). */
+  PREPARING: 'PREPARING',
+  /** Uploading the JSONL input file to the provider. */
+  UPLOADING: 'UPLOADING',
+  /** Input file uploaded (id saved); remote batch create in flight. */
+  SUBMITTING: 'SUBMITTING',
+  /**
+   * The create call's outcome is UNKNOWN (network/timeout after the request was
+   * sent). We must NOT create another remote batch — reconciliation verifies via
+   * the correlation id before deciding.
+   */
+  SUBMISSION_UNKNOWN: 'SUBMISSION_UNKNOWN',
   /** Uploaded input file + created remote batch; awaiting provider validation. */
   SUBMITTED: 'SUBMITTED',
   IN_PROGRESS: 'IN_PROGRESS',
@@ -120,6 +178,21 @@ export const TERMINAL_BATCH_STATUSES: readonly AiBatchStatus[] = [
 export function isTerminalBatchStatus(status: AiBatchStatus): boolean {
   return TERMINAL_BATCH_STATUSES.includes(status);
 }
+
+/** States the status poller advances (a remote batch exists). */
+export const POLLABLE_BATCH_STATUSES: readonly AiBatchStatus[] = [
+  AI_BATCH_STATUS.SUBMITTED,
+  AI_BATCH_STATUS.IN_PROGRESS,
+  AI_BATCH_STATUS.FINALIZING,
+  AI_BATCH_STATUS.CANCELLING,
+];
+
+/** States the submission reconciler inspects (create outcome uncertain/incomplete). */
+export const RECONCILE_SUBMISSION_STATUSES: readonly AiBatchStatus[] = [
+  AI_BATCH_STATUS.UPLOADING,
+  AI_BATCH_STATUS.SUBMITTING,
+  AI_BATCH_STATUS.SUBMISSION_UNKNOWN,
+];
 
 /** Per-request item status inside a batch. */
 export const AI_BATCH_ITEM_STATUS = {

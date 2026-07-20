@@ -8,6 +8,7 @@ import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AiExecutionService } from '../../modules/ai/ai-execution.service';
 import { AiBatchService } from '../../modules/ai/batch/ai-batch.service';
+import { AiTrainingFileService } from '../../modules/ai/ai-training-file.service';
 import { AiMemoryService } from '../../modules/ai-memory/ai-memory.service';
 
 /**
@@ -25,6 +26,7 @@ export class AiProcessor extends WorkerHost {
     private readonly ctx: TenantContextService,
     private readonly memory: AiMemoryService,
     private readonly batch: AiBatchService,
+    private readonly trainingFiles: AiTrainingFileService,
   ) {
     super();
   }
@@ -41,10 +43,15 @@ export class AiProcessor extends WorkerHost {
     // that reached a terminal state. No-op when batch is unconfigured.
     if (job.name === JOB.AI_BATCH_POLL) {
       const result = await this.batch.sweep();
-      if (result.polled > 0) {
-        this.logger.log(`ai.batchPoll polled=${result.polled} finalized=${result.finalized}`);
+      // Durable backstop: finalize any training file stuck in PROCESSING whose
+      // batch has since reached a terminal state (DB is the source of truth).
+      const reconciled = await this.trainingFiles.reconcileProcessing();
+      if (result.polled > 0 || reconciled.finalized > 0) {
+        this.logger.log(
+          `ai.batchPoll polled=${result.polled} finalized=${result.finalized} filesReconciled=${reconciled.finalized}`,
+        );
       }
-      return result;
+      return { ...result, filesReconciled: reconciled.finalized };
     }
 
     const data = job.data;

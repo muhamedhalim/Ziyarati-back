@@ -96,7 +96,7 @@ describe('HandoverRequestService', () => {
 
   it('accept requires ASSIGNED status', async () => {
     load(HANDOVER_STATUS.PENDING);
-    await expect(service.accept(TENANT, 'h1')).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    await expect(service.accept(TENANT, 'h1', 'u1')).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
   });
 
   it('resolve sets RESOLVED + resolved_at', async () => {

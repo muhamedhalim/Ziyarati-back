@@ -198,6 +198,7 @@ import { AiBatchService } from './batch/ai-batch.service';
     AiExecutionPolicyService,
     AiDataResidencyService,
     AiBatchService,
+    AiTrainingFileService,
   ],
 })
 export class AiModule {}

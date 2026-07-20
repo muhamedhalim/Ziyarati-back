@@ -126,18 +126,46 @@ describe('OpenAiBatchProvider (mocked SDK — real Batch API surface)', () => {
     expect(errors[0].error?.code).toBe('bad');
   });
 
-  it('uses the tenant residency client when one is enforced', async () => {
-    const { provider, clients } = setup();
-    const tenantFiles = { create: jest.fn().mockResolvedValue({ id: 'file_eu' }) };
-    const tenantBatches = { create: jest.fn().mockResolvedValue({ id: 'batch_eu', status: 'validating', request_counts: { total: 1 } }) };
+  it('routes EVERY batch call through the tenant residency client when enforced', async () => {
+    const { provider, files, batches, clients } = setup();
+    const tenantFiles = {
+      create: jest.fn().mockResolvedValue({ id: 'file_eu' }),
+      content: jest.fn().mockResolvedValue({ text: async () => '' }),
+    };
+    const tenantBatches = {
+      create: jest.fn().mockResolvedValue({ id: 'batch_eu', status: 'validating', request_counts: { total: 1 } }),
+      retrieve: jest.fn().mockResolvedValue({ id: 'batch_eu', status: 'completed', output_file_id: 'o', error_file_id: 'e' }),
+      cancel: jest.fn().mockResolvedValue({ id: 'batch_eu', status: 'cancelling' }),
+      list: jest.fn().mockResolvedValue({ data: [{ id: 'batch_eu', status: 'in_progress', metadata: { correlation_id: 'corr-1' } }] }),
+    };
     clients.forTenant.mockResolvedValue({ files: tenantFiles, batches: tenantBatches });
 
-    const handle = await provider.submit({
-      tenantId: 'tenant-eu',
-      endpoint: '/v1/embeddings',
-      requests: [{ customId: 'kb-1', method: 'POST', url: '/v1/embeddings', body: {} }],
-    });
+    // submit → upload + create
+    await provider.submit({ tenantId: 'tenant-eu', endpoint: '/v1/embeddings', requests: [{ customId: 'k', method: 'POST', url: '/v1/embeddings', body: {} }] });
+    // poll / cancel / fetchResults / findByCorrelation
+    const handle = await provider.poll('tenant-eu', 'batch_eu');
+    await provider.cancel('tenant-eu', 'batch_eu');
+    await provider.fetchResults('tenant-eu', handle);
+    await provider.findByCorrelation('tenant-eu', 'corr-1');
+
+    // The tenant (regional) client received every call…
     expect(tenantFiles.create).toHaveBeenCalledTimes(1);
-    expect(handle.externalId).toBe('batch_eu');
+    expect(tenantBatches.create).toHaveBeenCalledTimes(1);
+    expect(tenantBatches.retrieve).toHaveBeenCalledTimes(1);
+    expect(tenantBatches.cancel).toHaveBeenCalledTimes(1);
+    expect(tenantFiles.content).toHaveBeenCalled();
+    expect(tenantBatches.list).toHaveBeenCalledTimes(1);
+    // …and the GLOBAL client received nothing.
+    expect(files.create).not.toHaveBeenCalled();
+    expect(batches.create).not.toHaveBeenCalled();
+  });
+
+  it('propagates a fail-closed residency error WITHOUT uploading anything', async () => {
+    const { provider, files, clients } = setup();
+    clients.forTenant.mockRejectedValue(new Error('AI data residency required'));
+    await expect(
+      provider.uploadInputFile('tenant-x', [{ customId: 'k', method: 'POST', url: '/v1/embeddings', body: {} }]),
+    ).rejects.toThrow(/residency/i);
+    expect(files.create).not.toHaveBeenCalled(); // nothing uploaded before verification
   });
 });

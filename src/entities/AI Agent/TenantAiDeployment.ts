@@ -40,7 +40,7 @@ export class TenantAiDeployment {
   provider!: string;
 
   /** Descriptive region label (e.g. 'eu', 'us'); NOT a legal guarantee. */
-  @Column({ length: 40, nullable: true })
+  @Column({ type: 'varchar', length: 40, nullable: true })
   region?: string | null;
 
   /** Regional API base URL for this deployment (e.g. Azure/OpenAI regional). */
@@ -48,7 +48,7 @@ export class TenantAiDeployment {
   base_url?: string | null;
 
   /** OpenAI Project id scoping usage/billing for this tenant. */
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   openai_project?: string | null;
 
   /** Encrypted (aes-256-gcm) API key. Never returned in plaintext. */

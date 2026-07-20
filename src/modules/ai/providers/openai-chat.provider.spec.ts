@@ -28,4 +28,28 @@ describe('OpenAiChatProvider (mocked SDK)', () => {
       providerAttempts: 1, providerRequestId: 'req-1',
     }));
   });
+
+  it('dials the tenant REGIONAL client when Data Residency is enforced (standard chat)', async () => {
+    const globalCreate = jest.fn();
+    const tenantCreate = jest.fn().mockResolvedValue({
+      model: 'gpt-4o', choices: [{ message: { content: 'ok', tool_calls: [] } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    const clients = { forTenant: jest.fn().mockResolvedValue({ chat: { completions: { create: tenantCreate } } }) };
+    const provider = new OpenAiChatProvider(new ConfigService({ OPENAI_API_KEY: 'k' }), clients as any);
+    (provider as any).client = { chat: { completions: { create: globalCreate } } };
+    await provider.complete({ tenantId: 't-eu', messages: [{ role: 'user', content: 'hi' }] });
+    expect(clients.forTenant).toHaveBeenCalledWith('t-eu');
+    expect(tenantCreate).toHaveBeenCalledTimes(1);
+    expect(globalCreate).not.toHaveBeenCalled();
+  });
+
+  it('propagates a fail-closed residency error (never falls back to the global client)', async () => {
+    const globalCreate = jest.fn();
+    const clients = { forTenant: jest.fn().mockRejectedValue(new Error('residency required')) };
+    const provider = new OpenAiChatProvider(new ConfigService({ OPENAI_API_KEY: 'k' }), clients as any);
+    (provider as any).client = { chat: { completions: { create: globalCreate } } };
+    await expect(provider.complete({ tenantId: 't-eu', messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow(/residency/i);
+    expect(globalCreate).not.toHaveBeenCalled();
+  });
 });

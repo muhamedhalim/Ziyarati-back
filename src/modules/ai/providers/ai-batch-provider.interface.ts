@@ -42,6 +42,14 @@ export interface AiBatchSubmitInput {
   metadata?: Record<string, string>;
 }
 
+export interface AiBatchCreateInput {
+  tenantId: string;
+  inputFileId: string;
+  endpoint: string;
+  completionWindow?: string;
+  metadata?: Record<string, string>;
+}
+
 /**
  * Batch-provider port. The batch execution layer depends ONLY on this interface,
  * never on the OpenAI SDK — mirroring AiCompletionProvider / AiEmbeddingProvider.
@@ -50,9 +58,31 @@ export interface AiBatchProvider {
   readonly name: string;
   /** True only when a real backend is configured (no key ⇒ false). */
   isConfigured(): boolean;
+  /**
+   * Upload the JSONL input file. Split from `createBatch` so the caller can
+   * persist the input file id BEFORE the (non-idempotent) batch create, which is
+   * what makes crash recovery around submission safe. Verifies the tenant's
+   * regional deployment BEFORE any bytes are uploaded (fail-closed).
+   */
+  uploadInputFile(
+    tenantId: string,
+    requests: AiBatchLineRequest[],
+  ): Promise<{ inputFileId: string }>;
+  /** Create the remote batch from an already-uploaded input file. */
+  createBatch(input: AiBatchCreateInput): Promise<AiBatchHandle>;
+  /** Convenience: upload + create in one call (used by tests / simple callers). */
   submit(input: AiBatchSubmitInput): Promise<AiBatchHandle>;
   poll(tenantId: string, externalId: string): Promise<AiBatchHandle>;
   cancel(tenantId: string, externalId: string): Promise<AiBatchHandle>;
+  /**
+   * Find a remote batch this tenant created carrying `correlationId` in its
+   * metadata. Used to reconcile a submission whose create outcome is unknown —
+   * so we never create a duplicate remote batch. Returns null if none exists.
+   */
+  findByCorrelation(
+    tenantId: string,
+    correlationId: string,
+  ): Promise<AiBatchHandle | null>;
   fetchResults(
     tenantId: string,
     handle: AiBatchHandle,
@@ -68,7 +98,12 @@ export const AI_BATCH_PROVIDER = Symbol('AI_BATCH_PROVIDER');
 export function buildBatchJsonl(requests: AiBatchLineRequest[]): string {
   return requests
     .map((r) =>
-      JSON.stringify({ custom_id: r.customId, method: r.method, url: r.url, body: r.body }),
+      JSON.stringify({
+        custom_id: r.customId,
+        method: r.method,
+        url: r.url,
+        body: r.body,
+      }),
     )
     .join('\n');
 }
@@ -93,11 +128,14 @@ export function parseBatchResultsJsonl(text: string): AiBatchLineResult[] {
     } catch {
       continue;
     }
-    const customId = typeof parsed.custom_id === 'string' ? parsed.custom_id : '';
+    const customId =
+      typeof parsed.custom_id === 'string' ? parsed.custom_id : '';
     if (!customId) continue;
     const response = parsed.response ?? null;
     const statusCode =
-      response && typeof response.status_code === 'number' ? response.status_code : null;
+      response && typeof response.status_code === 'number'
+        ? response.status_code
+        : null;
     const body =
       response && response.body && typeof response.body === 'object'
         ? (response.body as Record<string, unknown>)
@@ -105,8 +143,12 @@ export function parseBatchResultsJsonl(text: string): AiBatchLineResult[] {
     let error: AiBatchLineResult['error'] = null;
     if (parsed.error) {
       error = {
-        code: typeof parsed.error.code === 'string' ? parsed.error.code : undefined,
-        message: typeof parsed.error.message === 'string' ? parsed.error.message : undefined,
+        code:
+          typeof parsed.error.code === 'string' ? parsed.error.code : undefined,
+        message:
+          typeof parsed.error.message === 'string'
+            ? parsed.error.message
+            : undefined,
       };
     } else if (statusCode !== null && statusCode >= 400) {
       error = { code: `HTTP_${statusCode}`, message: 'request failed' };
@@ -121,16 +163,22 @@ export function sumEmbeddingTokens(results: AiBatchLineResult[]): number {
   let total = 0;
   for (const r of results) {
     const usage = (r.body?.usage ?? null) as { total_tokens?: unknown } | null;
-    if (usage && typeof usage.total_tokens === 'number') total += usage.total_tokens;
+    if (usage && typeof usage.total_tokens === 'number')
+      total += usage.total_tokens;
   }
   return total;
 }
 
 /** Extract the first embedding vector from an embeddings response body. */
-export function extractEmbeddingVector(body: Record<string, unknown> | null): number[] | null {
+export function extractEmbeddingVector(
+  body: Record<string, unknown> | null,
+): number[] | null {
   const data = (body?.data ?? null) as Array<{ embedding?: unknown }> | null;
   const embedding = Array.isArray(data) ? data[0]?.embedding : undefined;
-  if (Array.isArray(embedding) && embedding.every((n) => typeof n === 'number')) {
+  if (
+    Array.isArray(embedding) &&
+    embedding.every((n) => typeof n === 'number')
+  ) {
     return embedding as number[];
   }
   return null;

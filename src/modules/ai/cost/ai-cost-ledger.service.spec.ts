@@ -28,4 +28,22 @@ describe('AiCostLedgerService', () => {
     expect(insertParams).toContain('7000');
     expect(query).toHaveBeenCalledTimes(2);
   });
+
+  it('does not silently absorb a ledger failure — logs and emits an alert event', async () => {
+    const dataSource = { transaction: () => { throw new Error('db down'); } } as any;
+    const prices = {} as any;
+    const emitter = { emit: jest.fn() };
+    const ledger = new AiCostLedgerService(dataSource, prices, emitter as any);
+    const result = await ledger.record({
+      tenantId: 't1', idempotencyKey: 'k', requestKind: 'CHAT', provider: 'openai', model: 'gpt-4o',
+      feature: 'chat', route: 'ai.chat.api', channel: 'API', success: true,
+      quote: { status: 'PRICED', provider: 'openai', requestedModel: 'gpt-4o', executionMode: 'STANDARD', costMicrousd: 1n } as any,
+    });
+    // Interactive turn is not broken (returns), but the failure is surfaced loudly.
+    expect(result.inserted).toBe(false);
+    expect(emitter.emit).toHaveBeenCalledWith(
+      AiCostLedgerService.LEDGER_FAILURE_EVENT,
+      expect.objectContaining({ tenantId: 't1', feature: 'chat' }),
+    );
+  });
 });

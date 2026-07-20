@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 
 import { AiTrainingFile } from '../../entities/AI Agent/AiTrainingFile';
 import { AiAgent } from '../../entities/AI Agent/AiAgent';
+import { AiBatchJob } from '../../entities/AI Agent/AiBatchJob';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
@@ -18,7 +19,7 @@ import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.
 import { splitIntoChunks } from './ingestion/text-splitter';
 import { AiBatchService } from './batch/ai-batch.service';
 import { AiExecutionPolicyService } from './execution/ai-execution-policy.service';
-import { AI_BATCH_STATUS, AI_FEATURE } from './execution/ai-execution.constants';
+import { AI_EXECUTION_MODE, AI_FEATURE, isTerminalBatchStatus } from './execution/ai-execution.constants';
 import { AiBatchCompletedEvent } from '../../events/ai-batch.events';
 import { StorageService } from '../storage/storage.service';
 import { AI_TRAINING_UPLOAD_POLICY } from '../storage/storage.constants';
@@ -38,6 +39,7 @@ export class AiTrainingFileService {
     @InjectRepository(AiTrainingFile)
     private readonly files: Repository<AiTrainingFile>,
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
+    @InjectRepository(AiBatchJob) private readonly batchJobs: Repository<AiBatchJob>,
     private readonly ingestion: AiKnowledgeIngestionService,
     private readonly batch: AiBatchService,
     private readonly policy: AiExecutionPolicyService,
@@ -143,15 +145,25 @@ export class AiTrainingFileService {
       }
       const contentHash = createHash('sha256').update(text.normalize('NFKC')).digest('hex');
 
-      // Large files go through the async BATCH embedding route (cheaper, no
-      // synchronous OpenAI round-trips) when it is enabled; small files stay on
-      // the synchronous STANDARD route. The threshold is env-configurable.
+      // Decide the route via the execution policy. Large files use the async
+      // BATCH route when enabled; small files index synchronously. When batch is
+      // DISABLED the policy applies the per-feature safe behavior — it will NOT
+      // silently fan a very large file out synchronously (that FAILS with a clear
+      // error rather than risking a huge single request / unexpected cost).
       const chunkCount = splitIntoChunks(text, { maxTokens: 500, overlapTokens: 60 }).length;
-      const useBatch = this.batch.isConfigured()
-        && this.ingestion.canStoreEmbeddings()
-        && this.policy.shouldBatchEmbeddings(chunkCount);
+      const canBatch = this.batch.isConfigured() && this.ingestion.canStoreEmbeddings();
+      const decision = this.policy.resolveEmbeddingExecution(AI_FEATURE.FILE_INDEXING, chunkCount);
 
-      if (useBatch) {
+      if (decision.action === 'FAIL' || decision.action === 'DEFER') {
+        return this.fail(
+          file,
+          'BATCH_REQUIRED_DISABLED',
+          'This file is too large to index synchronously and the batch execution mode is disabled. ' +
+            'Enable AI_BATCH_ENABLED to index large files.',
+        );
+      }
+
+      if (decision.mode === AI_EXECUTION_MODE.BATCH && canBatch) {
         const prepared = await this.ingestion.prepareBatchDocument(tenantId, file.agent.id, text, file.id);
         if (prepared.chunks <= 0) {
           return this.fail(file, 'NO_INDEXABLE_CONTENT', 'The file did not contain indexable text.');
@@ -165,20 +177,30 @@ export class AiTrainingFileService {
           file.indexed_at = new Date();
           return this.files.save(file);
         }
-        await this.batch.submitEmbeddingBatch({
-          tenantId,
-          feature: AI_FEATURE.FILE_INDEXING,
-          agentId: file.agent.id,
-          items: prepared.pending.map((p) => ({ content: p.content, targetRef: p.kbId })),
-          idempotencyKey: `training:${tenantId}:${file.id}:${contentHash}`,
-          sourceType: 'training_file',
-          sourceId: file.id,
-        });
-        // Stay PROCESSING: onBatchCompleted flips to INDEXED only after EVERY
-        // embedding has been saved. The file is never marked INDEXED early.
-        return this.files.save(file);
+        // Persist PROCESSING BEFORE submitting so a crash during submission leaves
+        // the file recoverable by reconcileProcessing (never stuck, never early-INDEXED).
+        await this.files.save(file);
+        try {
+          await this.batch.submitEmbeddingBatch({
+            tenantId,
+            feature: AI_FEATURE.FILE_INDEXING,
+            agentId: file.agent.id,
+            items: prepared.pending.map((p) => ({ targetRef: p.kbId })),
+            idempotencyKey: `training:${tenantId}:${file.id}:${contentHash}`,
+            sourceType: 'training_file',
+            sourceId: file.id,
+          });
+        } catch (err) {
+          // A transient submission failure does NOT fail the file — the batch
+          // submission reconciler retries. The file stays PROCESSING.
+          this.logger.warn(
+            `Batch submission deferred to reconciler tenant=${tenantId} file=${file.id}: ${(err as Error).message}`,
+          );
+        }
+        return file;
       }
 
+      // STANDARD synchronous indexing (small file, or batch unavailable & small).
       const result = await this.ingestion.ingestDocument(tenantId, file.agent.id, text, file.id, { requireEmbedding: true });
       if (result.chunks + result.deduplicated <= 0) {
         return this.fail(file, 'NO_INDEXABLE_CONTENT', 'The file did not contain indexable text.');
@@ -214,25 +236,39 @@ export class AiTrainingFileService {
   }
 
   /**
-   * Finalize a training file's ASYNC (batch) indexing. Fired by AiBatchService
-   * once the embedding batch reaches a terminal state. The file becomes INDEXED
-   * ONLY when the batch completed, no request failed, and no chunk is left
-   * unembedded — otherwise it is marked FAILED and its partial index removed.
-   * This is the enforcement of "do not index a file until ALL embeddings are
-   * complete and successfully saved."
+   * Fast-path finalizer: the in-process completion event just TRIGGERS a
+   * finalize; the decision is made from the DATABASE (the batch job row), never
+   * from the event payload. So if the event is missed (crash/restart) the
+   * periodic reconciler (`reconcileProcessing`) finalizes from the same DB state.
    */
   @OnEvent(AiBatchCompletedEvent.eventName)
   async onBatchCompleted(event: AiBatchCompletedEvent): Promise<void> {
     if (event.sourceType !== 'training_file' || !event.sourceId) return;
-    const file = await this.files.findOne({
-      where: { id: event.sourceId, tenant: { id: event.tenantId } },
-      relations: { agent: true },
-    });
+    await this.finalizeIndexing(event.tenantId, event.sourceId);
+  }
+
+  /**
+   * DB-sourced, idempotent finalize for one training file. Reads the file's batch
+   * job from the database (source of truth) and:
+   *  - INDEXED only when the batch is COMPLETED, no request failed, and NO chunk
+   *    is left unembedded — never earlier.
+   *  - Otherwise FAILED with the partial index deleted (partial-failure policy).
+   * Guarded by `status === PROCESSING`, so concurrent/repeated calls are no-ops.
+   */
+  async finalizeIndexing(tenantId: string, fileId: string): Promise<void> {
+    const file = await this.files.findOne({ where: { id: fileId, tenant: { id: tenantId } } });
     if (!file || file.status !== TRAINING_FILE_STATUS.PROCESSING) return;
 
-    const unembedded = await this.ingestion.countUnembeddedChunks(event.tenantId, file.id);
+    const job = await this.batchJobs.findOne({
+      where: { tenant_id: tenantId, source_type: 'training_file', source_id: fileId },
+      order: { created_at: 'DESC' },
+    });
+    // No job yet (submission still in flight) or batch not terminal → revisit later.
+    if (!job || !isTerminalBatchStatus(job.status as never)) return;
+
+    const unembedded = await this.ingestion.countUnembeddedChunks(tenantId, fileId);
     const fullySucceeded =
-      event.status === AI_BATCH_STATUS.COMPLETED && event.failedRequests === 0 && unembedded === 0;
+      job.status === 'COMPLETED' && job.failed_requests === 0 && unembedded === 0;
 
     if (fullySucceeded) {
       file.status = TRAINING_FILE_STATUS.INDEXED;
@@ -242,17 +278,45 @@ export class AiTrainingFileService {
       return;
     }
 
-    // Any shortfall → FAILED. Never leave a half-embedded index behind.
-    await this.ingestion.cleanupSource(event.tenantId, file.id).catch(() => undefined);
+    // Partial-failure policy: fail the whole file and delete the partial index.
+    await this.ingestion.cleanupSource(tenantId, fileId).catch(() => undefined);
     file.status = TRAINING_FILE_STATUS.FAILED;
-    file.error_code =
-      event.status === AI_BATCH_STATUS.COMPLETED ? 'EMBEDDING_INCOMPLETE' : `BATCH_${event.status}`;
+    file.error_code = job.status === 'COMPLETED' ? 'EMBEDDING_INCOMPLETE' : `BATCH_${job.status}`;
     file.chunk_count = 0;
     file.indexed_at = undefined;
     await this.files.save(file);
     this.logger.warn(
-      `Batch indexing finalized as FAILED tenant=${event.tenantId} file=${file.id} status=${event.status}`,
+      `Batch indexing finalized as FAILED tenant=${tenantId} file=${fileId} batch_status=${job.status}`,
     );
+  }
+
+  /**
+   * Reconciliation sweep (worker): finalize any file stuck in PROCESSING whose
+   * batch job has since reached a terminal state. This is the durable backstop
+   * that makes the DB — not the in-process event — the source of truth, so a
+   * crash between "all embeddings saved" and "event handled" cannot leave a file
+   * PROCESSING forever.
+   */
+  async reconcileProcessing(limit = 50): Promise<{ scanned: number; finalized: number }> {
+    const graceMin = Number(this.config.get('AI_TRAINING_FINALIZE_GRACE_MINUTES', 1));
+    const files = await this.files.find({
+      where: { status: TRAINING_FILE_STATUS.PROCESSING },
+      relations: { tenant: true },
+      order: { processing_started_at: 'ASC' },
+      take: limit,
+    });
+    let finalized = 0;
+    for (const file of files) {
+      // Give the synchronous path a moment before the reconciler intervenes.
+      if (file.processing_started_at
+        && Date.now() - new Date(file.processing_started_at).getTime() < graceMin * 60_000) continue;
+      const tenantId = file.tenant?.id;
+      if (!tenantId) continue;
+      await this.finalizeIndexing(tenantId, file.id);
+      const after = await this.files.findOne({ where: { id: file.id }, select: { id: true, status: true } });
+      if (after && after.status !== TRAINING_FILE_STATUS.PROCESSING) finalized += 1;
+    }
+    return { scanned: files.length, finalized };
   }
 
   async remove(tenantId: string, id: string): Promise<void> {
