@@ -46,4 +46,41 @@ describe('mapTypeOrmError', () => {
   it('maps an unknown SQLSTATE to DATABASE_ERROR', () => {
     expect(mapTypeOrmError(pgError({ code: '99999' })).code).toBe(ErrorCode.DATABASE_ERROR);
   });
+
+  describe('no internal detail ever reaches the client', () => {
+    it('falls back to a generic message for a unique violation on an unmapped constraint (never echoes the constraint name)', () => {
+      const err = mapTypeOrmError(
+        pgError({ code: '23505', constraint: 'some_future_unmapped_constraint' }),
+      );
+      expect(err.message).toBe('A record with these details already exists');
+      expect(err.message).not.toContain('some_future_unmapped_constraint');
+      expect(err.context).toBeUndefined();
+    });
+
+    it('never puts the SQLSTATE, table, or raw driver detail into context', () => {
+      const err = mapTypeOrmError(
+        pgError({
+          code: '23503',
+          table: 'internal_secrets_table',
+          detail: 'Key (tenant_id)=(...) is not present in table "tenants".',
+        }),
+      );
+      const serializedContext = JSON.stringify(err.context ?? {});
+      expect(serializedContext).not.toContain('internal_secrets_table');
+      expect(serializedContext).not.toContain('is not present in table');
+    });
+
+    it('preserves the raw driver error as `cause` for server-side logs only', () => {
+      const raw = pgError({ code: '23505', constraint: 'uq_user_tenant_email' });
+      const err = mapTypeOrmError(raw);
+      expect(err.cause).toBe(raw);
+    });
+
+    it('the only context ever produced (NOT_NULL_VIOLATION) carries just the field name, nothing else', () => {
+      const err = mapTypeOrmError(
+        pgError({ code: '23502', column: 'email', table: 'users', detail: 'internal detail' }),
+      );
+      expect(err.context).toEqual({ field: 'email' });
+    });
+  });
 });

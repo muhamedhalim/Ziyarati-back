@@ -32,6 +32,44 @@ describe('sanitizeForLog', () => {
     expect(out.cvv).toBe('[REDACTED]');
   });
 
+  it('redacts cookies, hyphenated headers, and payment-data fields', () => {
+    const out = sanitizeForLog({
+      cookie: 'session=abc',
+      Cookie: 'session=abc',
+      'set-cookie': 'refresh_token=xyz',
+      'x-api-key': 'k',
+      'Authorization-Token': 'z',
+      refreshToken: 'r',
+      creditCardNumber: '4111111111111111',
+      cvc: '123',
+      iban: 'SA0000000000000000000000',
+      bankAccountNumber: '12345',
+      routingNumber: '999',
+      clientSecret: 's',
+      ssn: '000-00-0000',
+      email: 'a@b.com',
+    }) as Record<string, unknown>;
+
+    for (const key of [
+      'cookie',
+      'Cookie',
+      'set-cookie',
+      'x-api-key',
+      'Authorization-Token',
+      'refreshToken',
+      'creditCardNumber',
+      'cvc',
+      'iban',
+      'bankAccountNumber',
+      'routingNumber',
+      'clientSecret',
+      'ssn',
+    ]) {
+      expect(out[key]).toBe('[REDACTED]');
+    }
+    expect(out.email).toBe('a@b.com');
+  });
+
   it('recurses into nested objects and arrays', () => {
     const out = sanitizeForLog({
       user: { name: 'x', token: 't' },

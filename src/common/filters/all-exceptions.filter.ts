@@ -29,6 +29,10 @@ interface NormalizedError {
   context?: Record<string, unknown>;
 }
 
+/** Generic, non-leaking stand-ins shown to the client in production. */
+const PRODUCTION_SAFE_MESSAGE = 'An unexpected error occurred';
+const PRODUCTION_SAFE_ERROR_LABEL = 'Internal Server Error';
+
 /**
  * Catches EVERY exception thrown anywhere in the request lifecycle (guards,
  * pipes, controllers, services) and renders the single canonical error shape.
@@ -84,24 +88,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   private normalize(exception: unknown): NormalizedError {
     if (exception instanceof AppError) {
-      return {
-        statusCode: exception.statusCode,
-        code: exception.code,
-        message: exception.message,
-        error: 'AppError',
-        context: exception.context,
-      };
+      return this.fromAppError(exception, 'AppError');
     }
 
     if (exception instanceof QueryFailedError) {
-      const mapped = mapTypeOrmError(exception);
-      return {
-        statusCode: mapped.statusCode,
-        code: mapped.code,
-        message: mapped.message,
-        error: 'QueryFailedError',
-        context: mapped.context,
-      };
+      // mapTypeOrmError() always returns an AppError, so this funnels through
+      // the exact same client-safe-context rule as a directly-thrown AppError.
+      return this.fromAppError(mapTypeOrmError(exception), 'QueryFailedError');
     }
 
     if (exception instanceof EntityNotFoundError) {
@@ -128,15 +121,41 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return this.fromHttpException(exception);
     }
 
-    // Unknown / unexpected — treat as a bug. Hide details in production.
-    const error = exception instanceof Error ? exception.constructor.name : 'Error';
+    // Unknown / unexpected — treat as a bug. Hide details in production: the
+    // real message AND the real class name (e.g. TypeError) are dev-only
+    // diagnostics; a client never learns anything beyond "something broke."
+    const devErrorName = exception instanceof Error ? exception.constructor.name : 'Error';
     const devMessage =
       exception instanceof Error ? exception.message : String(exception);
     return {
       statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
       code: ErrorCode.INTERNAL_ERROR,
-      message: this.isProduction ? 'An unexpected error occurred' : devMessage,
-      error,
+      message: this.isProduction ? PRODUCTION_SAFE_MESSAGE : devMessage,
+      error: this.isProduction ? PRODUCTION_SAFE_ERROR_LABEL : devErrorName,
+    };
+  }
+
+  /**
+   * Single funnel for every AppError-backed response — whether thrown
+   * directly by application code or produced by {@link mapTypeOrmError} from
+   * a raw DB failure. `context` is ONLY EVER populated here: `AppError.context`
+   * is the one channel in this whole filter that a developer explicitly opts
+   * into per-throw (see {@link AppError}'s docs), so it's the sole thing
+   * classified "client-safe" — nothing else in `normalize()` ever attaches
+   * context to a response, in any environment.
+   *
+   * The `error` label collapses to the generic `AppError` wrapper name in
+   * production — the underlying (sometimes TypeORM-specific, e.g.
+   * `QueryFailedError`) class name is a dev-only diagnostic aid, not
+   * something a client needs or should see.
+   */
+  private fromAppError(error: AppError, devErrorLabel: string): NormalizedError {
+    return {
+      statusCode: error.statusCode,
+      code: error.code,
+      message: error.message,
+      error: this.isProduction ? 'AppError' : devErrorLabel,
+      context: error.context,
     };
   }
 
@@ -199,6 +218,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       | { id?: string; tenantId?: string | null }
       | undefined;
 
+    // Logs prefer the ORIGINAL exception message over the (possibly sanitized)
+    // client-facing one — e.g. a mapped QueryFailedError shows "Email already
+    // exists" to the caller, but the log keeps the real driver message so an
+    // operator can actually diagnose the failure. HttpException is excluded:
+    // Nest synthesizes a generic `.message` for it when the real content is an
+    // array (class-validator), so `normalized.message` is already the truer
+    // signal there.
+    const rawMessage =
+      exception instanceof Error && !(exception instanceof HttpException)
+        ? exception.message
+        : undefined;
     const payload = {
       requestId,
       method: request.method,
@@ -207,9 +237,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: normalized.code,
       userId: principal?.id,
       tenantId: principal?.tenantId,
-      message: Array.isArray(normalized.message)
-        ? normalized.message.join('; ')
-        : normalized.message,
+      message:
+        rawMessage ??
+        (Array.isArray(normalized.message)
+          ? normalized.message.join('; ')
+          : normalized.message),
       body: sanitizeForLog(request.body),
     };
 

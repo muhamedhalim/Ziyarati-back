@@ -1,26 +1,43 @@
 /**
- * Keys whose values must never be written to logs. Matched case-insensitively
- * and as substrings (so `password_hash`, `newPassword`, etc. are all caught).
+ * Keys whose values must never be written to logs. Matched case-insensitively,
+ * with separators (`-`, `_`, spaces) stripped from both sides first, and as
+ * substrings — so `password_hash`, `newPassword`, `api-key`, `X-Api-Key`, etc.
+ * are all caught regardless of naming convention.
  */
 const SENSITIVE_KEY_PATTERNS = [
+  // Credentials
   'password',
-  'token',
   'secret',
+  // Tokens / auth (covers accessToken, refreshToken, Authorization header, JWTs)
+  'token',
   'authorization',
   'apikey',
-  'api_key',
+  // Session / cookies
+  'cookie',
+  // Payment data
   'creditcard',
   'cardnumber',
   'cvv',
+  'cvc',
+  'iban',
+  'bankaccount',
+  'accountnumber',
+  'routingnumber',
+  // National identifiers
   'ssn',
 ];
 
 const REDACTED = '[REDACTED]';
 const MAX_DEPTH = 6;
 
+/** Lowercases and strips separators so `api-key`, `API_KEY`, `apiKey` all compare equal. */
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[-_\s]/g, '');
+}
+
 function isSensitiveKey(key: string): boolean {
-  const lower = key.toLowerCase();
-  return SENSITIVE_KEY_PATTERNS.some((p) => lower.includes(p));
+  const normalized = normalizeKey(key);
+  return SENSITIVE_KEY_PATTERNS.some((p) => normalized.includes(p));
 }
 
 /**

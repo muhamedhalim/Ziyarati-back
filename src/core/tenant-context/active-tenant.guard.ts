@@ -65,7 +65,7 @@ export class ActiveTenantGuard implements CanActivate {
       !tenant.is_active
     ) {
       throw new AppError(ErrorCode.FORBIDDEN, {
-        message: `Tenant is not active (status: ${tenant.approval_status}). Access to this resource is denied.`,
+        message: 'Your clinic is not currently allowed to access this resource.',
         context: { tenantStatus: tenant.approval_status, isActive: tenant.is_active },
       });
     }

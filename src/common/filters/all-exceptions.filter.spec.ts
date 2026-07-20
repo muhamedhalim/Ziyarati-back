@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
+import { HttpException, HttpStatus, Logger, NotFoundException } from '@nestjs/common';
 import {
   EntityNotFoundError,
   OptimisticLockVersionMismatchError,
@@ -91,5 +91,153 @@ describe('AllExceptionsFilter', () => {
   it('includes a dev stack and sanitizes the logged body', () => {
     filter.catch(new Error('boom'), host); // non-prod → stack in context
     expect(bodySent().context?.stack).toBeDefined();
+  });
+
+  // ── Development vs. production safety ──────────────────────────────────── //
+  describe('environment-gated safety (development vs. production)', () => {
+    const withEnv = (env: string, fn: () => void) => {
+      const prev = process.env.NODE_ENV;
+      process.env.NODE_ENV = env;
+      try {
+        fn();
+      } finally {
+        process.env.NODE_ENV = prev;
+      }
+    };
+
+    describe('development', () => {
+      it('shows the real message, the real error class name, and the stack for an unexpected error', () => {
+        withEnv('development', () => {
+          const devFilter = new AllExceptionsFilter();
+          devFilter.catch(new TypeError('cannot read property x of undefined'), host);
+          const b = bodySent();
+          expect(b.message).toBe('cannot read property x of undefined');
+          expect(b.error).toBe('TypeError');
+          expect(b.context?.stack).toBeDefined();
+        });
+      });
+
+      it('shows the real "QueryFailedError" label as a diagnostic aid', () => {
+        withEnv('development', () => {
+          const devFilter = new AllExceptionsFilter();
+          const err = Object.assign(new QueryFailedError('q', [], new Error('dup')), {
+            code: '23505',
+            constraint: 'uq_user_tenant_email',
+          });
+          devFilter.catch(err, host);
+          expect(bodySent().error).toBe('QueryFailedError');
+        });
+      });
+    });
+
+    describe('production', () => {
+      it('hides the real message and error class name for an unexpected error, showing only generic values', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(new TypeError('leaked internal db connection string'), host);
+          const b = bodySent();
+          expect(b.message).toBe('An unexpected error occurred');
+          expect(b.error).toBe('Internal Server Error');
+          expect(b.message).not.toContain('leaked internal db connection string');
+        });
+      });
+
+      it('never attaches a stack or any context for an unexpected error', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(new Error('boom'), host);
+          expect(bodySent().context).toBeUndefined();
+        });
+      });
+
+      it('collapses the internal "QueryFailedError" class name to the generic "AppError" label', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          const err = Object.assign(new QueryFailedError('q', [], new Error('dup')), {
+            code: '23505',
+            constraint: 'uq_user_tenant_email',
+          });
+          prodFilter.catch(err, host);
+          const b = bodySent();
+          expect(b.error).toBe('AppError');
+          expect(b.error).not.toBe('QueryFailedError');
+        });
+      });
+
+      it('still forwards explicitly client-safe AppError context (not "internal" context)', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          // NOT_NULL_VIOLATION is the one mapTypeOrmError branch that sets context.
+          const err = Object.assign(new QueryFailedError('q', [], new Error('null')), {
+            code: '23502',
+            column: 'email',
+          });
+          prodFilter.catch(err, host);
+          const b = bodySent();
+          expect(b.context).toEqual({ field: 'email' });
+        });
+      });
+
+      it('forwards a directly-thrown AppError\'s message and context unchanged (already client-safe by contract)', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(
+            new AppError(ErrorCode.CONFLICT, {
+              message: 'Only completed appointments can be reviewed',
+              context: { currentStatus: 'PENDING' },
+            }),
+            host,
+          );
+          const b = bodySent();
+          expect(b.message).toBe('Only completed appointments can be reviewed');
+          expect(b.context).toEqual({ currentStatus: 'PENDING' });
+          expect(b.error).toBe('AppError');
+        });
+      });
+    });
+
+    describe('logs retain full detail in every environment', () => {
+      it('logs the real message even when the client-facing message is hidden (production)', () => {
+        const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(new Error('leaked internal db connection string'), host);
+        });
+        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain('leaked internal db connection string');
+        errorSpy.mockRestore();
+      });
+
+      it('logs the real driver message for a mapped QueryFailedError, not the sanitized client message', () => {
+        // A unique violation maps to 409 (CONFLICT) — an operational 4xx, so
+        // writeLog() logs it via `.warn`, not `.error` (that's reserved for 5xx).
+        const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          const err = Object.assign(
+            new QueryFailedError('q', [], new Error('duplicate key value violates unique constraint "uq_user_tenant_email"')),
+            { code: '23505', constraint: 'uq_user_tenant_email' },
+          );
+          prodFilter.catch(err, host);
+        });
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain('duplicate key value violates unique constraint');
+        // The client, meanwhile, only ever saw the friendly mapped message.
+        expect(bodySent().message).toBe('Email already exists in this tenant');
+        warnSpy.mockRestore();
+      });
+
+      it('still sanitizes the sensitive request body fields in logs regardless of environment', () => {
+        const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(new Error('boom'), host);
+        });
+        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain('[REDACTED]');
+        expect(logged).not.toContain('"password":"secret"');
+        errorSpy.mockRestore();
+      });
+    });
   });
 });
