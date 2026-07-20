@@ -4,7 +4,9 @@ import { Repository } from 'typeorm';
 
 import { TenantVerificationDocument } from '../../entities/SaaS-Core/TenantVerificationDocument';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { TenantApprovalStatus, VerificationDocStatus } from '../../entities/enums';
+import {
+  VerificationDocStatus,
+} from '../../entities/enums';
 import { CreateVerificationDocumentDto } from './dto/create-verification-document.dto';
 import { ReviewVerificationDocumentDto } from './dto/review-verification-document.dto';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -15,10 +17,7 @@ import {
   type AuditActor,
 } from '../verification-audit/verification-audit.service';
 import { AdminNotificationService } from '../admin-notifications/admin-notification.service';
-import {
-  REQUIRED_DOC_TYPES,
-  labelForDocType,
-} from './verification.constants';
+import { REQUIRED_DOC_TYPES, labelForDocType } from './verification.constants';
 
 /**
  * Manages clinic verification documents end-to-end.
@@ -212,20 +211,36 @@ export class TenantVerificationService {
   }
 
   /**
-   * Guard for clinic-level approval: throws 400 if any required document type
-   * is missing. Called by the tenant approve action so the platform can't
-   * approve a clinic that hasn't supplied its mandatory paperwork.
+   * Guard for clinic-level approval: throws 400 unless every required document
+   * type is present AND has been reviewed as `APPROVED`. Presence alone isn't
+   * enough — a required document left `PENDING` (never reviewed) or
+   * `REJECTED` must also block final tenant approval, since approval implies
+   * management has signed off on every mandatory document.
    */
   async assertReadyForApproval(tenantId: string): Promise<void> {
-    const missing = await this.missingRequiredTypes(tenantId);
-    if (missing.length > 0) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: `Cannot approve: missing required documents: ${missing
-          .map(labelForDocType)
-          .join(', ')}.`,
-        context: { missing },
-      });
+    const { missing, unapproved } =
+      await this.unapprovedRequiredDocs(tenantId);
+    if (missing.length === 0 && unapproved.length === 0) {
+      return;
     }
+
+    const details = [
+      ...missing.map((t) => `${labelForDocType(t)} (missing)`),
+      ...unapproved.map(
+        (d) => `${labelForDocType(d.docType)} (${d.status.toLowerCase()})`,
+      ),
+    ];
+
+    throw new AppError(ErrorCode.BAD_REQUEST, {
+      message: `Cannot approve: all required documents must be approved. Outstanding: ${details.join(', ')}.`,
+      context: {
+        missing,
+        unapproved: unapproved.map((d) => ({
+          docType: d.docType,
+          status: d.status,
+        })),
+      },
+    });
   }
 
   /**
@@ -310,14 +325,13 @@ export class TenantVerificationService {
 
     await this.audit.record({
       tenantId: doc.tenant.id,
-      action: dto.status === VerificationDocStatus.APPROVED ? 'APPROVED' : 'REJECTED',
+      action:
+        dto.status === VerificationDocStatus.APPROVED ? 'APPROVED' : 'REJECTED',
       documentId: doc.id,
       docType: doc.doc_type,
       actor: reviewer,
       metadata: { reviewNote: dto.reviewNote ?? null },
     });
-
-    await this.maybeAdvanceToPendingApproval(doc.tenant.id, reviewer.id ?? 'system');
 
     return saved;
   }
@@ -334,6 +348,36 @@ export class TenantVerificationService {
     return REQUIRED_DOC_TYPES.filter((t) => !present.has(t));
   }
 
+  /**
+   * Required types that are either missing entirely, or present but not yet
+   * `APPROVED` (still `PENDING` review, or `REJECTED`). One ACTIVE document
+   * exists per `doc_type` (see class docs), so a single status lookup per
+   * type is authoritative.
+   */
+  private async unapprovedRequiredDocs(tenantId: string): Promise<{
+    missing: string[];
+    unapproved: { docType: string; status: VerificationDocStatus }[];
+  }> {
+    const docs = await this.documents.find({
+      where: { tenant: { id: tenantId } },
+      select: { doc_type: true, status: true },
+    });
+    const statusByType = new Map(docs.map((d) => [d.doc_type, d.status]));
+
+    const missing: string[] = [];
+    const unapproved: { docType: string; status: VerificationDocStatus }[] =
+      [];
+    for (const docType of REQUIRED_DOC_TYPES) {
+      const status = statusByType.get(docType);
+      if (!status) {
+        missing.push(docType);
+      } else if (status !== VerificationDocStatus.APPROVED) {
+        unapproved.push({ docType, status });
+      }
+    }
+    return { missing, unapproved };
+  }
+
   /** Deletes an R2 object, swallowing failures (cleanup must not block flow). */
   private async safeDeleteObject(key: string): Promise<void> {
     try {
@@ -345,33 +389,4 @@ export class TenantVerificationService {
     }
   }
 
-  /**
-   * Best-effort PENDING_VERIFICATION → PENDING_APPROVAL when no PENDING docs
-   * remain after a review. Redundant with the owner's explicit submit-for-review
-   * but harmless, and covers clinics reviewed before finalising. Never throws.
-   */
-  private async maybeAdvanceToPendingApproval(
-    tenantId: string,
-    actorId: string,
-  ): Promise<void> {
-    try {
-      const tenant = await this.tenantService.findById(tenantId);
-      if (tenant.approval_status !== TenantApprovalStatus.PENDING_VERIFICATION) {
-        return;
-      }
-      const hasPending = await this.documents.exists({
-        where: {
-          tenant: { id: tenantId },
-          status: VerificationDocStatus.PENDING,
-        },
-      });
-      if (!hasPending) {
-        await this.tenantService.markPendingApproval(tenantId, actorId);
-      }
-    } catch (err) {
-      this.logger.warn(
-        `Auto-advance to PENDING_APPROVAL skipped for tenant ${tenantId}: ${(err as Error)?.message}`,
-      );
-    }
-  }
 }
