@@ -155,6 +155,32 @@ export const validate = (config: Record<string, unknown>) => {
     AI_POWERFUL_FEATURES: Joi.string().allow('').default(''),
     AI_POWERFUL_ROUTES: Joi.string().allow('').default(''),
     AI_TRAINING_FILE_MAX_BYTES: Joi.number().integer().min(1024).default(10 * 1024 * 1024),
+
+    // ── AI execution mode: Standard vs Batch (OpenAI Batch API) ───────────
+    // Master switch for the async BATCH execution mode. Default OFF: with it
+    // off, every feature runs on the synchronous STANDARD path exactly as
+    // before (fully revertable). The frontend/user can NEVER select the mode —
+    // it is derived server-side from the feature (AiExecutionPolicyService).
+    AI_BATCH_ENABLED: Joi.string().valid('true', 'false').default('false'),
+    // Chunk count at/above which file indexing prefers the BATCH route. Small
+    // files stay on the synchronous embedding path for immediate indexing.
+    AI_BATCH_EMBEDDING_CHUNK_THRESHOLD: Joi.number().integer().min(1).default(200),
+    // OpenAI Batch completion window (only '24h' is currently supported).
+    AI_BATCH_COMPLETION_WINDOW: Joi.string().default('24h'),
+    // Cron cadence for the batch-status poll sweep (worker).
+    AI_BATCH_POLL_CRON: Joi.string().default('*/5 * * * *'),
+    // Grace period before a PENDING job that never recorded a remote batch id
+    // (submission crashed) is reaped as FAILED.
+    AI_BATCH_SUBMIT_GRACE_MINUTES: Joi.number().integer().min(1).default(15),
+
+    // ── AI Data Residency (compliance policy — OFF by default) ────────────
+    // Master switch for per-tenant regional OpenAI deployments. Default OFF: no
+    // tenant deployment is consulted and the global client is used. When ON,
+    // a tenant whose deployment is enabled but unavailable FAILS CLOSED — the
+    // request is never silently redirected to the global region. Enabling this
+    // does NOT assert that data stays in any particular country.
+    AI_DATA_RESIDENCY_ENABLED: Joi.string().valid('true', 'false').default('false'),
+
     RAG_TOP_K: Joi.number().default(5),
     // HNSW query-time recall/latency knob (higher = better recall, slower).
     HNSW_EF_SEARCH: Joi.number().default(60),

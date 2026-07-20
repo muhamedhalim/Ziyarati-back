@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 import { JOB, QUEUE } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
@@ -15,7 +16,10 @@ import { QueueService } from '../queue/queue.service';
 export class ScheduleRegistrarService implements OnApplicationBootstrap {
   private readonly logger = new Logger('ScheduleRegistrar');
 
-  constructor(private readonly queue: QueueService) {}
+  constructor(
+    private readonly queue: QueueService,
+    private readonly config: ConfigService,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     try {
@@ -42,7 +46,15 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_TICK, { tenantId: null }, '5 * * * *');
       // Long-term AI memory expiry purge — 04:00 UTC daily.
       await this.queue.addRepeatable(QUEUE.AI, JOB.AI_MEMORY_CLEANUP, { tenantId: null }, '0 4 * * *');
-      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick)');
+      // AI batch poll sweep — polls live OpenAI batches and processes terminal
+      // ones. Cheap no-op when batch is unconfigured. Cadence is env-tunable.
+      await this.queue.addRepeatable(
+        QUEUE.AI,
+        JOB.AI_BATCH_POLL,
+        { tenantId: null },
+        this.config.get<string>('AI_BATCH_POLL_CRON', '*/5 * * * *'),
+      );
+      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

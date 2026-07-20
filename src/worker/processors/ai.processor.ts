@@ -7,6 +7,7 @@ import { AiExecuteJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AiExecutionService } from '../../modules/ai/ai-execution.service';
+import { AiBatchService } from '../../modules/ai/batch/ai-batch.service';
 import { AiMemoryService } from '../../modules/ai-memory/ai-memory.service';
 
 /**
@@ -23,6 +24,7 @@ export class AiProcessor extends WorkerHost {
     private readonly exec: AiExecutionService,
     private readonly ctx: TenantContextService,
     private readonly memory: AiMemoryService,
+    private readonly batch: AiBatchService,
   ) {
     super();
   }
@@ -33,6 +35,16 @@ export class AiProcessor extends WorkerHost {
       const { deleted } = await this.memory.cleanupExpired();
       this.logger.log(`ai.memoryCleanup purged ${deleted} expired memories`);
       return { deleted };
+    }
+
+    // Batch poll sweep (platform-wide): poll live OpenAI batches and process any
+    // that reached a terminal state. No-op when batch is unconfigured.
+    if (job.name === JOB.AI_BATCH_POLL) {
+      const result = await this.batch.sweep();
+      if (result.polled > 0) {
+        this.logger.log(`ai.batchPoll polled=${result.polled} finalized=${result.finalized}`);
+      }
+      return result;
     }
 
     const data = job.data;

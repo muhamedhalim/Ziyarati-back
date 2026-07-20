@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
+import { OnEvent } from '@nestjs/event-emitter';
 import { createHash } from 'node:crypto';
 
 import { AiTrainingFile } from '../../entities/AI Agent/AiTrainingFile';
@@ -14,6 +15,11 @@ import { UpdateTrainingFileDto } from './dto/update-training-file.dto';
 import { TrainingFileFilterDto } from './dto/training-file-filter.dto';
 import { TRAINING_FILE_STATUS } from './ai.constants';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
+import { splitIntoChunks } from './ingestion/text-splitter';
+import { AiBatchService } from './batch/ai-batch.service';
+import { AiExecutionPolicyService } from './execution/ai-execution-policy.service';
+import { AI_BATCH_STATUS, AI_FEATURE } from './execution/ai-execution.constants';
+import { AiBatchCompletedEvent } from '../../events/ai-batch.events';
 import { StorageService } from '../storage/storage.service';
 import { AI_TRAINING_UPLOAD_POLICY } from '../storage/storage.constants';
 
@@ -33,6 +39,8 @@ export class AiTrainingFileService {
     private readonly files: Repository<AiTrainingFile>,
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
     private readonly ingestion: AiKnowledgeIngestionService,
+    private readonly batch: AiBatchService,
+    private readonly policy: AiExecutionPolicyService,
     private readonly storage: StorageService,
     private readonly config: ConfigService,
   ) {}
@@ -134,6 +142,43 @@ export class AiTrainingFileService {
         return this.fail(file, 'TEXT_EXTRACTION_FAILED', 'The file is empty or is not valid UTF-8 text.');
       }
       const contentHash = createHash('sha256').update(text.normalize('NFKC')).digest('hex');
+
+      // Large files go through the async BATCH embedding route (cheaper, no
+      // synchronous OpenAI round-trips) when it is enabled; small files stay on
+      // the synchronous STANDARD route. The threshold is env-configurable.
+      const chunkCount = splitIntoChunks(text, { maxTokens: 500, overlapTokens: 60 }).length;
+      const useBatch = this.batch.isConfigured()
+        && this.ingestion.canStoreEmbeddings()
+        && this.policy.shouldBatchEmbeddings(chunkCount);
+
+      if (useBatch) {
+        const prepared = await this.ingestion.prepareBatchDocument(tenantId, file.agent.id, text, file.id);
+        if (prepared.chunks <= 0) {
+          return this.fail(file, 'NO_INDEXABLE_CONTENT', 'The file did not contain indexable text.');
+        }
+        file.content_hash = contentHash;
+        file.chunk_count = prepared.chunks;
+        if (prepared.pending.length === 0) {
+          // Every chunk reused an existing vector — nothing to embed; index now.
+          file.status = TRAINING_FILE_STATUS.INDEXED;
+          file.error_code = undefined;
+          file.indexed_at = new Date();
+          return this.files.save(file);
+        }
+        await this.batch.submitEmbeddingBatch({
+          tenantId,
+          feature: AI_FEATURE.FILE_INDEXING,
+          agentId: file.agent.id,
+          items: prepared.pending.map((p) => ({ content: p.content, targetRef: p.kbId })),
+          idempotencyKey: `training:${tenantId}:${file.id}:${contentHash}`,
+          sourceType: 'training_file',
+          sourceId: file.id,
+        });
+        // Stay PROCESSING: onBatchCompleted flips to INDEXED only after EVERY
+        // embedding has been saved. The file is never marked INDEXED early.
+        return this.files.save(file);
+      }
+
       const result = await this.ingestion.ingestDocument(tenantId, file.agent.id, text, file.id, { requireEmbedding: true });
       if (result.chunks + result.deduplicated <= 0) {
         return this.fail(file, 'NO_INDEXABLE_CONTENT', 'The file did not contain indexable text.');
@@ -166,6 +211,48 @@ export class AiTrainingFileService {
       });
     }
     return this.process(tenantId, id);
+  }
+
+  /**
+   * Finalize a training file's ASYNC (batch) indexing. Fired by AiBatchService
+   * once the embedding batch reaches a terminal state. The file becomes INDEXED
+   * ONLY when the batch completed, no request failed, and no chunk is left
+   * unembedded — otherwise it is marked FAILED and its partial index removed.
+   * This is the enforcement of "do not index a file until ALL embeddings are
+   * complete and successfully saved."
+   */
+  @OnEvent(AiBatchCompletedEvent.eventName)
+  async onBatchCompleted(event: AiBatchCompletedEvent): Promise<void> {
+    if (event.sourceType !== 'training_file' || !event.sourceId) return;
+    const file = await this.files.findOne({
+      where: { id: event.sourceId, tenant: { id: event.tenantId } },
+      relations: { agent: true },
+    });
+    if (!file || file.status !== TRAINING_FILE_STATUS.PROCESSING) return;
+
+    const unembedded = await this.ingestion.countUnembeddedChunks(event.tenantId, file.id);
+    const fullySucceeded =
+      event.status === AI_BATCH_STATUS.COMPLETED && event.failedRequests === 0 && unembedded === 0;
+
+    if (fullySucceeded) {
+      file.status = TRAINING_FILE_STATUS.INDEXED;
+      file.error_code = undefined;
+      file.indexed_at = new Date();
+      await this.files.save(file);
+      return;
+    }
+
+    // Any shortfall → FAILED. Never leave a half-embedded index behind.
+    await this.ingestion.cleanupSource(event.tenantId, file.id).catch(() => undefined);
+    file.status = TRAINING_FILE_STATUS.FAILED;
+    file.error_code =
+      event.status === AI_BATCH_STATUS.COMPLETED ? 'EMBEDDING_INCOMPLETE' : `BATCH_${event.status}`;
+    file.chunk_count = 0;
+    file.indexed_at = undefined;
+    await this.files.save(file);
+    this.logger.warn(
+      `Batch indexing finalized as FAILED tenant=${event.tenantId} file=${file.id} status=${event.status}`,
+    );
   }
 
   async remove(tenantId: string, id: string): Promise<void> {

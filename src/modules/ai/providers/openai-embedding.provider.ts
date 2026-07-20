@@ -115,7 +115,7 @@ export class OpenAiEmbeddingProvider implements AiEmbeddingProvider {
           requestKind: 'EMBEDDING', provider: 'openai', model: this.model,
           feature: context.feature ?? 'embedding', route: context.route ?? 'embedding', channel: context.channel ?? 'INTERNAL',
           success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
-          quote: { status: 'UNPRICED', provider: 'openai', requestedModel: this.model, costMicrousd: null },
+          quote: { status: 'UNPRICED', provider: 'openai', requestedModel: this.model, executionMode: 'STANDARD', costMicrousd: null },
         });
         throw err;
       }
@@ -146,7 +146,7 @@ export class OpenAiEmbeddingProvider implements AiEmbeddingProvider {
         requestKind: 'EMBEDDING', provider: 'openai', model: this.model,
         feature: context.feature ?? 'embedding', route: context.route ?? 'embedding', channel: context.channel ?? 'INTERNAL',
         success: false, errorCode: 'RETRY_USAGE_UNKNOWN',
-        quote: { status: 'UNPRICED', provider: 'openai', requestedModel: this.model, costMicrousd: null },
+        quote: { status: 'UNPRICED', provider: 'openai', requestedModel: this.model, executionMode: 'STANDARD', costMicrousd: null },
       });
     }
 

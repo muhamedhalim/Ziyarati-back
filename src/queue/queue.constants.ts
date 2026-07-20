@@ -70,6 +70,8 @@ export const JOB = {
   CAMPAIGNS_DLQ: 'campaigns.dlq',
   AI_EXECUTE: 'ai.execute',
   AI_MEMORY_CLEANUP: 'ai.memoryCleanup',
+  /** Repeatable sweep: poll live OpenAI batches + process terminal ones. */
+  AI_BATCH_POLL: 'ai.batchPoll',
   ANALYTICS_AGGREGATE: 'analytics.aggregate',
   ANALYTICS_GENERATE_REPORT: 'analytics.generateReport',
   ANALYTICS_CLEANUP: 'analytics.cleanup',

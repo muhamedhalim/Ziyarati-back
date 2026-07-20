@@ -367,7 +367,7 @@ export class AiExecutionService {
           success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
           quote: {
             status: PRICING_STATUS.UNPRICED, provider: providerForMetric,
-            requestedModel: modelForMetric, costMicrousd: null,
+            requestedModel: modelForMetric, executionMode: 'STANDARD', costMicrousd: null,
           },
         });
       }
@@ -836,7 +836,7 @@ export class AiExecutionService {
           success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
           quote: {
             status: PRICING_STATUS.UNPRICED, provider: providerForMetric,
-            requestedModel: modelForMetric, costMicrousd: null,
+            requestedModel: modelForMetric, executionMode: 'STANDARD', costMicrousd: null,
           },
         });
       }
@@ -986,7 +986,7 @@ export class AiExecutionService {
         requestKind: 'CHAT', provider, model: completion.model,
         feature: 'chat', route, channel,
         success: false, errorCode: 'RETRY_USAGE_UNKNOWN',
-        quote: { status: PRICING_STATUS.UNPRICED, provider, requestedModel: completion.model, costMicrousd: null },
+        quote: { status: PRICING_STATUS.UNPRICED, provider, requestedModel: completion.model, executionMode: 'STANDARD', costMicrousd: null },
       });
       accounting.pricingStatus = PRICING_STATUS.UNPRICED;
     }

@@ -4,7 +4,7 @@ import { OpenAiEmbeddingProvider } from './openai-embedding.provider';
 describe('OpenAiEmbeddingProvider cache/dedup (mocked SDK)', () => {
   const quote = {
     status: 'PRICED', provider: 'openai', requestedModel: 'text-embedding-3-small',
-    costMicrousd: 1n,
+    executionMode: 'STANDARD', costMicrousd: 1n,
   } as const;
 
   function setup(redisFails = false) {

@@ -39,6 +39,111 @@ export class AiKnowledgeIngestionService {
     return this.embedder.isConfigured() && this.pgvector.isAvailable();
   }
 
+  /** pgvector must be available to STORE batch-produced vectors. */
+  canStoreEmbeddings(): boolean {
+    return this.pgvector.isAvailable();
+  }
+
+  /** The embedding model batch jobs must request (matches the standard path). */
+  currentEmbeddingModel(): string {
+    return this.config.get<string>('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small');
+  }
+
+  /**
+   * Prepare a document for ASYNC (batch) embedding: (re)create its chunk rows
+   * WITHOUT vectors, reusing any identical already-embedded vector from another
+   * source, and return the chunks that still need an embedding. The caller
+   * (AiBatchService) submits those to the Batch API and writes the vectors back
+   * via `saveEmbedding` once the batch completes.
+   *
+   * The chunk rows are committed here so the vectors have a home to attach to;
+   * the owning training file stays PROCESSING until every pending item's vector
+   * is saved (see the batch completion finalizer).
+   */
+  async prepareBatchDocument(
+    tenantId: string,
+    agentId: string,
+    text: string,
+    sourceId: string,
+  ): Promise<{ chunks: number; reused: number; pending: Array<{ kbId: string; content: string }> }> {
+    const parts = splitIntoChunks(text, { maxTokens: 500, overlapTokens: 60 });
+    if (parts.length === 0) return { chunks: 0, reused: 0, pending: [] };
+
+    const unique = [...new Map(parts.map((content) => {
+      const h = this.hashContent(content);
+      return [h.hash, { content, ...h }];
+    })).values()];
+
+    // Reuse a persisted vector for identical content owned by another source.
+    const reusable = new Map<string, string>();
+    const rows = await this.dataSource.query(
+      `SELECT DISTINCT ON (kb.content_hash) kb.content_hash, kb.id
+         FROM ai_knowledge_bases kb
+         JOIN ${AI_KB_EMBEDDINGS_TABLE} e ON e.kb_id=kb.id
+        WHERE kb."tenantId"=$1 AND kb."agentId"=$2
+          AND kb.source_id IS DISTINCT FROM $3
+          AND kb.content_hash = ANY($4::varchar[])
+        ORDER BY kb.content_hash, kb.created_at ASC`,
+      [tenantId, agentId, sourceId, unique.map((p) => p.hash)],
+    ) as Array<{ content_hash: string; id: string }>;
+    for (const row of rows) reusable.set(row.content_hash, row.id);
+
+    return this.dataSource.transaction(async (m) => {
+      await m.query(`DELETE FROM ai_kb_embeddings WHERE kb_id IN (SELECT id FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2)`, [tenantId, sourceId]);
+      await m.query(`DELETE FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2`, [tenantId, sourceId]);
+      let inserted = 0;
+      let reused = 0;
+      const pending: Array<{ kbId: string; content: string }> = [];
+      for (let i = 0; i < unique.length; i += 1) {
+        const insertedRows = await m.query(
+          `INSERT INTO ai_knowledge_bases ("tenantId","agentId",content,content_hash,embedding_version,source_type,source_id)
+           VALUES ($1,$2,$3,$4,$5,'training_file',$6)
+           ON CONFLICT DO NOTHING RETURNING id`,
+          [tenantId, agentId, unique[i].content, unique[i].hash, unique[i].version, sourceId],
+        );
+        if (!insertedRows[0]?.id) continue;
+        inserted += 1;
+        const kbId = insertedRows[0].id as string;
+        if (reusable.has(unique[i].hash)) {
+          const copied = await m.query(
+            `INSERT INTO ${AI_KB_EMBEDDINGS_TABLE} (kb_id,tenant_id,agent_id,embedding)
+             SELECT $1,$2,$3,embedding FROM ${AI_KB_EMBEDDINGS_TABLE} WHERE kb_id=$4
+             ON CONFLICT (kb_id) DO NOTHING RETURNING kb_id`,
+            [kbId, tenantId, agentId, reusable.get(unique[i].hash)],
+          );
+          if (copied[0]?.kb_id) { reused += 1; continue; }
+        }
+        pending.push({ kbId, content: unique[i].content });
+      }
+      return { chunks: inserted, reused, pending };
+    });
+  }
+
+  /**
+   * Persist a single embedding vector for a chunk (public seam used by
+   * AiBatchService when applying batch results). Idempotent (ON CONFLICT).
+   */
+  async saveEmbedding(
+    kbId: string,
+    tenantId: string,
+    agentId: string,
+    vector: number[],
+    manager = this.dataSource.manager,
+  ): Promise<void> {
+    await this.upsertEmbedding(kbId, tenantId, agentId, vector, manager);
+  }
+
+  /** Count chunk rows for a source that still lack an embedding. */
+  async countUnembeddedChunks(tenantId: string, sourceId: string): Promise<number> {
+    const rows = await this.dataSource.query(
+      `SELECT count(*)::int AS n FROM ai_knowledge_bases kb
+        LEFT JOIN ${AI_KB_EMBEDDINGS_TABLE} e ON e.kb_id=kb.id
+       WHERE kb."tenantId"=$1 AND kb.source_id=$2 AND e.kb_id IS NULL`,
+      [tenantId, sourceId],
+    ) as Array<{ n: number }>;
+    return rows[0]?.n ?? 0;
+  }
+
   /** Create one chunk and (best-effort) embed it. */
   async ingestChunk(
     tenantId: string,

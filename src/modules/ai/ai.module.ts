@@ -11,6 +11,9 @@ import { AiUsageLog } from '../../entities/AI Agent/AiUsageLog';
 import { AiCostLog } from '../../entities/AI Agent/AiCostLog';
 import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
 import { AiExecutionMetric } from '../../entities/AI Agent/AiExecutionMetric';
+import { AiBatchJob } from '../../entities/AI Agent/AiBatchJob';
+import { AiBatchItem } from '../../entities/AI Agent/AiBatchItem';
+import { TenantAiDeployment } from '../../entities/AI Agent/TenantAiDeployment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { User } from '../../entities/Auth&RBAC/User';
@@ -65,6 +68,12 @@ import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { AiPromptBudgetService } from './prompt/ai-prompt-budget.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
 import { AiModelRouterService } from './routing/ai-model-router.service';
+import { AiExecutionPolicyService } from './execution/ai-execution-policy.service';
+import { AiDataResidencyService } from './execution/ai-data-residency.service';
+import { OpenAiClientProvider } from './providers/openai-client.provider';
+import { OpenAiBatchProvider } from './providers/openai-batch.provider';
+import { AI_BATCH_PROVIDER } from './providers/ai-batch-provider.interface';
+import { AiBatchService } from './batch/ai-batch.service';
 
 /**
  * AI / RAG Domain.
@@ -91,6 +100,9 @@ import { AiModelRouterService } from './routing/ai-model-router.service';
       AiCostLog,
       HandoverRequest,
       AiExecutionMetric,
+      AiBatchJob,
+      AiBatchItem,
+      TenantAiDeployment,
       Branch,
       Conversation,
       User,
@@ -153,6 +165,14 @@ import { AiModelRouterService } from './routing/ai-model-router.service';
     AiPromptBudgetService,
     AiRequestExecutionService,
     AiModelRouterService,
+    // Execution mode (Standard/Batch) + Data Residency (compliance) + the OpenAI
+    // Batch orchestrator. All gated by feature flags (default OFF).
+    AiExecutionPolicyService,
+    AiDataResidencyService,
+    OpenAiClientProvider,
+    OpenAiBatchProvider,
+    AiBatchService,
+    { provide: AI_BATCH_PROVIDER, useClass: OpenAiBatchProvider },
     // Embedding backend (RAG + ingestion only). Falls back to keyword retrieval
     // when no API key is configured (provider.isConfigured() === false).
     { provide: AI_EMBEDDING_PROVIDER, useClass: OpenAiEmbeddingProvider },
@@ -175,6 +195,9 @@ import { AiModelRouterService } from './routing/ai-model-router.service';
     AiCostLedgerService,
     AiPromptBudgetService,
     AiModelRouterService,
+    AiExecutionPolicyService,
+    AiDataResidencyService,
+    AiBatchService,
   ],
 })
 export class AiModule {}

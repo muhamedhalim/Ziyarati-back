@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { AiPriceCatalogService, PRICING_STATUS } from './ai-price-catalog.service';
+import { AI_EXECUTION_MODE } from '../execution/ai-execution.constants';
 
 describe('AiPriceCatalogService', () => {
   it('calculates input, cached input, and output with integer micro-USD', () => {
@@ -14,6 +15,26 @@ describe('AiPriceCatalogService', () => {
       .quoteEmbedding('openai', 'text-embedding-3-small', 1_000);
     expect(quote.costMicrousd).toBe(20n);
     expect(quote.embeddingMicrousdPerMillion).toBe('20000');
+  });
+
+  it('prices BATCH embeddings at a different (lower) rate than STANDARD', () => {
+    const catalog = new AiPriceCatalogService(new ConfigService());
+    const standard = catalog.quoteEmbedding('openai', 'text-embedding-3-small', 1_000);
+    const batch = catalog.quoteEmbedding('openai', 'text-embedding-3-small', 1_000, AI_EXECUTION_MODE.BATCH);
+    expect(standard.costMicrousd).toBe(20n);
+    expect(batch.costMicrousd).toBe(10n); // half of standard — never the same rate
+    expect(batch.executionMode).toBe(AI_EXECUTION_MODE.BATCH);
+    expect(batch.embeddingMicrousdPerMillion).toBe('10000');
+    expect(batch.costMicrousd).not.toBe(standard.costMicrousd);
+  });
+
+  it('prices BATCH chat at half the standard rate and stamps the mode', () => {
+    const catalog = new AiPriceCatalogService(new ConfigService());
+    const standard = catalog.quoteChat('openai', 'gpt-4o', 1_000, 500, 400);
+    const batch = catalog.quoteChat('openai', 'gpt-4o', 1_000, 500, 400, AI_EXECUTION_MODE.BATCH);
+    expect(standard.costMicrousd).toBe(7_000n);
+    expect(batch.costMicrousd).toBe(3_500n);
+    expect(batch.executionMode).toBe(AI_EXECUTION_MODE.BATCH);
   });
 
   it('never treats an unknown model as free', () => {

@@ -10,6 +10,7 @@ describe('AiCostLedgerService', () => {
     const ledger = new AiCostLedgerService(dataSource, prices);
     const quote = {
       status: 'PRICED' as const, provider: 'openai', requestedModel: 'gpt-4o',
+      executionMode: 'STANDARD' as const,
       pricedModel: 'gpt-4o', catalogVersion: 'catalog-v1', source: 'approved-source',
       effectiveAt: '2026-07-19', inputMicrousdPerMillion: '2500000',
       cachedInputMicrousdPerMillion: '1250000', outputMicrousdPerMillion: '10000000',
