@@ -153,7 +153,19 @@ export class AiBatchService {
    * outcome. Throws on submission failure (the caller/reconciler retries).
    */
   private async performSubmission(jobId: string): Promise<AiBatchJob> {
+    // Concurrency guard: exactly ONE worker submits a given job at a time.
+    // Winning this lease (bumping next_poll_at into the future) blocks a
+    // concurrent submit/reconcile from double-uploading or creating a duplicate
+    // remote batch. The lease is a timestamp — NO row lock is held across the
+    // upload/create network calls; a crash simply lets the lease expire and the
+    // reconciler re-claim.
+    if (!(await this.claimSubmissionLease(jobId))) {
+      return this.jobs.findOneByOrFail({ id: jobId });
+    }
     let job = await this.jobs.findOneByOrFail({ id: jobId });
+    // Ensure the item rows exist (crash before insert, or a racer that won the
+    // lease before the caller's insert committed) by deriving from the source.
+    await this.ensureItems(job);
 
     // 1) Upload the input file (unless already uploaded).
     if (!job.input_file_id) {
@@ -272,6 +284,64 @@ export class AiBatchService {
   }
 
   /**
+   * Atomically claim the right to submit this job (compare-and-swap on a lease
+   * timestamp). Returns false when another worker already holds the lease (or the
+   * job has advanced past submission) — the caller then no-ops. The lease is
+   * aligned with the reconcile grace, so a crashed submission is retried only
+   * after the lease expires. No lock is held across the network.
+   */
+  private async claimSubmissionLease(jobId: string): Promise<boolean> {
+    const leaseSec = Number(
+      this.config.get('AI_BATCH_SUBMIT_LEASE_SECONDS', 120),
+    );
+    const raw = await this.dataSource.query(
+      `UPDATE ai_batch_jobs
+          SET next_poll_at = now() + ($2 || ' seconds')::interval, updated_at = now()
+        WHERE id = $1
+          AND status IN ('PREPARING','UPLOADING','SUBMITTING','SUBMISSION_UNKNOWN')
+          AND (next_poll_at IS NULL OR next_poll_at <= now())
+        RETURNING id`,
+      [jobId, String(leaseSec)],
+    );
+    return this.updateReturning(raw).length > 0;
+  }
+
+  /**
+   * TypeORM's `query()` returns `[rows, affectedCount]` for `UPDATE … RETURNING`
+   * (whereas `INSERT … RETURNING` returns the rows directly). Normalize to the
+   * rows array. Getting this wrong silently breaks the lease (an empty result's
+   * `.length` is 2, i.e. "always won") and polling (`.map` yields undefined ids)
+   * — caught only by the real-Postgres integration test, not the mocked units.
+   */
+  private updateReturning<T = { id: string }>(raw: unknown): T[] {
+    if (Array.isArray(raw) && Array.isArray(raw[0])) return raw[0] as T[];
+    return Array.isArray(raw) ? (raw as T[]) : [];
+  }
+
+  /**
+   * Ensure a job's item rows exist. Derives them from the source's still-
+   * unembedded chunks when absent (crash before the caller's insert, or a racer
+   * that won the lease first). Deterministic order + ON CONFLICT keeps it
+   * duplicate-free across retries.
+   */
+  private async ensureItems(job: AiBatchJob): Promise<void> {
+    if (await this.items.count({ where: { batch_job_id: job.id } })) return;
+    if (!job.source_id) return;
+    const targetRefs = await this.ingestion.unembeddedChunkIds(
+      job.tenant_id,
+      job.source_id,
+    );
+    if (targetRefs.length === 0) return;
+    await this.insertItems(
+      job.id,
+      job.tenant_id,
+      targetRefs,
+      job.source_type,
+      job.source_id,
+    );
+  }
+
+  /**
    * Reconcile submissions whose outcome is uncertain or incomplete
    * (UPLOADING / SUBMITTING / SUBMISSION_UNKNOWN) or stuck in PREPARING. Verifies
    * via the correlation id before ever creating a new remote batch, so a crash
@@ -357,37 +427,8 @@ export class AiBatchService {
     }
     await this.jobs.increment({ id: job.id }, 'poll_attempts', 1);
 
-    // 3) Re-derive items if the crash happened before they were persisted.
-    const itemCount = await this.items.count({
-      where: { batch_job_id: job.id },
-    });
-    if (itemCount === 0) {
-      if (!job.source_id) return false;
-      const targetRefs = await this.ingestion.unembeddedChunkIds(
-        job.tenant_id,
-        job.source_id,
-      );
-      if (targetRefs.length === 0) {
-        await this.jobs.update(
-          { id: job.id },
-          {
-            status: AI_BATCH_STATUS.COMPLETED,
-            total_requests: 0,
-            completed_at: new Date(),
-          },
-        );
-        return true;
-      }
-      await this.insertItems(
-        job.id,
-        job.tenant_id,
-        targetRefs,
-        job.source_type,
-        job.source_id,
-      );
-    }
-
-    // 4) Continue the submission from wherever it stalled.
+    // 3) Continue the submission from wherever it stalled. performSubmission
+    //    claims the lease and (re-)derives items if they were never persisted.
     await this.performSubmission(job.id);
     return true;
   }
@@ -428,7 +469,7 @@ export class AiBatchService {
    */
   private async leasePollableJobs(limit: number): Promise<string[]> {
     const leaseSec = Number(this.config.get('AI_BATCH_POLL_LEASE_SECONDS', 60));
-    const rows = (await this.dataSource.query(
+    const raw = await this.dataSource.query(
       `UPDATE ai_batch_jobs SET next_poll_at = now() + ($2 || ' seconds')::interval, updated_at = now()
         WHERE id IN (
           SELECT id FROM ai_batch_jobs
@@ -440,8 +481,8 @@ export class AiBatchService {
            FOR UPDATE SKIP LOCKED)
         RETURNING id`,
       [limit, String(leaseSec)],
-    )) as Array<{ id: string }>;
-    return rows.map((r) => r.id);
+    );
+    return this.updateReturning<{ id: string }>(raw).map((r) => r.id);
   }
 
   /** Poll one job; process results if terminal, else reschedule with backoff. */

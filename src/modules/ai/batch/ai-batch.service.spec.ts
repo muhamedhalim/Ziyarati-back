@@ -63,7 +63,13 @@ describe('AiBatchService', () => {
       quoteEmbedding: jest.fn().mockReturnValue({ status: 'PRICED', costMicrousd: 30n, executionMode: 'BATCH' }),
       recordInTransaction: jest.fn().mockResolvedValue({ inserted: true }),
     };
-    const query = jest.fn().mockResolvedValue([]);
+    // By default the submission-lease CAS (an UPDATE … SET next_poll_at …
+    // RETURNING id, WITHOUT SKIP LOCKED) is won; everything else returns [].
+    const query = jest.fn(async (sql: string, ..._params: unknown[]) =>
+      /SET next_poll_at/.test(sql) && /RETURNING id/.test(sql) && !/SKIP LOCKED/.test(sql)
+        ? [{ id: 'lease' }]
+        : [],
+    );
     const dataSource = { query, transaction: jest.fn() };
     const config = { get: jest.fn((_k: string, d: unknown) => d) };
     const emitter = { emit: jest.fn() };
@@ -134,6 +140,16 @@ describe('AiBatchService', () => {
       await expect(service.submitEmbeddingBatch(submitInput)).rejects.toThrow();
       const unknown = jobs.update.mock.calls.find((c) => c[1]?.status === AI_BATCH_STATUS.SUBMISSION_UNKNOWN);
       expect(unknown).toBeUndefined();
+    });
+
+    it('does NOT submit when another worker holds the submission lease (no duplicate batch)', async () => {
+      const { service, provider, query } = setup();
+      // Lease CAS returns no row → another worker owns the submission.
+      query.mockImplementation(async () => []);
+      query.mockResolvedValueOnce([{ id: 'job-1' }]); // claim created
+      await service.submitEmbeddingBatch(submitInput);
+      expect(provider.uploadInputFile).not.toHaveBeenCalled();
+      expect(provider.createBatch).not.toHaveBeenCalled();
     });
 
     it('resumes after a crash between upload and create WITHOUT re-uploading', async () => {

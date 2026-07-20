@@ -169,9 +169,11 @@ export const validate = (config: Record<string, unknown>) => {
     AI_BATCH_COMPLETION_WINDOW: Joi.string().default('24h'),
     // Cron cadence for the batch-status poll sweep (worker).
     AI_BATCH_POLL_CRON: Joi.string().default('*/5 * * * *'),
-    // Grace period before a PENDING job that never recorded a remote batch id
-    // (submission crashed) is reaped as FAILED.
-    AI_BATCH_SUBMIT_GRACE_MINUTES: Joi.number().integer().min(1).default(15),
+    // Submission lease: how long one worker exclusively owns a job's submission
+    // (blocks a concurrent submit/reconcile from creating a duplicate remote
+    // batch). Aligned with the reconcile grace so a crashed submit is retried
+    // only after the lease expires.
+    AI_BATCH_SUBMIT_LEASE_SECONDS: Joi.number().integer().min(10).default(120),
     // Max chunks a single workload may embed SYNCHRONOUSLY when batch is disabled.
     AI_STANDARD_MAX_EMBED_CHUNKS: Joi.number().integer().min(1).default(512),
     // Submission reconciliation: grace before revisiting a stuck submission, and

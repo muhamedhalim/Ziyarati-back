@@ -82,9 +82,12 @@ export class AiBatchExecution1730003900000 implements MigrationInterface {
     await q.query(`CREATE INDEX IF NOT EXISTS idx_ai_batch_items_job ON ai_batch_items (batch_job_id, status)`);
     // Internal binding: at most one item per (job, source, chunk) — makes a
     // duplicate/replayed chunk mapping impossible independent of custom_id.
+    // NOT a partial index: a partial index cannot be the arbiter for
+    // `INSERT … ON CONFLICT (cols)` without repeating its predicate. NULLs are
+    // distinct in Postgres, so source-less rows (all-NULL) never falsely
+    // conflict, while training-file rows (all non-NULL) are strictly unique.
     await q.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_batch_item_source_chunk
-      ON ai_batch_items (batch_job_id, source_type, source_id, chunk_index)
-      WHERE source_id IS NOT NULL AND chunk_index IS NOT NULL`);
+      ON ai_batch_items (batch_job_id, source_type, source_id, chunk_index)`);
 
     // ── Data residency (per-tenant regional deployment) ─────────────────────
     await q.query(`CREATE TABLE IF NOT EXISTS tenant_ai_deployments (
