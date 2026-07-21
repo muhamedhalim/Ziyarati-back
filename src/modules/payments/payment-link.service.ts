@@ -63,7 +63,7 @@ export class PaymentLinkService {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message:
             'Provided amount does not match the booking price. The booking price is read from the server.',
-          context: { expected: bookingAmount, provided: dto.amount },
+          publicContext: { expected: bookingAmount, provided: dto.amount },
         });
       }
       amount = bookingAmount;

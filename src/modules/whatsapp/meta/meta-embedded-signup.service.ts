@@ -166,7 +166,7 @@ export class MetaEmbeddedSignupService {
         message:
           'The WhatsApp connection did not grant the permissions required to send and manage messages. ' +
           'Please redo the connection and accept all requested permissions.',
-        context: { missingScopes: missing },
+        publicContext: { missingScopes: missing },
       });
     }
   }
@@ -204,7 +204,7 @@ export class MetaEmbeddedSignupService {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
           'This WhatsApp Business Account has multiple phone numbers. Select which number to connect.',
-        context: {
+        publicContext: {
           phoneNumbers: numbers.map((n) => ({
             id: n.id,
             displayPhoneNumber: n.displayPhoneNumber,

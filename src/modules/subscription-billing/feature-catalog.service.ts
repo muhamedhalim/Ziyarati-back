@@ -136,7 +136,7 @@ export class FeatureCatalogService {
       if (reachable.includes(featureKey)) {
         throw new AppError(ErrorCode.BAD_REQUEST, {
           message: `Circular dependency: "${req}" already requires "${featureKey}"`,
-          context: { featureKey, requires: req },
+          publicContext: { featureKey, requires: req },
         });
       }
     }
@@ -169,7 +169,7 @@ export class FeatureCatalogService {
       if (target && target.missingDependencies.length > 0) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: `Cannot enable "${featureKey}": missing dependencies: ${target.missingDependencies.join(', ')}.`,
-          context: { featureKey, missing: target.missingDependencies },
+          publicContext: { featureKey, missing: target.missingDependencies },
         });
       }
     }

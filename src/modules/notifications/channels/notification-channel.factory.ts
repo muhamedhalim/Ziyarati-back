@@ -24,7 +24,7 @@ export class NotificationChannelFactory {
     if (!provider) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `No notification provider registered for channel "${channel ?? 'UNKNOWN'}"`,
-        context: { channel },
+        publicContext: { channel },
       });
     }
     return provider;

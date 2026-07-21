@@ -117,7 +117,7 @@ export class NotificationTemplateService {
       throw new AppError(ErrorCode.CONFLICT, {
         message:
           'Template is in use by rules or pending notifications and cannot be deleted',
-        context: { ruleRefs, scheduledRefs },
+        publicContext: { ruleRefs, scheduledRefs },
       });
     }
 

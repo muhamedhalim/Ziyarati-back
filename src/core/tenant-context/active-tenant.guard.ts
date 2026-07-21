@@ -66,7 +66,7 @@ export class ActiveTenantGuard implements CanActivate {
     ) {
       throw new AppError(ErrorCode.FORBIDDEN, {
         message: 'Your clinic is not currently allowed to access this resource.',
-        context: { tenantStatus: tenant.approval_status, isActive: tenant.is_active },
+        publicContext: { tenantStatus: tenant.approval_status, isActive: tenant.is_active },
       });
     }
 

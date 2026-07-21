@@ -135,7 +135,7 @@ export class AvailabilityService {
     if (!result.available) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: `The selected time is not available (${result.reasons.join('; ')})`,
-        context: { conflicts: result.conflicts, reasons: result.reasons },
+        publicContext: { conflicts: result.conflicts, reasons: result.reasons },
       });
     }
   }

@@ -25,8 +25,10 @@ interface NormalizedError {
   message: string | string[];
   /** Originating error class name, for debugging. */
   error: string;
-  /** Client-safe metadata. */
+  /** Client-safe metadata — sourced ONLY from `AppError.publicContext`. Goes into the HTTP response. */
   context?: Record<string, unknown>;
+  /** Server-log-only diagnostics — sourced ONLY from `AppError.internalContext`. NEVER put into the HTTP response. */
+  internalContext?: Record<string, unknown>;
 }
 
 /** Generic, non-leaking stand-ins shown to the client in production. */
@@ -65,6 +67,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       requestId,
     };
+    // The ONLY thing ever assigned to the response's `context` — sourced
+    // exclusively from `AppError.publicContext` (see `fromAppError()`).
+    // `internalContext` and `cause` never reach this point; they only flow
+    // into `writeLog()` below.
     if (normalized.context) {
       body.context = normalized.context;
     }
@@ -138,11 +144,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
   /**
    * Single funnel for every AppError-backed response — whether thrown
    * directly by application code or produced by {@link mapTypeOrmError} from
-   * a raw DB failure. `context` is ONLY EVER populated here: `AppError.context`
-   * is the one channel in this whole filter that a developer explicitly opts
-   * into per-throw (see {@link AppError}'s docs), so it's the sole thing
-   * classified "client-safe" — nothing else in `normalize()` ever attaches
-   * context to a response, in any environment.
+   * a raw DB failure. `context` is ONLY EVER populated here, from
+   * `AppError.publicContext` — the one channel in this whole filter that a
+   * developer explicitly opts into per-throw (see {@link AppError}'s docs) —
+   * nothing else in `normalize()` ever attaches context to a response, in any
+   * environment. `AppError.internalContext` is carried separately and is
+   * NEVER read by `catch()` when building the client response — it (and
+   * `cause`) only reach `writeLog()`.
    *
    * The `error` label collapses to the generic `AppError` wrapper name in
    * production — the underlying (sometimes TypeORM-specific, e.g.
@@ -155,7 +163,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: error.code,
       message: error.message,
       error: this.isProduction ? 'AppError' : devErrorLabel,
-      context: error.context,
+      context: error.publicContext,
+      internalContext: error.internalContext,
     };
   }
 
@@ -229,6 +238,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
       exception instanceof Error && !(exception instanceof HttpException)
         ? exception.message
         : undefined;
+
+    // `cause` is documented as "logged server-side only" — this is the one
+    // place that promise is actually kept. Only ever read off the raw
+    // exception (an AppError thrown directly), never off a `normalize()`d
+    // stand-in, so it can't be confused with anything client-facing.
+    const cause =
+      exception instanceof AppError && exception.cause instanceof Error
+        ? exception.cause
+        : undefined;
+
     const payload = {
       requestId,
       method: request.method,
@@ -242,14 +261,24 @@ export class AllExceptionsFilter implements ExceptionFilter {
         (Array.isArray(normalized.message)
           ? normalized.message.join('; ')
           : normalized.message),
+      // Server-log-only diagnostics — never present in the client response.
+      internalContext: normalized.internalContext
+        ? sanitizeForLog(normalized.internalContext)
+        : undefined,
+      cause: cause ? { message: cause.message, name: cause.name } : undefined,
       body: sanitizeForLog(request.body),
     };
 
     const serialized = JSON.stringify(payload);
 
     if (normalized.statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
-      // 5xx: real failures — log at error with the full stack.
-      const stack = exception instanceof Error ? exception.stack : undefined;
+      // 5xx: real failures — log at error with the full stack, including the
+      // cause's own stack (e.g. the raw DB/provider error an AppError wraps).
+      const stack = exception instanceof Error
+        ? [exception.stack, cause?.stack && `Caused by: ${cause.stack}`]
+            .filter(Boolean)
+            .join('\n')
+        : undefined;
       this.logger.error(serialized, stack);
     } else {
       // 4xx: expected/operational — log at warn, no stack noise.

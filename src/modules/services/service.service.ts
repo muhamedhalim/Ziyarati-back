@@ -144,7 +144,7 @@ export class ServiceService {
       throw new AppError(ErrorCode.CONFLICT, {
         message:
           'Cannot delete a service with upcoming appointments. Deactivate it instead so it stays bookable history.',
-        context: { upcomingAppointments: upcoming },
+        publicContext: { upcomingAppointments: upcoming },
       });
     }
 
@@ -155,7 +155,7 @@ export class ServiceService {
       throw new AppError(ErrorCode.CONFLICT, {
         message:
           'Cannot delete a service that is still assigned to staff. Unassign it from all staff (or deactivate it) first.',
-        context: { staffAssignments: assigned },
+        publicContext: { staffAssignments: assigned },
       });
     }
 

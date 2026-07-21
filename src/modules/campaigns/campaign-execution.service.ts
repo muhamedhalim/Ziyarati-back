@@ -386,7 +386,7 @@ export class CampaignExecutionService {
     if (!LIFECYCLE_TRANSITIONS[from].includes(to)) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: `Illegal campaign lifecycle transition: ${from} → ${to}`,
-        context: { allowed: LIFECYCLE_TRANSITIONS[from] },
+        publicContext: { allowed: LIFECYCLE_TRANSITIONS[from] },
       });
     }
   }

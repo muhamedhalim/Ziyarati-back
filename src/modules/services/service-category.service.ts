@@ -67,7 +67,7 @@ export class ServiceCategoryService {
       throw new AppError(ErrorCode.CONFLICT, {
         message:
           'Cannot delete a category that still owns services. Reassign or remove its services first.',
-        context: { services: owned },
+        publicContext: { services: owned },
       });
     }
 

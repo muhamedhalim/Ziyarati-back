@@ -163,7 +163,8 @@ export class BillingService {
         await repo.save(locked);
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: 'Payment was declined by the provider',
-          context: { reason: result.failureReason },
+          // Raw gateway decline text — provider-response detail, logs only.
+          internalContext: { reason: result.failureReason },
         });
       }
 

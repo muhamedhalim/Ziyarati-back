@@ -274,14 +274,14 @@ export class PaymentService {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
           'Provided amount does not match the booking price. The booking price is read from the server.',
-        context: { expected: amount, provided: dto.amount },
+        publicContext: { expected: amount, provided: dto.amount },
       });
     }
     if (dto.currency && dto.currency.toUpperCase() !== currency.toUpperCase()) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
           'Provided currency does not match the booking currency. The booking currency is read from the server.',
-        context: { expected: currency, provided: dto.currency },
+        publicContext: { expected: currency, provided: dto.currency },
       });
     }
 
@@ -307,7 +307,7 @@ export class PaymentService {
     if (paid) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: 'This booking is already paid',
-        context: { paymentId: paid.id },
+        publicContext: { paymentId: paid.id },
       });
     }
 
@@ -459,7 +459,7 @@ export class PaymentService {
       );
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Captured amount does not match the expected payment amount',
-        context: {
+        publicContext: {
           expectedMinorUnits: expectedC,
           capturedMinorUnits: result.capturedMinorUnits,
         },
@@ -474,7 +474,7 @@ export class PaymentService {
       );
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Captured currency does not match the expected payment currency',
-        context: {
+        publicContext: {
           expected: payment.currency,
           captured: result.capturedCurrency,
         },

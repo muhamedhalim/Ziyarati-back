@@ -388,7 +388,7 @@ export class StaffScheduleService {
       if (overlaps(s, e, toMinutes(row.start_time), toMinutes(row.end_time))) {
         throw new AppError(ErrorCode.CONFLICT, {
           message: 'This schedule overlaps an existing slot for the staff member on that day',
-          context: { conflictingScheduleId: row.id },
+          publicContext: { conflictingScheduleId: row.id },
         });
       }
     }
@@ -417,7 +417,7 @@ export class StaffScheduleService {
       if (overlaps(s, e, toMinutes(row.start_time), toMinutes(row.end_time))) {
         throw new AppError(ErrorCode.CONFLICT, {
           message: 'These working hours overlap an existing open slot for the branch on that day',
-          context: { conflictingWorkingHoursId: row.id },
+          publicContext: { conflictingWorkingHoursId: row.id },
         });
       }
     }

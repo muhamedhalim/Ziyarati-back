@@ -35,7 +35,7 @@ describe('mapTypeOrmError', () => {
     const err = mapTypeOrmError(pgError({ code: '23502', column: 'email' }));
     expect(err.code).toBe(ErrorCode.NOT_NULL_VIOLATION);
     expect(err.message).toContain('email');
-    expect(err.context).toEqual({ field: 'email' });
+    expect(err.publicContext).toEqual({ field: 'email' });
   });
 
   it('maps invalid text representation and check violation to BAD_REQUEST', () => {
@@ -47,17 +47,17 @@ describe('mapTypeOrmError', () => {
     expect(mapTypeOrmError(pgError({ code: '99999' })).code).toBe(ErrorCode.DATABASE_ERROR);
   });
 
-  describe('no internal detail ever reaches the client', () => {
+  describe('no internal detail ever reaches publicContext', () => {
     it('falls back to a generic message for a unique violation on an unmapped constraint (never echoes the constraint name)', () => {
       const err = mapTypeOrmError(
         pgError({ code: '23505', constraint: 'some_future_unmapped_constraint' }),
       );
       expect(err.message).toBe('A record with these details already exists');
       expect(err.message).not.toContain('some_future_unmapped_constraint');
-      expect(err.context).toBeUndefined();
+      expect(err.publicContext).toBeUndefined();
     });
 
-    it('never puts the SQLSTATE, table, or raw driver detail into context', () => {
+    it('never puts the SQLSTATE, table, or raw driver detail into publicContext — only in internalContext (logs)', () => {
       const err = mapTypeOrmError(
         pgError({
           code: '23503',
@@ -65,9 +65,17 @@ describe('mapTypeOrmError', () => {
           detail: 'Key (tenant_id)=(...) is not present in table "tenants".',
         }),
       );
-      const serializedContext = JSON.stringify(err.context ?? {});
-      expect(serializedContext).not.toContain('internal_secrets_table');
-      expect(serializedContext).not.toContain('is not present in table');
+      // Never in the client-facing field...
+      const serializedPublic = JSON.stringify(err.publicContext ?? {});
+      expect(serializedPublic).not.toContain('internal_secrets_table');
+      expect(serializedPublic).not.toContain('is not present in table');
+
+      // ...but present in the server-log-only field, so operators can still diagnose it.
+      expect(err.internalContext).toMatchObject({
+        sqlState: '23503',
+        table: 'internal_secrets_table',
+        detail: 'Key (tenant_id)=(...) is not present in table "tenants".',
+      });
     });
 
     it('preserves the raw driver error as `cause` for server-side logs only', () => {
@@ -76,11 +84,21 @@ describe('mapTypeOrmError', () => {
       expect(err.cause).toBe(raw);
     });
 
-    it('the only context ever produced (NOT_NULL_VIOLATION) carries just the field name, nothing else', () => {
+    it('the only publicContext ever produced (NOT_NULL_VIOLATION) carries just the field name, nothing else', () => {
       const err = mapTypeOrmError(
         pgError({ code: '23502', column: 'email', table: 'users', detail: 'internal detail' }),
       );
-      expect(err.context).toEqual({ field: 'email' });
+      expect(err.publicContext).toEqual({ field: 'email' });
+      // The table/detail still land in internalContext for logs, never publicContext.
+      expect(err.internalContext).toMatchObject({ table: 'users', detail: 'internal detail' });
+    });
+
+    it('every branch attaches internalContext for log-side diagnostics', () => {
+      const codes = ['23505', '23P01', '23503', '23502', '22P02', '23514', '99999'];
+      for (const code of codes) {
+        const err = mapTypeOrmError(pgError({ code, constraint: 'some_constraint' }));
+        expect(err.internalContext).toMatchObject({ sqlState: code });
+      }
     });
   });
 });

@@ -87,7 +87,7 @@ export class AccessControlService {
     if (!decision.allowed) {
       throw new AppError(ErrorCode.FORBIDDEN, {
         message: decision.reason ?? 'Access denied',
-        context: { source: decision.source },
+        publicContext: { source: decision.source },
       });
     }
   }

@@ -158,7 +158,7 @@ export class AiDataResidencyService {
       message:
         'AI data residency is required for this tenant but its regional deployment is unavailable. ' +
         'The request was refused rather than processed in the global region.',
-      context: { reason: AI_COMPLIANCE_ROUTE_UNAVAILABLE },
+      publicContext: { reason: AI_COMPLIANCE_ROUTE_UNAVAILABLE },
     });
   }
 }

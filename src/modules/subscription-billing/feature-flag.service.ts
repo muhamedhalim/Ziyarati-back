@@ -63,7 +63,7 @@ export class FeatureFlagService {
     if (!(await this.isEnabled(tenantId, featureKey))) {
       throw new AppError(ErrorCode.FORBIDDEN, {
         message: `The "${featureKey}" feature is not enabled for your subscription`,
-        context: { featureKey },
+        publicContext: { featureKey },
       });
     }
   }

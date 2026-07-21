@@ -364,7 +364,8 @@ export class MetaGraphClient {
         message: err?.message
           ? `Meta rejected the request: ${err.message}`
           : `Meta API error (HTTP ${res.status}).`,
-        context: { metaCode: err?.code, metaSubcode: err?.error_subcode },
+        // Meta's own error code/subcode — provider-response detail, logs only.
+        internalContext: { metaCode: err?.code, metaSubcode: err?.error_subcode },
       });
     }
     return json;

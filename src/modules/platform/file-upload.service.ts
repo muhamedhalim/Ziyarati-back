@@ -59,7 +59,7 @@ export class FileUploadService {
     if (used + size > tenantQuotaBytes) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Tenant storage quota exceeded',
-        context: { usedBytes: used, quotaBytes: tenantQuotaBytes },
+        publicContext: { usedBytes: used, quotaBytes: tenantQuotaBytes },
       });
     }
 

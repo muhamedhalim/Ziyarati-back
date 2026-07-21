@@ -951,7 +951,7 @@ export class AppointmentsService {
     if (!ALLOWED_TRANSITIONS[from].includes(to)) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: `Illegal status transition: ${from} → ${to}`,
-        context: { allowed: ALLOWED_TRANSITIONS[from] },
+        publicContext: { allowed: ALLOWED_TRANSITIONS[from] },
       });
     }
   }

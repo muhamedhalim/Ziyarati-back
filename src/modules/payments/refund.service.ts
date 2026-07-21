@@ -139,7 +139,9 @@ export class RefundService {
       if (!ok) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: 'Refund was declined by the gateway',
-          context: { reason: failureReason },
+          // Raw gateway decline text — a provider-response detail, not
+          // something we've curated as client-safe. Logs only.
+          internalContext: { reason: failureReason },
         });
       }
 
@@ -229,7 +231,7 @@ export class RefundService {
     if (amountC <= 0 || amountC > remainingC) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Refund amount exceeds the remaining refundable balance',
-        context: { remaining: fromCents(remainingC), requested: fromCents(amountC) },
+        publicContext: { remaining: fromCents(remainingC), requested: fromCents(amountC) },
       });
     }
 

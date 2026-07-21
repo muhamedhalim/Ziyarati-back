@@ -7,10 +7,20 @@ export interface AppErrorOptions {
   /** Override the default HTTP status for the code. */
   status?: HttpStatus;
   /**
-   * Client-safe metadata returned in the response `context` field
-   * (e.g. `{ field: 'email' }`). NEVER put secrets or internal details here.
+   * Client-safe metadata returned in the API response's `context` field
+   * (e.g. `{ field: 'email' }`). This is the ONLY channel `AllExceptionsFilter`
+   * will ever put in a client response — NEVER put secrets, SQL, constraint
+   * names, provider responses, or any other internal detail here. If in doubt,
+   * it belongs in `internalContext` instead.
    */
-  context?: Record<string, unknown>;
+  publicContext?: Record<string, unknown>;
+  /**
+   * Diagnostic metadata for server-side logs ONLY — never serialized into the
+   * HTTP response. Use this for SQL/constraint/table names, raw third-party
+   * provider error payloads, or anything else useful for debugging that a
+   * client must never see.
+   */
+  internalContext?: Record<string, unknown>;
   /** The underlying error (logged server-side only, never sent to client). */
   cause?: unknown;
 }
@@ -22,11 +32,18 @@ export interface AppErrorOptions {
  *
  * `isOperational = true` marks it as an expected/handled error (vs. an
  * unforeseen bug), which the filter uses to decide log severity.
+ *
+ * `publicContext` / `internalContext` are deliberately separate fields (not
+ * one object with a "safe" flag) so it's structurally impossible for
+ * `AllExceptionsFilter` to accidentally forward internal detail to a client —
+ * it only ever reads `publicContext`. `internalContext` and `cause` are
+ * surfaced exclusively through server-side logging.
  */
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly statusCode: HttpStatus;
-  readonly context?: Record<string, unknown>;
+  readonly publicContext?: Record<string, unknown>;
+  readonly internalContext?: Record<string, unknown>;
   readonly isOperational = true;
 
   constructor(code: ErrorCode, options: AppErrorOptions = {}) {
@@ -35,7 +52,8 @@ export class AppError extends Error {
     this.name = 'AppError';
     this.code = code;
     this.statusCode = options.status ?? meta.status;
-    this.context = options.context;
+    this.publicContext = options.publicContext;
+    this.internalContext = options.internalContext;
 
     // Keep the stack pointing at the throw site, not this constructor.
     if (Error.captureStackTrace) {

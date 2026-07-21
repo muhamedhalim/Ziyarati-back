@@ -260,7 +260,7 @@ describe('MetaEmbeddedSignupService', () => {
       ]);
 
       await expect(service.complete(TENANT, VALID_DTO)).rejects.toMatchObject({
-        context: { phoneNumbers: [{ id: 'pid-1' }, { id: 'pid-2' }].map(expect.objectContaining) },
+        publicContext: { phoneNumbers: [{ id: 'pid-1' }, { id: 'pid-2' }].map(expect.objectContaining) },
       });
     });
 

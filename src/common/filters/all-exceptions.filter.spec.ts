@@ -184,7 +184,7 @@ describe('AllExceptionsFilter', () => {
           prodFilter.catch(
             new AppError(ErrorCode.CONFLICT, {
               message: 'Only completed appointments can be reviewed',
-              context: { currentStatus: 'PENDING' },
+              publicContext: { currentStatus: 'PENDING' },
             }),
             host,
           );
@@ -237,6 +237,78 @@ describe('AllExceptionsFilter', () => {
         expect(logged).toContain('[REDACTED]');
         expect(logged).not.toContain('"password":"secret"');
         errorSpy.mockRestore();
+      });
+    });
+
+    // ── publicContext / internalContext / cause separation ──────────────── //
+    describe('publicContext is client-visible; internalContext and cause never are', () => {
+      // status forced to 500 so writeLog()'s `.error` path (which attaches the
+      // cause's stack trace) actually runs — a 4xx only logs via `.warn`.
+      const buildError = () =>
+        new AppError(ErrorCode.CONFLICT, {
+          message: 'Refund was declined by the gateway',
+          status: HttpStatus.INTERNAL_SERVER_ERROR,
+          publicContext: { requestedAmount: 42 },
+          internalContext: { gatewayReason: 'insufficient_funds_raw_provider_text' },
+          cause: new Error('POST https://gateway.example/refund -> 402 insufficient_funds'),
+        });
+
+      it('sends publicContext to the client in development', () => {
+        withEnv('development', () => {
+          const devFilter = new AllExceptionsFilter();
+          devFilter.catch(buildError(), host);
+          expect(bodySent().context).toMatchObject({ requestedAmount: 42 });
+        });
+      });
+
+      it('sends publicContext to the client in production', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(buildError(), host);
+          expect(bodySent().context).toMatchObject({ requestedAmount: 42 });
+        });
+      });
+
+      it('never sends internalContext or cause to the client in development', () => {
+        withEnv('development', () => {
+          const devFilter = new AllExceptionsFilter();
+          devFilter.catch(buildError(), host);
+          const raw = JSON.stringify(bodySent());
+          expect(raw).not.toContain('gatewayReason');
+          expect(raw).not.toContain('insufficient_funds_raw_provider_text');
+          expect(raw).not.toContain('gateway.example');
+          expect(bodySent().internalContext).toBeUndefined();
+          expect(bodySent().cause).toBeUndefined();
+        });
+      });
+
+      it('never sends internalContext or cause to the client in production', () => {
+        withEnv('production', () => {
+          const prodFilter = new AllExceptionsFilter();
+          prodFilter.catch(buildError(), host);
+          const raw = JSON.stringify(bodySent());
+          expect(raw).not.toContain('gatewayReason');
+          expect(raw).not.toContain('insufficient_funds_raw_provider_text');
+          expect(raw).not.toContain('gateway.example');
+          expect(bodySent().internalContext).toBeUndefined();
+          expect(bodySent().cause).toBeUndefined();
+        });
+      });
+
+      it('logs internalContext and the cause chain, in both environments', () => {
+        for (const env of ['development', 'production']) {
+          const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+          withEnv(env, () => {
+            const f = new AllExceptionsFilter();
+            f.catch(buildError(), host);
+          });
+          const loggedJson = errorSpy.mock.calls[0]?.[0] as string;
+          const loggedTrace = errorSpy.mock.calls[0]?.[1] as string;
+          expect(loggedJson).toContain('gatewayReason');
+          expect(loggedJson).toContain('insufficient_funds_raw_provider_text');
+          expect(loggedTrace).toContain('gateway.example');
+          errorSpy.mockRestore();
+        }
       });
     });
   });

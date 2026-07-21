@@ -183,7 +183,7 @@ export class TenantVerificationService {
         message: `Missing required documents: ${missing
           .map(labelForDocType)
           .join(', ')}.`,
-        context: { missing },
+        publicContext: { missing },
       });
     }
 
@@ -233,7 +233,7 @@ export class TenantVerificationService {
 
     throw new AppError(ErrorCode.BAD_REQUEST, {
       message: `Cannot approve: all required documents must be approved. Outstanding: ${details.join(', ')}.`,
-      context: {
+      publicContext: {
         missing,
         unapproved: unapproved.map((d) => ({
           docType: d.docType,

@@ -200,7 +200,7 @@ export class NotificationSchedulerService {
     if (row.status !== NOTIFICATION_STATUS.FAILED) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Only failed notifications can be retried',
-        context: { currentStatus: row.status },
+        publicContext: { currentStatus: row.status },
       });
     }
     // Reset to SCHEDULED so the worker's atomic claim (SCHEDULED/PENDING only)

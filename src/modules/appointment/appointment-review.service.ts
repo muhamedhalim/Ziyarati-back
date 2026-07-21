@@ -49,7 +49,7 @@ export class AppointmentReviewService {
     if (appointment.status !== AppointmentStatus.COMPLETED) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: 'Only completed appointments can be reviewed',
-        context: { currentStatus: appointment.status },
+        publicContext: { currentStatus: appointment.status },
       });
     }
 

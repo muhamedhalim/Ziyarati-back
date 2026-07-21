@@ -88,7 +88,7 @@ describe('AiDataResidencyService', () => {
       id: 'd1', enabled: true, region: null, api_key_ciphertext: 'enc:key',
     });
     await expect(service.resolve('tenant-1')).rejects.toMatchObject({
-      context: { reason: 'AI_COMPLIANCE_ROUTE_UNAVAILABLE' },
+      publicContext: { reason: 'AI_COMPLIANCE_ROUTE_UNAVAILABLE' },
     });
   });
 

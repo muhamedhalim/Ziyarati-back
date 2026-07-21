@@ -122,7 +122,7 @@ export class UsageService {
     if (used + amount > limit) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Usage limit reached for ${metric} (${used}/${limit})`,
-        context: { metric, used, limit, requested: amount },
+        publicContext: { metric, used, limit, requested: amount },
       });
     }
   }
@@ -152,7 +152,7 @@ export class UsageService {
     if (currentCount + amount > limit) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
-        context: { limit: limitColumn, current: currentCount, max: limit, requested: amount },
+        publicContext: { limit: limitColumn, current: currentCount, max: limit, requested: amount },
       });
     }
   }

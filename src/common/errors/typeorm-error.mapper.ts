@@ -40,10 +40,23 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
 /**
  * Converts a TypeORM QueryFailedError into a clean AppError. The original error
  * is preserved as `cause` for server-side logging; no SQL, table, or constraint
- * detail leaks into the resulting client message.
+ * detail leaks into the resulting client message or `publicContext`. Every
+ * branch attaches the raw SQLSTATE/constraint/table/column to `internalContext`
+ * instead — visible only in logs (via `AllExceptionsFilter.writeLog`), never in
+ * the API response.
  */
 export function mapTypeOrmError(error: QueryFailedError): AppError {
   const driver = error as unknown as PgDriverError;
+
+  /** Diagnostic detail for logs only — never touches the client. */
+  const internalContext = (extra?: Record<string, unknown>): Record<string, unknown> => ({
+    sqlState: driver.code,
+    constraint: driver.constraint,
+    table: driver.table,
+    column: driver.column,
+    detail: driver.detail,
+    ...extra,
+  });
 
   switch (driver.code) {
     case PG.UNIQUE_VIOLATION:
@@ -51,6 +64,7 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
         message: driver.constraint
           ? CONSTRAINT_MESSAGES[driver.constraint]
           : undefined,
+        internalContext: internalContext(),
         cause: error,
       });
 
@@ -61,11 +75,15 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
         message: driver.constraint
           ? CONSTRAINT_MESSAGES[driver.constraint] ?? 'The selected time is no longer available'
           : 'The selected time is no longer available',
+        internalContext: internalContext(),
         cause: error,
       });
 
     case PG.FOREIGN_KEY_VIOLATION:
-      return new AppError(ErrorCode.FOREIGN_KEY_VIOLATION, { cause: error });
+      return new AppError(ErrorCode.FOREIGN_KEY_VIOLATION, {
+        internalContext: internalContext(),
+        cause: error,
+      });
 
     case PG.NOT_NULL_VIOLATION:
       return new AppError(ErrorCode.NOT_NULL_VIOLATION, {
@@ -73,24 +91,30 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
         message: driver.column
           ? `Required field "${driver.column}" is missing`
           : undefined,
-        context: driver.column ? { field: driver.column } : undefined,
+        publicContext: driver.column ? { field: driver.column } : undefined,
+        internalContext: internalContext(),
         cause: error,
       });
 
     case PG.INVALID_TEXT_REPRESENTATION:
       return new AppError(ErrorCode.BAD_REQUEST, {
         message: 'One or more values have an invalid format',
+        internalContext: internalContext(),
         cause: error,
       });
 
     case PG.CHECK_VIOLATION:
       return new AppError(ErrorCode.BAD_REQUEST, {
         message: 'A value violates a data constraint',
+        internalContext: internalContext(),
         cause: error,
       });
 
     default:
       // Unknown DB failure — generic message, full detail goes to logs only.
-      return new AppError(ErrorCode.DATABASE_ERROR, { cause: error });
+      return new AppError(ErrorCode.DATABASE_ERROR, {
+        internalContext: internalContext(),
+        cause: error,
+      });
   }
 }

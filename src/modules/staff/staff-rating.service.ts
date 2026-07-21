@@ -54,7 +54,7 @@ export class StaffRatingService {
     if (appointment.status !== AppointmentStatus.COMPLETED) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Only completed appointments can be rated',
-        context: { currentStatus: appointment.status },
+        publicContext: { currentStatus: appointment.status },
       });
     }
 
