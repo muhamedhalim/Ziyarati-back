@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Ip,
   Param,
   ParseUUIDPipe,
   Post,
@@ -28,7 +29,9 @@ import { QueryApiKeysDto } from './dto/query-api-keys.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
-import { PERMISSION } from '../../rbac/rbac.constants';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
@@ -64,8 +67,17 @@ export class ApiKeyController {
   @ApiForbiddenResponse({ description: 'Caller lacks `platform.api-keys.manage`, or clinic inactive.', schema: S_ERROR })
   @Post()
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
-  create(@Body() dto: CreateApiKeyDto) {
-    return this.keys.create(this.ctx.requireTenantId(), dto);
+  create(
+    @Body() dto: CreateApiKeyDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.keys.create(this.ctx.requireTenantId(), dto, {
+      userId: user.id,
+      permissions: user.permissions,
+      isSuperAdmin: user.roles.includes(ROLE.SUPER_ADMIN),
+      ip,
+    });
   }
 
   @ApiOperation({ summary: 'List API keys', description: '**Protected — `platform.api-keys.read`. Clinic active.** Tenant-scoped; secrets never included.' })
@@ -99,8 +111,12 @@ export class ApiKeyController {
   @Post(':id/rotate')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
-  rotate(@Param('id', ParseUUIDPipe) id: string) {
-    return this.keys.rotate(this.ctx.requireTenantId(), id);
+  rotate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.keys.rotate(this.ctx.requireTenantId(), id, { userId, ip });
   }
 
   @ApiOperation({ summary: 'Revoke an API key (permanent)', description: '**Protected — `platform.api-keys.manage`. Clinic active.** Permanently disables the key (inactive + expired).' })
@@ -112,8 +128,12 @@ export class ApiKeyController {
   @Post(':id/revoke')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
-  revoke(@Param('id', ParseUUIDPipe) id: string) {
-    return this.keys.revoke(this.ctx.requireTenantId(), id);
+  revoke(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.keys.revoke(this.ctx.requireTenantId(), id, { userId, ip });
   }
 
   @ApiOperation({ summary: 'Activate an API key', description: '**Protected — `platform.api-keys.manage`. Clinic active.** Re-enables a deactivated key.' })
@@ -125,8 +145,12 @@ export class ApiKeyController {
   @Post(':id/activate')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
-  activate(@Param('id', ParseUUIDPipe) id: string) {
-    return this.keys.activate(this.ctx.requireTenantId(), id);
+  activate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.keys.activate(this.ctx.requireTenantId(), id, { userId, ip });
   }
 
   @ApiOperation({ summary: 'Deactivate an API key', description: '**Protected — `platform.api-keys.manage`. Clinic active.** Temporarily disables the key (reversible via activate).' })
@@ -138,7 +162,11 @@ export class ApiKeyController {
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
-  deactivate(@Param('id', ParseUUIDPipe) id: string) {
-    return this.keys.deactivate(this.ctx.requireTenantId(), id);
+  deactivate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.keys.deactivate(this.ctx.requireTenantId(), id, { userId, ip });
   }
 }

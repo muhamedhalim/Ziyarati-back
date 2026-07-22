@@ -8,7 +8,9 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import { QueryApiKeysDto } from './dto/query-api-keys.dto';
-import { generateApiKey, hashApiKey } from './platform.constants';
+import { generateApiKey, hashApiKey, keyPrefix } from './platform.constants';
+import { assertScopesGrantable, normalizeScopes } from './integration-scopes.constants';
+import { ApiKeyAuditService, API_KEY_AUDIT_ACTION } from './api-key-audit.service';
 
 /** API key with the secret hash stripped — the shape returned to clients. */
 export type SafeApiKey = Omit<ApiKey, 'key_hash'>;
@@ -18,6 +20,15 @@ export interface AuthenticatedApiKey {
   keyId: string;
   tenantId: string | null;
   permissions: string[];
+}
+
+/** The acting user's identity + privilege, for scope-grant checks and audit metadata. */
+export interface ApiKeyActor {
+  userId?: string;
+  /** Internal RBAC permission slugs the caller currently holds. */
+  permissions: string[];
+  isSuperAdmin: boolean;
+  ip?: string;
 }
 
 /** Only refresh last_used_at at most this often (avoid a write per request). */
@@ -35,6 +46,13 @@ const LAST_USED_THROTTLE_MS = 60_000;
  * column): deactivate → is_active=false (reversible); activate → is_active=true;
  * revoke → is_active=false AND expires_at=now (permanent — an activate cannot
  * resurrect an expired key).
+ *
+ * Scopes: `permissions` holds `integration.*` scope slugs (never internal RBAC
+ * permissions — see integration-scopes.constants.ts). `create` rejects any
+ * scope the caller doesn't themselves hold the underlying permission for, so a
+ * key can never exceed its issuer's own access.
+ *
+ * Every mutating method records a best-effort audit row (ApiKeyAuditService).
  */
 @Injectable()
 export class ApiKeyService {
@@ -43,24 +61,35 @@ export class ApiKeyService {
   constructor(
     @InjectRepository(ApiKey)
     private readonly keys: Repository<ApiKey>,
+    private readonly audit: ApiKeyAuditService,
   ) {}
 
   async create(
     tenantId: string,
     dto: CreateApiKeyDto,
+    actor: ApiKeyActor,
   ): Promise<SafeApiKey & { apiKey: string }> {
+    assertScopesGrantable(dto.permissions, actor.permissions, actor.isSuperAdmin);
+
     const { plaintext, hash } = generateApiKey();
+    const scopes = normalizeScopes(dto.permissions);
     const saved = await this.keys.save(
       this.keys.create({
         tenant: { id: tenantId } as Tenant,
         name: dto.name,
         key_hash: hash,
-        permissions: dto.permissions,
+        key_prefix: keyPrefix(plaintext),
+        permissions: scopes,
         expires_at: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
         is_active: true,
       }),
     );
     this.logger.log(`API key ${saved.id} created for tenant ${tenantId}`);
+    await this.audit.record(API_KEY_AUDIT_ACTION.CREATE, tenantId, actor.userId, saved.id, actor.ip, {
+      name: dto.name ?? null,
+      scopes,
+      expiresAt: dto.expiresAt ?? null,
+    });
     // Plaintext returned exactly once — it is never stored or retrievable later.
     return { ...this.toSafe(saved), apiKey: plaintext };
   }
@@ -69,32 +98,53 @@ export class ApiKeyService {
   async rotate(
     tenantId: string,
     id: string,
+    actor: Pick<ApiKeyActor, 'userId' | 'ip'>,
   ): Promise<SafeApiKey & { apiKey: string }> {
     const key = await this.findOneOrThrow(tenantId, id);
     const { plaintext, hash } = generateApiKey();
     key.key_hash = hash;
+    key.key_prefix = keyPrefix(plaintext);
     const saved = await this.keys.save(key);
+    await this.audit.record(API_KEY_AUDIT_ACTION.ROTATE, tenantId, actor.userId, id, actor.ip);
     return { ...this.toSafe(saved), apiKey: plaintext };
   }
 
   /** Permanent disable: inactive + immediately expired. */
-  async revoke(tenantId: string, id: string): Promise<SafeApiKey> {
+  async revoke(
+    tenantId: string,
+    id: string,
+    actor: Pick<ApiKeyActor, 'userId' | 'ip'>,
+  ): Promise<SafeApiKey> {
     const key = await this.findOneOrThrow(tenantId, id);
     key.is_active = false;
     key.expires_at = new Date();
-    return this.toSafe(await this.keys.save(key));
+    const saved = await this.keys.save(key);
+    await this.audit.record(API_KEY_AUDIT_ACTION.REVOKE, tenantId, actor.userId, id, actor.ip);
+    return this.toSafe(saved);
   }
 
-  async activate(tenantId: string, id: string): Promise<SafeApiKey> {
+  async activate(
+    tenantId: string,
+    id: string,
+    actor: Pick<ApiKeyActor, 'userId' | 'ip'>,
+  ): Promise<SafeApiKey> {
     const key = await this.findOneOrThrow(tenantId, id);
     key.is_active = true;
-    return this.toSafe(await this.keys.save(key));
+    const saved = await this.keys.save(key);
+    await this.audit.record(API_KEY_AUDIT_ACTION.ACTIVATE, tenantId, actor.userId, id, actor.ip);
+    return this.toSafe(saved);
   }
 
-  async deactivate(tenantId: string, id: string): Promise<SafeApiKey> {
+  async deactivate(
+    tenantId: string,
+    id: string,
+    actor: Pick<ApiKeyActor, 'userId' | 'ip'>,
+  ): Promise<SafeApiKey> {
     const key = await this.findOneOrThrow(tenantId, id);
     key.is_active = false;
-    return this.toSafe(await this.keys.save(key));
+    const saved = await this.keys.save(key);
+    await this.audit.record(API_KEY_AUDIT_ACTION.DEACTIVATE, tenantId, actor.userId, id, actor.ip);
+    return this.toSafe(saved);
   }
 
   async get(tenantId: string, id: string): Promise<SafeApiKey> {
@@ -148,7 +198,8 @@ export class ApiKeyService {
     return {
       keyId: key.id,
       tenantId: key.tenant?.id ?? null,
-      permissions: Array.isArray(key.permissions) ? (key.permissions as string[]) : [],
+      // Legacy/junk-safe: only recognised scope strings ever reach the principal.
+      permissions: normalizeScopes(key.permissions),
     };
   }
 
@@ -162,10 +213,10 @@ export class ApiKeyService {
     return key;
   }
 
-  /** Strip the secret hash before returning a key to any client. */
+  /** Strip the secret hash before returning a key to any client; normalize legacy/junk scopes. */
   private toSafe(key: ApiKey): SafeApiKey {
     const { key_hash, ...safe } = key;
     void key_hash;
-    return safe;
+    return { ...safe, permissions: normalizeScopes(safe.permissions) };
   }
 }

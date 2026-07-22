@@ -23,6 +23,18 @@ export class ApiKey {
   @Column({ type: 'varchar', length: 255, unique: true })
   key_hash!: string;
 
+  /** First few characters of the plaintext (e.g. `zk_AbCdEfGh`) — safe to
+   *  display so an owner can tell keys apart without ever storing/re-showing
+   *  the full secret. Nullable: rows created before this column existed. */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  key_prefix?: string;
+
+  /**
+   * Integration scopes granted to this key (see integration-scopes.constants
+   * .ts) — NOT internal RBAC permission slugs. Free-form jsonb for schema
+   * stability, but every write path validates values against the
+   * INTEGRATION_SCOPES allowlist before saving.
+   */
   @Column({ type: 'jsonb', nullable: true })
   permissions?: any;
 

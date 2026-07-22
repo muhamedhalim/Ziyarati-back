@@ -1,21 +1,43 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import { ApiKeyService } from './api-key.service';
+import { ApiKeyService, ApiKeyActor } from './api-key.service';
+import { ApiKeyAuditService, API_KEY_AUDIT_ACTION } from './api-key-audit.service';
 import { ApiKey } from '../../entities/System/ApiKey';
 import { ErrorCode } from '../../common/errors';
+import { INTEGRATION_SCOPE } from './integration-scopes.constants';
+import { PERMISSION } from '../../rbac/rbac.constants';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 
+const SUPER_ACTOR: ApiKeyActor = { userId: 'u1', permissions: [], isSuperAdmin: true };
+const OWNER_ACTOR_FULL: ApiKeyActor = {
+  userId: 'u1',
+  isSuperAdmin: false,
+  permissions: [
+    PERMISSION.SERVICES_READ,
+    PERMISSION.STAFF_READ,
+    PERMISSION.SCHEDULING_AVAILABILITY_READ,
+    PERMISSION.CRM_CUSTOMERS_READ,
+    PERMISSION.APPOINTMENTS_READ,
+  ],
+};
+
 describe('ApiKeyService', () => {
   let service: ApiKeyService;
   let keys: MockRepository;
+  let audit: { record: jest.Mock };
 
   beforeEach(async () => {
     keys = createMockRepository();
+    audit = { record: jest.fn().mockResolvedValue(undefined) };
     const moduleRef: TestingModule = await Test.createTestingModule({
-      providers: [ApiKeyService, { provide: getRepositoryToken(ApiKey), useValue: keys }],
+      providers: [
+        ApiKeyService,
+        { provide: getRepositoryToken(ApiKey), useValue: keys },
+        { provide: ApiKeyAuditService, useValue: audit },
+      ],
     }).compile();
     service = moduleRef.get(ApiKeyService);
   });
@@ -23,39 +45,110 @@ describe('ApiKeyService', () => {
   afterEach(() => jest.clearAllMocks());
 
   it('creates a key, returns the plaintext once, and never leaks the hash', async () => {
-    keys.save.mockResolvedValueOnce({ id: 'k1', key_hash: 'secret-hash', name: 'n', permissions: [], is_active: true });
-    const res = await service.create(TENANT, { name: 'n', permissions: [] } as any);
+    keys.save.mockResolvedValueOnce({
+      id: 'k1',
+      key_hash: 'secret-hash',
+      key_prefix: 'zk_abc',
+      name: 'n',
+      permissions: [],
+      is_active: true,
+    });
+    const res = await service.create(TENANT, { name: 'n', permissions: [] } as any, SUPER_ACTOR);
     expect(res.apiKey).toEqual(expect.any(String));
     expect(res.apiKey.length).toBeGreaterThan(0);
     expect((res as Record<string, unknown>).key_hash).toBeUndefined();
   });
 
-  it('rotate issues a fresh secret for an existing key', async () => {
-    keys.findOne.mockResolvedValueOnce({ id: 'k1', key_hash: 'old' });
+  it('stores a safe key_prefix derived from the plaintext', async () => {
     keys.save.mockImplementationOnce(async (k: any) => k);
-    const res = await service.rotate(TENANT, 'k1');
-    expect(res.apiKey).toEqual(expect.any(String));
+    const res = await service.create(TENANT, { permissions: [] } as any, SUPER_ACTOR);
+    expect(res.key_prefix).toBeDefined();
+    expect(res.apiKey.startsWith(res.key_prefix!)).toBe(true);
   });
 
-  it('revoke deactivates and immediately expires the key', async () => {
+  it('rejects a scope the caller does not themselves hold the underlying permission for', async () => {
+    const actor: ApiKeyActor = { userId: 'u1', isSuperAdmin: false, permissions: [] };
+    await expect(
+      service.create(TENANT, { permissions: [INTEGRATION_SCOPE.SERVICES_READ] } as any, actor),
+    ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    expect(keys.save).not.toHaveBeenCalled();
+  });
+
+  it('allows a scope the caller holds the underlying permission for', async () => {
+    keys.save.mockImplementationOnce(async (k: any) => k);
+    await expect(
+      service.create(
+        TENANT,
+        { permissions: [INTEGRATION_SCOPE.SERVICES_READ] } as any,
+        OWNER_ACTOR_FULL,
+      ),
+    ).resolves.toMatchObject({ permissions: [INTEGRATION_SCOPE.SERVICES_READ] });
+  });
+
+  it('super_admin may grant any scope regardless of held permissions', async () => {
+    keys.save.mockImplementationOnce(async (k: any) => k);
+    await expect(
+      service.create(
+        TENANT,
+        { permissions: [INTEGRATION_SCOPE.APPOINTMENTS_READ] } as any,
+        SUPER_ACTOR,
+      ),
+    ).resolves.toMatchObject({ permissions: [INTEGRATION_SCOPE.APPOINTMENTS_READ] });
+  });
+
+  it('records an audit row on create', async () => {
+    keys.save.mockImplementationOnce(async (k: any) => ({ ...k, id: 'k1' }));
+    await service.create(TENANT, { name: 'n', permissions: [] } as any, SUPER_ACTOR);
+    expect(audit.record).toHaveBeenCalledWith(
+      API_KEY_AUDIT_ACTION.CREATE,
+      TENANT,
+      'u1',
+      'k1',
+      undefined,
+      expect.objectContaining({ name: 'n' }),
+    );
+  });
+
+  it('rotate issues a fresh secret + prefix for an existing key and audits it', async () => {
+    keys.findOne.mockResolvedValueOnce({ id: 'k1', key_hash: 'old', key_prefix: 'zk_old' });
+    keys.save.mockImplementationOnce(async (k: any) => k);
+    const res = await service.rotate(TENANT, 'k1', { userId: 'u1', ip: '1.2.3.4' });
+    expect(res.apiKey).toEqual(expect.any(String));
+    expect(res.key_prefix).not.toBe('zk_old');
+    expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.ROTATE, TENANT, 'u1', 'k1', '1.2.3.4');
+  });
+
+  it('revoke deactivates, immediately expires the key, and audits it', async () => {
     keys.findOne.mockResolvedValueOnce({ id: 'k1', is_active: true });
     keys.save.mockImplementationOnce(async (k: any) => k);
-    await service.revoke(TENANT, 'k1');
+    await service.revoke(TENANT, 'k1', { userId: 'u1' });
     const saved = keys.save.mock.calls[0][0];
     expect(saved.is_active).toBe(false);
     expect(saved.expires_at).toBeInstanceOf(Date);
+    expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.REVOKE, TENANT, 'u1', 'k1', undefined);
   });
 
-  it('activate / deactivate toggle is_active', async () => {
+  it('activate / deactivate toggle is_active and audit each transition', async () => {
     keys.findOne.mockResolvedValue({ id: 'k1', is_active: false });
     keys.save.mockImplementation(async (k: any) => k);
-    expect((await service.activate(TENANT, 'k1')).is_active).toBe(true);
-    expect((await service.deactivate(TENANT, 'k1')).is_active).toBe(false);
+    expect((await service.activate(TENANT, 'k1', { userId: 'u1' })).is_active).toBe(true);
+    expect((await service.deactivate(TENANT, 'k1', { userId: 'u1' })).is_active).toBe(false);
+    expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.ACTIVATE, TENANT, 'u1', 'k1', undefined);
+    expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.DEACTIVATE, TENANT, 'u1', 'k1', undefined);
   });
 
   it('findOneOrThrow (via get) throws for an unknown key', async () => {
     keys.findOne.mockResolvedValueOnce(null);
     await expect(service.get(TENANT, 'x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+  });
+
+  it('list() strips legacy/junk scope strings from stored permissions', async () => {
+    keys.findAndCount.mockResolvedValueOnce([
+      [{ id: 'k1', permissions: ['services.read', INTEGRATION_SCOPE.SERVICES_READ, 123, null] }],
+      1,
+    ]);
+    const res = await service.list(TENANT, { page: 1, limit: 20 } as any);
+    expect(res.data[0].permissions).toEqual([INTEGRATION_SCOPE.SERVICES_READ]);
   });
 
   describe('authenticate', () => {
@@ -80,17 +173,21 @@ describe('ApiKeyService', () => {
       await expect(service.authenticate('plain')).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
     });
 
-    it('resolves the principal for a valid key', async () => {
+    it('resolves the principal for a valid key, normalizing legacy scope junk', async () => {
       keys.findOne.mockResolvedValueOnce({
         id: 'k1',
         is_active: true,
         expires_at: null,
         tenant: { id: TENANT },
-        permissions: ['payments.read'],
+        permissions: [INTEGRATION_SCOPE.CUSTOMERS_READ, 'not-a-real-scope'],
         last_used_at: null,
       });
       const principal = await service.authenticate('plain');
-      expect(principal).toEqual({ keyId: 'k1', tenantId: TENANT, permissions: ['payments.read'] });
+      expect(principal).toEqual({
+        keyId: 'k1',
+        tenantId: TENANT,
+        permissions: [INTEGRATION_SCOPE.CUSTOMERS_READ],
+      });
     });
   });
 });

@@ -223,6 +223,12 @@ export const validate = (config: Record<string, unknown>) => {
     UPLOAD_MAX_BYTES: Joi.number().min(1).default(10 * 1024 * 1024),
     // Signed-URL lifetime (seconds) for private object reads (default 5 min).
     SIGNED_URL_EXPIRES_SECONDS: Joi.number().min(30).default(300),
+
+    // ── External integration API (read-only, API-key authenticated) ──────
+    // Per-key token-bucket ceiling (ApiKeyAuthGuard, reusing the existing
+    // Redis rate limiter). Redis-unavailable fails OPEN (see the guard's
+    // docstring) — this is a courtesy limit, not the sole abuse defense.
+    INTEGRATION_API_RATE_LIMIT_PER_MINUTE: Joi.number().integer().min(1).default(120),
   });
 
   const { error, value } = schema.validate(config, {

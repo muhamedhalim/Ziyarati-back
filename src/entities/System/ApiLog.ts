@@ -33,6 +33,15 @@ export class ApiLog {
   @Column({ type: 'varchar', length: 45, nullable: true })
   ip_address?: string;
 
+  /**
+   * The API key that authenticated this request, if any (most traffic is
+   * JWT-cookie authenticated and carries no key). Plain column, not a
+   * relation — a best-effort correlation id for per-key usage metrics, never
+   * loaded as an association.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  api_key_id?: string;
+
   @CreateDateColumn()
   created_at!: Date;
 }

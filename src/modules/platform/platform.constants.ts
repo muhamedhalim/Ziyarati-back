@@ -27,6 +27,15 @@ export function hashApiKey(plaintext: string): string {
   return createHash('sha256').update(plaintext).digest('hex');
 }
 
+/**
+ * First few characters of a plaintext key — safe to store and display so an
+ * owner can tell keys apart in a list, without ever storing or re-showing the
+ * full secret (only the SHA-256 hash is persisted for verification).
+ */
+export function keyPrefix(plaintext: string): string {
+  return plaintext.slice(0, 10);
+}
+
 /** Keys whose values are redacted before a webhook payload is persisted. */
 const SENSITIVE_KEY = /(token|secret|password|passwd|authorization|api[_-]?key|signature|access[_-]?token|refresh[_-]?token|client[_-]?secret|card|cvv|pan|iban)/i;
 

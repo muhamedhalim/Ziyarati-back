@@ -38,17 +38,20 @@ export function typeOrmFactory(config: ConfigService): TypeOrmModuleOptions {
     // The `!(*.spec)` exclusion only matters when this factory resolves
     // against the TS source tree (ts-jest e2e tests) rather than the compiled
     // `dist/` output: `tsconfig.build.json` already excludes `*.spec.ts` from
-    // the build, so `dist/entities/**` never contains one. Against source it
-    // would otherwise `require()` `entities.spec.ts` as if it were an entity
-    // class — which also registers its `it()`/`describe()` calls against
-    // whatever Jest test happened to trigger DataSource.initialize(), and
-    // crashes with "Cannot add a test after tests have started running."
+    // the build, so `dist/entities/**` / `dist/migrations/**` never contain
+    // one. Against source it would otherwise `require()` a `*.spec.ts` file as
+    // if it were an entity/migration class — which also registers its
+    // `it()`/`describe()` calls against whatever Jest test happened to
+    // trigger DataSource.initialize(), and crashes with "Cannot add a test
+    // after tests have started running." Applies to BOTH globs — migrations
+    // has the exact same spec-file collision as entities (e.g.
+    // `1730003800000-AiFinopsHardening.spec.ts` sits next to its migration).
     // MUST be a single glob (not a second `!pattern` array entry) — TypeORM's
-    // DirectoryExportedClassesLoader globs each `entities[]` array element
-    // SEPARATELY and concatenates the results, so a lone negation entry has
-    // no positive match to exclude from and is silently a no-op.
+    // DirectoryExportedClassesLoader globs each array element SEPARATELY and
+    // concatenates the results, so a lone negation entry has no positive
+    // match to exclude from and is silently a no-op.
     entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
-    migrations: [join(__dirname, '..', 'migrations', '*.{ts,js}')],
+    migrations: [join(__dirname, '..', 'migrations', '!(*.spec).{ts,js}')],
     synchronize,
     migrationsRun: !synchronize,
     logging: logging ? ['query', 'error', 'warn'] : ['error'],

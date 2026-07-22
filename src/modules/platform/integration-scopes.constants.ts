@@ -1,0 +1,71 @@
+import { PERMISSION, PermissionSlug } from '../../rbac/rbac.constants';
+import { AppError, ErrorCode } from '../../common/errors';
+
+/**
+ * External integration API scopes — a DELIBERATELY SEPARATE namespace from
+ * the internal RBAC permission contract (`rbac.constants.ts`). An API key is a
+ * long-lived, exportable credential handed to a third-party system, so it must
+ * never carry a raw internal permission slug (`services.read`, `staff.read`,
+ * ...): those slugs also unlock internal dashboard/admin behaviour and their
+ * meaning can change independently of what a clinic integration should see.
+ *
+ * Each scope below maps to the ONE internal permission a caller must already
+ * hold to grant it — enforced by `assertScopesGrantable` at key create/rotate
+ * time, so a key can never carry more access than its issuer has.
+ */
+export const INTEGRATION_SCOPE = {
+  SERVICES_READ: 'integration.services.read',
+  STAFF_READ: 'integration.staff.read',
+  AVAILABILITY_READ: 'integration.availability.read',
+  CUSTOMERS_READ: 'integration.customers.read',
+  APPOINTMENTS_READ: 'integration.appointments.read',
+} as const;
+
+export type IntegrationScope =
+  (typeof INTEGRATION_SCOPE)[keyof typeof INTEGRATION_SCOPE];
+
+/** Every valid scope string — used by the DTO allowlist validator. */
+export const INTEGRATION_SCOPES: IntegrationScope[] =
+  Object.values(INTEGRATION_SCOPE);
+
+/**
+ * The internal permission a caller must hold to grant each scope to a key.
+ * Read-only today (Phase 1 exposes read-only endpoints only).
+ */
+export const INTEGRATION_SCOPE_REQUIRES: Record<IntegrationScope, PermissionSlug> = {
+  [INTEGRATION_SCOPE.SERVICES_READ]: PERMISSION.SERVICES_READ,
+  [INTEGRATION_SCOPE.STAFF_READ]: PERMISSION.STAFF_READ,
+  [INTEGRATION_SCOPE.AVAILABILITY_READ]: PERMISSION.SCHEDULING_AVAILABILITY_READ,
+  [INTEGRATION_SCOPE.CUSTOMERS_READ]: PERMISSION.CRM_CUSTOMERS_READ,
+  [INTEGRATION_SCOPE.APPOINTMENTS_READ]: PERMISSION.APPOINTMENTS_READ,
+};
+
+/** Narrows an arbitrary string array to the ones that are valid scopes (legacy/junk-safe). */
+export function normalizeScopes(raw: unknown): IntegrationScope[] {
+  if (!Array.isArray(raw)) return [];
+  const valid = new Set<string>(INTEGRATION_SCOPES);
+  return raw.filter((s): s is IntegrationScope => typeof s === 'string' && valid.has(s));
+}
+
+/**
+ * Throws FORBIDDEN if any requested scope's required internal permission is
+ * not held by the caller. `super_admin` (no seeded permission rows) is exempt,
+ * mirroring PermissionsGuard's bypass.
+ */
+export function assertScopesGrantable(
+  requested: string[] | undefined,
+  callerPermissions: string[],
+  isSuperAdmin: boolean,
+): void {
+  if (isSuperAdmin || !requested?.length) return;
+  const heldSet = new Set(callerPermissions);
+  const missing = requested.filter((scope) => {
+    const required = INTEGRATION_SCOPE_REQUIRES[scope as IntegrationScope];
+    return !required || !heldSet.has(required);
+  });
+  if (missing.length > 0) {
+    throw new AppError(ErrorCode.FORBIDDEN, {
+      message: `Cannot grant scope(s) you do not hold the underlying permission for: ${missing.join(', ')}`,
+    });
+  }
+}

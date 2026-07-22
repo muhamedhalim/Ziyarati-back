@@ -1,11 +1,15 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
   IsArray,
+  IsIn,
   IsISO8601,
   IsOptional,
   IsString,
   MaxLength,
 } from 'class-validator';
+
+import { INTEGRATION_SCOPES } from '../integration-scopes.constants';
 
 /**
  * Create an API key for external (machine-to-machine) integrations — ERP, HIS,
@@ -20,13 +24,20 @@ export class CreateApiKeyDto {
   name?: string;
 
   @ApiPropertyOptional({
-    description: 'Scopes granted to the key (stored as JSON).',
+    description:
+      'Integration scopes granted to the key. Must be from the fixed allowlist — never an ' +
+      'internal RBAC permission slug — and the caller must already hold the internal permission ' +
+      'each scope maps to (see integration-scopes.constants.ts), so a key can never exceed its ' +
+      "issuer's own access.",
     type: [String],
-    example: ['crm.read', 'appointments.read'],
+    enum: INTEGRATION_SCOPES,
+    example: ['integration.services.read', 'integration.appointments.read'],
   })
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(INTEGRATION_SCOPES.length)
   @IsString({ each: true })
+  @IsIn(INTEGRATION_SCOPES, { each: true })
   permissions?: string[];
 
   @ApiPropertyOptional({ description: 'Expiry timestamp (ISO-8601). Omit for no expiry.', example: '2027-01-01T00:00:00Z' })

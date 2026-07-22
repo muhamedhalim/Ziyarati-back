@@ -8,8 +8,10 @@ import { ApiLog } from '../../entities/System/ApiLog';
 import { WebhookLog } from '../../entities/System/WebhookLog';
 import { FileUpload } from '../../entities/System/FileUpload';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { ApiKeyService } from './api-key.service';
+import { ApiKeyAuditService } from './api-key-audit.service';
 import { ApiLogService } from './api-log.service';
 import { WebhookLogService } from './webhook-log.service';
 import { FileUploadService } from './file-upload.service';
@@ -24,6 +26,7 @@ import { FileUploadController } from './file-upload.controller';
 import { SystemSettingController } from './system-setting.controller';
 
 import { ApiKeyAuthGuard } from './guards/api-key-auth.guard';
+import { IntegrationScopeGuard } from './guards/integration-scope.guard';
 import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
 
 /**
@@ -31,9 +34,13 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
  *
  * Wired capabilities:
  *  - API-key AUTH for external M2M routes — ApiKeyAuthGuard (+ @ApiKeyProtected):
- *    hash → active → expiry → permission scopes, with throttled last_used_at.
+ *    hash → active → expiry → tenant status → integration scopes → per-key rate
+ *    limit, with throttled last_used_at. Scopes are validated against the
+ *    caller's own RBAC permissions at issuance (integration-scopes.constants.ts)
+ *    and every lifecycle mutation is audited (ApiKeyAuditService).
  *  - API request observability — ApiLoggingInterceptor (global APP_INTERCEPTOR),
- *    non-blocking, sampled.
+ *    non-blocking, sampled, attributed to the API key when one authenticated
+ *    the request.
  *  - Webhook audit — WebhookLogService.record (payloads redacted of secrets).
  *  - File-upload metadata — quota + URL safety enforced (storage external).
  *  - Platform settings — super-admin only, typed registry + raw KV fallback.
@@ -48,7 +55,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
 @Module({
   imports: [
     ConfigModule,
-    TypeOrmModule.forFeature([ApiKey, ApiLog, WebhookLog, FileUpload, SystemSetting]),
+    TypeOrmModule.forFeature([ApiKey, ApiLog, WebhookLog, FileUpload, SystemSetting, AuditLog]),
   ],
   controllers: [
     ApiKeyController,
@@ -59,6 +66,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
   ],
   providers: [
     ApiKeyService,
+    ApiKeyAuditService,
     ApiLogService,
     WebhookLogService,
     FileUploadService,
@@ -66,6 +74,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     PlatformMaintenanceService,
     MaintenanceGuard,
     ApiKeyAuthGuard,
+    IntegrationScopeGuard,
     { provide: APP_INTERCEPTOR, useClass: ApiLoggingInterceptor },
   ],
   exports: [
@@ -74,6 +83,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     WebhookLogService,
     PlatformMaintenanceService,
     ApiKeyAuthGuard,
+    IntegrationScopeGuard,
     SystemSettingService,
     MaintenanceGuard,
   ],

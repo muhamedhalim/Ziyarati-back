@@ -21,6 +21,8 @@ export interface ApiLogInput {
   statusCode?: number;
   responseTimeMs?: number;
   ipAddress?: string;
+  /** The API key that authenticated this request, if any. */
+  apiKeyId?: string | null;
 }
 
 /**
@@ -48,6 +50,7 @@ export class ApiLogService {
         status_code: input.statusCode,
         response_time_ms: input.responseTimeMs,
         ip_address: input.ipAddress,
+        api_key_id: input.apiKeyId ?? undefined,
       }),
     );
   }

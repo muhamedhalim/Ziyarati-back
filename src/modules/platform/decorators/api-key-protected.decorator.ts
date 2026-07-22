@@ -1,26 +1,33 @@
 import { applyDecorators, UseGuards } from '@nestjs/common';
 
 import { Public } from '../../auth/decorators/public.decorator';
-import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
-import { PermissionsGuard } from '../../auth/guards/permissions.guard';
-import { PermissionSlug } from '../../../rbac/rbac.constants';
-import { ApiKeyAuthGuard } from '../guards/api-key-auth.guard';
+import { ApiKeyRoute } from '../../auth/decorators/api-key-route.decorator';
+import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.guard';
+import { IntegrationScopeGuard } from '../guards/integration-scope.guard';
+import { RequireScopes } from './require-scopes.decorator';
+import type { IntegrationScope } from '../integration-scopes.constants';
 
 /**
- * Protects an EXTERNAL integration route with API-key auth + RBAC scopes.
+ * Protects an EXTERNAL (machine-to-machine) integration route with API-key
+ * auth + integration-scope enforcement.
  *
- *   @ApiKeyProtected(PERMISSION.CRM_READ)
- *   @Get('partner/customers')
+ *   @ApiKeyProtected(INTEGRATION_SCOPE.SERVICES_READ)
+ *   @Get('integrations/services')
  *   list() { ... }
  *
- * `@Public()` makes the global JwtAuthGuard step aside; ApiKeyAuthGuard then
- * authenticates the key and populates the principal, and PermissionsGuard
- * enforces the key's permission scopes (the key's `permissions` array).
+ * `@Public()` + `@ApiKeyRoute()` make the global JwtAuthGuard resolve the API
+ * key itself (see jwt-auth.guard.ts's docstring for why authentication must
+ * happen there, not in a route-level guard, for tenant-status/maintenance
+ * checks to see the principal). ActiveTenantGuard then rejects a suspended,
+ * unapproved, or otherwise inactive tenant's key, and IntegrationScopeGuard
+ * enforces the key's granted `integration.*` scopes — never internal RBAC
+ * permissions (see integration-scopes.constants.ts).
  */
-export function ApiKeyProtected(...permissions: PermissionSlug[]) {
+export function ApiKeyProtected(...scopes: IntegrationScope[]) {
   return applyDecorators(
     Public(),
-    UseGuards(ApiKeyAuthGuard, PermissionsGuard),
-    RequirePermissions(...permissions),
+    ApiKeyRoute(),
+    UseGuards(ActiveTenantGuard, IntegrationScopeGuard),
+    RequireScopes(...scopes),
   );
 }

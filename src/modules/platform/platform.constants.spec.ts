@@ -1,6 +1,7 @@
 import {
   generateApiKey,
   hashApiKey,
+  keyPrefix,
   redactSecrets,
   API_KEY_PREFIX,
 } from './platform.constants';
@@ -17,6 +18,15 @@ describe('platform.constants', () => {
     it('hashApiKey is deterministic', () => {
       expect(hashApiKey('abc')).toBe(hashApiKey('abc'));
       expect(hashApiKey('abc')).not.toBe(hashApiKey('abd'));
+    });
+  });
+
+  describe('keyPrefix', () => {
+    it('returns a short, safe-to-display prefix of the plaintext', () => {
+      const { plaintext } = generateApiKey();
+      const prefix = keyPrefix(plaintext);
+      expect(prefix.length).toBeLessThan(plaintext.length);
+      expect(plaintext.startsWith(prefix)).toBe(true);
     });
   });
 

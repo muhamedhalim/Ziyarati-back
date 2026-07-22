@@ -51,9 +51,16 @@ export class ApiLoggingInterceptor implements NestInterceptor {
     );
   }
 
+  /** API-key principals are synthesized as `apikey:<keyId>` — see ApiKeyAuthGuard. */
+  private static readonly API_KEY_PRINCIPAL = /^apikey:(.+)$/;
+
   private record(req: Request, context: ExecutionContext, statusCode: number, startedAt: number): void {
     // Tenant from the resolved principal — never from input. Null for platform/anon.
     const tenantId = this.ctx.getTenantId();
+    const principalId = this.ctx.getUser()?.id;
+    const apiKeyId = principalId
+      ? ApiLoggingInterceptor.API_KEY_PRINCIPAL.exec(principalId)?.[1]
+      : undefined;
     const endpoint =
       (context.getClass()?.name && (req.route as { path?: string })?.path) || req.path;
     void this.apiLogs
@@ -63,6 +70,7 @@ export class ApiLoggingInterceptor implements NestInterceptor {
         statusCode,
         responseTimeMs: Date.now() - startedAt,
         ipAddress: (req.ip ?? req.socket?.remoteAddress ?? undefined)?.slice(0, 45),
+        apiKeyId,
       })
       .catch(() => undefined);
   }

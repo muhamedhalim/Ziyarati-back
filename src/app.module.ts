@@ -38,6 +38,7 @@ import { SupportTicketsModule } from './modules/support-tickets/support-tickets.
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
+import { IntegrationModule } from './modules/integration/integration.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { ServicesModule } from './modules/services/services.module';
 import { StorageModule } from './modules/storage/storage.module';
@@ -115,6 +116,7 @@ import { validate } from './config/env.validation';
     SupportTicketsModule,
     AnalyticsModule,
     PlatformModule,
+    IntegrationModule,
     SchedulingModule,
     ServicesModule,
     StorageModule,
