@@ -170,7 +170,7 @@ to another clinic), \`VALIDATION_ERROR\` (bad query params), \`RATE_LIMITED\`.
         status: 'ok',
         message: 'Clinic SaaS API is running',
         docs: '/api/v1/docs',
-        integrationDocs: '/api/v1/docs/integrations',
+        integrationDocs: '/docs/integrations',
         health: '/api/v1/health',
       });
     }

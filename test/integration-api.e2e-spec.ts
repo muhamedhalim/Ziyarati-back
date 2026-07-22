@@ -31,6 +31,9 @@ import { Tenant } from '../src/entities/SaaS-Core/Tenant';
 import { Service } from '../src/entities/Services/Service';
 import { Customer } from '../src/entities/CRM/Customer';
 import { PERMISSION } from '../src/rbac/rbac.constants';
+import { TenantApprovalStatus } from '../src/entities/enums';
+import { SystemSettingService } from '../src/modules/platform/system-setting.service';
+import { SettingKey } from '../src/modules/platform/settings.registry';
 
 const API = '/api/v1';
 
@@ -426,6 +429,73 @@ describe('Integration API + API-key hardening — HTTP e2e', () => {
       } finally {
         await tenants.update({ id: owner.tenantId }, { is_active: true });
       }
+    });
+
+    it('an unapproved tenant\'s previously-valid key is rejected', async () => {
+      const created = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/api-keys`)
+        .set(...authHeader(owner.token))
+        .send({ permissions: ['integration.services.read'] })
+        .expect(201);
+      const key = created.body.apiKey as string;
+
+      const tenants = e2e.dataSource.getRepository(Tenant);
+      await tenants.update({ id: owner.tenantId }, { approval_status: TenantApprovalStatus.SUSPENDED });
+      try {
+        await request(e2e.app.getHttpServer())
+          .get(`${API}/integrations/services`)
+          .set('X-API-Key', key)
+          .expect(403);
+      } finally {
+        await tenants.update({ id: owner.tenantId }, { approval_status: TenantApprovalStatus.APPROVED });
+      }
+    });
+
+    it('platform maintenance mode blocks API-key requests (no super-admin bypass for a tenant key)', async () => {
+      const created = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/api-keys`)
+        .set(...authHeader(owner.token))
+        .send({ permissions: ['integration.services.read'] })
+        .expect(201);
+      const key = created.body.apiKey as string;
+
+      const settings = e2e.app.get(SystemSettingService);
+      await settings.upsertByKey(SettingKey.MAINTENANCE_MODE, true);
+      try {
+        await request(e2e.app.getHttpServer())
+          .get(`${API}/integrations/services`)
+          .set('X-API-Key', key)
+          .expect(503);
+      } finally {
+        await settings.upsertByKey(SettingKey.MAINTENANCE_MODE, false);
+      }
+
+      // Sanity: works again once maintenance mode is lifted.
+      await request(e2e.app.getHttpServer()).get(`${API}/integrations/services`).set('X-API-Key', key).expect(200);
+    });
+
+    it('an API key cannot authenticate a normal JWT-protected (internal dashboard) route', async () => {
+      const created = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/api-keys`)
+        .set(...authHeader(owner.token))
+        .send({ permissions: ['integration.services.read'] })
+        .expect(201);
+
+      // The internal dashboard route is JWT-only; presenting an API key
+      // (with no Bearer/cookie) must NOT authenticate it.
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/platform/api-keys`)
+        .set('X-API-Key', created.body.apiKey)
+        .expect(401);
+    });
+
+    it('a JWT bearer token cannot authenticate an external integration route', async () => {
+      // The integration route only recognises X-API-Key / Authorization: ApiKey.
+      // A dashboard user's Bearer JWT must be rejected, not silently accepted.
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/integrations/services`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(401);
     });
 
     it('routes for staff/appointments/availability are wired and scope-enforced', async () => {

@@ -173,6 +173,11 @@ export const PERMISSION = {
   PLATFORM_API_LOGS_READ: 'platform.api-logs.read',
   PLATFORM_WEBHOOKS_READ: 'platform.webhooks.read',
   PLATFORM_WEBHOOKS_MANAGE: 'platform.webhooks.manage',
+  // Outbound webhook subscriptions + deliveries (Phase 2 — Integration
+  // platform). Deliberately separate from PLATFORM_WEBHOOKS_* above, which
+  // governs the INBOUND provider webhook-log admin surface.
+  PLATFORM_WEBHOOKS_OUTBOUND_READ: 'platform.webhooks-outbound.read',
+  PLATFORM_WEBHOOKS_OUTBOUND_MANAGE: 'platform.webhooks-outbound.manage',
   PLATFORM_FILES_READ: 'platform.files.read',
   PLATFORM_FILES_MANAGE: 'platform.files.manage',
   // Platform-owned global settings (super_admin only; held via the * wildcard)
@@ -385,6 +390,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.PLATFORM_API_LOGS_READ, name: 'Read API logs', module: 'platform' },
   { slug: PERMISSION.PLATFORM_WEBHOOKS_READ, name: 'Read webhook logs', module: 'platform' },
   { slug: PERMISSION.PLATFORM_WEBHOOKS_MANAGE, name: 'Manage webhook logs', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ, name: 'Read outbound webhooks', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE, name: 'Manage outbound webhooks', module: 'platform' },
   { slug: PERMISSION.PLATFORM_FILES_READ, name: 'Read file uploads', module: 'platform' },
   { slug: PERMISSION.PLATFORM_FILES_MANAGE, name: 'Manage file uploads', module: 'platform' },
   { slug: PERMISSION.PLATFORM_SETTINGS_READ, name: 'Read system settings', module: 'platform' },
@@ -568,6 +575,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PLATFORM_API_LOGS_READ,
     PERMISSION.PLATFORM_WEBHOOKS_READ,
     PERMISSION.PLATFORM_WEBHOOKS_MANAGE,
+    PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ,
+    PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE,
     PERMISSION.PLATFORM_FILES_READ,
     PERMISSION.PLATFORM_FILES_MANAGE,
   ],

@@ -198,3 +198,28 @@ export interface WorkflowActionJob extends BaseJobData {
   /** Index of the action within the workflow's action list. */
   actionIndex: number;
 }
+
+// ── Outbound webhooks (Phase 2 — Integration platform) ─────────────────────
+/**
+ * Deliver one webhook delivery attempt.
+ *
+ * Carries only the delivery row's id — never the payload/secret. The
+ * `webhook_deliveries` row is the source of truth (updated in place across
+ * attempts, replayable/inspectable from the dashboard); Redis is not where a
+ * tenant's business-event payload should live.
+ */
+export interface WebhookDeliverJob extends BaseJobData {
+  tenantId: string;
+  webhookDeliveryId: string;
+}
+
+/** Dead-letter envelope for an exhausted `webhooks.deliver` job. */
+export interface WebhookDlqJob extends BaseJobData {
+  webhookDeliveryId: string;
+  sourceQueue: string;
+  sourceJobName: string;
+  originalJobId?: string;
+  failedReason: string;
+  attemptsMade: number;
+  diedAt: string;
+}

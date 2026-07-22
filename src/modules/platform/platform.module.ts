@@ -6,6 +6,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApiKey } from '../../entities/System/ApiKey';
 import { ApiLog } from '../../entities/System/ApiLog';
 import { WebhookLog } from '../../entities/System/WebhookLog';
+import { WebhookEndpoint } from '../../entities/System/WebhookEndpoint';
+import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
 import { FileUpload } from '../../entities/System/FileUpload';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -14,6 +16,10 @@ import { ApiKeyService } from './api-key.service';
 import { ApiKeyAuditService } from './api-key-audit.service';
 import { ApiLogService } from './api-log.service';
 import { WebhookLogService } from './webhook-log.service';
+import { WebhookEndpointService } from './webhook-endpoint.service';
+import { WebhookDeliveryService } from './webhook-delivery.service';
+import { WebhookAuditService } from './webhook-audit.service';
+import { WebhookEventListener } from './webhook-event.listener';
 import { FileUploadService } from './file-upload.service';
 import { SystemSettingService } from './system-setting.service';
 import { PlatformMaintenanceService } from './platform-maintenance.service';
@@ -22,6 +28,8 @@ import { MaintenanceGuard } from './guards/maintenance.guard';
 import { ApiKeyController } from './api-key.controller';
 import { ApiLogController } from './api-log.controller';
 import { WebhookLogController } from './webhook-log.controller';
+import { WebhookEndpointController } from './webhook-endpoint.controller';
+import { WebhookDeliveryController } from './webhook-delivery.controller';
 import { FileUploadController } from './file-upload.controller';
 import { SystemSettingController } from './system-setting.controller';
 
@@ -42,12 +50,18 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
  *    non-blocking, sampled, attributed to the API key when one authenticated
  *    the request.
  *  - Webhook audit — WebhookLogService.record (payloads redacted of secrets).
+ *  - Outbound webhooks (Phase 2) — WebhookEndpointService (tenant-registered
+ *    endpoints, encrypted secret, strict event allowlist), WebhookEventListener
+ *    (bridges EXISTING appointment/payment domain events to fan-out),
+ *    WebhookDeliveryService (queue-based async delivery, tenant-scoped
+ *    history + replay). Actual HTTP delivery runs in the worker process
+ *    (WebhookDeliveryProcessor) — see worker.module.ts.
  *  - File-upload metadata — quota + URL safety enforced (storage external).
  *  - Platform settings — super-admin only, typed registry + raw KV fallback.
  *  - Retention — PlatformMaintenanceService purges aged logs (worker job).
  *
- * TWO ownership models: TENANT-OWNED (ApiKey/ApiLog/WebhookLog/FileUpload) and
- * PLATFORM-OWNED (SystemSetting, super-admin).
+ * TWO ownership models: TENANT-OWNED (ApiKey/ApiLog/WebhookLog/WebhookEndpoint/
+ * WebhookDelivery/FileUpload) and PLATFORM-OWNED (SystemSetting, super-admin).
  *
  * SystemSettingService and MaintenanceGuard are exported so other modules can
  * consume typed settings without duplicating the entity registration.
@@ -55,12 +69,23 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
 @Module({
   imports: [
     ConfigModule,
-    TypeOrmModule.forFeature([ApiKey, ApiLog, WebhookLog, FileUpload, SystemSetting, AuditLog]),
+    TypeOrmModule.forFeature([
+      ApiKey,
+      ApiLog,
+      WebhookLog,
+      WebhookEndpoint,
+      WebhookDelivery,
+      FileUpload,
+      SystemSetting,
+      AuditLog,
+    ]),
   ],
   controllers: [
     ApiKeyController,
     ApiLogController,
     WebhookLogController,
+    WebhookEndpointController,
+    WebhookDeliveryController,
     FileUploadController,
     SystemSettingController,
   ],
@@ -69,6 +94,10 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     ApiKeyAuditService,
     ApiLogService,
     WebhookLogService,
+    WebhookEndpointService,
+    WebhookDeliveryService,
+    WebhookAuditService,
+    WebhookEventListener,
     FileUploadService,
     SystemSettingService,
     PlatformMaintenanceService,
@@ -81,6 +110,8 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     ApiKeyService,
     ApiLogService,
     WebhookLogService,
+    WebhookEndpointService,
+    WebhookDeliveryService,
     PlatformMaintenanceService,
     ApiKeyAuthGuard,
     IntegrationScopeGuard,

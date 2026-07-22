@@ -229,6 +229,11 @@ export const validate = (config: Record<string, unknown>) => {
     // Redis rate limiter). Redis-unavailable fails OPEN (see the guard's
     // docstring) — this is a courtesy limit, not the sole abuse defense.
     INTEGRATION_API_RATE_LIMIT_PER_MINUTE: Joi.number().integer().min(1).default(120),
+
+    // ── Outbound webhooks (Phase 2 — Integration platform) ───────────────
+    WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number().integer().min(1000).default(10_000),
+    WEBHOOK_DELIVERY_MAX_ATTEMPTS: Joi.number().integer().min(1).default(6),
+    WEBHOOK_DELIVERY_BACKOFF_MS: Joi.number().integer().min(100).default(5000),
   });
 
   const { error, value } = schema.validate(config, {

@@ -28,6 +28,8 @@ import {
   WhatsappWebhookProcessJob,
   WhatsappMediaDownloadJob,
   WhatsappDlqJob,
+  WebhookDeliverJob,
+  WebhookDlqJob,
   WorkflowActionJob,
   WorkflowRunJob,
 } from './job-data.interface';
@@ -300,6 +302,45 @@ export class QueueService {
   retryWorkflowAction(data: WorkflowActionJob, opts?: JobsOptions) {
     return this.add(QUEUE.WORKFLOW, JOB.WORKFLOW_ACTION, data, {
       jobId: `wf-action-${data.runId}-${data.actionIndex}-retry-${Date.now()}`,
+      ...opts,
+    });
+  }
+
+  // ── Outbound webhooks (Phase 2 — Integration platform) ──────────────────
+
+  /**
+   * Deliver one webhook delivery attempt. Idempotent per delivery row: the
+   * deterministic jobId means a domain event that races an existing enqueue
+   * (or a duplicate `@OnEvent` fan-out) collapses onto one job.
+   */
+  enqueueWebhookDeliver(data: WebhookDeliverJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WEBHOOKS_DELIVER, JOB.WEBHOOKS_DELIVER, data, {
+      jobId: `webhook-delivery-${data.webhookDeliveryId}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Manual replay from the dashboard. Unique job id (unlike
+   * `enqueueWebhookDeliver`) so it re-runs even though the original attempt's
+   * job still exists in BullMQ's retained failed/completed set.
+   */
+  retryWebhookDeliver(data: WebhookDeliverJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WEBHOOKS_DELIVER, JOB.WEBHOOKS_DELIVER, data, {
+      jobId: `webhook-delivery-${data.webhookDeliveryId}-retry-${Date.now()}`,
+      ...opts,
+    });
+  }
+
+  /**
+   * Park an exhausted webhook delivery (never auto-processed; platform
+   * ops-depth visibility only — the tenant-facing replay flow operates on the
+   * `webhook_deliveries` row directly, never on this queue, so a tenant can
+   * never read or replay another tenant's parked job by guessing a jobId).
+   */
+  enqueueWebhookDlq(data: WebhookDlqJob, opts?: JobsOptions) {
+    return this.add(QUEUE.WEBHOOKS_DLQ, JOB.WEBHOOKS_DLQ, data, {
+      jobId: `webhook-dlq-${data.originalJobId ?? Date.now()}`,
       ...opts,
     });
   }

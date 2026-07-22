@@ -40,6 +40,10 @@ export const QUEUE = {
   EMAIL: 'email',
   USAGE_REPORT: 'usage-report',
   WORKFLOW: 'workflow',
+  /** Outbound webhook delivery (Phase 2 — Integration platform). */
+  WEBHOOKS_DELIVER: 'webhooks.deliver',
+  /** Dead-letter park for exhausted webhooks.deliver jobs. */
+  WEBHOOKS_DLQ: 'webhooks.dlq',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -85,6 +89,8 @@ export const JOB = {
   USAGE_REPORT_RUN: 'usageReport.run',
   WORKFLOW_RUN: 'workflow.run',
   WORKFLOW_ACTION: 'workflow.action',
+  WEBHOOKS_DELIVER: 'webhooks.deliver',
+  WEBHOOKS_DLQ: 'webhooks.dlq',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

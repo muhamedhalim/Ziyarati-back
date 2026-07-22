@@ -54,6 +54,7 @@ import { PlatformUsageModule } from './modules/platform-usage/platform-usage.mod
 import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { WorkflowProcessor } from './worker/processors/workflow.processor';
+import { WebhookDeliveryProcessor } from './worker/processors/webhook-delivery.processor';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -137,6 +138,7 @@ import { WorkflowProcessor } from './worker/processors/workflow.processor';
     EmailProcessor,
     UsageReportProcessor,
     WorkflowProcessor,
+    WebhookDeliveryProcessor,
   ],
 })
 export class WorkerModule {}

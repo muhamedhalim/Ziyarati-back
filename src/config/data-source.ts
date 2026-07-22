@@ -15,7 +15,7 @@ export default new DataSource({
   url: process.env.DATABASE_URL,
   // See typeorm.config.ts for why this excludes *.spec — same loader, same gotcha.
   entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
-  migrations: [join(__dirname, '..', 'migrations', '*.{ts,js}')],
+  migrations: [join(__dirname, '..', 'migrations', '!(*.spec).{ts,js}')],
   synchronize: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
