@@ -22,6 +22,10 @@ import { CreateStaffWithNewUserDto } from './dto/create-staff-with-new-user.dto'
 
 import { AuthService } from '../auth/auth.service';
 import { RolesService } from '../auth/roles.service';
+import {
+  StaffAccessService,
+  type DashboardAccessState,
+} from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
@@ -51,9 +55,35 @@ export class StaffService {
     private readonly dataSource: DataSource,
     private readonly authService: AuthService,
     private readonly rolesService: RolesService,
+    private readonly access: StaffAccessService,
     private readonly storage: StorageService,
     private readonly usage: UsageService,
   ) {}
+
+  /**
+   * Attaches each profile's derived Reception Dashboard access state so the
+   * Staff page can render an access column without a second round-trip.
+   * Resolved in bulk (one set of queries for the whole page, never per row).
+   *
+   * Transient/presentation-only — `dashboard_access` is not a column and is
+   * never persisted; write paths load through `loadProfile`, which skips this.
+   */
+  private async withAccessState<T extends StaffProfile>(
+    profiles: T[],
+  ): Promise<(T & { dashboard_access?: DashboardAccessState })[]> {
+    const userIds = profiles.map((p) => p.user?.id).filter(Boolean) as string[];
+    const states = await this.access.getAccessStates(userIds);
+
+    return profiles.map((profile) => {
+      const decorated = profile as T & {
+        dashboard_access?: DashboardAccessState;
+      };
+      if (profile.user?.id) {
+        decorated.dashboard_access = states.get(profile.user.id);
+      }
+      return decorated;
+    });
+  }
 
   /** Roles this tenant may assign to staff — backs the Add Staff role selector. */
   async findAssignableRoles(
@@ -266,7 +296,12 @@ export class StaffService {
     });
 
     await Promise.all(data.map((profile) => this.withResolvedAvatar(profile)));
-    return { data, total, page: query.page, limit: query.limit };
+    return {
+      data: await this.withAccessState(data),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
 
   /**
@@ -349,7 +384,9 @@ export class StaffService {
 
   async findOne(tenantId: string, id: string): Promise<StaffProfile> {
     const profile = await this.loadProfile(tenantId, id);
-    return this.withResolvedAvatar(profile);
+    await this.withResolvedAvatar(profile);
+    const [decorated] = await this.withAccessState([profile]);
+    return decorated;
   }
 
   async update(

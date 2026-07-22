@@ -30,6 +30,7 @@ import {
 } from '@nestjs/swagger';
 
 import { StaffService } from './staff.service';
+import { StaffAccessService } from './staff-access.service';
 import { StaffScheduleService } from './staff-schedule.service';
 import { StaffTimeOffService } from './staff-time-off.service';
 import { StaffCommissionService } from './staff-commission.service';
@@ -52,6 +53,7 @@ import { CommissionSummaryQueryDto } from './dto/commission-summary.query.dto';
 import { CreateStaffRatingDto } from './dto/create-staff-rating.dto';
 import { AvailabilityQueryDto } from './dto/availability.query.dto';
 
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -281,6 +283,7 @@ const S_AVAILABILITY = {
 export class StaffController {
   constructor(
     private readonly staff: StaffService,
+    private readonly access: StaffAccessService,
     private readonly schedules: StaffScheduleService,
     private readonly timeOff: StaffTimeOffService,
     private readonly commissions: StaffCommissionService,
@@ -583,6 +586,162 @@ appointments, commissions and ratings are retained.
   @RequirePermissions(PERMISSION.STAFF_MANAGE)
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.staff.remove(this.ctx.requireTenantId(), id);
+  }
+
+  // ────────────────────── Reception dashboard access ─────────────────────── //
+
+  @ApiOperation({
+    summary: 'Grant Reception Dashboard access to a staff member',
+    description: `
+**Protected — requires \`staff.manage\`. Clinic must be active.**
+
+Gives an existing staff member access to the Reception Dashboard
+(\`/reception/**\`) by setting their linked account's role to
+\`receptionist\`.
+
+**This does NOT create or link an account.** Every staff profile already
+owns exactly one user account (\`staff_profiles.user_id\` is UNIQUE and is
+always populated on creation), so this endpoint only changes the ROLE of
+that existing account.
+
+**The role is fixed server-side** to \`receptionist\` from the RBAC
+catalogue — the request carries no role and no permissions, so this
+endpoint can never be used to mint an owner, manager or platform admin.
+Accounts holding a protected role (\`owner\`, \`super_admin\`) are rejected.
+
+Side effects:
+ - any other role on the account is REPLACED by \`receptionist\`
+ - the account is re-enabled (\`is_active = true\`)
+ - existing sessions/refresh tokens are revoked (the permission set changed)
+ - if the person has never signed in, a single-use set-password invitation
+   is emailed (same \`password_resets\` mechanism as forgot-password)
+
+Idempotent: re-running for an already-active receptionist changes nothing
+and will not sign them out or re-send an invitation.
+
+**Who can call this:** Owner, Manager (\`staff.manage\`). Receptionists hold
+only \`staff.read\` and therefore cannot grant access to themselves or anyone else.
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Access granted; returns the new access state.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.manage`, the target holds a protected role (`owner`/`super_admin`), or the clinic is inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found in this clinic (also returned for another clinic\'s id).',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'The staff member has no email address.',
+    schema: S_ERROR,
+  })
+  @Post(':id/dashboard-access')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.STAFF_MANAGE)
+  grantDashboardAccess(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.access.grant(this.ctx.requireTenantId(), id, actorId);
+  }
+
+  @ApiOperation({
+    summary: 'Disable a staff member\'s dashboard login access',
+    description: `
+**Protected — requires \`staff.manage\`. Clinic must be active.**
+
+Sets \`users.is_active = false\` and revokes refresh tokens, so the account
+can no longer sign in or call the API and live sessions end immediately.
+
+**The staff record is NOT deleted.** Appointments, notes and every record
+the person created are retained, and their booking availability
+(\`is_available_for_booking\`) is a separate switch that is left untouched —
+employment/bookability and login access are deliberately independent.
+
+**Who can call this:** Owner, Manager (\`staff.manage\`).
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Access disabled; returns the new access state.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or the target holds a protected role.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({ description: 'The staff member does not have dashboard access yet.', schema: S_ERROR })
+  @Post(':id/dashboard-access/disable')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.STAFF_MANAGE)
+  disableDashboardAccess(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.access.setEnabled(this.ctx.requireTenantId(), id, false, actorId);
+  }
+
+  @ApiOperation({
+    summary: 'Re-enable a staff member\'s dashboard login access',
+    description: `
+**Protected — requires \`staff.manage\`. Clinic must be active.**
+
+Sets \`users.is_active = true\`, restoring the account's ability to sign in.
+The receptionist role must already be present (grant access first).
+
+**Who can call this:** Owner, Manager (\`staff.manage\`).
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Access enabled; returns the new access state.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or the target holds a protected role.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({ description: 'The staff member does not have dashboard access yet.', schema: S_ERROR })
+  @Post(':id/dashboard-access/enable')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.STAFF_MANAGE)
+  enableDashboardAccess(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.access.setEnabled(this.ctx.requireTenantId(), id, true, actorId);
+  }
+
+  @ApiOperation({
+    summary: 'Resend the dashboard set-password invitation',
+    description: `
+**Protected — requires \`staff.manage\`. Clinic must be active.**
+
+Issues a fresh single-use set-password token and emails the invitation
+again. Reuses the same \`password_resets\` table and
+\`POST /auth/reset-password\` consumption path as forgot-password — there is
+only one credential-setup mechanism in the system. The raw token is only
+ever delivered by email; it is stored hashed and never logged or returned.
+
+Only valid while the person has never signed in — once they have, they own
+their password and should use forgot-password instead.
+
+**Who can call this:** Owner, Manager (\`staff.manage\`).
+    `.trim(),
+  })
+  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Invitation re-sent; returns the current access state.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or the target holds a protected role.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'No dashboard access yet, the staff member has already signed in, or they have no email address.',
+    schema: S_ERROR,
+  })
+  @Post(':id/dashboard-access/resend-invitation')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.STAFF_MANAGE)
+  resendDashboardInvitation(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') actorId: string,
+  ) {
+    return this.access.resendInvitation(this.ctx.requireTenantId(), id, actorId);
   }
 
   // ─────────────────────── Service / branch mapping ──────────────────────── //

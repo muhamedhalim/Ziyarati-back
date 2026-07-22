@@ -424,7 +424,7 @@ export class AuthService {
     );
 
     // Deliver the reset link by email (best-effort; never blocks the response).
-    const resetUrl = `${this.appUrl()}/auth/reset-password?token=${rawToken}`;
+    const resetUrl = this.passwordSetupUrl(rawToken);
     await this.email.sendPasswordReset({
       to: dto.email,
       name: user.full_name ?? undefined,
@@ -440,6 +440,46 @@ export class AuthService {
           };
       }
       return {};
+  }
+
+  /**
+   * Issues a single-use "set your password" token for an EXISTING user and
+   * returns the raw token so the caller can deliver it (e.g. the staff
+   * dashboard-access invitation email).
+   *
+   * Deliberately reuses the exact `password_resets` table, hashing and TTL
+   * mechanics as {@link forgotPassword} — and therefore the same
+   * `POST /auth/reset-password` consumption path — so there is only ever ONE
+   * credential-setup mechanism in the system. Only the raw token is returned;
+   * it is never persisted in plaintext and never logged.
+   *
+   * Unlike `forgotPassword` this takes a resolved user id (the caller has
+   * already proven tenant ownership), so it does not need enumeration
+   * protection.
+   */
+  async issuePasswordSetupToken(
+    userId: string,
+    ttlMinutes?: number,
+  ): Promise<string> {
+    const rawToken = randomBytes(32).toString('hex');
+    const ttl =
+      ttlMinutes ??
+      this.config.get<number>('STAFF_INVITATION_TTL_MIN', 60 * 24 * 7); // 7 days
+
+    await this.passwordResets.save(
+      this.passwordResets.create({
+        user: { id: userId } as User,
+        token_hash: this.hashToken(rawToken),
+        expires_at: new Date(Date.now() + ttl * 60_000),
+      }),
+    );
+
+    return rawToken;
+  }
+
+  /** Absolute URL of the set-password / reset-password screen for a raw token. */
+  passwordSetupUrl(rawToken: string): string {
+    return `${this.appUrl()}/auth/reset-password?token=${rawToken}`;
   }
 
   /** Consumes a reset token, sets the new password and kills all sessions. */

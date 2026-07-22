@@ -12,6 +12,7 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AuthService } from '../auth/auth.service';
 import { RolesService } from '../auth/roles.service';
+import { StaffAccessService } from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { ROLE } from '../../rbac/rbac.constants';
@@ -42,6 +43,7 @@ describe('StaffService', () => {
     deleteObject: jest.Mock;
   };
   let usage: { assertCountWithinLimit: jest.Mock };
+  let staffAccess: { getAccessStates: jest.Mock };
 
   beforeEach(async () => {
     staff = createMockRepository();
@@ -58,6 +60,7 @@ describe('StaffService', () => {
         .mockResolvedValue({ id: 'role-receptionist', slug: ROLE.RECEPTIONIST, name: 'Receptionist' }),
     };
     usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
+    staffAccess = { getAccessStates: jest.fn().mockResolvedValue(new Map()) };
     storage = {
       assertKeyBelongsToTenant: jest.fn(),
       getSignedDownloadUrl: jest.fn().mockResolvedValue('https://signed.example.com/avatar'),
@@ -76,6 +79,10 @@ describe('StaffService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: AuthService, useValue: authService },
         { provide: RolesService, useValue: rolesService },
+        // Only used to decorate read results with derived access state; an
+        // empty map keeps `dashboard_access` undefined and leaves the shapes
+        // these tests assert on untouched.
+        { provide: StaffAccessService, useValue: staffAccess },
         { provide: StorageService, useValue: storage },
         { provide: UsageService, useValue: usage },
       ],

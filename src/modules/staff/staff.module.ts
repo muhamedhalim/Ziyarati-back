@@ -13,11 +13,15 @@ import { StaffRating } from '../../entities/Staff/StaffRating';
 // Referenced resources (read/validation: same-tenant checks + reports)
 import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { User } from '../../entities/Auth&RBAC/User';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
+import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 
 import { StaffService } from './staff.service';
+import { StaffAccessService } from './staff-access.service';
 import { StaffScheduleService } from './staff-schedule.service';
 import { StaffTimeOffService } from './staff-time-off.service';
 import { StaffCommissionService } from './staff-commission.service';
@@ -63,6 +67,9 @@ import { StorageModule } from '../storage/storage.module';
       StaffRating,
       BranchUser,
       User,
+      UserRole,
+      PasswordReset,
+      AuditLog,
       Service,
       Branch,
       Appointment,
@@ -74,6 +81,7 @@ import { StorageModule } from '../storage/storage.module';
   controllers: [StaffController, WorkingHoursController],
   providers: [
     StaffService,
+    StaffAccessService,
     StaffScheduleService,
     StaffTimeOffService,
     StaffCommissionService,
@@ -81,6 +89,7 @@ import { StorageModule } from '../storage/storage.module';
   ],
   exports: [
     StaffService,
+    StaffAccessService,
     StaffScheduleService,
     StaffTimeOffService,
     StaffCommissionService,
