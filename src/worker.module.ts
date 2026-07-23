@@ -55,6 +55,9 @@ import { AiMemoryModule } from './modules/ai-memory/ai-memory.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { WorkflowProcessor } from './worker/processors/workflow.processor';
 import { WebhookDeliveryProcessor } from './worker/processors/webhook-delivery.processor';
+import { IntegrationPlatformModule } from './modules/integration-platform/integration-platform.module';
+import { IntegrationImportProcessor } from './worker/processors/integration-import.processor';
+import { IntegrationSyncProcessor } from './worker/processors/integration-sync.processor';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -113,6 +116,8 @@ import { WebhookDeliveryProcessor } from './worker/processors/webhook-delivery.p
     PlatformUsageModule,
     AiMemoryModule,
     WorkflowModule,
+    // Phase 4 — async import + sync processors reuse the shared write pipeline.
+    IntegrationPlatformModule,
   ],
   providers: [
     WorkerTenantsService,
@@ -139,6 +144,8 @@ import { WebhookDeliveryProcessor } from './worker/processors/webhook-delivery.p
     UsageReportProcessor,
     WorkflowProcessor,
     WebhookDeliveryProcessor,
+    IntegrationImportProcessor,
+    IntegrationSyncProcessor,
   ],
 })
 export class WorkerModule {}

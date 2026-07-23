@@ -223,3 +223,25 @@ export interface WebhookDlqJob extends BaseJobData {
   attemptsMade: number;
   diedAt: string;
 }
+
+/**
+ * Async import processing (Phase 4). Carries only the durable job-row id — the
+ * `integration_import_jobs` row (with its server-only staged payload) is the
+ * source of truth, never Redis.
+ */
+export interface IntegrationImportJobData extends BaseJobData {
+  importJobId: string;
+}
+
+/** Synchronization run (Phase 4). Carries only the `integration_sync_jobs` row id. */
+export interface IntegrationSyncJobData extends BaseJobData {
+  syncJobId: string;
+}
+
+/**
+ * Inbound integration webhook processing (Phase 4). Carries only the persisted
+ * inbound-event row id — the verified payload lives on that row, never in Redis.
+ */
+export interface IntegrationInboundJobData extends BaseJobData {
+  inboundEventId: string;
+}

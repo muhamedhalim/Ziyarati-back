@@ -4,6 +4,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { IntegrationConnection } from '../../entities/Integration/IntegrationConnection';
 import { IntegrationIdMap } from '../../entities/Integration/IntegrationIdMap';
 import { IntegrationIdempotencyKey } from '../../entities/Integration/IntegrationIdempotencyKey';
+import { IntegrationImportJob } from '../../entities/Integration/IntegrationImportJob';
+import { IntegrationImportItem } from '../../entities/Integration/IntegrationImportItem';
+import { IntegrationSyncJob } from '../../entities/Integration/IntegrationSyncJob';
+import { IntegrationConflict } from '../../entities/Integration/IntegrationConflict';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { Customer } from '../../entities/CRM/Customer';
 import { Service } from '../../entities/Services/Service';
@@ -18,37 +22,49 @@ import { IntegrationIdempotencyService } from './idempotency/integration-idempot
 import { IntegrationAuditService } from './integration-audit.service';
 import { IntegrationUpsertService } from './write/integration-upsert.service';
 import { IntegrationImportService } from './imports/integration-import.service';
+import { IntegrationImportJobService } from './imports/integration-import-job.service';
 import { IntegrationWriteService } from './write/integration-write.service';
+import { IntegrationConflictService } from './conflicts/integration-conflict.service';
+import { IntegrationConflictResolutionService } from './conflicts/integration-conflict-resolution.service';
+import { IntegrationSyncService } from './sync/integration-sync.service';
+import { IntegrationProviderService } from './providers/integration-provider.service';
 
 import { IntegrationConnectionController } from './connections/integration-connection.controller';
 import { IntegrationMappingsController } from './mappings/mappings.controller';
 import { IntegrationImportsController } from './imports/imports.controller';
+import { IntegrationImportJobsController } from './imports/import-jobs.controller';
+import { IntegrationSyncController } from './sync/sync.controller';
+import { IntegrationConflictsController } from './conflicts/conflicts.controller';
 
 /**
- * Integration Platform (Phase 3 — two-way integrations).
+ * Integration Platform — the integration bounded context's application core +
+ * tenant-facing management (Phases 3 & 4). Reuses — never rebuilds — the
+ * platform module's API-key auth/scopes, encryption, audit log, and the shared
+ * BullMQ producer/worker split.
  *
- * Adds the WRITE half of the integration platform on top of Phase 1 (read API +
- * API keys) and Phase 2 (outbound webhooks), reusing — never rebuilding — their
- * auth, tenant guards, scopes, audit, encryption and DTO patterns.
+ * Sub-domains (internal folders):
+ *  - connections/  connection lifecycle, encrypted credentials, derived health,
+ *                  live provider probe, multi-connection-per-tenant isolation.
+ *  - mappings/     external-id ⇄ internal-id map (DB-enforced 1:1 per connection).
+ *  - write/        the ONE mutation pipeline: source-of-truth/protected-field
+ *                  engine + upsert (delegates to domain services) + M2M
+ *                  orchestrator. Every inbound path (API, import, sync, webhook,
+ *                  conflict resolution) writes through here — no second path.
+ *  - idempotency/  retry-safe write dedupe.
+ *  - imports/      async queue-based import jobs + items (primary) and the
+ *                  bounded synchronous importer (small ops only).
+ *  - sync/         queue-based sync engine (cursor/watermark, resume, DB-enforced
+ *                  single-active-run-per-tuple).
+ *  - conflicts/    persistent conflict store + manual resolution via the shared
+ *                  pipeline.
+ *  - providers/    provider abstraction (compiled adapters only — no tenant URLs).
  *
- * Wired capabilities:
- *  - IntegrationConnection lifecycle (CRUD/activate/deactivate/disconnect/health),
- *    encrypted credentials, multi-connection-per-tenant isolation.
- *  - External-id ⇄ internal-id mapping with DB-enforced uniqueness + dedupe.
- *  - Idempotency-Key store (retry-safe writes; payload-mismatch rejection).
- *  - Source-of-truth / protected-field engine (mass-assignment defense).
- *  - Scoped write/upsert pipeline (customers, services) that DELEGATES to the
- *    existing domain services (CustomerService/ServiceService) so all business
- *    rules are reused — no repository writes here.
- *  - Bounded synchronous batch import (dry-run + partial success + counts).
+ * Worker processors (IntegrationImportProcessor/IntegrationSyncProcessor) inject
+ * the exported job services; enqueues go through the global QueueService.
  *
- * DELIBERATELY NOT YET INCLUDED (later phases): async import worker, sync
- * engine/cursors, conflict persistence + resolution UI, import/sync history
- * tables, connection-scoped inbound webhooks, OAuth provider abstraction, and
- * staff/appointment write (identity/lifecycle handling).
- *
- * IntegrationWriteService is exported so the M2M write controllers in
- * IntegrationModule can share the exact same write path.
+ * STILL DEFERRED: inbound webhooks (connection-scoped) and staff/appointment
+ * write adapters land next; a real OAuth provider adapter ships when a validated
+ * provider config exists.
  */
 @Module({
   imports: [
@@ -59,12 +75,23 @@ import { IntegrationImportsController } from './imports/imports.controller';
       IntegrationConnection,
       IntegrationIdMap,
       IntegrationIdempotencyKey,
+      IntegrationImportJob,
+      IntegrationImportItem,
+      IntegrationSyncJob,
+      IntegrationConflict,
       AuditLog,
       Customer,
       Service,
     ]),
   ],
-  controllers: [IntegrationConnectionController, IntegrationMappingsController, IntegrationImportsController],
+  controllers: [
+    IntegrationConnectionController,
+    IntegrationMappingsController,
+    IntegrationImportsController,
+    IntegrationImportJobsController,
+    IntegrationSyncController,
+    IntegrationConflictsController,
+  ],
   providers: [
     IntegrationConnectionService,
     IntegrationIdMapService,
@@ -72,8 +99,21 @@ import { IntegrationImportsController } from './imports/imports.controller';
     IntegrationAuditService,
     IntegrationUpsertService,
     IntegrationImportService,
+    IntegrationImportJobService,
     IntegrationWriteService,
+    IntegrationConflictService,
+    IntegrationConflictResolutionService,
+    IntegrationSyncService,
+    IntegrationProviderService,
   ],
-  exports: [IntegrationWriteService, IntegrationConnectionService, IntegrationIdMapService],
+  exports: [
+    IntegrationWriteService,
+    IntegrationConnectionService,
+    IntegrationIdMapService,
+    IntegrationImportJobService,
+    IntegrationSyncService,
+    IntegrationConflictService,
+    IntegrationProviderService,
+  ],
 })
 export class IntegrationPlatformModule {}
