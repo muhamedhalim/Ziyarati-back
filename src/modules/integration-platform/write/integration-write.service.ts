@@ -36,8 +36,11 @@ export class IntegrationWriteService {
     const connection = await this.connections.requireActive(tenantId, connectionId);
     const policy = this.connections.conflictPolicyOf(connection);
 
-    const endpoint = `${resource}.upsert`;
-    const requestHash = this.idempotency.hashPayload({ resource, connectionId, externalId, data });
+    // Bind the METHOD + ROUTE (`endpoint`) into the hash so the same key reused
+    // on a different route/method with a different body is a clean mismatch (422)
+    // rather than an accidental replay of an unrelated stored response.
+    const endpoint = `POST ${resource}.upsert`;
+    const requestHash = this.idempotency.hashPayload({ endpoint, resource, connectionId, externalId, data });
     const begin = await this.idempotency.begin(tenantId, connectionId, idempotencyKey, endpoint, requestHash);
     if (begin.replay) {
       return { status: begin.replay.status, body: begin.replay.body };
