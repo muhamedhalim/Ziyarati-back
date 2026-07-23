@@ -38,6 +38,18 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
 };
 
 /**
+ * True when `error` is a Postgres UNIQUE violation (SQLSTATE 23505). Lets a
+ * caller distinguish "lost an insert race / duplicate key" from other failures
+ * without depending on `instanceof QueryFailedError` details at each call site.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  return (
+    error instanceof QueryFailedError &&
+    (error as unknown as PgDriverError).code === PG.UNIQUE_VIOLATION
+  );
+}
+
+/**
  * Converts a TypeORM QueryFailedError into a clean AppError. The original error
  * is preserved as `cause` for server-side logging; no SQL, table, or constraint
  * detail leaks into the resulting client message or `publicContext`. Every
