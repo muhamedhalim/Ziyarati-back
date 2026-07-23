@@ -19,6 +19,14 @@ export const INTEGRATION_SCOPE = {
   AVAILABILITY_READ: 'integration.availability.read',
   CUSTOMERS_READ: 'integration.customers.read',
   APPOINTMENTS_READ: 'integration.appointments.read',
+
+  // Write scopes (Phase 3 — two-way integrations). A separate, strictly
+  // higher-privilege set from the read scopes above: a key must hold the write
+  // scope AND its issuer must hold the underlying internal write permission.
+  CUSTOMERS_WRITE: 'integration.customers.write',
+  SERVICES_WRITE: 'integration.services.write',
+  STAFF_WRITE: 'integration.staff.write',
+  APPOINTMENTS_WRITE: 'integration.appointments.write',
 } as const;
 
 export type IntegrationScope =
@@ -29,8 +37,10 @@ export const INTEGRATION_SCOPES: IntegrationScope[] =
   Object.values(INTEGRATION_SCOPE);
 
 /**
- * The internal permission a caller must hold to grant each scope to a key.
- * Read-only today (Phase 1 exposes read-only endpoints only).
+ * The internal permission a caller must hold to grant each scope to a key, so a
+ * key can never carry more access than its issuer. Read scopes (Phase 1) map to
+ * the matching read permission; write scopes (Phase 3) map to the write/create
+ * permission.
  */
 export const INTEGRATION_SCOPE_REQUIRES: Record<IntegrationScope, PermissionSlug> = {
   [INTEGRATION_SCOPE.SERVICES_READ]: PERMISSION.SERVICES_READ,
@@ -38,6 +48,12 @@ export const INTEGRATION_SCOPE_REQUIRES: Record<IntegrationScope, PermissionSlug
   [INTEGRATION_SCOPE.AVAILABILITY_READ]: PERMISSION.SCHEDULING_AVAILABILITY_READ,
   [INTEGRATION_SCOPE.CUSTOMERS_READ]: PERMISSION.CRM_CUSTOMERS_READ,
   [INTEGRATION_SCOPE.APPOINTMENTS_READ]: PERMISSION.APPOINTMENTS_READ,
+
+  // Write scopes require the underlying internal WRITE/CREATE permission.
+  [INTEGRATION_SCOPE.CUSTOMERS_WRITE]: PERMISSION.CUSTOMERS_MANAGE,
+  [INTEGRATION_SCOPE.SERVICES_WRITE]: PERMISSION.SERVICES_CREATE,
+  [INTEGRATION_SCOPE.STAFF_WRITE]: PERMISSION.STAFF_MANAGE,
+  [INTEGRATION_SCOPE.APPOINTMENTS_WRITE]: PERMISSION.APPOINTMENTS_CREATE,
 };
 
 /** Narrows an arbitrary string array to the ones that are valid scopes (legacy/junk-safe). */

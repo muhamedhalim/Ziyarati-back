@@ -178,6 +178,11 @@ export const PERMISSION = {
   // governs the INBOUND provider webhook-log admin surface.
   PLATFORM_WEBHOOKS_OUTBOUND_READ: 'platform.webhooks-outbound.read',
   PLATFORM_WEBHOOKS_OUTBOUND_MANAGE: 'platform.webhooks-outbound.manage',
+  // External-system integration connections + mapping/import/sync (Phase 3 —
+  // two-way integrations). Governs the tenant-admin Developer Options surface;
+  // the M2M write API itself is gated by API-key integration scopes, not these.
+  PLATFORM_INTEGRATIONS_READ: 'platform.integrations.read',
+  PLATFORM_INTEGRATIONS_MANAGE: 'platform.integrations.manage',
   PLATFORM_FILES_READ: 'platform.files.read',
   PLATFORM_FILES_MANAGE: 'platform.files.manage',
   // Platform-owned global settings (super_admin only; held via the * wildcard)
@@ -392,6 +397,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.PLATFORM_WEBHOOKS_MANAGE, name: 'Manage webhook logs', module: 'platform' },
   { slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ, name: 'Read outbound webhooks', module: 'platform' },
   { slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE, name: 'Manage outbound webhooks', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_INTEGRATIONS_READ, name: 'Read integration connections', module: 'platform' },
+  { slug: PERMISSION.PLATFORM_INTEGRATIONS_MANAGE, name: 'Manage integration connections', module: 'platform' },
   { slug: PERMISSION.PLATFORM_FILES_READ, name: 'Read file uploads', module: 'platform' },
   { slug: PERMISSION.PLATFORM_FILES_MANAGE, name: 'Manage file uploads', module: 'platform' },
   { slug: PERMISSION.PLATFORM_SETTINGS_READ, name: 'Read system settings', module: 'platform' },
@@ -577,6 +584,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PLATFORM_WEBHOOKS_MANAGE,
     PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ,
     PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE,
+    PERMISSION.PLATFORM_INTEGRATIONS_READ,
+    PERMISSION.PLATFORM_INTEGRATIONS_MANAGE,
     PERMISSION.PLATFORM_FILES_READ,
     PERMISSION.PLATFORM_FILES_MANAGE,
   ],
