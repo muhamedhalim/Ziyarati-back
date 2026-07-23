@@ -12,11 +12,13 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { Customer } from '../../entities/CRM/Customer';
 import { Service } from '../../entities/Services/Service';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 
 import { CryptoModule } from '../../common/crypto/crypto.module';
 import { CrmModule } from '../crm/crm.module';
 import { ServicesModule } from '../services/services.module';
 import { StaffModule } from '../staff/staff.module';
+import { AppointmentModule } from '../appointment/appointment.module';
 
 import { IntegrationConnectionService } from './connections/integration-connection.service';
 import { IntegrationIdMapService } from './mappings/integration-id-map.service';
@@ -77,6 +79,10 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
     // Staff upsert delegates to StaffService (update/link only — never creates
     // an account; provisioning stays in StaffAccessService's invitation flow).
     StaffModule,
+    // Appointment upsert delegates to AppointmentsService (create/reschedule/
+    // cancel) so tenant-scoped reference checks, the real availability re-check
+    // and persistence all run inside that service's own transaction.
+    AppointmentModule,
     TypeOrmModule.forFeature([
       IntegrationConnection,
       IntegrationIdMap,
@@ -89,6 +95,7 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
       Customer,
       Service,
       StaffProfile,
+      Appointment,
     ]),
   ],
   controllers: [
