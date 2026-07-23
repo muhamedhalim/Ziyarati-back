@@ -30,6 +30,8 @@ const HEALTH_STALE_SUCCESS_MS = 24 * 3600 * 1000;
 /** Connection with the encrypted credential stripped — the shape returned to clients. */
 export type SafeConnection = Omit<IntegrationConnection, 'credentials_ciphertext'> & {
   hasCredential: boolean;
+  /** Derived health state (healthy|degraded|offline|disabled) — never row existence. */
+  healthState: HealthState;
 };
 
 export interface ConnectionActor {
@@ -324,6 +326,10 @@ export class IntegrationConnectionService {
 
   private toSafe(c: IntegrationConnection): SafeConnection {
     const { credentials_ciphertext, ...rest } = c;
-    return { ...rest, hasCredential: !!credentials_ciphertext } as SafeConnection;
+    return {
+      ...rest,
+      hasCredential: !!credentials_ciphertext,
+      healthState: this.deriveHealthState(c),
+    } as SafeConnection;
   }
 }
