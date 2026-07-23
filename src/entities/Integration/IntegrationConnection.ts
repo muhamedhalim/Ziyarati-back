@@ -74,6 +74,18 @@ export class IntegrationConnection {
   last_error_at?: Date | null;
 
   /**
+   * Count of consecutive failed communications since the last success. Drives the
+   * healthy → degraded → offline transition (health is NEVER inferred from row
+   * existence alone). Reset to 0 on any success.
+   */
+  @Column({ type: 'int', default: 0 })
+  consecutive_failures!: number;
+
+  /** Last measured round-trip latency to the provider, in ms (when measured). */
+  @Column({ type: 'int', nullable: true })
+  last_latency_ms?: number | null;
+
+  /**
    * Soft-delete marker. "Disconnect + delete" sets this (+ status disconnected)
    * rather than removing the row — mappings and history reference this
    * connection and must survive its removal for audit. Tenant-facing reads

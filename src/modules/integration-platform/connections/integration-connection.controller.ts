@@ -55,6 +55,13 @@ export class IntegrationConnectionController {
     return this.connections.list(this.ctx.requireTenantId(), query);
   }
 
+  @ApiOperation({ summary: 'List providers + capabilities', description: '**Protected — `platform.integrations.read`.** Static route (declared before `:id`).' })
+  @Get('providers')
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
+  providers() {
+    return this.connections.listProviders();
+  }
+
   @ApiOperation({ summary: 'Get a connection', description: '**Protected — `platform.integrations.read`.**' })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get(':id')
@@ -63,12 +70,21 @@ export class IntegrationConnectionController {
     return this.connections.get(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Connection health/status', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({ summary: 'Connection health/status', description: '**Protected — `platform.integrations.read`.** Derived state, never row existence.' })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get(':id/health')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
   health(@Param('id', ParseUUIDPipe) id: string) {
     return this.connections.health(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({ summary: 'Run a live health probe', description: '**Protected — `platform.integrations.manage`.** Calls the provider adapter; records latency + failure.' })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @Post(':id/health/check')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
+  checkHealth(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+    return this.connections.checkHealth(this.ctx.requireTenantId(), id, { userId, ip });
   }
 
   @ApiOperation({ summary: 'Update a connection', description: '**Protected — `platform.integrations.manage`.**' })

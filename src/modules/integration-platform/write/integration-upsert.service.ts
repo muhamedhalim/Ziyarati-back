@@ -25,6 +25,7 @@ import { decideConflict, sanitizeExternalInput } from './source-of-truth';
 import { IntegrationIdMapService } from '../mappings/integration-id-map.service';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
+import { IntegrationConflictService } from '../conflicts/integration-conflict.service';
 
 export interface UpsertResult {
   outcome: UpsertOutcome;
@@ -82,6 +83,7 @@ export class IntegrationUpsertService {
     private readonly idMap: IntegrationIdMapService,
     private readonly connections: IntegrationConnectionService,
     private readonly audit: IntegrationAuditService,
+    private readonly conflicts: IntegrationConflictService,
   ) {
     this.adapters = {
       [INTEGRATION_RESOURCE.CUSTOMER]: this.customerAdapter(),
@@ -158,6 +160,14 @@ export class IntegrationUpsertService {
       }
       const decision = decideConflict(conflictPolicy as never, clean, current);
       if (decision.report) {
+        if (!dryRun) {
+          await this.conflicts.record({
+            tenantId, connectionId, resource, externalId,
+            internalId: mapping.internal_resource_id,
+            changedFields: decision.changedFields, policy: conflictPolicy,
+            externalValues: clean, platformValues: current,
+          });
+        }
         return this.conflicted(externalId, mapping.internal_resource_id, decision.changedFields);
       }
       if (!decision.apply) {
@@ -192,7 +202,14 @@ export class IntegrationUpsertService {
       await this.audit.record(INTEGRATION_AUDIT_ACTION.MAPPING_LINK, tenantId, resource, existing.id, actor, {
         connectionId, externalId,
       });
-      if (decision.report) return this.conflicted(externalId, existing.id, decision.changedFields);
+      if (decision.report) {
+        await this.conflicts.record({
+          tenantId, connectionId, resource, externalId, internalId: existing.id,
+          changedFields: decision.changedFields, policy: conflictPolicy,
+          externalValues: clean, platformValues: current,
+        });
+        return this.conflicted(externalId, existing.id, decision.changedFields);
+      }
       if (decision.apply) {
         await adapter.update(tenantId, existing.id, clean);
         return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: existing.id, changedFields: decision.changedFields };

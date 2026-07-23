@@ -32,6 +32,9 @@ import {
   WebhookDlqJob,
   WorkflowActionJob,
   WorkflowRunJob,
+  IntegrationImportJobData,
+  IntegrationSyncJobData,
+  IntegrationInboundJobData,
 } from './job-data.interface';
 
 /**
@@ -341,6 +344,48 @@ export class QueueService {
   enqueueWebhookDlq(data: WebhookDlqJob, opts?: JobsOptions) {
     return this.add(QUEUE.WEBHOOKS_DLQ, JOB.WEBHOOKS_DLQ, data, {
       jobId: `webhook-dlq-${data.originalJobId ?? Date.now()}`,
+      ...opts,
+    });
+  }
+
+  // ── Integration platform (Phase 4) ───────────────────────────────────────
+
+  /** Enqueue async import processing. Deterministic jobId → duplicate-safe. */
+  enqueueIntegrationImport(data: IntegrationImportJobData, opts?: JobsOptions) {
+    return this.add(QUEUE.INTEGRATION_IMPORT, JOB.INTEGRATION_IMPORT, data, {
+      jobId: `integration-import-${data.importJobId}`,
+      ...opts,
+    });
+  }
+
+  /** Manual retry of an import job — unique jobId so it re-runs past a retained job. */
+  retryIntegrationImport(data: IntegrationImportJobData, opts?: JobsOptions) {
+    return this.add(QUEUE.INTEGRATION_IMPORT, JOB.INTEGRATION_IMPORT, data, {
+      jobId: `integration-import-${data.importJobId}-retry-${Date.now()}`,
+      ...opts,
+    });
+  }
+
+  /** Enqueue a sync run. Deterministic jobId → duplicate-safe at the queue layer. */
+  enqueueIntegrationSync(data: IntegrationSyncJobData, opts?: JobsOptions) {
+    return this.add(QUEUE.INTEGRATION_SYNC, JOB.INTEGRATION_SYNC, data, {
+      jobId: `integration-sync-${data.syncJobId}`,
+      ...opts,
+    });
+  }
+
+  /** Manual retry/resume of a sync run — unique jobId so it re-runs. */
+  retryIntegrationSync(data: IntegrationSyncJobData, opts?: JobsOptions) {
+    return this.add(QUEUE.INTEGRATION_SYNC, JOB.INTEGRATION_SYNC, data, {
+      jobId: `integration-sync-${data.syncJobId}-retry-${Date.now()}`,
+      ...opts,
+    });
+  }
+
+  /** Enqueue inbound-webhook processing. Deterministic jobId → duplicate-safe. */
+  enqueueIntegrationInbound(data: IntegrationInboundJobData, opts?: JobsOptions) {
+    return this.add(QUEUE.INTEGRATION_INBOUND, JOB.INTEGRATION_INBOUND, data, {
+      jobId: `integration-inbound-${data.inboundEventId}`,
       ...opts,
     });
   }

@@ -44,6 +44,12 @@ export const QUEUE = {
   WEBHOOKS_DELIVER: 'webhooks.deliver',
   /** Dead-letter park for exhausted webhooks.deliver jobs. */
   WEBHOOKS_DLQ: 'webhooks.dlq',
+  /** Async batch import processing (Phase 4 — two-way integrations). */
+  INTEGRATION_IMPORT: 'integration.import',
+  /** Synchronization runs — pull/push external changes (Phase 4). */
+  INTEGRATION_SYNC: 'integration.sync',
+  /** Inbound integration webhook processing (Phase 4). */
+  INTEGRATION_INBOUND: 'integration.inbound',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -91,6 +97,10 @@ export const JOB = {
   WORKFLOW_ACTION: 'workflow.action',
   WEBHOOKS_DELIVER: 'webhooks.deliver',
   WEBHOOKS_DLQ: 'webhooks.dlq',
+  INTEGRATION_IMPORT: 'integration.import',
+  INTEGRATION_IMPORT_RECOVER: 'integration.importRecover',
+  INTEGRATION_SYNC: 'integration.sync',
+  INTEGRATION_INBOUND: 'integration.inbound',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

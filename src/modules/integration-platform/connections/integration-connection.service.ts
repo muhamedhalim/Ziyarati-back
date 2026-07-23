@@ -14,9 +14,18 @@ import {
   CONNECTION_AUTH_TYPE,
   CONNECTION_STATUS,
   ConflictPolicy,
+  HEALTH_DEGRADED_AT,
+  HEALTH_OFFLINE_AT,
+  HEALTH_STATE,
+  HealthState,
+  INTEGRATION_PROVIDERS,
   getProvider,
 } from '../integration-platform.constants';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
+import { IntegrationProviderService } from '../providers/integration-provider.service';
+
+/** Age after which a connection with no fresh success is considered stale/offline. */
+const HEALTH_STALE_SUCCESS_MS = 24 * 3600 * 1000;
 
 /** Connection with the encrypted credential stripped — the shape returned to clients. */
 export type SafeConnection = Omit<IntegrationConnection, 'credentials_ciphertext'> & {
@@ -44,6 +53,7 @@ export class IntegrationConnectionService {
     private readonly connections: Repository<IntegrationConnection>,
     private readonly encryption: EncryptionService,
     private readonly audit: IntegrationAuditService,
+    private readonly providers: IntegrationProviderService,
   ) {}
 
   async create(tenantId: string, dto: CreateConnectionDto, actor: ConnectionActor): Promise<SafeConnection> {
@@ -99,18 +109,79 @@ export class IntegrationConnectionService {
     return this.toSafe(await this.findOneOrThrow(tenantId, id));
   }
 
-  /** Lightweight health/status snapshot (no credential, no internal detail). */
+  /**
+   * Derived health/status snapshot (no credential). The `state` is computed from
+   * real signals — status, consecutive failures, and last-success staleness —
+   * NEVER from row existence alone.
+   */
   async health(tenantId: string, id: string) {
     const c = await this.findOneOrThrow(tenantId, id);
+    return this.healthView(c);
+  }
+
+  /**
+   * LIVE health probe — actually calls the provider adapter's healthCheck (real
+   * communication, not row existence), records latency + success/failure, and
+   * returns the refreshed health view.
+   */
+  async checkHealth(tenantId: string, id: string, actor: ConnectionActor) {
+    const c = await this.findOneOrThrow(tenantId, id);
+    if (c.status !== CONNECTION_STATUS.ACTIVE) {
+      return this.healthView(c);
+    }
+    const started = Date.now();
+    try {
+      const res = await this.providers.healthCheck(c);
+      if (res.ok) {
+        await this.markSuccess(c.id, res.latencyMs ?? Date.now() - started);
+      } else {
+        await this.markError(c.id, res.reason ?? 'Provider health check failed');
+      }
+    } catch (err) {
+      await this.markError(c.id, (err as Error)?.message ?? 'Provider health check error');
+    }
+    await this.audit.record(INTEGRATION_AUDIT_ACTION.CONNECTION_UPDATE, tenantId, 'IntegrationConnection', id, actor, {
+      action: 'healthCheck',
+    });
+    return this.healthView(await this.findOneOrThrow(tenantId, id));
+  }
+
+  private healthView(c: IntegrationConnection) {
     return {
       id: c.id,
       status: c.status,
-      healthy: c.status === CONNECTION_STATUS.ACTIVE && !c.last_error,
+      state: this.deriveHealthState(c),
+      /** Retained boolean for back-compat; true only when state === healthy. */
+      healthy: this.deriveHealthState(c) === HEALTH_STATE.HEALTHY,
       lastSuccessAt: c.last_success_at ?? null,
       lastError: c.last_error ?? null,
       lastErrorAt: c.last_error_at ?? null,
+      consecutiveFailures: c.consecutive_failures ?? 0,
+      latencyMs: c.last_latency_ms ?? null,
+      /** Credential presence + shape only — never the secret itself. */
+      credential: { present: !!c.credentials_ciphertext, authType: c.auth_type },
       syncDirection: c.sync_direction,
     };
+  }
+
+  /**
+   * healthy → degraded → offline → disabled, from real signals only:
+   *  - disabled: connection is not active.
+   *  - offline : too many consecutive failures, or no fresh success in a day.
+   *  - degraded: some recent failures, or active-but-never-yet-succeeded.
+   *  - healthy : active, a recent success, and zero consecutive failures.
+   */
+  private deriveHealthState(c: IntegrationConnection): HealthState {
+    if (c.status !== CONNECTION_STATUS.ACTIVE) return HEALTH_STATE.DISABLED;
+    const failures = c.consecutive_failures ?? 0;
+    const lastSuccessMs = c.last_success_at ? c.last_success_at.getTime() : null;
+    const stale = lastSuccessMs !== null && Date.now() - lastSuccessMs > HEALTH_STALE_SUCCESS_MS;
+
+    if (failures >= HEALTH_OFFLINE_AT) return HEALTH_STATE.OFFLINE;
+    if (failures >= HEALTH_DEGRADED_AT) return HEALTH_STATE.DEGRADED;
+    if (lastSuccessMs === null) return HEALTH_STATE.DEGRADED; // never proven → not "healthy"
+    if (stale) return HEALTH_STATE.OFFLINE;
+    return HEALTH_STATE.HEALTHY;
   }
 
   async update(tenantId: string, id: string, dto: UpdateConnectionDto, actor: ConnectionActor): Promise<SafeConnection> {
@@ -182,22 +253,58 @@ export class IntegrationConnectionService {
     return c;
   }
 
-  /** Record a successful sync/import checkpoint. Best-effort, never throws. */
-  async markSuccess(id: string): Promise<void> {
+  /**
+   * Record a successful communication checkpoint: resets the consecutive-failure
+   * counter and clears the last error. Best-effort, never throws.
+   */
+  async markSuccess(id: string, latencyMs?: number): Promise<void> {
     await this.connections
-      .update({ id }, { last_success_at: new Date(), last_error: null, last_error_at: null })
+      .update(
+        { id },
+        {
+          last_success_at: new Date(),
+          last_error: null,
+          last_error_at: null,
+          consecutive_failures: 0,
+          ...(latencyMs !== undefined ? { last_latency_ms: Math.max(0, Math.round(latencyMs)) } : {}),
+        },
+      )
       .catch(() => undefined);
   }
 
-  /** Record a safe, truncated error summary. Best-effort, never throws. */
+  /**
+   * Record a safe, truncated error summary and INCREMENT the consecutive-failure
+   * counter (drives the degraded → offline transition). Deliberately does NOT
+   * flip the connection status: a transient failure must degrade health, not
+   * silently disable an active integration. Best-effort, never throws.
+   */
   async markError(id: string, message: string): Promise<void> {
     await this.connections
-      .update({ id }, { status: CONNECTION_STATUS.ERROR, last_error: message.slice(0, 500), last_error_at: new Date() })
+      .createQueryBuilder()
+      .update(IntegrationConnection)
+      .set({
+        last_error: message.slice(0, 500),
+        last_error_at: new Date(),
+        consecutive_failures: () => '"consecutive_failures" + 1',
+      })
+      .where('id = :id', { id })
+      .execute()
       .catch(() => undefined);
   }
 
   conflictPolicyOf(connection: IntegrationConnection): ConflictPolicy {
     return connection.default_conflict_policy as ConflictPolicy;
+  }
+
+  /** Trusted provider registry + capabilities for the connection UI (no secrets). */
+  listProviders() {
+    return Object.values(INTEGRATION_PROVIDERS).map((p) => ({
+      key: p.key,
+      label: p.label,
+      authTypes: p.authTypes,
+      oauth: p.oauth,
+      capabilities: this.providers.capabilitiesOf(p.key),
+    }));
   }
 
   private async findOneOrThrow(tenantId: string, id: string): Promise<IntegrationConnection> {
