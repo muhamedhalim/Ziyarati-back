@@ -97,6 +97,24 @@ export class IntegrationIdempotencyService {
       .catch((e) => this.logger.warn(`idempotency fail cleanup failed: ${(e as Error)?.message}`));
   }
 
+  /**
+   * Retention sweep — delete idempotency records past their TTL so the table
+   * cannot grow unbounded. Safe to run repeatedly; returns the number removed.
+   */
+  async purgeExpired(now: Date = new Date()): Promise<number> {
+    const res = await this.repo
+      .createQueryBuilder()
+      .delete()
+      .from(IntegrationIdempotencyKey)
+      .where('expires_at < :now', { now })
+      .execute()
+      .catch((e) => {
+        this.logger.warn(`idempotency purge failed: ${(e as Error)?.message}`);
+        return { affected: 0 } as { affected?: number | null };
+      });
+    return res.affected ?? 0;
+  }
+
   /** Persist the final response so a later retry replays it. No-op without a record. */
   async complete(
     recordId: string | undefined,
