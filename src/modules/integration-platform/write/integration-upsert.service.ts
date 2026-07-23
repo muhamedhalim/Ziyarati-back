@@ -7,6 +7,7 @@ import { validate } from 'class-validator';
 import { Customer } from '../../../entities/CRM/Customer';
 import { Service } from '../../../entities/Services/Service';
 import { StaffProfile } from '../../../entities/Staff/StaffProfile';
+import { Appointment } from '../../../entities/Calendar&Appointments/Appointment';
 import { AppError, ErrorCode } from '../../../common/errors';
 import { CustomerService } from '../../crm/customer.service';
 import { CreateCustomerDto } from '../../crm/dto/create-customer.dto';
@@ -16,6 +17,8 @@ import { CreateServiceDto } from '../../services/dto/create-service.dto';
 import { UpdateServiceDto } from '../../services/dto/update-service.dto';
 import { StaffService as StaffDomainService } from '../../staff/staff.service';
 import { UpdateStaffDto } from '../../staff/dto/update-staff.dto';
+import { AppointmentsService } from '../../appointment/appointment.service';
+import { CreateAppointmentDto } from '../../appointment/dto/create-appointment.dto';
 
 import {
   CONFLICT_REASON,
@@ -47,6 +50,37 @@ export interface UpsertActor {
 }
 
 /**
+ * Per-operation context handed to an adapter. `raw` is the ORIGINAL payload so an
+ * adapter can read READ-ONLY hints (staff `matchEmail`, appointment
+ * `*ExternalId` / `action` / `reason`) that are deliberately not writable;
+ * `connectionId` scopes any mapping lookups the adapter needs.
+ */
+export interface AdapterContext {
+  actor: UpsertActor;
+  raw: Record<string, unknown>;
+  connectionId: string;
+}
+
+/** UUID shape check — API-key principals (`apikey:<id>`) are NOT real users. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Appointments record real ownership (`booked_by`/`cancelled_by` are user FKs),
+ * so a write must be attributable to a real platform user. An API-key principal
+ * is not one — such a write is refused rather than corrupting ownership.
+ */
+function requireActorUser(actor: UpsertActor): string {
+  const id = actor?.userId;
+  if (!id || !UUID_RE.test(id)) {
+    throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+      message:
+        'Appointment writes must be attributable to a platform user — run this import from the dashboard rather than a machine-to-machine key',
+    });
+  }
+  return id;
+}
+
+/**
  * Maps one resource type onto its EXISTING domain service so all business rules
  * (uniqueness, validation, category/lifecycle checks) are reused — the upsert
  * pipeline never writes to a repository directly. The two repositories injected
@@ -64,8 +98,8 @@ interface ResourceAdapter {
   canCreate?: boolean;
   /** Reason code recorded when `canCreate` is false. */
   cannotCreateReason?: ConflictReason;
-  create(tenantId: string, data: Record<string, unknown>): Promise<{ id: string }>;
-  update(tenantId: string, id: string, data: Record<string, unknown>): Promise<{ id: string }>;
+  create(tenantId: string, data: Record<string, unknown>, ctx: AdapterContext): Promise<{ id: string }>;
+  update(tenantId: string, id: string, data: Record<string, unknown>, ctx: AdapterContext): Promise<{ id: string }>;
   /** Comparable (allowlist-keyed) current view, or null if the record is gone. */
   currentView(tenantId: string, id: string): Promise<Record<string, unknown> | null>;
   /**
@@ -103,9 +137,11 @@ export class IntegrationUpsertService {
     private readonly customers: CustomerService,
     private readonly servicesSvc: ServiceService,
     private readonly staffSvc: StaffDomainService,
+    private readonly appointmentsSvc: AppointmentsService,
     @InjectRepository(Customer) private readonly customerRepo: Repository<Customer>,
     @InjectRepository(Service) private readonly serviceRepo: Repository<Service>,
     @InjectRepository(StaffProfile) private readonly staffRepo: Repository<StaffProfile>,
+    @InjectRepository(Appointment) private readonly appointmentRepo: Repository<Appointment>,
     private readonly idMap: IntegrationIdMapService,
     private readonly connections: IntegrationConnectionService,
     private readonly audit: IntegrationAuditService,
@@ -115,8 +151,7 @@ export class IntegrationUpsertService {
       [INTEGRATION_RESOURCE.CUSTOMER]: this.customerAdapter(),
       [INTEGRATION_RESOURCE.SERVICE]: this.serviceAdapter(),
       [INTEGRATION_RESOURCE.STAFF]: this.staffAdapter(),
-      // Appointment upsert requires lifecycle/availability handling — next.
-      [INTEGRATION_RESOURCE.APPOINTMENT]: undefined,
+      [INTEGRATION_RESOURCE.APPOINTMENT]: this.appointmentAdapter(),
     };
   }
 
@@ -202,7 +237,7 @@ export class IntegrationUpsertService {
       if (dryRun) {
         return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: mapping.internal_resource_id, changedFields: decision.changedFields };
       }
-      const updated = await adapter.update(tenantId, mapping.internal_resource_id, clean);
+      const updated = await adapter.update(tenantId, mapping.internal_resource_id, clean, { actor, raw: rawData ?? {}, connectionId });
       await this.audit.record(INTEGRATION_AUDIT_ACTION.UPSERT, tenantId, resource, updated.id, actor, {
         connectionId, externalId, outcome: UPSERT_OUTCOME.UPDATED, changedFields: decision.changedFields,
       });
@@ -236,7 +271,7 @@ export class IntegrationUpsertService {
         return this.conflicted(externalId, existing.id, decision.changedFields);
       }
       if (decision.apply) {
-        await adapter.update(tenantId, existing.id, clean);
+        await adapter.update(tenantId, existing.id, clean, { actor, raw: rawData ?? {}, connectionId });
         return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: existing.id, changedFields: decision.changedFields };
       }
       return { outcome: UPSERT_OUTCOME.LINKED, externalId, internalId: existing.id };
@@ -268,7 +303,7 @@ export class IntegrationUpsertService {
     if (dryRun) {
       return { outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: null };
     }
-    const created = await adapter.create(tenantId, clean);
+    const created = await adapter.create(tenantId, clean, { actor, raw: rawData ?? {}, connectionId });
     await this.idMap.link(tenantId, connectionId, resource, externalId, created.id, MAPPING_SOURCE.EXTERNAL);
     await this.audit.record(INTEGRATION_AUDIT_ACTION.UPSERT, tenantId, resource, created.id, actor, {
       connectionId, externalId, outcome: UPSERT_OUTCOME.CREATED,
@@ -321,6 +356,160 @@ export class IntegrationUpsertService {
         const c = await this.customerRepo.findOne({ where: { tenant: { id: tenantId }, phone } });
         return c ? { id: c.id } : null;
       },
+    };
+  }
+
+  /**
+   * Appointments — routed exclusively through the appointment LIFECYCLE service
+   * (`create` / `reschedule` / `cancel`), never a raw row write. That service
+   * validates branch/customer/staff/services within the tenant, re-checks REAL
+   * availability, and does it all inside ONE transaction, so a double-booking or
+   * an invalid combination can never be produced by an integration.
+   *
+   * Dependencies are resolved to internal ids from the connection's mapping using
+   * read-only `*ExternalId` hints (an external PMS knows its own ids, not ours).
+   * Internal uuids may also be supplied directly — the lifecycle service
+   * tenant-validates them either way. If ANY dependency cannot be resolved the
+   * record fails safely with a `missing_dependency` conflict; nothing partial is
+   * written because the whole create runs in the service's transaction.
+   *
+   * Lifecycle intent is carried by the read-only `action` hint:
+   *   `cancel`     → AppointmentsService.cancel   (reason only; refunds are
+   *                  platform-owned and never externally settable)
+   *   `reschedule` → AppointmentsService.reschedule (availability re-checked)
+   *   default      → create (new) / reschedule-on-time-change (existing)
+   * A transition the lifecycle forbids surfaces as a safe failure, never a
+   * forced status write.
+   */
+  private appointmentAdapter(): ResourceAdapter {
+    /** Resolve one dependency: explicit internal id, else mapping lookup. */
+    const resolveRef = async (
+      tenantId: string,
+      connectionId: string,
+      resource: IntegrationResource,
+      internalId: unknown,
+      externalId: unknown,
+    ): Promise<string | null> => {
+      if (typeof internalId === 'string' && internalId) return internalId;
+      if (typeof externalId === 'string' && externalId) {
+        const m = await this.idMap.findByExternalId(tenantId, connectionId, resource, externalId);
+        return m?.internal_resource_id ?? null;
+      }
+      return null;
+    };
+
+    const missingDependency = (what: string): never => {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Cannot resolve the ${what} for this appointment — import or map it first`,
+        publicContext: { reason: CONFLICT_REASON.MISSING_DEPENDENCY },
+      });
+    };
+
+    const resolveServiceIds = async (
+      tenantId: string,
+      connectionId: string,
+      internal: unknown,
+      external: unknown,
+    ): Promise<string[] | undefined> => {
+      if (Array.isArray(internal) && internal.length) return internal as string[];
+      if (!Array.isArray(external) || !external.length) return undefined;
+      const ids: string[] = [];
+      for (const ext of external) {
+        if (typeof ext !== 'string') continue;
+        const m = await this.idMap.findByExternalId(
+          tenantId, connectionId, INTEGRATION_RESOURCE.SERVICE, ext,
+        );
+        if (!m) missingDependency('service');
+        ids.push((m as { internal_resource_id: string }).internal_resource_id);
+      }
+      return ids;
+    };
+
+    return {
+      createDto: CreateAppointmentDto,
+      updateDto: CreateAppointmentDto,
+      create: async (tenantId, data, ctx) => {
+        const userId = requireActorUser(ctx.actor);
+        const branchId = await resolveRef(
+          tenantId, ctx.connectionId, INTEGRATION_RESOURCE.APPOINTMENT, data.branchId, ctx.raw.branchExternalId,
+        );
+        const customerId = await resolveRef(
+          tenantId, ctx.connectionId, INTEGRATION_RESOURCE.CUSTOMER, data.customerId, ctx.raw.customerExternalId,
+        );
+        const staffId = await resolveRef(
+          tenantId, ctx.connectionId, INTEGRATION_RESOURCE.STAFF, data.staffId, ctx.raw.staffExternalId,
+        );
+        if (!branchId) missingDependency('branch');
+        if (!customerId) missingDependency('customer');
+        if (!staffId) missingDependency('staff');
+        const serviceIds = await resolveServiceIds(
+          tenantId, ctx.connectionId, data.serviceIds, ctx.raw.serviceExternalIds,
+        );
+
+        // Delegated wholesale: tenant-scoped reference checks, the REAL
+        // availability re-check and persistence all happen inside the
+        // appointment service's own transaction — so a double-booking or an
+        // invalid staff/service/branch combination can never be produced here.
+        const created = await this.appointmentsSvc.create(tenantId, userId, {
+          branchId,
+          customerId,
+          staffId,
+          startAt: data.startAt,
+          endAt: data.endAt,
+          serviceIds,
+          notes: data.notes,
+        } as unknown as CreateAppointmentDto);
+        return { id: created.id };
+      },
+      update: async (tenantId, id, data, ctx) => {
+        const userId = requireActorUser(ctx.actor);
+        const action = typeof ctx.raw.action === 'string' ? ctx.raw.action.toLowerCase() : '';
+        const reason = typeof ctx.raw.reason === 'string' ? ctx.raw.reason.slice(0, 1000) : undefined;
+
+        if (action === 'cancel') {
+          // Reason only — refunds/amounts/settlement are platform-owned and are
+          // never settable by an external system.
+          await this.appointmentsSvc.cancel(tenantId, userId, id, { reason } as never);
+          return { id };
+        }
+
+        if (action === 'reschedule' || data.startAt !== undefined) {
+          if (!data.startAt) {
+            throw new AppError(ErrorCode.VALIDATION_ERROR, {
+              message: 'A new start time is required to reschedule this appointment',
+            });
+          }
+          // Lifecycle guards (not-terminal) + availability re-check run inside
+          // the service's transaction.
+          await this.appointmentsSvc.reschedule(tenantId, userId, id, {
+            newStartAt: data.startAt,
+            newEndAt: data.endAt,
+            reason,
+          } as never);
+          return { id };
+        }
+
+        // Nothing lifecycle-relevant changed — a no-op beats a raw row write
+        // that would bypass the lifecycle rules.
+        return { id };
+      },
+      currentView: async (tenantId, id) => {
+        const a = await this.appointmentRepo.findOne({
+          where: { id, tenant: { id: tenantId } },
+          relations: { staff: true, branch: true, customer: true },
+        });
+        if (!a) return null;
+        return {
+          startAt: a.start_at ? new Date(a.start_at).toISOString() : null,
+          endAt: a.end_at ? new Date(a.end_at).toISOString() : null,
+          staffId: a.staff?.id ?? null,
+          customerId: a.customer?.id ?? null,
+          branchId: a.branch?.id ?? null,
+        };
+      },
+      // An external appointment id is the ONLY safe identity: matching by
+      // time+staff would silently hijack an unrelated booking.
+      naturalMatch: async () => null,
     };
   }
 

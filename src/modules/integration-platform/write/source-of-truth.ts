@@ -57,16 +57,19 @@ export const EXTERNAL_WRITABLE_FIELDS: Record<IntegrationResource, readonly stri
     'isAvailableForBooking',
     'bookingBufferMinutes',
   ],
-  // Appointments go exclusively through the appointment lifecycle service; no
-  // direct external field writes are allowed here (create is the only importable
-  // action, handled by the appointment service's own validation).
+  // Appointments go exclusively through the appointment LIFECYCLE service
+  // (create/reschedule/cancel), which validates every reference inside a
+  // transaction and re-checks real availability. Names match CreateAppointmentDto.
+  // `currency` is deliberately EXCLUDED (financial) even though the DTO accepts
+  // it, and status/payment/settlement fields are protected below.
   [INTEGRATION_RESOURCE.APPOINTMENT]: [
-    'start_at',
-    'end_at',
+    'startAt',
+    'endAt',
     'staffId',
     'customerId',
     'branchId',
     'serviceIds',
+    'notes',
   ],
 };
 
@@ -134,7 +137,27 @@ const RESOURCE_PROTECTED_FIELDS: Record<IntegrationResource, readonly string[]> 
     'avatar_storage_key',
     'avatarStorageKey',
   ],
-  [INTEGRATION_RESOURCE.APPOINTMENT]: ['status', 'booked_by', 'bookedBy', 'slot'],
+  [INTEGRATION_RESOURCE.APPOINTMENT]: [
+    // Lifecycle + ownership — only the lifecycle service may move these.
+    'status',
+    'booked_by',
+    'bookedBy',
+    'cancelled_by',
+    'cancelledBy',
+    'rescheduled_by',
+    'rescheduledBy',
+    'slot',
+    'source',
+    // Money / settlement — platform-owned (global list also covers most of these).
+    'refund_amount',
+    'refundAmount',
+    'transaction_id',
+    'transactionId',
+    'provider_reference',
+    'providerReference',
+    'payment_id',
+    'paymentId',
+  ],
 };
 
 export function protectedFieldsFor(resource: IntegrationResource): Set<string> {
