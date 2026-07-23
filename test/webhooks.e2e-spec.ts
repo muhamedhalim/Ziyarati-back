@@ -37,6 +37,7 @@ import {
   AppointmentCreatedEvent,
   AppointmentCancelledEvent,
   AppointmentCompletedEvent,
+  AppointmentNoShowEvent,
   APPOINTMENT_EVENT,
 } from '../src/events/appointment.events';
 
@@ -187,6 +188,68 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
       expect(updated.body.events.sort()).toEqual(['payment.refunded', 'payment.succeeded']);
     });
 
+    it('updates the URL, re-validated by the same SSRF guard used at creation', async () => {
+      const created = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/webhooks/endpoints`)
+        .set(...authHeader(owner.token))
+        .send({ url: 'https://example.com/hooks/url-update-test', events: ['appointment.created'] })
+        .expect(201);
+      const id = created.body.id as string;
+
+      const updated = await request(e2e.app.getHttpServer())
+        .patch(`${API}/platform/webhooks/endpoints/${id}`)
+        .set(...authHeader(owner.token))
+        .send({ url: 'https://updated.example.com/hooks/ziyarati' })
+        .expect(200);
+      expect(updated.body.url).toBe('https://updated.example.com/hooks/ziyarati');
+
+      await request(e2e.app.getHttpServer())
+        .patch(`${API}/platform/webhooks/endpoints/${id}`)
+        .set(...authHeader(owner.token))
+        .send({ url: 'http://169.254.169.254/latest/meta-data/' })
+        .expect(400);
+    });
+
+    it('an edited event subscription takes effect on the next dispatch', async () => {
+      const endpoint = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/webhooks/endpoints`)
+        .set(...authHeader(owner.token))
+        .send({ url: 'https://example.com/hooks/edited-subscription', events: ['appointment.created'] })
+        .expect(201);
+
+      const emitter = e2e.app.get(EventEmitter2);
+      await emitter.emitAsync(
+        APPOINTMENT_EVENT.NO_SHOW,
+        new AppointmentNoShowEvent(owner.tenantId, 'apt-edit-1', 'cust-edit-1'),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+
+      const before = await request(e2e.app.getHttpServer())
+        .get(`${API}/platform/webhooks/deliveries?webhookEndpointId=${endpoint.body.id}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(before.body.data).toHaveLength(0); // not subscribed to appointment.no_show yet
+
+      await request(e2e.app.getHttpServer())
+        .patch(`${API}/platform/webhooks/endpoints/${endpoint.body.id}`)
+        .set(...authHeader(owner.token))
+        .send({ events: ['appointment.no_show'] })
+        .expect(200);
+
+      await emitter.emitAsync(
+        APPOINTMENT_EVENT.NO_SHOW,
+        new AppointmentNoShowEvent(owner.tenantId, 'apt-edit-2', 'cust-edit-2'),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+
+      const after = await request(e2e.app.getHttpServer())
+        .get(`${API}/platform/webhooks/deliveries?webhookEndpointId=${endpoint.body.id}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(after.body.data).toHaveLength(1);
+      expect(after.body.data[0].eventType).toBe('appointment.no_show');
+    });
+
     it('deletes an endpoint (cross-tenant delete/get both 404)', async () => {
       const created = await request(e2e.app.getHttpServer())
         .post(`${API}/platform/webhooks/endpoints`)
@@ -204,6 +267,52 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
         .get(`${API}/platform/webhooks/endpoints/${id}`)
         .set(...authHeader(owner.token))
         .expect(404);
+    });
+
+    it('deleting an endpoint is a SOFT delete — the row survives (deleted_at set) and its delivery history is preserved', async () => {
+      const endpoint = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/webhooks/endpoints`)
+        .set(...authHeader(owner.token))
+        .send({ name: 'retained', url: 'https://example.com/hooks/retention-test', events: ['appointment.completed'] })
+        .expect(201);
+      const id = endpoint.body.id as string;
+
+      const emitter = e2e.app.get(EventEmitter2);
+      await emitter.emitAsync(
+        APPOINTMENT_EVENT.COMPLETED,
+        new AppointmentCompletedEvent(owner.tenantId, 'apt-retain-1', 'cust-retain-1'),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+
+      const before = await request(e2e.app.getHttpServer())
+        .get(`${API}/platform/webhooks/deliveries?webhookEndpointId=${id}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(before.body.data).toHaveLength(1);
+      const deliveryId = before.body.data[0].id as string;
+
+      await request(e2e.app.getHttpServer())
+        .delete(`${API}/platform/webhooks/endpoints/${id}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+
+      // The endpoint row itself still exists in the DB (soft-deleted), never
+      // hard-removed — this is what makes the FK-preserving history possible.
+      const rawRow = await e2e.dataSource.query(
+        `SELECT "deleted_at", "is_active" FROM "webhook_endpoints" WHERE "id" = $1`,
+        [id],
+      );
+      expect(rawRow).toHaveLength(1);
+      expect(rawRow[0].deleted_at).not.toBeNull();
+      expect(rawRow[0].is_active).toBe(false);
+
+      // The delivery history is untouched and still readable, with the
+      // endpoint's URL preserved via the immutable snapshot.
+      const delivery = await request(e2e.app.getHttpServer())
+        .get(`${API}/platform/webhooks/deliveries/${deliveryId}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(delivery.body.webhookEndpointUrl).toBe('https://example.com/hooks/retention-test');
     });
 
     it('cross-tenant access to another clinic\'s endpoint returns 404', async () => {
@@ -361,7 +470,7 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
         .expect(422);
     });
 
-    it('replays a dead-lettered delivery: resets to PENDING, re-enqueues, and audits it', async () => {
+    it('replays a dead-lettered delivery: creates a NEW linked delivery, re-enqueues it, and audits it — the original keeps its terminal status', async () => {
       const endpoint = await request(e2e.app.getHttpServer())
         .post(`${API}/platform/webhooks/endpoints`)
         .set(...authHeader(owner.token))
@@ -391,14 +500,25 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
         .expect(200);
       expect(replayed.body.status).toBe('PENDING');
       expect(replayed.body.attemptCount).toBe(0);
+      expect(replayed.body.replayedFromId).toBe(deliveryId);
+      // A brand-new row, not the original mutated in place.
+      expect(replayed.body.id).not.toBe(deliveryId);
+
+      // The original delivery's terminal outcome is untouched by the replay.
+      const originalAfter = await request(e2e.app.getHttpServer())
+        .get(`${API}/platform/webhooks/deliveries/${deliveryId}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(originalAfter.body.status).toBe('DEAD_LETTERED');
+      expect(originalAfter.body.lastError).toBe('exhausted');
 
       const queueService = e2e.app.get(QueueService);
       const jobs = await queueService.queue(QUEUE.WEBHOOKS_DELIVER).getJobs(['waiting', 'delayed'], 0, 50);
-      const replayJob = jobs.find((j) => j.id?.startsWith(`webhook-delivery-${deliveryId}-retry-`));
+      const replayJob = jobs.find((j) => j.id?.startsWith(`webhook-delivery-${replayed.body.id}-retry-`));
       expect(replayJob).toBeTruthy();
 
       const audits = e2e.dataSource.getRepository(AuditLog);
-      const rows = await audits.find({ where: { entity_type: 'WebhookDelivery', entity_id: deliveryId } });
+      const rows = await audits.find({ where: { entity_type: 'WebhookDelivery', entity_id: replayed.body.id } });
       expect(rows.map((r) => r.action)).toContain('webhook.replay');
     });
 

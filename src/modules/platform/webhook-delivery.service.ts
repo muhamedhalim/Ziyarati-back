@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, Not, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 
 import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
@@ -66,6 +66,9 @@ export class WebhookDeliveryService {
           this.deliveries.create({
             tenant: { id: tenantId } as Tenant,
             webhook_endpoint: { id: endpoint.id } as WebhookEndpoint,
+            // Immutable snapshot of the URL as of THIS dispatch instant — never
+            // re-derived from the (possibly since-edited) endpoint later.
+            webhook_endpoint_url_snapshot: endpoint.url,
             event_type: eventType,
             payload,
             status: WEBHOOK_DELIVERY_STATUS.PENDING,
@@ -173,41 +176,62 @@ export class WebhookDeliveryService {
     );
   }
 
-  /** Called by the processor's `@OnWorkerEvent('failed')` once retries are exhausted. */
-  async markDeadLettered(id: string, error: string): Promise<void> {
-    await this.deliveries.update(
-      { id },
+  /**
+   * Called by the processor's `@OnWorkerEvent('failed')` once retries are
+   * exhausted. Conditional on the row NOT already being DEAD_LETTERED, so the
+   * DEAD_LETTERED transition — and the DLQ park that follows it — happens
+   * exactly once even if BullMQ were ever to emit 'failed' more than once for
+   * the same exhausted job. Returns whether this call performed the
+   * transition (the caller skips the DLQ enqueue when it did not).
+   */
+  async markDeadLettered(id: string, error: string): Promise<boolean> {
+    const result = await this.deliveries.update(
+      { id, status: Not(WEBHOOK_DELIVERY_STATUS.DEAD_LETTERED) },
       { status: WEBHOOK_DELIVERY_STATUS.DEAD_LETTERED, last_error: error },
     );
+    return (result.affected ?? 0) > 0;
   }
 
-  /** Manual replay from the dashboard — only for deliveries in a terminal failure state. */
+  /**
+   * Manual replay from the dashboard — only for deliveries in a terminal
+   * failure state. Creates a brand-new delivery row linked back to the
+   * original via `replayed_from_id`, rather than resetting the original row
+   * in place: the original's terminal outcome (FAILED/DEAD_LETTERED, its
+   * final http_status/error/response_preview) is never lost. The event
+   * type and payload are copied byte-for-byte from the original — a replay
+   * NEVER rebuilds the payload from current/live database state.
+   */
   async replay(tenantId: string, id: string, actor: WebhookDeliveryActor) {
-    const delivery = await this.findOneOrThrow(tenantId, id);
+    const original = await this.findOneOrThrow(tenantId, id);
 
     if (
-      delivery.status !== WEBHOOK_DELIVERY_STATUS.FAILED &&
-      delivery.status !== WEBHOOK_DELIVERY_STATUS.DEAD_LETTERED
+      original.status !== WEBHOOK_DELIVERY_STATUS.FAILED &&
+      original.status !== WEBHOOK_DELIVERY_STATUS.DEAD_LETTERED
     ) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: `Only failed or dead-lettered deliveries can be replayed (current status: ${delivery.status})`,
+        message: `Only failed or dead-lettered deliveries can be replayed (current status: ${original.status})`,
       });
     }
-    if (!delivery.webhook_endpoint.is_active) {
+    if (!original.webhook_endpoint || !original.webhook_endpoint.is_active) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'The webhook endpoint is disabled — activate it before replaying',
+        message: 'The webhook endpoint is disabled or no longer exists — activate it before replaying',
       });
     }
 
-    delivery.status = WEBHOOK_DELIVERY_STATUS.PENDING;
-    delivery.attempt_count = 0;
-    delivery.http_status = undefined;
-    delivery.last_error = undefined;
-    delivery.response_preview = undefined;
-    const saved = await this.deliveries.save(delivery);
+    const replay = await this.deliveries.save(
+      this.deliveries.create({
+        tenant: { id: tenantId } as Tenant,
+        webhook_endpoint: original.webhook_endpoint,
+        webhook_endpoint_url_snapshot: original.webhook_endpoint.url,
+        event_type: original.event_type,
+        payload: original.payload,
+        status: WEBHOOK_DELIVERY_STATUS.PENDING,
+        replayed_from_id: original.id,
+      }),
+    );
 
     await this.queue.retryWebhookDeliver(
-      { tenantId, webhookDeliveryId: saved.id },
+      { tenantId, webhookDeliveryId: replay.id },
       this.deliverJobOptions(),
     );
     await this.audit.record(
@@ -215,11 +239,15 @@ export class WebhookDeliveryService {
       tenantId,
       actor.userId,
       'WebhookDelivery',
-      saved.id,
+      replay.id,
       actor.ip,
-      { eventType: saved.event_type, webhookEndpointId: saved.webhook_endpoint.id },
+      {
+        eventType: replay.event_type,
+        webhookEndpointId: original.webhook_endpoint.id,
+        replayedFromId: original.id,
+      },
     );
-    return this.toView(saved);
+    return this.toView(replay);
   }
 
   private async findOneOrThrow(tenantId: string, id: string): Promise<WebhookDelivery> {
@@ -243,20 +271,25 @@ export class WebhookDeliveryService {
     };
   }
 
-  /** Response projection — never includes the endpoint's secret. */
+  /**
+   * Response projection — never includes the endpoint's secret. Falls back to
+   * `webhook_endpoint_url_snapshot` (never null) whenever the live relation is
+   * gone, so history stays readable even after an endpoint is deleted.
+   */
   private toView(delivery: WebhookDelivery) {
     return {
       id: delivery.id,
       eventType: delivery.event_type,
-      webhookEndpointId: delivery.webhook_endpoint.id,
-      webhookEndpointName: delivery.webhook_endpoint.name ?? null,
-      webhookEndpointUrl: delivery.webhook_endpoint.url,
+      webhookEndpointId: delivery.webhook_endpoint?.id ?? null,
+      webhookEndpointName: delivery.webhook_endpoint?.name ?? null,
+      webhookEndpointUrl: delivery.webhook_endpoint?.url ?? delivery.webhook_endpoint_url_snapshot,
       status: delivery.status,
       httpStatus: delivery.http_status ?? null,
       attemptCount: delivery.attempt_count,
       responsePreview: delivery.response_preview ?? null,
       lastError: delivery.last_error ?? null,
       lastAttemptedAt: delivery.last_attempted_at ?? null,
+      replayedFromId: delivery.replayed_from_id ?? null,
       requestId: delivery.id,
       createdAt: delivery.created_at,
     };

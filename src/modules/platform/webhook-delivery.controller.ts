@@ -76,7 +76,7 @@ export class WebhookDeliveryController {
     return this.deliveries.get(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Manually replay a failed/dead-lettered delivery', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Resets the delivery to PENDING and re-enqueues it with a fresh attempt budget. Requires the endpoint to be active.' })
+  @ApiOperation({ summary: 'Manually replay a failed/dead-lettered delivery', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Creates a NEW delivery (linked via `replayedFromId`) with the exact original event type/payload and a fresh attempt budget — the original delivery keeps its terminal status untouched. Requires the endpoint to be active. Delivery is at-least-once: receivers should dedupe on `X-Webhook-Id`.' })
   @ApiParam({ name: 'id', description: 'Webhook delivery UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'Delivery re-queued.' })
   @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })

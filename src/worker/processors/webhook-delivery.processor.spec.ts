@@ -9,6 +9,11 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { QueueService } from '../../queue/queue.service';
 import { WebhookDeliverJob } from '../../queue/job-data.interface';
 import { createMockConfigService } from '../../../test/utils/mock-factories';
+import { deliverWebhookRequest } from '../../modules/platform/webhook-http-client';
+
+jest.mock('../../modules/platform/webhook-http-client');
+
+const mockDeliverWebhookRequest = deliverWebhookRequest as jest.MockedFunction<typeof deliverWebhookRequest>;
 
 function makeJob(data: WebhookDeliverJob, attemptsMade = 0, opts: Record<string, unknown> = { attempts: 6 }) {
   return { id: 'job-1', name: 'webhooks.deliver', data, attemptsMade, opts } as unknown as Job<WebhookDeliverJob>;
@@ -37,13 +42,14 @@ describe('WebhookDeliveryProcessor', () => {
   };
 
   beforeEach(async () => {
+    mockDeliverWebhookRequest.mockReset();
     deliveryService = {
       loadForProcessing: jest.fn().mockResolvedValue(baseDelivery),
       markDelivering: jest.fn().mockResolvedValue(undefined),
       markSucceeded: jest.fn().mockResolvedValue(undefined),
       markFailedPermanent: jest.fn().mockResolvedValue(undefined),
       recordTransientFailure: jest.fn().mockResolvedValue(undefined),
-      markDeadLettered: jest.fn().mockResolvedValue(undefined),
+      markDeadLettered: jest.fn().mockResolvedValue(true),
     };
     endpoints = {
       findActiveWithSecret: jest.fn().mockResolvedValue({
@@ -72,11 +78,7 @@ describe('WebhookDeliveryProcessor', () => {
   });
 
   it('marks SUCCEEDED and never throws on a 2xx response', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      text: async () => 'ok',
-    } as Response);
+    mockDeliverWebhookRequest.mockResolvedValueOnce({ ok: true, transient: false, httpStatus: 200, bodyPreview: 'ok' });
 
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).resolves.toBeUndefined();
     expect(deliveryService.markSucceeded).toHaveBeenCalledWith('d1', 200, 'ok');
@@ -84,29 +86,30 @@ describe('WebhookDeliveryProcessor', () => {
     expect(deliveryService.recordTransientFailure).not.toHaveBeenCalled();
   });
 
-  it('signs the request and sends the documented headers', async () => {
-    const fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '' } as Response);
+  it('signs the request and sends the documented headers to the correct URL/body/timeout', async () => {
+    mockDeliverWebhookRequest.mockResolvedValueOnce({ ok: true, transient: false, httpStatus: 200, bodyPreview: '' });
 
     await processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }));
 
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(mockDeliverWebhookRequest).toHaveBeenCalledTimes(1);
+    const [url, body, headers, timeoutMs] = mockDeliverWebhookRequest.mock.calls[0];
     expect(url).toBe('https://example.com/hook');
-    const headers = init.headers as Record<string, string>;
+    expect(JSON.parse(body)).toEqual({ appointmentId: 'a1' });
     expect(headers['X-Webhook-Id']).toBe('d1');
     expect(headers['X-Webhook-Event']).toBe('appointment.created');
     expect(headers['X-Webhook-Timestamp']).toMatch(/^\d+$/);
     expect(headers['X-Webhook-Signature']).toMatch(/^sha256=[0-9a-f]{64}$/);
-    expect(JSON.parse(init.body as string)).toEqual({ appointmentId: 'a1' });
+    expect(timeoutMs).toBe(200);
   });
 
   it('marks FAILED (permanent) and does NOT throw on a non-retryable 4xx', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+    mockDeliverWebhookRequest.mockResolvedValueOnce({
       ok: false,
-      status: 400,
-      text: async () => 'bad request',
-    } as Response);
+      transient: false,
+      httpStatus: 400,
+      bodyPreview: 'bad request',
+      error: 'HTTP 400',
+    });
 
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).resolves.toBeUndefined();
     expect(deliveryService.markFailedPermanent).toHaveBeenCalledWith('d1', 400, 'bad request', 'HTTP 400');
@@ -114,11 +117,13 @@ describe('WebhookDeliveryProcessor', () => {
   });
 
   it('records progress and THROWS (triggering a BullMQ retry) on a 500', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+    mockDeliverWebhookRequest.mockResolvedValueOnce({
       ok: false,
-      status: 500,
-      text: async () => 'server error',
-    } as Response);
+      transient: true,
+      httpStatus: 500,
+      bodyPreview: 'server error',
+      error: 'HTTP 500',
+    });
 
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).rejects.toThrow();
     expect(deliveryService.recordTransientFailure).toHaveBeenCalledWith('d1', 500, 'server error', 'HTTP 500');
@@ -126,26 +131,20 @@ describe('WebhookDeliveryProcessor', () => {
   });
 
   it('treats HTTP 429 as transient (throws for retry)', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+    mockDeliverWebhookRequest.mockResolvedValueOnce({
       ok: false,
-      status: 429,
-      text: async () => 'slow down',
-    } as Response);
+      transient: true,
+      httpStatus: 429,
+      bodyPreview: 'slow down',
+      error: 'HTTP 429',
+    });
 
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).rejects.toThrow();
     expect(deliveryService.recordTransientFailure).toHaveBeenCalledWith('d1', 429, 'slow down', 'HTTP 429');
   });
 
   it('classifies a timeout as transient and throws', async () => {
-    jest.spyOn(global, 'fetch').mockImplementationOnce((_url, init) => {
-      return new Promise((_resolve, reject) => {
-        (init as RequestInit).signal?.addEventListener('abort', () => {
-          const err = new Error('The operation was aborted');
-          err.name = 'AbortError';
-          reject(err);
-        });
-      });
-    });
+    mockDeliverWebhookRequest.mockResolvedValueOnce({ ok: false, transient: true, error: 'Delivery timed out' });
 
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).rejects.toThrow(
       'Delivery timed out',
@@ -156,23 +155,38 @@ describe('WebhookDeliveryProcessor', () => {
       undefined,
       'Delivery timed out',
     );
-  }, 10_000);
+  });
 
   it('classifies a network error as transient and throws', async () => {
-    jest.spyOn(global, 'fetch').mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    mockDeliverWebhookRequest.mockResolvedValueOnce({ ok: false, transient: true, error: 'ECONNREFUSED' });
 
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).rejects.toThrow(
       'ECONNREFUSED',
     );
   });
 
-  it('is idempotent: skips (and never calls fetch) when the delivery already SUCCEEDED', async () => {
+  it('classifies an SSRF-blocked target as permanent (does NOT throw)', async () => {
+    mockDeliverWebhookRequest.mockResolvedValueOnce({
+      ok: false,
+      transient: false,
+      error: 'Delivery blocked: target address is not allowed',
+    });
+
+    await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).resolves.toBeUndefined();
+    expect(deliveryService.markFailedPermanent).toHaveBeenCalledWith(
+      'd1',
+      undefined,
+      undefined,
+      'Delivery blocked: target address is not allowed',
+    );
+  });
+
+  it('is idempotent: skips (and never calls the http client) when the delivery already SUCCEEDED', async () => {
     deliveryService.loadForProcessing.mockResolvedValueOnce({ ...baseDelivery, status: 'SUCCEEDED' });
-    const fetchSpy = jest.spyOn(global, 'fetch');
 
     await processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }));
 
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockDeliverWebhookRequest).not.toHaveBeenCalled();
     expect(deliveryService.markSucceeded).not.toHaveBeenCalled();
   });
 
@@ -187,11 +201,17 @@ describe('WebhookDeliveryProcessor', () => {
     );
   });
 
+  it('marks FAILED (permanent, no throw) when the delivery has no endpoint relation at all (hard-deleted)', async () => {
+    deliveryService.loadForProcessing.mockResolvedValueOnce({ ...baseDelivery, webhook_endpoint: undefined });
+    await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }))).resolves.toBeUndefined();
+    expect(deliveryService.markFailedPermanent).toHaveBeenCalledWith('d1', undefined, undefined, 'Endpoint no longer exists');
+    expect(endpoints.findActiveWithSecret).not.toHaveBeenCalled();
+  });
+
   it('skips gracefully when the delivery row no longer exists', async () => {
     deliveryService.loadForProcessing.mockResolvedValueOnce(null);
-    const fetchSpy = jest.spyOn(global, 'fetch');
     await expect(processor.process(makeJob({ tenantId: 't1', webhookDeliveryId: 'gone' }))).resolves.toBeUndefined();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockDeliverWebhookRequest).not.toHaveBeenCalled();
   });
 
   describe('@OnWorkerEvent(failed) — DLQ on exhaustion', () => {
@@ -215,6 +235,15 @@ describe('WebhookDeliveryProcessor', () => {
       await processor.onFailed(job, new Error('boom'));
 
       expect(deliveryService.markDeadLettered).not.toHaveBeenCalled();
+      expect(queue.enqueueWebhookDlq).not.toHaveBeenCalled();
+    });
+
+    it('does not double-park a DLQ job when the delivery was already DEAD_LETTERED (exactly-once transition)', async () => {
+      deliveryService.markDeadLettered.mockResolvedValueOnce(false);
+      const job = makeJob({ tenantId: 't1', webhookDeliveryId: 'd1' }, 6, { attempts: 6 });
+      await processor.onFailed(job, new Error('boom'));
+
+      expect(deliveryService.markDeadLettered).toHaveBeenCalledWith('d1', 'boom');
       expect(queue.enqueueWebhookDlq).not.toHaveBeenCalled();
     });
   });

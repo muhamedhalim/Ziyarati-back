@@ -135,10 +135,19 @@ describe('WebhookEndpointService', () => {
   });
 
   describe('remove', () => {
-    it('audits the deletion and removes the row (cascade handles delivery history at the DB level)', async () => {
-      endpoints.findOne.mockResolvedValueOnce({ id: 'e1', name: 'ERP', url: 'https://example.com/hook' });
+    it('soft-deletes (deleted_at + is_active=false) rather than removing the row, and audits it', async () => {
+      endpoints.findOne.mockResolvedValueOnce({
+        id: 'e1',
+        name: 'ERP',
+        url: 'https://example.com/hook',
+        is_active: true,
+      });
+      endpoints.save.mockImplementationOnce(async (e: any) => e);
       await service.remove(TENANT, 'e1', { userId: 'u1' });
-      expect(endpoints.remove).toHaveBeenCalled();
+      expect(endpoints.remove).not.toHaveBeenCalled();
+      const saved = endpoints.save.mock.calls[0][0];
+      expect(saved.deleted_at).toBeInstanceOf(Date);
+      expect(saved.is_active).toBe(false);
       expect(audit.record).toHaveBeenCalledWith(
         WEBHOOK_AUDIT_ACTION.DELETE,
         TENANT,
@@ -147,6 +156,44 @@ describe('WebhookEndpointService', () => {
         'e1',
         undefined,
         expect.objectContaining({ name: 'ERP' }),
+      );
+    });
+
+    it('a soft-deleted endpoint 404s on every subsequent tenant-facing lookup', async () => {
+      // findOneOrThrow filters `deleted_at IS NULL` — the mock repository
+      // simulates that by simply returning null once the row is "deleted".
+      endpoints.findOne.mockResolvedValueOnce(null);
+      await expect(service.get(TENANT, 'e1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+  });
+
+  describe('update', () => {
+    it('re-validates a changed URL with the same SSRF guard used at creation', async () => {
+      endpoints.findOne.mockResolvedValueOnce({ id: 'e1', url: 'https://example.com/hook', events: ['appointment.created'] });
+      await expect(
+        service.update(TENANT, 'e1', { url: 'http://127.0.0.1/hook' } as any, { userId: 'u1' }),
+      ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+      expect(endpoints.save).not.toHaveBeenCalled();
+    });
+
+    it('allows changing the URL to another safe address and audits the change', async () => {
+      endpoints.findOne.mockResolvedValueOnce({ id: 'e1', url: 'https://old.example.com/hook', events: ['appointment.created'] });
+      endpoints.save.mockImplementationOnce(async (e: any) => e);
+      const res = await service.update(
+        TENANT,
+        'e1',
+        { url: 'https://new.example.com/hook' } as any,
+        { userId: 'u1' },
+      );
+      expect(res.url).toBe('https://new.example.com/hook');
+      expect(audit.record).toHaveBeenCalledWith(
+        WEBHOOK_AUDIT_ACTION.UPDATE,
+        TENANT,
+        'u1',
+        'WebhookEndpoint',
+        'e1',
+        undefined,
+        expect.objectContaining({ urlChanged: true }),
       );
     });
   });

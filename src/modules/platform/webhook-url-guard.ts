@@ -1,3 +1,6 @@
+import { isIP } from 'node:net';
+import { promises as dns } from 'node:dns';
+
 import { AppError, ErrorCode } from '../../common/errors';
 
 /**
@@ -8,46 +11,123 @@ import { AppError, ErrorCode } from '../../common/errors';
  * is https-only (a stricter policy appropriate for AI provider deployments),
  * while webhook endpoints must allow plain http too (many self-hosted clinic
  * systems have no TLS) — extracting a shared core for two callers that want
- * different protocol policies would be more coupling than the ~30 lines of
- * duplicated IP-range logic are worth. The blocked-range list is the same
- * well-known SSRF set (private/loopback/link-local/CGNAT/cloud-metadata).
+ * different protocol policies would be more coupling than the duplicated
+ * IP-range logic is worth.
  *
- * KNOWN LIMITATION (documented, not fixed here): this validates the URL's
- * literal hostname/IP only, with no DNS resolution. A hostname that resolves
- * to a private IP only at request time (DNS rebinding) would pass this check
- * — Node's `fetch` does not re-validate the resolved socket address. Full
- * mitigation would require a custom resolving `Agent`/dispatcher, which is a
- * larger change out of scope for Phase 2.
+ * TWO LAYERS, used at different times:
+ *
+ *  1. `assertSafeWebhookUrl` — literal, synchronous checks (scheme,
+ *     credentials, dangerous ports, and the URL's literal hostname/IP
+ *     against the blocklist below). Cheap; used for fast-fail UX at
+ *     create/update time, and as the first step of layer 2.
+ *
+ *  2. `resolveSafeWebhookTarget` — DNS-resolves the hostname (ALL A + AAAA
+ *     records), validates every resolved address, and returns the ONE address
+ *     the caller must connect to. Called immediately before EVERY delivery
+ *     attempt (initial send, automatic retry, manual replay — see
+ *     WebhookDeliveryProcessor / webhook-http-client.ts), never only at
+ *     creation time. The caller pinning the returned address for the actual
+ *     socket connection (instead of letting the HTTP stack re-resolve the
+ *     hostname itself) is what closes the DNS-rebinding TOCTOU window: a
+ *     hostname that resolves safely here but would resolve to an internal IP
+ *     a second later (rebinding) can never reach that second lookup, because
+ *     there IS no second lookup — the pinned literal IP is used directly.
  */
 
-/** IPv4 in a private / loopback / link-local / CGNAT range. */
-function isBlockedIpv4(host: string): boolean {
+/** IPv4 in a private / loopback / link-local / CGNAT / multicast / reserved range. */
+export function isBlockedIpv4(host: string): boolean {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!m) return false;
   const [a, b, c, d] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
   if ([a, b, c, d].some((n) => n > 255)) return true; // malformed → block
   if (a === 10) return true; // 10.0.0.0/8
   if (a === 127) return true; // loopback
-  if (a === 0) return true; // 0.0.0.0/8
+  if (a === 0) return true; // 0.0.0.0/8 "this network"
   if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 cloud metadata
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
   if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+  if (a >= 224 && a <= 239) return true; // 224.0.0.0/4 multicast
+  if (a >= 240) return true; // 240.0.0.0/4 reserved + 255.255.255.255 broadcast
+  if (a === 198 && b >= 18 && b <= 19) return true; // 198.18.0.0/15 benchmarking
+  if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 documentation (TEST-NET-1)
+  if (a === 198 && b === 51 && c === 100) return true; // 198.51.100.0/24 documentation (TEST-NET-2)
+  if (a === 203 && b === 0 && c === 113) return true; // 203.0.113.0/24 documentation (TEST-NET-3)
   return false;
 }
 
-/**
- * Ports commonly used by internal services — blocked so a public IP fronting
- * an internal service on a non-web port can't be used as an SSRF pivot. Not
- * exhaustive; the primary defense is the IP-range check above, this is
- * defense-in-depth.
- */
+/** Parses a (bracket-stripped) IPv6 literal into 16 bytes, or null if unparseable. Assumes no embedded dotted-quad (WHATWG URL / Node's dns module both normalize those to hex groups already). */
+export function parseIpv6ToBytes(raw: string): Uint8Array | null {
+  const host = raw.trim().toLowerCase();
+  if (!host || host.includes('.') || !/^[0-9a-f:]+$/.test(host)) return null;
+
+  const doubleColonCount = (host.match(/::/g) || []).length;
+  if (doubleColonCount > 1) return null;
+
+  const hasDoubleColon = host.includes('::');
+  let headGroups: string[] = [];
+  let tailGroups: string[] = [];
+
+  if (hasDoubleColon) {
+    const idx = host.indexOf('::');
+    const headPart = host.slice(0, idx);
+    const tailPart = host.slice(idx + 2);
+    headGroups = headPart.length ? headPart.split(':') : [];
+    tailGroups = tailPart.length ? tailPart.split(':') : [];
+    if (headGroups.length + tailGroups.length >= 8) return null; // "::" must collapse >=1 group
+  } else {
+    headGroups = host.split(':');
+    if (headGroups.length !== 8) return null;
+  }
+
+  const missing = hasDoubleColon ? 8 - headGroups.length - tailGroups.length : 0;
+  const allGroups = hasDoubleColon
+    ? [...headGroups, ...Array(missing).fill('0'), ...tailGroups]
+    : headGroups;
+  if (allGroups.length !== 8) return null;
+
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 8; i++) {
+    const g = allGroups[i];
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    const val = parseInt(g, 16);
+    bytes[i * 2] = (val >> 8) & 0xff;
+    bytes[i * 2 + 1] = val & 0xff;
+  }
+  return bytes;
+}
+
+/** IPv6 loopback / unspecified / link-local / unique-local(private) / multicast / IPv4-mapped-or-compatible(recurses into v4 check) / documentation. */
+export function isBlockedIpv6Bytes(bytes: Uint8Array): boolean {
+  const isZero = (from: number, to: number) => {
+    for (let i = from; i < to; i++) if (bytes[i] !== 0) return false;
+    return true;
+  };
+
+  if (isZero(0, 16)) return true; // :: unspecified
+  if (isZero(0, 15) && bytes[15] === 1) return true; // ::1 loopback
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link-local
+  if ((bytes[0] & 0xfe) === 0xfc) return true; // fc00::/7 unique-local (private)
+  if (bytes[0] === 0xff) return true; // ff00::/8 multicast
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x0d && bytes[3] === 0xb8) return true; // 2001:db8::/32 documentation
+
+  // ::ffff:a.b.c.d/96 (IPv4-mapped) and ::a.b.c.d/96 (IPv4-compatible, legacy) — recurse into the embedded IPv4.
+  const isMapped = isZero(0, 10) && bytes[10] === 0xff && bytes[11] === 0xff;
+  const isCompatible = isZero(0, 12) && !isZero(12, 16);
+  if (isMapped || isCompatible) {
+    const v4 = `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+    return isBlockedIpv4(v4);
+  }
+  return false;
+}
+
 const DANGEROUS_PORTS = new Set([
   22, 23, 25, 53, 110, 135, 139, 143, 161, 389, 445, 512, 513, 514,
   1433, 1521, 2375, 2376, 3306, 3389, 5432, 5984, 6379, 8500, 9200,
   11211, 27017,
 ]);
 
+/** Literal, synchronous checks — scheme/credentials/port/literal-host. See file docstring for the two-layer model. */
 export function assertSafeWebhookUrl(raw: string): void {
   let url: URL;
   try {
@@ -83,11 +163,80 @@ export function assertSafeWebhookUrl(raw: string): void {
 
   if (host === 'localhost' || host.endsWith('.localhost')) fail('Webhook URL host is loopback');
   if (host.endsWith('.internal') || host.endsWith('.local')) fail('Webhook URL host is internal');
-  if (isBlockedIpv4(host)) fail('Webhook URL host is a private/loopback IP');
-  // IPv6 loopback (::1), unspecified (::), link-local (fe80::/10), unique-local (fc00::/7).
-  if (host === '::1' || host === '::') fail('Webhook URL host is IPv6 loopback');
-  if (['fe8', 'fe9', 'fea', 'feb'].some((p) => host.startsWith(p))) {
-    fail('Webhook URL host is IPv6 link-local');
+
+  const literalFamily = isIP(host);
+  if (literalFamily === 4) {
+    if (isBlockedIpv4(host)) fail('Webhook URL host is a blocked IPv4 address');
+  } else if (literalFamily === 6) {
+    const bytes = parseIpv6ToBytes(host);
+    if (!bytes || isBlockedIpv6Bytes(bytes)) fail('Webhook URL host is a blocked IPv6 address');
   }
-  if (host.startsWith('fc') || host.startsWith('fd')) fail('Webhook URL host is IPv6 ULA');
+}
+
+/** Thrown by `resolveSafeWebhookTarget` when DNS resolution succeeds but every resolved address (or the literal IP) is blocked. Callers must treat this as PERMANENT — never retry a blocked target. */
+export class SsrfBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SsrfBlockedError';
+  }
+}
+
+export interface PinnedWebhookTarget {
+  /** The literal IP address to connect to — MUST be used as-is for the socket, never re-resolved. */
+  address: string;
+  family: 4 | 6;
+}
+
+/**
+ * Layer 2 — see file docstring. Re-runs the literal checks (defensive: an
+ * endpoint's URL could in principle have been validated under a since-loosened
+ * rule) then resolves every A/AAAA record for the hostname, rejects the whole
+ * target if ANY resolved address is unsafe, and returns exactly one safe,
+ * literal address to pin the connection to.
+ *
+ * A DNS resolution failure (no records / NXDOMAIN / resolver error) throws a
+ * plain `Error` — callers classify that as a TRANSIENT fault (the resolver or
+ * network could be temporarily unavailable) via webhook-retry-policy.ts. A
+ * blocked address throws `SsrfBlockedError` — always PERMANENT.
+ */
+export async function resolveSafeWebhookTarget(url: URL): Promise<PinnedWebhookTarget> {
+  assertSafeWebhookUrl(url.toString());
+
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const literalFamily = isIP(host);
+  if (literalFamily === 4) {
+    if (isBlockedIpv4(host)) throw new SsrfBlockedError('Webhook host is a blocked IPv4 address');
+    return { address: host, family: 4 };
+  }
+  if (literalFamily === 6) {
+    const bytes = parseIpv6ToBytes(host);
+    if (!bytes || isBlockedIpv6Bytes(bytes)) {
+      throw new SsrfBlockedError('Webhook host is a blocked IPv6 address');
+    }
+    return { address: host, family: 6 };
+  }
+
+  const [v4, v6] = await Promise.allSettled([dns.resolve4(host), dns.resolve6(host)]);
+  const candidates: PinnedWebhookTarget[] = [];
+  if (v4.status === 'fulfilled') candidates.push(...v4.value.map((a) => ({ address: a, family: 4 as const })));
+  if (v6.status === 'fulfilled') candidates.push(...v6.value.map((a) => ({ address: a, family: 6 as const })));
+
+  if (candidates.length === 0) {
+    throw new Error(`Could not resolve webhook host "${host}"`);
+  }
+
+  for (const candidate of candidates) {
+    const blocked =
+      candidate.family === 4
+        ? isBlockedIpv4(candidate.address)
+        : (() => {
+            const bytes = parseIpv6ToBytes(candidate.address);
+            return !bytes || isBlockedIpv6Bytes(bytes);
+          })();
+    if (blocked) {
+      throw new SsrfBlockedError(`Webhook host "${host}" resolves to a blocked address`);
+    }
+  }
+
+  return candidates.find((a) => a.family === 4) ?? candidates[0];
 }

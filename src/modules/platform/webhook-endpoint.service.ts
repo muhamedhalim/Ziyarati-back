@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, IsNull, Repository } from 'typeorm';
 
 import { WebhookEndpoint } from '../../entities/System/WebhookEndpoint';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
@@ -83,7 +83,7 @@ export class WebhookEndpointService {
   }
 
   async list(tenantId: string, query: QueryWebhookEndpointsDto) {
-    const where: FindOptionsWhere<WebhookEndpoint> = { tenant: { id: tenantId } };
+    const where: FindOptionsWhere<WebhookEndpoint> = { tenant: { id: tenantId }, deleted_at: IsNull() };
     if (query.isActive !== undefined) where.is_active = query.isActive;
 
     const [rows, total] = await this.endpoints.findAndCount({
@@ -113,6 +113,16 @@ export class WebhookEndpointService {
     const endpoint = await this.findOneOrThrow(tenantId, id);
     if (dto.name !== undefined) endpoint.name = dto.name;
 
+    let urlChanged = false;
+    if (dto.url !== undefined && dto.url !== endpoint.url) {
+      // Re-run the exact same SSRF check used at creation — the URL is fully
+      // editable, so every edit is itself a new untrusted write of attacker-
+      // influenced (tenant-influenced) data.
+      assertSafeWebhookUrl(dto.url);
+      endpoint.url = dto.url;
+      urlChanged = true;
+    }
+
     let events: string[] | undefined;
     if (dto.events !== undefined) {
       events = normalizeWebhookEvents(dto.events);
@@ -132,7 +142,12 @@ export class WebhookEndpointService {
       'WebhookEndpoint',
       id,
       actor.ip,
-      { name: dto.name ?? null, events: events ?? null },
+      {
+        name: dto.name ?? null,
+        events: events ?? null,
+        urlChanged,
+        urlHost: urlChanged ? this.safeHost(dto.url!) : null,
+      },
     );
     return this.toSafe(saved);
   }
@@ -179,8 +194,19 @@ export class WebhookEndpointService {
     return this.toSafe(saved);
   }
 
+  /**
+   * SOFT delete — sets `deleted_at` + `is_active = false` rather than
+   * removing the row. Delivery history and audit evidence must survive an
+   * endpoint's deletion; a soft-deleted endpoint behaves as 404 to every
+   * tenant-facing read (`findOneOrThrow`/`list` both filter it out) and stops
+   * receiving deliveries immediately (same `is_active` check the processor
+   * already uses to skip disabled endpoints).
+   */
   async remove(tenantId: string, id: string, actor: WebhookActor): Promise<{ deleted: true }> {
     const endpoint = await this.findOneOrThrow(tenantId, id);
+    endpoint.deleted_at = new Date();
+    endpoint.is_active = false;
+    await this.endpoints.save(endpoint);
     await this.audit.record(
       WEBHOOK_AUDIT_ACTION.DELETE,
       tenantId,
@@ -190,9 +216,6 @@ export class WebhookEndpointService {
       actor.ip,
       { name: endpoint.name ?? null, urlHost: this.safeHost(endpoint.url) },
     );
-    // Delivery history for this endpoint cascades at the DB level (FK ON DELETE
-    // CASCADE) — the deletion itself is captured above, independent of that cascade.
-    await this.endpoints.remove(endpoint);
     return { deleted: true };
   }
 
@@ -219,7 +242,7 @@ export class WebhookEndpointService {
 
   private async findOneOrThrow(tenantId: string, id: string): Promise<WebhookEndpoint> {
     const endpoint = await this.endpoints.findOne({
-      where: { id, tenant: { id: tenantId } },
+      where: { id, tenant: { id: tenantId }, deleted_at: IsNull() },
     });
     if (!endpoint) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Webhook endpoint not found' });

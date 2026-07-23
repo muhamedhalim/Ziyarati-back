@@ -15,14 +15,7 @@ import {
   WEBHOOK_PAYLOAD_MAX_BYTES,
   computeWebhookSignature,
 } from '../../modules/platform/webhook.constants';
-
-interface DeliveryAttemptResult {
-  ok: boolean;
-  transient: boolean;
-  httpStatus?: number;
-  bodyPreview?: string;
-  error?: string;
-}
+import { deliverWebhookRequest } from '../../modules/platform/webhook-http-client';
 
 /**
  * Consumes the `webhooks.deliver` queue — outbound HTTP delivery of a signed
@@ -39,12 +32,18 @@ interface DeliveryAttemptResult {
  * delivery row's own id) lets the RECEIVING tenant system dedupe on their
  * side too, per the documented delivery contract.
  *
- * RETRY CLASSIFICATION: HTTP 429/5xx, timeouts, and network errors are
+ * RETRY CLASSIFICATION (see webhook-retry-policy.ts for the tested pure
+ * function): HTTP 408/425/429/5xx, timeouts, and network errors are
  * TRANSIENT — this method throws, which is what makes BullMQ's
  * attempts/backoff retry the job (same "throw = retry" convention as
- * CampaignDispatchService's TransientDispatchError). Any other 4xx is
- * PERMANENT — the row is marked FAILED and this method returns normally
- * (no throw), so BullMQ marks the job complete and it is never retried.
+ * CampaignDispatchService's TransientDispatchError). Any other 4xx, a 3xx
+ * (redirects are never followed — see webhook-http-client.ts), or a blocked
+ * SSRF target is PERMANENT — the row is marked FAILED and this method
+ * returns normally (no throw), so BullMQ marks the job complete and never
+ * retries it. Delivery is AT-LEAST-ONCE, not exactly-once: a transient retry
+ * can in rare races re-send an event the receiver already accepted — the
+ * receiver is expected to dedupe on the stable `X-Webhook-Id` header.
+ * Ordering across events/deliveries is not guaranteed.
  */
 @Processor(QUEUE.WEBHOOKS_DELIVER, { concurrency: workerConcurrency() })
 export class WebhookDeliveryProcessor extends WorkerHost {
@@ -86,6 +85,16 @@ export class WebhookDeliveryProcessor extends WorkerHost {
       return;
     }
 
+    if (!delivery.webhook_endpoint) {
+      await this.deliveryService.markFailedPermanent(
+        deliveryId,
+        undefined,
+        undefined,
+        'Endpoint no longer exists',
+      );
+      return; // permanent — no throw, no retry
+    }
+
     const active = await this.endpoints.findActiveWithSecret(delivery.webhook_endpoint.id);
     if (!active) {
       await this.deliveryService.markFailedPermanent(
@@ -111,15 +120,23 @@ export class WebhookDeliveryProcessor extends WorkerHost {
 
     await this.deliveryService.markDelivering(deliveryId, attemptNumber);
 
+    // `delivery.event_type` / `delivery.payload` are the IMMUTABLE original —
+    // captured once at dispatch (or, for a replay, copied byte-for-byte from
+    // the delivery it replayed) and never rebuilt from live database state
+    // here. `timestampSeconds` is the one deliberate exception: it is the
+    // SIGNING timestamp, regenerated fresh on every attempt so the receiver's
+    // own replay-protection window doesn't reject a request that was merely
+    // delayed by backoff — it is not "when the event happened" (that, where
+    // relevant, is a field inside the immutable payload itself, e.g. `startAt`).
     const timestampSeconds = Math.floor(Date.now() / 1000);
     const signature = computeWebhookSignature(secret, timestampSeconds, bodyString);
 
-    const result = await this.attemptDelivery(endpoint.url, bodyString, {
+    const result = await deliverWebhookRequest(endpoint.url, bodyString, {
       [WEBHOOK_HEADER.ID]: delivery.id,
       [WEBHOOK_HEADER.EVENT]: delivery.event_type,
       [WEBHOOK_HEADER.TIMESTAMP]: String(timestampSeconds),
       [WEBHOOK_HEADER.SIGNATURE]: signature,
-    });
+    }, this.timeoutMs);
 
     if (result.ok) {
       await this.deliveryService.markSucceeded(deliveryId, result.httpStatus, result.bodyPreview);
@@ -146,46 +163,6 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     throw new Error(result.error ?? 'Transient webhook delivery failure');
   }
 
-  /** Native fetch + AbortController timeout — never throws; returns a result union. */
-  private async attemptDelivery(
-    url: string,
-    body: string,
-    headers: Record<string, string>,
-  ): Promise<DeliveryAttemptResult> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
-        body,
-        signal: controller.signal,
-      });
-      const text = await res.text().catch(() => '');
-      const bodyPreview = text.slice(0, 500);
-      if (res.ok) {
-        return { ok: true, transient: false, httpStatus: res.status, bodyPreview };
-      }
-      const transient = res.status === 429 || res.status >= 500;
-      return {
-        ok: false,
-        transient,
-        httpStatus: res.status,
-        bodyPreview,
-        error: `HTTP ${res.status}`,
-      };
-    } catch (err) {
-      const timedOut = (err as Error)?.name === 'AbortError';
-      return {
-        ok: false,
-        transient: true,
-        error: timedOut ? 'Delivery timed out' : ((err as Error)?.message ?? 'network error'),
-      };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
     const data = job?.data as WebhookDeliverJob | undefined;
@@ -198,10 +175,17 @@ export class WebhookDeliveryProcessor extends WorkerHost {
 
     // Beyond this point retries are done. Mark the row terminal so the
     // tenant-facing delivery history + replay endpoint (DB-driven, never a
-    // raw BullMQ jobId lookup) can see and act on it.
-    await this.deliveryService
+    // raw BullMQ jobId lookup) can see and act on it. `markDeadLettered`
+    // itself is a conditional update (only rows not already DEAD_LETTERED) —
+    // this guarantees the transition happens exactly once even if BullMQ ever
+    // emitted 'failed' more than once for the same exhausted job.
+    const transitioned = await this.deliveryService
       .markDeadLettered(data.webhookDeliveryId, err?.message ?? 'Exhausted retries')
-      .catch((e) => this.logger.error(`Failed to mark delivery dead-lettered: ${(e as Error)?.message}`));
+      .catch((e) => {
+        this.logger.error(`Failed to mark delivery dead-lettered: ${(e as Error)?.message}`);
+        return false;
+      });
+    if (!transitioned) return;
 
     // Platform ops-depth visibility only — mirrors every other domain's DLQ
     // park (WhatsappDlqService et al.); never read by the tenant-facing API.

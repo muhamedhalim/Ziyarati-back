@@ -116,3 +116,6 @@ export function shortHash(value: string): string {
 
 /** Max serialized payload size sent to a tenant endpoint — payloads are ids/scalars only, so this is generous headroom. */
 export const WEBHOOK_PAYLOAD_MAX_BYTES = 65_536;
+
+/** Response bytes read from a tenant endpoint before the socket is cut short — only the first ~500 chars are ever persisted as a preview, so there is no reason to wait for or buffer a large/slow body. */
+export const WEBHOOK_RESPONSE_READ_CAP_BYTES = 32_768;

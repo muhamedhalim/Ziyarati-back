@@ -49,6 +49,15 @@ export class WebhookEndpoint {
   @Column({ default: true })
   is_active!: boolean;
 
+  /**
+   * Soft-delete marker. "Delete" from the dashboard sets this (+ is_active
+   * false) instead of removing the row — deleting an endpoint must not
+   * silently destroy its delivery history / audit evidence, which still
+   * joins to this row. All tenant-facing reads filter `deleted_at IS NULL`.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  deleted_at?: Date;
+
   @CreateDateColumn()
   created_at!: Date;
 

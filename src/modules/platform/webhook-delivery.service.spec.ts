@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
+import { Not } from 'typeorm';
 
 import { WebhookDeliveryService } from './webhook-delivery.service';
 import { WebhookEndpointService } from './webhook-endpoint.service';
@@ -98,7 +99,7 @@ describe('WebhookDeliveryService', () => {
       deliveries.findOne.mockResolvedValueOnce({
         id: 'd1',
         status: 'SUCCEEDED',
-        webhook_endpoint: { id: 'ep1', is_active: true },
+        webhook_endpoint: { id: 'ep1', is_active: true, url: 'https://example.com/hook' },
       });
       await expect(service.replay(TENANT, 'd1', {})).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
@@ -110,33 +111,53 @@ describe('WebhookDeliveryService', () => {
       deliveries.findOne.mockResolvedValueOnce({
         id: 'd1',
         status: 'DEAD_LETTERED',
-        webhook_endpoint: { id: 'ep1', is_active: false },
+        webhook_endpoint: { id: 'ep1', is_active: false, url: 'https://example.com/hook' },
       });
       await expect(service.replay(TENANT, 'd1', {})).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
     });
 
-    it('resets the delivery to PENDING, re-enqueues with a fresh job, and audits the replay', async () => {
+    it('rejects replaying a delivery whose endpoint no longer exists (nullable relation)', async () => {
       deliveries.findOne.mockResolvedValueOnce({
+        id: 'd1',
+        status: 'FAILED',
+        webhook_endpoint: undefined,
+      });
+      await expect(service.replay(TENANT, 'd1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+    });
+
+    it('creates a NEW linked delivery row with the exact original event/payload — the original row is never mutated', async () => {
+      const original = {
         id: 'd1',
         status: 'DEAD_LETTERED',
         event_type: 'appointment.created',
+        payload: { appointmentId: 'a1' },
         attempt_count: 6,
         http_status: 500,
         last_error: 'boom',
-        webhook_endpoint: { id: 'ep1', is_active: true },
-      });
-      deliveries.save.mockImplementationOnce(async (d: any) => d);
+        webhook_endpoint: { id: 'ep1', is_active: true, url: 'https://example.com/hook' },
+      };
+      deliveries.findOne.mockResolvedValueOnce(original);
+      deliveries.save.mockImplementationOnce(async (d: any) => ({ ...d, id: 'd-replay-1' }));
 
-      await service.replay(TENANT, 'd1', { userId: 'u1', ip: '1.2.3.4' });
+      const result = await service.replay(TENANT, 'd1', { userId: 'u1', ip: '1.2.3.4' });
 
-      const saved = deliveries.save.mock.calls[0][0];
-      expect(saved.status).toBe('PENDING');
-      expect(saved.attempt_count).toBe(0);
-      expect(saved.http_status).toBeUndefined();
+      expect(deliveries.save).toHaveBeenCalledTimes(1);
+      const created = deliveries.save.mock.calls[0][0];
+      expect(created.status).toBe('PENDING');
+      expect(created.event_type).toBe('appointment.created');
+      expect(created.payload).toEqual({ appointmentId: 'a1' });
+      expect(created.replayed_from_id).toBe('d1');
+      expect(created.webhook_endpoint_url_snapshot).toBe('https://example.com/hook');
+      // The original keeps its terminal outcome — nothing about it was reset.
+      expect(original.status).toBe('DEAD_LETTERED');
+      expect(original.attempt_count).toBe(6);
+
       expect(queue.retryWebhookDeliver).toHaveBeenCalledWith(
-        { tenantId: TENANT, webhookDeliveryId: 'd1' },
+        { tenantId: TENANT, webhookDeliveryId: 'd-replay-1' },
         expect.objectContaining({ attempts: 6 }),
       );
       expect(audit.record).toHaveBeenCalledWith(
@@ -144,10 +165,11 @@ describe('WebhookDeliveryService', () => {
         TENANT,
         'u1',
         'WebhookDelivery',
-        'd1',
+        'd-replay-1',
         '1.2.3.4',
-        expect.objectContaining({ eventType: 'appointment.created' }),
+        expect.objectContaining({ eventType: 'appointment.created', replayedFromId: 'd1' }),
       );
+      expect(result.id).toBe('d-replay-1');
     });
 
     it('404s for a delivery not owned by the tenant', async () => {
@@ -173,12 +195,19 @@ describe('WebhookDeliveryService', () => {
       );
     });
 
-    it('markDeadLettered sets DEAD_LETTERED (called by the processor once retries are exhausted)', async () => {
-      await service.markDeadLettered('d1', 'exhausted');
+    it('markDeadLettered sets DEAD_LETTERED conditionally (not already DEAD_LETTERED) and reports the transition happened', async () => {
+      const result = await service.markDeadLettered('d1', 'exhausted');
+      expect(result).toBe(true);
       expect(deliveries.update).toHaveBeenCalledWith(
-        { id: 'd1' },
+        { id: 'd1', status: Not('DEAD_LETTERED') },
         expect.objectContaining({ status: 'DEAD_LETTERED', last_error: 'exhausted' }),
       );
+    });
+
+    it('markDeadLettered reports no transition when the row was already DEAD_LETTERED (exactly-once guard)', async () => {
+      deliveries.update.mockResolvedValueOnce({ affected: 0 });
+      const result = await service.markDeadLettered('d1', 'exhausted again');
+      expect(result).toBe(false);
     });
   });
 });

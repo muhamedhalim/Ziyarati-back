@@ -98,7 +98,7 @@ export class WebhookEndpointController {
     return this.endpoints.get(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Update a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Updates name and/or subscribed events (URL is immutable).' })
+  @ApiOperation({ summary: 'Update a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Updates name, URL, and/or subscribed events. A URL change is re-validated by the same SSRF guard used at creation.' })
   @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'Webhook endpoint updated.' })
   @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })
@@ -156,7 +156,7 @@ export class WebhookEndpointController {
     return this.endpoints.setActive(this.ctx.requireTenantId(), id, false, { userId, ip });
   }
 
-  @ApiOperation({ summary: 'Delete a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Permanently removes the endpoint and its delivery history.' })
+  @ApiOperation({ summary: 'Delete a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Soft-deletes the endpoint (stops delivery immediately); its delivery history and audit trail are preserved.' })
   @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'Webhook endpoint deleted.' })
   @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })
