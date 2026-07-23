@@ -45,9 +45,18 @@ export const EXTERNAL_WRITABLE_FIELDS: Record<IntegrationResource, readonly stri
     'isActive',
     'categoryId',
   ],
-  // Staff: PROFILE data only. Identity, roles, permissions, access, credentials
-  // and ownership are platform-controlled and never importable.
-  [INTEGRATION_RESOURCE.STAFF]: ['title', 'bio', 'is_available_for_booking'],
+  // Staff: PROFILE + booking-preference data only, named to match UpdateStaffDto.
+  // Identity, the linked user account, roles, permissions, access state,
+  // credentials, commissions, payouts and ratings are platform-controlled and
+  // never importable. A StaffProfile is bound to ONE user for life, so an
+  // integration can never create, re-link, or provision an account (see the
+  // staff adapter: update/link only, never create).
+  [INTEGRATION_RESOURCE.STAFF]: [
+    'title',
+    'bio',
+    'isAvailableForBooking',
+    'bookingBufferMinutes',
+  ],
   // Appointments go exclusively through the appointment lifecycle service; no
   // direct external field writes are allowed here (create is the only importable
   // action, handled by the appointment service's own validation).
@@ -96,18 +105,34 @@ const RESOURCE_PROTECTED_FIELDS: Record<IntegrationResource, readonly string[]> 
   [INTEGRATION_RESOURCE.CUSTOMER]: ['whatsapp_id', 'whatsapp_name'],
   [INTEGRATION_RESOURCE.SERVICE]: [],
   [INTEGRATION_RESOURCE.STAFF]: [
+    // Account identity + linkage — a profile is bound to one user for life.
     'user',
     'userId',
     'user_id',
+    'email',
+    'is_active',
+    'isActive',
+    // Authorization + credentials.
     'roles',
     'role',
     'permissions',
-    'commission',
-    'commission_rate',
-    'rating',
-    'dashboard_access',
     'password',
     'password_hash',
+    'dashboard_access',
+    'dashboardAccess',
+    // Money + reputation — platform-owned.
+    'commission',
+    'commission_rate',
+    'commissions',
+    'payout',
+    'payouts',
+    'rating',
+    'ratings',
+    // Internal storage/audit.
+    'avatar_url',
+    'avatarUrl',
+    'avatar_storage_key',
+    'avatarStorageKey',
   ],
   [INTEGRATION_RESOURCE.APPOINTMENT]: ['status', 'booked_by', 'bookedBy', 'slot'],
 };

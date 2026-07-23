@@ -34,9 +34,9 @@ export class IntegrationImportsController {
   @ApiOperation({
     summary: 'Batch import a resource (synchronous, bounded)',
     description:
-      '**Protected — `platform.integrations.manage`.** Bounded synchronous import (customers|services). Supports `dryRun`. Returns per-record counts + safe errors.',
+      '**Protected — `platform.integrations.manage`.** Bounded synchronous import (customers|services|staff). Supports `dryRun`. Returns per-record counts + safe errors.',
   })
-  @ApiParam({ name: 'resource', enum: [INTEGRATION_RESOURCE.CUSTOMER, INTEGRATION_RESOURCE.SERVICE] })
+  @ApiParam({ name: 'resource', enum: [INTEGRATION_RESOURCE.CUSTOMER, INTEGRATION_RESOURCE.SERVICE, INTEGRATION_RESOURCE.STAFF] })
   @Post('imports/:resource')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
   import(

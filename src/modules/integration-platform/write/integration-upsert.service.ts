@@ -6,6 +6,7 @@ import { validate } from 'class-validator';
 
 import { Customer } from '../../../entities/CRM/Customer';
 import { Service } from '../../../entities/Services/Service';
+import { StaffProfile } from '../../../entities/Staff/StaffProfile';
 import { AppError, ErrorCode } from '../../../common/errors';
 import { CustomerService } from '../../crm/customer.service';
 import { CreateCustomerDto } from '../../crm/dto/create-customer.dto';
@@ -13,8 +14,12 @@ import { UpdateCustomerDto } from '../../crm/dto/update-customer.dto';
 import { ServiceService } from '../../services/service.service';
 import { CreateServiceDto } from '../../services/dto/create-service.dto';
 import { UpdateServiceDto } from '../../services/dto/update-service.dto';
+import { StaffService as StaffDomainService } from '../../staff/staff.service';
+import { UpdateStaffDto } from '../../staff/dto/update-staff.dto';
 
 import {
+  CONFLICT_REASON,
+  ConflictReason,
   INTEGRATION_RESOURCE,
   IntegrationResource,
   MAPPING_SOURCE,
@@ -50,12 +55,31 @@ export interface UpsertActor {
 interface ResourceAdapter {
   createDto: ClassConstructor<object>;
   updateDto: ClassConstructor<object>;
+  /**
+   * When false, this resource may NEVER be created by an integration — an
+   * unmapped, unmatched external record raises a reviewable CONFLICT instead.
+   * Used by staff, where creating a record would require provisioning a user
+   * account (a privileged action that must go through the invitation flow).
+   */
+  canCreate?: boolean;
+  /** Reason code recorded when `canCreate` is false. */
+  cannotCreateReason?: ConflictReason;
   create(tenantId: string, data: Record<string, unknown>): Promise<{ id: string }>;
   update(tenantId: string, id: string, data: Record<string, unknown>): Promise<{ id: string }>;
   /** Comparable (allowlist-keyed) current view, or null if the record is gone. */
   currentView(tenantId: string, id: string): Promise<Record<string, unknown> | null>;
-  /** Existing internal record matching the external record's natural key, or null. */
-  naturalMatch(tenantId: string, data: Record<string, unknown>): Promise<{ id: string } | null>;
+  /**
+   * Existing internal record matching the external record's natural key, or null.
+   * `clean` is the sanitized (writable) payload; `raw` is the original request so
+   * an adapter can read a READ-ONLY match hint (e.g. staff's `matchEmail`) that
+   * is deliberately not writable. Returning null for an AMBIGUOUS match is
+   * required — never guess between candidates.
+   */
+  naturalMatch(
+    tenantId: string,
+    clean: Record<string, unknown>,
+    raw: Record<string, unknown>,
+  ): Promise<{ id: string } | null>;
 }
 
 /**
@@ -78,8 +102,10 @@ export class IntegrationUpsertService {
   constructor(
     private readonly customers: CustomerService,
     private readonly servicesSvc: ServiceService,
+    private readonly staffSvc: StaffDomainService,
     @InjectRepository(Customer) private readonly customerRepo: Repository<Customer>,
     @InjectRepository(Service) private readonly serviceRepo: Repository<Service>,
+    @InjectRepository(StaffProfile) private readonly staffRepo: Repository<StaffProfile>,
     private readonly idMap: IntegrationIdMapService,
     private readonly connections: IntegrationConnectionService,
     private readonly audit: IntegrationAuditService,
@@ -88,9 +114,8 @@ export class IntegrationUpsertService {
     this.adapters = {
       [INTEGRATION_RESOURCE.CUSTOMER]: this.customerAdapter(),
       [INTEGRATION_RESOURCE.SERVICE]: this.serviceAdapter(),
-      // Staff & appointment upsert require identity/lifecycle handling and are
-      // implemented in a later phase (see the module docstring).
-      [INTEGRATION_RESOURCE.STAFF]: undefined,
+      [INTEGRATION_RESOURCE.STAFF]: this.staffAdapter(),
+      // Appointment upsert requires lifecycle/availability handling — next.
       [INTEGRATION_RESOURCE.APPOINTMENT]: undefined,
     };
   }
@@ -185,7 +210,7 @@ export class IntegrationUpsertService {
     }
 
     // ── No mapping → dedupe against the natural key, else create ──────────
-    const existing = await adapter.naturalMatch(tenantId, clean);
+    const existing = await adapter.naturalMatch(tenantId, clean, rawData ?? {});
     if (existing) {
       const current = (await adapter.currentView(tenantId, existing.id)) ?? {};
       const decision = decideConflict(conflictPolicy as never, clean, current);
@@ -215,6 +240,28 @@ export class IntegrationUpsertService {
         return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: existing.id, changedFields: decision.changedFields };
       }
       return { outcome: UPSERT_OUTCOME.LINKED, externalId, internalId: existing.id };
+    }
+
+    // ── No mapping, no natural match → create (unless creation is forbidden) ──
+    if (adapter.canCreate === false) {
+      // Creating this resource would require a privileged platform action (e.g.
+      // provisioning a user account for staff). Raise a reviewable conflict
+      // instead of silently creating anything.
+      if (!dryRun) {
+        await this.conflicts.record({
+          tenantId, connectionId, resource, externalId, internalId: null,
+          changedFields: Object.keys(clean), policy: conflictPolicy,
+          externalValues: clean, platformValues: {},
+          reason: adapter.cannotCreateReason ?? CONFLICT_REASON.MISSING_DEPENDENCY,
+        });
+      }
+      return {
+        outcome: UPSERT_OUTCOME.CONFLICTED,
+        externalId,
+        internalId: null,
+        changedFields: Object.keys(clean),
+        error: 'No matching internal record; creating this resource from an integration is not permitted',
+      };
     }
 
     await this.validateOrThrow(adapter.createDto, clean);
@@ -273,6 +320,60 @@ export class IntegrationUpsertService {
         if (!phone) return null;
         const c = await this.customerRepo.findOne({ where: { tenant: { id: tenantId }, phone } });
         return c ? { id: c.id } : null;
+      },
+    };
+  }
+
+  /**
+   * Staff — UPDATE/LINK ONLY. A StaffProfile is bound to exactly one User for
+   * life, so creating one from an integration would mean provisioning a login
+   * account: a privileged action that must go through the platform's existing
+   * invitation flow (StaffAccessService.grant), never an external system. Hence
+   * `canCreate: false` — an unmapped, unmatched external staff record raises a
+   * reviewable conflict instead of creating anything.
+   *
+   * Natural matching is by the LINKED USER'S EMAIL, exact and tenant-scoped, and
+   * only ever produces a MAPPING (it never touches the user, its roles, its
+   * access state, or any money/reputation field). An ambiguous match (more than
+   * one profile) is refused rather than guessed.
+   */
+  private staffAdapter(): ResourceAdapter {
+    return {
+      createDto: UpdateStaffDto, // never used — creation is forbidden below
+      updateDto: UpdateStaffDto,
+      canCreate: false,
+      cannotCreateReason: CONFLICT_REASON.STAFF_REQUIRES_ACCOUNT,
+      create: async () => {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message:
+            'Staff cannot be created by an integration — invite the member through the platform, then re-run the import to link them',
+        });
+      },
+      update: async (tenantId, id, data) =>
+        this.staffSvc.update(tenantId, id, data as UpdateStaffDto),
+      currentView: async (tenantId, id) => {
+        const s = await this.staffRepo.findOne({ where: { id, tenant: { id: tenantId } } });
+        if (!s) return null;
+        return {
+          title: s.title ?? null,
+          bio: s.bio ?? null,
+          isAvailableForBooking: s.is_available_for_booking,
+          bookingBufferMinutes: s.booking_buffer_minutes,
+        };
+      },
+      naturalMatch: async (tenantId, _clean, raw) => {
+        // `matchEmail` is a READ-ONLY matching hint: not writable (so it can
+        // never change an account's email) and not protected (so sending it is
+        // not treated as an attack). Used solely to find the staff member to link.
+        const email = typeof raw.matchEmail === 'string' ? raw.matchEmail.trim().toLowerCase() : '';
+        if (!email) return null;
+        const matches = await this.staffRepo.find({
+          where: { tenant: { id: tenantId }, user: { email } },
+          relations: { user: true },
+          take: 2,
+        });
+        if (matches.length !== 1) return null; // 0 = no match, >1 = ambiguous → never guess
+        return { id: matches[0].id };
       },
     };
   }

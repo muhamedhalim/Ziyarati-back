@@ -46,7 +46,7 @@ export class IntegrationImportJobsController {
     description:
       '**Protected — `platform.integrations.manage`.** Validates, enqueues, and returns a job id immediately. Supports `dryRun` (preview).',
   })
-  @ApiParam({ name: 'resource', enum: [INTEGRATION_RESOURCE.CUSTOMER, INTEGRATION_RESOURCE.SERVICE] })
+  @ApiParam({ name: 'resource', enum: [INTEGRATION_RESOURCE.CUSTOMER, INTEGRATION_RESOURCE.SERVICE, INTEGRATION_RESOURCE.STAFF] })
   @Post(':resource')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
   create(

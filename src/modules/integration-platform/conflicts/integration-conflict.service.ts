@@ -10,8 +10,10 @@ import { User } from '../../../entities/Auth&RBAC/User';
 import { AppError, ErrorCode } from '../../../common/errors';
 
 import {
+  CONFLICT_REASON,
   CONFLICT_RESOLUTION,
   CONFLICT_STATUS,
+  ConflictReason,
   ConflictResolution,
   IntegrationResource,
 } from '../integration-platform.constants';
@@ -29,6 +31,8 @@ export interface RecordConflictInput {
   externalValues: Record<string, unknown>;
   /** Current platform values (allowlisted view). */
   platformValues: Record<string, unknown>;
+  /** Safe machine-readable reason code. Defaults to field divergence. */
+  reason?: ConflictReason;
 }
 
 /**
@@ -87,6 +91,7 @@ export class IntegrationConflictService {
         existing.external_hash = externalHash;
         existing.platform_hash = platformHash;
         existing.policy = input.policy;
+        existing.reason = input.reason ?? CONFLICT_REASON.FIELD_DIVERGENCE;
         return this.repo.save(existing);
       }
 
@@ -101,6 +106,7 @@ export class IntegrationConflictService {
           external_hash: externalHash,
           platform_hash: platformHash,
           policy: input.policy,
+          reason: input.reason ?? CONFLICT_REASON.FIELD_DIVERGENCE,
           status: CONFLICT_STATUS.PENDING,
         }),
       );
@@ -164,6 +170,7 @@ export class IntegrationConflictService {
       /** True when the two sides still differ (safe hash comparison — no values). */
       stillDiffers: !!c.external_hash && !!c.platform_hash && c.external_hash !== c.platform_hash,
       policy: c.policy,
+      reason: c.reason,
       status: c.status,
       resolution: c.resolution ?? null,
       resolvedBy: c.resolved_by?.id ?? null,
