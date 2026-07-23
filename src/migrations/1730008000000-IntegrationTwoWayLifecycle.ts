@@ -209,9 +209,9 @@ export class IntegrationTwoWayLifecycle1730008000000 implements MigrationInterfa
   }
 
   public async down(q: QueryRunner): Promise<void> {
-    // Children before parents. Connection health columns are additive and left in
-    // place (dropping them would lose health history and is not required to roll
-    // back the new tables).
+    // Children before parents. This migration OWNS the health columns (it added
+    // them), so a clean rollback drops them too — `up` re-adds them idempotently.
+    // Verified by an up → down → up replay on real Postgres.
     await q.query(`DROP TABLE IF EXISTS "integration_conflicts"`);
     await q.query(`DROP TABLE IF EXISTS "integration_import_items"`);
     await q.query(`DROP TABLE IF EXISTS "integration_import_jobs"`);
