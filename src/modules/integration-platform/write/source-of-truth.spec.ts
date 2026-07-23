@@ -52,13 +52,19 @@ describe('source-of-truth engine', () => {
       }
     });
 
-    it('allows staff profile-only fields', () => {
+    it('allows staff profile-only fields (named to match UpdateStaffDto)', () => {
       const { clean } = sanitizeExternalInput(INTEGRATION_RESOURCE.STAFF, {
         title: 'Dentist',
         bio: 'Hi',
-        is_available_for_booking: true,
+        isAvailableForBooking: true,
+        bookingBufferMinutes: 10,
       });
-      expect(clean).toEqual({ title: 'Dentist', bio: 'Hi', is_available_for_booking: true });
+      expect(clean).toEqual({
+        title: 'Dentist',
+        bio: 'Hi',
+        isAvailableForBooking: true,
+        bookingBufferMinutes: 10,
+      });
     });
 
     it('protects customer whatsapp linkage', () => {

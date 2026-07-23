@@ -64,6 +64,14 @@ export class IntegrationConflict {
   @Column({ type: 'varchar', length: 24 })
   policy!: string;
 
+  /**
+   * Safe machine-readable reason code (never free-form external text), e.g.
+   * `field_divergence`, `staff_requires_account`, `missing_dependency`. Lets the
+   * review UI explain WHY a record could not be applied without exposing values.
+   */
+  @Column({ type: 'varchar', length: 48, default: 'field_divergence' })
+  reason!: string;
+
   /** pending | resolved | ignored */
   @Column({ type: 'varchar', length: 16, default: 'pending' })
   status!: string;

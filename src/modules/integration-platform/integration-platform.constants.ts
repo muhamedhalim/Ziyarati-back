@@ -196,6 +196,27 @@ export const CONFLICT_STATUS = {
 } as const;
 export type ConflictStatus = (typeof CONFLICT_STATUS)[keyof typeof CONFLICT_STATUS];
 
+/**
+ * Why a conflict was raised. Safe machine-readable codes only — never free-form
+ * text from an external system.
+ */
+export const CONFLICT_REASON = {
+  /** Allowlisted field values diverge and the policy says report. */
+  FIELD_DIVERGENCE: 'field_divergence',
+  /** External staff record has no safe internal match; provisioning an account
+   *  is a privileged action that an integration must never perform. */
+  STAFF_REQUIRES_ACCOUNT: 'staff_requires_account',
+  /** A referenced customer/staff/service/branch mapping could not be resolved. */
+  MISSING_DEPENDENCY: 'missing_dependency',
+  /** More than one internal record matched the external natural key. */
+  AMBIGUOUS_MATCH: 'ambiguous_match',
+  /** The external update is older than the current platform state. */
+  STALE_UPDATE: 'stale_update',
+  /** The requested change is not allowed by the domain lifecycle. */
+  LIFECYCLE_NOT_ALLOWED: 'lifecycle_not_allowed',
+} as const;
+export type ConflictReason = (typeof CONFLICT_REASON)[keyof typeof CONFLICT_REASON];
+
 /** How a persisted conflict was resolved. */
 export const CONFLICT_RESOLUTION = {
   EXTERNAL_WINS: 'external_wins',
