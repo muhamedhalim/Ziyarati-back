@@ -16,6 +16,12 @@ export enum ErrorCode {
   UNAUTHORIZED = 'UNAUTHORIZED',
   FORBIDDEN = 'FORBIDDEN',
   RATE_LIMITED = 'RATE_LIMITED',
+  /**
+   * A dependency required to admit the request safely is unavailable, so the
+   * request was REJECTED rather than admitted unchecked (fail-closed). Always
+   * retryable — the client should back off and retry.
+   */
+  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
 
   // ── Authentication ───────────────────────────────────────────────────
   INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
@@ -91,6 +97,10 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.RATE_LIMITED]: {
     status: HttpStatus.TOO_MANY_REQUESTS,
     message: 'Too many requests',
+  },
+  [ErrorCode.SERVICE_UNAVAILABLE]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'Service temporarily unavailable — please retry',
   },
 
   [ErrorCode.INVALID_CREDENTIALS]: {

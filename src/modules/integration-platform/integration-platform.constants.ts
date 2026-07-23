@@ -221,3 +221,46 @@ export type HealthState = (typeof HEALTH_STATE)[keyof typeof HEALTH_STATE];
 /** Consecutive-failure thresholds for the health transition. */
 export const HEALTH_DEGRADED_AT = 1;
 export const HEALTH_OFFLINE_AT = 5;
+
+/**
+ * Operation classes for admission control. Each has its OWN limits and its own
+ * Redis-unavailable policy — the read-only API's fail-OPEN behaviour is never
+ * inherited by a write/import/sync/webhook (see IntegrationAdmissionService).
+ */
+export const ADMISSION_OP = {
+  WRITE: 'write',
+  IMPORT_CREATE: 'import.create',
+  IMPORT_RETRY: 'import.retry',
+  SYNC_START: 'sync.start',
+  SYNC_RETRY: 'sync.retry',
+  INBOUND_WEBHOOK: 'inbound.webhook',
+  HEALTH_PROBE: 'health.probe',
+} as const;
+export type AdmissionOp = (typeof ADMISSION_OP)[keyof typeof ADMISSION_OP];
+
+/**
+ * Per-minute request limits per scope, plus concurrency/size caps. Values are
+ * conservative defaults; each is overridable by env (see the admission service).
+ */
+export const ADMISSION_LIMITS: Record<
+  AdmissionOp,
+  { perKeyPerMin?: number; perTenantPerMin: number; perConnectionPerMin?: number }
+> = {
+  [ADMISSION_OP.WRITE]: { perKeyPerMin: 300, perTenantPerMin: 600, perConnectionPerMin: 300 },
+  [ADMISSION_OP.IMPORT_CREATE]: { perTenantPerMin: 10, perConnectionPerMin: 5 },
+  [ADMISSION_OP.IMPORT_RETRY]: { perTenantPerMin: 10, perConnectionPerMin: 5 },
+  [ADMISSION_OP.SYNC_START]: { perTenantPerMin: 20, perConnectionPerMin: 10 },
+  [ADMISSION_OP.SYNC_RETRY]: { perTenantPerMin: 20, perConnectionPerMin: 10 },
+  [ADMISSION_OP.INBOUND_WEBHOOK]: { perTenantPerMin: 1200, perConnectionPerMin: 600 },
+  [ADMISSION_OP.HEALTH_PROBE]: { perTenantPerMin: 60, perConnectionPerMin: 12 },
+};
+
+/** Max simultaneously active (pending|running) import jobs per tenant. */
+export const MAX_CONCURRENT_IMPORT_JOBS = 3;
+/** Max simultaneously active (pending|running) sync runs per tenant. */
+export const MAX_CONCURRENT_SYNC_JOBS = 5;
+
+/** Max accepted body size for a single M2M upsert payload. */
+export const MAX_UPSERT_PAYLOAD_BYTES = 256 * 1024; // 256 KB
+/** Max accepted inbound-webhook body size. */
+export const MAX_WEBHOOK_BODY_BYTES = 512 * 1024; // 512 KB

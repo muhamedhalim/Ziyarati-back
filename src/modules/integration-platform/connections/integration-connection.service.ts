@@ -11,6 +11,7 @@ import { CreateConnectionDto } from '../dto/create-connection.dto';
 import { UpdateConnectionDto } from '../dto/update-connection.dto';
 import { QueryConnectionsDto } from '../dto/query-connections.dto';
 import {
+  ADMISSION_OP,
   CONNECTION_AUTH_TYPE,
   CONNECTION_STATUS,
   ConflictPolicy,
@@ -23,6 +24,7 @@ import {
 } from '../integration-platform.constants';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 import { IntegrationProviderService } from '../providers/integration-provider.service';
+import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 
 /** Age after which a connection with no fresh success is considered stale/offline. */
 const HEALTH_STALE_SUCCESS_MS = 24 * 3600 * 1000;
@@ -56,6 +58,7 @@ export class IntegrationConnectionService {
     private readonly encryption: EncryptionService,
     private readonly audit: IntegrationAuditService,
     private readonly providers: IntegrationProviderService,
+    private readonly admission: IntegrationAdmissionService,
   ) {}
 
   async create(tenantId: string, dto: CreateConnectionDto, actor: ConnectionActor): Promise<SafeConnection> {
@@ -131,6 +134,9 @@ export class IntegrationConnectionService {
     if (c.status !== CONNECTION_STATUS.ACTIVE) {
       return this.healthView(c);
     }
+    // A probe makes an OUTBOUND call — admission-controlled so it cannot be used
+    // to hammer a provider (or us) from the dashboard.
+    await this.admission.admit(ADMISSION_OP.HEALTH_PROBE, { tenantId, connectionId: id });
     const started = Date.now();
     try {
       const res = await this.providers.healthCheck(c);
