@@ -1,5 +1,5 @@
-import { ErrorCode } from '../../common/errors';
-import { INTEGRATION_RESOURCE } from './integration-platform.constants';
+import { ErrorCode } from '../../../common/errors';
+import { INTEGRATION_RESOURCE } from '../integration-platform.constants';
 import { IntegrationIdMapService } from './integration-id-map.service';
 
 function repoMock(overrides: Partial<Record<string, jest.Mock>> = {}) {

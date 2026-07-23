@@ -4,15 +4,15 @@ import { IsNull, Repository } from 'typeorm';
 import { plainToInstance, ClassConstructor } from 'class-transformer';
 import { validate } from 'class-validator';
 
-import { Customer } from '../../entities/CRM/Customer';
-import { Service } from '../../entities/Services/Service';
-import { AppError, ErrorCode } from '../../common/errors';
-import { CustomerService } from '../crm/customer.service';
-import { CreateCustomerDto } from '../crm/dto/create-customer.dto';
-import { UpdateCustomerDto } from '../crm/dto/update-customer.dto';
-import { ServiceService } from '../services/service.service';
-import { CreateServiceDto } from '../services/dto/create-service.dto';
-import { UpdateServiceDto } from '../services/dto/update-service.dto';
+import { Customer } from '../../../entities/CRM/Customer';
+import { Service } from '../../../entities/Services/Service';
+import { AppError, ErrorCode } from '../../../common/errors';
+import { CustomerService } from '../../crm/customer.service';
+import { CreateCustomerDto } from '../../crm/dto/create-customer.dto';
+import { UpdateCustomerDto } from '../../crm/dto/update-customer.dto';
+import { ServiceService } from '../../services/service.service';
+import { CreateServiceDto } from '../../services/dto/create-service.dto';
+import { UpdateServiceDto } from '../../services/dto/update-service.dto';
 
 import {
   INTEGRATION_RESOURCE,
@@ -20,11 +20,11 @@ import {
   MAPPING_SOURCE,
   UPSERT_OUTCOME,
   UpsertOutcome,
-} from './integration-platform.constants';
+} from '../integration-platform.constants';
 import { decideConflict, sanitizeExternalInput } from './source-of-truth';
-import { IntegrationIdMapService } from './integration-id-map.service';
-import { IntegrationConnectionService } from './integration-connection.service';
-import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from './integration-audit.service';
+import { IntegrationIdMapService } from '../mappings/integration-id-map.service';
+import { IntegrationConnectionService } from '../connections/integration-connection.service';
+import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 
 export interface UpsertResult {
   outcome: UpsertOutcome;

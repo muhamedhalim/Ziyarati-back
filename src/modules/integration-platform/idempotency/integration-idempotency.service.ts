@@ -3,10 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { createHash } from 'node:crypto';
 
-import { IntegrationIdempotencyKey } from '../../entities/Integration/IntegrationIdempotencyKey';
-import { IntegrationConnection } from '../../entities/Integration/IntegrationConnection';
-import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
+import { IntegrationIdempotencyKey } from '../../../entities/Integration/IntegrationIdempotencyKey';
+import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
+import { Tenant } from '../../../entities/SaaS-Core/Tenant';
+import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
 
 /** TTL for a stored idempotency record. */
 const IDEMPOTENCY_TTL_MS = 24 * 3600 * 1000;

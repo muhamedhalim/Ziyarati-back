@@ -14,17 +14,17 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
-import { PermissionsGuard } from '../auth/guards/permissions.guard';
-import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { PERMISSION } from '../../rbac/rbac.constants';
-import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
-import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+import { PERMISSION } from '../../../rbac/rbac.constants';
+import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
+import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.guard';
 
 import { IntegrationConnectionService } from './integration-connection.service';
-import { CreateConnectionDto } from './dto/create-connection.dto';
-import { UpdateConnectionDto } from './dto/update-connection.dto';
-import { QueryConnectionsDto } from './dto/query-connections.dto';
+import { CreateConnectionDto } from '../dto/create-connection.dto';
+import { UpdateConnectionDto } from '../dto/update-connection.dto';
+import { QueryConnectionsDto } from '../dto/query-connections.dto';
 
 /**
  * Tenant-admin management of external-system connections (Phase 3). Guarded by

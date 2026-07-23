@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
-import { IntegrationResource } from './integration-platform.constants';
-import { IntegrationConnectionService } from './integration-connection.service';
-import { IntegrationIdempotencyService } from './integration-idempotency.service';
+import { IntegrationResource } from '../integration-platform.constants';
+import { IntegrationConnectionService } from '../connections/integration-connection.service';
+import { IntegrationIdempotencyService } from '../idempotency/integration-idempotency.service';
 import { IntegrationUpsertService, UpsertActor } from './integration-upsert.service';
 
 export interface ApiUpsertResponse {

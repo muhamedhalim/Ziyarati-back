@@ -2,21 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, IsNull, Repository } from 'typeorm';
 
-import { IntegrationConnection } from '../../entities/Integration/IntegrationConnection';
-import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { AppError, ErrorCode } from '../../common/errors';
-import { EncryptionService } from '../../common/crypto/encryption.service';
+import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
+import { Tenant } from '../../../entities/SaaS-Core/Tenant';
+import { AppError, ErrorCode } from '../../../common/errors';
+import { EncryptionService } from '../../../common/crypto/encryption.service';
 
-import { CreateConnectionDto } from './dto/create-connection.dto';
-import { UpdateConnectionDto } from './dto/update-connection.dto';
-import { QueryConnectionsDto } from './dto/query-connections.dto';
+import { CreateConnectionDto } from '../dto/create-connection.dto';
+import { UpdateConnectionDto } from '../dto/update-connection.dto';
+import { QueryConnectionsDto } from '../dto/query-connections.dto';
 import {
   CONNECTION_AUTH_TYPE,
   CONNECTION_STATUS,
   ConflictPolicy,
   getProvider,
-} from './integration-platform.constants';
-import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from './integration-audit.service';
+} from '../integration-platform.constants';
+import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 
 /** Connection with the encrypted credential stripped — the shape returned to clients. */
 export type SafeConnection = Omit<IntegrationConnection, 'credentials_ciphertext'> & {

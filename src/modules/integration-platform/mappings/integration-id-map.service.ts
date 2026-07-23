@@ -2,17 +2,17 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 
-import { IntegrationIdMap } from '../../entities/Integration/IntegrationIdMap';
-import { IntegrationConnection } from '../../entities/Integration/IntegrationConnection';
-import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
+import { IntegrationIdMap } from '../../../entities/Integration/IntegrationIdMap';
+import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
+import { Tenant } from '../../../entities/SaaS-Core/Tenant';
+import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
 
 import {
   IntegrationResource,
   MAPPING_SOURCE,
   MappingSource,
-} from './integration-platform.constants';
-import { QueryMappingsDto } from './dto/query-mappings.dto';
+} from '../integration-platform.constants';
+import { QueryMappingsDto } from '../dto/query-mappings.dto';
 
 /**
  * External-id ⇄ internal-id mapping (Phase 3). Every read/write is scoped to a

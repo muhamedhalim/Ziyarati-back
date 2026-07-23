@@ -4,7 +4,7 @@ import { ApiOperation, ApiSecurity, ApiTags, ApiHeader } from '@nestjs/swagger';
 import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decorator';
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
-import { IntegrationWriteService } from '../integration-platform/integration-write.service';
+import { IntegrationWriteService } from '../integration-platform/write/integration-write.service';
 import { INTEGRATION_RESOURCE } from '../integration-platform/integration-platform.constants';
 import { UpsertRecordDto } from '../integration-platform/dto/upsert-record.dto';
 

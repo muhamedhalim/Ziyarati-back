@@ -12,16 +12,17 @@ import { CryptoModule } from '../../common/crypto/crypto.module';
 import { CrmModule } from '../crm/crm.module';
 import { ServicesModule } from '../services/services.module';
 
-import { IntegrationConnectionService } from './integration-connection.service';
-import { IntegrationIdMapService } from './integration-id-map.service';
-import { IntegrationIdempotencyService } from './integration-idempotency.service';
+import { IntegrationConnectionService } from './connections/integration-connection.service';
+import { IntegrationIdMapService } from './mappings/integration-id-map.service';
+import { IntegrationIdempotencyService } from './idempotency/integration-idempotency.service';
 import { IntegrationAuditService } from './integration-audit.service';
-import { IntegrationUpsertService } from './integration-upsert.service';
-import { IntegrationImportService } from './integration-import.service';
-import { IntegrationWriteService } from './integration-write.service';
+import { IntegrationUpsertService } from './write/integration-upsert.service';
+import { IntegrationImportService } from './imports/integration-import.service';
+import { IntegrationWriteService } from './write/integration-write.service';
 
-import { IntegrationConnectionController } from './integration-connection.controller';
-import { IntegrationDataController } from './integration-data.controller';
+import { IntegrationConnectionController } from './connections/integration-connection.controller';
+import { IntegrationMappingsController } from './mappings/mappings.controller';
+import { IntegrationImportsController } from './imports/imports.controller';
 
 /**
  * Integration Platform (Phase 3 — two-way integrations).
@@ -63,7 +64,7 @@ import { IntegrationDataController } from './integration-data.controller';
       Service,
     ]),
   ],
-  controllers: [IntegrationConnectionController, IntegrationDataController],
+  controllers: [IntegrationConnectionController, IntegrationMappingsController, IntegrationImportsController],
   providers: [
     IntegrationConnectionService,
     IntegrationIdMapService,
