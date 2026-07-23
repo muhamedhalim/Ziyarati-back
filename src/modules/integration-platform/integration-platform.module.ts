@@ -28,6 +28,7 @@ import { IntegrationConflictService } from './conflicts/integration-conflict.ser
 import { IntegrationConflictResolutionService } from './conflicts/integration-conflict-resolution.service';
 import { IntegrationSyncService } from './sync/integration-sync.service';
 import { IntegrationProviderService } from './providers/integration-provider.service';
+import { IntegrationAdmissionService } from './admission/integration-admission.service';
 
 import { IntegrationConnectionController } from './connections/integration-connection.controller';
 import { IntegrationMappingsController } from './mappings/mappings.controller';
@@ -105,6 +106,7 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
     IntegrationConflictResolutionService,
     IntegrationSyncService,
     IntegrationProviderService,
+    IntegrationAdmissionService,
   ],
   exports: [
     IntegrationWriteService,

@@ -1,8 +1,14 @@
 import { Injectable } from '@nestjs/common';
 
-import { IntegrationResource } from '../integration-platform.constants';
+import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
+import {
+  ADMISSION_OP,
+  IntegrationResource,
+  MAX_UPSERT_PAYLOAD_BYTES,
+} from '../integration-platform.constants';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationIdempotencyService } from '../idempotency/integration-idempotency.service';
+import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationUpsertService, UpsertActor } from './integration-upsert.service';
 
 export interface ApiUpsertResponse {
@@ -22,7 +28,15 @@ export class IntegrationWriteService {
     private readonly connections: IntegrationConnectionService,
     private readonly idempotency: IntegrationIdempotencyService,
     private readonly upsert: IntegrationUpsertService,
+    private readonly admission: IntegrationAdmissionService,
+    private readonly ctx: TenantContextService,
   ) {}
+
+  /** `apikey:<id>` principal → the raw key id, for per-key admission. */
+  private currentKeyId(): string | null {
+    const id = this.ctx.getUser()?.id;
+    return id?.startsWith('apikey:') ? id.slice('apikey:'.length) : null;
+  }
 
   async upsertViaApi(
     tenantId: string,
@@ -33,6 +47,16 @@ export class IntegrationWriteService {
     idempotencyKey: string | undefined,
     actor: UpsertActor,
   ): Promise<ApiUpsertResponse> {
+    // Admission BEFORE any persistence/enqueue: an oversized or over-budget
+    // request is rejected without side effects. Write admission FAILS CLOSED if
+    // the limiter is unreachable — it never inherits the read API's fail-open.
+    this.admission.assertPayloadSize(data, MAX_UPSERT_PAYLOAD_BYTES, 'upsert payload');
+    await this.admission.admit(ADMISSION_OP.WRITE, {
+      tenantId,
+      keyId: this.currentKeyId(),
+      connectionId,
+    });
+
     const connection = await this.connections.requireActive(tenantId, connectionId);
     const policy = this.connections.conflictPolicyOf(connection);
 

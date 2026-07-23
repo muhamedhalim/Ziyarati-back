@@ -13,6 +13,7 @@ import { StartSyncDto } from '../dto/start-sync.dto';
 import { QueryJobsDto } from '../dto/query-jobs.dto';
 import {
   ACTIVE_JOB_STATUSES,
+  ADMISSION_OP,
   IntegrationResource,
   JOB_STATUS,
   SYNC_DIRECTION,
@@ -20,6 +21,7 @@ import {
   TERMINAL_JOB_STATUSES,
   UPSERT_OUTCOME,
 } from '../integration-platform.constants';
+import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationUpsertService } from '../write/integration-upsert.service';
 import { IntegrationProviderService } from '../providers/integration-provider.service';
@@ -56,11 +58,17 @@ export class IntegrationSyncService {
     private readonly providers: IntegrationProviderService,
     private readonly audit: IntegrationAuditService,
     private readonly queue: QueueService,
+    private readonly admission: IntegrationAdmissionService,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
 
-  async start(tenantId: string, dto: StartSyncDto, actor: Actor) {
+  async start(tenantId: string, dto: StartSyncDto, actor: Actor, op: string = ADMISSION_OP.SYNC_START) {
+    // Admission before any row is created: rate (fail-closed) + a DB-backed
+    // concurrency cap. The partial unique index is the final duplicate guard.
+    await this.admission.admit(op as never, { tenantId, connectionId: dto.connectionId });
+    await this.admission.assertSyncConcurrency(tenantId);
+
     const connection = await this.connections.requireActive(tenantId, dto.connectionId);
     const resource = dto.resourceType as IntegrationResource;
     const direction = dto.direction;
@@ -150,12 +158,17 @@ export class IntegrationSyncService {
     if (!TERMINAL_JOB_STATUSES.includes(prior.status as never)) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'Only a finished run can be retried' });
     }
-    return this.start(tenantId, {
-      connectionId: prior.connection?.id as string,
-      resourceType: prior.resource_type,
-      direction: prior.direction,
-      mode: SYNC_MODE.INCREMENTAL,
-    }, actor);
+    return this.start(
+      tenantId,
+      {
+        connectionId: prior.connection?.id as string,
+        resourceType: prior.resource_type,
+        direction: prior.direction,
+        mode: SYNC_MODE.INCREMENTAL,
+      },
+      actor,
+      ADMISSION_OP.SYNC_RETRY,
+    );
   }
 
   // ── Worker path ─────────────────────────────────────────────────────────────

@@ -14,14 +14,17 @@ import { CreateImportJobDto } from '../dto/create-import-job.dto';
 import { QueryJobsDto } from '../dto/query-jobs.dto';
 import {
   ACTIVE_JOB_STATUSES,
+  ADMISSION_OP,
   IMPORT_ITEM_STATUS,
   IMPORT_MODE,
   IntegrationResource,
   JOB_STATUS,
   MAX_ASYNC_IMPORT_BATCH,
+  MAX_UPSERT_PAYLOAD_BYTES,
   TERMINAL_JOB_STATUSES,
   UPSERT_OUTCOME,
 } from '../integration-platform.constants';
+import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationUpsertService } from '../write/integration-upsert.service';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
@@ -56,6 +59,7 @@ export class IntegrationImportJobService {
     private readonly upsert: IntegrationUpsertService,
     private readonly audit: IntegrationAuditService,
     private readonly queue: QueueService,
+    private readonly admission: IntegrationAdmissionService,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
@@ -81,6 +85,12 @@ export class IntegrationImportJobService {
         message: `Import exceeds the maximum of ${MAX_ASYNC_IMPORT_BATCH} records`,
       });
     }
+    // Admission BEFORE persistence/enqueue — size, rate (fail-closed), and a
+    // DB-backed concurrency cap that stays correct even during a Redis outage.
+    this.admission.assertPayloadSize(dto.records, MAX_UPSERT_PAYLOAD_BYTES * 40, 'import batch');
+    await this.admission.admit(ADMISSION_OP.IMPORT_CREATE, { tenantId, connectionId: dto.connectionId });
+    await this.admission.assertImportConcurrency(tenantId);
+
     // Connection must be ACTIVE at accept time (re-checked at process time too).
     await this.connections.requireActive(tenantId, dto.connectionId);
 
@@ -190,6 +200,11 @@ export class IntegrationImportJobService {
         message: 'No retryable records remain for this job',
       });
     }
+    await this.admission.admit(ADMISSION_OP.IMPORT_RETRY, {
+      tenantId,
+      connectionId: job.connection?.id ?? null,
+    });
+    await this.admission.assertImportConcurrency(tenantId);
     job.status = JOB_STATUS.PENDING;
     job.cancel_requested = false;
     job.processed = 0;
