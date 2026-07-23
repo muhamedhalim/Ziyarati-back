@@ -1,11 +1,11 @@
-import { AppError, ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode } from '../../../common/errors';
 
 import {
   CONFLICT_POLICY,
   ConflictPolicy,
   INTEGRATION_RESOURCE,
   IntegrationResource,
-} from './integration-platform.constants';
+} from '../integration-platform.constants';
 
 /**
  * Source-of-truth & protected-field engine (pure, side-effect-free).

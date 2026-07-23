@@ -1,8 +1,8 @@
-import { AppError } from '../../common/errors';
+import { AppError } from '../../../common/errors';
 import {
   CONFLICT_POLICY,
   INTEGRATION_RESOURCE,
-} from './integration-platform.constants';
+} from '../integration-platform.constants';
 import {
   decideConflict,
   protectedFieldsFor,

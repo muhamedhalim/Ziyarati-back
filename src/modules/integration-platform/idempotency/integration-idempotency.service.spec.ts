@@ -1,4 +1,4 @@
-import { AppError, ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode } from '../../../common/errors';
 import { IntegrationIdempotencyService } from './integration-idempotency.service';
 
 /** Minimal repo mock — only the methods `begin` touches. */

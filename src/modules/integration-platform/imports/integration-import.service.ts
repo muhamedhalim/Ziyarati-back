@@ -1,16 +1,16 @@
 import { Injectable } from '@nestjs/common';
 
-import { AppError, ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode } from '../../../common/errors';
 
-import { BatchImportDto } from './dto/batch-import.dto';
+import { BatchImportDto } from '../dto/batch-import.dto';
 import {
   IntegrationResource,
   MAX_SYNC_IMPORT_BATCH,
   UPSERT_OUTCOME,
-} from './integration-platform.constants';
-import { IntegrationConnectionService } from './integration-connection.service';
-import { IntegrationUpsertService, UpsertActor } from './integration-upsert.service';
-import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from './integration-audit.service';
+} from '../integration-platform.constants';
+import { IntegrationConnectionService } from '../connections/integration-connection.service';
+import { IntegrationUpsertService, UpsertActor } from '../write/integration-upsert.service';
+import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 
 export interface ImportSummary {
   connectionId: string;
