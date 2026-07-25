@@ -34,6 +34,7 @@
         "timestamptz",
         "tstzrange",
         "UNCOLLECTIBLE",
+        "unmetered",
         "unvalidated",
         "waba",
         "ziyaratech",
@@ -44,6 +45,7 @@
         "بموعدك",
         "غداً",
         "مرحباً",
-        "نذكّرك"
+        "نذكّرك",
+        "وDomain"
     ]
 }
