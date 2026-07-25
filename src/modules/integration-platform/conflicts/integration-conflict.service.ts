@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, In, Repository } from 'typeorm';
 import { createHash } from 'node:crypto';
 
 import { IntegrationConflict } from '../../../entities/Integration/IntegrationConflict';
@@ -16,6 +16,7 @@ import {
   ConflictReason,
   ConflictResolution,
   IntegrationResource,
+  OPEN_CONFLICT_STATUSES,
 } from '../integration-platform.constants';
 import { QueryConflictsDto } from '../dto/query-conflicts.dto';
 
@@ -75,13 +76,17 @@ export class IntegrationConflictService {
       const externalHash = IntegrationConflictService.hashValues(input.changedFields, input.externalValues);
       const platformHash = IntegrationConflictService.hashValues(input.changedFields, input.platformValues);
 
+      // Dedupe against ANY still-open state, not just `pending` — a `stale`
+      // conflict is unresolved, so a fresh divergence must REFRESH it rather
+      // than pile a second open row on top of it. (The partial unique index
+      // covers the same set, so a race collapses the same way.)
       const existing = await this.repo.findOne({
         where: {
           tenant: { id: input.tenantId },
           connection: { id: input.connectionId },
           resource_type: input.resource,
           external_id: input.externalId,
-          status: CONFLICT_STATUS.PENDING,
+          status: In(OPEN_CONFLICT_STATUSES),
         },
       });
 
@@ -92,6 +97,13 @@ export class IntegrationConflictService {
         existing.platform_hash = platformHash;
         existing.policy = input.policy;
         existing.reason = input.reason ?? CONFLICT_REASON.FIELD_DIVERGENCE;
+        // A refreshed snapshot supersedes staleness: both sides are current
+        // again, so the conflict returns to the actionable queue. A row someone
+        // is actively RESOLVING is left claimed — stealing the claim mid-apply
+        // is exactly the race the claim exists to prevent.
+        if (existing.status === CONFLICT_STATUS.STALE) {
+          existing.status = CONFLICT_STATUS.PENDING;
+        }
         return this.repo.save(existing);
       }
 
@@ -120,7 +132,11 @@ export class IntegrationConflictService {
     const where: FindOptionsWhere<IntegrationConflict> = { tenant: { id: tenantId } };
     if (query.connectionId) where.connection = { id: query.connectionId };
     if (query.resourceType) where.resource_type = query.resourceType;
-    where.status = query.status ?? CONFLICT_STATUS.PENDING;
+    // Default to every state still needing a decision — a `stale` conflict is
+    // unresolved and must not disappear from the queue just because its status
+    // is no longer literally `pending`.
+    const status = query.status ?? 'open';
+    where.status = status === 'open' ? In(OPEN_CONFLICT_STATUSES) : status;
 
     const [rows, total] = await this.repo.findAndCount({
       where,
@@ -141,22 +157,91 @@ export class IntegrationConflictService {
     return c;
   }
 
-  /** Mark a conflict resolved (the data change, if any, is applied by the caller). */
+  /**
+   * ATOMIC CLAIM. Moves pending|stale → `resolving` with a CONDITIONAL update and
+   * reports whether THIS caller won. Two resolvers pressing "resolve" at the same
+   * moment cannot both proceed: exactly one update matches, the other gets false
+   * and is told the conflict is already being resolved. A service-level
+   * "is it still pending?" read could not give this guarantee.
+   */
+  async claim(tenantId: string, id: string): Promise<boolean> {
+    const res = await this.repo
+      .createQueryBuilder()
+      .update(IntegrationConflict)
+      .set({ status: CONFLICT_STATUS.RESOLVING })
+      .where('id = :id', { id })
+      .andWhere('"tenantId" = :tenantId', { tenantId })
+      .andWhere('status IN (:...open)', {
+        open: [CONFLICT_STATUS.PENDING, CONFLICT_STATUS.STALE],
+      })
+      .execute();
+    return (res.affected ?? 0) > 0;
+  }
+
+  /** Release a claim back to `pending` when the resolution could not be applied. */
+  async release(tenantId: string, id: string): Promise<void> {
+    await this.repo
+      .createQueryBuilder()
+      .update(IntegrationConflict)
+      .set({ status: CONFLICT_STATUS.PENDING })
+      .where('id = :id', { id })
+      .andWhere('"tenantId" = :tenantId', { tenantId })
+      .andWhere('status = :resolving', { resolving: CONFLICT_STATUS.RESOLVING })
+      .execute()
+      .catch((e) => this.logger.warn(`conflict release failed: ${(e as Error)?.message}`));
+  }
+
+  /**
+   * The internal record moved on since the conflict was raised. Refresh the
+   * platform-side hash to the CURRENT values and park the conflict as `stale` so
+   * a reviewer re-reads it — the recorded external snapshot is never applied on
+   * top of a record that has since changed.
+   */
+  async markStale(
+    tenantId: string,
+    id: string,
+    currentPlatformHash: string | null,
+  ): Promise<IntegrationConflict> {
+    const c = await this.getOrThrow(tenantId, id);
+    c.status = CONFLICT_STATUS.STALE;
+    c.platform_hash = currentPlatformHash;
+    c.stale_attempts += 1;
+    c.last_stale_at = new Date();
+    return this.repo.save(c);
+  }
+
+  /**
+   * Mark a claimed conflict resolved. Only a conflict this caller has CLAIMED
+   * (status `resolving`) can be completed, so a late/duplicate submit after
+   * someone else finished cannot overwrite the recorded outcome.
+   */
   async markResolved(
     tenantId: string,
     id: string,
     resolution: ConflictResolution,
     resolverId?: string,
   ): Promise<IntegrationConflict> {
-    const c = await this.getOrThrow(tenantId, id);
-    if (c.status !== CONFLICT_STATUS.PENDING) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'Conflict is already resolved' });
+    const res = await this.repo
+      .createQueryBuilder()
+      .update(IntegrationConflict)
+      .set({
+        status:
+          resolution === CONFLICT_RESOLUTION.IGNORED ? CONFLICT_STATUS.IGNORED : CONFLICT_STATUS.RESOLVED,
+        resolution,
+        resolved_by: resolverId ? ({ id: resolverId } as User) : null,
+        resolved_at: new Date(),
+      })
+      .where('id = :id', { id })
+      .andWhere('"tenantId" = :tenantId', { tenantId })
+      .andWhere('status = :resolving', { resolving: CONFLICT_STATUS.RESOLVING })
+      .execute();
+
+    if ((res.affected ?? 0) === 0) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'This conflict was already resolved by someone else',
+      });
     }
-    c.status = resolution === CONFLICT_RESOLUTION.IGNORED ? CONFLICT_STATUS.IGNORED : CONFLICT_STATUS.RESOLVED;
-    c.resolution = resolution;
-    c.resolved_by = resolverId ? ({ id: resolverId } as User) : null;
-    c.resolved_at = new Date();
-    return this.repo.save(c);
+    return this.getOrThrow(tenantId, id);
   }
 
   private toView(c: IntegrationConflict) {
@@ -172,6 +257,10 @@ export class IntegrationConflictService {
       policy: c.policy,
       reason: c.reason,
       status: c.status,
+      /** True when the platform record moved on and the snapshot can't be applied. */
+      isStale: c.status === CONFLICT_STATUS.STALE,
+      staleAttempts: c.stale_attempts ?? 0,
+      lastStaleAt: c.last_stale_at ?? null,
       resolution: c.resolution ?? null,
       resolvedBy: c.resolved_by?.id ?? null,
       resolvedAt: c.resolved_at ?? null,

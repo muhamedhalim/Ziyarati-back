@@ -2,12 +2,26 @@ import { IntegrationConflictService } from './integration-conflict.service';
 import { CONFLICT_RESOLUTION, CONFLICT_STATUS } from '../integration-platform.constants';
 import { ErrorCode } from '../../../common/errors';
 
-function repoMock(overrides: Partial<Record<string, jest.Mock>> = {}) {
+/**
+ * Conditional-UPDATE double. `affected` is what the service branches on: 1 means
+ * this caller won the atomic transition, 0 means someone else already did.
+ */
+function qbMock(affected = 1) {
+  const qb: Record<string, unknown> = {};
+  for (const m of ['update', 'set', 'where', 'andWhere', 'delete', 'from']) {
+    qb[m] = jest.fn(() => qb);
+  }
+  qb.execute = jest.fn().mockResolvedValue({ affected });
+  return qb;
+}
+
+function repoMock(overrides: Partial<Record<string, jest.Mock>> = {}, affected = 1) {
   return {
     findOne: jest.fn(),
     save: jest.fn((x) => Promise.resolve({ id: 'cf1', ...x })),
     create: jest.fn((x) => x),
     findAndCount: jest.fn(),
+    createQueryBuilder: jest.fn(() => qbMock(affected)),
     ...overrides,
   } as any;
 }
@@ -63,9 +77,26 @@ describe('IntegrationConflictService', () => {
     await expect(svc.record(baseInput)).resolves.toBeNull();
   });
 
-  it('markResolved transitions pending → resolved and stamps the resolver', async () => {
-    const conflict = { id: 'cf1', tenant: { id: 't1' }, status: CONFLICT_STATUS.PENDING };
-    const repo = repoMock({ findOne: jest.fn().mockResolvedValue(conflict) });
+  it('claim wins the atomic pending → resolving transition', async () => {
+    const svc = new IntegrationConflictService(repoMock({}, 1));
+    await expect(svc.claim('t1', 'cf1')).resolves.toBe(true);
+  });
+
+  it('claim LOSES when another resolver already transitioned the row', async () => {
+    // 0 rows matched the conditional UPDATE — someone else got there first.
+    const svc = new IntegrationConflictService(repoMock({}, 0));
+    await expect(svc.claim('t1', 'cf1')).resolves.toBe(false);
+  });
+
+  it('markResolved completes a CLAIMED conflict and stamps the resolver', async () => {
+    const resolved = {
+      id: 'cf1',
+      tenant: { id: 't1' },
+      status: CONFLICT_STATUS.RESOLVED,
+      resolution: CONFLICT_RESOLUTION.PLATFORM_WINS,
+      resolved_by: { id: 'user-9' },
+    };
+    const repo = repoMock({ findOne: jest.fn().mockResolvedValue(resolved) }, 1);
     const svc = new IntegrationConflictService(repo);
     const res = await svc.markResolved('t1', 'cf1', CONFLICT_RESOLUTION.PLATFORM_WINS, 'user-9');
     expect(res.status).toBe(CONFLICT_STATUS.RESOLVED);
@@ -74,20 +105,30 @@ describe('IntegrationConflictService', () => {
   });
 
   it('markResolved(ignored) sets status ignored', async () => {
-    const conflict = { id: 'cf1', tenant: { id: 't1' }, status: CONFLICT_STATUS.PENDING };
-    const repo = repoMock({ findOne: jest.fn().mockResolvedValue(conflict) });
+    const ignored = { id: 'cf1', tenant: { id: 't1' }, status: CONFLICT_STATUS.IGNORED };
+    const repo = repoMock({ findOne: jest.fn().mockResolvedValue(ignored) }, 1);
     const svc = new IntegrationConflictService(repo);
     const res = await svc.markResolved('t1', 'cf1', CONFLICT_RESOLUTION.IGNORED);
     expect(res.status).toBe(CONFLICT_STATUS.IGNORED);
   });
 
-  it('rejects resolving an already-resolved conflict', async () => {
-    const conflict = { id: 'cf1', tenant: { id: 't1' }, status: CONFLICT_STATUS.RESOLVED };
+  it('markResolved refuses when the conflict was NOT claimed by this caller (409)', async () => {
+    // The conditional UPDATE matched nothing — the row is no longer `resolving`,
+    // so a late/duplicate submit cannot overwrite the recorded outcome.
+    const svc = new IntegrationConflictService(repoMock({}, 0));
+    await expect(svc.markResolved('t1', 'cf1', CONFLICT_RESOLUTION.IGNORED)).rejects.toMatchObject({
+      code: ErrorCode.CONFLICT,
+    });
+  });
+
+  it('markStale refreshes the platform hash and counts the rejected attempt', async () => {
+    const conflict = { id: 'cf1', tenant: { id: 't1' }, status: CONFLICT_STATUS.PENDING, stale_attempts: 0 };
     const repo = repoMock({ findOne: jest.fn().mockResolvedValue(conflict) });
     const svc = new IntegrationConflictService(repo);
-    await expect(svc.markResolved('t1', 'cf1', CONFLICT_RESOLUTION.IGNORED)).rejects.toMatchObject({
-      code: ErrorCode.UNPROCESSABLE_ENTITY,
-    });
+    const res = await svc.markStale('t1', 'cf1', 'new-platform-hash');
+    expect(res.status).toBe(CONFLICT_STATUS.STALE);
+    expect(res.platform_hash).toBe('new-platform-hash');
+    expect(res.stale_attempts).toBe(1);
   });
 
   it('throws NOT_FOUND for an unknown conflict', async () => {

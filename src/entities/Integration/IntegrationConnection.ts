@@ -55,6 +55,35 @@ export class IntegrationConnection {
   @Column({ type: 'jsonb', nullable: true })
   config?: Record<string, unknown> | null;
 
+  // ── OAuth2 token storage (Phase 4) ────────────────────────────────────────
+  // All three token columns are ENCRYPTED and NEVER serialized to any client —
+  // the API exposes only presence/expiry. Refresh ROTATION replaces the stored
+  // refresh token on every successful refresh, so a leaked older token is
+  // useless once rotated.
+
+  /** Encrypted OAuth access token. */
+  @Column({ type: 'text', nullable: true })
+  oauth_access_token_ciphertext?: string | null;
+
+  /** Encrypted OAuth refresh token (rotated on each refresh). */
+  @Column({ type: 'text', nullable: true })
+  oauth_refresh_token_ciphertext?: string | null;
+
+  /** Access-token expiry — drives proactive refresh and the UI's expiry state. */
+  @Column({ type: 'timestamptz', nullable: true })
+  oauth_expires_at?: Date | null;
+
+  /** Scopes the provider actually granted (may be narrower than requested). */
+  @Column({ type: 'text', nullable: true })
+  oauth_scope?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  oauth_connected_at?: Date | null;
+
+  /** Last successful refresh — for operator visibility into rotation. */
+  @Column({ type: 'timestamptz', nullable: true })
+  oauth_refreshed_at?: Date | null;
+
   /** inbound | outbound | bidirectional */
   @Column({ type: 'varchar', length: 20, default: 'bidirectional' })
   sync_direction!: string;

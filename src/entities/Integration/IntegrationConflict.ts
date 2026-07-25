@@ -72,9 +72,24 @@ export class IntegrationConflict {
   @Column({ type: 'varchar', length: 48, default: 'field_divergence' })
   reason!: string;
 
-  /** pending | resolved | ignored */
+  /**
+   * pending | resolving | stale | resolved | ignored.
+   *
+   * `resolving` is a short-lived CLAIM: a resolver moves pending → resolving with
+   * a CONDITIONAL update, so two admins resolving the same conflict at the same
+   * moment cannot both apply an outcome — the loser is told it is already being
+   * resolved. `stale` means the internal record changed after this conflict was
+   * raised, so the recorded external snapshot may no longer be safe to apply.
+   */
   @Column({ type: 'varchar', length: 16, default: 'pending' })
   status!: string;
+
+  /** How many times a resolution was refused because the record had moved on. */
+  @Column({ type: 'int', default: 0 })
+  stale_attempts!: number;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  last_stale_at?: Date | null;
 
   /**
    * How it was resolved (set when status leaves `pending`):

@@ -58,6 +58,7 @@ import { WebhookDeliveryProcessor } from './worker/processors/webhook-delivery.p
 import { IntegrationPlatformModule } from './modules/integration-platform/integration-platform.module';
 import { IntegrationImportProcessor } from './worker/processors/integration-import.processor';
 import { IntegrationSyncProcessor } from './worker/processors/integration-sync.processor';
+import { IntegrationInboundProcessor } from './worker/processors/integration-inbound.processor';
 
 /**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
@@ -146,6 +147,7 @@ import { IntegrationSyncProcessor } from './worker/processors/integration-sync.p
     WebhookDeliveryProcessor,
     IntegrationImportProcessor,
     IntegrationSyncProcessor,
+    IntegrationInboundProcessor,
   ],
 })
 export class WorkerModule {}

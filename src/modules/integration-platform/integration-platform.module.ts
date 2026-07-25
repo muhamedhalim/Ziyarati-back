@@ -8,7 +8,12 @@ import { IntegrationImportJob } from '../../entities/Integration/IntegrationImpo
 import { IntegrationImportItem } from '../../entities/Integration/IntegrationImportItem';
 import { IntegrationSyncJob } from '../../entities/Integration/IntegrationSyncJob';
 import { IntegrationConflict } from '../../entities/Integration/IntegrationConflict';
+import { IntegrationWebhookEndpoint } from '../../entities/Integration/IntegrationWebhookEndpoint';
+import { IntegrationInboundEvent } from '../../entities/Integration/IntegrationInboundEvent';
+import { IntegrationStaffProvisioning } from '../../entities/Integration/IntegrationStaffProvisioning';
+import { IntegrationOAuthState } from '../../entities/Integration/IntegrationOAuthState';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { User } from '../../entities/Auth&RBAC/User';
 import { Customer } from '../../entities/CRM/Customer';
 import { Service } from '../../entities/Services/Service';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
@@ -33,6 +38,11 @@ import { IntegrationConflictResolutionService } from './conflicts/integration-co
 import { IntegrationSyncService } from './sync/integration-sync.service';
 import { IntegrationProviderService } from './providers/integration-provider.service';
 import { IntegrationAdmissionService } from './admission/integration-admission.service';
+import { IntegrationServiceAccountService } from './write/integration-service-account.service';
+import { IntegrationWebhookEndpointService } from './inbound/integration-webhook-endpoint.service';
+import { IntegrationInboundService } from './inbound/integration-inbound.service';
+import { IntegrationStaffProvisioningService } from './staff/integration-staff-provisioning.service';
+import { IntegrationOAuthService } from './oauth/integration-oauth.service';
 
 import { IntegrationConnectionController } from './connections/integration-connection.controller';
 import { IntegrationMappingsController } from './mappings/mappings.controller';
@@ -40,6 +50,10 @@ import { IntegrationImportsController } from './imports/imports.controller';
 import { IntegrationImportJobsController } from './imports/import-jobs.controller';
 import { IntegrationSyncController } from './sync/sync.controller';
 import { IntegrationConflictsController } from './conflicts/conflicts.controller';
+import { IntegrationInboundEndpointsController } from './inbound/inbound-endpoints.controller';
+import { IntegrationInboundWebhookController } from './inbound/inbound-webhook.controller';
+import { IntegrationStaffProvisioningController } from './staff/staff-provisioning.controller';
+import { IntegrationOAuthController } from './oauth/oauth.controller';
 
 /**
  * Integration Platform — the integration bounded context's application core +
@@ -63,13 +77,16 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
  *  - conflicts/    persistent conflict store + manual resolution via the shared
  *                  pipeline.
  *  - providers/    provider abstraction (compiled adapters only — no tenant URLs).
+ *  - inbound/      connection-scoped, signature-authenticated webhook receiver +
+ *                  its queue worker. Verified events are applied by the SAME
+ *                  write/ pipeline — there is no second mutation implementation.
+ *  - admission/    fail-closed rate/concurrency/size limits for sensitive ops.
  *
- * Worker processors (IntegrationImportProcessor/IntegrationSyncProcessor) inject
- * the exported job services; enqueues go through the global QueueService.
+ * Worker processors (IntegrationImport/Sync/InboundProcessor) inject the exported
+ * job services; enqueues go through the global QueueService.
  *
- * STILL DEFERRED: inbound webhooks (connection-scoped) and staff/appointment
- * write adapters land next; a real OAuth provider adapter ships when a validated
- * provider config exists.
+ * STILL DEFERRED: a real OAuth provider adapter ships when a validated provider
+ * config exists.
  */
 @Module({
   imports: [
@@ -91,7 +108,12 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
       IntegrationImportItem,
       IntegrationSyncJob,
       IntegrationConflict,
+      IntegrationWebhookEndpoint,
+      IntegrationInboundEvent,
+      IntegrationStaffProvisioning,
+      IntegrationOAuthState,
       AuditLog,
+      User,
       Customer,
       Service,
       StaffProfile,
@@ -105,6 +127,11 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
     IntegrationImportJobsController,
     IntegrationSyncController,
     IntegrationConflictsController,
+    IntegrationInboundEndpointsController,
+    // PUBLIC (signature-authenticated) receiver — see the controller docstring.
+    IntegrationInboundWebhookController,
+    IntegrationStaffProvisioningController,
+    IntegrationOAuthController,
   ],
   providers: [
     IntegrationConnectionService,
@@ -120,6 +147,11 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
     IntegrationSyncService,
     IntegrationProviderService,
     IntegrationAdmissionService,
+    IntegrationServiceAccountService,
+    IntegrationWebhookEndpointService,
+    IntegrationInboundService,
+    IntegrationStaffProvisioningService,
+    IntegrationOAuthService,
   ],
   exports: [
     IntegrationWriteService,
@@ -129,6 +161,10 @@ import { IntegrationConflictsController } from './conflicts/conflicts.controller
     IntegrationSyncService,
     IntegrationConflictService,
     IntegrationProviderService,
+    IntegrationInboundService,
+    IntegrationServiceAccountService,
+    IntegrationStaffProvisioningService,
+    IntegrationOAuthService,
   ],
 })
 export class IntegrationPlatformModule {}

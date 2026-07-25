@@ -13,10 +13,40 @@ export const INTEGRATION_AUDIT_ACTION = {
   CONNECTION_ACTIVATE: 'integration.connection.activate',
   CONNECTION_DEACTIVATE: 'integration.connection.deactivate',
   CONNECTION_DISCONNECT: 'integration.connection.disconnect',
+  CONNECTION_RECONNECT: 'integration.connection.reconnect',
+  /** HARD delete — destroys mappings. History survives via SET NULL FKs. */
+  CONNECTION_PURGE: 'integration.connection.purge',
   MAPPING_CREATE: 'integration.mapping.create',
   MAPPING_LINK: 'integration.mapping.link',
+  MAPPING_UNLINK: 'integration.mapping.unlink',
+  MAPPING_RELINK: 'integration.mapping.relink',
+  MAPPING_TRANSFER: 'integration.mapping.transfer',
   UPSERT: 'integration.upsert',
   IMPORT: 'integration.import',
+  // Inbound webhooks (Phase 4).
+  WEBHOOK_ENDPOINT_CREATE: 'integration.webhook.endpoint.create',
+  WEBHOOK_ENDPOINT_UPDATE: 'integration.webhook.endpoint.update',
+  WEBHOOK_ENDPOINT_DELETE: 'integration.webhook.endpoint.delete',
+  WEBHOOK_SECRET_ROTATE: 'integration.webhook.secret.rotate',
+  /** An inbound delivery that passed every check and was queued. */
+  WEBHOOK_ACCEPTED: 'integration.webhook.accepted',
+  /** An inbound delivery refused at the door — reason CODE only, never payload. */
+  WEBHOOK_REJECTED: 'integration.webhook.rejected',
+  // Staff provisioning review (Phase 4) — every account-linking decision.
+  STAFF_PROVISION_APPROVE: 'integration.staff.provision.approve',
+  STAFF_PROVISION_REJECT: 'integration.staff.provision.reject',
+  STAFF_PROVISION_LINK: 'integration.staff.provision.link',
+  // OAuth2/PKCE client (Phase 4) — never a token value in `details`.
+  OAUTH_AUTHORIZE: 'integration.oauth.authorize',
+  OAUTH_CONNECTED: 'integration.oauth.connected',
+  OAUTH_CALLBACK_FAILED: 'integration.oauth.callback.failed',
+  OAUTH_REFRESHED: 'integration.oauth.refreshed',
+  OAUTH_REFRESH_FAILED: 'integration.oauth.refresh.failed',
+  OAUTH_DISCONNECTED: 'integration.oauth.disconnected',
+  // Conflict resolution (Phase 4).
+  CONFLICT_RESOLVE: 'integration.conflict.resolve',
+  /** A resolution refused because the internal record moved on. */
+  CONFLICT_STALE: 'integration.conflict.stale',
 } as const;
 
 export type IntegrationAuditAction =

@@ -52,6 +52,30 @@ export class IntegrationIdMap {
   @Column({ type: 'varchar', length: 20, default: 'external' })
   source!: string;
 
+  /**
+   * UNLINK is a SOFT delete. An unlinked mapping keeps its row so the historical
+   * correspondence survives — import/sync history, conflicts and audit entries
+   * all reference these ids, and a reconnect can REUSE the mapping instead of
+   * re-importing and risking a duplicate internal record.
+   *
+   * Both unique constraints are PARTIAL (`WHERE unlinked_at IS NULL`), so an
+   * unlinked row never blocks a new mapping, while an ACTIVE 1:1 correspondence
+   * per connection stays DB-enforced.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  unlinked_at?: Date | null;
+
+  /** Safe machine-readable code: manual | superseded | connection_replaced. */
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  unlink_reason?: string | null;
+
+  /**
+   * When this mapping was carried over from another connection during a
+   * reconnect. Preserves the provenance chain across a replacement connection.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  replaced_connection_id?: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

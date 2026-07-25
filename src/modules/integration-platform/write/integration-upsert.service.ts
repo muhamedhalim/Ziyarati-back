@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { plainToInstance, ClassConstructor } from 'class-transformer';
@@ -34,6 +34,7 @@ import { IntegrationIdMapService } from '../mappings/integration-id-map.service'
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 import { IntegrationConflictService } from '../conflicts/integration-conflict.service';
+import { IntegrationStaffProvisioningService } from '../staff/integration-staff-provisioning.service';
 
 export interface UpsertResult {
   outcome: UpsertOutcome;
@@ -98,6 +99,17 @@ interface ResourceAdapter {
   canCreate?: boolean;
   /** Reason code recorded when `canCreate` is false. */
   cannotCreateReason?: ConflictReason;
+  /**
+   * Optional hook fired when creation was blocked, so a resource with a REVIEW
+   * QUEUE (staff) can enqueue an actionable request alongside the conflict.
+   * Must never throw — the conflict is already the durable record.
+   */
+  onCreateBlocked?(
+    tenantId: string,
+    clean: Record<string, unknown>,
+    ctx: AdapterContext,
+    externalId: string,
+  ): Promise<void>;
   create(tenantId: string, data: Record<string, unknown>, ctx: AdapterContext): Promise<{ id: string }>;
   update(tenantId: string, id: string, data: Record<string, unknown>, ctx: AdapterContext): Promise<{ id: string }>;
   /** Comparable (allowlist-keyed) current view, or null if the record is gone. */
@@ -146,6 +158,9 @@ export class IntegrationUpsertService {
     private readonly connections: IntegrationConnectionService,
     private readonly audit: IntegrationAuditService,
     private readonly conflicts: IntegrationConflictService,
+    // Staff-only review queue. Optional so the pipeline still constructs (and
+    // unit-tests) without it; the conflict remains the durable record either way.
+    @Optional() private readonly staffProvisioning?: IntegrationStaffProvisioningService,
   ) {
     this.adapters = {
       [INTEGRATION_RESOURCE.CUSTOMER]: this.customerAdapter(),
@@ -158,6 +173,22 @@ export class IntegrationUpsertService {
   /** Whether write/import is currently supported for a resource. */
   supports(resource: IntegrationResource): boolean {
     return !!this.adapters[resource];
+  }
+
+  /**
+   * The comparable (allowlist-keyed) current view of an internal record, or null
+   * if it no longer exists. Exposed so conflict resolution can detect that the
+   * platform record MOVED ON since the conflict was raised — without duplicating
+   * any adapter knowledge. Contains only allowlisted fields, never protected ones.
+   */
+  async currentViewOf(
+    tenantId: string,
+    resource: IntegrationResource,
+    internalId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const adapter = this.adapters[resource];
+    if (!adapter) return null;
+    return adapter.currentView(tenantId, internalId);
   }
 
   /**
@@ -289,6 +320,13 @@ export class IntegrationUpsertService {
           externalValues: clean, platformValues: {},
           reason: adapter.cannotCreateReason ?? CONFLICT_REASON.MISSING_DEPENDENCY,
         });
+        // …and, where the resource has a review queue, enqueue an ACTIONABLE
+        // request so the admin can approve/link/reject rather than only seeing
+        // that something failed. Best-effort: the conflict above is the record
+        // of truth, so a hiccup here must not fail the import.
+        await adapter.onCreateBlocked?.(tenantId, clean, {
+          actor, raw: rawData ?? {}, connectionId,
+        }, externalId);
       }
       return {
         outcome: UPSERT_OUTCOME.CONFLICTED,
@@ -554,17 +592,49 @@ export class IntegrationUpsertService {
         // `matchEmail` is a READ-ONLY matching hint: not writable (so it can
         // never change an account's email) and not protected (so sending it is
         // not treated as an attack). Used solely to find the staff member to link.
-        const email = typeof raw.matchEmail === 'string' ? raw.matchEmail.trim().toLowerCase() : '';
-        if (!email) return null;
-        const matches = await this.staffRepo.find({
-          where: { tenant: { id: tenantId }, user: { email } },
-          relations: { user: true },
-          take: 2,
-        });
+        const matches = await this.matchStaffByEmail(tenantId, raw);
         if (matches.length !== 1) return null; // 0 = no match, >1 = ambiguous → never guess
         return { id: matches[0].id };
       },
+      /**
+       * No account exists for this external staff member. Rather than only
+       * failing, enqueue a REVIEWABLE provisioning request carrying the proposed
+       * identity + allowlisted profile fields (and any ambiguous candidates), so
+       * an admin can approve (choosing the role), link, or reject. Nothing about
+       * an account is created or changed here.
+       */
+      onCreateBlocked: async (tenantId, clean, ctx, externalId) => {
+        const candidates = await this.matchStaffByEmail(tenantId, ctx.raw);
+        await this.staffProvisioning
+          ?.record({
+            tenantId,
+            connectionId: ctx.connectionId,
+            externalId,
+            fullName: typeof ctx.raw.fullName === 'string' ? ctx.raw.fullName : null,
+            email: typeof ctx.raw.matchEmail === 'string' ? ctx.raw.matchEmail : null,
+            profile: clean,
+            candidateStaffIds: candidates.map((c) => c.id),
+          })
+          .catch((e) =>
+            this.logger.warn(`staff provisioning enqueue failed: ${(e as Error)?.message}`),
+          );
+      },
     };
+  }
+
+  /** Exact, tenant-scoped staff lookup by the read-only `matchEmail` hint. */
+  private async matchStaffByEmail(
+    tenantId: string,
+    raw: Record<string, unknown>,
+  ): Promise<Array<{ id: string }>> {
+    const email = typeof raw.matchEmail === 'string' ? raw.matchEmail.trim().toLowerCase() : '';
+    if (!email) return [];
+    return this.staffRepo.find({
+      where: { tenant: { id: tenantId }, user: { email } },
+      relations: { user: true },
+      take: 2,
+      select: { id: true },
+    });
   }
 
   private serviceAdapter(): ResourceAdapter {

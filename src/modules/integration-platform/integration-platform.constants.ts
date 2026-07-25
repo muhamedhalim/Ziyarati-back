@@ -84,6 +84,17 @@ export const MAPPING_SOURCE = {
 } as const;
 export type MappingSource = (typeof MAPPING_SOURCE)[keyof typeof MAPPING_SOURCE];
 
+/** Why a mapping was unlinked — safe machine-readable codes only. */
+export const UNLINK_REASON = {
+  /** A tenant admin unlinked it deliberately. */
+  MANUAL: 'manual',
+  /** Replaced by a relink to a different internal record. */
+  SUPERSEDED: 'superseded',
+  /** Carried over to a replacement connection during a reconnect. */
+  CONNECTION_REPLACED: 'connection_replaced',
+} as const;
+export type UnlinkReason = (typeof UNLINK_REASON)[keyof typeof UNLINK_REASON];
+
 /**
  * Provider registry — the ONLY source of provider metadata. A connection
  * references a provider KEY; any real endpoints/credentials for a provider come
@@ -181,20 +192,71 @@ export const IMPORT_ITEM_STATUS = {
 } as const;
 export type ImportItemStatus = (typeof IMPORT_ITEM_STATUS)[keyof typeof IMPORT_ITEM_STATUS];
 
-/** Sync mode. */
+/** Sync mode. `full` ignores the stored watermark and re-scans from the start. */
 export const SYNC_MODE = {
   FULL: 'full',
   INCREMENTAL: 'incremental',
 } as const;
 export type SyncMode = (typeof SYNC_MODE)[keyof typeof SYNC_MODE];
 
-/** Persisted conflict lifecycle. */
+/**
+ * What a provider's cursor token actually is. The engine treats every cursor as
+ * OPAQUE regardless — this is documentation for operators, and it is what an
+ * adapter declares, never something a tenant sets.
+ */
+export const CURSOR_KIND = {
+  /** Provider-defined token; never parsed or ordered by the platform. */
+  OPAQUE: 'opaque',
+  TIMESTAMP: 'timestamp',
+  VERSION: 'version',
+  SEQUENCE: 'sequence',
+} as const;
+export type CursorKind = (typeof CURSOR_KIND)[keyof typeof CURSOR_KIND];
+
+/** Why a sync run stopped — a bounded stop is not an end-of-stream. */
+export const SYNC_STOP_REASON = {
+  COMPLETED: 'completed',
+  MAX_PAGES: 'max_pages',
+  MAX_RECORDS: 'max_records',
+  MAX_RUNTIME: 'max_runtime',
+  /** The provider returned the same cursor with more pages claimed — a loop. */
+  REPEATED_CURSOR: 'repeated_cursor',
+  CANCELLED: 'cancelled',
+  /** A record in the page could not be handled; the cursor was NOT advanced. */
+  ITEM_FAILURE: 'item_failure',
+  ERROR: 'error',
+} as const;
+export type SyncStopReason = (typeof SYNC_STOP_REASON)[keyof typeof SYNC_STOP_REASON];
+
+/** Safety bounds for ONE sync run. A runaway provider can never hold a worker. */
+export const MAX_SYNC_PAGES = 1_000;
+export const MAX_SYNC_RECORDS = 100_000;
+export const MAX_SYNC_RUNTIME_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Persisted conflict lifecycle.
+ *
+ * `resolving` is a short-lived CLAIM state: a resolver moves pending → resolving
+ * with a conditional UPDATE, so two admins pressing "resolve" concurrently can
+ * never both apply an outcome (the loser sees 409). `stale` means the internal
+ * record changed after the conflict was raised — the stored external snapshot can
+ * no longer be applied blindly and the conflict must be re-reviewed.
+ */
 export const CONFLICT_STATUS = {
   PENDING: 'pending',
+  RESOLVING: 'resolving',
+  STALE: 'stale',
   RESOLVED: 'resolved',
   IGNORED: 'ignored',
 } as const;
 export type ConflictStatus = (typeof CONFLICT_STATUS)[keyof typeof CONFLICT_STATUS];
+
+/** Conflict states that still need a human decision. */
+export const OPEN_CONFLICT_STATUSES: ConflictStatus[] = [
+  CONFLICT_STATUS.PENDING,
+  CONFLICT_STATUS.RESOLVING,
+  CONFLICT_STATUS.STALE,
+];
 
 /**
  * Why a conflict was raised. Safe machine-readable codes only — never free-form
@@ -216,6 +278,28 @@ export const CONFLICT_REASON = {
   LIFECYCLE_NOT_ALLOWED: 'lifecycle_not_allowed',
 } as const;
 export type ConflictReason = (typeof CONFLICT_REASON)[keyof typeof CONFLICT_REASON];
+
+/**
+ * Staff provisioning review lifecycle. An external system can only ever put a
+ * request into an OPEN state — approving it (and choosing the role) is a
+ * platform-admin action.
+ */
+export const STAFF_PROVISIONING_STATUS = {
+  PENDING: 'pending',
+  /** More than one internal candidate matched — a human must choose. */
+  AMBIGUOUS: 'ambiguous',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+  /** Resolved by linking to an existing staff member (no account created). */
+  LINKED: 'linked',
+} as const;
+export type StaffProvisioningStatus =
+  (typeof STAFF_PROVISIONING_STATUS)[keyof typeof STAFF_PROVISIONING_STATUS];
+
+export const OPEN_PROVISIONING_STATUSES: StaffProvisioningStatus[] = [
+  STAFF_PROVISIONING_STATUS.PENDING,
+  STAFF_PROVISIONING_STATUS.AMBIGUOUS,
+];
 
 /** How a persisted conflict was resolved. */
 export const CONFLICT_RESOLUTION = {
@@ -285,3 +369,131 @@ export const MAX_CONCURRENT_SYNC_JOBS = 5;
 export const MAX_UPSERT_PAYLOAD_BYTES = 256 * 1024; // 256 KB
 /** Max accepted inbound-webhook body size. */
 export const MAX_WEBHOOK_BODY_BYTES = 512 * 1024; // 512 KB
+
+// ── Inbound webhooks ────────────────────────────────────────────────────────
+
+/** Inbound webhook endpoint lifecycle. */
+export const WEBHOOK_ENDPOINT_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+} as const;
+export type WebhookEndpointStatus =
+  (typeof WEBHOOK_ENDPOINT_STATUS)[keyof typeof WEBHOOK_ENDPOINT_STATUS];
+
+/**
+ * The ONLY inbound event types the platform will act on. An event outside this
+ * compiled allowlist is recorded as rejected and never reaches the write
+ * pipeline — a provider cannot invent an event that maps to an arbitrary action.
+ * Each entry names exactly one resource and one lifecycle intent.
+ */
+export const INBOUND_EVENT = {
+  CUSTOMER_UPSERTED: 'customer.upserted',
+  SERVICE_UPSERTED: 'service.upserted',
+  STAFF_UPSERTED: 'staff.upserted',
+  APPOINTMENT_CREATED: 'appointment.created',
+  APPOINTMENT_RESCHEDULED: 'appointment.rescheduled',
+  APPOINTMENT_CANCELLED: 'appointment.cancelled',
+} as const;
+export type InboundEvent = (typeof INBOUND_EVENT)[keyof typeof INBOUND_EVENT];
+export const INBOUND_EVENTS: InboundEvent[] = Object.values(INBOUND_EVENT);
+
+/** Event type → (resource, lifecycle action hint) handed to the shared pipeline. */
+export const INBOUND_EVENT_MAP: Record<
+  InboundEvent,
+  { resource: IntegrationResource; action?: 'reschedule' | 'cancel' }
+> = {
+  [INBOUND_EVENT.CUSTOMER_UPSERTED]: { resource: INTEGRATION_RESOURCE.CUSTOMER },
+  [INBOUND_EVENT.SERVICE_UPSERTED]: { resource: INTEGRATION_RESOURCE.SERVICE },
+  [INBOUND_EVENT.STAFF_UPSERTED]: { resource: INTEGRATION_RESOURCE.STAFF },
+  [INBOUND_EVENT.APPOINTMENT_CREATED]: { resource: INTEGRATION_RESOURCE.APPOINTMENT },
+  [INBOUND_EVENT.APPOINTMENT_RESCHEDULED]: {
+    resource: INTEGRATION_RESOURCE.APPOINTMENT,
+    action: 'reschedule',
+  },
+  [INBOUND_EVENT.APPOINTMENT_CANCELLED]: {
+    resource: INTEGRATION_RESOURCE.APPOINTMENT,
+    action: 'cancel',
+  },
+};
+
+/** Lifecycle of one received inbound event. */
+export const INBOUND_STATUS = {
+  /** Verified + persisted, waiting for the worker. */
+  ACCEPTED: 'accepted',
+  /** A worker has claimed it. */
+  PROCESSING: 'processing',
+  /** Applied through the shared write pipeline. */
+  PROCESSED: 'processed',
+  /** Applied but the pipeline raised a conflict for review. */
+  CONFLICTED: 'conflicted',
+  /** Verified but processing failed after its retries. */
+  FAILED: 'failed',
+  /** Never accepted — see `rejection_reason`. */
+  REJECTED: 'rejected',
+  /** A duplicate of an event already received (safe no-op ack). */
+  DUPLICATE: 'duplicate',
+} as const;
+export type InboundStatus = (typeof INBOUND_STATUS)[keyof typeof INBOUND_STATUS];
+
+export const TERMINAL_INBOUND_STATUSES: InboundStatus[] = [
+  INBOUND_STATUS.PROCESSED,
+  INBOUND_STATUS.CONFLICTED,
+  INBOUND_STATUS.FAILED,
+  INBOUND_STATUS.REJECTED,
+  INBOUND_STATUS.DUPLICATE,
+];
+
+/**
+ * Safe machine-readable rejection codes. NEVER free-form provider text — the
+ * rejection history must be explainable without echoing anything the caller sent.
+ */
+export const INBOUND_REJECTION = {
+  NO_ENDPOINT: 'no_endpoint',
+  ENDPOINT_INACTIVE: 'endpoint_inactive',
+  CONNECTION_INACTIVE: 'connection_inactive',
+  MISSING_SIGNATURE: 'missing_signature',
+  INVALID_SIGNATURE: 'invalid_signature',
+  MISSING_TIMESTAMP: 'missing_timestamp',
+  STALE_TIMESTAMP: 'stale_timestamp',
+  FUTURE_TIMESTAMP: 'future_timestamp',
+  REPLAYED: 'replayed',
+  EVENT_NOT_ALLOWED: 'event_not_allowed',
+  UNSUPPORTED_EVENT: 'unsupported_event',
+  MISSING_EVENT_ID: 'missing_event_id',
+  MISSING_EXTERNAL_ID: 'missing_external_id',
+  PAYLOAD_TOO_LARGE: 'payload_too_large',
+  PROTECTED_FIELDS: 'protected_fields',
+  MALFORMED: 'malformed',
+} as const;
+export type InboundRejection = (typeof INBOUND_REJECTION)[keyof typeof INBOUND_REJECTION];
+
+/** Compiled signature schemes. A tenant selects one; it can never supply code. */
+export const WEBHOOK_SIGNATURE_SCHEME = {
+  /** HMAC-SHA256 over `"{timestamp}.{rawBody}"`, header `sha256=<hex>`. */
+  HMAC_SHA256_TIMESTAMPED: 'hmac_sha256_timestamped',
+  /** HMAC-SHA256 over the raw body alone, header `sha256=<hex>`. */
+  HMAC_SHA256_BODY: 'hmac_sha256_body',
+} as const;
+export type WebhookSignatureScheme =
+  (typeof WEBHOOK_SIGNATURE_SCHEME)[keyof typeof WEBHOOK_SIGNATURE_SCHEME];
+export const WEBHOOK_SIGNATURE_SCHEMES: WebhookSignatureScheme[] =
+  Object.values(WEBHOOK_SIGNATURE_SCHEME);
+
+/** Inbound request headers the platform reads. */
+export const INBOUND_HEADER = {
+  SIGNATURE: 'x-ziyarati-signature',
+  TIMESTAMP: 'x-ziyarati-timestamp',
+  EVENT_ID: 'x-ziyarati-event-id',
+  EVENT_TYPE: 'x-ziyarati-event',
+} as const;
+
+/**
+ * Default replay window. A signature is only honoured while its timestamp is
+ * within ±this many seconds of now, which bounds how long a captured request
+ * stays useful; the persisted event id then blocks the replay outright.
+ */
+export const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
+/** Hard ceiling a tenant may configure for the tolerance above. */
+export const WEBHOOK_MAX_TOLERANCE_SECONDS = 900;
+/** How long delivery history (and its replay guard) is retained. */
+export const INBOUND_EVENT_RETENTION_DAYS = 30;

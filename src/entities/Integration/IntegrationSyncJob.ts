@@ -63,13 +63,57 @@ export class IntegrationSyncJob {
   @Column({ type: 'varchar', length: 24, default: 'pending' })
   status!: string;
 
-  /** Watermark this run STARTED from (the prior last_successful_cursor). */
+  /**
+   * CURSOR SCOPE — a cursor is only ever meaningful for the exact tuple
+   * (tenant, connection, resource_type, direction) named by this row. It is
+   * never shared across tenants, connections, resources or directions.
+   *
+   * CURSOR KIND — an OPAQUE, PROVIDER-DEFINED token. The platform does not
+   * parse, order or compare it (beyond equality, to detect a provider that
+   * stopped advancing); it is stored and handed back verbatim. `cursor_kind`
+   * records what a given adapter's token actually is, for operators.
+   *
+   * The three watermarks are stored SEPARATELY and mean different things:
+   *  - `cursor`                 the watermark this run STARTED from,
+   *  - `attempted_cursor`       the newest page boundary this run has REQUESTED
+   *                             (may be ahead of what was safely handled),
+   *  - `last_successful_cursor` the newest boundary where EVERY record was
+   *                             handled — the ONLY resume point,
+   *  - `next_cursor`            what the provider says comes next.
+   *
+   * A retry resumes from `last_successful_cursor`, so a page containing a failed
+   * record is re-fetched rather than skipped: records cannot be lost.
+   */
   @Column({ type: 'varchar', length: 255, nullable: true })
   cursor?: string | null;
 
-  /** Watermark last successfully persisted by this run (resume point). */
+  /** Newest page boundary REQUESTED by this run (may be past a failure). */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  attempted_cursor?: string | null;
+
+  /** Newest boundary where every record was handled — the resume point. */
   @Column({ type: 'varchar', length: 255, nullable: true })
   last_successful_cursor?: string | null;
+
+  /** What the provider reports as the next page boundary. */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  next_cursor?: string | null;
+
+  /** Documented shape of this adapter's cursor: opaque|timestamp|version|sequence. */
+  @Column({ type: 'varchar', length: 16, default: 'opaque' })
+  cursor_kind!: string;
+
+  /** Pages actually fetched by this run (bounded by MAX_SYNC_PAGES). */
+  @Column({ type: 'int', default: 0 })
+  pages_fetched!: number;
+
+  /**
+   * Why the run stopped: completed | max_pages | max_records | max_runtime |
+   * repeated_cursor | cancelled | item_failure | error. Makes a bounded stop
+   * distinguishable from a genuine end-of-stream.
+   */
+  @Column({ type: 'varchar', length: 24, nullable: true })
+  stop_reason?: string | null;
 
   @Column({ type: 'int', default: 0 })
   processed!: number;

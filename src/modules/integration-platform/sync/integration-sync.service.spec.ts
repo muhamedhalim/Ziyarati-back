@@ -31,6 +31,7 @@ const connMock = (over: Partial<Record<string, jest.Mock>> = {}) => ({
 } as any);
 const auditMock = () => ({ record: jest.fn().mockResolvedValue(undefined) } as any);
 /** Admission control mock — permissive unless a test overrides it. */
+const serviceAccountMock = () => ({ resolve: jest.fn().mockResolvedValue('svc-user'), resolveActorUserId: jest.fn(async (_t, u) => u ?? 'svc-user') } as any);
 const admissionMock = (over: Partial<Record<string, jest.Mock>> = {}) => ({
   admit: jest.fn().mockResolvedValue(undefined),
   assertSyncConcurrency: jest.fn().mockResolvedValue(undefined),
@@ -45,7 +46,7 @@ describe('IntegrationSyncService', () => {
   describe('start', () => {
     it('rejects a direction the connection is not configured for', async () => {
       const conn = connMock({ requireActive: jest.fn().mockResolvedValue({ id: 'c1', sync_direction: SYNC_DIRECTION.OUTBOUND }) });
-      const svc = new IntegrationSyncService(jobsRepoMock(), conn, {} as any, {} as any, auditMock(), { enqueueIntegrationSync: jest.fn() } as any, admissionMock());
+      const svc = new IntegrationSyncService(jobsRepoMock(), conn, {} as any, {} as any, auditMock(), { enqueueIntegrationSync: jest.fn() } as any, admissionMock(), serviceAccountMock());
       await expect(
         svc.start(tenantId, { connectionId: 'c1', resourceType: 'customer', direction: SYNC_DIRECTION.INBOUND } as any, {}),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
@@ -56,7 +57,7 @@ describe('IntegrationSyncService', () => {
         findOne: jest.fn().mockResolvedValue(null),
         save: jest.fn().mockRejectedValue(new PgUnique('dup')),
       });
-      const svc = new IntegrationSyncService(jobs, connMock(), {} as any, {} as any, auditMock(), { enqueueIntegrationSync: jest.fn() } as any, admissionMock());
+      const svc = new IntegrationSyncService(jobs, connMock(), {} as any, {} as any, auditMock(), { enqueueIntegrationSync: jest.fn() } as any, admissionMock(), serviceAccountMock());
       await expect(
         svc.start(tenantId, { connectionId: 'c1', resourceType: 'customer', direction: SYNC_DIRECTION.INBOUND } as any, {}),
       ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
@@ -68,7 +69,7 @@ describe('IntegrationSyncService', () => {
         save: jest.fn((x) => Promise.resolve({ id: 'sync-1', ...x })),
       });
       const queue = { enqueueIntegrationSync: jest.fn().mockResolvedValue({ id: 'q' }) };
-      const svc = new IntegrationSyncService(jobs, connMock(), {} as any, {} as any, auditMock(), queue as any, admissionMock());
+      const svc = new IntegrationSyncService(jobs, connMock(), {} as any, {} as any, auditMock(), queue as any, admissionMock(), serviceAccountMock());
       const res = await svc.start(tenantId, { connectionId: 'c1', resourceType: 'customer', direction: SYNC_DIRECTION.INBOUND, mode: 'incremental' } as any, {});
       expect(res.cursor).toBe('watermark-7');
       expect(queue.enqueueIntegrationSync).toHaveBeenCalledWith({ tenantId, syncJobId: 'sync-1' });
@@ -99,7 +100,7 @@ describe('IntegrationSyncService', () => {
       };
       const upsert = { upsertOne: jest.fn().mockResolvedValue({ outcome: UPSERT_OUTCOME.CREATED, externalId: 'X', internalId: 'i' }) };
       const conn = connMock();
-      const svc = new IntegrationSyncService(jobs, conn, upsert as any, provider as any, auditMock(), {} as any, admissionMock());
+      const svc = new IntegrationSyncService(jobs, conn, upsert as any, provider as any, auditMock(), {} as any, admissionMock(), serviceAccountMock());
 
       await svc.process('sync-1');
 
@@ -120,7 +121,7 @@ describe('IntegrationSyncService', () => {
       const jobs = jobsRepoMock({ findOne: jest.fn().mockResolvedValue(job), save: jest.fn((x) => Promise.resolve(x)) });
       const provider = { pullChanges: jest.fn() };
       const conn = connMock();
-      const svc = new IntegrationSyncService(jobs, conn, { upsertOne: jest.fn() } as any, provider as any, auditMock(), {} as any, admissionMock());
+      const svc = new IntegrationSyncService(jobs, conn, { upsertOne: jest.fn() } as any, provider as any, auditMock(), {} as any, admissionMock(), serviceAccountMock());
       await svc.process('sync-2');
       expect(provider.pullChanges).not.toHaveBeenCalled();
       expect(job.status).toBe(JOB_STATUS.COMPLETED);
@@ -130,7 +131,7 @@ describe('IntegrationSyncService', () => {
       const job: any = { id: 'sync-3', status: JOB_STATUS.COMPLETED };
       const jobs = jobsRepoMock({ findOne: jest.fn().mockResolvedValue(job) });
       const provider = { pullChanges: jest.fn() };
-      const svc = new IntegrationSyncService(jobs, connMock(), { upsertOne: jest.fn() } as any, provider as any, auditMock(), {} as any, admissionMock());
+      const svc = new IntegrationSyncService(jobs, connMock(), { upsertOne: jest.fn() } as any, provider as any, auditMock(), {} as any, admissionMock(), serviceAccountMock());
       await svc.process('sync-3');
       expect(provider.pullChanges).not.toHaveBeenCalled();
     });

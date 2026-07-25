@@ -23,6 +23,28 @@ export class QueryMappingsDto {
   @MaxLength(255)
   externalId?: string;
 
+  @ApiPropertyOptional({ description: 'Exact internal record id to look up.', format: 'uuid' })
+  @IsOptional()
+  @IsUUID('4')
+  internalResourceId?: string;
+
+  @ApiPropertyOptional({ description: 'Partial match against either the external or the internal id.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  search?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Which mappings to return. `active` (default) = live correspondences; `unlinked` = history kept for audit/reconnect; `all` = both.',
+    enum: ['active', 'unlinked', 'all'],
+    default: 'active',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['active', 'unlinked', 'all'])
+  scope?: 'active' | 'unlinked' | 'all';
+
   @ApiPropertyOptional({ description: 'Page number (1-based).', minimum: 1, default: 1 })
   @IsOptional()
   @Type(() => Number)
