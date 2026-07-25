@@ -299,6 +299,7 @@ export class AppointmentsService {
     id: string,
     dto: UpdateAppointmentDto,
   ): Promise<Appointment> {
+    let emittedChanges: string[] = [];
     let madeChanges = false;
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
@@ -340,7 +341,9 @@ export class AppointmentsService {
         changes.push('notes updated');
       }
 
-      await manager.getRepository(Appointment).save(appointment);
+      if (changes.length > 0) {
+        await manager.getRepository(Appointment).save(appointment);
+      }
 
       if (changes.length) {
         madeChanges = true;
@@ -353,6 +356,7 @@ export class AppointmentsService {
           userId,
           changes.join('; '),
         );
+        emittedChanges = [...changes];
       }
     });
 
@@ -360,7 +364,7 @@ export class AppointmentsService {
     if (madeChanges) {
       this.emitter.emit(
         AppointmentUpdatedEvent.eventName,
-        new AppointmentUpdatedEvent(tenantId, appointment.id, appointment.customer!.id, 'details updated'),
+        new AppointmentUpdatedEvent(tenantId, appointment.id, appointment.customer!.id, emittedChanges.join('; ')),
       );
     }
     return appointment;

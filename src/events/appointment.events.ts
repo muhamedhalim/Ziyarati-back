@@ -9,6 +9,9 @@
  * Payload policy: include only stable identifiers (UUIDs + scalars from the
  * saved aggregate). Consumers that need richer data should load it themselves
  * using the provided ids.
+ * Clean Architecture وDomain-Driven Design
+ * Open / Closed Principle
+ * Loose Coupling
  */
 
 export const APPOINTMENT_EVENT = {
