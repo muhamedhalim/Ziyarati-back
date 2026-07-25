@@ -127,6 +127,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return this.fromHttpException(exception);
     }
 
+    const bodyParser = this.asBodyParserError(exception);
+    if (bodyParser) return bodyParser;
+
     // Unknown / unexpected — treat as a bug. Hide details in production: the
     // real message AND the real class name (e.g. TypeError) are dev-only
     // diagnostics; a client never learns anything beyond "something broke."
@@ -138,6 +141,43 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: ErrorCode.INTERNAL_ERROR,
       message: this.isProduction ? PRODUCTION_SAFE_MESSAGE : devMessage,
       error: this.isProduction ? PRODUCTION_SAFE_ERROR_LABEL : devErrorName,
+    };
+  }
+
+  /**
+   * body-parser rejects a request BEFORE any guard, pipe or controller runs —
+   * an over-sized body (`entity.too.large`), malformed JSON
+   * (`entity.parse.failed`), a bad charset or an unsupported encoding. Those
+   * errors are plain `Error`s carrying an HTTP `status`, not Nest
+   * `HttpException`s, so without this branch they fall through to the
+   * unknown-error case and a caller who simply sent too much data gets a 500 —
+   * indistinguishable from a server bug, and un-actionable.
+   *
+   * Deliberately narrow: it only claims errors that carry BOTH a body-parser
+   * `type` and a 4xx status, so a genuine internal failure is never dressed up
+   * as a client error. The message is body-parser's own fixed, non-leaking text
+   * (e.g. "request entity too large") — never request content.
+   */
+  private asBodyParserError(exception: unknown): NormalizedError | null {
+    if (!(exception instanceof Error)) return null;
+    const e = exception as Error & { type?: unknown; status?: unknown; statusCode?: unknown };
+    if (typeof e.type !== 'string' || !e.type.startsWith('entity.') && !e.type.startsWith('charset.') && !e.type.startsWith('encoding.')) {
+      return null;
+    }
+    const status = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : 0;
+    if (status < 400 || status >= 500) return null;
+
+    return {
+      statusCode: status,
+      code:
+        status === HttpStatus.PAYLOAD_TOO_LARGE
+          ? ErrorCode.VALIDATION_ERROR
+          : ErrorCode.BAD_REQUEST,
+      message:
+        status === HttpStatus.PAYLOAD_TOO_LARGE
+          ? 'Request body is too large'
+          : 'Request body could not be parsed',
+      error: e.constructor.name,
     };
   }
 

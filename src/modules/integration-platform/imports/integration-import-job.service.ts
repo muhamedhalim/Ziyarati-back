@@ -251,6 +251,14 @@ export class IntegrationImportJobService {
     const connectionId = job.connection?.id;
     const resource = job.resource_type as IntegrationResource;
 
+    // Take the staged records BEFORE the first save. `payload` is `select: false`,
+    // and TypeORM's `save()` re-reads the row afterwards and merges the result
+    // back into the entity — a re-read that, by definition, does not include a
+    // `select: false` column. That merge would blank `job.payload` in memory and
+    // the worker would then iterate over nothing and "complete" every job having
+    // processed zero records.
+    const records = job.payload ?? [];
+
     job.status = JOB_STATUS.RUNNING;
     job.started_at = job.started_at ?? new Date();
     await this.jobs.save(job);
@@ -269,7 +277,6 @@ export class IntegrationImportJobService {
     // so ownership FKs (e.g. an appointment's `booked_by`) are always real.
     const actorUserId = await this.serviceAccount.resolveActorUserId(tenantId, job.requested_by?.id);
 
-    const records = job.payload ?? [];
     const seen = new Set<string>();
     const remaining: Array<{ externalId: string; data: Record<string, unknown> }> = [];
     let cancelled = false;

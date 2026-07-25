@@ -97,6 +97,31 @@ interface ResourceAdapter {
    * account (a privileged action that must go through the invitation flow).
    */
   canCreate?: boolean;
+  /**
+   * Skip the generic pre-validation against `createDto`/`updateDto`.
+   *
+   * Needed by appointments: their required references arrive as READ-ONLY
+   * `*ExternalId` hints that only the adapter can resolve into internal ids, so
+   * validating the sanitized payload against `CreateAppointmentDto` beforehand
+   * would reject every hint-based record for "missing customerId" before the
+   * mapping lookup ever ran. Nothing is lost by skipping it — the adapter
+   * delegates to the domain lifecycle service, which applies the very same DTO
+   * validation (plus tenant-scoped reference checks and the availability
+   * re-check) inside its own transaction.
+   */
+  validatesInAdapter?: boolean;
+  /**
+   * True when the payload asks for a LIFECYCLE transition that is not visible as
+   * a field diff.
+   *
+   * `decideConflict` compares allowlisted VALUES, so a cancel — which carries no
+   * writable field at all, only the read-only `action`/`reason` hints — produces
+   * an empty diff and would otherwise be skipped as "nothing changed". A
+   * lifecycle request is an instruction, not a value, so the adapter must still
+   * be invoked. It remains subject to the domain lifecycle's own rules, which
+   * reject a transition that is not allowed.
+   */
+  hasLifecycleIntent?(raw: Record<string, unknown>): boolean;
   /** Reason code recorded when `canCreate` is false. */
   cannotCreateReason?: ConflictReason;
   /**
@@ -250,7 +275,11 @@ export class IntegrationUpsertService {
         });
       }
       const decision = decideConflict(conflictPolicy as never, clean, current);
-      if (decision.report) {
+      // A LIFECYCLE request (cancel / reschedule) is an instruction, not a value,
+      // so it carries no field diff and must not be mistaken for "nothing
+      // changed". The domain lifecycle still rejects a transition it disallows.
+      const lifecycle = !!adapter.hasLifecycleIntent?.(rawData ?? {});
+      if (decision.report && !lifecycle) {
         if (!dryRun) {
           await this.conflicts.record({
             tenantId, connectionId, resource, externalId,
@@ -261,10 +290,10 @@ export class IntegrationUpsertService {
         }
         return this.conflicted(externalId, mapping.internal_resource_id, decision.changedFields);
       }
-      if (!decision.apply) {
+      if (!decision.apply && !lifecycle) {
         return { outcome: UPSERT_OUTCOME.SKIPPED, externalId, internalId: mapping.internal_resource_id };
       }
-      await this.validateOrThrow(adapter.updateDto, clean);
+      if (!adapter.validatesInAdapter) await this.validateOrThrow(adapter.updateDto, clean);
       if (dryRun) {
         return { outcome: UPSERT_OUTCOME.UPDATED, externalId, internalId: mapping.internal_resource_id, changedFields: decision.changedFields };
       }
@@ -280,7 +309,9 @@ export class IntegrationUpsertService {
     if (existing) {
       const current = (await adapter.currentView(tenantId, existing.id)) ?? {};
       const decision = decideConflict(conflictPolicy as never, clean, current);
-      if (decision.apply) await this.validateOrThrow(adapter.updateDto, clean);
+      if (decision.apply && !adapter.validatesInAdapter) {
+        await this.validateOrThrow(adapter.updateDto, clean);
+      }
 
       if (dryRun) {
         if (decision.report) return this.conflicted(externalId, existing.id, decision.changedFields);
@@ -337,7 +368,7 @@ export class IntegrationUpsertService {
       };
     }
 
-    await this.validateOrThrow(adapter.createDto, clean);
+    if (!adapter.validatesInAdapter) await this.validateOrThrow(adapter.createDto, clean);
     if (dryRun) {
       return { outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: null };
     }
@@ -466,6 +497,17 @@ export class IntegrationUpsertService {
     return {
       createDto: CreateAppointmentDto,
       updateDto: CreateAppointmentDto,
+      // Dependencies arrive as read-only `*ExternalId` hints that only this
+      // adapter can resolve, so generic pre-validation would reject every
+      // hint-based record before the mapping lookup. The lifecycle service
+      // applies the same DTO validation inside its own transaction.
+      validatesInAdapter: true,
+      // `cancel` carries no writable field, so without this the empty diff would
+      // be read as "nothing changed" and the cancellation silently skipped.
+      hasLifecycleIntent: (raw) => {
+        const action = typeof raw.action === 'string' ? raw.action.toLowerCase() : '';
+        return action === 'cancel' || action === 'reschedule';
+      },
       create: async (tenantId, data, ctx) => {
         const userId = requireActorUser(ctx.actor);
         const branchId = await resolveRef(

@@ -20,6 +20,7 @@ import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 
 import { CryptoModule } from '../../common/crypto/crypto.module';
+import { AuthModule } from '../auth/auth.module';
 import { CrmModule } from '../crm/crm.module';
 import { ServicesModule } from '../services/services.module';
 import { StaffModule } from '../staff/staff.module';
@@ -91,6 +92,9 @@ import { IntegrationOAuthController } from './oauth/oauth.controller';
 @Module({
   imports: [
     CryptoModule,
+    // RolesService — validates the role an admin picks when APPROVING a staff
+    // provisioning request against the tenant's assignable-role catalogue.
+    AuthModule,
     CrmModule,
     ServicesModule,
     // Staff upsert delegates to StaffService (update/link only — never creates

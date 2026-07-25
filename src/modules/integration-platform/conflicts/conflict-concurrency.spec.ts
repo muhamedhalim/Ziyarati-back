@@ -47,7 +47,7 @@ function build(opts: {
       opts.currentView === undefined ? { full_name: 'Original' } : opts.currentView,
     ),
   };
-  const audit = { record: jest.fn(async () => undefined) };
+  const audit = { record: jest.fn(async (..._a: unknown[]) => undefined) as jest.Mock };
   const svc = new IntegrationConflictResolutionService(
     conflicts as never,
     { requireActive: jest.fn(async () => ({ id: 'c1' })) } as never,
