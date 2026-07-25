@@ -9,6 +9,7 @@ import {
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationIdempotencyService } from '../idempotency/integration-idempotency.service';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
+import { IntegrationServiceAccountService } from './integration-service-account.service';
 import { IntegrationUpsertService, UpsertActor } from './integration-upsert.service';
 
 export interface ApiUpsertResponse {
@@ -29,6 +30,7 @@ export class IntegrationWriteService {
     private readonly idempotency: IntegrationIdempotencyService,
     private readonly upsert: IntegrationUpsertService,
     private readonly admission: IntegrationAdmissionService,
+    private readonly serviceAccount: IntegrationServiceAccountService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -70,6 +72,15 @@ export class IntegrationWriteService {
       return { status: begin.replay.status, body: begin.replay.body };
     }
 
+    // An M2M call has no signed-in user, but appointments record real ownership
+    // (`booked_by` is a user FK). Attribute the write to the tenant's verified
+    // integration SERVICE ACCOUNT — never to a fabricated id and never to the
+    // `apikey:<id>` principal, which is not a user.
+    const attributedActor: UpsertActor = {
+      ...actor,
+      userId: await this.serviceAccount.resolveActorUserId(tenantId, actor.userId),
+    };
+
     let response: ApiUpsertResponse;
     try {
       const result = await this.upsert.upsertOne(
@@ -79,7 +90,7 @@ export class IntegrationWriteService {
         policy,
         externalId,
         data,
-        actor,
+        attributedActor,
         { safe: false },
       );
       response = {

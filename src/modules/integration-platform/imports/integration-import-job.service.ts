@@ -27,6 +27,7 @@ import {
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationUpsertService } from '../write/integration-upsert.service';
+import { IntegrationServiceAccountService } from '../write/integration-service-account.service';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 
 interface Actor {
@@ -60,6 +61,7 @@ export class IntegrationImportJobService {
     private readonly audit: IntegrationAuditService,
     private readonly queue: QueueService,
     private readonly admission: IntegrationAdmissionService,
+    private readonly serviceAccount: IntegrationServiceAccountService,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
@@ -262,6 +264,10 @@ export class IntegrationImportJobService {
       return;
     }
     const policy = this.connections.conflictPolicyOf(connection);
+    // Attribute every record to the requesting user, or — for a job created by a
+    // machine principal — to the tenant's verified integration service account,
+    // so ownership FKs (e.g. an appointment's `booked_by`) are always real.
+    const actorUserId = await this.serviceAccount.resolveActorUserId(tenantId, job.requested_by?.id);
 
     const records = job.payload ?? [];
     const seen = new Set<string>();
@@ -286,7 +292,7 @@ export class IntegrationImportJobService {
 
       const result = await this.upsert.upsertOne(
         tenantId, resource, connection.id, policy, record.externalId, record.data,
-        { userId: job.requested_by?.id }, { safe: true, dryRun: job.dry_run },
+        { userId: actorUserId }, { safe: true, dryRun: job.dry_run },
       );
       this.tally(job, result.outcome);
       job.processed += 1;

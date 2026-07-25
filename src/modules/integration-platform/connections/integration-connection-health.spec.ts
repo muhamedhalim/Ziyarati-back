@@ -9,6 +9,8 @@ function repoMock(connection: any) {
 const encryption = {} as any;
 const audit = { record: jest.fn() } as any;
 const providers = { capabilitiesOf: jest.fn(), healthCheck: jest.fn() } as any;
+const admission = { admit: jest.fn().mockResolvedValue(undefined) } as any;
+const idMap = { retentionImpact: jest.fn(), transferMappings: jest.fn(), purgeForConnection: jest.fn() } as any;
 
 const conn = (over: Record<string, unknown> = {}) => ({
   id: 'c1',
@@ -25,7 +27,7 @@ const conn = (over: Record<string, unknown> = {}) => ({
 });
 
 async function stateOf(over: Record<string, unknown>): Promise<string> {
-  const svc = new IntegrationConnectionService(repoMock(conn(over)), encryption, audit, providers);
+  const svc = new IntegrationConnectionService(repoMock(conn(over)), encryption, audit, providers, admission, idMap);
   const h = await svc.health('t1', 'c1');
   return h.state;
 }
@@ -58,7 +60,7 @@ describe('IntegrationConnectionService — derived health (never row existence)'
   });
 
   it('health view never leaks the credential ciphertext', async () => {
-    const svc = new IntegrationConnectionService(repoMock(conn()), encryption, audit, providers);
+    const svc = new IntegrationConnectionService(repoMock(conn()), encryption, audit, providers, admission, idMap);
     const h = await svc.health('t1', 'c1');
     expect(JSON.stringify(h)).not.toContain('CIPHERTEXT_SENTINEL_XYZ');
     expect(h.credential).toEqual({ present: true, authType: 'api_key' });

@@ -25,6 +25,7 @@ import {
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 import { IntegrationProviderService } from '../providers/integration-provider.service';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
+import { IntegrationIdMapService } from '../mappings/integration-id-map.service';
 
 /** Age after which a connection with no fresh success is considered stale/offline. */
 const HEALTH_STALE_SUCCESS_MS = 24 * 3600 * 1000;
@@ -59,6 +60,7 @@ export class IntegrationConnectionService {
     private readonly audit: IntegrationAuditService,
     private readonly providers: IntegrationProviderService,
     private readonly admission: IntegrationAdmissionService,
+    private readonly idMap: IntegrationIdMapService,
   ) {}
 
   async create(tenantId: string, dto: CreateConnectionDto, actor: ConnectionActor): Promise<SafeConnection> {
@@ -211,11 +213,17 @@ export class IntegrationConnectionService {
     return this.toSafe(saved);
   }
 
+  /**
+   * Deactivate/reactivate. Deactivation is fully REVERSIBLE and destroys
+   * nothing: mappings, import/sync history, conflicts and audit all remain, and
+   * the connection simply stops being writable (`requireActive` rejects it), so
+   * writes, sync runs and inbound webhooks are all refused while it is off.
+   */
   async setActive(tenantId: string, id: string, active: boolean, actor: ConnectionActor): Promise<SafeConnection> {
     const c = await this.findOneOrThrow(tenantId, id);
     if (c.status === CONNECTION_STATUS.DISCONNECTED) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'A disconnected connection cannot be re-activated; create a new one',
+        message: 'This connection is disconnected — use reconnect to bring it back',
       });
     }
     c.status = active ? CONNECTION_STATUS.ACTIVE : CONNECTION_STATUS.INACTIVE;
@@ -243,6 +251,130 @@ export class IntegrationConnectionService {
     await this.connections.save(c);
     await this.audit.record(INTEGRATION_AUDIT_ACTION.CONNECTION_DISCONNECT, tenantId, 'IntegrationConnection', id, actor);
     return { disconnected: true };
+  }
+
+  /**
+   * RECONNECT a disconnected connection. Ordinary disconnect is a soft-delete
+   * that keeps every mapping and all history, so reconnecting is a genuine
+   * restore rather than a fresh start.
+   *
+   * Two shapes, both non-destructive:
+   *  - same connection (no `replacementConnectionId`): clear the soft-delete and
+   *    reactivate. Its mappings are still attached, so nothing has to move.
+   *  - replacement connection: carry the ACTIVE mappings over to the replacement
+   *    (see `transferMappings`), leaving the originals as unlinked historical
+   *    rows. Nothing is deleted on either side.
+   *
+   * A credential must be supplied again when the auth type needs one, because
+   * disconnect deliberately destroys the stored secret.
+   */
+  async reconnect(
+    tenantId: string,
+    id: string,
+    opts: { replacementConnectionId?: string; credential?: string },
+    actor: ConnectionActor,
+  ) {
+    const c = await this.connections.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!c) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Integration connection not found' });
+
+    if (opts.replacementConnectionId) {
+      // Cross-tenant safety: the replacement is resolved tenant-scoped, so a
+      // connection from another tenant can never be named here.
+      const replacement = await this.findOneOrThrow(tenantId, opts.replacementConnectionId);
+      if (replacement.id === c.id) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, {
+          message: 'The replacement connection must be a different connection',
+        });
+      }
+      if (replacement.status !== CONNECTION_STATUS.ACTIVE) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: 'The replacement connection must be active',
+        });
+      }
+      const moved = await this.idMap.transferMappings(tenantId, c.id, replacement.id);
+      await this.audit.record(INTEGRATION_AUDIT_ACTION.MAPPING_TRANSFER, tenantId, 'IntegrationConnection', c.id, actor, {
+        fromConnectionId: c.id,
+        toConnectionId: replacement.id,
+        ...moved,
+      });
+      return { reconnected: true, connectionId: replacement.id, mappings: moved };
+    }
+
+    if (c.status === CONNECTION_STATUS.ACTIVE && !c.deleted_at) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'This connection is already active' });
+    }
+    this.assertCredentialConsistency(c.auth_type, opts.credential);
+    const needsCredential =
+      c.auth_type === CONNECTION_AUTH_TYPE.API_KEY || c.auth_type === CONNECTION_AUTH_TYPE.SECRET;
+    if (needsCredential && !opts.credential) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'A credential is required to reconnect — disconnect deliberately destroys the stored secret',
+      });
+    }
+    if (opts.credential) c.credentials_ciphertext = this.encryption.encrypt(opts.credential);
+    c.status = CONNECTION_STATUS.ACTIVE;
+    c.deleted_at = null;
+    c.consecutive_failures = 0;
+    c.last_error = null;
+    c.last_error_at = null;
+    await this.connections.save(c);
+    await this.audit.record(INTEGRATION_AUDIT_ACTION.CONNECTION_RECONNECT, tenantId, 'IntegrationConnection', id, actor, {
+      credentialProvided: !!opts.credential,
+    });
+    const mappings = await this.idMap.retentionImpact(tenantId, c.id);
+    return { reconnected: true, connectionId: c.id, mappings };
+  }
+
+  /**
+   * What a HARD delete would destroy. Shown before confirming so the consequence
+   * is explicit rather than discovered afterwards.
+   */
+  async purgeImpact(tenantId: string, id: string) {
+    const c = await this.connections.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!c) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Integration connection not found' });
+    const mappings = await this.idMap.retentionImpact(tenantId, id);
+    return {
+      connectionId: id,
+      status: c.status,
+      /** Hard delete is only offered once the connection is already disconnected. */
+      eligible: c.status === CONNECTION_STATUS.DISCONNECTED,
+      ...mappings,
+      /**
+       * Import/sync/conflict/inbound history SURVIVES: those FKs are ON DELETE
+       * SET NULL, so the runs remain readable with a null connection reference.
+       * Mappings are ON DELETE CASCADE and are the real loss.
+       */
+      retains: ['import history', 'sync history', 'conflicts', 'inbound delivery history', 'audit log'],
+      destroys: ['external-id mappings (active and historical)'],
+    };
+  }
+
+  /**
+   * HARD delete — permanently removes the connection row and CASCADES its
+   * mappings. Deliberately gated: only a connection that is already
+   * DISCONNECTED can be purged, so this can never be reached by a single
+   * mis-click on a live integration. Requires the manage permission (enforced at
+   * the controller) and is audited with its retention impact.
+   */
+  async purge(tenantId: string, id: string, actor: ConnectionActor): Promise<{ purged: true }> {
+    const c = await this.connections.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!c) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Integration connection not found' });
+    if (c.status !== CONNECTION_STATUS.DISCONNECTED) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Only a disconnected connection can be permanently deleted — disconnect it first',
+      });
+    }
+    const impact = await this.idMap.retentionImpact(tenantId, id);
+    // Audit BEFORE the delete: afterwards the connection id no longer resolves.
+    await this.audit.record(INTEGRATION_AUDIT_ACTION.CONNECTION_PURGE, tenantId, 'IntegrationConnection', id, actor, {
+      ...impact,
+      name: c.name,
+      provider: c.provider,
+    });
+    await this.idMap.purgeForConnection(tenantId, id);
+    await this.connections.delete({ id });
+    this.logger.warn(`Integration connection ${id} PURGED for tenant ${tenantId}`);
+    return { purged: true };
   }
 
   /**

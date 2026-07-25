@@ -22,6 +22,7 @@ import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.gu
 
 import { IntegrationConflictService } from './integration-conflict.service';
 import { IntegrationConflictResolutionService } from './integration-conflict-resolution.service';
+import { CONFLICT_STATUS } from '../integration-platform.constants';
 import { QueryConflictsDto } from '../dto/query-conflicts.dto';
 import { ResolveConflictDto } from '../dto/resolve-conflict.dto';
 
@@ -67,7 +68,11 @@ export class IntegrationConflictsController {
       conflictingFields: c.conflicting_fields,
       stillDiffers: !!c.external_hash && !!c.platform_hash && c.external_hash !== c.platform_hash,
       policy: c.policy,
+      reason: c.reason,
       status: c.status,
+      isStale: c.status === CONFLICT_STATUS.STALE,
+      staleAttempts: c.stale_attempts ?? 0,
+      lastStaleAt: c.last_stale_at ?? null,
       resolution: c.resolution ?? null,
     };
   }

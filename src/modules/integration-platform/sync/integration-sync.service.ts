@@ -16,14 +16,20 @@ import {
   ADMISSION_OP,
   IntegrationResource,
   JOB_STATUS,
+  MAX_SYNC_PAGES,
+  MAX_SYNC_RECORDS,
+  MAX_SYNC_RUNTIME_MS,
   SYNC_DIRECTION,
   SYNC_MODE,
+  SYNC_STOP_REASON,
+  SyncStopReason,
   TERMINAL_JOB_STATUSES,
   UPSERT_OUTCOME,
 } from '../integration-platform.constants';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationConnectionService } from '../connections/integration-connection.service';
 import { IntegrationUpsertService } from '../write/integration-upsert.service';
+import { IntegrationServiceAccountService } from '../write/integration-service-account.service';
 import { IntegrationProviderService } from '../providers/integration-provider.service';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 
@@ -31,9 +37,6 @@ interface Actor {
   userId?: string;
   ip?: string;
 }
-
-/** Max pages pulled in one run (safety bound against a runaway provider). */
-const MAX_SYNC_PAGES = 1_000;
 
 /**
  * Queue-based synchronization engine (Phase 4). A run is a durable
@@ -59,6 +62,7 @@ export class IntegrationSyncService {
     private readonly audit: IntegrationAuditService,
     private readonly queue: QueueService,
     private readonly admission: IntegrationAdmissionService,
+    private readonly serviceAccount: IntegrationServiceAccountService,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
@@ -214,44 +218,118 @@ export class IntegrationSyncService {
     }
 
     const policy = this.connections.conflictPolicyOf(connection);
-    let cursor = job.cursor ?? null;
+    // Attribute records to the triggering user, or to the tenant's verified
+    // integration service account for a scheduled/machine run.
+    const actorUserId = await this.serviceAccount.resolveActorUserId(tenantId, job.triggered_by?.id);
+
+    // Resume from the last SAFE watermark, never from a boundary that was merely
+    // attempted — a page containing a failed record must be re-fetched.
+    let cursor = job.last_successful_cursor ?? job.cursor ?? null;
     let pages = 0;
+    let stop: SyncStopReason = SYNC_STOP_REASON.COMPLETED;
+    const deadline = Date.now() + MAX_SYNC_RUNTIME_MS;
+    /** Boundaries already requested — a repeat means the provider is looping. */
+    const seenCursors = new Set<string>();
 
     try {
-      while (pages < MAX_SYNC_PAGES) {
+      while (true) {
+        if (pages >= MAX_SYNC_PAGES) { stop = SYNC_STOP_REASON.MAX_PAGES; break; }
+        if (job.processed >= MAX_SYNC_RECORDS) { stop = SYNC_STOP_REASON.MAX_RECORDS; break; }
+        if (Date.now() > deadline) { stop = SYNC_STOP_REASON.MAX_RUNTIME; break; }
+
         const fresh = await this.jobs.findOne({ where: { id: syncJobId }, select: { cancel_requested: true } });
         if (fresh?.cancel_requested) {
+          job.stop_reason = SYNC_STOP_REASON.CANCELLED;
           await this.finish(job, JOB_STATUS.CANCELLED, null);
           return;
         }
 
+        // PAGINATION-LOOP GUARD: asking for a boundary we already asked for in
+        // this run means the provider is not advancing. Stop rather than spin.
+        const key = cursor ?? ' start';
+        if (seenCursors.has(key)) { stop = SYNC_STOP_REASON.REPEATED_CURSOR; break; }
+        seenCursors.add(key);
+
+        job.attempted_cursor = cursor;
         const page = await this.providers.pullChanges(connection, resource, cursor);
+        job.next_cursor = page.nextCursor ?? null;
+        pages += 1;
+        job.pages_fetched = pages;
+
+        // Per-item processing. Records may arrive DUPLICATED or OUT OF ORDER —
+        // both are safe: the external-id mapping makes a repeat an idempotent
+        // no-op update, and each record is applied on its own merits rather than
+        // by position in the stream.
+        let pageFullyHandled = true;
+        const seenInPage = new Set<string>();
         for (const rec of page.records) {
+          if (seenInPage.has(rec.externalId)) {
+            // Same record twice in one page — count once, skip the rework.
+            job.skipped_count += 1;
+            job.processed += 1;
+            continue;
+          }
+          seenInPage.add(rec.externalId);
+
           const result = await this.upsert.upsertOne(
             tenantId, resource, connection.id, policy, rec.externalId, rec.data,
-            { userId: job.triggered_by?.id }, { safe: true },
+            { userId: actorUserId }, { safe: true },
           );
           this.tally(job, result.outcome);
           job.processed += 1;
+          // A FAILED record blocks the watermark. A conflict does not: it is
+          // durably recorded for review, so the record is accounted for.
+          if (result.outcome === UPSERT_OUTCOME.FAILED) pageFullyHandled = false;
         }
 
+        if (!pageFullyHandled) {
+          // PARTIAL-PAGE FAILURE: do NOT advance last_successful_cursor. The run
+          // ends here so a retry re-fetches this exact page — a record that was
+          // not safely handled can never be skipped past.
+          stop = SYNC_STOP_REASON.ITEM_FAILURE;
+          await this.jobs.save(job);
+          break;
+        }
+
+        // Whole page handled → this boundary is a safe resume point.
         cursor = page.nextCursor;
         job.cursor = cursor;
-        job.last_successful_cursor = cursor; // page committed → safe resume point
+        job.last_successful_cursor = cursor;
         await this.jobs.save(job);
-        pages += 1;
-        if (!page.hasMore) break;
+
+        if (!page.hasMore) { stop = SYNC_STOP_REASON.COMPLETED; break; }
       }
 
-      const status = job.failed_count === 0 ? JOB_STATUS.COMPLETED : JOB_STATUS.PARTIALLY_COMPLETED;
-      await this.finish(job, status, status === JOB_STATUS.PARTIALLY_COMPLETED ? 'Some records failed' : null);
+      job.stop_reason = stop;
+      const clean = job.failed_count === 0 && stop === SYNC_STOP_REASON.COMPLETED;
+      const status = clean ? JOB_STATUS.COMPLETED : JOB_STATUS.PARTIALLY_COMPLETED;
+      await this.finish(job, status, clean ? null : this.stopSummary(stop, job.failed_count));
       await this.connections.markSuccess(connection.id);
     } catch (err) {
-      // Interrupted mid-run — leave last_successful_cursor as the resume point
-      // and mark failed so a retry resumes from there. Re-throw so BullMQ retries.
+      // Interrupted mid-run — last_successful_cursor still points at the last
+      // fully-handled page, so a retry resumes there. Re-throw so BullMQ retries.
+      job.stop_reason = SYNC_STOP_REASON.ERROR;
       await this.finish(job, JOB_STATUS.FAILED, (err as Error)?.message ?? 'Sync failed');
       await this.connections.markError(connection.id, (err as Error)?.message ?? 'Sync failed');
       throw err;
+    }
+  }
+
+  /** Safe, operator-readable reason a run did not complete cleanly. */
+  private stopSummary(stop: SyncStopReason, failed: number): string {
+    switch (stop) {
+      case SYNC_STOP_REASON.ITEM_FAILURE:
+        return `${failed} record(s) failed — the cursor was not advanced; retry to re-process from the same page`;
+      case SYNC_STOP_REASON.MAX_PAGES:
+        return `Stopped at the ${MAX_SYNC_PAGES}-page limit — retry to continue from the last successful cursor`;
+      case SYNC_STOP_REASON.MAX_RECORDS:
+        return `Stopped at the ${MAX_SYNC_RECORDS}-record limit — retry to continue from the last successful cursor`;
+      case SYNC_STOP_REASON.MAX_RUNTIME:
+        return 'Stopped at the runtime limit — retry to continue from the last successful cursor';
+      case SYNC_STOP_REASON.REPEATED_CURSOR:
+        return 'The provider returned a cursor it had already returned — stopped to avoid an endless loop';
+      default:
+        return failed > 0 ? 'Some records failed' : 'Run did not complete';
     }
   }
 
@@ -321,8 +399,17 @@ export class IntegrationSyncService {
       direction: j.direction,
       mode: j.mode,
       status: j.status,
+      /** Watermark this run STARTED from. */
       cursor: j.cursor ?? null,
+      /** Newest boundary REQUESTED (may be ahead of what was safely handled). */
+      attemptedCursor: j.attempted_cursor ?? null,
+      /** Newest FULLY-handled boundary — the only resume point. */
       lastSuccessfulCursor: j.last_successful_cursor ?? null,
+      /** What the provider reports as next. */
+      nextCursor: j.next_cursor ?? null,
+      cursorKind: j.cursor_kind ?? 'opaque',
+      pagesFetched: j.pages_fetched ?? 0,
+      stopReason: j.stop_reason ?? null,
       counts: {
         processed: j.processed,
         created: j.created_count,

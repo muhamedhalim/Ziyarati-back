@@ -17,10 +17,15 @@ export class QueryConflictsDto {
   @IsIn(INTEGRATION_RESOURCES)
   resourceType?: string;
 
-  @ApiPropertyOptional({ description: 'Conflict status.', enum: Object.values(CONFLICT_STATUS), default: 'pending' })
+  @ApiPropertyOptional({
+    description:
+      'Conflict status. `open` is a convenience filter for everything still needing a decision (pending + resolving + stale). Defaults to `open`.',
+    enum: [...Object.values(CONFLICT_STATUS), 'open'],
+    default: 'open',
+  })
   @IsOptional()
   @IsString()
-  @IsIn(Object.values(CONFLICT_STATUS))
+  @IsIn([...Object.values(CONFLICT_STATUS), 'open'])
   status?: string;
 
   @ApiPropertyOptional({ description: 'Page number (1-based).', minimum: 1, default: 1 })

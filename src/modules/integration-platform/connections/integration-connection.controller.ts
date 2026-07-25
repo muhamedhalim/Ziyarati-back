@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -25,6 +26,7 @@ import { IntegrationConnectionService } from './integration-connection.service';
 import { CreateConnectionDto } from '../dto/create-connection.dto';
 import { UpdateConnectionDto } from '../dto/update-connection.dto';
 import { QueryConnectionsDto } from '../dto/query-connections.dto';
+import { ReconnectConnectionDto } from '../dto/relink-mapping.dto';
 
 /**
  * Tenant-admin management of external-system connections (Phase 3). Guarded by
@@ -128,5 +130,53 @@ export class IntegrationConnectionController {
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
   disconnect(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
     return this.connections.disconnect(this.ctx.requireTenantId(), id, { userId, ip });
+  }
+
+  @ApiOperation({
+    summary: 'Reconnect a disconnected connection',
+    description:
+      '**Protected — `platform.integrations.manage`.** Restores the connection in place (a credential must be supplied again — disconnect destroys the stored secret), or, with `replacementConnectionId`, carries its active mappings over to a replacement connection. Nothing is deleted either way.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @Post(':id/reconnect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
+  reconnect(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReconnectConnectionDto & { credential?: string },
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.connections.reconnect(
+      this.ctx.requireTenantId(),
+      id,
+      { replacementConnectionId: dto.replacementConnectionId, credential: dto.credential },
+      { userId, ip },
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Preview what a permanent delete would destroy',
+    description:
+      '**Protected — `platform.integrations.read`.** Shows the retention impact (mapping counts, what survives, what is destroyed) so the consequence is explicit before confirming.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @Get(':id/purge-impact')
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
+  purgeImpact(@Param('id', ParseUUIDPipe) id: string) {
+    return this.connections.purgeImpact(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: 'Permanently delete a disconnected connection',
+    description:
+      '**Protected — `platform.integrations.manage`.** HARD delete: removes the connection and CASCADES its external-id mappings. Only permitted once the connection is already disconnected. Import/sync/conflict/inbound history and audit records survive (their connection reference is nulled). Audited with the retention impact.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @Delete(':id/purge')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
+  purge(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+    return this.connections.purge(this.ctx.requireTenantId(), id, { userId, ip });
   }
 }
