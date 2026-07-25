@@ -16,6 +16,9 @@ import {
 } from '../integration-platform.constants';
 import { QueryMappingsDto } from '../dto/query-mappings.dto';
 
+/** Internal ids are UUID columns — only an exact match is valid against them. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * External-id ⇄ internal-id mapping (Phase 3). Every read/write is scoped to a
  * (tenant, connection, resource_type) so two external systems — or two tenants —
@@ -180,11 +183,17 @@ export class IntegrationIdMapService {
     if (scope === 'active') base.unlinked_at = IsNull();
     if (scope === 'unlinked') base.unlinked_at = Not(IsNull());
 
-    // Free-text search matches either id, so one box covers both directions.
+    // Free-text search covers both directions. `external_id` is text, so it gets
+    // a partial ILIKE; `internal_resource_id` is a UUID column, which Postgres
+    // cannot ILIKE at all — an exact match is the only valid (and only useful)
+    // comparison there, so a well-formed uuid is matched exactly and anything
+    // else searches the external side only.
     const where: FindOptionsWhere<IntegrationIdMap>[] = query.search
       ? [
           { ...base, external_id: ILike(`%${query.search}%`) },
-          { ...base, internal_resource_id: ILike(`%${query.search}%`) as never },
+          ...(UUID_RE.test(query.search.trim())
+            ? [{ ...base, internal_resource_id: query.search.trim() }]
+            : []),
         ]
       : [base];
 

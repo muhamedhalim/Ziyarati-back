@@ -16,7 +16,8 @@ import {
  */
 
 /** A job row that behaves like the entity for the fields the service touches. */
-function makeJob(over: Record<string, unknown> = {}) {
+type JobRow = Record<string, any>;
+function makeJob(over: Record<string, unknown> = {}): JobRow {
   return {
     id: 'sync-1',
     tenant: { id: 't1' },
@@ -44,7 +45,7 @@ function makeJob(over: Record<string, unknown> = {}) {
     finished_at: null,
     triggered_by: null,
     ...over,
-  } as never;
+  };
 }
 
 interface Page {

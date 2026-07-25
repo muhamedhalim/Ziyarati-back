@@ -16,6 +16,7 @@ import { IntegrationAvailabilityController } from './integration-availability.co
 import { IntegrationWriteCustomersController } from './integration-write-customers.controller';
 import { IntegrationWriteServicesController } from './integration-write-services.controller';
 import { IntegrationWriteStaffController } from './integration-write-staff.controller';
+import { IntegrationWriteAppointmentsController } from './integration-write-appointments.controller';
 
 /**
  * External (machine-to-machine) integration API.
@@ -60,6 +61,7 @@ import { IntegrationWriteStaffController } from './integration-write-staff.contr
     IntegrationWriteServicesController,
     // Phase 4 — staff upsert (update/link only; never creates an account).
     IntegrationWriteStaffController,
+    IntegrationWriteAppointmentsController,
   ],
 })
 export class IntegrationModule {}

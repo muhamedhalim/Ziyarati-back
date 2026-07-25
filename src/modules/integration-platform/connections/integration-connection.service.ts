@@ -384,10 +384,23 @@ export class IntegrationConnectionService {
    * can read its conflict policy.
    */
   async requireActive(tenantId: string, id: string): Promise<IntegrationConnection> {
-    const c = await this.findOneOrThrow(tenantId, id);
+    // Deliberately looks up WITHOUT the soft-delete filter. A disconnected
+    // connection is hidden from tenant reads, but an external system still
+    // pointing at it deserves "this connection is disconnected" rather than a
+    // bare 404 that reads like a wrong id — the two need different fixes.
+    const c = await this.connections.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!c) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Integration connection not found' });
+
+    if (c.status === CONNECTION_STATUS.DISCONNECTED || c.deleted_at) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'This integration connection has been disconnected — reconnect it to resume',
+        publicContext: { connectionStatus: CONNECTION_STATUS.DISCONNECTED },
+      });
+    }
     if (c.status !== CONNECTION_STATUS.ACTIVE) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'The integration connection is not active',
+        publicContext: { connectionStatus: c.status },
       });
     }
     return c;
