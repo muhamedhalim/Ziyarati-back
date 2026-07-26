@@ -51,9 +51,34 @@ export interface ProviderChangePage {
   hasMore: boolean;
 }
 
+/** One internal record to push outbound: `externalId` is the known mapping (update) or null (create). */
+export interface ProviderPushRecord {
+  internalId: string;
+  externalId: string | null;
+  data: Record<string, unknown>;
+}
+
+/** Per-record outcome of a push — lets the caller link a new mapping or classify a failure as retryable. */
+export interface ProviderPushRecordResult {
+  internalId: string;
+  ok: boolean;
+  /** Present on a successful CREATE — the id the external system assigned. */
+  externalId?: string | null;
+  /** Whether a retry might succeed (network/5xx/429) vs a permanent failure (4xx/validation). Only meaningful when `ok` is false. */
+  transient?: boolean;
+  error?: string;
+}
+
 export interface ProviderPushResult {
   pushed: number;
   failed: number;
+  results: ProviderPushRecordResult[];
+}
+
+/** Per-resource verification result — reachability of ONE configured resource endpoint, not just the base connection. */
+export interface ResourceCheckResult {
+  ok: boolean;
+  message: string;
 }
 
 export interface IntegrationProviderAdapter {
@@ -77,8 +102,15 @@ export interface IntegrationProviderAdapter {
   pushChanges(
     ctx: ProviderContext,
     resource: IntegrationResource,
-    records: Array<{ externalId: string | null; data: Record<string, unknown> }>,
+    records: ProviderPushRecord[],
   ): Promise<ProviderPushResult>;
+
+  /**
+   * Optional: verify ONE configured resource's endpoint is reachable/authorized —
+   * used by connection verification to report per-resource status rather than only
+   * overall connectivity. Absent when a provider has no per-resource endpoints.
+   */
+  checkResource?(ctx: ProviderContext, resource: IntegrationResource): Promise<ResourceCheckResult>;
 
   /** Optional: verify an inbound webhook signature for this provider. */
   verifyWebhook?(headers: Record<string, string | undefined>, rawBody: string, secret: string): boolean;

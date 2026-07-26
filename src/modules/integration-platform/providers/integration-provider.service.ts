@@ -11,6 +11,9 @@ import {
   HealthCheckResult,
   ProviderChangePage,
   ProviderContext,
+  ProviderPushRecord,
+  ProviderPushResult,
+  ResourceCheckResult,
 } from './provider.types';
 
 /**
@@ -74,5 +77,21 @@ export class IntegrationProviderService {
     cursor: string | null,
   ): Promise<ProviderChangePage> {
     return this.adapterOrThrow(connection.provider).pullChanges(this.contextOf(connection), resource, cursor);
+  }
+
+  /** Push a bounded batch of internal records to the external system (outbound sync). */
+  async pushChanges(
+    connection: IntegrationConnection,
+    resource: IntegrationResource,
+    records: ProviderPushRecord[],
+  ): Promise<ProviderPushResult> {
+    return this.adapterOrThrow(connection.provider).pushChanges(this.contextOf(connection), resource, records);
+  }
+
+  /** Verify ONE configured resource's endpoint (connection verification) — absent when the adapter has no such check. */
+  async checkResource(connection: IntegrationConnection, resource: IntegrationResource): Promise<ResourceCheckResult | null> {
+    const adapter = this.adapterOrThrow(connection.provider);
+    if (!adapter.checkResource) return null;
+    return adapter.checkResource(this.contextOf(connection), resource);
   }
 }

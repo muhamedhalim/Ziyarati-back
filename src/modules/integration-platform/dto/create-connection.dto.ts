@@ -14,7 +14,7 @@ import {
 // provider declares that yet, so submitting oauth2 today still fails — with a
 // specific "not supported by this provider" message rather than a generic
 // shape-validation error.
-const SELECTABLE_AUTH_TYPES = [
+export const SELECTABLE_AUTH_TYPES = [
   CONNECTION_AUTH_TYPE.NONE,
   CONNECTION_AUTH_TYPE.API_KEY,
   CONNECTION_AUTH_TYPE.SECRET,

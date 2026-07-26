@@ -118,6 +118,64 @@ describe('IntegrationConnectionTestService', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
+  it('verifies each configured resource endpoint individually, not just base connectivity', async () => {
+    const server = await startServer((req, res) => {
+      if (req.url?.startsWith('/customers')) {
+        res.writeHead(200);
+        res.end('[]');
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    try {
+      const svc = new IntegrationConnectionTestService(repoMock(), encryption, admission, audit);
+      const result = await svc.test(
+        tenantId,
+        {
+          provider: 'generic_rest',
+          authType: CONNECTION_AUTH_TYPE.NONE,
+          config: {
+            baseUrl: server.url,
+            advanced: {
+              endpoints: {
+                customer: { list: { path: '/customers', method: 'GET' } },
+                staff: { list: { path: '/staff', method: 'GET' } },
+              },
+            },
+          },
+        } as any,
+        actor,
+      );
+      expect(result.resources).toEqual(
+        expect.arrayContaining([
+          { resource: 'customer', ok: true, message: 'Reachable' },
+          { resource: 'staff', ok: false, message: expect.stringContaining('HTTP 404') },
+        ]),
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('omits `resources` entirely when no resource endpoint is configured', async () => {
+    const server = await startServer((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+    try {
+      const svc = new IntegrationConnectionTestService(repoMock(), encryption, admission, audit);
+      const result = await svc.test(
+        tenantId,
+        { provider: 'generic_rest', authType: CONNECTION_AUTH_TYPE.NONE, config: { baseUrl: server.url } } as any,
+        actor,
+      );
+      expect(result.resources).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('never returns the credential in the result', async () => {
     const server = await startServer((_req, res) => {
       res.writeHead(401);

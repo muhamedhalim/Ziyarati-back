@@ -179,6 +179,110 @@ describe('performGenericRestRequest', () => {
     }
   });
 
+  it('retries a 429 honoring Retry-After, then succeeds', async () => {
+    let calls = 0;
+    const server = await startServer((_req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        res.writeHead(429, { 'Retry-After': '0' });
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end('ok');
+    });
+    try {
+      const res = await performGenericRestRequest({
+        method: 'GET', url: server.url, headers: {}, timeoutMs: 2000, maxResponseBytes: 1024,
+      });
+      expect(res.ok).toBe(true);
+      expect(res.attempts).toBe(2);
+      expect(calls).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('exhausts retries on a persistent 429 and still reports it as transient', async () => {
+    let calls = 0;
+    const server = await startServer((_req, res) => {
+      calls += 1;
+      res.writeHead(429, { 'Retry-After': '0' });
+      res.end();
+    });
+    try {
+      const res = await performGenericRestRequest({
+        method: 'GET', url: server.url, headers: {}, timeoutMs: 2000, maxResponseBytes: 1024,
+      });
+      expect(res.ok).toBe(false);
+      expect(res.status).toBe(429);
+      expect(res.transient).toBe(true);
+      expect(calls).toBe(2); // default maxAttempts (1 retry) — bounded, never unbounded
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('retries a transient 5xx and succeeds once the server recovers', async () => {
+    let calls = 0;
+    const server = await startServer((_req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        res.writeHead(503);
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end('recovered');
+    });
+    try {
+      const res = await performGenericRestRequest({
+        method: 'GET', url: server.url, headers: {}, timeoutMs: 2000, maxResponseBytes: 1024,
+      });
+      expect(res.ok).toBe(true);
+      expect(res.bodyText).toBe('recovered');
+      expect(calls).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('never retries a permanent 4xx (other than 429) — a single attempt only', async () => {
+    let calls = 0;
+    const server = await startServer((_req, res) => {
+      calls += 1;
+      res.writeHead(400);
+      res.end();
+    });
+    try {
+      const res = await performGenericRestRequest({
+        method: 'GET', url: server.url, headers: {}, timeoutMs: 2000, maxResponseBytes: 1024,
+      });
+      expect(res.ok).toBe(false);
+      expect(calls).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('honors an explicit lower maxAttempts (no retry) even for a transient failure', async () => {
+    let calls = 0;
+    const server = await startServer((_req, res) => {
+      calls += 1;
+      res.writeHead(503);
+      res.end();
+    });
+    try {
+      const res = await performGenericRestRequest({
+        method: 'GET', url: server.url, headers: {}, timeoutMs: 2000, maxResponseBytes: 1024, maxAttempts: 1,
+      });
+      expect(res.ok).toBe(false);
+      expect(calls).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('returns a safe, non-revealing error for a blocked target rather than a raw exception', async () => {
     const prev = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';

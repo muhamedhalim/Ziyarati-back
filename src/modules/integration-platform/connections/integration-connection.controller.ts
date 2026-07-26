@@ -29,6 +29,7 @@ import { UpdateConnectionDto } from '../dto/update-connection.dto';
 import { QueryConnectionsDto } from '../dto/query-connections.dto';
 import { ReconnectConnectionDto } from '../dto/relink-mapping.dto';
 import { TestConnectionDto } from '../dto/test-connection.dto';
+import { RotateConnectionAuthDto } from '../dto/rotate-connection-auth.dto';
 
 /**
  * Tenant-admin management of external-system connections (Phase 3). Guarded by
@@ -168,6 +169,24 @@ export class IntegrationConnectionController {
       { replacementConnectionId: dto.replacementConnectionId, credential: dto.credential },
       { userId, ip },
     );
+  }
+
+  @ApiOperation({
+    summary: 'Rotate authentication (change auth type or credentials) safely',
+    description:
+      '**Protected — `platform.integrations.manage`.** Auth type is immutable on an existing connection, so this creates a REPLACEMENT connection with the new auth type/credential, transfers this connection\'s active mappings onto it, and retires (disconnects — never deletes) the original. Nothing is destroyed.',
+  })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  @Post(':id/rotate-auth')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
+  rotateAuth(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RotateConnectionAuthDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.connections.rotateAuth(this.ctx.requireTenantId(), id, dto, { userId, ip });
   }
 
   @ApiOperation({

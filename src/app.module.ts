@@ -35,6 +35,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
 import { SupportTicketsModule } from './modules/support-tickets/support-tickets.module';
+import { BillingUpgradeModule } from './modules/billing-upgrades/billing-upgrade.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
@@ -115,6 +116,7 @@ import { validate } from './config/env.validation';
     PaymentsModule,
     CrmModule,
     SupportTicketsModule,
+    BillingUpgradeModule,
     AnalyticsModule,
     PlatformModule,
     IntegrationModule,

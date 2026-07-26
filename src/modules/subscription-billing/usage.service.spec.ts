@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { UsageService } from './usage.service';
 import { AccessControlService } from './access-control.service';
+import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
 import { USAGE_METRIC, COUNT_LIMIT } from './usage-metric';
@@ -14,11 +15,17 @@ describe('UsageService', () => {
   let subscriptions: MockRepository;
   let usageRepo: MockRepository;
   let access: { isEnforced: jest.Mock };
+  let limitOverrides: { getActive: jest.Mock; getActiveMap: jest.Mock };
 
   beforeEach(async () => {
     subscriptions = createMockRepository();
     usageRepo = createMockRepository();
     access = { isEnforced: jest.fn().mockResolvedValue(true) };
+    // No active override in any existing scenario — preserves prior behavior.
+    limitOverrides = {
+      getActive: jest.fn().mockResolvedValue(null),
+      getActiveMap: jest.fn().mockResolvedValue(new Map()),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -26,6 +33,7 @@ describe('UsageService', () => {
         { provide: getRepositoryToken(Subscription), useValue: subscriptions },
         { provide: getRepositoryToken(SubscriptionUsage), useValue: usageRepo },
         { provide: AccessControlService, useValue: access },
+        { provide: TenantUsageLimitOverrideService, useValue: limitOverrides },
       ],
     }).compile();
     service = moduleRef.get(UsageService);

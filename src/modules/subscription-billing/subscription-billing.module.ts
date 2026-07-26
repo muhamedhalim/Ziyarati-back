@@ -12,6 +12,7 @@ import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
 import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
 import { FeaturePlan } from '../../entities/SaaS-Core/FeaturePlan';
 import { FeatureDependency } from '../../entities/SaaS-Core/FeatureDependency';
+import { TenantUsageLimitOverride } from '../../entities/SaaS-Core/TenantUsageLimitOverride';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -19,6 +20,7 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { UsageService } from './usage.service';
+import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
 import { FeatureFlagService } from './feature-flag.service';
 import { FeatureCatalogService } from './feature-catalog.service';
 import { FeatureResolverService } from './feature-resolver.service';
@@ -67,6 +69,7 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
       FeatureDefinition,
       FeaturePlan,
       FeatureDependency,
+      TenantUsageLimitOverride,
       SystemSetting,
       Tenant,
       AuditLog,
@@ -86,6 +89,7 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     SubscriptionService,
     BillingService,
     UsageService,
+    TenantUsageLimitOverrideService,
     FeatureFlagService,
     FeatureCatalogService,
     FeatureResolverService,
@@ -118,6 +122,7 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     SubscriptionService,
     BillingService,
     UsageService,
+    TenantUsageLimitOverrideService,
     FeatureFlagService,
     // The single effective-feature resolver — reused by any module that needs
     // to know whether a tenant may actually use a feature.

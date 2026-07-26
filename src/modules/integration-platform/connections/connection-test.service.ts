@@ -7,7 +7,7 @@ import { AppError, ErrorCode } from '../../../common/errors';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
 
 import { TestConnectionDto } from '../dto/test-connection.dto';
-import { ADMISSION_OP, CONNECTION_AUTH_TYPE, getProvider } from '../integration-platform.constants';
+import { ADMISSION_OP, CONNECTION_AUTH_TYPE, IntegrationResource, getProvider } from '../integration-platform.constants';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 import { resolveProviderAdapter } from '../providers/provider.registry';
@@ -24,10 +24,18 @@ export interface ConnectionActor {
   ip?: string;
 }
 
+export interface ResourceTestResult {
+  resource: string;
+  ok: boolean;
+  message: string;
+}
+
 export interface TestConnectionResult {
   ok: boolean;
   message: string;
   latencyMs?: number;
+  /** Per-configured-resource reachability — present only when at least one resource endpoint is configured. */
+  resources?: ResourceTestResult[];
 }
 
 const CREDENTIAL_AUTH_TYPES = new Set<string>([
@@ -128,12 +136,36 @@ export class IntegrationConnectionTestService {
     }
     const latencyMs = result.latencyMs ?? Date.now() - started;
 
+    // Verify each CONFIGURED resource endpoint individually — connectivity
+    // alone doesn't prove e.g. the "appointment" list path is right, only that
+    // the base URL answers. Bounded to the resources the tenant actually
+    // configured (at most the 4 known resource types) and never run for a
+    // provider with no such check (`checkResource` is optional).
+    let resources: ResourceTestResult[] | undefined;
+    const configuredResources = Object.keys(config.advanced?.endpoints ?? {}) as IntegrationResource[];
+    if (adapter.checkResource && configuredResources.length > 0) {
+      resources = [];
+      for (const resource of configuredResources) {
+        try {
+          const r = await adapter.checkResource(ctx, resource);
+          resources.push({ resource, ok: r.ok, message: r.message });
+        } catch (err) {
+          resources.push({
+            resource,
+            ok: false,
+            message: `Unexpected error while checking this resource: ${(err as Error)?.message ?? 'unknown'}`,
+          });
+        }
+      }
+    }
+
     await this.audit
       .record(INTEGRATION_AUDIT_ACTION.CONNECTION_TEST, tenantId, 'IntegrationConnection', dto.connectionId, actor, {
         provider: provider.key,
         authType,
         ok: result.ok,
         host: this.safeHost(config.baseUrl),
+        resources: resources?.map((r) => ({ resource: r.resource, ok: r.ok })),
       })
       .catch(() => undefined);
 
@@ -143,6 +175,7 @@ export class IntegrationConnectionTestService {
         ? `Connected successfully (${Math.max(0, Math.round(latencyMs))}ms)`
         : (result.reason ?? 'Could not connect'),
       latencyMs: Math.max(0, Math.round(latencyMs)),
+      ...(resources ? { resources } : {}),
     };
   }
 

@@ -10,6 +10,7 @@ import { EncryptionService } from '../../../common/crypto/encryption.service';
 import { CreateConnectionDto } from '../dto/create-connection.dto';
 import { UpdateConnectionDto } from '../dto/update-connection.dto';
 import { QueryConnectionsDto } from '../dto/query-connections.dto';
+import { RotateConnectionAuthDto } from '../dto/rotate-connection-auth.dto';
 import {
   ADMISSION_OP,
   CONNECTION_AUTH_TYPE,
@@ -360,6 +361,78 @@ export class IntegrationConnectionService {
     });
     const mappings = await this.idMap.retentionImpact(tenantId, c.id);
     return { reconnected: true, connectionId: c.id, mappings };
+  }
+
+  /**
+   * SAFE auth rotation: auth type is immutable on an existing connection (see
+   * `assertConfigMatchesAuthType`'s docs) by design, so changing it — or
+   * rotating to a fresh credential under a different scheme — creates a
+   * REPLACEMENT connection instead of mutating this one in place. Reuses
+   * `create()` for every validation rule a brand-new connection already has
+   * (provider/auth-type compatibility, credential consistency, config
+   * coherence), transfers this connection's ACTIVE mappings onto the
+   * replacement (same primitive `reconnect(..., { replacementConnectionId })`
+   * already uses), then retires (disconnects — never deletes) the original.
+   * Nothing is destroyed: mappings move, and import/sync/conflict/audit
+   * history remains attached to whichever connection produced it.
+   */
+  async rotateAuth(
+    tenantId: string,
+    id: string,
+    dto: RotateConnectionAuthDto,
+    actor: ConnectionActor,
+  ): Promise<{ connection: SafeConnection; mappings: { transferred: number; skipped: number } }> {
+    const existing = await this.findOneOrThrow(tenantId, id);
+    const providerKey = dto.provider ?? existing.provider;
+
+    const created = await this.create(
+      tenantId,
+      {
+        name: dto.name ?? `${existing.name} (rotated)`,
+        provider: providerKey,
+        authType: dto.authType,
+        credential: dto.credential,
+        config: this.carryOverConfig(existing.config as ConnectionConfig | null, dto.config),
+        syncDirection: existing.sync_direction,
+        defaultConflictPolicy: existing.default_conflict_policy,
+      } as CreateConnectionDto,
+      actor,
+    );
+
+    const moved = await this.idMap.transferMappings(tenantId, existing.id, created.id);
+    await this.disconnect(tenantId, existing.id, actor);
+
+    await this.audit.record(INTEGRATION_AUDIT_ACTION.CONNECTION_ROTATE_AUTH, tenantId, 'IntegrationConnection', created.id, actor, {
+      fromConnectionId: existing.id,
+      toConnectionId: created.id,
+      fromAuthType: existing.auth_type,
+      toAuthType: dto.authType,
+      ...moved,
+    });
+
+    return { connection: created, mappings: moved };
+  }
+
+  /**
+   * Carries the OLD connection's non-auth-specific config (base URL, resource
+   * enablement, advanced Generic REST settings) onto the replacement as a BASE
+   * — never the auth-specific sub-configs (`apiKey`/`basic`), which are tied to
+   * the auth type being replaced and would otherwise fail coherence validation
+   * against the new one. The caller's `config` (if any) is shallow-merged on
+   * top: a key the caller supplies (e.g. `basic`) replaces that key outright,
+   * while every key the caller omits (baseUrl, resources, advanced) carries
+   * over untouched — so rotating auth never forces re-entering the rest of the
+   * connection's settings. The result is still raw input at this point; the
+   * usual `parseConnectionConfig` validation inside `create()` is what makes it
+   * safe.
+   */
+  private carryOverConfig(
+    existing: ConnectionConfig | null | undefined,
+    patch: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    const { apiKey: _apiKey, basic: _basic, ...rest } = existing ?? {};
+    const merged: Record<string, unknown> = { ...rest, ...(patch ?? {}) };
+    return Object.keys(merged).length > 0 ? merged : undefined;
   }
 
   /**

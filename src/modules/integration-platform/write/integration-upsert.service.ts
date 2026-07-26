@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { FindOptionsWhere, IsNull, MoreThan, Repository } from 'typeorm';
 import { plainToInstance, ClassConstructor } from 'class-transformer';
 import { validate } from 'class-validator';
 
@@ -62,8 +62,36 @@ export interface AdapterContext {
   connectionId: string;
 }
 
+/** One internal record changed since the outbound cursor, with its own resume point. */
+export interface DirtyInternalRow {
+  internalId: string;
+  /** Opaque — "resume strictly after this row". Never parsed by the caller. */
+  cursor: string;
+}
+export interface DirtyInternalPage {
+  rows: DirtyInternalRow[];
+  hasMore: boolean;
+}
+
 /** UUID shape check — API-key principals (`apikey:<id>`) are NOT real users. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Outbound cursor codec — `{updated_at ISO}|{id}` so a resume point can break a
+ * tie between two records with the identical millisecond timestamp. Opaque to
+ * every caller outside this file (the sync engine stores/replays it verbatim).
+ */
+function encodeOutboundCursor(updatedAt: Date, id: string): string {
+  return `${updatedAt.toISOString()}|${id}`;
+}
+function decodeOutboundCursor(raw: string): { ts: Date; id: string } | null {
+  const idx = raw.indexOf('|');
+  if (idx <= 0) return null;
+  const ts = new Date(raw.slice(0, idx));
+  const id = raw.slice(idx + 1);
+  if (Number.isNaN(ts.getTime()) || !id) return null;
+  return { ts, id };
+}
 
 /**
  * Appointments record real ownership (`booked_by`/`cancelled_by` are user FKs),
@@ -198,6 +226,73 @@ export class IntegrationUpsertService {
   /** Whether write/import is currently supported for a resource. */
   supports(resource: IntegrationResource): boolean {
     return !!this.adapters[resource];
+  }
+
+  /**
+   * Internal records changed since `cursorRaw` (outbound sync's own
+   * changed-since scan) — ordered `(updated_at, id)` so a resume point is
+   * always unambiguous even when two rows share a timestamp. Bounded to
+   * `limit` rows per call (the sync engine pages through this exactly like an
+   * inbound provider page). Reuses the SAME repositories already injected for
+   * natural-key dedupe reads; the actual outbound payload for each row comes
+   * from {@link currentViewOf} (the existing allowlisted projection), so no
+   * new "what can be sent externally" logic is introduced here.
+   */
+  async listDirtyInternal(
+    tenantId: string,
+    resource: IntegrationResource,
+    cursorRaw: string | null,
+    limit: number,
+  ): Promise<DirtyInternalPage> {
+    switch (resource) {
+      case INTEGRATION_RESOURCE.CUSTOMER:
+        return this.listDirtyRows(this.customerRepo, tenantId, cursorRaw, limit);
+      case INTEGRATION_RESOURCE.SERVICE:
+        return this.listDirtyRows(this.serviceRepo, tenantId, cursorRaw, limit);
+      case INTEGRATION_RESOURCE.STAFF:
+        return this.listDirtyRows(this.staffRepo, tenantId, cursorRaw, limit);
+      case INTEGRATION_RESOURCE.APPOINTMENT:
+        return this.listDirtyRows(this.appointmentRepo, tenantId, cursorRaw, limit);
+      default:
+        return { rows: [], hasMore: false };
+    }
+  }
+
+  private async listDirtyRows<T extends { id: string; updated_at?: Date }>(
+    repo: Repository<T>,
+    tenantId: string,
+    cursorRaw: string | null,
+    limit: number,
+  ): Promise<DirtyInternalPage> {
+    const decoded = cursorRaw ? decodeOutboundCursor(cursorRaw) : null;
+    if (cursorRaw && !decoded) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Outbound sync cursor is invalid' });
+    }
+
+    const base = { tenant: { id: tenantId } } as unknown as FindOptionsWhere<T>;
+    const where: FindOptionsWhere<T>[] = decoded
+      ? [
+          { ...base, updated_at: MoreThan(decoded.ts) } as unknown as FindOptionsWhere<T>,
+          { ...base, updated_at: decoded.ts, id: MoreThan(decoded.id) } as unknown as FindOptionsWhere<T>,
+        ]
+      : [base];
+
+    const rows = await repo.find({
+      where,
+      order: { updated_at: 'ASC', id: 'ASC' } as never,
+      take: limit + 1, // one extra to learn `hasMore` without a second count query
+      select: { id: true, updated_at: true } as never,
+    });
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      hasMore,
+      rows: page.map((r) => {
+        const row = r as unknown as { id: string; updated_at: Date };
+        return { internalId: row.id, cursor: encodeOutboundCursor(row.updated_at, row.id) };
+      }),
+    };
   }
 
   /**

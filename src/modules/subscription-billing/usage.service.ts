@@ -7,6 +7,7 @@ import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
 import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
+import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
 import {
   CountLimitColumn,
   RESOURCE_LIMIT_MAP,
@@ -33,6 +34,7 @@ export class UsageService {
     @InjectRepository(SubscriptionUsage)
     private readonly usage: Repository<SubscriptionUsage>,
     private readonly access: AccessControlService,
+    private readonly limitOverrides: TenantUsageLimitOverrideService,
   ) {}
 
   /**
@@ -110,7 +112,12 @@ export class UsageService {
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[limitColumn];
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
-    const limit = Number(limitRaw);
+    // A paid, tenant-specific raise (billing-upgrade workflow) never LOWERS the
+    // plan limit — the effective limit is the higher of the two.
+    const override = await this.limitOverrides.getActive(tenantId, metric);
+    const limit = override
+      ? Math.max(Number(limitRaw), Number(override.override_limit))
+      : Number(limitRaw);
     const row = await this.usage.findOne({
       where: {
         subscription_id: subscription.id,
@@ -157,6 +164,34 @@ export class UsageService {
     }
   }
 
+  /**
+   * Average per-period usage for a metered metric over the last N periods
+   * (null when the tenant has no subscription or no usage history yet). Pure
+   * aggregate number — feeds the billing-upgrade AI cost estimate's
+   * "historical aggregate consumption" input without exposing any raw
+   * tenant/customer content.
+   */
+  async getHistoricalAverage(
+    tenantId: string,
+    metric: UsageMetric,
+    periods = 3,
+  ): Promise<number | null> {
+    const subscription = await this.findCurrentSubscription(tenantId);
+    if (!subscription) return null;
+    const { usageColumn } = USAGE_METRIC_MAP[metric];
+    const rows = await this.usage.find({
+      where: { subscription_id: subscription.id },
+      order: { period_month: 'DESC' },
+      take: periods,
+    });
+    if (rows.length === 0) return null;
+    const total = rows.reduce(
+      (sum, r) => sum + Number((r as unknown as Record<string, unknown>)[usageColumn]),
+      0,
+    );
+    return total / rows.length;
+  }
+
   /** Raw usage row for a period (zeros if none yet). */
   async getUsage(tenantId: string, periodMonth?: string) {
     const subscription = await this.resolveSubscription(tenantId);
@@ -183,11 +218,12 @@ export class UsageService {
     const subscription = await this.resolveSubscription(tenantId, true);
     const usage = await this.getUsage(tenantId, periodMonth);
     const plan = subscription.plan as unknown as Record<string, unknown>;
+    const overrides = await this.limitOverrides.getActiveMap(tenantId);
 
     // Public shape is unchanged — the historical 5 fields, derived from the same
     // single line formula used everywhere (buildLine).
-    const line = (used: number, limitRaw: unknown) => {
-      const l = this.buildLine(used, limitRaw);
+    const line = (used: number, limitRaw: unknown, metric: string) => {
+      const l = this.buildLine(used, this.mergeLimit(limitRaw, overrides.get(metric)));
       return { used: l.used, limit: l.limit, remaining: l.remaining, percentUsed: l.percentUsed, exceeded: l.exceeded };
     };
 
@@ -197,10 +233,10 @@ export class UsageService {
       planId: subscription.plan.id,
       planName: subscription.plan.name,
       metrics: {
-        aiTokens: line(usage.aiTokensUsed, plan.max_ai_tokens),
-        whatsappMessages: line(usage.whatsappMessagesUsed, plan.max_whatsapp_messages),
-        appointments: line(usage.appointmentsUsed, plan.max_appointments),
-        campaigns: line(usage.campaignsUsed, plan.max_campaigns),
+        aiTokens: line(usage.aiTokensUsed, plan.max_ai_tokens, 'AI_TOKENS'),
+        whatsappMessages: line(usage.whatsappMessagesUsed, plan.max_whatsapp_messages, 'WHATSAPP_MESSAGES'),
+        appointments: line(usage.appointmentsUsed, plan.max_appointments, 'APPOINTMENTS'),
+        campaigns: line(usage.campaignsUsed, plan.max_campaigns, 'CAMPAIGNS'),
       },
     };
   }
@@ -230,19 +266,35 @@ export class UsageService {
     const usageRow = subscription
       ? await this.usage.findOne({ where: { subscription_id: subscription.id, period_month: period } })
       : null;
+    const overrides = await this.limitOverrides.getActiveMap(tenantId);
     const uv = (col: string): number =>
       usageRow ? Number((usageRow as unknown as Record<string, unknown>)[col]) : 0;
 
     const out: Record<string, UnifiedUsageLine> = {
-      aiTokens: this.buildLine(uv('ai_tokens_used'), plan?.max_ai_tokens, enforced),
-      whatsappMessages: this.buildLine(uv('whatsapp_messages_used'), plan?.max_whatsapp_messages, enforced),
-      appointments: this.buildLine(uv('appointments_used'), plan?.max_appointments, enforced),
-      campaigns: this.buildLine(uv('campaigns_used'), plan?.max_campaigns, enforced),
+      aiTokens: this.buildLine(uv('ai_tokens_used'), this.mergeLimit(plan?.max_ai_tokens, overrides.get('AI_TOKENS')), enforced),
+      whatsappMessages: this.buildLine(uv('whatsapp_messages_used'), this.mergeLimit(plan?.max_whatsapp_messages, overrides.get('WHATSAPP_MESSAGES')), enforced),
+      appointments: this.buildLine(uv('appointments_used'), this.mergeLimit(plan?.max_appointments, overrides.get('APPOINTMENTS')), enforced),
+      campaigns: this.buildLine(uv('campaigns_used'), this.mergeLimit(plan?.max_campaigns, overrides.get('CAMPAIGNS')), enforced),
     };
     for (const [metric, col] of Object.entries(RESOURCE_LIMIT_MAP)) {
-      out[metric] = this.buildLine(counts[metric as ResourceMetric] ?? 0, plan?.[col], enforced);
+      out[metric] = this.buildLine(
+        counts[metric as ResourceMetric] ?? 0,
+        this.mergeLimit(plan?.[col], overrides.get(metric)),
+        enforced,
+      );
     }
     return out;
+  }
+
+  /**
+   * Raises `planRaw` to an active tenant override's limit, never below it and
+   * never disturbing an unlimited (null) plan limit. A no-op when no override
+   * exists for the metric — existing callers/tests are unaffected.
+   */
+  private mergeLimit(planRaw: unknown, overrideLimit: number | undefined): unknown {
+    if (planRaw === null || planRaw === undefined) return planRaw;
+    if (overrideLimit === undefined) return planRaw;
+    return Math.max(Number(planRaw), overrideLimit);
   }
 
   /** The one line formula — used by getBreakdown and getUnifiedBreakdown. */

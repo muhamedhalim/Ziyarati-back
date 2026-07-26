@@ -216,3 +216,87 @@ describe('IntegrationConnectionService.update — never erases on a blank field'
     await expect(svc.update(tenantId, 'c1', { config: { baseUrl: '' } } as any, actor)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 });
+
+describe('IntegrationConnectionService.rotateAuth — safe auth rotation', () => {
+  function existingConnection(over: Record<string, unknown> = {}) {
+    return {
+      id: 'old-1',
+      name: 'Old PMS',
+      provider: 'generic_rest',
+      auth_type: CONNECTION_AUTH_TYPE.API_KEY,
+      credentials_ciphertext: 'ENC:old-key',
+      config: {
+        baseUrl: 'https://api.example.com',
+        apiKey: { location: 'header', name: 'X-Api-Key' },
+        resources: { staff: { enabled: false } },
+      },
+      status: CONNECTION_STATUS.ACTIVE,
+      sync_direction: 'bidirectional',
+      default_conflict_policy: 'reject_and_report',
+      deleted_at: null,
+      ...over,
+    };
+  }
+
+  function buildForRotation(existing: ReturnType<typeof existingConnection>) {
+    let created = 0;
+    const repo = repoMock({
+      findOne: jest.fn(({ where }: any) => Promise.resolve(where.id === existing.id ? { ...existing } : null)),
+      save: jest.fn((x: any) => {
+        if (x.id === existing.id) return Promise.resolve({ ...existing, ...x }); // saving the retired original
+        created += 1;
+        return Promise.resolve({ id: `new-${created}`, ...x }); // a brand-new replacement row
+      }),
+    });
+    const idMapLocal = { transferMappings: jest.fn().mockResolvedValue({ transferred: 3, skipped: 0 }) } as any;
+    const svc = new IntegrationConnectionService(repo, encryption, audit, providers, admission, idMapLocal);
+    return { svc, repo, idMapLocal };
+  }
+
+  it('creates a replacement connection with the new auth type, transfers mappings, and retires (never deletes) the original', async () => {
+    const existing = existingConnection();
+    const { svc, repo, idMapLocal } = buildForRotation(existing);
+
+    const result = await svc.rotateAuth(
+      tenantId,
+      existing.id,
+      { authType: CONNECTION_AUTH_TYPE.BASIC, credential: 'new-pw', config: { basic: { username: 'svc' } } } as any,
+      actor,
+    );
+
+    expect(result.connection.id).not.toBe(existing.id);
+    expect(idMapLocal.transferMappings).toHaveBeenCalledWith(tenantId, existing.id, result.connection.id);
+    expect(result.mappings).toEqual({ transferred: 3, skipped: 0 });
+
+    const createdSavedArg = repo.save.mock.calls.map((c: any[]) => c[0]).find((x: any) => x.id === undefined);
+    expect(createdSavedArg.auth_type).toBe(CONNECTION_AUTH_TYPE.BASIC);
+    expect(createdSavedArg.credentials_ciphertext).toBe('ENC:new-pw');
+    // Carried over from the original — not re-specified by the caller.
+    expect(createdSavedArg.config.baseUrl).toBe('https://api.example.com');
+    expect(createdSavedArg.config.resources).toEqual({ staff: { enabled: false } });
+    // The OLD auth-specific sub-config never carries over to the new auth type.
+    expect(createdSavedArg.config.apiKey).toBeUndefined();
+    expect(createdSavedArg.config.basic).toEqual({ username: 'svc' });
+
+    const retiredSavedArg = repo.save.mock.calls.map((c: any[]) => c[0]).find((x: any) => x.id === existing.id);
+    expect(retiredSavedArg.status).toBe(CONNECTION_STATUS.DISCONNECTED);
+    expect(retiredSavedArg.credentials_ciphertext).toBeNull();
+  });
+
+  it('defaults the replacement name and keeps sync direction/conflict policy from the original', async () => {
+    const existing = existingConnection({ sync_direction: 'inbound', default_conflict_policy: 'external_wins' });
+    const { svc, repo } = buildForRotation(existing);
+
+    await svc.rotateAuth(
+      tenantId,
+      existing.id,
+      { authType: CONNECTION_AUTH_TYPE.SECRET, credential: 'bearer-tok' } as any,
+      actor,
+    );
+
+    const createdSavedArg = repo.save.mock.calls.map((c: any[]) => c[0]).find((x: any) => x.id === undefined);
+    expect(createdSavedArg.name).toBe('Old PMS (rotated)');
+    expect(createdSavedArg.sync_direction).toBe('inbound');
+    expect(createdSavedArg.default_conflict_policy).toBe('external_wins');
+  });
+});

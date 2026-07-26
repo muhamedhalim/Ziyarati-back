@@ -4,7 +4,7 @@ import {
   IntegrationResource,
   PAGINATION_STRATEGY,
 } from '../integration-platform.constants';
-import { ConnectionConfig, PaginationConfig } from '../connections/connection-config';
+import { ConnectionConfig, PaginationConfig, applyFieldMap, invertFieldMap } from '../connections/connection-config';
 import {
   CredentialCheckResult,
   HealthCheckResult,
@@ -12,7 +12,10 @@ import {
   ProviderCapabilities,
   ProviderChangePage,
   ProviderContext,
+  ProviderPushRecord,
+  ProviderPushRecordResult,
   ProviderPushResult,
+  ResourceCheckResult,
 } from './provider.types';
 import { performGenericRestRequest } from './generic-rest-http-client';
 
@@ -32,6 +35,7 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 /** Defensive cap independent of the sync engine's own MAX_SYNC_RECORDS bound. */
 const MAX_PAGE_RECORDS = 500;
 const DEFAULT_PAGE_SIZE = 50;
+const MAX_CURSOR_LEN = 500;
 
 function configOf(ctx: ProviderContext): ConnectionConfig {
   return (ctx.config ?? {}) as ConnectionConfig;
@@ -87,6 +91,25 @@ function extractExternalId(item: Record<string, unknown>): string {
   return String(raw);
 }
 
+/** The id a provider assigned to a just-created record, parsed from its response body (top-level or `data`/`result`/`record`-wrapped). */
+function parseCreatedExternalId(bodyText: string | undefined): string | null {
+  if (!bodyText) return null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (!isPlainRecord(parsed)) return null;
+    const direct = extractExternalId(parsed);
+    if (direct) return direct;
+    const nested = parsed.data ?? parsed.result ?? parsed.record;
+    if (isPlainRecord(nested)) {
+      const id = extractExternalId(nested);
+      return id || null;
+    }
+  } catch {
+    // Not JSON, or unparsable — no id to report; the caller still counts this as pushed.
+  }
+  return null;
+}
+
 function parsePage(
   bodyText: string | undefined,
   resource: IntegrationResource,
@@ -110,6 +133,34 @@ function parsePage(
     return { items, providerNextCursor: typeof cursorCandidate === 'string' ? cursorCandidate : null };
   }
   throw new Error(`Response for "${resource}" was not a recognizable page shape`);
+}
+
+/**
+ * Defensive, format-level validation of an incoming cursor BEFORE it is
+ * round-tripped into a request to the provider. The cursor is always either
+ * one WE generated from a prior response or opaque provider-supplied state,
+ * but a corrupted/tampered value (e.g. a hand-edited retry payload) must never
+ * be forwarded blindly — an invalid cursor fails the run loudly rather than
+ * silently resetting to page 1 (which would waste a full re-scan) or being
+ * sent as-is (which could break the provider's own pagination).
+ */
+function validateCursor(cursor: string | null, pagination: PaginationConfig): void {
+  if (cursor === null) return;
+  if (cursor.length === 0 || cursor.length > MAX_CURSOR_LEN) {
+    throw new Error('Cursor is invalid (empty or unexpectedly long)');
+  }
+  if (pagination.strategy === PAGINATION_STRATEGY.PAGE_NUMBER) {
+    if (!/^[1-9][0-9]{0,9}$/.test(cursor)) {
+      throw new Error(`Invalid page-number cursor: "${cursor.slice(0, 50)}"`);
+    }
+  } else if (pagination.strategy === PAGINATION_STRATEGY.CURSOR_PARAM) {
+    // Printable ASCII only. Defense in depth — URLSearchParams already encodes
+    // this safely, but a cursor with control characters/newlines is refused
+    // outright rather than trusted to round-trip cleanly.
+    if (!/^[\x20-\x7E]+$/.test(cursor)) {
+      throw new Error('Cursor contains invalid characters');
+    }
+  }
 }
 
 /**
@@ -150,16 +201,16 @@ function computeNextCursor(
  * Real `IntegrationProviderAdapter` for `generic_rest` — the ONLY provider
  * that accepts a tenant-supplied base URL (see integration-platform.constants
  * `requiresBaseUrl`). Every outbound call funnels through
- * `generic-rest-http-client.ts`'s DNS-pinned, redirect-disabled request
- * executor, so SSRF protection is enforced on every single call, not only at
- * connection save time.
+ * `generic-rest-http-client.ts`'s DNS-pinned, redirect-disabled, retrying
+ * request executor, so SSRF protection AND transient-failure/429 handling are
+ * enforced on every single call, not only at connection save time.
  *
- * Endpoint paths, pagination strategy, the cursor field name and custom
- * headers all come from the connection's validated `config` (see
- * connections/connection-config.ts) — never raw tenant input at request time.
- * A resource with no configured endpoint is an honest no-op (empty page /
- * zero pushed), matching the built-in adapters' existing "never fabricate a
- * record" contract.
+ * Endpoint paths/methods (per operation: list/create/update/delete), pagination
+ * strategy, the cursor field name, custom headers and field mapping all come
+ * from the connection's validated `config` (see connections/connection-config.ts)
+ * — never raw tenant input at request time. A resource with no configured
+ * endpoint is an honest no-op/failure (empty page / a clear per-record error) —
+ * matching the built-in adapters' existing "never fabricate a record" contract.
  */
 export class GenericRestAdapter implements IntegrationProviderAdapter {
   readonly key = 'generic_rest';
@@ -192,9 +243,10 @@ export class GenericRestAdapter implements IntegrationProviderAdapter {
     const config = configOf(ctx);
     const baseUrl = config.baseUrl!;
     const { headers, query } = buildAuth(ctx);
-    // Prefer a configured resource endpoint (more representative than the bare
-    // base URL, which many APIs 404 on); fall back to the base URL itself.
-    const probePath = Object.values(config.advanced?.endpoints ?? {})[0] ?? '';
+    // Prefer a configured resource's list endpoint (more representative than the
+    // bare base URL, which many APIs 404 on); fall back to the base URL itself.
+    const probeEndpoint = Object.values(config.advanced?.endpoints ?? {})[0]?.list;
+    const probePath = probeEndpoint?.path ?? '';
 
     const started = Date.now();
     const res = await performGenericRestRequest({
@@ -221,32 +273,70 @@ export class GenericRestAdapter implements IntegrationProviderAdapter {
     return { ok: false, latencyMs, reason: res.error ?? 'Could not reach the server' };
   }
 
+  /**
+   * Verifies ONE configured resource's LIST endpoint is reachable/authorized —
+   * used by connection verification to report per-resource status rather than
+   * only overall connectivity. Requests a single, minimal page (pageSize 1
+   * where the pagination strategy supports it) so this stays a cheap probe.
+   */
+  async checkResource(ctx: ProviderContext, resource: IntegrationResource): Promise<ResourceCheckResult> {
+    const config = configOf(ctx);
+    if (!config.baseUrl) return { ok: false, message: 'No base URL is configured' };
+    const endpoint = config.advanced?.endpoints?.[resource]?.list;
+    if (!endpoint) return { ok: false, message: `No endpoint is configured for "${resource}"` };
+
+    const { headers, query } = buildAuth(ctx);
+    const pagination: PaginationConfig = config.advanced?.pagination ?? { strategy: PAGINATION_STRATEGY.NONE };
+    if (pagination.strategy === PAGINATION_STRATEGY.PAGE_NUMBER) {
+      query.set(pagination.pageParam ?? 'page', '1');
+      query.set(pagination.sizeParam ?? 'pageSize', '1');
+    }
+
+    const res = await performGenericRestRequest({
+      method: 'GET',
+      url: buildUrl(config.baseUrl, endpoint.path, query),
+      headers: { ...headers, ...(config.advanced?.headers ?? {}) },
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      maxResponseBytes: MAX_RESPONSE_BYTES,
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, message: `Authentication was rejected (HTTP ${res.status})` };
+    }
+    if (res.status !== undefined) {
+      if (res.status >= 200 && res.status < 300) return { ok: true, message: 'Reachable' };
+      return { ok: false, message: `Endpoint responded with HTTP ${res.status}` };
+    }
+    return { ok: false, message: res.error ?? 'Could not reach the endpoint' };
+  }
+
   async pullChanges(
     ctx: ProviderContext,
     resource: IntegrationResource,
     cursor: string | null,
   ): Promise<ProviderChangePage> {
     const config = configOf(ctx);
-    const path = config.advanced?.endpoints?.[resource];
-    if (!config.baseUrl || !path) {
+    const endpoint = config.advanced?.endpoints?.[resource]?.list;
+    if (!config.baseUrl || !endpoint) {
       // Honest no-op: no endpoint wired for this resource yet.
       return { records: [], nextCursor: cursor, hasMore: false };
     }
 
-    const { headers, query } = buildAuth(ctx);
     const pagination: PaginationConfig = config.advanced?.pagination ?? { strategy: PAGINATION_STRATEGY.NONE };
+    validateCursor(cursor, pagination);
 
+    const { headers, query } = buildAuth(ctx);
     if (pagination.strategy === PAGINATION_STRATEGY.PAGE_NUMBER) {
       const page = cursor ? Number(cursor) : 1;
-      query.set(pagination.pageParam ?? 'page', String(Number.isFinite(page) && page > 0 ? page : 1));
+      query.set(pagination.pageParam ?? 'page', String(page));
       query.set(pagination.sizeParam ?? 'pageSize', String(pagination.pageSize ?? DEFAULT_PAGE_SIZE));
     } else if (pagination.strategy === PAGINATION_STRATEGY.CURSOR_PARAM && cursor) {
       query.set(pagination.cursorParam ?? 'cursor', cursor);
     }
 
     const res = await performGenericRestRequest({
-      method: 'GET',
-      url: buildUrl(config.baseUrl, path, query),
+      method: endpoint.method,
+      url: buildUrl(config.baseUrl, endpoint.path, query),
       headers: { ...headers, ...(config.advanced?.headers ?? {}) },
       timeoutMs: REQUEST_TIMEOUT_MS,
       maxResponseBytes: MAX_RESPONSE_BYTES,
@@ -258,41 +348,79 @@ export class GenericRestAdapter implements IntegrationProviderAdapter {
 
     const { items, providerNextCursor } = parsePage(res.bodyText, resource);
     const boundedItems = items.slice(0, MAX_PAGE_RECORDS);
+    const fieldMap = config.advanced?.fieldMap?.[resource];
     const records = boundedItems
-      .map((item) => ({ externalId: extractExternalId(item), data: item }))
+      .map((item) => ({ externalId: extractExternalId(item), data: applyFieldMap(item, fieldMap) }))
       .filter((r) => r.externalId !== '');
 
-    const nextCursor = computeNextCursor(pagination, cursor, providerNextCursor, boundedItems, config.advanced?.cursorField);
+    let nextCursor = computeNextCursor(pagination, cursor, providerNextCursor, boundedItems, config.advanced?.cursorField);
+    // PAGINATION-LOOP PROTECTION at the source: a provider claiming "more" but
+    // returning the SAME boundary again is not progress. The sync engine's own
+    // seenCursors guard also catches this one call later; stopping here avoids
+    // that one wasted extra request.
+    if (nextCursor !== null && nextCursor === cursor) nextCursor = null;
     return { records, nextCursor, hasMore: nextCursor !== null };
   }
 
   async pushChanges(
     ctx: ProviderContext,
     resource: IntegrationResource,
-    records: Array<{ externalId: string | null; data: Record<string, unknown> }>,
+    records: ProviderPushRecord[],
   ): Promise<ProviderPushResult> {
     const config = configOf(ctx);
-    const path = config.advanced?.endpoints?.[resource];
-    if (!config.baseUrl || !path || records.length === 0) {
-      return { pushed: 0, failed: 0 };
+    const results: ProviderPushRecordResult[] = [];
+    if (!config.baseUrl || records.length === 0) {
+      return { pushed: 0, failed: 0, results: [] };
     }
 
+    const endpoints = config.advanced?.endpoints?.[resource];
     const { headers, query } = buildAuth(ctx);
+    const outboundFieldMap = invertFieldMap(config.advanced?.fieldMap?.[resource]);
     let pushed = 0;
     let failed = 0;
+
     for (const record of records) {
-      const target = record.externalId ? `${path}/${encodeURIComponent(record.externalId)}` : path;
+      const isCreate = !record.externalId;
+      const op = isCreate ? endpoints?.create : endpoints?.update;
+      if (!op) {
+        failed += 1;
+        results.push({
+          internalId: record.internalId,
+          ok: false,
+          transient: false,
+          error: `No ${isCreate ? 'create' : 'update'} endpoint configured for "${resource}"`,
+        });
+        continue;
+      }
+
+      const target = isCreate ? op.path : `${op.path}/${encodeURIComponent(record.externalId!)}`;
+      const payload = applyFieldMap(record.data, outboundFieldMap);
       const res = await performGenericRestRequest({
-        method: record.externalId ? 'PUT' : 'POST',
+        method: op.method,
         url: buildUrl(config.baseUrl, target, query),
         headers: { ...headers, ...(config.advanced?.headers ?? {}) },
-        body: JSON.stringify(record.data),
+        body: JSON.stringify(payload),
         timeoutMs: REQUEST_TIMEOUT_MS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
       });
-      if (res.ok) pushed += 1;
-      else failed += 1;
+
+      if (res.ok) {
+        pushed += 1;
+        results.push({
+          internalId: record.internalId,
+          ok: true,
+          externalId: isCreate ? parseCreatedExternalId(res.bodyText) : undefined,
+        });
+      } else {
+        failed += 1;
+        results.push({
+          internalId: record.internalId,
+          ok: false,
+          transient: res.transient,
+          error: res.error ?? `Request to the "${resource}" endpoint failed`,
+        });
+      }
     }
-    return { pushed, failed };
+    return { pushed, failed, results };
   }
 }

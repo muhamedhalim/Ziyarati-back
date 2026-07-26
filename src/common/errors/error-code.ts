@@ -48,6 +48,13 @@ export enum ErrorCode {
   FOREIGN_KEY_VIOLATION = 'FOREIGN_KEY_VIOLATION',
   NOT_NULL_VIOLATION = 'NOT_NULL_VIOLATION',
   DATABASE_ERROR = 'DATABASE_ERROR',
+
+  // ── Billing upgrade requests ──────────────────────────────────────────
+  DUPLICATE_ACTIVE_REQUEST = 'DUPLICATE_ACTIVE_REQUEST',
+  INVALID_UPGRADE_METRIC = 'INVALID_UPGRADE_METRIC',
+  INVALID_REQUEST_STATUS = 'INVALID_REQUEST_STATUS',
+  REQUEST_NOT_QUOTED = 'REQUEST_NOT_QUOTED',
+  QUOTE_EXPIRED = 'QUOTE_EXPIRED',
 }
 
 export interface ErrorCodeMeta {
@@ -177,5 +184,26 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.DATABASE_ERROR]: {
     status: HttpStatus.INTERNAL_SERVER_ERROR,
     message: 'A database error occurred',
+  },
+
+  [ErrorCode.DUPLICATE_ACTIVE_REQUEST]: {
+    status: HttpStatus.CONFLICT,
+    message: 'An active upgrade request already exists for this feature or usage limit',
+  },
+  [ErrorCode.INVALID_UPGRADE_METRIC]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'This feature or usage metric cannot be requested',
+  },
+  [ErrorCode.INVALID_REQUEST_STATUS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This request cannot be modified from its current status',
+  },
+  [ErrorCode.REQUEST_NOT_QUOTED]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'This request has not been quoted yet',
+  },
+  [ErrorCode.QUOTE_EXPIRED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This quote has expired — ask the platform to re-quote the request',
   },
 };

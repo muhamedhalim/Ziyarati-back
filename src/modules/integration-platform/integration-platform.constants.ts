@@ -278,6 +278,9 @@ export const MAX_SYNC_PAGES = 1_000;
 export const MAX_SYNC_RECORDS = 100_000;
 export const MAX_SYNC_RUNTIME_MS = 10 * 60 * 1000; // 10 minutes
 
+/** Internal records scanned per outbound-sync page (mirrors an inbound provider page). */
+export const OUTBOUND_SYNC_PAGE_SIZE = 50;
+
 /**
  * Persisted conflict lifecycle.
  *
