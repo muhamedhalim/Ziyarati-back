@@ -78,7 +78,8 @@ export class IntegrationSyncService {
     const direction = dto.direction;
     const mode = dto.mode ?? SYNC_MODE.INCREMENTAL;
 
-    this.assertDirectionAllowed(connection, direction);
+    this.connections.assertResourceEnabled(connection, resource);
+    this.assertDirectionAllowed(connection, resource, direction);
 
     // For incremental, resume from the most recent successful cursor for this
     // tuple; for full, ignore it (backfill/full re-scan from the start).
@@ -342,12 +343,13 @@ export class IntegrationSyncService {
     await this.jobs.save(job);
   }
 
-  private assertDirectionAllowed(connection: IntegrationConnection, direction: string): void {
-    const configured = connection.sync_direction;
+  /** Honours a per-resource direction override (see connections/connection-config.ts), falling back to the connection's own default. */
+  private assertDirectionAllowed(connection: IntegrationConnection, resource: IntegrationResource, direction: string): void {
+    const configured = this.connections.effectiveDirectionOf(connection, resource);
     if (configured === SYNC_DIRECTION.BIDIRECTIONAL) return;
     if (configured !== direction) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: `Connection sync direction is "${configured}"; cannot start a ${direction} sync`,
+        message: `Resource "${resource}" sync direction is "${configured}"; cannot start a ${direction} sync`,
       });
     }
   }

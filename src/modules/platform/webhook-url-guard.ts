@@ -121,7 +121,8 @@ export function isBlockedIpv6Bytes(bytes: Uint8Array): boolean {
   return false;
 }
 
-const DANGEROUS_PORTS = new Set([
+/** Exported so other outbound-URL guards (e.g. integration base URLs) share one vetted list. */
+export const DANGEROUS_PORTS = new Set([
   22, 23, 25, 53, 110, 135, 139, 143, 161, 389, 445, 512, 513, 514,
   1433, 1521, 2375, 2376, 3306, 3389, 5432, 5984, 6379, 8500, 9200,
   11211, 27017,

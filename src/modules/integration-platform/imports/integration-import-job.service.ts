@@ -94,7 +94,8 @@ export class IntegrationImportJobService {
     await this.admission.assertImportConcurrency(tenantId);
 
     // Connection must be ACTIVE at accept time (re-checked at process time too).
-    await this.connections.requireActive(tenantId, dto.connectionId);
+    const connection = await this.connections.requireActive(tenantId, dto.connectionId);
+    this.connections.assertResourceEnabled(connection, resource);
 
     const payload = dto.records.map((r) => ({ externalId: r.externalId, data: r.data }));
 

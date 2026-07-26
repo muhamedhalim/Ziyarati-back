@@ -8,15 +8,19 @@ import {
   ProviderContext,
   ProviderPushResult,
 } from './provider.types';
+import { GenericRestAdapter } from './generic-rest.adapter';
 
 /**
- * Built-in provider adapters (Phase 4). Endpoints/flows are compiled here — never
- * tenant-supplied — so there is no SSRF/open-redirect surface. No real external
- * PMS/EMR is currently wired, so `pullChanges`/`pushChanges` are honest no-ops
- * (they never fabricate external records): a sync against a built-in provider
- * validates the connection, records a clean run, and advances no cursor. A real
- * adapter (with a validated compiled endpoint/OAuth config) can be added to this
- * map without touching the sync engine.
+ * Built-in provider adapters (Phase 4). Endpoints/flows are compiled here —
+ * never tenant-supplied — so there is no SSRF/open-redirect surface.
+ *
+ * `generic_rest` has a REAL coded adapter (`GenericRestAdapter`): it talks to
+ * a tenant-supplied, SSRF-guarded base URL using the connection's validated
+ * `config` (endpoint paths, pagination, auth). `custom` has no real endpoint
+ * wired at all, so it stays the honest `BuiltinRestAdapter` no-op — per the
+ * architecture's own rule, an unsupported provider is left unavailable
+ * (`requiresBaseUrl: false`, no real transport) rather than given an unsafe
+ * pseudo-generic integration.
  */
 
 const NO_ENDPOINT_CAPS: ProviderCapabilities = {
@@ -61,7 +65,7 @@ class BuiltinRestAdapter implements IntegrationProviderAdapter {
 }
 
 const BUILTIN_ADAPTERS: Record<string, IntegrationProviderAdapter> = {
-  generic_rest: new BuiltinRestAdapter('generic_rest'),
+  generic_rest: new GenericRestAdapter(),
   custom: new BuiltinRestAdapter('custom'),
 };
 

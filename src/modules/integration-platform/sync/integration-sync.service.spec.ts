@@ -27,6 +27,10 @@ const connMock = (over: Partial<Record<string, jest.Mock>> = {}) => ({
   conflictPolicyOf: jest.fn().mockReturnValue('reject_and_report'),
   markSuccess: jest.fn().mockResolvedValue(undefined),
   markError: jest.fn().mockResolvedValue(undefined),
+  assertResourceEnabled: jest.fn(),
+  // No per-resource override configured in these tests — mirrors the
+  // connection's own sync_direction, same as the pre-existing behaviour.
+  effectiveDirectionOf: jest.fn((c: any) => c.sync_direction),
   ...over,
 } as any);
 const auditMock = () => ({ record: jest.fn().mockResolvedValue(undefined) } as any);

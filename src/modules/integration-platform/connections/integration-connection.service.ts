@@ -20,12 +20,22 @@ import {
   HEALTH_STATE,
   HealthState,
   INTEGRATION_PROVIDERS,
+  IntegrationResource,
+  SyncDirection,
   getProvider,
 } from '../integration-platform.constants';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 import { IntegrationProviderService } from '../providers/integration-provider.service';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
 import { IntegrationIdMapService } from '../mappings/integration-id-map.service';
+import {
+  ConnectionConfig,
+  assertConfigMatchesAuthType,
+  isResourceEnabled,
+  mergeConnectionConfig,
+  parseConnectionConfig,
+  resourceDirectionOf,
+} from './connection-config';
 
 /** Age after which a connection with no fresh success is considered stale/offline. */
 const HEALTH_STALE_SUCCESS_MS = 24 * 3600 * 1000;
@@ -76,6 +86,12 @@ export class IntegrationConnectionService {
     }
     this.assertCredentialConsistency(authType, dto.credential);
 
+    const config = parseConnectionConfig(dto.config, {
+      providerRequiresBaseUrl: provider.requiresBaseUrl,
+      baseUrlRequiredIfOmitted: true,
+    });
+    assertConfigMatchesAuthType(config, authType);
+
     const saved = await this.connections.save(
       this.connections.create({
         tenant: { id: tenantId } as Tenant,
@@ -83,6 +99,7 @@ export class IntegrationConnectionService {
         provider: provider.key,
         auth_type: authType,
         credentials_ciphertext: dto.credential ? this.encryption.encrypt(dto.credential) : null,
+        config: Object.keys(config).length > 0 ? (config as unknown as Record<string, unknown>) : null,
         status: CONNECTION_STATUS.ACTIVE,
         sync_direction: dto.syncDirection ?? 'bidirectional',
         default_conflict_policy: dto.defaultConflictPolicy ?? 'reject_and_report',
@@ -95,6 +112,7 @@ export class IntegrationConnectionService {
       authType,
       syncDirection: saved.sync_direction,
       defaultConflictPolicy: saved.default_conflict_policy,
+      hasBaseUrl: !!config.baseUrl,
     });
     return this.toSafe(saved);
   }
@@ -203,12 +221,26 @@ export class IntegrationConnectionService {
       this.assertCredentialConsistency(c.auth_type, dto.credential);
       c.credentials_ciphertext = dto.credential ? this.encryption.encrypt(dto.credential) : null;
     }
+    let configChanged = false;
+    if (dto.config !== undefined) {
+      const provider = getProvider(c.provider);
+      const patch = parseConnectionConfig(dto.config, {
+        providerRequiresBaseUrl: provider?.requiresBaseUrl ?? false,
+        // Omitted on update means "keep existing" — only an EXPLICIT blank
+        // baseUrl is rejected (handled inside parseConnectionConfig itself).
+        baseUrlRequiredIfOmitted: false,
+      });
+      const merged = mergeConnectionConfig(c.config as ConnectionConfig | null, patch);
+      c.config = Object.keys(merged).length > 0 ? (merged as unknown as Record<string, unknown>) : null;
+      configChanged = true;
+    }
     const saved = await this.connections.save(c);
     await this.audit.record(INTEGRATION_AUDIT_ACTION.CONNECTION_UPDATE, tenantId, 'IntegrationConnection', id, actor, {
       name: dto.name ?? null,
       syncDirection: dto.syncDirection ?? null,
       defaultConflictPolicy: dto.defaultConflictPolicy ?? null,
       credentialRotated: dto.credential !== undefined,
+      configChanged,
     });
     return this.toSafe(saved);
   }
@@ -303,14 +335,19 @@ export class IntegrationConnectionService {
     if (c.status === CONNECTION_STATUS.ACTIVE && !c.deleted_at) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'This connection is already active' });
     }
-    this.assertCredentialConsistency(c.auth_type, opts.credential);
+    // Checked BEFORE the generic consistency check so an entirely-absent
+    // credential gets this more specific, more helpful message rather than
+    // the generic "a credential is required for this authentication type".
     const needsCredential =
-      c.auth_type === CONNECTION_AUTH_TYPE.API_KEY || c.auth_type === CONNECTION_AUTH_TYPE.SECRET;
+      c.auth_type === CONNECTION_AUTH_TYPE.API_KEY ||
+      c.auth_type === CONNECTION_AUTH_TYPE.SECRET ||
+      c.auth_type === CONNECTION_AUTH_TYPE.BASIC;
     if (needsCredential && !opts.credential) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
         message: 'A credential is required to reconnect — disconnect deliberately destroys the stored secret',
       });
     }
+    this.assertCredentialConsistency(c.auth_type, opts.credential);
     if (opts.credential) c.credentials_ciphertext = this.encryption.encrypt(opts.credential);
     c.status = CONNECTION_STATUS.ACTIVE;
     c.deleted_at = null;
@@ -456,6 +493,7 @@ export class IntegrationConnectionService {
       label: p.label,
       authTypes: p.authTypes,
       oauth: p.oauth,
+      requiresBaseUrl: p.requiresBaseUrl,
       capabilities: this.providers.capabilitiesOf(p.key),
     }));
   }
@@ -466,13 +504,51 @@ export class IntegrationConnectionService {
     return c;
   }
 
+  /**
+   * Cross-checks the ONE secret value (`credential`) against the auth type.
+   * `api_key` / `secret` (bearer token) / `basic` (password) each need a
+   * non-empty credential when one is supplied at all; `none` and `oauth2`
+   * must NEVER carry a manually-supplied secret (`oauth2` gets its access
+   * token exclusively through the authorize/refresh flow — see item 3 of the
+   * connection-config task: "connect/authorization flow, not manual secrets").
+   */
   private assertCredentialConsistency(authType: string, credential?: string): void {
-    const needsCredential = authType === CONNECTION_AUTH_TYPE.API_KEY || authType === CONNECTION_AUTH_TYPE.SECRET;
-    if (needsCredential && credential !== undefined && credential.trim() === '') {
+    const needsCredential =
+      authType === CONNECTION_AUTH_TYPE.API_KEY ||
+      authType === CONNECTION_AUTH_TYPE.SECRET ||
+      authType === CONNECTION_AUTH_TYPE.BASIC;
+    if (needsCredential && (!credential || credential.trim() === '')) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
         message: 'A credential is required for this authentication type',
       });
     }
+    const rejectsCredential = authType === CONNECTION_AUTH_TYPE.NONE || authType === CONNECTION_AUTH_TYPE.OAUTH2;
+    if (rejectsCredential && credential !== undefined && credential.trim() !== '') {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message:
+          authType === CONNECTION_AUTH_TYPE.OAUTH2
+            ? 'OAuth 2.0 connections are authorized through the connect flow, not a manually supplied credential'
+            : 'This authentication type does not accept a credential',
+      });
+    }
+  }
+
+  /** Reject when a resource has been explicitly disabled for this connection (absent = enabled). */
+  assertResourceEnabled(connection: IntegrationConnection, resource: IntegrationResource): void {
+    if (!isResourceEnabled(connection.config as ConnectionConfig | null, resource)) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Resource "${resource}" is disabled for this connection`,
+      });
+    }
+  }
+
+  /** Effective sync direction for a resource — its own override, else the connection's default. */
+  effectiveDirectionOf(connection: IntegrationConnection, resource: IntegrationResource): SyncDirection {
+    return resourceDirectionOf(
+      connection.config as ConnectionConfig | null,
+      resource,
+      connection.sync_direction as SyncDirection,
+    );
   }
 
   private toSafe(c: IntegrationConnection): SafeConnection {

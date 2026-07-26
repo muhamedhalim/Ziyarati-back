@@ -27,6 +27,7 @@ import { StaffModule } from '../staff/staff.module';
 import { AppointmentModule } from '../appointment/appointment.module';
 
 import { IntegrationConnectionService } from './connections/integration-connection.service';
+import { IntegrationConnectionTestService } from './connections/connection-test.service';
 import { IntegrationIdMapService } from './mappings/integration-id-map.service';
 import { IntegrationIdempotencyService } from './idempotency/integration-idempotency.service';
 import { IntegrationAuditService } from './integration-audit.service';
@@ -139,6 +140,7 @@ import { IntegrationOAuthController } from './oauth/oauth.controller';
   ],
   providers: [
     IntegrationConnectionService,
+    IntegrationConnectionTestService,
     IntegrationIdMapService,
     IntegrationIdempotencyService,
     IntegrationAuditService,

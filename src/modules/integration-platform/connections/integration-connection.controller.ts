@@ -23,10 +23,12 @@ import { TenantContextService } from '../../../core/tenant-context/tenant-contex
 import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.guard';
 
 import { IntegrationConnectionService } from './integration-connection.service';
+import { IntegrationConnectionTestService } from './connection-test.service';
 import { CreateConnectionDto } from '../dto/create-connection.dto';
 import { UpdateConnectionDto } from '../dto/update-connection.dto';
 import { QueryConnectionsDto } from '../dto/query-connections.dto';
 import { ReconnectConnectionDto } from '../dto/relink-mapping.dto';
+import { TestConnectionDto } from '../dto/test-connection.dto';
 
 /**
  * Tenant-admin management of external-system connections (Phase 3). Guarded by
@@ -40,6 +42,7 @@ import { ReconnectConnectionDto } from '../dto/relink-mapping.dto';
 export class IntegrationConnectionController {
   constructor(
     private readonly connections: IntegrationConnectionService,
+    private readonly connectionTest: IntegrationConnectionTestService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -48,6 +51,18 @@ export class IntegrationConnectionController {
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
   create(@Body() dto: CreateConnectionDto, @CurrentUser('id') userId: string, @Ip() ip: string) {
     return this.connections.create(this.ctx.requireTenantId(), dto, { userId, ip });
+  }
+
+  @ApiOperation({
+    summary: 'Test an unsaved (or partially edited) connection draft',
+    description:
+      '**Protected — `platform.integrations.manage`.** Real outbound probe with SSRF protection, a bounded timeout and response size — nothing is persisted. Static route (declared before `:id`).',
+  })
+  @Post('test-connection')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
+  testConnection(@Body() dto: TestConnectionDto, @CurrentUser('id') userId: string, @Ip() ip: string) {
+    return this.connectionTest.test(this.ctx.requireTenantId(), dto, { userId, ip });
   }
 
   @ApiOperation({ summary: 'List connections', description: '**Protected — `platform.integrations.read`.**' })
