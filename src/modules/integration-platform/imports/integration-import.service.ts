@@ -76,6 +76,7 @@ export class IntegrationImportService {
     }
 
     const connection = await this.connections.requireActive(tenantId, dto.connectionId);
+    this.connections.assertResourceEnabled(connection, resource);
     const policy = this.connections.conflictPolicyOf(connection);
     const dryRun = !!dto.dryRun;
 

@@ -71,11 +71,39 @@ export const SYNC_DIRECTIONS: SyncDirection[] = Object.values(SYNC_DIRECTION);
 export const CONNECTION_AUTH_TYPE = {
   NONE: 'none',
   API_KEY: 'api_key',
+  /** One bearer-style secret sent as `Authorization: Bearer <token>`. Labelled "Bearer token" in the UI. */
   SECRET: 'secret',
+  /** HTTP Basic — username lives in `config.basic.username` (non-secret), password is the encrypted credential. */
+  BASIC: 'basic',
   OAUTH2: 'oauth2',
 } as const;
 export type ConnectionAuthType =
   (typeof CONNECTION_AUTH_TYPE)[keyof typeof CONNECTION_AUTH_TYPE];
+
+/** Where an API-key auth type places the key on the outgoing request. */
+export const API_KEY_LOCATION = {
+  HEADER: 'header',
+  QUERY: 'query',
+} as const;
+export type ApiKeyLocation = (typeof API_KEY_LOCATION)[keyof typeof API_KEY_LOCATION];
+export const API_KEY_LOCATIONS: ApiKeyLocation[] = Object.values(API_KEY_LOCATION);
+
+/**
+ * Bounded pagination strategies a Generic REST adapter may use to page through
+ * a resource collection. Deliberately a small closed set — never an arbitrary
+ * tenant-supplied paging scheme — so the adapter's request-building stays
+ * predictable and cannot be coerced into unbounded or malformed requests.
+ */
+export const PAGINATION_STRATEGY = {
+  /** Single page; no further requests are made. */
+  NONE: 'none',
+  /** `?{pageParam}=N&{sizeParam}=size`, N starting at 1. */
+  PAGE_NUMBER: 'page_number',
+  /** `?{cursorParam}=<opaque token>` returned by the provider's previous page. */
+  CURSOR_PARAM: 'cursor_param',
+} as const;
+export type PaginationStrategy = (typeof PAGINATION_STRATEGY)[keyof typeof PAGINATION_STRATEGY];
+export const PAGINATION_STRATEGIES: PaginationStrategy[] = Object.values(PAGINATION_STRATEGY);
 
 /** Which side is recorded as the owner/creator of a mapped record. */
 export const MAPPING_SOURCE = {
@@ -109,20 +137,37 @@ export interface IntegrationProviderDef {
   authTypes: ConnectionAuthType[];
   /** True once a validated OAuth config exists for this provider. */
   oauth: boolean;
+  /**
+   * True when this provider has a REAL coded HTTP adapter that talks to a
+   * tenant-supplied base URL (see providers/generic-rest.adapter.ts). Only
+   * true for providers with an actual registered adapter — never a signal
+   * that arbitrary endpoint configuration is safe on its own.
+   */
+  requiresBaseUrl: boolean;
 }
 
 export const INTEGRATION_PROVIDERS: Record<string, IntegrationProviderDef> = {
   generic_rest: {
     key: 'generic_rest',
     label: 'Generic REST / PMS-EMR',
-    authTypes: [CONNECTION_AUTH_TYPE.API_KEY, CONNECTION_AUTH_TYPE.SECRET, CONNECTION_AUTH_TYPE.NONE],
+    authTypes: [
+      CONNECTION_AUTH_TYPE.NONE,
+      CONNECTION_AUTH_TYPE.API_KEY,
+      CONNECTION_AUTH_TYPE.SECRET,
+      CONNECTION_AUTH_TYPE.BASIC,
+    ],
     oauth: false,
+    requiresBaseUrl: true,
   },
   custom: {
     key: 'custom',
     label: 'Custom clinic system',
+    // No coded adapter exists for "custom" — it stays a credential-shape-only
+    // placeholder (see BuiltinRestAdapter). No base URL is accepted for it,
+    // rather than offering endpoint configuration with nothing to execute it.
     authTypes: [CONNECTION_AUTH_TYPE.API_KEY, CONNECTION_AUTH_TYPE.SECRET, CONNECTION_AUTH_TYPE.NONE],
     oauth: false,
+    requiresBaseUrl: false,
   },
 };
 
@@ -340,6 +385,8 @@ export const ADMISSION_OP = {
   SYNC_RETRY: 'sync.retry',
   INBOUND_WEBHOOK: 'inbound.webhook',
   HEALTH_PROBE: 'health.probe',
+  /** Test-connection probe against an UNSAVED draft config — real outbound I/O. */
+  CONNECTION_TEST: 'connection.test',
 } as const;
 export type AdmissionOp = (typeof ADMISSION_OP)[keyof typeof ADMISSION_OP];
 
@@ -358,6 +405,7 @@ export const ADMISSION_LIMITS: Record<
   [ADMISSION_OP.SYNC_RETRY]: { perTenantPerMin: 20, perConnectionPerMin: 10 },
   [ADMISSION_OP.INBOUND_WEBHOOK]: { perTenantPerMin: 1200, perConnectionPerMin: 600 },
   [ADMISSION_OP.HEALTH_PROBE]: { perTenantPerMin: 60, perConnectionPerMin: 12 },
+  [ADMISSION_OP.CONNECTION_TEST]: { perTenantPerMin: 30, perConnectionPerMin: 10 },
 };
 
 /** Max simultaneously active (pending|running) import jobs per tenant. */

@@ -20,6 +20,8 @@ const connectionsMock = (over: Partial<Record<string, jest.Mock>> = {}) => ({
   requireActive: jest.fn().mockResolvedValue({ id: 'c1' }),
   conflictPolicyOf: jest.fn().mockReturnValue('reject_and_report'),
   markSuccess: jest.fn().mockResolvedValue(undefined),
+  assertResourceEnabled: jest.fn(),
+  effectiveDirectionOf: jest.fn().mockReturnValue('bidirectional'),
   ...over,
 } as any);
 
