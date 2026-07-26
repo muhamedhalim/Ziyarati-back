@@ -1,5 +1,7 @@
 import {
+  applyFieldMap,
   assertConfigMatchesAuthType,
+  invertFieldMap,
   isResourceEnabled,
   mergeConnectionConfig,
   parseConnectionConfig,
@@ -110,9 +112,64 @@ describe('parseConnectionConfig — advanced', () => {
     ).toThrow(/only applicable/);
   });
 
-  it('parses endpoint paths', () => {
+  it('normalizes the backward-compatible bare-string endpoint shorthand into list/create/update', () => {
     const config = parseConnectionConfig({ ...base, advanced: { endpoints: { customer: '/api/customers' } } }, opts());
-    expect(config.advanced?.endpoints).toEqual({ customer: '/api/customers' });
+    expect(config.advanced?.endpoints).toEqual({
+      customer: {
+        list: { path: '/api/customers', method: 'GET' },
+        create: { path: '/api/customers', method: 'POST' },
+        update: { path: '/api/customers', method: 'PUT' },
+      },
+    });
+  });
+
+  it('parses per-operation endpoint objects with explicit methods', () => {
+    const config = parseConnectionConfig(
+      {
+        ...base,
+        advanced: {
+          endpoints: {
+            appointment: {
+              list: { path: '/appointments' },
+              create: { path: '/appointments', method: 'POST' },
+              update: { path: '/appointments', method: 'PATCH' },
+              delete: { path: '/appointments/cancel', method: 'POST' },
+            },
+          },
+        },
+      },
+      opts(),
+    );
+    expect(config.advanced?.endpoints?.appointment).toEqual({
+      list: { path: '/appointments', method: 'GET' },
+      create: { path: '/appointments', method: 'POST' },
+      update: { path: '/appointments', method: 'PATCH' },
+      delete: { path: '/appointments/cancel', method: 'POST' },
+    });
+  });
+
+  it('rejects a method not allowed for the operation', () => {
+    expect(() =>
+      parseConnectionConfig(
+        { ...base, advanced: { endpoints: { customer: { list: { path: '/c', method: 'POST' } } } } },
+        opts(),
+      ),
+    ).toThrow(/must be one of/);
+    expect(() =>
+      parseConnectionConfig(
+        { ...base, advanced: { endpoints: { customer: { delete: { path: '/c', method: 'GET' } } } } },
+        opts(),
+      ),
+    ).toThrow(/must be one of/);
+  });
+
+  it('rejects an unknown key inside a per-operation endpoint object', () => {
+    expect(() =>
+      parseConnectionConfig(
+        { ...base, advanced: { endpoints: { customer: { list: { path: '/c', extra: 1 } } } } },
+        opts(),
+      ),
+    ).toThrow(/Unknown field/);
   });
 
   it('rejects a full URL as an endpoint path (relative paths only — no second SSRF target)', () => {
@@ -159,6 +216,65 @@ describe('parseConnectionConfig — advanced', () => {
     expect(() =>
       parseConnectionConfig({ ...base, advanced: { headers: { 'X-Custom': 'a\r\nX-Injected: evil' } } }, opts()),
     ).toThrow(/line breaks/);
+  });
+
+  it('parses a per-resource field mapping', () => {
+    const config = parseConnectionConfig(
+      { ...base, advanced: { fieldMap: { customer: { full_name: 'fullName', phone_number: 'phone' } } } },
+      opts(),
+    );
+    expect(config.advanced?.fieldMap).toEqual({ customer: { full_name: 'fullName', phone_number: 'phone' } });
+  });
+
+  it('rejects a field mapping with an invalid field name on either side', () => {
+    expect(() =>
+      parseConnectionConfig({ ...base, advanced: { fieldMap: { customer: { 'bad name!': 'phone' } } } }, opts()),
+    ).toThrow(/not a valid field name/);
+    expect(() =>
+      parseConnectionConfig({ ...base, advanced: { fieldMap: { customer: { phone_number: 'bad name!' } } } }, opts()),
+    ).toThrow(/must be a valid field name/);
+  });
+
+  it('rejects two external fields mapping to the same internal field (ambiguous outbound inversion)', () => {
+    expect(() =>
+      parseConnectionConfig(
+        { ...base, advanced: { fieldMap: { customer: { full_name: 'name', display_name: 'name' } } } },
+        opts(),
+      ),
+    ).toThrow(/more than one external field/);
+  });
+
+  it('rejects too many field mappings for one resource', () => {
+    const map: Record<string, string> = {};
+    for (let i = 0; i < 41; i++) map[`ext_${i}`] = `int_${i}`;
+    expect(() => parseConnectionConfig({ ...base, advanced: { fieldMap: { customer: map } } }, opts())).toThrow(/At most 40/);
+  });
+});
+
+describe('applyFieldMap / invertFieldMap', () => {
+  it('renames mapped keys and passes unmapped keys through unchanged', () => {
+    const out = applyFieldMap({ full_name: 'Ada', unmapped: 1 }, { full_name: 'fullName' });
+    expect(out).toEqual({ fullName: 'Ada', unmapped: 1 });
+  });
+
+  it('is a no-op when there is no map', () => {
+    const data = { a: 1 };
+    expect(applyFieldMap(data, undefined)).toBe(data);
+  });
+
+  it('inverts external->internal into internal->external', () => {
+    expect(invertFieldMap({ full_name: 'fullName', phone_number: 'phone' })).toEqual({
+      fullName: 'full_name',
+      phone: 'phone_number',
+    });
+  });
+
+  it('round-trips: apply then invert-apply restores the original external shape', () => {
+    const map = { full_name: 'fullName' };
+    const external = { full_name: 'Ada Lovelace' };
+    const internal = applyFieldMap(external, map);
+    const backToExternal = applyFieldMap(internal, invertFieldMap(map));
+    expect(backToExternal).toEqual(external);
   });
 });
 
@@ -210,14 +326,37 @@ describe('mergeConnectionConfig — non-destructive update', () => {
 
   it('merges advanced.endpoints and advanced.headers per-key', () => {
     const existing = {
-      advanced: { endpoints: { customer: '/c', staff: '/s' }, headers: { 'X-A': '1' }, cursorField: 'updatedAt' },
+      advanced: {
+        endpoints: {
+          customer: { list: { path: '/c', method: 'GET' as const } },
+          staff: { list: { path: '/s', method: 'GET' as const } },
+        },
+        headers: { 'X-A': '1' },
+        cursorField: 'updatedAt',
+      },
     };
     const merged = mergeConnectionConfig(existing, {
-      advanced: { endpoints: { customer: '/customers-v2' }, headers: { 'X-B': '2' } },
+      advanced: { endpoints: { customer: { list: { path: '/customers-v2', method: 'GET' as const } } } },
     });
-    expect(merged.advanced?.endpoints).toEqual({ customer: '/customers-v2', staff: '/s' });
-    expect(merged.advanced?.headers).toEqual({ 'X-A': '1', 'X-B': '2' });
+    expect(merged.advanced?.endpoints).toEqual({
+      customer: { list: { path: '/customers-v2', method: 'GET' } },
+      staff: { list: { path: '/s', method: 'GET' } },
+    });
+    expect(merged.advanced?.headers).toEqual({ 'X-A': '1' }); // untouched (patch omitted headers)
     expect(merged.advanced?.cursorField).toBe('updatedAt'); // untouched
+  });
+
+  it('merges advanced.fieldMap per-resource, replacing only the resource present in the patch', () => {
+    const existing = {
+      advanced: { fieldMap: { customer: { full_name: 'fullName' }, service: { svc_name: 'name' } } },
+    };
+    const merged = mergeConnectionConfig(existing, {
+      advanced: { fieldMap: { customer: { full_name: 'name', phone_number: 'phone' } } },
+    });
+    expect(merged.advanced?.fieldMap).toEqual({
+      customer: { full_name: 'name', phone_number: 'phone' },
+      service: { svc_name: 'name' }, // untouched
+    });
   });
 
   it('starts from nothing when there is no existing config', () => {

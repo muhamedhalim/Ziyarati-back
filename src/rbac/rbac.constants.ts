@@ -151,6 +151,11 @@ export const PERMISSION = {
   USAGE_READ: 'usage.read',
   FEATUREFLAG_READ: 'featureflag.read',
   FEATUREFLAG_MANAGE: 'featureflag.manage',
+  // Owner-initiated feature/limit upgrade requests. Platform-side review is
+  // role-gated (super_admin only), not permission-gated — see
+  // PlatformBillingUpgradeController, matching PlatformBillingAdminController.
+  BILLING_UPGRADE_READ: 'billing_upgrade.read',
+  BILLING_UPGRADE_MANAGE: 'billing_upgrade.manage',
 
   // Notifications
   NOTIFICATIONS_READ: 'notifications.read',
@@ -376,6 +381,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.USAGE_READ, name: 'Read usage stats', module: 'billing' },
   { slug: PERMISSION.FEATUREFLAG_READ, name: 'Read feature flags', module: 'billing' },
   { slug: PERMISSION.FEATUREFLAG_MANAGE, name: 'Manage feature flags', module: 'billing' },
+  { slug: PERMISSION.BILLING_UPGRADE_READ, name: 'Read billing upgrade requests', module: 'billing' },
+  { slug: PERMISSION.BILLING_UPGRADE_MANAGE, name: 'Create / accept / cancel billing upgrade requests', module: 'billing' },
 
   { slug: PERMISSION.NOTIFICATIONS_READ, name: 'Read notifications', module: 'notifications' },
   { slug: PERMISSION.NOTIFICATIONS_MANAGE, name: 'Manage notifications', module: 'notifications' },
@@ -564,6 +571,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.BILLING_MANAGE,
     PERMISSION.USAGE_READ,
     PERMISSION.FEATUREFLAG_READ,
+    PERMISSION.BILLING_UPGRADE_READ,
+    PERMISSION.BILLING_UPGRADE_MANAGE,
     PERMISSION.NOTIFICATIONS_READ,
     PERMISSION.NOTIFICATIONS_MANAGE,
     PERMISSION.NOTIFICATION_TEMPLATES_READ,
@@ -637,6 +646,7 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.BILLING_READ,
     PERMISSION.USAGE_READ,
     PERMISSION.FEATUREFLAG_READ,
+    PERMISSION.BILLING_UPGRADE_READ,
     PERMISSION.NOTIFICATIONS_READ,
     PERMISSION.NOTIFICATIONS_MANAGE,
     PERMISSION.NOTIFICATION_TEMPLATES_READ,

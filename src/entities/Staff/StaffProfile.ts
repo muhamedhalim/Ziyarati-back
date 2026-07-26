@@ -7,6 +7,7 @@ import {
   OneToMany,
   JoinColumn,
   CreateDateColumn,
+  UpdateDateColumn,
   DeleteDateColumn,
   Index,
 } from 'typeorm';
@@ -104,6 +105,10 @@ export class StaffProfile {
 
   @CreateDateColumn()
   created_at!: Date;
+
+  /** Drives outbound-sync change detection (see IntegrationUpsertService.listDirtyInternal). */
+  @UpdateDateColumn()
+  updated_at!: Date;
 
   @DeleteDateColumn()
   deleted_at?: Date;

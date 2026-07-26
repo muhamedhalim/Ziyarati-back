@@ -16,9 +16,11 @@ import {
   ADMISSION_OP,
   IntegrationResource,
   JOB_STATUS,
+  MAPPING_SOURCE,
   MAX_SYNC_PAGES,
   MAX_SYNC_RECORDS,
   MAX_SYNC_RUNTIME_MS,
+  OUTBOUND_SYNC_PAGE_SIZE,
   SYNC_DIRECTION,
   SYNC_MODE,
   SYNC_STOP_REASON,
@@ -31,6 +33,8 @@ import { IntegrationConnectionService } from '../connections/integration-connect
 import { IntegrationUpsertService } from '../write/integration-upsert.service';
 import { IntegrationServiceAccountService } from '../write/integration-service-account.service';
 import { IntegrationProviderService } from '../providers/integration-provider.service';
+import { IntegrationIdMapService } from '../mappings/integration-id-map.service';
+import { ProviderPushRecord } from '../providers/provider.types';
 import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
 
 interface Actor {
@@ -63,6 +67,7 @@ export class IntegrationSyncService {
     private readonly queue: QueueService,
     private readonly admission: IntegrationAdmissionService,
     private readonly serviceAccount: IntegrationServiceAccountService,
+    private readonly idMap: IntegrationIdMapService,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
@@ -210,11 +215,8 @@ export class IntegrationSyncService {
       return;
     }
 
-    // Outbound sync via the built-in providers is a no-op push; inbound pulls
-    // bounded pages. Neither fabricates data (no real endpoint is wired).
     if (job.direction === SYNC_DIRECTION.OUTBOUND) {
-      await this.finish(job, JOB_STATUS.COMPLETED, null);
-      await this.connections.markSuccess(connection.id);
+      await this.processOutbound(job, connection, resource, tenantId);
       return;
     }
 
@@ -312,6 +314,142 @@ export class IntegrationSyncService {
       job.stop_reason = SYNC_STOP_REASON.ERROR;
       await this.finish(job, JOB_STATUS.FAILED, (err as Error)?.message ?? 'Sync failed');
       await this.connections.markError(connection.id, (err as Error)?.message ?? 'Sync failed');
+      throw err;
+    }
+  }
+
+  /**
+   * Real outbound push (Platform → External). Only runs when the resolved
+   * adapter actually declares `capabilities.pushChanges` — for a provider
+   * without one (e.g. `custom`), this preserves the exact prior behaviour: an
+   * honest, immediately-completed no-op rather than fabricating a push.
+   *
+   * Mirrors the inbound loop's bounds/cancel/loop-guard, but the "page" here is
+   * a bounded scan of internal records changed since the outbound cursor (see
+   * `IntegrationUpsertService.listDirtyInternal`) rather than a provider page.
+   * A transient per-record failure (network/5xx/429) halts the run at that
+   * record WITHOUT advancing the watermark, so a retry re-attempts it; a
+   * permanent failure (4xx/validation) is tallied and skipped past — retrying
+   * a request the provider will never accept only wastes the next run.
+   */
+  private async processOutbound(
+    job: IntegrationSyncJob,
+    connection: IntegrationConnection,
+    resource: IntegrationResource,
+    tenantId: string,
+  ): Promise<void> {
+    const canPush = !!this.providers.capabilitiesOf(connection.provider)?.pushChanges;
+    if (!canPush) {
+      await this.finish(job, JOB_STATUS.COMPLETED, null);
+      await this.connections.markSuccess(connection.id);
+      return;
+    }
+
+    let cursor = job.last_successful_cursor ?? job.cursor ?? null;
+    let pages = 0;
+    let stop: SyncStopReason = SYNC_STOP_REASON.COMPLETED;
+    const deadline = Date.now() + MAX_SYNC_RUNTIME_MS;
+    const seenCursors = new Set<string>();
+
+    try {
+      outer: while (true) {
+        if (pages >= MAX_SYNC_PAGES) { stop = SYNC_STOP_REASON.MAX_PAGES; break; }
+        if (job.processed >= MAX_SYNC_RECORDS) { stop = SYNC_STOP_REASON.MAX_RECORDS; break; }
+        if (Date.now() > deadline) { stop = SYNC_STOP_REASON.MAX_RUNTIME; break; }
+
+        const fresh = await this.jobs.findOne({ where: { id: job.id }, select: { cancel_requested: true } });
+        if (fresh?.cancel_requested) {
+          job.stop_reason = SYNC_STOP_REASON.CANCELLED;
+          await this.finish(job, JOB_STATUS.CANCELLED, null);
+          return;
+        }
+
+        const key = cursor ?? ' start';
+        if (seenCursors.has(key)) { stop = SYNC_STOP_REASON.REPEATED_CURSOR; break; }
+        seenCursors.add(key);
+
+        job.attempted_cursor = cursor;
+        const page = await this.upsert.listDirtyInternal(tenantId, resource, cursor, OUTBOUND_SYNC_PAGE_SIZE);
+        pages += 1;
+        job.pages_fetched = pages;
+
+        if (page.rows.length === 0) { stop = SYNC_STOP_REASON.COMPLETED; break; }
+
+        // ONE record pushed at a time — never the whole page as a single
+        // batch. A transient failure must stop the run BEFORE any later row
+        // in this page is sent; batching them upfront would already have
+        // pushed those later rows over the wire by the time the engine
+        // "decides" to stop, making a retry re-push (and, for a create,
+        // duplicate) work that already succeeded.
+        let stoppedAtRow: string | null = null;
+        for (const row of page.rows) {
+          job.processed += 1;
+          const data = await this.upsert.currentViewOf(tenantId, resource, row.internalId);
+          if (!data) {
+            // Gone since it was marked dirty — nothing to push; counts as handled.
+            this.tally(job, UPSERT_OUTCOME.SKIPPED);
+            continue;
+          }
+          const mapping = await this.idMap.findByInternalId(tenantId, connection.id, resource, row.internalId);
+          const record: ProviderPushRecord = { internalId: row.internalId, externalId: mapping?.external_id ?? null, data };
+
+          const pushResult = await this.providers.pushChanges(connection, resource, [record]);
+          const result = pushResult.results[0];
+          if (!result) {
+            // Should not happen (every submitted record gets a result), but never
+            // silently treat a missing result as success.
+            this.tally(job, UPSERT_OUTCOME.FAILED);
+            stoppedAtRow = row.internalId;
+            break;
+          }
+          if (result.ok) {
+            const wasCreate = !record.externalId;
+            this.tally(job, wasCreate ? UPSERT_OUTCOME.CREATED : UPSERT_OUTCOME.UPDATED);
+            if (wasCreate && result.externalId) {
+              await this.idMap
+                .link(tenantId, connection.id, resource, result.externalId, row.internalId, MAPPING_SOURCE.PLATFORM)
+                .catch((e) => this.logger.warn(`outbound mapping link failed for ${row.internalId}: ${(e as Error)?.message}`));
+            }
+            continue;
+          }
+          this.tally(job, UPSERT_OUTCOME.FAILED);
+          if (result.transient) {
+            // Halt exactly here — do not advance past a record that might
+            // still succeed on retry.
+            stoppedAtRow = row.internalId;
+            break;
+          }
+          // Permanent failure: tallied, skip forward — retrying would never help.
+        }
+
+        if (stoppedAtRow) {
+          const idx = page.rows.findIndex((r) => r.internalId === stoppedAtRow);
+          // Resume from the row BEFORE the one that halted the run — never past it.
+          cursor = idx > 0 ? page.rows[idx - 1].cursor : cursor;
+          job.cursor = cursor;
+          job.last_successful_cursor = cursor;
+          await this.jobs.save(job);
+          stop = SYNC_STOP_REASON.ITEM_FAILURE;
+          break outer;
+        }
+
+        cursor = page.rows[page.rows.length - 1].cursor;
+        job.cursor = cursor;
+        job.last_successful_cursor = cursor;
+        await this.jobs.save(job);
+
+        if (!page.hasMore) { stop = SYNC_STOP_REASON.COMPLETED; break; }
+      }
+
+      job.stop_reason = stop;
+      const clean = job.failed_count === 0 && stop === SYNC_STOP_REASON.COMPLETED;
+      const status = clean ? JOB_STATUS.COMPLETED : JOB_STATUS.PARTIALLY_COMPLETED;
+      await this.finish(job, status, clean ? null : this.stopSummary(stop, job.failed_count));
+      await this.connections.markSuccess(connection.id);
+    } catch (err) {
+      job.stop_reason = SYNC_STOP_REASON.ERROR;
+      await this.finish(job, JOB_STATUS.FAILED, (err as Error)?.message ?? 'Outbound sync failed');
+      await this.connections.markError(connection.id, (err as Error)?.message ?? 'Outbound sync failed');
       throw err;
     }
   }

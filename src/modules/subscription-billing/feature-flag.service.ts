@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 
 import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
@@ -29,25 +29,32 @@ export class FeatureFlagService {
     });
   }
 
-  /** Upsert a (tenant, feature_key) flag. */
+  /**
+   * Upsert a (tenant, feature_key) flag. Accepts an optional transaction
+   * `manager` so the write can commit atomically with a caller's own
+   * transaction (e.g. BillingUpgradeEntitlementListener applying a feature
+   * grant in the same transaction as the request's status flip).
+   */
   async set(
     tenantId: string,
     featureKey: string,
     isEnabled: boolean,
+    manager?: EntityManager,
   ): Promise<FeatureFlag> {
-    let flag = await this.flags.findOne({
+    const repo = manager ? manager.getRepository(FeatureFlag) : this.flags;
+    let flag = await repo.findOne({
       where: { tenant: { id: tenantId }, feature_key: featureKey },
     });
     if (flag) {
       flag.is_enabled = isEnabled;
     } else {
-      flag = this.flags.create({
+      flag = repo.create({
         tenant: { id: tenantId } as Tenant,
         feature_key: featureKey,
         is_enabled: isEnabled,
       });
     }
-    return this.flags.save(flag);
+    return repo.save(flag);
   }
 
   /** Returns whether a feature is enabled for the tenant (default: false). */

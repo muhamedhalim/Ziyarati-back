@@ -75,6 +75,8 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
   [PERMISSION.BILLING_MANAGE]: 'high',
   [PERMISSION.SUBSCRIPTION_MANAGE]: 'high',
   [PERMISSION.FEATUREFLAG_MANAGE]: 'high',
+  [PERMISSION.BILLING_UPGRADE_MANAGE]: 'high', // triggers a real charge on accept
+
   [PERMISSION.PLATFORM_WEBHOOKS_MANAGE]: 'high',
   [PERMISSION.STAFF_MANAGE]: 'high',
   [PERMISSION.CUSTOMERS_MANAGE]: 'high',

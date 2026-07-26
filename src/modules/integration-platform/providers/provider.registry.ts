@@ -6,6 +6,7 @@ import {
   ProviderCapabilities,
   ProviderChangePage,
   ProviderContext,
+  ProviderPushRecord,
   ProviderPushResult,
 } from './provider.types';
 import { GenericRestAdapter } from './generic-rest.adapter';
@@ -59,8 +60,20 @@ class BuiltinRestAdapter implements IntegrationProviderAdapter {
     return { records: [], nextCursor: cursor, hasMore: false };
   }
 
-  async pushChanges(): Promise<ProviderPushResult> {
-    return { pushed: 0, failed: 0 };
+  async pushChanges(_ctx: ProviderContext, _resource: unknown, records: ProviderPushRecord[]): Promise<ProviderPushResult> {
+    // Honest no-op: no external system is wired for a built-in provider. Every
+    // record is reported (not silently dropped) so a caller can see nothing
+    // was actually pushed rather than mistaking silence for success.
+    return {
+      pushed: 0,
+      failed: records.length,
+      results: records.map((r) => ({
+        internalId: r.internalId,
+        ok: false,
+        transient: false,
+        error: 'No provider adapter is configured to push this resource',
+      })),
+    };
   }
 }
 

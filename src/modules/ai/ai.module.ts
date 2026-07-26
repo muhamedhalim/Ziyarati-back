@@ -199,6 +199,9 @@ import { AiBatchService } from './batch/ai-batch.service';
     AiDataResidencyService,
     AiBatchService,
     AiTrainingFileService,
+    // Single seam for provider-agnostic completions — reused by the billing
+    // upgrade domain's advisory AI cost-estimation service.
+    AiProviderFactory,
   ],
 })
 export class AiModule {}

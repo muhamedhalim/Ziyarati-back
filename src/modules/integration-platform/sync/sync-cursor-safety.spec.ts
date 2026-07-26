@@ -99,6 +99,7 @@ function buildService(pages: Page[], outcomes: Record<string, string> = {}) {
     { enqueueIntegrationSync: jest.fn() } as never,
     { admit: jest.fn(), assertSyncConcurrency: jest.fn() } as never,
     { resolve: jest.fn(async () => 'svc-user'), resolveActorUserId: jest.fn(async () => 'svc-user') } as never,
+    { findByInternalId: jest.fn(), link: jest.fn() } as never,
   );
   return { svc, job, providers, upsert };
 }

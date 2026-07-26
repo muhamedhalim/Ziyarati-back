@@ -14,6 +14,8 @@ export const INTEGRATION_AUDIT_ACTION = {
   CONNECTION_DEACTIVATE: 'integration.connection.deactivate',
   CONNECTION_DISCONNECT: 'integration.connection.disconnect',
   CONNECTION_RECONNECT: 'integration.connection.reconnect',
+  /** Auth rotation: a replacement connection took over, mappings transferred, original retired. */
+  CONNECTION_ROTATE_AUTH: 'integration.connection.rotate_auth',
   /** Test-connection probe — safe metadata only (host, never credential/URL path). */
   CONNECTION_TEST: 'integration.connection.test',
   /** HARD delete — destroys mappings. History survives via SET NULL FKs. */

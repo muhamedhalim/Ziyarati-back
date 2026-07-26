@@ -52,7 +52,20 @@ describe('provider.registry (built-in adapters)', () => {
       const caps = resolveProviderAdapter('custom')!.capabilities;
       expect(caps.apiKey).toBe(true);
       expect(caps.pullChanges).toBe(false); // no real endpoint wired
+      expect(caps.pushChanges).toBe(false);
       expect(caps.oauth2Pkce).toBe(false);
+    });
+
+    it('pushChanges is an honest per-record failure — never silently drops a record', async () => {
+      const a = resolveProviderAdapter('custom')!;
+      const result = await a.pushChanges(ctx(), 'customer' as never, [
+        { internalId: 'i1', externalId: null, data: {} },
+      ]);
+      expect(result.pushed).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.results).toEqual([
+        { internalId: 'i1', ok: false, transient: false, error: expect.stringContaining('No provider adapter') },
+      ]);
     });
   });
 
