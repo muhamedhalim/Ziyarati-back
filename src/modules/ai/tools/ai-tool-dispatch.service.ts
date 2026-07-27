@@ -172,13 +172,21 @@ export class AiToolDispatchService {
         return { usage: breakdown };
       }
       case AI_ADMIN_TOOL.GET_APPOINTMENT_OVERVIEW: {
-        const result = await this.appointments.findAll(ctx.tenantId, {
-          status: this.str(args.status) as never,
-          from: this.str(args.from),
-          to: this.str(args.to),
-          page: 1,
-          limit: 1,
-        } as never);
+        // Same ownership scoping the REST endpoint applies: if the acting
+        // user only holds appointments.read_own (e.g. a doctor), this
+        // overview is scoped to their own appointments too — never a way to
+        // see tenant-wide totals through chat that the REST API would deny.
+        const result = await this.appointments.findAll(
+          ctx.tenantId,
+          {
+            status: this.str(args.status) as never,
+            from: this.str(args.from),
+            to: this.str(args.to),
+            page: 1,
+            limit: 1,
+          } as never,
+          { id: ctx.actorUserId ?? '', permissions: ctx.permissions ?? [] },
+        );
         return { totalAppointments: result.total, filters: { status: args.status, from: args.from, to: args.to } };
       }
       case AI_ADMIN_TOOL.GET_PATIENT_OVERVIEW: {

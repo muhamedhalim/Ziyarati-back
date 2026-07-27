@@ -8,8 +8,13 @@ import { RolePermission } from '../../entities/Auth&RBAC/RolePermission';
 import { User } from '../../entities/Auth&RBAC/User';
 import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { ErrorCode } from '../../common/errors';
-import { ROLE } from '../../rbac/rbac.constants';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import { CUSTOM_ROLE_SENTINEL, PERMISSION, ROLE } from '../../rbac/rbac.constants';
+import {
+  createMockEntityManager,
+  createMockRepository,
+  MockEntityManager,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 describe('RolesService', () => {
   let service: RolesService;
@@ -59,6 +64,13 @@ describe('RolesService', () => {
       await expect(service.create({ slug: 'dup' } as any, TENANT)).rejects.toMatchObject({
         code: ErrorCode.ROLE_ALREADY_EXISTS,
       });
+    });
+
+    it('rejects the reserved "other" slug without a DB lookup', async () => {
+      await expect(
+        service.create({ slug: CUSTOM_ROLE_SENTINEL, name: 'Other' } as any, TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(roles.findOne).not.toHaveBeenCalled();
     });
   });
 
@@ -263,6 +275,223 @@ describe('RolesService', () => {
       userRoles.findOne.mockResolvedValueOnce({ id: 'ur1' });
       await service.removeRoleFromUser('u1', 'r1', TENANT);
       expect(userRoles.remove).toHaveBeenCalledWith({ id: 'ur1' });
+    });
+  });
+
+  describe('findGrantableForCaller', () => {
+    it('returns [] without a query when the caller holds no permissions', async () => {
+      await expect(service.findGrantableForCaller([])).resolves.toEqual([]);
+      expect(permissions.find).not.toHaveBeenCalled();
+    });
+
+    it('looks up the catalogue rows matching the caller\'s permission slugs', async () => {
+      const found = [{ id: 'p1', slug: 'appointments.read' }];
+      permissions.find.mockResolvedValueOnce(found);
+
+      await expect(
+        service.findGrantableForCaller(['appointments.read']),
+      ).resolves.toEqual(found);
+      expect(permissions.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { slug: expect.anything() } }),
+      );
+    });
+
+    it('excludes dashboard.access and reserved permissions even when the caller holds them', async () => {
+      permissions.find.mockResolvedValueOnce([]);
+
+      await service.findGrantableForCaller([
+        PERMISSION.APPOINTMENTS_READ,
+        PERMISSION.DASHBOARD_ACCESS,
+        PERMISSION.ROLES_MANAGE,
+        PERMISSION.USERS_MANAGE,
+        PERMISSION.TENANTS_MANAGE,
+      ]);
+
+      const [{ where }] = permissions.find.mock.calls[0];
+      expect(where.slug.value).toEqual([PERMISSION.APPOINTMENTS_READ]);
+    });
+
+    it('returns [] without a query when only reserved/implicit permissions are held', async () => {
+      await expect(
+        service.findGrantableForCaller([PERMISSION.DASHBOARD_ACCESS, PERMISSION.ROLES_MANAGE]),
+      ).resolves.toEqual([]);
+      expect(permissions.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('validateCustomPermissions ("Other" role)', () => {
+    const CALLER = [PERMISSION.APPOINTMENTS_READ, PERMISSION.CUSTOMERS_READ];
+
+    it('rejects an empty permission selection', async () => {
+      await expect(
+        service.validateCustomPermissions([], CALLER),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(permissions.find).not.toHaveBeenCalled();
+    });
+
+    it('rejects a reserved permission (owner/super_admin-only) even if the caller holds it', async () => {
+      const ownerLikeCaller = [PERMISSION.APPOINTMENTS_READ, PERMISSION.ROLES_MANAGE];
+      await expect(
+        service.validateCustomPermissions(
+          [PERMISSION.APPOINTMENTS_READ, PERMISSION.ROLES_MANAGE],
+          ownerLikeCaller,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(permissions.find).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown permission slug', async () => {
+      permissions.find.mockResolvedValueOnce([{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }]); // only 1 of 2 found
+      await expect(
+        service.validateCustomPermissions(
+          [PERMISSION.APPOINTMENTS_READ, 'not.a.real.permission'],
+          CALLER,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.PERMISSION_NOT_FOUND });
+    });
+
+    it('BLOCKS granting a permission the caller does not themselves hold (privilege escalation)', async () => {
+      permissions.find.mockResolvedValueOnce([
+        { id: 'p1', slug: PERMISSION.APPOINTMENTS_READ },
+        { id: 'p2', slug: PERMISSION.BILLING_MANAGE },
+      ]);
+
+      await expect(
+        service.validateCustomPermissions(
+          [PERMISSION.APPOINTMENTS_READ, PERMISSION.BILLING_MANAGE],
+          CALLER, // does not include billing.manage
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    });
+
+    it('returns the resolved Permission entities on success', async () => {
+      const found = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }];
+      permissions.find.mockResolvedValueOnce(found);
+      await expect(
+        service.validateCustomPermissions([PERMISSION.APPOINTMENTS_READ], CALLER),
+      ).resolves.toEqual(found);
+    });
+  });
+
+  describe('resolveCustomRole ("Other" role — transactional write phase)', () => {
+    let manager: MockEntityManager;
+    let mRoles: MockRepository;
+    let mPermissions: MockRepository;
+    let mRolePermissions: MockRepository;
+    let mUserRoles: MockRepository;
+    const DASHBOARD_PERM = { id: 'p-dash', slug: PERMISSION.DASHBOARD_ACCESS };
+
+    beforeEach(() => {
+      manager = createMockEntityManager();
+      mRoles = manager.getRepository(Role) as unknown as MockRepository;
+      mPermissions = manager.getRepository(Permission) as unknown as MockRepository;
+      mRolePermissions = manager.getRepository(RolePermission) as unknown as MockRepository;
+      mUserRoles = manager.getRepository(UserRole) as unknown as MockRepository;
+      mPermissions.findOne.mockResolvedValue(DASHBOARD_PERM); // implicit dashboard.access lookup
+    });
+
+    it('creates a fresh custom role scoped to the tenant when there is no user to reuse from', async () => {
+      const perms = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }] as any;
+      mRoles.save.mockResolvedValueOnce({ id: 'role-new', is_system: false, tenant: { id: TENANT } });
+
+      const result = await service.resolveCustomRole(
+        TENANT,
+        perms,
+        null,
+        'Sara Al-Amin',
+        manager as any,
+      );
+
+      expect(mRoles.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Custom — Sara Al-Amin', is_system: false }),
+      );
+      // The implicit dashboard.access permission is always included alongside
+      // whatever was explicitly granted.
+      const savedPerms = mRolePermissions.save.mock.calls[0][0];
+      expect(savedPerms.map((rp: any) => rp.permission.slug)).toEqual(
+        expect.arrayContaining([PERMISSION.APPOINTMENTS_READ, PERMISSION.DASHBOARD_ACCESS]),
+      );
+      expect(result).toEqual(expect.objectContaining({ id: 'role-new' }));
+    });
+
+    it('reuses (updates in place) the sole custom role already held only by this user', async () => {
+      const perms = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }] as any;
+      mUserRoles.find.mockResolvedValueOnce([
+        { role: { id: 'role-existing', is_system: false, tenant: { id: TENANT } } },
+      ]);
+      mUserRoles.count.mockResolvedValueOnce(1); // sole holder
+
+      const result = await service.resolveCustomRole(
+        TENANT,
+        perms,
+        'user-1',
+        undefined,
+        manager as any,
+      );
+
+      expect(mRolePermissions.delete).toHaveBeenCalledWith({ role: { id: 'role-existing' } });
+      expect(mRoles.save).not.toHaveBeenCalled(); // no NEW role created
+      expect(result).toEqual(expect.objectContaining({ id: 'role-existing' }));
+    });
+
+    it('creates a fresh role instead of mutating a custom role shared by another user', async () => {
+      const perms = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }] as any;
+      mUserRoles.find.mockResolvedValueOnce([
+        { role: { id: 'role-shared', is_system: false, tenant: { id: TENANT } } },
+      ]);
+      mUserRoles.count.mockResolvedValueOnce(2); // shared with another user
+      mRoles.save.mockResolvedValueOnce({ id: 'role-new-2', is_system: false, tenant: { id: TENANT } });
+
+      await service.resolveCustomRole(TENANT, perms, 'user-1', undefined, manager as any);
+
+      expect(mRoles.save).toHaveBeenCalled(); // a NEW role was created, not the shared one mutated
+    });
+
+    it('two employees given identical permission sets independently get two distinct roles (never reused by matching permissions)', async () => {
+      const perms = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }] as any;
+      mRoles.save.mockResolvedValueOnce({ id: 'role-employee-a', is_system: false, tenant: { id: TENANT } });
+      const roleA = await service.resolveCustomRole(TENANT, perms, null, 'Employee A', manager as any);
+
+      mRoles.save.mockResolvedValueOnce({ id: 'role-employee-b', is_system: false, tenant: { id: TENANT } });
+      const roleB = await service.resolveCustomRole(TENANT, perms, null, 'Employee B', manager as any);
+
+      expect(roleA.id).not.toEqual(roleB.id);
+      expect(mRoles.save).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('deleteIfOrphanedCustomRole', () => {
+    let manager: MockEntityManager;
+
+    beforeEach(() => {
+      manager = createMockEntityManager();
+    });
+
+    it('soft-removes a tenant custom role with zero remaining holders', async () => {
+      const role = { id: 'role-1', is_system: false } as any;
+      (manager.getRepository(UserRole) as unknown as MockRepository).count.mockResolvedValueOnce(0);
+
+      await service.deleteIfOrphanedCustomRole(role, manager as any);
+
+      expect((manager.getRepository(Role) as unknown as MockRepository).softRemove).toHaveBeenCalledWith(role);
+    });
+
+    it('leaves a custom role alone while it still has a holder', async () => {
+      const role = { id: 'role-1', is_system: false } as any;
+      (manager.getRepository(UserRole) as unknown as MockRepository).count.mockResolvedValueOnce(1);
+
+      await service.deleteIfOrphanedCustomRole(role, manager as any);
+
+      expect((manager.getRepository(Role) as unknown as MockRepository).softRemove).not.toHaveBeenCalled();
+    });
+
+    it('never touches a system role, even with zero holders', async () => {
+      const role = { id: 'role-sys', is_system: true } as any;
+
+      await service.deleteIfOrphanedCustomRole(role, manager as any);
+
+      expect((manager.getRepository(UserRole) as unknown as MockRepository).count).not.toHaveBeenCalled();
+      expect((manager.getRepository(Role) as unknown as MockRepository).softRemove).not.toHaveBeenCalled();
     });
   });
 });

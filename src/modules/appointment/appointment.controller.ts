@@ -45,7 +45,9 @@ import { CreateReviewDto } from './dto/create-review.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -233,16 +235,20 @@ holding \`appointments.create\`). The WhatsApp bot uses the same path with
   @ApiOperation({
     summary: 'List appointments (filtered + paginated)',
     description: `
-**Protected — requires \`appointments.read\`. Clinic must be active.**
+**Protected — requires \`appointments.read\` OR \`appointments.read_own\`. Clinic must be active.**
 
 Returns a paginated list of the clinic's appointments. All filters
 (\`status\`, \`branchId\`, \`staffId\`, \`customerId\`, \`from\`/\`to\` date range)
 are applied ON TOP OF the mandatory tenant scope.
 
+**Ownership scoping:** a caller who holds only \`appointments.read_own\`
+(currently: \`doctor\`) is FORCED to their own StaffProfile's appointments —
+\`staffId\` in the query is ignored for them, never a way to widen the scope.
+
 Ordered by \`start_at\` descending (most recent first).
 
-**Who can call this:** Owner, Manager, Receptionist (\`appointments.read\`).
-Customers use ownership-scoped self-service endpoints, not this list.
+**Who can call this:** Owner, Manager, Receptionist (\`appointments.read\`);
+Doctor, own appointments only (\`appointments.read_own\`).
 
 **Tenant scoping:** Only the caller's clinic appointments are ever returned.
     `.trim(),
@@ -251,21 +257,31 @@ Customers use ownership-scoped self-service endpoints, not this list.
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
   @Get()
-  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
-  findAll(@Query() query: QueryAppointmentsDto) {
-    return this.appointments.findAll(this.ctx.requireTenantId(), query);
+  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
+  findAll(@Query() query: QueryAppointmentsDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.appointments.findAll(this.ctx.requireTenantId(), query, {
+      id: user.id,
+      permissions: user.permissions,
+    });
   }
 
   @ApiOperation({
     summary: 'Get an appointment by ID',
     description: `
-**Protected — requires \`appointments.read\`. Clinic must be active.**
+**Protected — requires \`appointments.read\` OR \`appointments.read_own\`. Clinic must be active.**
 
 Returns one appointment with its branch, customer, staff, services and
 booking metadata.
 
+**Ownership scoping:** a caller who holds only \`appointments.read_own\`
+(currently: \`doctor\`) gets this appointment ONLY if it is assigned to
+their own StaffProfile.
+
 **Tenant scoping:** An appointment from another clinic returns 404
-(no cross-tenant existence leak).
+(no cross-tenant existence leak). The SAME 404 — not 403 — is returned when
+an \`appointments.read_own\` caller requests an appointment assigned to a
+different staff member, so existence is never distinguishable from "not
+yours".
     `.trim(),
   })
   @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
@@ -274,9 +290,12 @@ booking metadata.
   @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
   @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
   @Get(':id')
-  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.appointments.findOne(this.ctx.requireTenantId(), id);
+  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
+  findOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.appointments.findOne(this.ctx.requireTenantId(), id, {
+      id: user.id,
+      permissions: user.permissions,
+    });
   }
 
   // ───────────────────────────── Update ──────────────────────────────────── //
@@ -500,7 +519,7 @@ body.
   @ApiOperation({
     summary: 'List internal notes for an appointment',
     description: `
-**Protected — requires \`appointments.read\`. Clinic must be active.**
+**Protected — requires \`appointments.read\` OR \`appointments.read_own\` (own appointment only). Clinic must be active.**
 
 Returns all internal staff notes for the appointment, newest first.
 
@@ -513,9 +532,12 @@ Returns all internal staff notes for the appointment, newest first.
   @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
   @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
   @Get(':id/notes')
-  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
-  listNotes(@Param('id', ParseUUIDPipe) id: string) {
-    return this.appointments.listNotes(this.ctx.requireTenantId(), id);
+  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
+  listNotes(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.appointments.listNotes(this.ctx.requireTenantId(), id, {
+      id: user.id,
+      permissions: user.permissions,
+    });
   }
 
   // ───────────────────────────── Timeline ────────────────────────────────── //
@@ -523,7 +545,7 @@ Returns all internal staff notes for the appointment, newest first.
   @ApiOperation({
     summary: 'Get the full appointment timeline (audit trail)',
     description: `
-**Protected — requires \`appointments.read\`. Clinic must be active.**
+**Protected — requires \`appointments.read\` OR \`appointments.read_own\` (own appointment only). Clinic must be active.**
 
 Returns a single chronological stream merged from every audit source:
 creation, status logs, history entries, notes, reschedules and
@@ -540,9 +562,12 @@ Ideal for rendering an activity feed on the appointment detail screen.
   @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
   @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
   @Get(':id/timeline')
-  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
-  timeline(@Param('id', ParseUUIDPipe) id: string) {
-    return this.appointments.getTimeline(this.ctx.requireTenantId(), id);
+  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
+  timeline(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.appointments.getTimeline(this.ctx.requireTenantId(), id, {
+      id: user.id,
+      permissions: user.permissions,
+    });
   }
 
   // ───────────────────────────── Delete ──────────────────────────────────── //

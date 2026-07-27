@@ -86,6 +86,22 @@ const S_STAFF = {
     },
     booking_buffer_minutes: { type: 'number', example: 10 },
     is_available_for_booking: { type: 'boolean', example: true },
+    role: {
+      type: 'object',
+      nullable: true,
+      description: 'The linked account\'s currently held role (null if it holds zero or more than one).',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        slug: { type: 'string', example: 'doctor' },
+        name: { type: 'string', example: 'Doctor' },
+        isCustom: { type: 'boolean', description: 'True for a synthesized "Other" role.' },
+        permissionSlugs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Present only when isCustom is true.',
+        },
+      },
+    },
     user: {
       type: 'object',
       properties: {
@@ -340,6 +356,10 @@ new staff member out of band. It cannot be retrieved again.
   tenant's own custom roles or a system role); defaults to \`receptionist\`.
   Founding/platform roles (\`owner\`, \`super_admin\`) and non-staff system
   roles (\`customer\`, \`ai-bot\`) are rejected even if forced directly.
+- Pass \`roleSlug: "other"\` with a non-empty \`permissionSlugs\` to instead
+  synthesize a tenant-scoped custom role carrying exactly those permissions.
+  Every slug must already be a permission the CALLER holds — see
+  \`GET /staff/assignable-permissions\`.
 - Subject to the plan's \`max_users\` limit.
 - Optional \`branchIds\` are validated and assigned in the same transaction.
 
@@ -347,15 +367,28 @@ new staff member out of band. It cannot be retrieved again.
     `.trim(),
   })
   @ApiCreatedResponse({ description: 'User + staff profile created.', schema: S_STAFF_WITH_CREDENTIALS })
-  @ApiBadRequestResponse({ description: 'Validation failed, or primaryBranchId not in branchIds.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description:
+      'Validation failed, primaryBranchId not in branchIds, or roleSlug is "other" with an empty permissionSlugs.',
+    schema: S_ERROR,
+  })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, attempted a privileged role, or clinic inactive.', schema: S_ERROR })
   @ApiConflictResponse({ description: 'Email address already exists within this clinic.', schema: S_ERROR })
   @ApiUnprocessableEntityResponse({ description: 'Plan user limit reached, or a branch was not found in this clinic.', schema: S_ERROR })
   @Post('from-new-user')
   @RequirePermissions(PERMISSION.STAFF_CREATE)
-  createFromNewUser(@Body() dto: CreateStaffWithNewUserDto) {
-    return this.staff.createWithNewUser(this.ctx.requireTenantId(), dto);
+  createFromNewUser(
+    @Body() dto: CreateStaffWithNewUserDto,
+    @CurrentUser('permissions') callerPermissions: string[],
+    @CurrentUser('id') actorUserId: string,
+  ) {
+    return this.staff.createWithNewUser(
+      this.ctx.requireTenantId(),
+      dto,
+      callerPermissions,
+      actorUserId,
+    );
   }
 
   @ApiOperation({
@@ -416,6 +449,46 @@ drives the dropdown.
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   findAssignableRoles() {
     return this.staff.findAssignableRoles(this.ctx.requireTenantId());
+  }
+
+  @ApiOperation({
+    summary: 'List permissions the caller may grant via the "Other" role ("Create new user")',
+    description: `
+**Protected — requires \`staff.create\`. Clinic must be active.**
+
+Returns the permission catalogue entries the CALLER themselves currently
+holds — always a subset of the full catalogue, never all of it. Backs the
+permissions checklist shown when \`roleSlug\` is set to the reserved value
+\`"other"\` on \`POST /staff/from-new-user\` / \`PATCH /staff/:id\`: since the
+selector only ever offers permissions the caller already has, there is no
+way to request one that will be rejected server-side (the same
+privilege-escalation guard is re-enforced on the write endpoints
+regardless of what the client sends).
+
+**Who can call this:** Owner, Manager (\`staff.create\`).
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Permissions the caller may grant.',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          slug: { type: 'string', example: 'appointments.read' },
+          name: { type: 'string', example: 'Read appointments' },
+          module: { type: 'string', nullable: true, example: 'appointments' },
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
+  @Get('assignable-permissions')
+  @RequirePermissions(PERMISSION.STAFF_CREATE)
+  findAssignablePermissions(@CurrentUser('permissions') callerPermissions: string[]) {
+    return this.staff.findAssignablePermissions(callerPermissions);
   }
 
   @ApiOperation({
@@ -503,19 +576,42 @@ from another clinic returns 404 (no cross-tenant leak).
 Updates mutable profile fields (title, bio, avatar, buffer, availability).
 \`userId\` is immutable.
 
-**Who can call this:** Owner, Manager (\`staff.update\`).
+**Changing the role:** optionally pass \`roleSlug\` (and \`permissionSlugs\`
+when it is the reserved value \`"other"\`) to reassign the linked account's
+role — same validation and privilege-escalation guard as
+\`POST /staff/from-new-user\`. Omit \`roleSlug\` entirely to leave the role
+untouched. Requires \`staff.manage\` in addition to \`staff.update\`, and
+refuses to touch an \`owner\`/\`super_admin\` account.
+
+**Who can call this:** Owner, Manager (\`staff.update\`; \`staff.manage\` also
+required to change the role).
     `.trim(),
   })
   @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
   @ApiOkResponse({ description: 'Staff profile updated.', schema: S_STAFF })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.update`, or clinic inactive.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.update` (or `staff.manage` when changing the role), attempted a privileged role, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
   @Patch(':id')
   @RequirePermissions(PERMISSION.STAFF_UPDATE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateStaffDto) {
-    return this.staff.update(this.ctx.requireTenantId(), id, dto);
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateStaffDto,
+    @CurrentUser('permissions') callerPermissions: string[],
+    @CurrentUser('id') actorUserId: string,
+  ) {
+    return this.staff.update(
+      this.ctx.requireTenantId(),
+      id,
+      dto,
+      callerPermissions,
+      actorUserId,
+    );
   }
 
   @ApiOperation({

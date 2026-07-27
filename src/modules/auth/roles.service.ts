@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
+import { EntityManager, In, IsNull, Repository } from 'typeorm';
 
 import { Role } from '../../entities/Auth&RBAC/Role';
 import { Permission } from '../../entities/Auth&RBAC/Permission';
@@ -11,7 +12,15 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { AppError, ErrorCode } from '../../common/errors';
-import { NON_STAFF_ROLE_SLUGS, ROLE, RoleSlug } from '../../rbac/rbac.constants';
+import {
+  CUSTOM_ROLE_SENTINEL,
+  NON_STAFF_ROLE_SLUGS,
+  PERMISSION,
+  PermissionSlug,
+  RESERVED_PERMISSION_SLUGS,
+  ROLE,
+  RoleSlug,
+} from '../../rbac/rbac.constants';
 
 /**
  * Privileged roles that must NEVER be grantable through the roles API.
@@ -48,6 +57,12 @@ export class RolesService {
   ) {}
 
   async create(dto: CreateRoleDto, tenantId: string | null): Promise<Role> {
+    if (dto.slug === CUSTOM_ROLE_SENTINEL) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: `Slug "${CUSTOM_ROLE_SENTINEL}" is reserved and cannot be used for a role`,
+      });
+    }
+
     const duplicate = await this.roles.findOne({
       where: {
         slug: dto.slug,
@@ -203,6 +218,191 @@ export class RolesService {
       });
     }
     return role;
+  }
+
+  /**
+   * The permission catalogue entries the CALLER may grant to someone else —
+   * always a subset of the caller's own `permissions` (never the full
+   * catalogue), and never {@link RESERVED_PERMISSION_SLUGS} or
+   * `dashboard.access` (auto-granted to every custom role — see
+   * {@link resolveCustomRole} — so it is never a meaningful checklist item).
+   * Backs the "Other" role permissions selector: a Manager who lacks
+   * `payments.manage` can never see it as a choice, let alone submit it, so
+   * there is no way to escalate through this endpoint. Order is stable
+   * (module, then name) for a predictable grouped UI.
+   */
+  async findGrantableForCaller(callerPermissions: string[]): Promise<Permission[]> {
+    const selectable = callerPermissions.filter(
+      (p) =>
+        p !== PERMISSION.DASHBOARD_ACCESS &&
+        !RESERVED_PERMISSION_SLUGS.has(p as PermissionSlug),
+    );
+    if (!selectable.length) return [];
+    return this.permissions.find({
+      where: { slug: In(selectable) },
+      order: { module: 'ASC', name: 'ASC' },
+    });
+  }
+
+  /**
+   * Validates a requested custom-permission set WITHOUT writing anything —
+   * pure reads/checks, so a doomed request fails fast BEFORE any transaction
+   * opens (see StaffService.createWithNewUser/changeRole, which call this
+   * first, then {@link resolveCustomRole} inside their transaction only once
+   * validation has passed).
+   *
+   * Rejects, in order: an empty selection; a slug in
+   * {@link RESERVED_PERMISSION_SLUGS} (never delegatable through this flow,
+   * regardless of the caller's own holdings — closes the self-escalation
+   * path where a custom-role employee granted `roles.manage`/`users.manage`
+   * could bypass every other guard here via the standalone Roles/Users API);
+   * an unknown slug; and finally any slug the caller does not themselves
+   * hold (the base privilege-escalation guard).
+   */
+  async validateCustomPermissions(
+    permissionSlugs: string[] | undefined,
+    callerPermissions: string[],
+  ): Promise<Permission[]> {
+    const slugs = Array.from(new Set(permissionSlugs ?? []));
+    if (slugs.length === 0) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Select at least one permission for a custom role',
+      });
+    }
+
+    const reserved = slugs.filter((s) => RESERVED_PERMISSION_SLUGS.has(s as PermissionSlug));
+    if (reserved.length) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `These permissions can never be granted to a custom role: ${reserved.join(', ')}`,
+      });
+    }
+
+    const perms = await this.permissions.find({ where: { slug: In(slugs) } });
+    if (perms.length !== slugs.length) {
+      throw new AppError(ErrorCode.PERMISSION_NOT_FOUND, {
+        message: 'One or more permissions do not exist',
+      });
+    }
+
+    const callerSet = new Set(callerPermissions);
+    const notHeld = slugs.filter((s) => !callerSet.has(s));
+    if (notHeld.length) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `You cannot grant a permission you do not hold: ${notHeld.join(', ')}`,
+      });
+    }
+
+    return perms;
+  }
+
+  /**
+   * Resolves the role backing the "Other" option: a tenant-scoped custom
+   * role carrying `perms` PLUS the implicit `dashboard.access` (every
+   * custom-role employee needs it to reach the workspace at all — see
+   * PERMISSION.DASHBOARD_ACCESS). No new authorization mechanism — this is
+   * the same `roles` / `role_permissions` / `user_roles` machinery every
+   * other role uses (mirrors how the AI Bot Actor's role is lazily created
+   * per tenant, see {@link ROLE.AI_BOT} in rbac.constants.ts).
+   *
+   * ALWAYS runs inside the CALLER's transaction (`manager`) — never opens its
+   * own — so the role/role_permissions writes here are atomic with the
+   * surrounding user/staff/user_roles writes (see StaffService).
+   *
+   * Per-employee ownership (never affects another employee): when
+   * `existingUserId` is given and that user's SOLE current role is already a
+   * tenant custom role held ONLY by them, its permission set is replaced IN
+   * PLACE (repeated edits update that one employee's role and nothing else,
+   * and don't pile up orphaned roles). Otherwise a fresh custom role is
+   * created — this NEVER mutates a role another user might also hold, and
+   * two employees who happen to be given the identical permission set still
+   * get two distinct roles (no reuse across employees, ever).
+   */
+  async resolveCustomRole(
+    tenantId: string,
+    perms: Permission[],
+    existingUserId: string | null,
+    displayNameHint: string | undefined,
+    manager: EntityManager,
+  ): Promise<Role> {
+    const roleRepo = manager.getRepository(Role);
+    const permissionRepo = manager.getRepository(Permission);
+    const rolePermissionRepo = manager.getRepository(RolePermission);
+
+    const dashboardAccess = await permissionRepo.findOne({
+      where: { slug: PERMISSION.DASHBOARD_ACCESS },
+    });
+    const grantedPerms =
+      dashboardAccess && !perms.some((p) => p.id === dashboardAccess.id)
+        ? [...perms, dashboardAccess]
+        : perms;
+
+    if (existingUserId) {
+      const reusable = await this.findSoleCustomRole(existingUserId, tenantId, manager);
+      if (reusable) {
+        await rolePermissionRepo.delete({ role: { id: reusable.id } });
+        await rolePermissionRepo.save(
+          grantedPerms.map((permission) =>
+            rolePermissionRepo.create({ role: reusable, permission }),
+          ),
+        );
+        return reusable;
+      }
+    }
+
+    const role = roleRepo.create({
+      name: displayNameHint ? `Custom — ${displayNameHint}` : 'Custom role',
+      slug: `custom-${randomUUID()}`,
+      is_system: false,
+      tenant: { id: tenantId } as Role['tenant'],
+    });
+    const saved = await roleRepo.save(role);
+    await rolePermissionRepo.save(
+      grantedPerms.map((permission) => rolePermissionRepo.create({ role: saved, permission })),
+    );
+    return saved;
+  }
+
+  /**
+   * The user's current custom (non-system) tenant role, ONLY when it is
+   * their sole role AND no other user also holds it — otherwise `null`, so
+   * the caller creates a fresh role instead of mutating one someone else
+   * might depend on. A custom role must belong to exactly one employee.
+   */
+  private async findSoleCustomRole(
+    userId: string,
+    tenantId: string,
+    manager: EntityManager,
+  ): Promise<Role | null> {
+    const userRoleRepo = manager.getRepository(UserRole);
+    const links = await userRoleRepo.find({
+      where: { user: { id: userId } },
+      relations: { role: { tenant: true } },
+    });
+    if (links.length !== 1) return null;
+
+    const role = links[0].role;
+    if (role.is_system || (role.tenant?.id ?? null) !== tenantId) return null;
+
+    const holders = await userRoleRepo.count({ where: { role: { id: role.id } } });
+    return holders === 1 ? role : null;
+  }
+
+  /**
+   * When an employee moves OFF a role (e.g. from the synthesized "Other"
+   * role onto a catalogue role like Doctor), the old role may now have zero
+   * holders. If it is a tenant custom (non-system) role, delete it — never a
+   * system role, which is shared platform-wide and must never be touched
+   * here. Runs inside the caller's transaction so the cleanup is atomic with
+   * the reassignment that orphaned it.
+   */
+  async deleteIfOrphanedCustomRole(role: Role, manager: EntityManager): Promise<void> {
+    if (role.is_system) return;
+    const remaining = await manager
+      .getRepository(UserRole)
+      .count({ where: { role: { id: role.id } } });
+    if (remaining === 0) {
+      await manager.getRepository(Role).softRemove(role);
+    }
   }
 
   // --------------------------- user assignments -------------------------- //

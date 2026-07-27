@@ -58,6 +58,9 @@ export const DEFAULT_RISK: RiskLevel = 'medium';
  * falls back to the derived default (low for reads, medium otherwise).
  */
 export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
+  // Low — mere entry to the workspace shell, not a data-access grant.
+  [PERMISSION.DASHBOARD_ACCESS]: 'low',
+
   // Critical — platform integrity & privilege escalation
   [PERMISSION.TENANTS_MANAGE]: 'critical',
   [PERMISSION.ROLES_MANAGE]: 'critical', // can grant any permission to anyone
@@ -108,6 +111,8 @@ export const DEPRECATED_SLUGS: ReadonlySet<PermissionSlug> = new Set<PermissionS
 // ---------------------------------------------------------------------------
 
 export const PERMISSION_DESCRIPTIONS: Partial<Record<PermissionSlug, string>> = {
+  [PERMISSION.DASHBOARD_ACCESS]:
+    'Entry to the clinic dashboard shell itself — grants no data access on its own; what a role can see/do once inside is governed by its other permissions.',
   [PERMISSION.TENANTS_MANAGE]:
     'Create, suspend and delete tenants (clinics). Platform-level control that spans every tenant.',
   [PERMISSION.ROLES_MANAGE]:

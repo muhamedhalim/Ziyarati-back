@@ -13,7 +13,7 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { ROLE } from '../../../rbac/rbac.constants';
+import { CUSTOM_ROLE_SENTINEL, ROLE } from '../../../rbac/rbac.constants';
 
 /**
  * "Create new staff user" — the second Add Staff Member path. Creates the
@@ -59,13 +59,25 @@ export class CreateStaffWithNewUserDto {
 
   @ApiPropertyOptional({
     description:
-      'Slug of the role to assign — any of the tenant\'s own custom roles or a shared system role, fetched from `GET /staff/assignable-roles`. Founding/platform roles (`owner`, `super_admin`) and non-staff system roles (`customer`, `ai-bot`) are rejected, re-validated server-side regardless of what the client sends. Defaults to `receptionist` when omitted.',
+      'Slug of the role to assign — any of the tenant\'s own custom roles or a shared system role, fetched from `GET /staff/assignable-roles`. Founding/platform roles (`owner`, `super_admin`) and non-staff system roles (`customer`, `ai-bot`) are rejected, re-validated server-side regardless of what the client sends. Defaults to `receptionist` when omitted. Pass the reserved value `"other"` to synthesize a tenant-scoped custom role from `permissionSlugs` instead (see below).',
     example: ROLE.RECEPTIONIST,
   })
   @IsOptional()
   @IsString()
   @MaxLength(100)
   roleSlug?: string;
+
+  @ApiPropertyOptional({
+    description:
+      `Permission slugs to grant, used ONLY when \`roleSlug\` is \`"${CUSTOM_ROLE_SENTINEL}"\`. A tenant-scoped custom role carrying exactly this set is created and assigned. Every slug must already be a permission the CALLER holds — requesting one they don't hold is rejected (privilege-escalation guard). Must be non-empty when \`roleSlug\` is \`"${CUSTOM_ROLE_SENTINEL}"\`. Discover selectable slugs via \`GET /staff/assignable-permissions\` (already scoped to what the caller may grant).`,
+    example: ['appointments.read', 'customers.read'],
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsString({ each: true })
+  permissionSlugs?: string[];
 
   // ── Professional profile ─────────────────────────────────────────────── //
 
