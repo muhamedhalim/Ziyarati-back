@@ -1,13 +1,17 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
+import { ANY_PERMISSIONS_KEY } from '../decorators/require-any-permission.decorator';
 import { AuthenticatedUser } from '../interfaces/authenticated-user.interface';
 import { PermissionSlug, ROLE } from '../../../rbac/rbac.constants';
 import { AppError, ErrorCode } from '../../../common/errors';
 
 /**
- * Grants access only when the user holds EVERY required permission slug.
- * Runs after JwtAuthGuard, so `request.user` is already populated.
+ * Grants access only when the user holds EVERY permission slug required by
+ * `@RequirePermissions` (if present) AND AT LEAST ONE slug required by
+ * `@RequireAnyPermission` (if present) — both may be declared on the same
+ * route and are combined with AND. Runs after JwtAuthGuard, so `request.user`
+ * is already populated.
  *
  * Comparison uses the dot-notation slugs from the RBAC contract — the exact
  * same strings the seeder writes to the database and the strategy loads onto
@@ -25,7 +29,13 @@ export class PermissionsGuard implements CanActivate {
       PERMISSIONS_KEY,
       [context.getHandler(), context.getClass()],
     );
-    if (!required || required.length === 0) {
+    const requiredAny = this.reflector.getAllAndOverride<PermissionSlug[]>(
+      ANY_PERMISSIONS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    const hasRequired = required && required.length > 0;
+    const hasRequiredAny = requiredAny && requiredAny.length > 0;
+    if (!hasRequired && !hasRequiredAny) {
       return true;
     }
 
@@ -41,8 +51,10 @@ export class PermissionsGuard implements CanActivate {
       return true;
     }
 
-    const hasAll = required.every((perm) => user.permissions.includes(perm));
-    if (!hasAll) {
+    if (hasRequired && !required.every((perm) => user.permissions.includes(perm))) {
+      throw new AppError(ErrorCode.PERMISSION_DENIED);
+    }
+    if (hasRequiredAny && !requiredAny.some((perm) => user.permissions.includes(perm))) {
       throw new AppError(ErrorCode.PERMISSION_DENIED);
     }
     return true;

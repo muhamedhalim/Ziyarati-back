@@ -7,6 +7,8 @@ import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { StaffService as StaffServiceEntity } from '../../entities/Staff/StaffService';
 import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { User } from '../../entities/Auth&RBAC/User';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -15,7 +17,7 @@ import { RolesService } from '../auth/roles.service';
 import { StaffAccessService } from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
-import { ROLE } from '../../rbac/rbac.constants';
+import { CUSTOM_ROLE_SENTINEL, PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import {
   createMockRepository,
   createMockEntityManager,
@@ -33,10 +35,21 @@ describe('StaffService', () => {
   let staffServices: MockRepository;
   let branchUsers: MockRepository;
   let users: MockRepository;
+  let userRoles: MockRepository;
+  let auditLogs: MockRepository;
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
-  let authService: { createUserWithRole: jest.Mock };
-  let rolesService: { findAssignableForStaff: jest.Mock; findAssignableRoleBySlug: jest.Mock };
+  let authService: { createUserWithRole: jest.Mock; revokeAllForUser: jest.Mock };
+  let rolesService: {
+    findAssignableForStaff: jest.Mock;
+    findAssignableRoleBySlug: jest.Mock;
+    findGrantableForCaller: jest.Mock;
+    validateCustomPermissions: jest.Mock;
+    resolveCustomRole: jest.Mock;
+    deleteIfOrphanedCustomRole: jest.Mock;
+    listUserRoles: jest.Mock;
+    findOne: jest.Mock;
+  };
   let storage: {
     assertKeyBelongsToTenant: jest.Mock;
     getSignedDownloadUrl: jest.Mock;
@@ -50,14 +63,25 @@ describe('StaffService', () => {
     staffServices = createMockRepository();
     branchUsers = createMockRepository();
     users = createMockRepository();
+    userRoles = createMockRepository();
+    auditLogs = createMockRepository();
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
-    authService = { createUserWithRole: jest.fn() };
+    authService = {
+      createUserWithRole: jest.fn(),
+      revokeAllForUser: jest.fn().mockResolvedValue(undefined),
+    };
     rolesService = {
       findAssignableForStaff: jest.fn().mockResolvedValue([]),
       findAssignableRoleBySlug: jest
         .fn()
         .mockResolvedValue({ id: 'role-receptionist', slug: ROLE.RECEPTIONIST, name: 'Receptionist' }),
+      findGrantableForCaller: jest.fn().mockResolvedValue([]),
+      validateCustomPermissions: jest.fn(),
+      resolveCustomRole: jest.fn(),
+      deleteIfOrphanedCustomRole: jest.fn().mockResolvedValue(undefined),
+      listUserRoles: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn(),
     };
     usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
     staffAccess = { getAccessStates: jest.fn().mockResolvedValue(new Map()) };
@@ -74,6 +98,8 @@ describe('StaffService', () => {
         { provide: getRepositoryToken(StaffServiceEntity), useValue: staffServices },
         { provide: getRepositoryToken(BranchUser), useValue: branchUsers },
         { provide: getRepositoryToken(User), useValue: users },
+        { provide: getRepositoryToken(UserRole), useValue: userRoles },
+        { provide: getRepositoryToken(AuditLog), useValue: auditLogs },
         { provide: getRepositoryToken(Service), useValue: createMockRepository() },
         { provide: getRepositoryToken(Branch), useValue: createMockRepository() },
         { provide: DataSource, useValue: dataSource },
@@ -424,6 +450,286 @@ describe('StaffService', () => {
       await expect(
         service.createWithNewUser(TENANT, { ...dto, branchIds: ['b1'] } as any),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    });
+
+    it('creates a doctor via the normal catalogue-role path (no special-casing)', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'role-doctor',
+        slug: ROLE.DOCTOR,
+        name: 'Doctor',
+      });
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-4' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-4' });
+
+      await service.createWithNewUser(TENANT, { ...dto, roleSlug: ROLE.DOCTOR } as any);
+
+      expect(rolesService.findAssignableRoleBySlug).toHaveBeenCalledWith(ROLE.DOCTOR, TENANT);
+      expect(rolesService.resolveCustomRole).not.toHaveBeenCalled();
+    });
+
+    it('"other": validates permissions up front, then synthesizes the custom role INSIDE the transaction', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      const resolvedPerms = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }];
+      rolesService.validateCustomPermissions.mockResolvedValueOnce(resolvedPerms);
+      rolesService.resolveCustomRole.mockResolvedValueOnce({
+        id: 'role-custom-1',
+        slug: 'custom-abc',
+        name: 'Custom — New Staff',
+      });
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-5' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-5' });
+
+      const callerPermissions = [PERMISSION.APPOINTMENTS_READ, PERMISSION.CUSTOMERS_READ];
+      await service.createWithNewUser(
+        TENANT,
+        { ...dto, roleSlug: CUSTOM_ROLE_SENTINEL, permissionSlugs: [PERMISSION.APPOINTMENTS_READ] } as any,
+        callerPermissions,
+      );
+
+      expect(rolesService.validateCustomPermissions).toHaveBeenCalledWith(
+        [PERMISSION.APPOINTMENTS_READ],
+        callerPermissions,
+      );
+      expect(rolesService.resolveCustomRole).toHaveBeenCalledWith(
+        TENANT,
+        resolvedPerms,
+        null,
+        dto.fullName,
+        manager,
+      );
+      expect(rolesService.findAssignableRoleBySlug).not.toHaveBeenCalled();
+      expect(authService.createUserWithRole).toHaveBeenCalledWith(
+        manager,
+        expect.any(Object),
+        { id: 'role-custom-1', slug: 'custom-abc', name: 'Custom — New Staff' },
+        TENANT,
+      );
+    });
+
+    it('"other": propagates the privilege-escalation rejection from RolesService WITHOUT opening a transaction', async () => {
+      rolesService.validateCustomPermissions.mockRejectedValueOnce(
+        new AppError(ErrorCode.FORBIDDEN, { message: 'You cannot grant a permission you do not hold' }),
+      );
+
+      await expect(
+        service.createWithNewUser(
+          TENANT,
+          { ...dto, roleSlug: CUSTOM_ROLE_SENTINEL, permissionSlugs: [PERMISSION.BILLING_MANAGE] } as any,
+          [PERMISSION.APPOINTMENTS_READ],
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(rolesService.resolveCustomRole).not.toHaveBeenCalled();
+    });
+
+    it('writes an audit entry for the role assigned on creation, when an actor is given', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-6' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-6' });
+
+      await service.createWithNewUser(TENANT, dto, [], 'actor-1');
+
+      // `entity_id` is the profile id returned by the transaction itself
+      // (the mock EntityManager auto-generates one) — not the `staff-6`
+      // reload mock below, which only backs the final response projection.
+      expect(auditLogs.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'staff.role.assigned',
+          entity_type: 'staff_profile',
+          entity_id: 'generated-id',
+        }),
+      );
+    });
+
+    it('never throws when the audit write fails (best-effort)', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-7' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-7' });
+      auditLogs.save.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(
+        service.createWithNewUser(TENANT, dto, [], 'actor-1'),
+      ).resolves.toEqual(expect.objectContaining({ profile: { id: 'staff-7' } }));
+    });
+  });
+
+  describe('update — role changes', () => {
+    const loadedProfile = { id: 'staff-1', title: 'Old', user: { id: 'u1', full_name: 'Sara' } };
+
+    it('leaves the role untouched and skips the staff.manage check when roleSlug is omitted', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      await service.update(TENANT, 'staff-1', { title: 'New' } as any, []);
+      expect(rolesService.listUserRoles).not.toHaveBeenCalled();
+    });
+
+    it('rejects a role change from a caller without staff.manage', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      await expect(
+        service.update(TENANT, 'staff-1', { roleSlug: ROLE.DOCTOR } as any, [PERMISSION.STAFF_UPDATE]),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(rolesService.findAssignableRoleBySlug).not.toHaveBeenCalled();
+    });
+
+    it('refuses to change the role of an owner/super_admin-held account', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      rolesService.listUserRoles.mockResolvedValueOnce([{ id: 'r-owner', slug: ROLE.OWNER }]);
+
+      await expect(
+        service.update(TENANT, 'staff-1', { roleSlug: ROLE.DOCTOR } as any, [PERMISSION.STAFF_MANAGE]),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    });
+
+    it('reassigns user_roles and revokes sessions when the role actually changes', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      rolesService.listUserRoles.mockResolvedValueOnce([
+        { id: 'r-recep', slug: ROLE.RECEPTIONIST, is_system: true },
+      ]);
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'r-doctor',
+        slug: ROLE.DOCTOR,
+        name: 'Doctor',
+      });
+
+      await service.update(TENANT, 'staff-1', { roleSlug: ROLE.DOCTOR } as any, [PERMISSION.STAFF_MANAGE]);
+
+      expect(repo(UserRole).delete).toHaveBeenCalledWith({ user: { id: 'u1' } });
+      expect(repo(UserRole).save).toHaveBeenCalled();
+      expect(authService.revokeAllForUser).toHaveBeenCalledWith('u1');
+    });
+
+    it('is a no-op when the requested CATALOGUE role is already the sole held role — never opens a transaction', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      rolesService.listUserRoles.mockResolvedValueOnce([{ id: 'r-doctor', slug: ROLE.DOCTOR }]);
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'r-doctor',
+        slug: ROLE.DOCTOR,
+        name: 'Doctor',
+      });
+
+      await service.update(TENANT, 'staff-1', { roleSlug: ROLE.DOCTOR } as any, [PERMISSION.STAFF_MANAGE]);
+
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(authService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    it('"other": validates permissions up front, then resolves the custom role INSIDE the transaction', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      rolesService.listUserRoles.mockResolvedValueOnce([
+        { id: 'r-recep', slug: ROLE.RECEPTIONIST, is_system: true },
+      ]);
+      const resolvedPerms = [{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }];
+      rolesService.validateCustomPermissions.mockResolvedValueOnce(resolvedPerms);
+      rolesService.resolveCustomRole.mockResolvedValueOnce({
+        id: 'role-custom-2',
+        slug: 'custom-xyz',
+        name: 'Custom — Sara',
+      });
+
+      const callerPermissions = [PERMISSION.STAFF_MANAGE, PERMISSION.APPOINTMENTS_READ];
+      await service.update(
+        TENANT,
+        'staff-1',
+        { roleSlug: CUSTOM_ROLE_SENTINEL, permissionSlugs: [PERMISSION.APPOINTMENTS_READ] } as any,
+        callerPermissions,
+      );
+
+      expect(rolesService.validateCustomPermissions).toHaveBeenCalledWith(
+        [PERMISSION.APPOINTMENTS_READ],
+        callerPermissions,
+      );
+      expect(rolesService.resolveCustomRole).toHaveBeenCalledWith(
+        TENANT,
+        resolvedPerms,
+        'u1',
+        'Sara',
+        manager,
+      );
+    });
+
+    it('cleans up the old custom role if it becomes orphaned by the reassignment', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      const oldRole = { id: 'role-old-custom', slug: 'custom-old', is_system: false };
+      rolesService.listUserRoles.mockResolvedValueOnce([oldRole]);
+      rolesService.findOne.mockResolvedValueOnce({ ...oldRole, name: 'Custom — Sara', rolePermissions: [] });
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'r-doctor',
+        slug: ROLE.DOCTOR,
+        name: 'Doctor',
+      });
+
+      await service.update(TENANT, 'staff-1', { roleSlug: ROLE.DOCTOR } as any, [PERMISSION.STAFF_MANAGE]);
+
+      expect(rolesService.deleteIfOrphanedCustomRole).toHaveBeenCalledWith(oldRole, manager);
+    });
+
+    it('writes an audit entry with the previous and new role on a real change', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      const oldRole = { id: 'r-recep', slug: ROLE.RECEPTIONIST, is_system: true, name: 'Receptionist' };
+      rolesService.listUserRoles.mockResolvedValueOnce([oldRole]);
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'r-doctor',
+        slug: ROLE.DOCTOR,
+        name: 'Doctor',
+      });
+
+      await service.update(
+        TENANT,
+        'staff-1',
+        { roleSlug: ROLE.DOCTOR } as any,
+        [PERMISSION.STAFF_MANAGE],
+        'actor-1',
+      );
+
+      expect(auditLogs.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'staff.role.changed',
+          entity_type: 'staff_profile',
+          entity_id: 'staff-1',
+          old_values: expect.objectContaining({
+            target_user_id: 'u1',
+            role: expect.objectContaining({ slug: ROLE.RECEPTIONIST }),
+          }),
+          new_values: expect.objectContaining({
+            role: expect.objectContaining({ slug: ROLE.DOCTOR }),
+          }),
+        }),
+      );
+    });
+
+    it('does not audit a true no-op (same catalogue role reselected)', async () => {
+      staff.findOne.mockResolvedValue(loadedProfile);
+      rolesService.listUserRoles.mockResolvedValueOnce([{ id: 'r-doctor', slug: ROLE.DOCTOR }]);
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'r-doctor',
+        slug: ROLE.DOCTOR,
+        name: 'Doctor',
+      });
+
+      await service.update(
+        TENANT,
+        'staff-1',
+        { roleSlug: ROLE.DOCTOR } as any,
+        [PERMISSION.STAFF_MANAGE],
+        'actor-1',
+      );
+
+      expect(auditLogs.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findAssignablePermissions', () => {
+    it('delegates to RolesService.findGrantableForCaller', async () => {
+      const perms = [{ id: 'p1', slug: 'appointments.read', name: 'Read appointments', module: 'appointments' }];
+      rolesService.findGrantableForCaller.mockResolvedValueOnce(perms);
+
+      const callerPermissions = ['appointments.read'];
+      await expect(service.findAssignablePermissions(callerPermissions)).resolves.toEqual(perms);
+      expect(rolesService.findGrantableForCaller).toHaveBeenCalledWith(callerPermissions);
     });
   });
 

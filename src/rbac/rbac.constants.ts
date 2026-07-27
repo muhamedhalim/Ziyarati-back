@@ -23,6 +23,13 @@
 // ---------------------------------------------------------------------------
 
 export const PERMISSION = {
+  // General / workspace — entry to the clinic dashboard shell itself,
+  // independent of what a role can see/do once inside. Every staff role
+  // (system or tenant-custom) must hold this to reach `/app/**` at all; see
+  // `NON_STAFF_ROLES`/`RoleGuard` on the frontend, which gates purely on
+  // possession of this permission rather than a hardcoded role allow-list.
+  DASHBOARD_ACCESS: 'dashboard.access',
+
   // Appointments
   APPOINTMENTS_CREATE: 'appointments.create',
   APPOINTMENTS_READ: 'appointments.read',
@@ -221,6 +228,24 @@ export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> = new Set
   PERMISSION.PROFILE_UPDATE_OWN,
 ]);
 
+/**
+ * Permissions that can never be delegated through the "Other" custom-role
+ * flow (`RolesService.assignCustomPermissions`/`validateCustomPermissions`),
+ * even to a caller who holds them (e.g. Owner holds `roles.manage` and
+ * `users.manage` directly). Granting any of these to a synthesized custom
+ * role would let that employee manage OTHER users' roles/accounts or tenant
+ * configuration directly via the standalone Roles/Users APIs — a
+ * self-escalation path the "caller must hold what they grant" rule alone
+ * does not close, since it only asks "does the caller have it", not "should
+ * this ever be handed to a narrowly-scoped custom role." `TENANTS_MANAGE` is
+ * included even though no tenant role holds it today (defense in depth).
+ */
+export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
+  PERMISSION.ROLES_MANAGE,
+  PERMISSION.USERS_MANAGE,
+  PERMISSION.TENANTS_MANAGE,
+]);
+
 // ---------------------------------------------------------------------------
 // Roles (snake_case slugs)
 // ---------------------------------------------------------------------------
@@ -230,12 +255,26 @@ export const ROLE = {
   OWNER: 'owner',
   MANAGER: 'manager',
   RECEPTIONIST: 'receptionist',
+  DOCTOR: 'doctor',
   CUSTOMER: 'customer',
   /** Per-tenant system actor driving AI-initiated bookings (e.g. WhatsApp). */
   AI_BOT: 'ai-bot',
 } as const;
 
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
+
+/**
+ * Reserved `roleSlug` sentinel for the "Other" option on the Add/Edit Staff
+ * role selector. It is deliberately NOT a member of {@link ROLE} / `RoleSlug`
+ * and never becomes a row in the `roles` table under this literal slug — it
+ * only tells `StaffService`/`RolesService` "synthesize (or update) a
+ * tenant-scoped custom role from the caller-supplied `permissionSlugs`
+ * instead of resolving a catalogue role." Reused end-to-end (no new
+ * authorization system): the synthesized role is a normal row in `roles` /
+ * `role_permissions`, assigned via the normal `user_roles` join, and enforced
+ * by the same `PermissionsGuard` as every other role.
+ */
+export const CUSTOM_ROLE_SENTINEL = 'other' as const;
 
 /**
  * System roles that can never be assigned as a clinic STAFF role:
@@ -270,6 +309,8 @@ export interface RoleDef {
 }
 
 export const PERMISSIONS: PermissionDef[] = [
+  { slug: PERMISSION.DASHBOARD_ACCESS, name: 'Access clinic dashboard', module: 'general' },
+
   { slug: PERMISSION.APPOINTMENTS_CREATE, name: 'Create appointments', module: 'appointments' },
   { slug: PERMISSION.APPOINTMENTS_READ, name: 'Read appointments', module: 'appointments' },
   { slug: PERMISSION.APPOINTMENTS_READ_OWN, name: 'Read own appointments', module: 'appointments' },
@@ -438,6 +479,11 @@ export const ROLES: RoleDef[] = [
     description: 'Front desk. Handles bookings, customers and WhatsApp replies.',
   },
   {
+    slug: ROLE.DOCTOR,
+    name: 'Doctor',
+    description: 'Clinical staff who treat customers. Manages own appointments and schedule.',
+  },
+  {
     slug: ROLE.CUSTOMER,
     name: 'Customer',
     description: 'End user who books appointments and manages their profile.',
@@ -479,6 +525,7 @@ export const ROLE_PERMISSIONS: Record<
   // Clinic owner: full clinic control, excluding platform internals
   // (tenants.manage) and end-user self-service (ABAC) scopes.
   [ROLE.OWNER]: [
+    PERMISSION.DASHBOARD_ACCESS,
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_UPDATE,
@@ -602,6 +649,7 @@ export const ROLE_PERMISSIONS: Record<
   // Operations manager: appointments + customers + staff + reports.
   // No payment/refund access at all (reporting is its own domain now).
   [ROLE.MANAGER]: [
+    PERMISSION.DASHBOARD_ACCESS,
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_UPDATE,
@@ -703,6 +751,7 @@ export const ROLE_PERMISSIONS: Record<
 
   // Front desk: books appointments, manages customer records, WhatsApp replies.
   [ROLE.RECEPTIONIST]: [
+    PERMISSION.DASHBOARD_ACCESS,
     PERMISSION.APPOINTMENTS_CREATE,
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_UPDATE,
@@ -748,6 +797,36 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.AI_CONVERSATIONS_READ,
     PERMISSION.AI_HANDOVER_READ,
     PERMISSION.AI_HANDOVER_MANAGE,
+  ],
+
+  // Clinical staff — deliberately minimal (least privilege), reviewed against
+  // the actual clinic modules rather than assumed:
+  //
+  //   - DASHBOARD_ACCESS: reach the workspace shell at all.
+  //   - APPOINTMENTS_READ_OWN: an ABAC/ownership-scoped permission (see
+  //     OWNERSHIP_SCOPED_PERMISSIONS above) — NOT the tenant-wide
+  //     APPOINTMENTS_READ. AppointmentsService enforces the "own" scope
+  //     server-side (filters by the caller's own StaffProfile via
+  //     `appointment.staff.id`), so a doctor can list/view only appointments
+  //     assigned to them, including the notes/timeline sub-resources.
+  //     Patient data is exposed ONLY as the `customer` relation embedded in
+  //     that already-scoped response — never a broad customers/CRM read
+  //     permission, which would let a doctor browse or read notes/files for
+  //     every patient in the tenant regardless of whether that doctor ever
+  //     treated them (CustomerNote/CustomerFile are scoped to the customer,
+  //     not to a specific appointment or staff member, so there is currently
+  //     no way to grant them without that leak — see the Doctor permissions
+  //     report for what a schema change would need to add here).
+  //
+  // Explicitly NOT granted (see the Doctor permissions report for the full
+  // reasoning): appointments.create/update/reschedule/cancel (status/lifecycle
+  // changes), customers.*/crm.*, staff.* (including own-schedule viewing —
+  // no ownership-scoped variant exists yet), services.read, notifications.read,
+  // ai.chat, reviews.read. Add only once there is a real ownership-scoped
+  // enforcement path for each, mirroring APPOINTMENTS_READ_OWN.
+  [ROLE.DOCTOR]: [
+    PERMISSION.DASHBOARD_ACCESS,
+    PERMISSION.APPOINTMENTS_READ_OWN,
   ],
 
   // End user: self-service only (ownership enforced in the service layer).

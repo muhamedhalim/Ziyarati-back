@@ -36,6 +36,13 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import { PERMISSION } from '../../rbac/rbac.constants';
+
+/** Authenticated principal's identity + permission set — enough to apply ownership scoping. */
+export interface AppointmentCaller {
+  id: string;
+  permissions: string[];
+}
 
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
@@ -128,6 +135,8 @@ export class AppointmentsService {
     private readonly reschedules: Repository<AppointmentReschedule>,
     @InjectRepository(AppointmentCancellation)
     private readonly cancellations: Repository<AppointmentCancellation>,
+    @InjectRepository(StaffProfile)
+    private readonly staffProfiles: Repository<StaffProfile>,
     private readonly dataSource: DataSource,
     /** The single availability engine: every booking path validates through it. */
     private readonly availability: AvailabilityService,
@@ -137,13 +146,51 @@ export class AppointmentsService {
 
   // ───────────────────────────── Queries ─────────────────────────────────── //
 
-  /** Paginated, tenant-scoped list with optional filters. */
-  async findAll(tenantId: string, query: QueryAppointmentsDto) {
+  /**
+   * Resolves the caller's own StaffProfile id in this tenant, or `null` if
+   * they aren't linked to one (e.g. an Owner/Manager account with no
+   * StaffProfile). Backs the `appointments.read_own` ownership scope — see
+   * OWNERSHIP_SCOPED_PERMISSIONS in rbac.constants.ts. A caller with no
+   * StaffProfile and only the "_own" permission legitimately owns nothing.
+   */
+  private async resolveCallerStaffId(
+    tenantId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const profile = await this.staffProfiles.findOne({
+      where: { user: { id: userId }, tenant: { id: tenantId } },
+      select: { id: true },
+    });
+    return profile?.id ?? null;
+  }
+
+  /**
+   * Paginated, tenant-scoped list with optional filters.
+   *
+   * `caller` drives ownership scoping: holding only `appointments.read_own`
+   * (not the tenant-wide `appointments.read`) FORCES the staff filter to the
+   * caller's own StaffProfile, overriding whatever `query.staffId` the client
+   * sent — a doctor can never widen their own scope via the query string.
+   */
+  async findAll(
+    tenantId: string,
+    query: QueryAppointmentsDto,
+    caller: AppointmentCaller,
+  ) {
     const where: FindOptionsWhere<Appointment> = { tenant: { id: tenantId } };
+
+    if (!caller.permissions.includes(PERMISSION.APPOINTMENTS_READ)) {
+      const ownStaffId = await this.resolveCallerStaffId(tenantId, caller.id);
+      if (!ownStaffId) {
+        return { data: [], total: 0, page: query.page, limit: query.limit };
+      }
+      where.staff = { id: ownStaffId };
+    } else if (query.staffId) {
+      where.staff = { id: query.staffId };
+    }
 
     if (query.status) where.status = query.status;
     if (query.branchId) where.branch = { id: query.branchId };
-    if (query.staffId) where.staff = { id: query.staffId };
     if (query.customerId) where.customer = { id: query.customerId };
 
     if (query.from && query.to) {
@@ -170,8 +217,23 @@ export class AppointmentsService {
     return { data, total, page: query.page, limit: query.limit };
   }
 
-  /** Single appointment with full relations — tenant-scoped (404 otherwise). */
-  async findOne(tenantId: string, id: string): Promise<Appointment> {
+  /**
+   * Single appointment with full relations — tenant-scoped (404 otherwise).
+   *
+   * `caller` is optional so every INTERNAL call site (update/reschedule/
+   * cancel/etc., all gated by broader permissions than `appointments.read`)
+   * keeps its existing unrestricted behavior. Only the read-only controller
+   * routes pass it, to additionally enforce ownership scoping: when the
+   * caller holds only `appointments.read_own`, an appointment belonging to a
+   * different staff member returns the SAME 404 as a cross-tenant appointment
+   * — the established IDOR-safe pattern in this codebase (see StaffController
+   * docs) — never a distinguishable "exists but forbidden" response.
+   */
+  async findOne(
+    tenantId: string,
+    id: string,
+    caller?: AppointmentCaller,
+  ): Promise<Appointment> {
     const appointment = await this.appointments.findOne({
       where: { id, tenant: { id: tenantId } },
       relations: {
@@ -187,6 +249,16 @@ export class AppointmentsService {
         message: 'Appointment not found',
       });
     }
+
+    if (caller && !caller.permissions.includes(PERMISSION.APPOINTMENTS_READ)) {
+      const ownStaffId = await this.resolveCallerStaffId(tenantId, caller.id);
+      if (!ownStaffId || appointment.staff?.id !== ownStaffId) {
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Appointment not found',
+        });
+      }
+    }
+
     return appointment;
   }
 
@@ -614,8 +686,12 @@ export class AppointmentsService {
     return this.notes.save(note);
   }
 
-  async listNotes(tenantId: string, id: string): Promise<AppointmentNote[]> {
-    await this.findOne(tenantId, id);
+  async listNotes(
+    tenantId: string,
+    id: string,
+    caller?: AppointmentCaller,
+  ): Promise<AppointmentNote[]> {
+    await this.findOne(tenantId, id, caller); // throws 404 if not owned & caller lacks full read
     return this.notes.find({
       where: { appointment: { id }, tenant: { id: tenantId } },
       relations: { user: true },
@@ -626,8 +702,12 @@ export class AppointmentsService {
   // ───────────────────────────── Timeline ────────────────────────────────── //
 
   /** Unified, chronological audit trail merged from every audit table. */
-  async getTimeline(tenantId: string, id: string): Promise<TimelineEntry[]> {
-    const appointment = await this.findOne(tenantId, id);
+  async getTimeline(
+    tenantId: string,
+    id: string,
+    caller?: AppointmentCaller,
+  ): Promise<TimelineEntry[]> {
+    const appointment = await this.findOne(tenantId, id, caller);
 
     const scope = { appointment: { id }, tenant: { id: tenantId } } as const;
 

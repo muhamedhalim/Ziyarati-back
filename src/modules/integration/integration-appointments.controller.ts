@@ -7,6 +7,17 @@ import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decora
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { toIntegrationAppointment } from './integration.mappers';
+import { PERMISSION } from '../../rbac/rbac.constants';
+
+/**
+ * M2M API-key access is authorized entirely by integration SCOPES
+ * (`@ApiKeyProtected`), never by a human user's RBAC permissions — there is
+ * no per-doctor "own appointments" concept at this layer. Passing the full
+ * `appointments.read` permission here preserves the pre-existing tenant-wide
+ * behavior and opts out of AppointmentsService's ownership scoping, which
+ * only applies to `appointments.read_own` callers.
+ */
+const INTEGRATION_CALLER = { id: '', permissions: [PERMISSION.APPOINTMENTS_READ] };
 
 /**
  * Read-only external view of appointments. Delegates to the existing
@@ -32,7 +43,11 @@ export class IntegrationAppointmentsController {
   @ApiKeyProtected(INTEGRATION_SCOPE.APPOINTMENTS_READ)
   @Get()
   async list(@Query() query: QueryAppointmentsDto) {
-    const result = await this.appointments.findAll(this.ctx.requireTenantId(), query);
+    const result = await this.appointments.findAll(
+      this.ctx.requireTenantId(),
+      query,
+      INTEGRATION_CALLER,
+    );
     return { ...result, data: result.data.map(toIntegrationAppointment) };
   }
 

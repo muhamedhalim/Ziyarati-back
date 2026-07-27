@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
 import { DataSource, ILike, In, Not, Repository } from 'typeorm';
@@ -7,6 +7,10 @@ import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { StaffService as StaffServiceEntity } from '../../entities/Staff/StaffService';
 import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { User } from '../../entities/Auth&RBAC/User';
+import { Role } from '../../entities/Auth&RBAC/Role';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
+import { Permission } from '../../entities/Auth&RBAC/Permission';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
@@ -29,7 +33,31 @@ import {
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
-import { ROLE } from '../../rbac/rbac.constants';
+import {
+  CUSTOM_ROLE_SENTINEL,
+  PERMISSION,
+  ROLE,
+  RoleSlug,
+} from '../../rbac/rbac.constants';
+
+/** Staff-facing view of a held role — enough for the Add/Edit role selector. */
+export interface StaffRoleDetail {
+  id: string;
+  slug: string;
+  name: string;
+  /** True for a synthesized "Other" role — a tenant custom, non-system role. */
+  isCustom: boolean;
+  /** Present only when `isCustom` — the exact permission slugs it grants. */
+  permissionSlugs?: string[];
+}
+
+/** Role snapshot recorded in the audit trail — see `StaffService.auditRoleChange`. */
+interface AuditRoleSnapshot {
+  slug: string;
+  name: string;
+  isCustom: boolean;
+  permissionSlugs?: string[];
+}
 
 /**
  * Staff profile lifecycle + service/branch assignment.
@@ -42,6 +70,8 @@ import { ROLE } from '../../rbac/rbac.constants';
  */
 @Injectable()
 export class StaffService {
+  private readonly logger = new Logger(StaffService.name);
+
   constructor(
     @InjectRepository(StaffProfile)
     private readonly staff: Repository<StaffProfile>,
@@ -50,6 +80,10 @@ export class StaffService {
     @InjectRepository(BranchUser)
     private readonly branchUsers: Repository<BranchUser>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(UserRole)
+    private readonly userRoles: Repository<UserRole>,
+    @InjectRepository(AuditLog)
+    private readonly auditLogs: Repository<AuditLog>,
     @InjectRepository(Service) private readonly services: Repository<Service>,
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
     private readonly dataSource: DataSource,
@@ -93,6 +127,73 @@ export class StaffService {
     // Slim projection for the dropdown — the full Role (with its permission
     // set) is more than this endpoint needs to expose.
     return roles.map((r) => ({ id: r.id, slug: r.slug, name: r.name }));
+  }
+
+  /**
+   * Permissions the CALLER may grant to a staff member via the "Other" role
+   * option — always a subset of the caller's own permissions, never the full
+   * catalogue (see `RolesService.findGrantableForCaller`). This is what makes
+   * the selector inherently un-escalatable: an option that would 403 on
+   * submit is never even offered.
+   */
+  async findAssignablePermissions(
+    callerPermissions: string[],
+  ): Promise<{ id: string; slug: string; name: string; module?: string | null }[]> {
+    const perms = await this.rolesService.findGrantableForCaller(callerPermissions);
+    return perms.map((p) => ({ id: p.id, slug: p.slug, name: p.name, module: p.module }));
+  }
+
+  /**
+   * Attaches each profile's currently held role — the receptionist/manager/
+   * doctor system role, or the synthesized custom ("Other") role, with its
+   * exact permission set — so the Edit Staff dialog can prefill the role
+   * selector without a second round-trip. Bulk (one query for the whole
+   * page), mirroring {@link withAccessState}. Assumes the established
+   * single-role-per-staff-account model (see StaffAccessService docblock);
+   * a user holding more than one role is defensively left with `role: null`
+   * here rather than guessing which one to show.
+   */
+  private async withRoleDetail<T extends StaffProfile>(
+    profiles: T[],
+  ): Promise<(T & { role?: StaffRoleDetail | null })[]> {
+    const userIds = profiles.map((p) => p.user?.id).filter(Boolean) as string[];
+    if (userIds.length === 0) return profiles;
+
+    const links = await this.userRoles.find({
+      where: { user: { id: In(userIds) } },
+      relations: { user: true, role: { rolePermissions: { permission: true } } },
+    });
+
+    const byUser = new Map<string, UserRole[]>();
+    for (const link of links) {
+      if (!link.user) continue;
+      const list = byUser.get(link.user.id) ?? [];
+      list.push(link);
+      byUser.set(link.user.id, list);
+    }
+
+    return profiles.map((profile) => {
+      const decorated = profile as T & { role?: StaffRoleDetail | null };
+      const userLinks = profile.user?.id ? byUser.get(profile.user.id) : undefined;
+      decorated.role =
+        userLinks?.length === 1 ? this.toRoleDetail(userLinks[0].role) : null;
+      return decorated;
+    });
+  }
+
+  private toRoleDetail(role: Role): StaffRoleDetail {
+    const isCustom = !role.is_system;
+    return {
+      id: role.id,
+      slug: role.slug,
+      name: role.name,
+      isCustom,
+      permissionSlugs: isCustom
+        ? (role.rolePermissions ?? [])
+            .map((rp) => rp.permission?.slug)
+            .filter((s): s is string => Boolean(s))
+        : undefined,
+    };
   }
 
   /**
@@ -165,16 +266,36 @@ export class StaffService {
   async createWithNewUser(
     tenantId: string,
     dto: CreateStaffWithNewUserDto,
+    callerPermissions: string[] = [],
+    actorUserId?: string,
   ): Promise<{ profile: StaffProfile; temporaryPassword: string }> {
-    // Dynamic + backend-enforced: any of the tenant's own custom roles or a
-    // system role works, EXCEPT founding/platform/non-staff roles (see
+    const isCustom = dto.roleSlug === CUSTOM_ROLE_SENTINEL;
+
+    // Resolve/validate the role BEFORE opening any transaction — pure reads,
+    // so a doomed request (privileged role, unknown/reserved/un-held
+    // permission) fails fast without ever starting one. Dynamic + backend-
+    // enforced: any of the tenant's own custom roles or a system role works,
+    // EXCEPT founding/platform/non-staff roles (see
     // RolesService.findAssignableRoleBySlug) — never a static manager/
     // receptionist allow-list, so a forced API call can't smuggle one in
-    // either.
-    const role = await this.rolesService.findAssignableRoleBySlug(
-      dto.roleSlug ?? ROLE.RECEPTIONIST,
-      tenantId,
-    );
+    // either. `roleSlug === CUSTOM_ROLE_SENTINEL` ("Other") instead validates
+    // a caller-supplied permission set (RolesService.validateCustomPermissions)
+    // — the actual custom Role row (+ role_permissions) is created ONLY
+    // inside the transaction below via `resolveCustomRole`, so user + staff
+    // profile + custom role + role_permissions + user_role all commit or roll
+    // back TOGETHER, never a partially-created custom role left behind.
+    const catalogueRole = isCustom
+      ? null
+      : await this.rolesService.findAssignableRoleBySlug(
+          dto.roleSlug ?? ROLE.RECEPTIONIST,
+          tenantId,
+        );
+    const customPerms = isCustom
+      ? await this.rolesService.validateCustomPermissions(
+          dto.permissionSlugs,
+          callerPermissions,
+        )
+      : null;
 
     if (
       dto.primaryBranchId &&
@@ -209,56 +330,90 @@ export class StaffService {
 
     const temporaryPassword = randomBytes(9).toString('base64url'); // 12 chars
 
-    const profileId = await this.dataSource.transaction(async (manager) => {
-      const user = await this.authService.createUserWithRole(
-        manager,
-        {
-          email,
-          password: temporaryPassword,
-          fullName: dto.fullName,
-          phone: dto.phone,
-        },
-        role,
-        tenantId,
-      );
+    let assignedRole!: Role;
+    const { profileId, userId } = await this.dataSource.transaction(
+      async (manager) => {
+        // User creation, custom-role creation, role-permission assignment
+        // and user-role assignment all happen inside THIS one transaction.
+        assignedRole = isCustom
+          ? await this.rolesService.resolveCustomRole(
+              tenantId,
+              customPerms!,
+              null,
+              dto.fullName,
+              manager,
+            )
+          : catalogueRole!;
 
-      const profile = await manager.save(
-        manager.getRepository(StaffProfile).create({
-          tenant: { id: tenantId } as Tenant,
-          user: { id: user.id } as User,
-          title: dto.title,
-          bio: dto.bio,
-          avatar_storage_key: dto.avatarStorageKey,
-          booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
-          is_available_for_booking: dto.isAvailableForBooking ?? true,
-        }),
-      );
+        const user = await this.authService.createUserWithRole(
+          manager,
+          {
+            email,
+            password: temporaryPassword,
+            fullName: dto.fullName,
+            phone: dto.phone,
+          },
+          assignedRole,
+          tenantId,
+        );
 
-      if (dto.branchIds?.length) {
-        const found = await manager.getRepository(Branch).find({
-          where: { id: In(dto.branchIds), tenant: { id: tenantId } },
-        });
-        if (found.length !== dto.branchIds.length) {
-          throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-            message: 'One or more branches were not found in this clinic',
+        const profile = await manager.save(
+          manager.getRepository(StaffProfile).create({
+            tenant: { id: tenantId } as Tenant,
+            user: { id: user.id } as User,
+            title: dto.title,
+            bio: dto.bio,
+            avatar_storage_key: dto.avatarStorageKey,
+            booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
+            is_available_for_booking: dto.isAvailableForBooking ?? true,
+          }),
+        );
+
+        if (dto.branchIds?.length) {
+          const found = await manager.getRepository(Branch).find({
+            where: { id: In(dto.branchIds), tenant: { id: tenantId } },
           });
+          if (found.length !== dto.branchIds.length) {
+            throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+              message: 'One or more branches were not found in this clinic',
+            });
+          }
+
+          const primary = dto.primaryBranchId ?? dto.branchIds[0];
+          await manager.getRepository(BranchUser).save(
+            dto.branchIds.map((branchId) =>
+              manager.getRepository(BranchUser).create({
+                tenant: { id: tenantId } as Tenant,
+                branch: { id: branchId } as Branch,
+                user: { id: user.id } as User,
+                is_primary: branchId === primary,
+              }),
+            ),
+          );
         }
 
-        const primary = dto.primaryBranchId ?? dto.branchIds[0];
-        await manager.getRepository(BranchUser).save(
-          dto.branchIds.map((branchId) =>
-            manager.getRepository(BranchUser).create({
-              tenant: { id: tenantId } as Tenant,
-              branch: { id: branchId } as Branch,
-              user: { id: user.id } as User,
-              is_primary: branchId === primary,
-            }),
-          ),
-        );
-      }
+        return { profileId: profile.id, userId: user.id };
+      },
+    );
 
-      return profile.id;
-    });
+    if (actorUserId) {
+      await this.auditRoleChange({
+        tenantId,
+        actorUserId,
+        targetUserId: userId,
+        staffId: profileId,
+        action: 'staff.role.assigned',
+        previousRole: null,
+        newRole: isCustom
+          ? {
+              slug: assignedRole.slug,
+              name: assignedRole.name,
+              isCustom: true,
+              permissionSlugs: customPerms!.map((p) => p.slug),
+            }
+          : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
+      });
+    }
 
     return {
       profile: await this.findOne(tenantId, profileId),
@@ -297,7 +452,7 @@ export class StaffService {
 
     await Promise.all(data.map((profile) => this.withResolvedAvatar(profile)));
     return {
-      data: await this.withAccessState(data),
+      data: await this.withRoleDetail(await this.withAccessState(data)),
       total,
       page: query.page,
       limit: query.limit,
@@ -385,7 +540,8 @@ export class StaffService {
   async findOne(tenantId: string, id: string): Promise<StaffProfile> {
     const profile = await this.loadProfile(tenantId, id);
     await this.withResolvedAvatar(profile);
-    const [decorated] = await this.withAccessState([profile]);
+    const [withAccess] = await this.withAccessState([profile]);
+    const [decorated] = await this.withRoleDetail([withAccess]);
     return decorated;
   }
 
@@ -393,6 +549,8 @@ export class StaffService {
     tenantId: string,
     id: string,
     dto: UpdateStaffDto,
+    callerPermissions: string[] = [],
+    actorUserId?: string,
   ): Promise<StaffProfile> {
     const profile = await this.loadProfile(tenantId, id);
 
@@ -438,7 +596,212 @@ export class StaffService {
       }
     }
 
+    // Role changes are optional and independent of the profile fields above
+    // — omitting `roleSlug` entirely (the common case: editing title/bio/
+    // avatar) never touches the account's role or requires `staff.manage`.
+    if (dto.roleSlug !== undefined) {
+      await this.changeRole(
+        tenantId,
+        profile,
+        dto.roleSlug,
+        dto.permissionSlugs,
+        callerPermissions,
+        actorUserId,
+      );
+    }
+
     return this.findOne(tenantId, id);
+  }
+
+  /**
+   * Reassigns an existing staff member's role — generalizes the "replace
+   * whatever role(s) the account holds" semantics StaffAccessService.grant()
+   * uses for the fixed receptionist case to any assignable role (including
+   * "Other"). Gated on `staff.manage` in addition to the `staff.update` the
+   * controller already requires: role/permission changes are more sensitive
+   * than a title/bio edit (mirrors how the dashboard-access endpoints, which
+   * also change roles, require `staff.manage` rather than `staff.update`).
+   * Refuses to touch a super_admin/owner account.
+   *
+   * Everything that mutates state — synthesizing/reusing the custom role,
+   * reassigning `user_roles`, and deleting an orphaned custom role the
+   * account just moved off — happens inside ONE transaction. Reusing an
+   * existing custom role only ever touches that ONE employee's role (see
+   * RolesService.resolveCustomRole/findSoleCustomRole) — editing employee A
+   * never mutates employee B's role, even if they were given identical
+   * permission sets independently.
+   */
+  private async changeRole(
+    tenantId: string,
+    profile: StaffProfile,
+    roleSlug: string,
+    permissionSlugs: string[] | undefined,
+    callerPermissions: string[],
+    actorUserId?: string,
+  ): Promise<void> {
+    if (!callerPermissions.includes(PERMISSION.STAFF_MANAGE)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: "Changing a staff member's role requires staff.manage",
+      });
+    }
+
+    const userId = profile.user.id;
+    const currentRoles = await this.rolesService.listUserRoles(userId, tenantId);
+    const protectedHeld = currentRoles.find((r) =>
+      ([ROLE.SUPER_ADMIN, ROLE.OWNER] as RoleSlug[]).includes(r.slug as RoleSlug),
+    );
+    if (protectedHeld) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Cannot change role for a "${protectedHeld.slug}" account`,
+      });
+    }
+
+    // Resolve/validate BEFORE the transaction (pure reads/checks) — a doomed
+    // request fails fast without ever opening one.
+    const isCustom = roleSlug === CUSTOM_ROLE_SENTINEL;
+    const catalogueRole = isCustom
+      ? null
+      : await this.rolesService.findAssignableRoleBySlug(roleSlug, tenantId);
+    const customPerms = isCustom
+      ? await this.rolesService.validateCustomPermissions(
+          permissionSlugs,
+          callerPermissions,
+        )
+      : null;
+
+    // A catalogue role's identity is already known here — skip the
+    // transaction entirely (and log nothing) when nothing would change. The
+    // custom-role path can't take this shortcut: even re-selecting "Other"
+    // on the SAME synthesized role may carry a different permission
+    // selection that still needs to be written, so it always proceeds.
+    if (!isCustom && currentRoles.length === 1 && currentRoles[0].id === catalogueRole!.id) {
+      return;
+    }
+
+    // Snapshot the PREVIOUS role for the audit trail before anything changes.
+    const previousRoleSnapshot =
+      currentRoles.length === 1
+        ? await this.toAuditRoleSnapshot(currentRoles[0], tenantId)
+        : null;
+
+    let assignedRole!: Role;
+    let userRoleChanged = false;
+    await this.dataSource.transaction(async (manager) => {
+      // Custom-role creation/reuse, role-permission assignment and the
+      // user_roles reassignment below all happen inside THIS transaction.
+      assignedRole = isCustom
+        ? await this.rolesService.resolveCustomRole(
+            tenantId,
+            customPerms!,
+            userId,
+            profile.user.full_name ?? undefined,
+            manager,
+          )
+        : catalogueRole!;
+
+      // For the custom-role reuse path, `resolveCustomRole` already updated
+      // the (reused) role's permissions in place above — nothing further to
+      // do unless the account needs to be POINTED at a different role.
+      const alreadySoleRole =
+        currentRoles.length === 1 && currentRoles[0].id === assignedRole.id;
+      if (alreadySoleRole) return;
+
+      userRoleChanged = true;
+      await manager.getRepository(UserRole).delete({ user: { id: userId } });
+      await manager.getRepository(UserRole).save(
+        manager.getRepository(UserRole).create({
+          user: { id: userId } as User,
+          role: { id: assignedRole.id } as Role,
+        }),
+      );
+
+      // Correction: when the account moves OFF a role, delete it if it was a
+      // tenant custom role and is now orphaned (held by no one else).
+      for (const oldRole of currentRoles) {
+        if (oldRole.id !== assignedRole.id) {
+          await this.rolesService.deleteIfOrphanedCustomRole(oldRole, manager);
+        }
+      }
+    });
+
+    if (userRoleChanged) {
+      await this.authService.revokeAllForUser(userId);
+    }
+
+    if (actorUserId) {
+      await this.auditRoleChange({
+        tenantId,
+        actorUserId,
+        targetUserId: userId,
+        staffId: profile.id,
+        action: 'staff.role.changed',
+        previousRole: previousRoleSnapshot,
+        newRole: isCustom
+          ? {
+              slug: assignedRole.slug,
+              name: assignedRole.name,
+              isCustom: true,
+              permissionSlugs: customPerms!.map((p) => p.slug),
+            }
+          : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
+      });
+    }
+  }
+
+  /** Full audit snapshot of a currently-held role, including permission slugs when custom. */
+  private async toAuditRoleSnapshot(
+    role: Role,
+    tenantId: string,
+  ): Promise<AuditRoleSnapshot> {
+    if (role.is_system) {
+      return { slug: role.slug, name: role.name, isCustom: false };
+    }
+    const full = await this.rolesService.findOne(role.id, tenantId);
+    return {
+      slug: full.slug,
+      name: full.name,
+      isCustom: true,
+      permissionSlugs: (full.rolePermissions ?? [])
+        .map((rp) => rp.permission?.slug)
+        .filter((s): s is string => Boolean(s)),
+    };
+  }
+
+  /**
+   * Best-effort audit trail for role/permission changes — actor, employee,
+   * previous role+permissions, new role+permissions. Never fails the
+   * triggering operation (mirrors StaffAccessService.audit()'s swallow
+   * pattern — auditing must not be able to break staff provisioning).
+   */
+  private async auditRoleChange(entry: {
+    tenantId: string;
+    actorUserId: string;
+    targetUserId: string;
+    staffId: string;
+    action: string;
+    previousRole: AuditRoleSnapshot | null;
+    newRole: AuditRoleSnapshot;
+  }): Promise<void> {
+    try {
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          tenant: { id: entry.tenantId } as Tenant,
+          user: { id: entry.actorUserId } as User,
+          action: entry.action,
+          entity_type: 'staff_profile',
+          entity_id: entry.staffId,
+          old_values: {
+            target_user_id: entry.targetUserId,
+            role: entry.previousRole,
+          },
+          new_values: { role: entry.newRole },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to write audit log for ${entry.action}: ${(err as Error)?.message}`,
+      );
+    }
   }
 
   /** Toggles bookability. `active=false` keeps the record but hides it from booking/availability. */

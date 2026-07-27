@@ -58,3 +58,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 docs
 ziyaratech.backup
+
+# TestSprite backend tests — one file carries a platform-admin login inline
+# (the API issues tokens as HttpOnly cookies, so TestSprite's auto-auth cannot
+# fetch them). Keep them out of version control until that credential is moved
+# to an injected variable.
+/testsprite_tests

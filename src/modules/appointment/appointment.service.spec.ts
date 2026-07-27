@@ -22,6 +22,7 @@ import {
   AppointmentPaymentStatus,
 } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
+import { PERMISSION } from '../../rbac/rbac.constants';
 import {
   createMockRepository,
   createMockEntityManager,
@@ -46,6 +47,10 @@ describe('AppointmentsService', () => {
   let statusLogsRepo: MockRepository;
   let reschedulesRepo: MockRepository;
   let cancellationsRepo: MockRepository;
+  let staffProfilesRepo: MockRepository;
+
+  /** Full tenant-wide access — the default caller for existing tests. */
+  const FULL_ACCESS_CALLER = { id: USER, permissions: [PERMISSION.APPOINTMENTS_READ] };
 
   /** A fully-hydrated appointment returned by the trailing `findOne` reload. */
   const reloaded = {
@@ -72,6 +77,7 @@ describe('AppointmentsService', () => {
     statusLogsRepo = createMockRepository();
     reschedulesRepo = createMockRepository();
     cancellationsRepo = createMockRepository();
+    staffProfilesRepo = createMockRepository();
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -82,6 +88,7 @@ describe('AppointmentsService', () => {
         { provide: getRepositoryToken(AppointmentStatusLog), useValue: statusLogsRepo },
         { provide: getRepositoryToken(AppointmentReschedule), useValue: reschedulesRepo },
         { provide: getRepositoryToken(AppointmentCancellation), useValue: cancellationsRepo },
+        { provide: getRepositoryToken(StaffProfile), useValue: staffProfilesRepo },
         { provide: DataSource, useValue: dataSource },
         { provide: AvailabilityService, useValue: availability },
         { provide: UsageService, useValue: usage },
@@ -355,20 +362,116 @@ describe('AppointmentsService', () => {
   describe('findAll', () => {
     it('returns a tenant-scoped paginated result with filters applied', async () => {
       appointments.findAndCount.mockResolvedValueOnce([[{ id: 'a1' }], 1]);
-      const result = await service.findAll(TENANT, {
-        page: 1,
-        limit: 10,
-        status: AppointmentStatus.CONFIRMED,
-        branchId: 'b1',
-        staffId: 's1',
-        customerId: 'c1',
-        from: '2026-07-01T00:00:00Z',
-        to: '2026-07-31T00:00:00Z',
-      } as any);
+      const result = await service.findAll(
+        TENANT,
+        {
+          page: 1,
+          limit: 10,
+          status: AppointmentStatus.CONFIRMED,
+          branchId: 'b1',
+          staffId: 's1',
+          customerId: 'c1',
+          from: '2026-07-01T00:00:00Z',
+          to: '2026-07-31T00:00:00Z',
+        } as any,
+        FULL_ACCESS_CALLER,
+      );
 
       expect(result).toEqual({ data: [{ id: 'a1' }], total: 1, page: 1, limit: 10 });
       const arg = appointments.findAndCount.mock.calls[0][0];
-      expect(arg.where).toEqual(expect.objectContaining({ tenant: { id: TENANT } }));
+      expect(arg.where).toEqual(
+        expect.objectContaining({ tenant: { id: TENANT }, staff: { id: 's1' } }),
+      );
+    });
+  });
+
+  describe('ownership scoping (appointments.read_own)', () => {
+    const OWN_CALLER = { id: 'doctor-1', permissions: [PERMISSION.APPOINTMENTS_READ_OWN] };
+
+    describe('findAll', () => {
+      it('forces the staff filter to the caller\'s own StaffProfile, ignoring query.staffId', async () => {
+        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+        appointments.findAndCount.mockResolvedValueOnce([[{ id: 'a1' }], 1]);
+
+        await service.findAll(
+          TENANT,
+          { page: 1, limit: 10, staffId: 'someone-elses-staff-id' } as any,
+          OWN_CALLER,
+        );
+
+        expect(staffProfilesRepo.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { user: { id: 'doctor-1' }, tenant: { id: TENANT } },
+          }),
+        );
+        const arg = appointments.findAndCount.mock.calls[0][0];
+        expect(arg.where.staff).toEqual({ id: 'staff-doctor-1' });
+      });
+
+      it('returns an empty page without querying when the caller has no StaffProfile', async () => {
+        staffProfilesRepo.findOne.mockResolvedValueOnce(null);
+        const result = await service.findAll(TENANT, { page: 1, limit: 10 } as any, OWN_CALLER);
+        expect(result).toEqual({ data: [], total: 0, page: 1, limit: 10 });
+        expect(appointments.findAndCount).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('findOne', () => {
+      it('returns the appointment when it belongs to the caller\'s own StaffProfile', async () => {
+        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'staff-doctor-1' } });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+
+        await expect(service.findOne(TENANT, 'appt-1', OWN_CALLER)).resolves.toEqual(
+          expect.objectContaining({ id: 'appt-1' }),
+        );
+      });
+
+      it('returns NOT_FOUND (never a distinguishable forbidden) for another staff member\'s appointment', async () => {
+        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'someone-elses-staff-id' } });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+
+        await expect(service.findOne(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+          code: ErrorCode.NOT_FOUND,
+        });
+      });
+
+      it('returns NOT_FOUND when the caller has no StaffProfile at all', async () => {
+        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'staff-doctor-1' } });
+        staffProfilesRepo.findOne.mockResolvedValueOnce(null);
+
+        await expect(service.findOne(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+          code: ErrorCode.NOT_FOUND,
+        });
+      });
+
+      it('is unrestricted when no caller is passed (internal call sites)', async () => {
+        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'anyone' } });
+        await expect(service.findOne(TENANT, 'appt-1')).resolves.toEqual(
+          expect.objectContaining({ id: 'appt-1' }),
+        );
+        expect(staffProfilesRepo.findOne).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('listNotes / getTimeline', () => {
+      it('listNotes 404s for another staff member\'s appointment before touching notes', async () => {
+        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'someone-elses-staff-id' } });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+
+        await expect(service.listNotes(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+          code: ErrorCode.NOT_FOUND,
+        });
+        expect(notesRepo.find).not.toHaveBeenCalled();
+      });
+
+      it('getTimeline 404s for another staff member\'s appointment', async () => {
+        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'someone-elses-staff-id' } });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+
+        await expect(service.getTimeline(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+          code: ErrorCode.NOT_FOUND,
+        });
+      });
     });
   });
 
