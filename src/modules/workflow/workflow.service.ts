@@ -12,7 +12,7 @@ import { QUEUE, JOB } from '../../queue/queue.constants';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 import { WorkflowFilterDto } from './dto/workflow-filter.dto';
-import { WORKFLOW_OPERATOR, WORKFLOW_RUN_STATUS } from './workflow.constants';
+import { WORKFLOW_OPERATOR, WORKFLOW_RUN_STATUS, WORKFLOW_ACTION_CLAIM_STALE_MS } from './workflow.constants';
 
 /**
  * Tenant-scoped CRUD for workflows + the run lifecycle (create / evaluate
@@ -180,6 +180,65 @@ export class WorkflowService {
 
   async markRunning(runId: string): Promise<void> {
     await this.runs.update({ id: runId }, { status: WORKFLOW_RUN_STATUS.RUNNING });
+  }
+
+  /**
+   * ATOMIC CLAIM for one action (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.3). Replaces the prior check-then-execute
+   * guard (`handleAction` reading `run.results` in memory, then calling
+   * `executor.execute` — two concurrent deliveries of the SAME action could
+   * both observe "nothing recorded yet" and both run the side effect).
+   *
+   * A single conditional `UPDATE ... WHERE NOT EXISTS (...)` does the
+   * check-and-write in ONE statement: Postgres row-level locking means a
+   * second concurrent call blocks until the first commits, then re-evaluates
+   * the same WHERE clause against the now-updated row — so at most one caller
+   * ever observes `true`. The claim entry (`status: 'IN_PROGRESS'`) replaces
+   * any prior entry for the same index (so the array keeps exactly one entry
+   * per index, same invariant `appendResult` maintains), UNLESS that prior
+   * entry is itself a NON-STALE IN_PROGRESS or a terminal SUCCEEDED/SKIPPED —
+   * those block the claim. A prior FAILED entry, or a STALE IN_PROGRESS
+   * (older than `staleAfterMs` — the claim owner crashed without ever writing
+   * a terminal result), does not block: both are legitimate retry cases.
+   *
+   * Returns true iff THIS call won the claim and must now run the action;
+   * false means some other call already owns it (or already finished it).
+   */
+  async claimAction(
+    runId: string,
+    actionIndex: number,
+    type: string,
+    staleAfterMs = WORKFLOW_ACTION_CLAIM_STALE_MS,
+  ): Promise<boolean> {
+    const claim: WorkflowActionResult = {
+      index: actionIndex,
+      type,
+      status: 'IN_PROGRESS',
+      at: new Date().toISOString(),
+    };
+    const staleCutoff = new Date(Date.now() - staleAfterMs).toISOString();
+    // NOTE: `DataSource.query()` for an UPDATE/DELETE returns a TUPLE
+    // `[rows, affectedRowCount]` (see TypeORM's PostgresQueryRunner), not the
+    // rows array directly — only a plain SELECT returns rows unwrapped.
+    const [rows]: [Array<{ id: string }>, number] = await this.dataSource.query(
+      `UPDATE workflow_runs
+       SET results = (
+         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+         FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) AS elem
+         WHERE (elem->>'index')::int <> $2
+       ) || $4::jsonb
+       WHERE id = $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM jsonb_array_elements(COALESCE(results, '[]'::jsonb)) AS elem
+           WHERE (elem->>'index')::int = $2
+             AND elem->>'status' <> 'FAILED'
+             AND NOT (elem->>'status' = 'IN_PROGRESS' AND (elem->>'at')::timestamptz < $3::timestamptz)
+         )
+       RETURNING id`,
+      [runId, actionIndex, staleCutoff, JSON.stringify([claim])],
+    );
+    return Array.isArray(rows) && rows.length > 0;
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -98,6 +98,25 @@ if (process.env.NODE_ENV === 'production' && process.env.WORKER_ROLE === undefin
     '❌ WORKER_ROLE must be set explicitly in production — one of "all", "critical", or "dispatch". ' +
       'See docs/CACHING_QUEUES_AUDIT.md §0.5/§0.8.5: silently defaulting to "all" in production ' +
       'means every deployment gets the unsplit worker (shared DB pool, shared connection set) with no warning.',
+  );
+}
+
+// EXPLICIT `WORKER_ROLE=all` in production (gap-closure pass — see
+// docs/CACHING_QUEUES_AUDIT.md §0.8.10): the check above only catches an
+// UNSET value — an operator who explicitly typed `all` got zero feedback that
+// they've chosen the unsplit, monolithic worker (shared DB pool sized for
+// combined concurrency, every processor and infra cron in one process) rather
+// than the `critical`/`dispatch` split this whole role mechanism exists for.
+// `all` is a legitimate, supported choice for a small deployment — this is a
+// WARNING, not a hard failure, so it doesn't block a deployment that
+// genuinely doesn't need the split; it just makes the choice visible in logs
+// rather than silent.
+if (process.env.NODE_ENV === 'production' && process.env.WORKER_ROLE === 'all') {
+  new Logger('WorkerModule').warn(
+    '⚠️  WORKER_ROLE=all in production — running the UNSPLIT worker (every processor + cron in one ' +
+      'process, one shared DB pool). This is fine for a small deployment, but if you meant to isolate the ' +
+      'campaign recipient-dispatch hot path from everything else, set WORKER_ROLE=critical/dispatch on two ' +
+      'separate deployments instead. See docs/CACHING_QUEUES_AUDIT.md §0.3/§0.5.',
   );
 }
 

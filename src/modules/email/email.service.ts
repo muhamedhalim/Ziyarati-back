@@ -105,33 +105,44 @@ export class EmailService {
     return this.send({ to: p.to, template: 'staff_invitation', variables: p, tenantId: p.tenantId, idempotencyKey: p.token ? `invite:${p.token}` : undefined });
   }
 
-  sendSubscriptionNotification(p: { to: string; name?: string; event: 'activated' | 'renewed' | 'cancelled'; planName?: string; nextRenewal?: string; endsAt?: string; tenantId?: string }) {
+  sendSubscriptionNotification(p: { to: string; name?: string; event: 'activated' | 'renewed' | 'cancelled'; planName?: string; nextRenewal?: string; endsAt?: string; tenantId?: string; idempotencyKey?: string }) {
     const template = (
       { activated: 'subscription_activated', renewed: 'subscription_renewed', cancelled: 'subscription_cancelled' } as const
     )[p.event];
-    return this.send({ to: p.to, template, variables: p, tenantId: p.tenantId });
+    return this.send({ to: p.to, template, variables: p, tenantId: p.tenantId, idempotencyKey: p.idempotencyKey });
   }
 
-  sendDoctorNotification(p: { to: string; name?: string; title?: string; message: string; actionUrl?: string; actionLabel?: string; tenantId?: string }) {
-    return this.send({ to: p.to, template: 'doctor_notification', variables: p, tenantId: p.tenantId });
+  sendDoctorNotification(p: { to: string; name?: string; title?: string; message: string; actionUrl?: string; actionLabel?: string; tenantId?: string; idempotencyKey?: string }) {
+    return this.send({ to: p.to, template: 'doctor_notification', variables: p, tenantId: p.tenantId, idempotencyKey: p.idempotencyKey });
   }
 
-  sendPatientNotification(p: { to: string; name?: string; title?: string; message: string; actionUrl?: string; actionLabel?: string; tenantId?: string }) {
-    return this.send({ to: p.to, template: 'patient_notification', variables: p, tenantId: p.tenantId });
+  sendPatientNotification(p: { to: string; name?: string; title?: string; message: string; actionUrl?: string; actionLabel?: string; tenantId?: string; idempotencyKey?: string }) {
+    return this.send({ to: p.to, template: 'patient_notification', variables: p, tenantId: p.tenantId, idempotencyKey: p.idempotencyKey });
   }
 
-  sendSecurityAlert(p: { to: string; name?: string; message: string; actionUrl?: string; tenantId?: string }) {
-    return this.send({ to: p.to, template: 'security_alert', variables: p, tenantId: p.tenantId });
+  sendSecurityAlert(p: { to: string; name?: string; message: string; actionUrl?: string; tenantId?: string; idempotencyKey?: string }) {
+    return this.send({ to: p.to, template: 'security_alert', variables: p, tenantId: p.tenantId, idempotencyKey: p.idempotencyKey });
   }
 
   /**
-   * Content-addressed fallback (gap-closure pass — see
-   * docs/CACHING_QUEUES_AUDIT.md §0.8.11): hashes template + recipient +
-   * tenant + the FULL variables payload, not just template+recipient. Two
-   * calls with the SAME content (an exact redelivery) collapse to one send;
-   * two calls with genuinely DIFFERENT content (a different message to the
-   * same doctor using the same template) get different keys and both send —
-   * a key that ignored `variables` would wrongly drop the second one.
+   * LAST-RESORT fallback (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md
+   * §0.8.4) for a caller that supplies no `idempotencyKey` of its own — hashes
+   * template + recipient + tenant + the FULL variables payload, not just
+   * template+recipient, so two calls with genuinely DIFFERENT content still
+   * get different keys.
+   *
+   * This is NOT a substitute for a real business-process key. A content hash
+   * dedupes by WHAT THE MESSAGE SAYS, not by WHY it was sent — two DIFFERENT
+   * legitimate notifications (e.g. two separate monthly usage-report runs
+   * whose digest totals happen to be byte-identical, such as a quiet tenant
+   * with zero activity two months running) would collide and the second,
+   * genuinely-new send would be silently dropped. Callers that have a natural
+   * business identifier — an event id, request id, schedule-run timestamp —
+   * MUST pass their own `idempotencyKey` built from THAT (see
+   * `UsageReportService.deliver`, which keys on `scheduleId + claimedAt`, not
+   * on the rendered digest text). This fallback only exists for callers with
+   * no such identifier at all, so at least an EXACT redelivery still collapses
+   * instead of double-sending.
    */
   private fallbackIdempotencyKey(input: SendEmailInput): string {
     const recipient = Array.isArray(input.to) ? [...input.to].sort().join(',') : input.to;

@@ -45,4 +45,18 @@ describe('EmailService — fallback idempotencyKey (gap-closure pass, §0.8.11)'
     const job = queue.enqueueEmail.mock.calls[0][0];
     expect(job.idempotencyKey).toBe('reset:tok-123');
   });
+
+  it('a caller of sendDoctorNotification with a business-process key (e.g. UsageReportService) bypasses the content hash entirely — two calls with IDENTICAL content but DIFFERENT keys both send', async () => {
+    await service.sendDoctorNotification({
+      to: 'admin@x.com', title: 'Report', message: 'identical digest text', idempotencyKey: 'usage-report:sched-1:2026-06-01T00:00:00.000Z',
+    });
+    await service.sendDoctorNotification({
+      to: 'admin@x.com', title: 'Report', message: 'identical digest text', idempotencyKey: 'usage-report:sched-1:2026-07-01T00:00:00.000Z',
+    });
+
+    const [first, second] = queue.enqueueEmail.mock.calls.map((c) => c[0].idempotencyKey);
+    expect(first).toBe('usage-report:sched-1:2026-06-01T00:00:00.000Z');
+    expect(second).toBe('usage-report:sched-1:2026-07-01T00:00:00.000Z');
+    expect(first).not.toBe(second);
+  });
 });

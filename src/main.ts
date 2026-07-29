@@ -1,4 +1,4 @@
-import { ValidationPipe } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
@@ -183,6 +183,34 @@ to another clinic), \`VALIDATION_ERROR\` (bad query params), \`RATE_LIMITED\`.
   const redisIoAdapter = new RedisIoAdapter(app);
   await redisIoAdapter.connectToRedis();
   app.useWebSocketAdapter(redisIoAdapter);
+
+  // ---------------- Graceful shutdown ----------------
+  // Gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.8. Without this,
+  // NestJS's `onModuleDestroy` lifecycle hooks NEVER run on the API process: a
+  // plain `NestFactory.create()` app only wires them up if something actually
+  // calls `app.close()`, and nothing here ever did — SIGTERM (every normal
+  // deploy/restart) just killed the process outright. That silently skipped
+  // `ProducerQueues.onModuleDestroy()` (and every other module's cleanup),
+  // leaking its Redis producer connections on every single restart rather than
+  // closing them — the exact gap this closes. Mirrors `worker.ts`'s identical
+  // manual SIGTERM/SIGINT handling for consistency across both processes.
+  const logger = new Logger('Bootstrap');
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.log(`Received ${signal} — closing HTTP server and cleaning up…`);
+    try {
+      await app.close(); // runs onModuleDestroy on every module, incl. ProducerQueues
+      logger.log('API shut down cleanly.');
+      process.exit(0);
+    } catch (err) {
+      logger.error(`Error during shutdown: ${(err as Error)?.message}`);
+      process.exit(1);
+    }
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 
   // ---------------- Start Server ----------------
   const port = process.env.PORT ?? 3000;

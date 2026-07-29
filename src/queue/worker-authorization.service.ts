@@ -70,10 +70,18 @@ export class WorkerAuthorizationService {
    * the worker) when the job's tenant/actor/permission is not currently valid.
    */
   async assertAuthorized(jobName: string, data: BaseJobData): Promise<void> {
+    // FAIL CLOSED (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md
+    // §0.8.7): a job name missing from JOB_AUTHZ_POLICY is rejected
+    // permanently rather than silently inferred as the most permissive tier.
+    // A new job type someone forgets to register here must be loud (a failed
+    // job an operator investigates), never a quiet unchecked execution.
     if (!(jobName in JOB_AUTHZ_POLICY)) {
-      this.logger.warn(
-        `No authorization policy registered for job "${jobName}" — falling back to payload-shape inference. ` +
-          'Register it in job-authorization.constants.ts.',
+      this.logger.error(
+        `FAIL-CLOSED: no authorization policy registered for job "${jobName}" — rejecting permanently. ` +
+          'Register it in job-authorization.constants.ts before this job type can run.',
+      );
+      throw new UnrecoverableError(
+        `No authorization policy registered for job "${jobName}" — job permanently rejected (fail-closed)`,
       );
     }
     const policy = resolveJobAuthzPolicy(jobName);
