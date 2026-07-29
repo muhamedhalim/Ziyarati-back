@@ -6,6 +6,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WhatsappSendJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WhatsappExecutionService } from '../../modules/whatsapp/whatsapp-execution.service';
 import { SendTemplateMessageDto } from '../../modules/whatsapp/dto/send-template-message.dto';
 
@@ -22,6 +23,7 @@ export class WhatsappProcessor extends WorkerHost {
   constructor(
     private readonly exec: WhatsappExecutionService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -31,7 +33,7 @@ export class WhatsappProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} template=${data.templateId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, () =>
+    return runInTenantContext(this.ctx, this.authz, data, () =>
       this.exec.sendTemplateMessage(
         data.tenantId,
         data.templateId,

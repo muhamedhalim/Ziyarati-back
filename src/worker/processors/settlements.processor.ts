@@ -6,6 +6,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { SettlementsProcessJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
 import { WorkerTenantsService } from '../worker-tenants.service';
 import { SettlementService } from '../../modules/payments/settlement.service';
@@ -27,6 +28,7 @@ export class SettlementsProcessor extends WorkerHost {
     private readonly tenants: WorkerTenantsService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -49,7 +51,7 @@ export class SettlementsProcessor extends WorkerHost {
       return { fannedOut: ids.length };
     }
 
-    return runInTenantContext(this.ctx, data, async () => {
+    return runInTenantContext(this.ctx, this.authz, data, async () => {
       try {
         const result = await this.settlements.generate(data.tenantId!, {
           periodStart: data.periodStart,

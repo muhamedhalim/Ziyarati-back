@@ -50,15 +50,27 @@ function baseOptions(config: ConfigService): RedisOptions {
  * PRODUCER connection (HTTP API + relay enqueues). Keeps the offline queue so a
  * brief Redis blip buffers `add()` calls instead of throwing. Default
  * `maxRetriesPerRequest` is fine for non-blocking producer commands.
+ *
+ * Deliberately NO `commandTimeout` here (Phase 0 correction — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.2): a hard timeout would turn a transient
+ * Redis blip into a failed enqueue instead of one the offline queue buffers,
+ * which is the opposite of what this profile is for.
  */
 export function producerConnectionOptions(config: ConfigService): RedisOptions {
-  return { ...baseOptions(config), enableOfflineQueue: true };
+  return { ...baseOptions(config), enableOfflineQueue: true, connectionName: 'bullmq:producer' };
 }
 
 /**
  * BLOCKING connection (Workers + QueueEvents). BullMQ mandates
  * `maxRetriesPerRequest: null` here — its blocking commands must never be
  * aborted mid-wait.
+ *
+ * Deliberately NO `commandTimeout` here either (same Phase 0 correction): a
+ * command timeout on a blocking connection would race BullMQ's own internal
+ * lock-renewal/blocking-read timers and risks a Worker silently losing its job
+ * lock mid-processing — precisely the failure class this audit is trying to
+ * prevent, not cause. Application-level fail-fast behaviour belongs on the
+ * `application`/`rateLimiter`/`cache` profiles below, never here.
  */
 export function blockingConnectionOptions(config: ConfigService): RedisOptions {
   // `maxRetriesPerRequest: null` is mandatory for BullMQ blocking roles. Offline
@@ -68,6 +80,7 @@ export function blockingConnectionOptions(config: ConfigService): RedisOptions {
     ...baseOptions(config),
     maxRetriesPerRequest: null,
     enableOfflineQueue: true,
+    connectionName: 'bullmq:worker',
   };
 }
 
@@ -76,19 +89,69 @@ export function blockingConnectionOptions(config: ConfigService): RedisOptions {
  * profile it needs `maxRetriesPerRequest: null`, but it is read-only (never
  * enqueues) so the offline queue is disabled. A distinct instance keeps the
  * monitor's blocking `XREAD`/subscribe loop off the producer and worker sockets.
+ * No `commandTimeout` for the same reason as the blocking profile.
  */
 export function eventsConnectionOptions(config: ConfigService): RedisOptions {
   return {
     ...baseOptions(config),
     maxRetriesPerRequest: null,
     enableOfflineQueue: false,
+    connectionName: 'bullmq:events',
   };
 }
 
 /**
- * @deprecated Back-compat alias kept for existing imports. Returns the blocking
- * profile (the previous behaviour). Prefer the role-specific helpers above.
+ * APPLICATION commands (the plain KV helpers: health-check `PING`, and the
+ * generic `kvGet`/`kvSet` used e.g. by the embedding cache and the reaper
+ * heartbeat). Previously these silently rode the BullMQ producer connection —
+ * meaning a "fail open on Redis error" call site never actually failed fast,
+ * it just inherited the producer's slow-to-fail buffering. This profile is the
+ * fix: short `commandTimeout`, `enableOfflineQueue: false` so a command REJECTS
+ * immediately during an outage instead of queueing silently, and a single retry
+ * (`maxRetriesPerRequest: 1`) so a call site's own catch block actually runs
+ * within a bounded time.
  */
-export function redisConnectionOptions(config: ConfigService): RedisOptions {
-  return blockingConnectionOptions(config);
+export function applicationConnectionOptions(config: ConfigService): RedisOptions {
+  return {
+    ...baseOptions(config),
+    commandTimeout: 2000,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectionName: 'app:kv',
+  };
+}
+
+/**
+ * RATE LIMITER (the tenant/campaign/API-key token-bucket Lua script). Same
+ * fail-fast rationale as `application` — every caller of
+ * `TenantRateLimiterService.consume()` has an explicit fail-open/fail-closed
+ * branch that must actually run, not hang for the ~60-80s a buffered producer
+ * connection would take to give up.
+ */
+export function rateLimiterConnectionOptions(config: ConfigService): RedisOptions {
+  return {
+    ...baseOptions(config),
+    commandTimeout: 2000,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectionName: 'app:rate-limiter',
+  };
+}
+
+/**
+ * CACHE (AnalyticsCacheService's read-through cache). Previously built from the
+ * deprecated `redisConnectionOptions` alias (i.e. the BLOCKING profile) with an
+ * ad-hoc `maxRetriesPerRequest: 1` override — correct by accident, not by
+ * design. This is the proper dedicated profile: fail-fast, no offline
+ * buffering (a cache read/write should reject immediately and fall through to
+ * the database, never queue).
+ */
+export function cacheConnectionOptions(config: ConfigService): RedisOptions {
+  return {
+    ...baseOptions(config),
+    commandTimeout: 2000,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectionName: 'app:cache',
+  };
 }

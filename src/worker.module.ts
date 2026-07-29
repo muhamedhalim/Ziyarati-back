@@ -14,7 +14,7 @@ import { OutboxJob } from './entities/Campaigns/OutboxJob';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
-import { ALL_QUEUES } from './queue/queue.constants';
+import { resolveWorkerRole, queuesForRole } from './queue/queue.constants';
 import { blockingConnectionOptions } from './queue/redis.config';
 
 // Domain modules whose EXISTING services the processors reuse (no logic copied).
@@ -61,6 +61,67 @@ import { IntegrationSyncProcessor } from './worker/processors/integration-sync.p
 import { IntegrationInboundProcessor } from './worker/processors/integration-inbound.processor';
 
 /**
+ * Which processors/infra services this process instantiates, resolved ONCE at
+ * module load from `WORKER_ROLE` (Phase 0 correction — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.3/§0.5, not the original audit's rejected
+ * "just raise DB_POOL_MAX" plan).
+ *
+ * `all` (default — no env var set, e.g. every existing deployment and local
+ * dev) is BYTE-IDENTICAL to pre-Phase-0 behaviour: every processor and infra
+ * service registers in one process, nothing changed. Only an operator who
+ * explicitly sets `WORKER_ROLE=critical` (everything except the recipient
+ * dispatch hot path) or `WORKER_ROLE=dispatch` (ONLY the recipient dispatch
+ * hot path, `campaigns.processRecipient`) on two separately-deployed
+ * processes activates the split — each deployment then gets its own
+ * `DB_POOL_MAX` and its own replica count, instead of one shared pool sized
+ * for the combined theoretical concurrency.
+ *
+ * `WorkerTenantsService`/`QueueMonitorService`/`ScheduleRegistrarService`/
+ * `OutboxRelayService` are cron/monitoring/relay infra unrelated to campaign
+ * dispatch (they cover analytics, settlements, subscriptions, notifications,
+ * the outbox relay, and cross-queue failed/stalled logging) — they run under
+ * `critical`/`all` only, so a `dispatch`-role deployment doesn't duplicate
+ * cron registration or double up on QueueEvents connections for no reason.
+ */
+const WORKER_ROLE = resolveWorkerRole();
+
+const DISPATCH_PROCESSORS = [CampaignDispatchProcessor];
+
+const CRITICAL_PROCESSORS = [
+  NotificationsProcessor,
+  WhatsappProcessor,
+  // Inbound Meta events + media, on their own queues so neither can stall
+  // outbound sends (see QUEUE.WHATSAPP_WEBHOOK / WHATSAPP_MEDIA).
+  WhatsappWebhookProcessor,
+  WhatsappMediaProcessor,
+  CampaignLaunchProcessor,
+  CampaignFanoutProcessor,
+  AiProcessor,
+  AnalyticsProcessor,
+  SettlementsProcessor,
+  SubscriptionsProcessor,
+  RefundsProcessor,
+  PaymentsProcessor,
+  PlatformProcessor,
+  EmailProcessor,
+  UsageReportProcessor,
+  WorkflowProcessor,
+  WebhookDeliveryProcessor,
+  IntegrationImportProcessor,
+  IntegrationSyncProcessor,
+  IntegrationInboundProcessor,
+];
+
+const CRITICAL_INFRA = [WorkerTenantsService, QueueMonitorService, ScheduleRegistrarService, OutboxRelayService];
+
+const WORKER_PROVIDERS =
+  WORKER_ROLE === 'dispatch'
+    ? DISPATCH_PROCESSORS
+    : WORKER_ROLE === 'critical'
+      ? [...CRITICAL_INFRA, ...CRITICAL_PROCESSORS]
+      : [...CRITICAL_INFRA, ...CRITICAL_PROCESSORS, ...DISPATCH_PROCESSORS]; // 'all' — unchanged from pre-Phase-0
+
+/**
  * The BACKGROUND WORKER application root (bootstrapped by `worker.ts`).
  *
  * This is a separate process root from AppModule: it contains the BullMQ
@@ -68,6 +129,13 @@ import { IntegrationInboundProcessor } from './worker/processors/integration-inb
  * API. It imports the same DB + tenant-context + queue infrastructure and the
  * domain modules whose services the processors call, but NOT the HTTP guards,
  * controllers' auth, or the seeder. Stateless and horizontally scalable.
+ *
+ * Domain module `imports` stay UNCONDITIONAL across all three roles (trimming
+ * them per-role was considered and rejected — the saving would be a handful of
+ * unused service instances at boot, not DB/Redis connections, and it risks
+ * subtle cross-module DI breakage for a marginal gain). What's conditional is
+ * `providers`: only registering a `@Processor` for the queues this role
+ * actually consumes.
  */
 @Module({
   imports: [
@@ -96,8 +164,15 @@ import { IntegrationInboundProcessor } from './worker/processors/integration-inb
     // the API's `QueueModule` import stays untouched, so producers keep using
     // `ProducerQueues`'s own connections, unaffected). Same shared blocking
     // connection factory the module doc already describes as the intended design.
+    //
+    // Registers ONLY `queuesForRole(WORKER_ROLE)` — under the default `all`
+    // role that's every queue (unchanged behaviour); under a split deployment
+    // each process only opens BullMQ connections for queues it actually
+    // consumes, which is the other half of the Phase 0 connection-count fix
+    // (see docs/CACHING_QUEUES_AUDIT.md §0.4 — each registered queue is its
+    // own ioredis connection regardless of whether a processor exists for it).
     BullModule.registerQueueAsync(
-      ...ALL_QUEUES.map((name) => ({
+      ...queuesForRole(WORKER_ROLE).map((name) => ({
         name,
         imports: [ConfigModule],
         inject: [ConfigService],
@@ -120,34 +195,6 @@ import { IntegrationInboundProcessor } from './worker/processors/integration-inb
     // Phase 4 — async import + sync processors reuse the shared write pipeline.
     IntegrationPlatformModule,
   ],
-  providers: [
-    WorkerTenantsService,
-    QueueMonitorService,
-    ScheduleRegistrarService,
-    OutboxRelayService,
-    NotificationsProcessor,
-    WhatsappProcessor,
-    // Inbound Meta events + media, on their own queues so neither can stall
-    // outbound sends (see QUEUE.WHATSAPP_WEBHOOK / WHATSAPP_MEDIA).
-    WhatsappWebhookProcessor,
-    WhatsappMediaProcessor,
-    CampaignLaunchProcessor,
-    CampaignFanoutProcessor,
-    CampaignDispatchProcessor,
-    AiProcessor,
-    AnalyticsProcessor,
-    SettlementsProcessor,
-    SubscriptionsProcessor,
-    RefundsProcessor,
-    PaymentsProcessor,
-    PlatformProcessor,
-    EmailProcessor,
-    UsageReportProcessor,
-    WorkflowProcessor,
-    WebhookDeliveryProcessor,
-    IntegrationImportProcessor,
-    IntegrationSyncProcessor,
-    IntegrationInboundProcessor,
-  ],
+  providers: WORKER_PROVIDERS,
 })
 export class WorkerModule {}

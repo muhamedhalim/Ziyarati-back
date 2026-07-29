@@ -6,6 +6,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { IntegrationSyncJobData } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { IntegrationSyncService } from '../../modules/integration-platform/sync/integration-sync.service';
 
 /**
@@ -22,6 +23,7 @@ export class IntegrationSyncProcessor extends WorkerHost {
   constructor(
     private readonly sync: IntegrationSyncService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -31,7 +33,7 @@ export class IntegrationSyncProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] sync job=${data.syncJobId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, () => this.sync.process(data.syncJobId));
+    return runInTenantContext(this.ctx, this.authz, data, () => this.sync.process(data.syncJobId));
   }
 
   @OnWorkerEvent('failed')

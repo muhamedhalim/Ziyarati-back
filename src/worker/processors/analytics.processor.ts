@@ -9,6 +9,7 @@ import {
 } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
 import { WorkerTenantsService } from '../worker-tenants.service';
 import { DashboardMetricService } from '../../modules/analytics/dashboard-metric.service';
@@ -33,6 +34,7 @@ export class AnalyticsProcessor extends WorkerHost {
     private readonly tenants: WorkerTenantsService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -41,7 +43,7 @@ export class AnalyticsProcessor extends WorkerHost {
     if (job.name === JOB.ANALYTICS_AGGREGATE) {
       const data = job.data as AnalyticsAggregateJob;
       if (!data.tenantId) return this.sweepAggregate();
-      return runInTenantContext(this.ctx, data, () => this.dashboard.refresh(data.tenantId!));
+      return runInTenantContext(this.ctx, this.authz, data, () => this.dashboard.refresh(data.tenantId!));
     }
 
     if (job.name === JOB.ANALYTICS_CLEANUP) {
@@ -52,7 +54,7 @@ export class AnalyticsProcessor extends WorkerHost {
     // analytics.generateReport
     const data = job.data as AnalyticsGenerateReportJob;
     if (!data.tenantId) return this.sweepReports(data);
-    return runInTenantContext<unknown>(this.ctx, data, async () => {
+    return runInTenantContext<unknown>(this.ctx, this.authz, data, async () => {
       if (data.kind === 'monthly') {
         return this.monthly.generate(data.tenantId!, { month: data.month!, branchId: data.branchId });
       }

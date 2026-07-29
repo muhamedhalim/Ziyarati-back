@@ -57,7 +57,17 @@ export function typeOrmFactory(config: ConfigService): TypeOrmModuleOptions {
     logging: logging ? ['query', 'error', 'warn'] : ['error'],
     ssl: isProduction ? { rejectUnauthorized: false } : false,
     extra: {
-      max: config.get<number>('DB_POOL_MAX', 10) ?? 10,
+      // Default raised 10 → 15 (Phase 0 correction, measured — see
+      // docs/CACHING_QUEUES_AUDIT.md §0.3). NOT raised to match the worker's
+      // theoretical concurrency sum: the local benchmark showed acquisition
+      // wait scales with the oversubscription RATIO (concurrency/poolMax), not
+      // the raw concurrency number, and pool size beyond ~1.5-2x oversubscription
+      // has diminishing returns for this workload. Pair this with `WORKER_ROLE`
+      // (queue.constants.ts) to actually reduce the ratio for the campaign
+      // dispatch hot path, rather than growing this number indefinitely — each
+      // deployment (API, critical worker, dispatch worker) can still override
+      // via its own DB_POOL_MAX env var.
+      max: config.get<number>('DB_POOL_MAX', 15) ?? 15,
       min: config.get<number>('DB_POOL_MIN', 1) ?? 1,
       idleTimeoutMillis: config.get<number>('DB_POOL_IDLE_TIMEOUT', 30000),
     },

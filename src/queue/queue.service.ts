@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Job, JobsOptions, Queue } from 'bullmq';
-import { Redis } from 'ioredis';
 import { createHash } from 'node:crypto';
 
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
 import { ProducerQueues } from './producer-queues';
+import { AppRedisService } from './app-redis.service';
 import { ALL_QUEUES, BACKOFF_EXPO_JITTER, JOB, QUEUE, QueueName } from './queue.constants';
 import {
   AiExecuteJob,
@@ -54,6 +54,7 @@ export class QueueService {
   constructor(
     private readonly producers: ProducerQueues,
     private readonly ctx: TenantContextService,
+    private readonly appRedis: AppRedisService,
   ) {
     // All enqueues go through the dedicated PRODUCER-profile Queue instances.
     this.queues = producers.record();
@@ -416,27 +417,25 @@ export class QueueService {
   }
 
   // ── Health helpers (used by HealthController) ────────────────────────────
+  //
+  // These delegate to AppRedisService's dedicated `application` client — NOT
+  // a BullMQ producer connection. Before Phase 0 they rode
+  // `queues[NOTIFICATIONS].client`, which meant a Redis outage made them hang
+  // for the producer profile's buffered-retry window (~60-80s) instead of
+  // failing fast. See docs/CACHING_QUEUES_AUDIT.md §0.2/§0.5 (C2).
 
   async kvSet(key: string, value: string, ttlSec?: number): Promise<void> {
-    const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
-    if (ttlSec) await client.set(key, value, 'EX', ttlSec);
-    else await client.set(key, value);
+    if (ttlSec) await this.appRedis.application.set(key, value, 'EX', ttlSec);
+    else await this.appRedis.application.set(key, value);
   }
 
   async kvGet(key: string): Promise<string | null> {
-    const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
-    return client.get(key);
-  }
-
-  /** Shared ioredis client (used by the per-tenant rate limiter Lua script). */
-  async client(): Promise<Redis> {
-    return (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
+    return this.appRedis.application.get(key);
   }
 
   async redisPing(): Promise<number> {
-    const client = (await this.queues[QUEUE.NOTIFICATIONS].client) as unknown as Redis;
     const started = Date.now();
-    await client.ping();
+    await this.appRedis.application.ping();
     return Date.now() - started;
   }
 

@@ -1,13 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
 
 import { IntegrationSyncJob } from '../../../entities/Integration/IntegrationSyncJob';
 import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
 import { Tenant } from '../../../entities/SaaS-Core/Tenant';
 import { User } from '../../../entities/Auth&RBAC/User';
+import { OutboxJob } from '../../../entities/Campaigns/OutboxJob';
 import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
 import { QueueService } from '../../../queue/queue.service';
+import { QUEUE, JOB } from '../../../queue/queue.constants';
 
 import { StartSyncDto } from '../dto/start-sync.dto';
 import { QueryJobsDto } from '../dto/query-jobs.dto';
@@ -68,6 +70,7 @@ export class IntegrationSyncService {
     private readonly admission: IntegrationAdmissionService,
     private readonly serviceAccount: IntegrationServiceAccountService,
     private readonly idMap: IntegrationIdMapService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
@@ -92,25 +95,34 @@ export class IntegrationSyncService {
       mode === SYNC_MODE.INCREMENTAL ? await this.lastSuccessfulCursor(tenantId, dto.connectionId, resource, direction) : null;
 
     try {
-      const job = await this.jobs.save(
-        this.jobs.create({
-          tenant: { id: tenantId } as Tenant,
-          connection: { id: dto.connectionId } as IntegrationConnection,
-          resource_type: resource,
-          direction,
-          mode,
-          status: JOB_STATUS.PENDING,
-          cursor,
-          last_successful_cursor: cursor,
-          triggered_by: actor.userId ? ({ id: actor.userId } as User) : null,
-        }),
-      );
-
-      try {
-        await this.queue.enqueueIntegrationSync({ tenantId, syncJobId: job.id });
-      } catch (err) {
-        this.logger.error(`sync job ${job.id} enqueue failed (kept pending): ${(err as Error)?.message}`);
-      }
+      // Job row + enqueue-intent in ONE transaction via the transactional
+      // outbox (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5 item 4 /
+      // original audit H6). See IntegrationImportJobService.create for the
+      // identical pattern and rationale.
+      const job = await this.dataSource.transaction(async (mgr) => {
+        const created = await mgr.save(
+          mgr.create(IntegrationSyncJob, {
+            tenant: { id: tenantId } as Tenant,
+            connection: { id: dto.connectionId } as IntegrationConnection,
+            resource_type: resource,
+            direction,
+            mode,
+            status: JOB_STATUS.PENDING,
+            cursor,
+            last_successful_cursor: cursor,
+            triggered_by: actor.userId ? ({ id: actor.userId } as User) : null,
+          }),
+        );
+        await mgr.save(
+          mgr.create(OutboxJob, {
+            queue: QUEUE.INTEGRATION_SYNC,
+            job_name: JOB.INTEGRATION_SYNC,
+            dedupe_key: `integration-sync-${created.id}`,
+            payload: { tenantId, syncJobId: created.id },
+          }),
+        );
+        return created;
+      });
 
       await this.audit.record(INTEGRATION_AUDIT_ACTION.IMPORT, tenantId, resource, job.id, actor, {
         action: 'sync.start', connectionId: dto.connectionId, direction, mode,
@@ -570,7 +582,14 @@ export class IntegrationSyncService {
     };
   }
 
-  /** Recover runs left active by a dead worker/enqueue failure (idempotent). */
+  /**
+   * Recover runs left active by a dead worker (idempotent). NOTE (Phase 0):
+   * `start()` no longer risks an enqueue-failure-stuck `pending` row — that
+   * path now goes through the transactional outbox. This still matters for a
+   * worker that dies mid-`process()` (row already `running`). Not currently
+   * wired to a scheduled sweep — see the identical note on
+   * `IntegrationImportJobService.recoverStale`.
+   */
   async recoverStale(olderThanMs = 60_000): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);
     const stale = await this.jobs.find({

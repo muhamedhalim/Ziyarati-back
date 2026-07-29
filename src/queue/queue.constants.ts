@@ -162,3 +162,43 @@ export function expoJitterBackoff(attemptsMade: number): number {
   const exp = Math.min(base * 2 ** (attemptsMade - 1), max);
   return Math.floor(exp / 2 + Math.random() * (exp / 2));
 }
+
+/**
+ * Worker deployment role (Phase 0 correction — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.3/§0.5). Measured locally: 21 processors at
+ * the default concurrency sum to a much smaller DB-pool draw than
+ * `campaigns.processRecipient` alone once its concurrency (25, uncapped by
+ * anything else) is folded in, and the two have very different failure/scale
+ * profiles (one is provider-throughput-bound, the rest are DB/CPU-bound
+ * sweeps and dispatch-adjacent work). Splitting them into separate
+ * deployments — each with its OWN `DB_POOL_MAX` — was measured to be more
+ * effective than raising one shared pool to match the combined theoretical
+ * concurrency (the benchmark showed diminishing returns from pool size once
+ * concurrency is already several times the pool).
+ *
+ * Default `all` is a NO-OP change: a deployment that never sets `WORKER_ROLE`
+ * (today's single-worker-process setup, and local dev) behaves exactly as
+ * before this correction — every processor registers in one process, same as
+ * today. Only setting `WORKER_ROLE=critical` or `WORKER_ROLE=dispatch`
+ * activates the split, for an operator who has provisioned two deployments.
+ */
+export type WorkerRole = 'all' | 'critical' | 'dispatch';
+
+export function resolveWorkerRole(): WorkerRole {
+  const raw = (process.env.WORKER_ROLE ?? 'all').trim().toLowerCase();
+  return raw === 'critical' || raw === 'dispatch' ? raw : 'all';
+}
+
+/** The one queue carved out into its own deployment under `WORKER_ROLE=dispatch`. */
+export const DISPATCH_ONLY_QUEUES: QueueName[] = [QUEUE.CAMPAIGNS_PROCESS];
+
+/**
+ * Which queues THIS process should register with BullMQ (`registerQueueAsync`
+ * in worker.module.ts), given its resolved role. `all` (the default) registers
+ * everything, matching today's unsplit behaviour exactly.
+ */
+export function queuesForRole(role: WorkerRole): QueueName[] {
+  if (role === 'dispatch') return DISPATCH_ONLY_QUEUES;
+  if (role === 'critical') return ALL_QUEUES.filter((q) => !DISPATCH_ONLY_QUEUES.includes(q));
+  return ALL_QUEUES;
+}

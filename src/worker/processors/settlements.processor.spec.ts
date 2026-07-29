@@ -22,6 +22,7 @@ describe('SettlementsProcessor', () => {
       queue as unknown as QueueService,
       // a real (dependency-free) context service so runInTenantContext works
       new TenantContextService(),
+      { assertAuthorized: jest.fn().mockResolvedValue(undefined) } as any,
     );
   });
 

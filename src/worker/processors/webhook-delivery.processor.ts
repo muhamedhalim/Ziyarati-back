@@ -7,6 +7,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WebhookDeliverJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
 import { WebhookEndpointService } from '../../modules/platform/webhook-endpoint.service';
 import { WebhookDeliveryService } from '../../modules/platform/webhook-delivery.service';
@@ -55,6 +56,7 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     private readonly endpoints: WebhookEndpointService,
     private readonly ctx: TenantContextService,
     private readonly queue: QueueService,
+    private readonly authz: WorkerAuthorizationService,
     config: ConfigService,
   ) {
     super();
@@ -66,7 +68,7 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] delivery=${data.webhookDeliveryId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, () =>
+    return runInTenantContext(this.ctx, this.authz, data, () =>
       this.deliver(data.webhookDeliveryId, job.attemptsMade + 1),
     );
   }

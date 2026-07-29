@@ -1,13 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
 
 import { IntegrationInboundEvent } from '../../../entities/Integration/IntegrationInboundEvent';
 import { IntegrationWebhookEndpoint } from '../../../entities/Integration/IntegrationWebhookEndpoint';
 import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
 import { Tenant } from '../../../entities/SaaS-Core/Tenant';
+import { OutboxJob } from '../../../entities/Campaigns/OutboxJob';
 import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
 import { QueueService } from '../../../queue/queue.service';
+import { QUEUE, JOB } from '../../../queue/queue.constants';
 
 import {
   ADMISSION_OP,
@@ -76,10 +78,15 @@ export interface InboundReceipt {
  * source-of-truth enforcement, protected-field rejection, external-id mapping,
  * conflict persistence and audit are shared, not reimplemented.
  *
- * ACK SEMANTICS. The receiver persists the event BEFORE enqueuing and only then
- * acks 202. It never acks work it has not durably recorded, and it never
- * silently drops an accepted event: if the enqueue fails, the row stays
- * `accepted` and `recoverStale()` re-enqueues it. Rejections are acked with an
+ * ACK SEMANTICS. The receiver persists the event AND its enqueue-intent in one
+ * DB transaction (the transactional outbox — see OutboxJob/OutboxRelayService)
+ * and only then acks 202. Enqueuing is now a pure database write, not a Redis
+ * call — a Redis outage at accept time can no longer produce a durably-recorded
+ * event that never gets processed (the prior failure mode this section used to
+ * describe): the worker-side relay is what talks to Redis, on its own schedule,
+ * with its own recovery for a mid-publish crash. Only a genuine database
+ * failure rolls back the whole accept (nothing was ever committed). Rejections
+ * are acked with an
  * explicit 4xx and a safe reason CODE so a provider can fix its integration; a
  * duplicate is acked 200 (the provider did nothing wrong).
  *
@@ -105,6 +112,7 @@ export class IntegrationInboundService {
     private readonly serviceAccount: IntegrationServiceAccountService,
     private readonly audit: IntegrationAuditService,
     private readonly queue: QueueService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ── Receive (public HTTP path) ────────────────────────────────────────────
@@ -220,25 +228,39 @@ export class IntegrationInboundService {
       return this.rejectAuthenticated(endpoint, tenantId, connectionId, eventId, eventType, INBOUND_REJECTION.PROTECTED_FIELDS, ip);
     }
 
-    // 10. Persist BEFORE enqueue. The unique (tenant, endpoint, event id) index
-    //     is the replay guard — not a service-level "seen it?" check that two
-    //     concurrent deliveries could both pass.
+    // 10. Persist + enqueue-intent in ONE transaction via the transactional
+    //     outbox (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5 item 4 /
+    //     original audit H6). The unique (tenant, endpoint, event id) index is
+    //     the replay guard — not a service-level "seen it?" check that two
+    //     concurrent deliveries could both pass — and it fires on the INSERT
+    //     inside this transaction exactly as it did on the old standalone save.
     let event: IntegrationInboundEvent;
     try {
-      event = await this.events.save(
-        this.events.create({
-          tenant: { id: tenantId } as Tenant,
-          endpoint: { id: endpoint.id } as IntegrationWebhookEndpoint,
-          connection: { id: connectionId } as IntegrationConnection,
-          provider_event_id: eventId,
-          event_type: eventType,
-          resource_type: mapped.resource,
-          external_id: externalId,
-          status: INBOUND_STATUS.ACCEPTED,
-          payload,
-          signature_timestamp: h.timestamp ?? null,
-        }),
-      );
+      event = await this.dataSource.transaction(async (mgr) => {
+        const saved = await mgr.save(
+          mgr.create(IntegrationInboundEvent, {
+            tenant: { id: tenantId } as Tenant,
+            endpoint: { id: endpoint.id } as IntegrationWebhookEndpoint,
+            connection: { id: connectionId } as IntegrationConnection,
+            provider_event_id: eventId,
+            event_type: eventType,
+            resource_type: mapped.resource,
+            external_id: externalId,
+            status: INBOUND_STATUS.ACCEPTED,
+            payload,
+            signature_timestamp: h.timestamp ?? null,
+          }),
+        );
+        await mgr.save(
+          mgr.create(OutboxJob, {
+            queue: QUEUE.INTEGRATION_INBOUND,
+            job_name: JOB.INTEGRATION_INBOUND,
+            dedupe_key: `integration-inbound-${saved.id}`,
+            payload: { tenantId, inboundEventId: saved.id },
+          }),
+        );
+        return saved;
+      });
     } catch (err) {
       if (isUniqueViolation(err)) {
         // Already received — the provider re-delivered. Ack 200; do NOT process
@@ -250,14 +272,6 @@ export class IntegrationInboundService {
         };
       }
       throw err;
-    }
-
-    // 11. Enqueue. A failure here is NOT a lost event: the row is durable and
-    //     `recoverStale()` re-enqueues it, so we still ack.
-    try {
-      await this.queue.enqueueIntegrationInbound({ tenantId, inboundEventId: event.id });
-    } catch (err) {
-      this.logger.error(`inbound event ${event.id} enqueue failed (kept accepted for recovery): ${(err as Error)?.message}`);
     }
 
     await this.endpoints.recordOutcome(endpoint.id, true);
@@ -377,7 +391,13 @@ export class IntegrationInboundService {
     }
   }
 
-  /** Re-enqueue events left un-processed by a dead worker or a failed enqueue. */
+  /**
+   * Re-enqueue events left un-processed by a dead worker (a row stuck
+   * `PROCESSING`, or `ACCEPTED` past the point the outbox relay should have
+   * picked it up). NOTE (Phase 0): `receive()` no longer has an enqueue-failure
+   * path — see the identical note on `IntegrationImportJobService.recoverStale`.
+   * Not currently wired to a scheduled sweep.
+   */
   async recoverStale(olderThanMs = 60_000): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);
     const stale = await this.events.find({

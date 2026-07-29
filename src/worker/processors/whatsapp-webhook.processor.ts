@@ -6,6 +6,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WhatsappWebhookProcessJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WhatsappWebhookService } from '../../modules/whatsapp/whatsapp-webhook.service';
 import { QueueService } from '../../queue/queue.service';
 
@@ -29,6 +30,7 @@ export class WhatsappWebhookProcessor extends WorkerHost {
     private readonly webhooks: WhatsappWebhookService,
     private readonly ctx: TenantContextService,
     private readonly queue: QueueService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -41,7 +43,7 @@ export class WhatsappWebhookProcessor extends WorkerHost {
     );
     // Open a tenant context so downstream services (AI bot actor, usage
     // metering) see the same principal/tenant they would on an HTTP request.
-    return runInTenantContext(this.ctx, data, () =>
+    return runInTenantContext(this.ctx, this.authz, data, () =>
       this.webhooks.processEvent(data.webhookEventId),
     );
   }

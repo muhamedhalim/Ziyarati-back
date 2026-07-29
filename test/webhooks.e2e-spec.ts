@@ -9,8 +9,12 @@
  * scenarios (webhook-delivery.processor.spec.ts) — there is no separate
  * worker process running in this e2e suite, so what's verified HERE is the
  * REAL wiring this app process owns: HTTP → service → DB → domain event →
- * WebhookEventListener → WebhookDeliveryService → a real BullMQ job landing
- * on the real `webhooks.deliver` queue with the correct deterministic jobId.
+ * WebhookEventListener → WebhookDeliveryService → an `outbox_jobs` row
+ * committed in the SAME transaction as the delivery row (Phase 0 — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.5 item 4), under the documented
+ * deterministic `dedupe_key`. `OutboxRelayService` (worker-only, not running
+ * here) is what turns that row into a real BullMQ job — the manual `replay`
+ * action is unaffected by this and still enqueues directly (see that test).
  *
  * DATABASE ISOLATION: every fixture is scoped under a freshly-created Tenant;
  * `cleanupWebhookTenant` deletes this suite's audit_logs then delegates to the
@@ -31,6 +35,8 @@ import {
 
 import { AuditLog } from '../src/entities/Auth&RBAC/AuditLog';
 import { WebhookDelivery } from '../src/entities/System/WebhookDelivery';
+import { OutboxJob } from '../src/entities/Campaigns/OutboxJob';
+import { OutboxStatus } from '../src/entities/enums';
 import { QueueService } from '../src/queue/queue.service';
 import { QUEUE } from '../src/queue/queue.constants';
 import {
@@ -412,13 +418,21 @@ describe('Outbound Webhooks (Phase 2) — HTTP e2e', () => {
         .expect(200);
       expect(inactiveDeliveries.body.data).toHaveLength(0);
 
-      // Confirm a REAL BullMQ job landed on the real webhooks.deliver queue
-      // under the documented deterministic jobId (idempotency key).
+      // Phase 0: dispatch now goes through the transactional outbox (see
+      // docs/CACHING_QUEUES_AUDIT.md §0.5 item 4) — the delivery row and its
+      // enqueue-intent commit in ONE transaction. OutboxRelayService (not
+      // running in this e2e app) is what later turns the PENDING outbox row
+      // into a real BullMQ job, so the durable guarantee to check here is the
+      // outbox row under its deterministic dedupe_key, not a live job.
       const deliveryId = deliveries.body.data[0].id as string;
-      const queueService = e2e.app.get(QueueService);
-      const job = await queueService.queue(QUEUE.WEBHOOKS_DELIVER).getJob(`webhook-delivery-${deliveryId}`);
-      expect(job).toBeTruthy();
-      expect(job?.data).toMatchObject({ tenantId: owner.tenantId, webhookDeliveryId: deliveryId });
+      const outboxRow = await e2e.dataSource.getRepository(OutboxJob).findOne({
+        where: { dedupe_key: `webhook-delivery-${deliveryId}` },
+      });
+      expect(outboxRow).toBeTruthy();
+      expect(outboxRow!.status).toBe(OutboxStatus.PENDING);
+      expect(outboxRow!.queue).toBe(QUEUE.WEBHOOKS_DELIVER);
+      expect(outboxRow!.payload).toMatchObject({ tenantId: owner.tenantId, webhookDeliveryId: deliveryId });
+      expect(outboxRow!.opts).toMatchObject({ attempts: expect.any(Number) });
     });
 
     it('does not dispatch appointment.created to an endpoint only subscribed to appointment.cancelled (event filtering)', async () => {

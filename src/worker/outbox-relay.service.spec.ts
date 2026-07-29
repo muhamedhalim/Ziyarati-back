@@ -10,20 +10,26 @@ import {
   MockQueryBuilder,
 } from '../../test/utils/mock-factories';
 
-describe('OutboxRelayService.drainBatch', () => {
+describe('OutboxRelayService', () => {
   let service: OutboxRelayService;
   let dataSource: MockDataSource;
   let queue: { publish: jest.Mock };
-  let qb: MockQueryBuilder;
+  /** The claim-phase query builder (SELECT ... FOR UPDATE SKIP LOCKED, then the PUBLISHING UPDATE) — built via `mgr.createQueryBuilder()` inside the short claim transaction. */
+  let claimQb: MockQueryBuilder;
+  /** The mark-phase query builder (PUBLISHED/PENDING/FAILED UPDATE) — built directly via `dataSource.createQueryBuilder()`, with NO transaction open. */
+  let markQb: MockQueryBuilder;
 
   /** Invokes the private batch drainer directly (no interval/timer started). */
   const drain = () => (service as unknown as { drainBatch: () => Promise<void> }).drainBatch();
+  const recover = () => (service as unknown as { runRecovery: () => Promise<void> }).runRecovery();
 
   beforeEach(() => {
     dataSource = createMockDataSource();
     queue = { publish: jest.fn().mockResolvedValue({ id: 'job-1' }) };
-    qb = createMockQueryBuilder();
-    dataSource.manager.createQueryBuilder.mockReturnValue(qb);
+    claimQb = createMockQueryBuilder();
+    markQb = createMockQueryBuilder();
+    dataSource.manager.createQueryBuilder.mockReturnValue(claimQb);
+    (dataSource.createQueryBuilder as jest.Mock).mockReturnValue(markQb);
 
     service = new OutboxRelayService(
       dataSource as unknown as DataSource,
@@ -36,6 +42,7 @@ describe('OutboxRelayService.drainBatch', () => {
     queue: 'analytics',
     job_name: 'analytics.aggregate',
     payload: { tenantId: 't1', foo: 1 },
+    opts: undefined,
     dedupe_key: 'dedupe-1',
     status: OutboxStatus.PENDING,
     publish_attempts: 0,
@@ -44,75 +51,135 @@ describe('OutboxRelayService.drainBatch', () => {
     ...overrides,
   });
 
-  it('publishes a pending row and marks it PUBLISHED', async () => {
-    const r = row();
-    qb.getMany.mockResolvedValueOnce([r]);
+  describe('claim phase (short transaction: PENDING -> PUBLISHING)', () => {
+    it('claims a batch inside the transaction and flips it to PUBLISHING before any publish happens', async () => {
+      const r = row();
+      claimQb.getMany.mockResolvedValueOnce([r]);
 
-    await drain();
+      await drain();
 
-    expect(queue.publish).toHaveBeenCalledWith(
-      'analytics',
-      'analytics.aggregate',
-      expect.objectContaining({ tenantId: 't1', foo: 1 }),
-      'dedupe-1',
-    );
-    expect(r.status).toBe(OutboxStatus.PUBLISHED);
-    expect(r.published_at).toBeInstanceOf(Date);
-    expect(dataSource.manager.save).toHaveBeenCalledWith(r);
+      // The SELECT ran with a row lock + skip-locked (safe across replicas).
+      expect(claimQb.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(claimQb.setOnLocked).toHaveBeenCalledWith('skip_locked');
+      // The claim UPDATE set PUBLISHING — via the transactional manager, not the top-level dataSource.
+      expect(claimQb.update).toHaveBeenCalledWith(expect.anything());
+      expect(claimQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.PUBLISHING, claimed_at: expect.any(Date) }),
+      );
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1); // claim only — mark runs outside a transaction
+    });
+
+    it('does nothing when there are no pending rows (no claim UPDATE, no publish)', async () => {
+      claimQb.getMany.mockResolvedValueOnce([]);
+      await drain();
+      expect(claimQb.update).not.toHaveBeenCalled();
+      expect(queue.publish).not.toHaveBeenCalled();
+    });
   });
 
-  it('keeps a row PENDING and records the error on a transient publish failure', async () => {
-    const r = row();
-    qb.getMany.mockResolvedValueOnce([r]);
-    queue.publish.mockRejectedValueOnce(new Error('redis down'));
+  describe('publish + mark phases (outside any transaction)', () => {
+    it('publishes a claimed row and marks it PUBLISHED, with no transaction held during the publish call', async () => {
+      const r = row();
+      claimQb.getMany.mockResolvedValueOnce([r]);
 
-    await drain();
+      await drain();
 
-    expect(r.status).toBe(OutboxStatus.PENDING);
-    expect(r.publish_attempts).toBe(1);
-    expect(r.last_error).toBe('redis down');
+      expect(queue.publish).toHaveBeenCalledWith(
+        'analytics',
+        'analytics.aggregate',
+        expect.objectContaining({ tenantId: 't1', foo: 1 }),
+        'dedupe-1',
+        undefined,
+      );
+      // The mark-phase UPDATE ran directly on dataSource — never inside a transaction.
+      expect(markQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.PUBLISHED, published_at: expect.any(Date) }),
+      );
+      expect(markQb.execute).toHaveBeenCalled();
+    });
+
+    it('passes the row opts through to queue.publish (e.g. webhook delivery attempts/backoff)', async () => {
+      const r = row({ opts: { attempts: 6, backoff: { type: 'exponential', delay: 5000 } } });
+      claimQb.getMany.mockResolvedValueOnce([r]);
+      await drain();
+      expect(queue.publish).toHaveBeenCalledWith(
+        'analytics', 'analytics.aggregate', expect.anything(), 'dedupe-1',
+        { attempts: 6, backoff: { type: 'exponential', delay: 5000 } },
+      );
+    });
+
+    it('reverts a row to PENDING (not FAILED) and records the error on a transient publish failure', async () => {
+      const r = row();
+      claimQb.getMany.mockResolvedValueOnce([r]);
+      queue.publish.mockRejectedValueOnce(new Error('redis down'));
+
+      await drain();
+
+      expect(markQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.PENDING, publish_attempts: 1, last_error: 'redis down' }),
+      );
+    });
+
+    it('parks a row as FAILED once max publish attempts are exhausted', async () => {
+      const r = row({ publish_attempts: 9 }); // +1 → 10 === OUTBOX_MAX_ATTEMPTS default
+      claimQb.getMany.mockResolvedValueOnce([r]);
+      queue.publish.mockRejectedValueOnce(new Error('still down'));
+
+      await drain();
+
+      expect(markQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.FAILED, publish_attempts: 10 }),
+      );
+    });
   });
 
-  it('parks a row as FAILED once max publish attempts are exhausted', async () => {
-    const r = row({ publish_attempts: 9 }); // +1 → 10 === OUTBOX_MAX_ATTEMPTS default
-    qb.getMany.mockResolvedValueOnce([r]);
-    queue.publish.mockRejectedValueOnce(new Error('still down'));
+  describe('stuck-PUBLISHING recovery sweep', () => {
+    it('resets rows stuck in PUBLISHING past the threshold back to PENDING', async () => {
+      (dataSource.createQueryBuilder as jest.Mock).mockReturnValueOnce(markQb);
+      markQb.execute.mockResolvedValueOnce({ affected: 2, raw: [] });
 
-    await drain();
+      await recover();
 
-    expect(r.publish_attempts).toBe(10);
-    expect(r.status).toBe(OutboxStatus.FAILED);
-  });
+      expect(markQb.update).toHaveBeenCalledWith(expect.anything());
+      expect(markQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: OutboxStatus.PENDING }),
+      );
+      expect(markQb.where).toHaveBeenCalledWith(
+        expect.stringContaining('claimed_at'),
+        expect.objectContaining({ publishing: OutboxStatus.PUBLISHING }),
+      );
+    });
 
-  it('does nothing when there are no pending rows', async () => {
-    qb.getMany.mockResolvedValueOnce([]);
-    await drain();
-    expect(queue.publish).not.toHaveBeenCalled();
+    it('does not overlap with itself (recovering guard)', async () => {
+      (service as unknown as { recovering: boolean }).recovering = true;
+      await recover();
+      expect(markQb.execute).not.toHaveBeenCalled();
+    });
   });
 
   describe('lifecycle', () => {
-    it('starts a polling timer on bootstrap and clears it on destroy', () => {
+    it('starts BOTH the poll timer and the recovery timer on bootstrap, and clears both on destroy', () => {
       jest.useFakeTimers();
       const setSpy = jest.spyOn(global, 'setInterval');
       const clearSpy = jest.spyOn(global, 'clearInterval');
 
       service.onApplicationBootstrap();
-      expect(setSpy).toHaveBeenCalled();
+      expect(setSpy).toHaveBeenCalledTimes(2);
 
       service.onModuleDestroy();
-      expect(clearSpy).toHaveBeenCalled();
+      expect(clearSpy).toHaveBeenCalledTimes(2);
 
       jest.useRealTimers();
     });
 
     it('tick drains a batch and resets the running guard', async () => {
-      qb.getMany.mockResolvedValueOnce([]);
+      claimQb.getMany.mockResolvedValueOnce([]);
       await (service as unknown as { tick: () => Promise<void> }).tick();
       expect((service as unknown as { running: boolean }).running).toBe(false);
     });
 
     it('tick swallows errors and still clears the running guard', async () => {
-      qb.getMany.mockRejectedValueOnce(new Error('db down'));
+      claimQb.getMany.mockRejectedValueOnce(new Error('db down'));
       await (service as unknown as { tick: () => Promise<void> }).tick();
       expect((service as unknown as { running: boolean }).running).toBe(false);
     });

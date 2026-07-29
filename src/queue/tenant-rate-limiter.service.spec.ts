@@ -1,17 +1,17 @@
 import { TenantRateLimiterService } from './tenant-rate-limiter.service';
-import { QueueService } from './queue.service';
+import { AppRedisService } from './app-redis.service';
 
 describe('TenantRateLimiterService', () => {
   let service: TenantRateLimiterService;
   let evalMock: jest.Mock;
-  let queue: { client: jest.Mock };
+  let appRedis: { rateLimiter: { eval: jest.Mock } };
 
   const policy = { ratePerMinute: 60, dailyCap: 1000, monthlyCap: 10_000 };
 
   beforeEach(() => {
     evalMock = jest.fn();
-    queue = { client: jest.fn().mockResolvedValue({ eval: evalMock }) };
-    service = new TenantRateLimiterService(queue as unknown as QueueService);
+    appRedis = { rateLimiter: { eval: evalMock } };
+    service = new TenantRateLimiterService(appRedis as unknown as AppRedisService);
   });
 
   it('allows when the Lua script returns status 0', async () => {

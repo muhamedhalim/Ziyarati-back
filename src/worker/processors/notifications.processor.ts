@@ -6,6 +6,7 @@ import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { NotificationDispatchJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
 import { NotificationDispatchService } from '../../modules/notifications/notification-dispatch.service';
 
@@ -25,6 +26,7 @@ export class NotificationsProcessor extends WorkerHost {
     private readonly dispatch: NotificationDispatchService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -40,7 +42,7 @@ export class NotificationsProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] dispatch tenant=${data.tenantId} id=${data.notificationId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, async () => {
+    return runInTenantContext(this.ctx, this.authz, data, async () => {
       const outcome = await this.dispatch.processScheduled(data.tenantId, data.notificationId);
       if (outcome.status === 'rate_limited') {
         // Defer WITHOUT consuming an attempt (tenant pacing, not a failure).

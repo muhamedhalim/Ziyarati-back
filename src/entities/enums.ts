@@ -179,6 +179,15 @@ export enum FailureClass {
 /** Lifecycle of a transactional-outbox row (state-change → queue publish). */
 export enum OutboxStatus {
   PENDING = 'PENDING',
+  /**
+   * Claimed by a relay instance and mid-publish (Phase 0 — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.5 item 5). A row stuck here past the
+   * recovery threshold means the relay crashed between claiming and
+   * publishing; `OutboxRelayService.recoverStuckPublishing` resets it to
+   * PENDING so a later poll retries it. The `dedupe_key` jobId makes a
+   * duplicate publish attempt safe either way.
+   */
+  PUBLISHING = 'PUBLISHING',
   PUBLISHED = 'PUBLISHED',
   FAILED = 'FAILED',
 }

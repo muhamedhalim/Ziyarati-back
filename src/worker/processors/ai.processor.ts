@@ -6,6 +6,7 @@ import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { AiExecuteJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { AiExecutionService } from '../../modules/ai/ai-execution.service';
 import { AiBatchService } from '../../modules/ai/batch/ai-batch.service';
 import { AiTrainingFileService } from '../../modules/ai/ai-training-file.service';
@@ -27,6 +28,7 @@ export class AiProcessor extends WorkerHost {
     private readonly memory: AiMemoryService,
     private readonly batch: AiBatchService,
     private readonly trainingFiles: AiTrainingFileService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -58,7 +60,7 @@ export class AiProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} conv=${data.aiConversationId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, () =>
+    return runInTenantContext(this.ctx, this.authz, data, () =>
       this.exec.sendMessage(data.tenantId, data.aiConversationId, {
         content: data.content,
         idempotencyKey: data.idempotencyKey,

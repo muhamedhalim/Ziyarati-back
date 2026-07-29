@@ -1,13 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Not, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, Not, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 
 import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
 import { WebhookEndpoint } from '../../entities/System/WebhookEndpoint';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { AppError, ErrorCode } from '../../common/errors';
 import { QueueService } from '../../queue/queue.service';
+import { QUEUE, JOB } from '../../queue/queue.constants';
 
 import { WebhookEndpointService } from './webhook-endpoint.service';
 import { QueryWebhookDeliveriesDto } from './dto/query-webhook-deliveries.dto';
@@ -42,9 +44,19 @@ export class WebhookDeliveryService {
     private readonly queue: QueueService,
     private readonly audit: WebhookAuditService,
     private readonly config: ConfigService,
+    private readonly dataSource: DataSource,
   ) {}
 
-  /** Fan out one domain event to every active, subscribed endpoint for the tenant. */
+  /**
+   * Fan out one domain event to every active, subscribed endpoint for the
+   * tenant. The delivery row and the intent to enqueue it are written in ONE
+   * transaction via the transactional outbox (`OutboxJob` — see its docstring
+   * and `OutboxRelayService`) — Phase 0 hardening (see
+   * docs/CACHING_QUEUES_AUDIT.md §0.5 item 4 / original audit H6). Previously
+   * the enqueue happened after the row's own commit with only a try/catch and
+   * no recovery sweep: an enqueue failure left the row PENDING forever with
+   * nothing to ever re-enqueue it.
+   */
   async dispatchEvent(
     tenantId: string,
     eventType: string,
@@ -62,26 +74,35 @@ export class WebhookDeliveryService {
 
     for (const endpoint of subscribers) {
       try {
-        const delivery = await this.deliveries.save(
-          this.deliveries.create({
-            tenant: { id: tenantId } as Tenant,
-            webhook_endpoint: { id: endpoint.id } as WebhookEndpoint,
-            // Immutable snapshot of the URL as of THIS dispatch instant — never
-            // re-derived from the (possibly since-edited) endpoint later.
-            webhook_endpoint_url_snapshot: endpoint.url,
-            event_type: eventType,
-            payload,
-            status: WEBHOOK_DELIVERY_STATUS.PENDING,
-          }),
-        );
-        await this.queue.enqueueWebhookDeliver({
-          tenantId,
-          webhookDeliveryId: delivery.id,
-        }, this.deliverJobOptions());
+        await this.dataSource.transaction(async (mgr) => {
+          const delivery = await mgr.save(
+            mgr.create(WebhookDelivery, {
+              tenant: { id: tenantId } as Tenant,
+              webhook_endpoint: { id: endpoint.id } as WebhookEndpoint,
+              // Immutable snapshot of the URL as of THIS dispatch instant — never
+              // re-derived from the (possibly since-edited) endpoint later.
+              webhook_endpoint_url_snapshot: endpoint.url,
+              event_type: eventType,
+              payload,
+              status: WEBHOOK_DELIVERY_STATUS.PENDING,
+            }),
+          );
+          await mgr.save(
+            mgr.create(OutboxJob, {
+              queue: QUEUE.WEBHOOKS_DELIVER,
+              job_name: JOB.WEBHOOKS_DELIVER,
+              dedupe_key: `webhook-delivery-${delivery.id}`,
+              payload: { tenantId, webhookDeliveryId: delivery.id },
+              opts: this.deliverJobOptions(),
+            }),
+          );
+        });
       } catch (err) {
-        // One bad endpoint must never suppress delivery to the others.
+        // One bad endpoint must never suppress delivery to the others. A
+        // failure here means the ROW WAS NEVER COMMITTED (the transaction
+        // rolled back) — nothing is silently half-done.
         this.logger.error(
-          `Failed to enqueue webhook delivery for endpoint ${endpoint.id} (${eventType}): ${(err as Error)?.message}`,
+          `Failed to dispatch webhook delivery for endpoint ${endpoint.id} (${eventType}): ${(err as Error)?.message}`,
         );
       }
     }

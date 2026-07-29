@@ -26,8 +26,8 @@ import {
   SubscriptionTrialStartedEvent,
 } from '../../events/subscription.events';
 
-import { QueueService } from '../../queue/queue.service';
 import { WorkflowService } from './workflow.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
 /**
  * Bridges EXISTING domain events to the workflow engine (sibling to
@@ -35,7 +35,8 @@ import { WorkflowService } from './workflow.service';
  * the events barrel). For each event it:
  *   1. loads the tenant's active workflows for that trigger,
  *   2. evaluates each workflow's conditions against the event context,
- *   3. creates a WorkflowRun and enqueues it (BullMQ) for async action execution.
+ *   3. creates a WorkflowRun + its enqueue-intent via the transactional outbox
+ *      (see WorkflowService.createRunWithOutbox) for async action execution.
  *
  * Every handler is guarded so one bad workflow can never suppress the others or
  * break the event source.
@@ -46,7 +47,7 @@ export class WorkflowEventListener {
 
   constructor(
     private readonly workflows: WorkflowService,
-    private readonly queue: QueueService,
+    private readonly ctx: TenantContextService,
   ) {}
 
   // ── Appointments ──────────────────────────────────────────────────────────
@@ -190,8 +191,10 @@ export class WorkflowEventListener {
       try {
         if (!this.workflows.evaluateConditions(workflow.conditions, context)) continue;
         if (!workflow.actions || workflow.actions.length === 0) continue;
-        const run = await this.workflows.createRun(tenantId, workflow, context);
-        await this.queue.enqueueWorkflowRun({ tenantId, runId: run.id });
+        // Captured NOW, not left to auto-stamping at relay time — same
+        // reasoning as CampaignExecutionService's outbox writes (the relay's
+        // poll loop has no request/job in flight to inherit a correlationId from).
+        await this.workflows.createRunWithOutbox(tenantId, workflow, context, this.ctx.getCorrelationId() ?? undefined);
       } catch (err) {
         this.logger.error(`workflow ${workflow.id} dispatch failed: ${(err as Error)?.message}`);
       }

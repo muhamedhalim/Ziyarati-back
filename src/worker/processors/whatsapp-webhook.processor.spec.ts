@@ -16,6 +16,7 @@ describe('WhatsappWebhookProcessor', () => {
       webhooks as unknown as WhatsappWebhookService,
       new TenantContextService(),
       queue as unknown as QueueService,
+      { assertAuthorized: jest.fn().mockResolvedValue(undefined) } as any,
     );
   });
 

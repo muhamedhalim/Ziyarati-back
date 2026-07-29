@@ -28,8 +28,13 @@ export class RedisIoAdapter extends IoAdapter {
       return;
     }
     try {
-      const pubClient = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: null });
-      const subClient = pubClient.duplicate();
+      const pubClient = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: null, connectionName: 'socketio:pub' });
+      const subClient = pubClient.duplicate({ connectionName: 'socketio:sub' });
+      // An ioredis client with no 'error' listener throws an unhandled 'error'
+      // event on a later socket error (not just at connect time), which can
+      // crash the whole process — these were previously unguarded.
+      pubClient.on('error', (err) => this.logger.warn(`Redis pub client error (non-fatal): ${err.message}`));
+      subClient.on('error', (err) => this.logger.warn(`Redis sub client error (non-fatal): ${err.message}`));
       await pubClient.connect();
       await subClient.connect();
       this.adapterConstructor = createAdapter(pubClient, subClient);

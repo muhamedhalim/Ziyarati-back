@@ -24,6 +24,7 @@ describe('WhatsappMediaProcessor', () => {
       media as unknown as WhatsappMediaService,
       new TenantContextService(),
       queue as unknown as QueueService,
+      { assertAuthorized: jest.fn().mockResolvedValue(undefined) } as any,
     );
   });
 

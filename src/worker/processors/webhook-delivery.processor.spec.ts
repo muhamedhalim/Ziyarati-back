@@ -7,6 +7,7 @@ import { WebhookDeliveryService } from '../../modules/platform/webhook-delivery.
 import { WebhookEndpointService } from '../../modules/platform/webhook-endpoint.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { QueueService } from '../../queue/queue.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WebhookDeliverJob } from '../../queue/job-data.interface';
 import { createMockConfigService } from '../../../test/utils/mock-factories';
 import { deliverWebhookRequest } from '../../modules/platform/webhook-http-client';
@@ -66,6 +67,7 @@ describe('WebhookDeliveryProcessor', () => {
         { provide: WebhookEndpointService, useValue: endpoints },
         TenantContextService,
         { provide: QueueService, useValue: queue },
+        { provide: WorkerAuthorizationService, useValue: { assertAuthorized: jest.fn().mockResolvedValue(undefined) } },
         { provide: ConfigService, useValue: createMockConfigService({ WEBHOOK_DELIVERY_TIMEOUT_MS: 200 }) },
       ],
     }).compile();

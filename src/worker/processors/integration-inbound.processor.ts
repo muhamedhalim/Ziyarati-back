@@ -6,6 +6,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { IntegrationInboundJobData } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { IntegrationInboundService } from '../../modules/integration-platform/inbound/integration-inbound.service';
 
 /**
@@ -28,6 +29,7 @@ export class IntegrationInboundProcessor extends WorkerHost {
   constructor(
     private readonly inbound: IntegrationInboundService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -37,7 +39,7 @@ export class IntegrationInboundProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] inbound event=${data.inboundEventId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, () => this.inbound.process(data.inboundEventId));
+    return runInTenantContext(this.ctx, this.authz, data, () => this.inbound.process(data.inboundEventId));
   }
 
   @OnWorkerEvent('failed')
