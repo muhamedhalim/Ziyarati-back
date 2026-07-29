@@ -51,7 +51,7 @@ export class SettlementsProcessor extends WorkerHost {
       return { fannedOut: ids.length };
     }
 
-    return runInTenantContext(this.ctx, this.authz, data, async () => {
+    return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
       try {
         const result = await this.settlements.generate(data.tenantId!, {
           periodStart: data.periodStart,

@@ -46,7 +46,7 @@ export class WorkflowProcessor extends WorkerHost {
 
   private async handleRun(job: Job<WorkflowRunJob>) {
     const { tenantId, runId } = job.data;
-    return runInTenantContext(this.ctx, this.authz, job.data, async () => {
+    return runInTenantContext(this.ctx, this.authz, job.name, job.data, async () => {
       const loaded = await this.workflows.getRunWithWorkflow(runId);
       if (!loaded) {
         this.logger.warn(`workflow run ${runId} not found — skipping`);
@@ -67,12 +67,28 @@ export class WorkflowProcessor extends WorkerHost {
 
   private async handleAction(job: Job<WorkflowActionJob>) {
     const { tenantId, runId, actionIndex } = job.data;
-    return runInTenantContext(this.ctx, this.authz, job.data, async () => {
+    return runInTenantContext(this.ctx, this.authz, job.name, job.data, async () => {
       const loaded = await this.workflows.getRunWithWorkflow(runId);
       if (!loaded) return { skipped: true };
       const { run, workflow } = loaded;
       const action = (workflow.actions ?? [])[actionIndex];
       if (!action) return { skipped: true };
+
+      // ALREADY-TERMINAL guard (gap-closure pass — see
+      // docs/CACHING_QUEUES_AUDIT.md §0.8.11 / original audit H8):
+      // `appendResult` already dedupes the RESULTS BOOKKEEPING per actionIndex
+      // (a repeat call replaces, not duplicates, the entry), but nothing
+      // previously stopped `executor.execute` — the REAL side effect
+      // (email/WhatsApp/webhook send) — from running again. A manual retry
+      // racing a BullMQ auto-retry, or a stalled job redelivered after the
+      // action already succeeded, would double-send. A `FAILED` result is
+      // NOT terminal here — that's exactly what a legitimate retry needs to
+      // re-attempt.
+      const existing = (run.results ?? []).find((r) => r.index === actionIndex);
+      if (existing && existing.status !== 'FAILED') {
+        this.logger.log(`workflow run ${runId} action ${actionIndex} already ${existing.status} — skipping duplicate execution`);
+        return { status: existing.status, detail: existing.detail };
+      }
 
       // Per-action gate (IF/ELSE branching in the visual builder): reuses the
       // SAME evaluator the workflow-level `conditions` use — no second engine.

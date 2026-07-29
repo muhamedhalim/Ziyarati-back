@@ -21,6 +21,11 @@ import { BaseJobData } from './job-data.interface';
  * a permanent failure — no retry, since a suspended tenant or invalid actor
  * will not become valid by retrying the same job a few seconds later.
  *
+ * `jobName` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.10) is
+ * threaded through to `assertAuthorized` so authorization is tiered by the
+ * JOB'S declared policy (job-authorization.constants.ts), not inferred from
+ * whether `data.tenantId` happens to be null on this particular invocation.
+ *
  * Deliberately NOT declared `async`: this function must preserve the original
  * contract of throwing SYNCHRONOUSLY for a malformed call (e.g. a missing
  * `authz`/`ctx` argument) rather than returning a rejected promise — an
@@ -30,16 +35,17 @@ import { BaseJobData } from './job-data.interface';
  * exactly what broke `all-functions.spec.ts`'s generic smoke coverage, which
  * calls every exported function with several argument shapes inside a
  * try/catch that only catches SYNCHRONOUS throws). `.then()` chaining keeps
- * `authz.assertAuthorized(data)` itself throwing synchronously when `authz` is
+ * `authz.assertAuthorized(...)` itself throwing synchronously when `authz` is
  * not a real object, exactly like calling `ctx.run` on an invalid `ctx` always did.
  */
 export function runInTenantContext<T>(
   ctx: TenantContextService,
   authz: WorkerAuthorizationService,
+  jobName: string,
   data: BaseJobData,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return authz.assertAuthorized(data).then(() =>
+  return authz.assertAuthorized(jobName, data).then(() =>
     ctx.run(() => {
       if (data.tenantId) {
         ctx.setPrincipal({

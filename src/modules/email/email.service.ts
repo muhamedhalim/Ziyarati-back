@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 
 import { QueueService } from '../../queue/queue.service';
 import { EmailSendJob } from '../../queue/job-data.interface';
@@ -47,7 +48,13 @@ export class EmailService {
       template: input.template,
       variables: input.variables,
       locale: input.locale,
-      idempotencyKey: input.idempotencyKey,
+      // A deterministic fallback (gap-closure pass — see
+      // docs/CACHING_QUEUES_AUDIT.md §0.8.11 / original audit H5) so EVERY
+      // send is protected by EmailDeliveryService's atomic claim, not just the
+      // ones whose caller happened to supply an idempotencyKey. Several
+      // senders below (`sendSubscriptionNotification`, `sendDoctorNotification`,
+      // `sendPatientNotification`, `sendSecurityAlert`) never did.
+      idempotencyKey: input.idempotencyKey ?? this.fallbackIdempotencyKey(input),
       replyTo: input.replyTo,
     };
     try {
@@ -115,5 +122,20 @@ export class EmailService {
 
   sendSecurityAlert(p: { to: string; name?: string; message: string; actionUrl?: string; tenantId?: string }) {
     return this.send({ to: p.to, template: 'security_alert', variables: p, tenantId: p.tenantId });
+  }
+
+  /**
+   * Content-addressed fallback (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.11): hashes template + recipient +
+   * tenant + the FULL variables payload, not just template+recipient. Two
+   * calls with the SAME content (an exact redelivery) collapse to one send;
+   * two calls with genuinely DIFFERENT content (a different message to the
+   * same doctor using the same template) get different keys and both send —
+   * a key that ignored `variables` would wrongly drop the second one.
+   */
+  private fallbackIdempotencyKey(input: SendEmailInput): string {
+    const recipient = Array.isArray(input.to) ? [...input.to].sort().join(',') : input.to;
+    const payload = `${input.template}:${recipient}:${input.tenantId ?? ''}:${JSON.stringify(input.variables ?? {})}`;
+    return `auto:${createHash('sha256').update(payload).digest('hex')}`;
   }
 }

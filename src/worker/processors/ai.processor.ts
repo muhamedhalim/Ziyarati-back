@@ -60,7 +60,7 @@ export class AiProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} conv=${data.aiConversationId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () =>
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.exec.sendMessage(data.tenantId, data.aiConversationId, {
         content: data.content,
         idempotencyKey: data.idempotencyKey,

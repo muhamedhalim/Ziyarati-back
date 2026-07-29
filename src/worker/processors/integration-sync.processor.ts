@@ -33,7 +33,7 @@ export class IntegrationSyncProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] sync job=${data.syncJobId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () => this.sync.process(data.syncJobId));
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () => this.sync.process(data.syncJobId));
   }
 
   @OnWorkerEvent('failed')

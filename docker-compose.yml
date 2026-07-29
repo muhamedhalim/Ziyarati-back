@@ -20,6 +20,11 @@ services:
     # and docs/REDIS_CAPACITY.md for the full rationale + production sizing):
     #  - appendonly/appendfsync: BullMQ job state must survive a Redis restart;
     #    without AOF, a restart loses everything back to the last RDB snapshot.
+    #  - maxmemory 512mb: a DEV-SIZING EXAMPLE ONLY — noeviction is meaningless
+    #    without an actual ceiling to enforce against (gap-closure pass, see
+    #    docs/CACHING_QUEUES_AUDIT.md §0.8.9). Production must size this from
+    #    real measured traffic via docs/REDIS_CAPACITY.md's formula, never by
+    #    copying this dev default.
     #  - maxmemory-policy noeviction: this Redis holds queue state, NOT just a
     #    cache — an eviction policy would silently drop queued jobs under memory
     #    pressure instead of erroring loudly (which is what noeviction does).
@@ -29,6 +34,7 @@ services:
       redis-server
       --appendonly yes
       --appendfsync everysec
+      --maxmemory 512mb
       --maxmemory-policy noeviction
       --notify-keyspace-events Ex
     ports:

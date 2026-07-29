@@ -150,6 +150,18 @@ describe('OutboxRelayService', () => {
       );
     });
 
+    it('also treats a NULL claimed_at as stale (gap-closure regression: NULL < cutoff is NULL in SQL, not true)', async () => {
+      (dataSource.createQueryBuilder as jest.Mock).mockReturnValueOnce(markQb);
+      markQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
+
+      await recover();
+
+      expect(markQb.where).toHaveBeenCalledWith(
+        expect.stringContaining('claimed_at IS NULL'),
+        expect.anything(),
+      );
+    });
+
     it('does not overlap with itself (recovering guard)', async () => {
       (service as unknown as { recovering: boolean }).recovering = true;
       await recover();

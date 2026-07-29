@@ -6,7 +6,10 @@ import { UnrecoverableError } from 'bullmq';
 import { User } from '../entities/Auth&RBAC/User';
 import { TenantApprovalStatus } from '../entities/enums';
 import { TenantLookupService } from '../core/tenant-context/tenant-lookup.service';
+import { AuthService } from '../modules/auth/auth.service';
+import { ROLE } from '../rbac/rbac.constants';
 import { BaseJobData } from './job-data.interface';
+import { JOB_AUTHZ_POLICY, resolveJobAuthzPolicy } from './job-authorization.constants';
 
 interface CacheEntry {
   ok: boolean;
@@ -15,35 +18,36 @@ interface CacheEntry {
 
 /**
  * Tiered authorization for background jobs (Phase 0 — see
- * docs/CACHING_QUEUES_AUDIT.md §0.5 item 6 / original audit H7).
+ * docs/CACHING_QUEUES_AUDIT.md §0.5 item 6 / original audit H7; job-name-driven
+ * tiering added in the gap-closure pass, §0.8.10).
  *
- * Before this, `runInTenantContext` built a synthetic principal straight from
- * the job payload with NO verification — a job for a tenant suspended AFTER
- * the job was enqueued kept executing until the queue drained, and a forged or
- * stale `actorId` became an unvalidated attribution identity written into
- * audit columns (`booked_by`, `cancelled_by`, ...).
+ * Before Phase 0, `runInTenantContext` built a synthetic principal straight
+ * from the job payload with NO verification — a job for a tenant suspended
+ * AFTER the job was enqueued kept executing until the queue drained, and a
+ * forged or stale `actorId` became an unvalidated attribution identity written
+ * into audit columns (`booked_by`, `cancelled_by`, ...).
  *
- * Three tiers, by what the job payload actually carries:
- *  - SYSTEM jobs (`tenantId: null` — platform-wide sweeps: analytics,
- *    settlements, subscriptions, etc.) skip entirely. There is no tenant or
- *    actor to check.
- *  - TENANT jobs (`tenantId` set, no real `actorId`) verify the tenant is
- *    APPROVED and active.
- *  - ACTOR jobs (`tenantId` + a real `actorId`) additionally verify the actor
- *    exists, is active, and belongs to that tenant.
+ * Tiering is now keyed by the JOB NAME (`job-authorization.constants.ts`), not
+ * inferred from `!data.tenantId` — see that file's docstring for the full
+ * rationale (a job type's own payload shape, not its instantaneous value,
+ * decides what "no tenant" means for it).
  *
- * Deliberately does NOT build a full `AuthenticatedUser` (roles/permissions) —
- * that would mean an extra join/lookup on every single job for a permission
- * set nothing currently checks (no job type declares a required permission
- * today; `runInTenantContext` already stamps `permissions: []` on the restored
- * context, so any downstream check fails closed regardless). This service
- * only proves existence/membership/active-status, which is what attribution
- * integrity actually depends on.
+ * CACHE STALENESS (documented explicitly, not left implicit): tenant/actor
+ * validity is cached for 30s. A tenant or actor suspended mid-window can still
+ * have UP TO ~30s of jobs execute before the next lookup observes the
+ * suspension — an accepted, bounded staleness window, not a real-time
+ * revocation guarantee. A queue processing many jobs/second for the same
+ * tenant must not turn into one DB round trip per job just to re-confirm the
+ * same fact; closing this window fully would require an event-driven
+ * cache-bust on suspend/deactivate, which is a reasonable Phase 1 follow-on,
+ * not implemented here.
  *
- * Both tenant and actor results are cached briefly (mirrors
- * `SystemSettingService`'s TTL-cache pattern) — a queue processing hundreds of
- * jobs/second for the same tenant must not turn into hundreds of DB round
- * trips/second just to re-confirm the same fact.
+ * Deliberately does NOT build a full `AuthenticatedUser` for every job — that
+ * would mean an extra join/lookup for a permission set nothing checks. The
+ * ONE exception (`workflow.action`, see job-authorization.constants.ts) calls
+ * `AuthService.buildAuthenticatedUser` — the SAME method HTTP guards rely on —
+ * only when that job's policy declares a `requiredPermission` AND the job
+ * actually carries an actor.
  */
 @Injectable()
 export class WorkerAuthorizationService {
@@ -52,24 +56,56 @@ export class WorkerAuthorizationService {
 
   private readonly tenantCache = new Map<string, CacheEntry>();
   private readonly actorCache = new Map<string, CacheEntry>();
+  private readonly permissionCache = new Map<string, CacheEntry>();
 
   constructor(
     private readonly tenantLookup: TenantLookupService,
     @InjectRepository(User) private readonly users: Repository<User>,
+    private readonly authService: AuthService,
   ) {}
 
   /**
    * Throws `UnrecoverableError` (BullMQ: fail permanently, no retry, no DLQ —
    * matches the convention already used for permanent failures elsewhere in
-   * the worker) when the job's tenant/actor is not currently valid.
+   * the worker) when the job's tenant/actor/permission is not currently valid.
    */
-  async assertAuthorized(data: BaseJobData): Promise<void> {
-    if (!data.tenantId) return; // SYSTEM job — nothing to check
+  async assertAuthorized(jobName: string, data: BaseJobData): Promise<void> {
+    if (!(jobName in JOB_AUTHZ_POLICY)) {
+      this.logger.warn(
+        `No authorization policy registered for job "${jobName}" — falling back to payload-shape inference. ` +
+          'Register it in job-authorization.constants.ts.',
+      );
+    }
+    const policy = resolveJobAuthzPolicy(jobName);
+
+    if (policy.tier === 'system') {
+      if (data.tenantId) {
+        this.logger.debug(`system-tier job "${jobName}" unexpectedly carries tenantId=${data.tenantId} — proceeding anyway`);
+      }
+      return;
+    }
+
+    if (policy.tier === 'system-or-tenant' && !data.tenantId) {
+      return; // the sweep/system-level invocation of a dual-purpose job name
+    }
+
+    // 'tenant' tier, or 'system-or-tenant' WITH a real tenantId: a tenantId is
+    // now REQUIRED — a 'tenant'-tier job's own data type guarantees one, so a
+    // null value at runtime means data corruption or a misconfigured caller,
+    // not a legitimate system invocation (that silent-downgrade is exactly
+    // the bug this tiering closes).
+    if (!data.tenantId) {
+      this.logger.warn(`Rejecting job "${jobName}": tier "${policy.tier}" requires a tenantId but none was present`);
+      throw new UnrecoverableError(`Job "${jobName}" is tenant-scoped but carries no tenantId — job permanently rejected`);
+    }
 
     await this.assertTenantActive(data.tenantId);
 
     if (data.actorId && data.actorId !== 'system') {
       await this.assertActorValid(data.tenantId, data.actorId);
+      if (policy.requiredPermission) {
+        await this.assertActorHasPermission(data.tenantId, data.actorId, policy.requiredPermission);
+      }
     }
   }
 
@@ -100,6 +136,30 @@ export class WorkerAuthorizationService {
     if (!ok) this.rejectActor(tenantId, actorId);
   }
 
+  /**
+   * Reuses `AuthService.buildAuthenticatedUser` (the same permission
+   * resolution HTTP's `PermissionsGuard` relies on) rather than a second RBAC
+   * join. `super_admin` bypasses, mirroring `PermissionsGuard`'s own rule.
+   */
+  private async assertActorHasPermission(tenantId: string, actorId: string, permission: string): Promise<void> {
+    const key = `${actorId}:${permission}`;
+    const cached = this.readCache(this.permissionCache, key);
+    if (cached !== undefined) {
+      if (!cached) this.rejectPermission(tenantId, actorId, permission);
+      return;
+    }
+
+    let ok: boolean;
+    try {
+      const principal = await this.authService.buildAuthenticatedUser(actorId);
+      ok = principal.roles.includes(ROLE.SUPER_ADMIN) || principal.permissions.includes(permission as never);
+    } catch {
+      ok = false; // inactive/missing user — treated as lacking the permission
+    }
+    this.writeCache(this.permissionCache, key, ok);
+    if (!ok) this.rejectPermission(tenantId, actorId, permission);
+  }
+
   private rejectTenant(tenantId: string): never {
     this.logger.warn(`Rejecting job: tenant ${tenantId} is not APPROVED+active`);
     throw new UnrecoverableError(`Tenant ${tenantId} is not active — job permanently rejected`);
@@ -108,6 +168,11 @@ export class WorkerAuthorizationService {
   private rejectActor(tenantId: string, actorId: string): never {
     this.logger.warn(`Rejecting job: actor ${actorId} is not an active member of tenant ${tenantId}`);
     throw new UnrecoverableError(`Actor ${actorId} is not a valid, active member of tenant ${tenantId} — job permanently rejected`);
+  }
+
+  private rejectPermission(tenantId: string, actorId: string, permission: string): never {
+    this.logger.warn(`Rejecting job: actor ${actorId} (tenant ${tenantId}) lacks required permission "${permission}"`);
+    throw new UnrecoverableError(`Actor ${actorId} lacks required permission "${permission}" — job permanently rejected`);
   }
 
   private readCache(cache: Map<string, CacheEntry>, key: string): boolean | undefined {

@@ -68,7 +68,7 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] delivery=${data.webhookDeliveryId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () =>
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.deliver(data.webhookDeliveryId, job.attemptsMade + 1),
     );
   }

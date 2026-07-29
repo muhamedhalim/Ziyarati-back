@@ -40,7 +40,7 @@ export class WhatsappMediaProcessor extends WorkerHost {
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} ` +
         `type=${data.mediaType} message=${data.messageId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () => this.media.downloadAndAttach(data));
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () => this.media.downloadAndAttach(data));
   }
 
   @OnWorkerEvent('failed')

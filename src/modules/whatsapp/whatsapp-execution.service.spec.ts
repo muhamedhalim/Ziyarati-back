@@ -119,6 +119,51 @@ describe('WhatsappExecutionService', () => {
       ).rejects.toThrow('quota exceeded');
       expect(messaging.send).not.toHaveBeenCalled();
     });
+
+    describe('claim (gap-closure pass — atomic QUEUED -> SENDING, §0.8.11)', () => {
+      it('claims the log row (QUEUED -> SENDING) before sending, then updates that SAME row in place', async () => {
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 1 });
+        (logs.findOneBy as jest.Mock).mockResolvedValueOnce({ id: 'log-1', status: WHATSAPP_DELIVERY_STATUS.SENT });
+
+        const res = await service.sendTemplateMessage(
+          TENANT,
+          'tpl-1',
+          { toWaId: '966500000000' } as any,
+          { logId: 'log-1' },
+        );
+
+        expect(qb.update).toHaveBeenCalled();
+        expect(qb.set).toHaveBeenCalledWith(expect.objectContaining({ status: WHATSAPP_DELIVERY_STATUS.SENDING }));
+        expect(messaging.send).toHaveBeenCalled();
+        expect(logs.update).toHaveBeenCalledWith({ id: 'log-1' }, expect.objectContaining({ status: WHATSAPP_DELIVERY_STATUS.SENT }));
+        expect(logs.create).not.toHaveBeenCalled(); // no SECOND row created
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+      });
+
+      it('skips the send entirely when the claim affects zero rows (already claimed/handled — redelivered job)', async () => {
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+
+        const res = await service.sendTemplateMessage(
+          TENANT,
+          'tpl-1',
+          { toWaId: '966500000000' } as any,
+          { logId: 'log-1' },
+        );
+
+        expect(messaging.send).not.toHaveBeenCalled();
+        expect(res).toMatchObject({ duplicate: true, logId: 'log-1' });
+      });
+
+      it('does not attempt a claim when no claim is supplied (immediate/campaign send paths unaffected)', async () => {
+        await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+        expect(logs.createQueryBuilder).not.toHaveBeenCalled();
+        expect(messaging.send).toHaveBeenCalled();
+      });
+    });
   });
 
   describe('scheduleMessage', () => {

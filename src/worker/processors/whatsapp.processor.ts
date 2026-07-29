@@ -33,11 +33,12 @@ export class WhatsappProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} template=${data.templateId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () =>
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.exec.sendTemplateMessage(
         data.tenantId,
         data.templateId,
         data.payload as SendTemplateMessageDto,
+        data.logId ? { logId: data.logId } : undefined,
       ),
     );
   }

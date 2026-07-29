@@ -40,7 +40,7 @@ export class CampaignLaunchProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] launch campaign=${data.campaignId} run=${data.runId}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () =>
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.fanout.handleLaunch(data.tenantId, data.campaignId, data.runId, data.correlationId),
     );
   }
@@ -66,7 +66,7 @@ export class CampaignFanoutProcessor extends WorkerHost {
 
   async process(job: Job) {
     const data = job.data as CampaignFanoutChunkJob;
-    return runInTenantContext(this.ctx, this.authz, data, () =>
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.fanout.handleChunk(
         data.tenantId,
         data.campaignId,
@@ -111,7 +111,7 @@ export class CampaignDispatchProcessor extends WorkerHost {
 
   async process(job: Job, token?: string) {
     const data = job.data as CampaignProcessRecipientJob;
-    return runInTenantContext(this.ctx, this.authz, data, async () => {
+    return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
       const outcome = await this.dispatch.dispatch(
         data.tenantId,
         data.runId,

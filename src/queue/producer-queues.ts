@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
-import { ALL_QUEUES, QueueName, defaultJobOptions } from './queue.constants';
+import { QueueName, defaultJobOptions } from './queue.constants';
 import { producerConnectionOptions } from './redis.config';
 
 /**
@@ -17,6 +17,22 @@ import { producerConnectionOptions } from './redis.config';
  * ioredis socket, isolated from the workers' blocking connections and from the
  * QueueEvents connection.
  *
+ * LAZY per-queue connections (gap-closure pass — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.8.7): a `Queue` instance — and the ioredis
+ * socket it opens — is created the FIRST TIME a given queue name is actually
+ * requested, not eagerly for all 25 at construction. This was chosen over a
+ * static per-role queue allow-list (considered and rejected in §0.8.7): the
+ * producer side isn't the consume side — e.g. the `critical` role's
+ * `CampaignFanoutProcessor` produces onto `campaigns.processRecipient`, a
+ * queue `critical` never consumes — so chain-forward enqueues, DLQ parks and
+ * retries mean nearly every role's real producer need is close to the full
+ * queue set, and a hand-authored map risks silently missing a real call path.
+ * Lazy sizing is provably correct (opens exactly what's used, nothing more,
+ * nothing less) and needs no maintenance as queues are added. A `dispatch`
+ * role deployment, which only ever produces onto 1-2 queues, is the one that
+ * benefits most; `critical`/`all`/the API root end up opening close to the
+ * same connections they always did, just on first use instead of at boot.
+ *
  * Built by a runtime factory (ConfigService injected), so REDIS_URL resolution
  * happens after ConfigModule has loaded — no decoration-time `process.env`
  * pitfall. Lives in the @Global QueueModule, so the API enqueues through these
@@ -25,33 +41,40 @@ import { producerConnectionOptions } from './redis.config';
 @Injectable()
 export class ProducerQueues implements OnModuleDestroy {
   private readonly logger = new Logger('ProducerQueues');
-  private readonly queues: Record<QueueName, Queue>;
+  private readonly connection: ReturnType<typeof producerConnectionOptions>;
+  private readonly defaults: ReturnType<typeof defaultJobOptions>;
+  private readonly queues = new Map<QueueName, Queue>();
 
   constructor(config: ConfigService) {
-    const connection = producerConnectionOptions(config);
-    const defaults = defaultJobOptions(config);
-
-    const entries = ALL_QUEUES.map(
-      (name) =>
-        [name, new Queue(name, { connection, defaultJobOptions: defaults })] as const,
-    );
-    this.queues = Object.fromEntries(entries) as Record<QueueName, Queue>;
-    this.logger.log(
-      `Initialized ${ALL_QUEUES.length} producer queue connection(s) [producer profile]`,
-    );
+    this.connection = producerConnectionOptions(config);
+    this.defaults = defaultJobOptions(config);
   }
 
+  /** Returns the queue's producer connection, opening it on first use. */
   get(name: QueueName): Queue {
-    return this.queues[name];
+    let q = this.queues.get(name);
+    if (!q) {
+      q = new Queue(name, { connection: this.connection, defaultJobOptions: this.defaults });
+      this.queues.set(name, q);
+      this.logger.log(`Opened producer connection for queue "${name}" (${this.queues.size} open so far) [producer profile]`);
+    }
+    return q;
   }
 
+  /**
+   * A `Record`-shaped view for callers (`QueueService`) that index by queue
+   * name — backed by a `Proxy` so indexing still lazily opens on first use
+   * rather than requiring every caller to switch to `.get(name)`.
+   */
   record(): Record<QueueName, Queue> {
-    return this.queues;
+    return new Proxy({} as Record<QueueName, Queue>, {
+      get: (_target, prop) => (typeof prop === 'string' ? this.get(prop as QueueName) : undefined),
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
     await Promise.all(
-      Object.values(this.queues).map((q) => q.close().catch(() => undefined)),
+      Array.from(this.queues.values()).map((q) => q.close().catch(() => undefined)),
     );
   }
 }

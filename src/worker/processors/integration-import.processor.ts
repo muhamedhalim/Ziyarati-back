@@ -36,7 +36,7 @@ export class IntegrationImportProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] import job=${data.importJobId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, data, () => this.imports.process(data.importJobId));
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () => this.imports.process(data.importJobId));
   }
 
   @OnWorkerEvent('failed')

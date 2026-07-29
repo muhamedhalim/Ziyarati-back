@@ -56,12 +56,41 @@ export class WhatsappExecutionService {
     private readonly ctx: TenantContextService,
   ) {}
 
-  /** Sends a template message immediately and records the outcome. */
+  /**
+   * Sends a template message immediately and records the outcome.
+   *
+   * `claim` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11):
+   * when supplied — ONLY the queued/scheduled path does this — this method
+   * first atomically claims the given QUEUED `NotificationLog` row
+   * (QUEUED -> SENDING, `WHERE status = QUEUED`) before doing anything else.
+   * If the claim affects zero rows, the row has already been claimed or
+   * finished by a prior (possibly redelivered) invocation of the SAME job, so
+   * this call returns immediately without sending anything a second time —
+   * this queue previously had no jobId and no other idempotency guard at all.
+   * On completion the SAME row is updated in place (not a second `recordLog`
+   * insert, which is what happened before this fix).
+   */
   async sendTemplateMessage(
     tenantId: string,
     templateId: string,
     dto: SendTemplateMessageDto,
+    claim?: { logId: string },
   ) {
+    if (claim) {
+      const claimed = await this.claimQueuedLog(tenantId, claim.logId);
+      if (!claimed) {
+        this.logger.warn(`whatsapp send job for log ${claim.logId} was already claimed/handled — skipping duplicate delivery`);
+        return {
+          status: WHATSAPP_DELIVERY_STATUS.SENDING,
+          providerMessageId: undefined,
+          error: undefined,
+          recipient: undefined,
+          logId: claim.logId,
+          duplicate: true,
+        };
+      }
+    }
+
     const account = await this.router.resolveForSend(tenantId, {
       accountId: dto.accountId,
       branchId: dto.branchId,
@@ -108,10 +137,15 @@ export class WhatsappExecutionService {
       await this.usage.increment(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
     }
 
-    const log = await this.recordLog(tenantId, template.id, recipient, status, {
-      error: result.success ? undefined : result.error,
-      sentAt: result.success ? new Date() : undefined,
-    });
+    const log = claim
+      ? await this.updateClaimedLog(claim.logId, template.id, recipient, status, {
+          error: result.success ? undefined : result.error,
+          sentAt: result.success ? new Date() : undefined,
+        })
+      : await this.recordLog(tenantId, template.id, recipient, status, {
+          error: result.success ? undefined : result.error,
+          sentAt: result.success ? new Date() : undefined,
+        });
 
     return {
       status,
@@ -124,6 +158,21 @@ export class WhatsappExecutionService {
       recipient: { type: recipient.recipientType, id: recipient.recipientId, to: recipient.to },
       logId: log.id,
     };
+  }
+
+  /** Atomic QUEUED -> SENDING claim. Returns false if the row was already claimed/handled (or doesn't exist). */
+  private async claimQueuedLog(tenantId: string, logId: string): Promise<boolean> {
+    const result = await this.logs
+      .createQueryBuilder()
+      .update(NotificationLog)
+      .set({ status: WHATSAPP_DELIVERY_STATUS.SENDING })
+      .where('id = :logId AND "tenantId" = :tenantId AND status = :queued', {
+        logId,
+        tenantId,
+        queued: WHATSAPP_DELIVERY_STATUS.QUEUED,
+      })
+      .execute();
+    return (result.affected ?? 0) > 0;
   }
 
   /**
@@ -159,12 +208,16 @@ export class WhatsappExecutionService {
     );
 
     // Produce a DELAYED send job; the whatsapp worker performs the actual send
-    // (reusing sendTemplateMessage) at scheduledAt.
+    // (reusing sendTemplateMessage) at scheduledAt. `logId` + a deterministic
+    // jobId (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11) are
+    // what let the worker claim this exact row atomically — this queue
+    // previously had NEITHER a jobId NOR any DB-level dedupe.
     const delay = Math.max(0, new Date(dto.scheduledAt).getTime() - Date.now());
     await this.queue.enqueueWhatsappSend(
       {
         tenantId,
         templateId,
+        logId: log.id,
         payload: {
           accountId: dto.accountId,
           branchId: dto.branchId,
@@ -174,7 +227,7 @@ export class WhatsappExecutionService {
           variables: dto.variables,
         },
       },
-      { delay },
+      { delay, jobId: `whatsapp-send-${log.id}` },
     );
 
     return { status: WHATSAPP_DELIVERY_STATUS.QUEUED, scheduledAt: dto.scheduledAt, logId: log.id };
@@ -238,5 +291,35 @@ export class WhatsappExecutionService {
       sent_at: opts.sentAt,
     });
     return this.logs.save(log);
+  }
+
+  /**
+   * Updates the SAME log row a queued send already claimed, in place, instead
+   * of `recordLog`'s INSERT (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.11). Before this fix, a queued send
+   * produced TWO rows: the QUEUED one from `scheduleMessage` and a second,
+   * separate one the worker created fresh — this collapses back to one.
+   */
+  private async updateClaimedLog(
+    logId: string,
+    templateId: string,
+    recipient: ResolvedRecipient,
+    status: string,
+    opts: { error?: string; sentAt?: Date },
+  ): Promise<NotificationLog> {
+    await this.logs.update(
+      { id: logId },
+      {
+        template_id: templateId,
+        recipient_type: recipient.recipientType,
+        recipient_id: recipient.recipientId,
+        status,
+        error_message: opts.error,
+        sent_at: opts.sentAt,
+      },
+    );
+    const updated = await this.logs.findOneBy({ id: logId });
+    if (!updated) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Claimed notification log vanished mid-send' });
+    return updated;
   }
 }

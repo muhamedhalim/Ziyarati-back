@@ -110,8 +110,23 @@ export class UsageReportService {
   }
 
   /** Runs one schedule now: build + deliver + record status. Best-effort. */
+  /**
+   * Runs a schedule now. Called from TWO places: the tick-driven `usageReport.run`
+   * queue job (fires when due) AND the super-admin "run now" HTTP endpoint,
+   * which previously called this DIRECTLY — bypassing the queue and its jobId
+   * entirely (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11). A
+   * manual click racing the tick for the same schedule could double-send the
+   * report with NO protection at all. Fixed with a minute-bucketed atomic
+   * claim on `last_run_at` — reusing the existing column rather than adding a
+   * new one — INSIDE this shared method, so both callers are covered without
+   * changing either one's contract (the HTTP endpoint still returns real
+   * delivery status synchronously).
+   */
   async runSchedule(id: string): Promise<{ id: string; status: string }> {
     const schedule = await this.findOne(id);
+    if (!(await this.claimRun(id))) {
+      return { id, status: 'SKIPPED: already run for this minute' };
+    }
     let status = 'SENT';
     try {
       const report = await this.buildReport(schedule);
@@ -122,6 +137,26 @@ export class UsageReportService {
     }
     await this.schedules.update(id, { last_run_at: new Date(), last_status: status });
     return { id, status };
+  }
+
+  /**
+   * Atomic claim: only one caller within the same minute bucket wins.
+   * `last_run_at` is overloaded as both the claim marker AND the "when did
+   * this last actually run" bookkeeping field — a deliberate minimal trade-off
+   * (no new column/migration) rather than a design that pretends they're
+   * unrelated; this schedule's own cadence never fires more than once a
+   * minute anyway, so a minute-bucket window is enough to catch the real race
+   * (tick + a simultaneous manual click) without needing sub-second precision.
+   */
+  private async claimRun(id: string): Promise<boolean> {
+    const bucketStart = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+    const result = await this.schedules
+      .createQueryBuilder()
+      .update(UsageReportSchedule)
+      .set({ last_run_at: new Date() })
+      .where('id = :id AND (last_run_at IS NULL OR last_run_at < :bucketStart)', { id, bucketStart })
+      .execute();
+    return (result.affected ?? 0) > 0;
   }
 
   private async deliver(schedule: UsageReportSchedule, report: Record<string, unknown>): Promise<void> {

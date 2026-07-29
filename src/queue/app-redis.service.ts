@@ -26,10 +26,13 @@ export class AppRedisService implements OnModuleDestroy {
   readonly application: Redis;
   readonly rateLimiter: Redis;
 
-  constructor(config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+  ) {
     this.application = this.build(applicationConnectionOptions(config), 'application');
     this.rateLimiter = this.build(rateLimiterConnectionOptions(config), 'rate-limiter');
     this.checkMaxmemoryPolicy();
+    this.checkMaxmemoryCeiling();
   }
 
   private build(options: ReturnType<typeof applicationConnectionOptions>, label: string): Redis {
@@ -64,6 +67,32 @@ export class AppRedisService implements OnModuleDestroy {
         }
       })
       .catch((err) => this.logger.debug(`maxmemory-policy check skipped: ${(err as Error).message}`));
+  }
+
+  /**
+   * Non-fatal boot-time warning (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.9): `noeviction` has nothing to enforce
+   * against without an actual `maxmemory` ceiling — `0` means unlimited, which
+   * in production means an out-of-memory condition is whatever the HOST runs
+   * out of, not something Redis itself ever rejects a write for. Same
+   * best-effort `CONFIG GET` caveats as `checkMaxmemoryPolicy`.
+   */
+  private checkMaxmemoryCeiling(): void {
+    const isProduction = this.config.get<string>('NODE_ENV') === 'production';
+    this.application
+      .config('GET', 'maxmemory')
+      .then((res) => {
+        const raw = Array.isArray(res) ? res[1] : undefined;
+        const bytes = Number(raw ?? 0);
+        if (isProduction && (!Number.isFinite(bytes) || bytes <= 0)) {
+          this.logger.warn(
+            '⚠️  Redis maxmemory is unset/unlimited (0) in production. "noeviction" cannot reject writes ' +
+              'before running out of space if there is no ceiling to hit — size this from real measured ' +
+              'traffic per docs/REDIS_CAPACITY.md before relying on it.',
+          );
+        }
+      })
+      .catch((err) => this.logger.debug(`maxmemory ceiling check skipped: ${(err as Error).message}`));
   }
 
   async onModuleDestroy(): Promise<void> {
