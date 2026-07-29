@@ -164,8 +164,12 @@ export class WorkflowController {
     if (!this.workflows.evaluateConditions(workflow.conditions, context)) {
       return { enqueued: false, reason: 'conditions_not_met' };
     }
-    const created = await this.workflows.createRun(tenantId, workflow, context);
-    await this.queue.enqueueWorkflowRun({ tenantId, runId: created.id });
+    const created = await this.workflows.createRunWithOutbox(
+      tenantId,
+      workflow,
+      context,
+      this.ctx.getCorrelationId() ?? undefined,
+    );
     return { enqueued: true, runId: created.id };
   }
 

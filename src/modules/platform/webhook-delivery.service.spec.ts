@@ -7,9 +7,19 @@ import { WebhookDeliveryService } from './webhook-delivery.service';
 import { WebhookEndpointService } from './webhook-endpoint.service';
 import { WebhookAuditService, WEBHOOK_AUDIT_ACTION } from './webhook-audit.service';
 import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { QueueService } from '../../queue/queue.service';
+import { DataSource } from 'typeorm';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository, createMockConfigService } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+  createMockConfigService,
+  createMockDataSource,
+  createMockEntityManager,
+  MockDataSource,
+  MockEntityManager,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 
@@ -19,6 +29,8 @@ describe('WebhookDeliveryService', () => {
   let endpointsService: { findActiveSubscribers: jest.Mock };
   let queue: { enqueueWebhookDeliver: jest.Mock; retryWebhookDeliver: jest.Mock };
   let audit: { record: jest.Mock };
+  let manager: MockEntityManager;
+  let dataSource: MockDataSource;
 
   beforeEach(async () => {
     deliveries = createMockRepository();
@@ -28,6 +40,8 @@ describe('WebhookDeliveryService', () => {
       retryWebhookDeliver: jest.fn().mockResolvedValue({ id: 'job-2' }),
     };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
+    manager = createMockEntityManager();
+    dataSource = createMockDataSource(manager);
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -43,6 +57,7 @@ describe('WebhookDeliveryService', () => {
             WEBHOOK_DELIVERY_BACKOFF_MS: 5000,
           }),
         },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
     service = moduleRef.get(WebhookDeliveryService);
@@ -50,42 +65,60 @@ describe('WebhookDeliveryService', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  describe('dispatchEvent (event filtering + fan-out)', () => {
-    it('creates one delivery row + enqueues one job per active subscriber', async () => {
+  describe('dispatchEvent (event filtering + fan-out via the transactional outbox)', () => {
+    it('writes one WebhookDelivery row + one OutboxJob row per active subscriber, in one transaction', async () => {
       endpointsService.findActiveSubscribers.mockResolvedValueOnce([
         { id: 'ep1' },
         { id: 'ep2' },
       ]);
-      deliveries.save.mockImplementation(async (d: any) => ({ ...d, id: `d-${d.webhook_endpoint.id}` }));
+      manager.save.mockImplementation(async (d: any) => ({ ...d, id: d.id ?? `saved-${Math.random()}` }));
 
       await service.dispatchEvent(TENANT, 'appointment.created', { appointmentId: 'a1' });
 
-      expect(deliveries.save).toHaveBeenCalledTimes(2);
-      expect(queue.enqueueWebhookDeliver).toHaveBeenCalledTimes(2);
-      expect(queue.enqueueWebhookDeliver).toHaveBeenCalledWith(
-        { tenantId: TENANT, webhookDeliveryId: 'd-ep1' },
-        expect.objectContaining({ attempts: 6 }),
-      );
+      expect(dataSource.transaction).toHaveBeenCalledTimes(2); // one per endpoint
+      // Never falls back to the direct-enqueue path — the whole point of the outbox.
+      expect(queue.enqueueWebhookDeliver).not.toHaveBeenCalled();
+
+      const deliveryCreates = manager.create.mock.calls.filter((c) => c[0] === WebhookDelivery);
+      const outboxCreates = manager.create.mock.calls.filter((c) => c[0] === OutboxJob);
+      expect(deliveryCreates).toHaveLength(2);
+      expect(outboxCreates).toHaveLength(2);
+      expect(deliveryCreates[0][1]).toMatchObject({
+        tenant: { id: TENANT },
+        webhook_endpoint: { id: 'ep1' },
+        event_type: 'appointment.created',
+        payload: { appointmentId: 'a1' },
+        status: 'PENDING',
+      });
+      expect(outboxCreates[0][1]).toMatchObject({
+        queue: 'webhooks.deliver',
+        job_name: 'webhooks.deliver',
+        opts: expect.objectContaining({ attempts: 6 }),
+      });
+      // The outbox row references the delivery it belongs to.
+      expect(outboxCreates[0][1].payload).toMatchObject({ tenantId: TENANT });
+      expect(outboxCreates[0][1].dedupe_key).toMatch(/^webhook-delivery-/);
     });
 
     it('never dispatches to an endpoint not subscribed to the event (filtering happens in WebhookEndpointService)', async () => {
       endpointsService.findActiveSubscribers.mockResolvedValueOnce([]);
       await service.dispatchEvent(TENANT, 'payment.failed', {});
-      expect(deliveries.save).not.toHaveBeenCalled();
-      expect(queue.enqueueWebhookDeliver).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(manager.save).not.toHaveBeenCalled();
     });
 
-    it('one endpoint failing to enqueue does not block the others', async () => {
+    it('one endpoint whose transaction fails does not block the others — and never leaves a half-written row', async () => {
       endpointsService.findActiveSubscribers.mockResolvedValueOnce([{ id: 'ep1' }, { id: 'ep2' }]);
-      deliveries.save.mockImplementation(async (d: any) => ({ ...d, id: `d-${d.webhook_endpoint.id}` }));
-      queue.enqueueWebhookDeliver
-        .mockRejectedValueOnce(new Error('redis down'))
-        .mockResolvedValueOnce({ id: 'job-2' });
+      dataSource.transaction
+        .mockRejectedValueOnce(new Error('db down'))
+        .mockImplementationOnce(async (cb: any) => cb(manager));
 
       await expect(
         service.dispatchEvent(TENANT, 'appointment.created', {}),
       ).resolves.toBeUndefined();
-      expect(queue.enqueueWebhookDeliver).toHaveBeenCalledTimes(2);
+      expect(dataSource.transaction).toHaveBeenCalledTimes(2);
+      // Only the second (successful) endpoint actually wrote anything.
+      expect(manager.save).toHaveBeenCalledTimes(2); // delivery + outbox for ep2 only
     });
 
     it('a lookup failure for subscribers is caught and logged, never thrown', async () => {

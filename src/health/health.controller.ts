@@ -8,6 +8,12 @@ import { DataSource } from 'typeorm';
 
 import { Public } from '../modules/auth/decorators/public.decorator';
 import { QueueService } from '../queue/queue.service';
+import { withTimeout } from '../common/utils/with-timeout.util';
+
+/** Bounds how long an orchestrator probe waits on a dependency (Phase 0 — see
+ *  docs/CACHING_QUEUES_AUDIT.md §0.5 / original audit M6). Public, unauthenticated
+ *  route: it must answer fast and cheaply even during a real outage. */
+const READINESS_TIMEOUT_MS = 1500;
 
 /**
  * Infra health for orchestrators (Railway / load balancers / probes). Mounted at
@@ -30,17 +36,23 @@ export class HealthController {
     return { status: 'ok', timestamp: new Date().toISOString() };
   }
 
-  @ApiOperation({ summary: 'Readiness probe (DB + Redis + queues reachable)' })
-  @ApiOkResponse({ description: 'DB and Redis reachable; per-queue job counts returned.' })
+  /**
+   * DB + Redis reachability ONLY — deliberately does NOT return per-queue job
+   * counts (that used to run `getJobCounts` across every queue on every
+   * unauthenticated probe: an amplification lever AND a backlog-depth
+   * disclosure to anyone). Queue depth is available, super-admin-guarded, from
+   * `PlatformMonitoringController`. Each dependency check is capped at
+   * `READINESS_TIMEOUT_MS` so a Redis outage answers "degraded" fast instead of
+   * hanging the probe (and, transitively, an orchestrator's restart decision).
+   */
+  @ApiOperation({ summary: 'Readiness probe (DB + Redis reachable)' })
+  @ApiOkResponse({ description: 'DB and Redis reachable.' })
   @Public()
   @Get('readiness')
   async readiness() {
-    // Both checked independently — an orchestrator using this route to gate
-    // traffic must see a DB outage too, not just a Redis one (this endpoint
-    // previously only pinged Redis, so a dead Postgres still reported "ok").
     const [db, redis] = await Promise.allSettled([
-      this.pingDb(),
-      this.queues.redisPing(),
+      withTimeout(this.pingDb(), READINESS_TIMEOUT_MS, 'DB readiness check'),
+      withTimeout(this.queues.redisPing(), READINESS_TIMEOUT_MS, 'Redis readiness check'),
     ]);
 
     if (db.status === 'rejected' || redis.status === 'rejected') {
@@ -51,12 +63,10 @@ export class HealthController {
       });
     }
 
-    const queueCounts = await this.queues.queueCounts();
     return {
       status: 'ok',
       database: { status: 'up' },
       redis: { status: 'up', latencyMs: redis.value },
-      queues: queueCounts,
     };
   }
 

@@ -4,6 +4,7 @@ const base = {
   DATABASE_URL: 'postgres://x',
   JWT_ACCESS_SECRET: 'secret',
   JWT_REFRESH_SECRET: 'refresh-secret',
+  REDIS_URL: 'redis://localhost:6379',
 };
 
 describe('env.validation', () => {
@@ -24,6 +25,16 @@ describe('env.validation', () => {
 
   it('throws when JWT_REFRESH_SECRET is missing', () => {
     expect(() => validate({ DATABASE_URL: 'postgres://x', JWT_ACCESS_SECRET: 's' })).toThrow(/Env validation error/);
+  });
+
+  it('throws when REDIS_URL is missing (the queue subsystem cannot boot without it — Phase 0 correction)', () => {
+    expect(() =>
+      validate({
+        DATABASE_URL: 'postgres://x',
+        JWT_ACCESS_SECRET: 'secret',
+        JWT_REFRESH_SECRET: 'refresh-secret',
+      }),
+    ).toThrow(/Env validation error/);
   });
 
   it('rejects an invalid NODE_ENV enum', () => {

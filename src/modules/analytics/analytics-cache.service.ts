@@ -6,7 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
-import { redisConnectionOptions } from '../../queue/redis.config';
+import { cacheConnectionOptions } from '../../queue/redis.config';
 
 /** Cache namespaces — each has its own per-tenant version counter. */
 export const CACHE_NS = {
@@ -59,12 +59,13 @@ export class AnalyticsCacheService implements OnModuleDestroy {
       return;
     }
 
-    // A DEDICATED connection (not the BullMQ blocking connection). Cache traffic
-    // must never contend with the queue's blocking commands.
+    // A DEDICATED connection on the CACHE profile (fail-fast: commandTimeout,
+    // no offline queue) — never the BullMQ blocking/producer connection. Cache
+    // traffic must never contend with the queue's blocking commands, and a
+    // cache read/write must reject fast rather than buffer.
     this.client = new Redis({
-      ...redisConnectionOptions(this.config),
+      ...cacheConnectionOptions(this.config),
       lazyConnect: true,
-      maxRetriesPerRequest: 1,
     });
     this.client.on('error', (err) =>
       this.logger.warn(`Redis cache error (failing open to DB): ${err.message}`),

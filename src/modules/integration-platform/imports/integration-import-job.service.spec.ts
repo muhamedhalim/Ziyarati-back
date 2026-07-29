@@ -1,6 +1,9 @@
 import { IntegrationImportJobService } from './integration-import-job.service';
+import { IntegrationImportJob } from '../../../entities/Integration/IntegrationImportJob';
+import { OutboxJob } from '../../../entities/Campaigns/OutboxJob';
 import { JOB_STATUS, UPSERT_OUTCOME } from '../integration-platform.constants';
 import { ErrorCode } from '../../../common/errors';
+import { createMockDataSource, createMockEntityManager } from '../../../../test/utils/mock-factories';
 
 function jobsRepoMock(over: Partial<Record<string, jest.Mock>> = {}) {
   return {
@@ -45,29 +48,49 @@ describe('IntegrationImportJobService', () => {
       const svc = new IntegrationImportJobService(
         jobsRepoMock(), itemsRepoMock(), connectionsMock(),
         { supports: () => true } as any, auditMock(), { enqueueIntegrationImport: jest.fn() } as any,
-        admissionMock(), serviceAccountMock(),
+        admissionMock(), serviceAccountMock(), createMockDataSource() as any,
       );
       await expect(
         svc.create(tenantId, 'customer' as never, { connectionId: 'c1', mode: 'atomic', records: [{ externalId: 'A', data: {} }] } as any, {}),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
 
-    it('persists a pending job, enqueues, and returns the job id immediately', async () => {
-      const jobs = jobsRepoMock({ save: jest.fn().mockResolvedValue({ id: 'job-9', status: 'pending', total: 1 }) });
-      const queue = { enqueueIntegrationImport: jest.fn().mockResolvedValue({ id: 'q1' }) };
-      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connectionsMock(), { supports: () => true } as any, auditMock(), queue as any, admissionMock(), serviceAccountMock());
+    it('writes the job row + an OutboxJob in ONE transaction, and never calls queue.enqueueIntegrationImport directly', async () => {
+      const manager = createMockEntityManager();
+      manager.save.mockImplementation(async (x: any) => ({ id: x.id ?? 'job-9', status: x.status ?? 'pending', total: x.total ?? 1, ...x }));
+      const dataSource = createMockDataSource(manager);
+      const queue = { enqueueIntegrationImport: jest.fn() };
+      const svc = new IntegrationImportJobService(
+        jobsRepoMock(), itemsRepoMock(), connectionsMock(), { supports: () => true } as any,
+        auditMock(), queue as any, admissionMock(), serviceAccountMock(), dataSource as any,
+      );
       const res = await svc.create(tenantId, 'customer' as never, { connectionId: 'c1', records: [{ externalId: 'A', data: {} }] } as any, { userId: 'u1' });
+
       expect(res).toEqual({ jobId: 'job-9', status: 'pending', total: 1 });
-      expect(queue.enqueueIntegrationImport).toHaveBeenCalledWith({ tenantId, importJobId: 'job-9' });
+      expect(queue.enqueueIntegrationImport).not.toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+
+      const jobCreate = manager.create.mock.calls.find((c) => c[0] === IntegrationImportJob);
+      const outboxCreate = manager.create.mock.calls.find((c) => c[0] === OutboxJob);
+      expect(jobCreate?.[1]).toMatchObject({ resource_type: 'customer', status: JOB_STATUS.PENDING });
+      expect(outboxCreate?.[1]).toMatchObject({
+        queue: 'integration.import',
+        job_name: 'integration.import',
+        dedupe_key: 'integration-import-job-9',
+        payload: { tenantId, importJobId: 'job-9' },
+      });
     });
 
-    it('keeps the job (does not throw) if enqueue fails — recovery sweep handles it', async () => {
-      const jobs = jobsRepoMock({ save: jest.fn().mockResolvedValue({ id: 'job-9', status: 'pending', total: 1 }) });
-      const queue = { enqueueIntegrationImport: jest.fn().mockRejectedValue(new Error('redis down')) };
-      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connectionsMock(), { supports: () => true } as any, auditMock(), queue as any, admissionMock(), serviceAccountMock());
+    it('a transaction failure propagates (no half-written row, no outbox entry) rather than being swallowed', async () => {
+      const dataSource = createMockDataSource();
+      dataSource.transaction.mockRejectedValueOnce(new Error('db down'));
+      const svc = new IntegrationImportJobService(
+        jobsRepoMock(), itemsRepoMock(), connectionsMock(), { supports: () => true } as any,
+        auditMock(), { enqueueIntegrationImport: jest.fn() } as any, admissionMock(), serviceAccountMock(), dataSource as any,
+      );
       await expect(
         svc.create(tenantId, 'customer' as never, { connectionId: 'c1', records: [{ externalId: 'A', data: {} }] } as any, {}),
-      ).resolves.toMatchObject({ jobId: 'job-9' });
+      ).rejects.toThrow('db down');
     });
   });
 
@@ -94,7 +117,7 @@ describe('IntegrationImportJobService', () => {
             : { outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: 'int-A' }),
       };
       const connections = connectionsMock();
-      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connections, upsert as any, auditMock(), { enqueueIntegrationImport: jest.fn() } as any, admissionMock(), serviceAccountMock());
+      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connections, upsert as any, auditMock(), { enqueueIntegrationImport: jest.fn() } as any, admissionMock(), serviceAccountMock(), createMockDataSource() as any);
 
       await svc.process('job-1');
 
@@ -115,7 +138,7 @@ describe('IntegrationImportJobService', () => {
       const qb: any = { addSelect: () => qb, leftJoinAndSelect: () => qb, where: () => qb, getOne: jest.fn().mockResolvedValue(job) };
       const jobs = jobsRepoMock({ createQueryBuilder: jest.fn(() => qb) });
       const upsert = { upsertOne: jest.fn() };
-      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connectionsMock(), upsert as any, auditMock(), {} as any, admissionMock(), serviceAccountMock());
+      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connectionsMock(), upsert as any, auditMock(), {} as any, admissionMock(), serviceAccountMock(), createMockDataSource() as any);
       await svc.process('job-1');
       expect(upsert.upsertOne).not.toHaveBeenCalled();
     });
@@ -128,7 +151,7 @@ describe('IntegrationImportJobService', () => {
       const qb: any = { addSelect: () => qb, leftJoinAndSelect: () => qb, where: () => qb, getOne: jest.fn().mockResolvedValue(job) };
       const jobs = jobsRepoMock({ createQueryBuilder: jest.fn(() => qb) });
       const connections = connectionsMock({ requireActive: jest.fn().mockRejectedValue(new Error('not active')) });
-      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connections, { upsertOne: jest.fn() } as any, auditMock(), {} as any, admissionMock(), serviceAccountMock());
+      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connections, { upsertOne: jest.fn() } as any, auditMock(), {} as any, admissionMock(), serviceAccountMock(), createMockDataSource() as any);
       await svc.process('job-1');
       expect(job.status).toBe(JOB_STATUS.FAILED);
     });

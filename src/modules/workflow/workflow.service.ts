@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, ILike, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, ILike, Repository } from 'typeorm';
 
 import { Workflow, WorkflowConditionSpec } from '../../entities/Workflows/Workflow';
 import { WorkflowRun, WorkflowActionResult } from '../../entities/Workflows/WorkflowRun';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { AppError, ErrorCode } from '../../common/errors';
+import { QUEUE, JOB } from '../../queue/queue.constants';
 
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { UpdateWorkflowDto } from './dto/update-workflow.dto';
@@ -22,6 +24,7 @@ export class WorkflowService {
   constructor(
     @InjectRepository(Workflow) private readonly workflows: Repository<Workflow>,
     @InjectRepository(WorkflowRun) private readonly runs: Repository<WorkflowRun>,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ─────────────────────────────── CRUD ──────────────────────────────────── //
@@ -107,6 +110,11 @@ export class WorkflowService {
     return this.workflows.findOne({ where: { id } });
   }
 
+  /**
+   * @deprecated kept only for any external caller that hasn't migrated;
+   * production call sites use `createRunWithOutbox` (see its docstring). Does
+   * NOT enqueue anything — a caller using this directly must enqueue itself.
+   */
   createRun(
     tenantId: string,
     workflow: Workflow,
@@ -122,6 +130,43 @@ export class WorkflowService {
         results: [],
       }),
     );
+  }
+
+  /**
+   * Create a run AND its enqueue-intent in ONE transaction via the
+   * transactional outbox (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5
+   * item 4 / original audit H6 and §10). Replaces the previous
+   * `createRun()` + `queue.enqueueWorkflowRun()` two-step, which had no
+   * recovery path if the process died between the run's commit and the
+   * enqueue — a run could sit PENDING forever with nothing to ever start it.
+   */
+  async createRunWithOutbox(
+    tenantId: string,
+    workflow: Workflow,
+    context: Record<string, unknown>,
+    correlationId?: string,
+  ): Promise<WorkflowRun> {
+    return this.dataSource.transaction(async (mgr) => {
+      const run = await mgr.save(
+        mgr.create(WorkflowRun, {
+          tenant: { id: tenantId } as Tenant,
+          workflow: { id: workflow.id } as Workflow,
+          trigger_event: workflow.trigger_event,
+          status: WORKFLOW_RUN_STATUS.PENDING,
+          context,
+          results: [],
+        }),
+      );
+      await mgr.save(
+        mgr.create(OutboxJob, {
+          queue: QUEUE.WORKFLOW,
+          job_name: JOB.WORKFLOW_RUN,
+          dedupe_key: `wf-run-${run.id}`,
+          payload: { tenantId, runId: run.id, correlationId },
+        }),
+      );
+      return run;
+    });
   }
 
   async getRunWithWorkflow(runId: string): Promise<{ run: WorkflowRun; workflow: Workflow } | null> {

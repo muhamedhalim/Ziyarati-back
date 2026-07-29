@@ -6,6 +6,7 @@ import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WhatsappMediaDownloadJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WhatsappMediaService } from '../../modules/whatsapp/meta/whatsapp-media.service';
 import { QueueService } from '../../queue/queue.service';
 
@@ -28,6 +29,7 @@ export class WhatsappMediaProcessor extends WorkerHost {
     private readonly media: WhatsappMediaService,
     private readonly ctx: TenantContextService,
     private readonly queue: QueueService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -38,7 +40,7 @@ export class WhatsappMediaProcessor extends WorkerHost {
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} ` +
         `type=${data.mediaType} message=${data.messageId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, data, () => this.media.downloadAndAttach(data));
+    return runInTenantContext(this.ctx, this.authz, data, () => this.media.downloadAndAttach(data));
   }
 
   @OnWorkerEvent('failed')

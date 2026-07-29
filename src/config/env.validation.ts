@@ -16,22 +16,38 @@ export const validate = (config: Record<string, unknown>) => {
       .valid('true', 'false')
       .default('false'),
 
-    DB_POOL_MAX: Joi.number().default(10),
+    // Default 15 (raised from 10 — Phase 0 correction, measured; see
+    // docs/CACHING_QUEUES_AUDIT.md §0.3). Each deployment (API, critical
+    // worker, dispatch worker — see WORKER_ROLE below) may override this
+    // independently via its own env.
+    DB_POOL_MAX: Joi.number().default(15),
     DB_POOL_MIN: Joi.number().default(1),
     DB_POOL_IDLE_TIMEOUT: Joi.number().default(30000),
 
-    // Redis / BullMQ. REDIS_URL is required at runtime by the queue subsystem
-    // (the worker won't process without it); kept optional in the schema so the
-    // API can still boot in environments where queues are disabled.
-    REDIS_URL: Joi.string().allow('', null),
+    // Redis / BullMQ. REQUIRED — the @Global QueueModule constructs
+    // `ProducerQueues` (which throws without a REDIS_URL) unconditionally in
+    // BOTH process roots (API and worker), so there has never actually been a
+    // "queues disabled" boot mode; the schema previously allowed an empty value
+    // and claimed otherwise, which just moved the failure from a clear startup
+    // validation error to a confusing runtime one. Made required here so a
+    // misconfigured deployment fails at boot, not on the first request.
+    REDIS_URL: Joi.string().required(),
     QUEUE_DEFAULT_ATTEMPTS: Joi.number().default(5),
     QUEUE_BACKOFF_MS: Joi.number().default(3000),
     WORKER_CONCURRENCY: Joi.number().default(5),
+    // Which processors this worker PROCESS registers (see
+    // queue/queue.constants.ts `resolveWorkerRole`/`queuesForRole`). Default
+    // `all` is unchanged from pre-Phase-0 behaviour — every processor in one
+    // process. Set to `critical`/`dispatch` only when running the campaign
+    // recipient-dispatch hot path as its own deployment (see
+    // docs/CACHING_QUEUES_AUDIT.md §0.3/§0.5).
+    WORKER_ROLE: Joi.string().valid('all', 'critical', 'dispatch').default('all'),
+    CAMPAIGN_DISPATCH_CONCURRENCY: Joi.number().default(25),
 
     // ── Analytics read cache (Redis) ──────────────────────────────────────
-    // Optional: reuses REDIS_URL on a dedicated connection. When REDIS_URL is
-    // unset or ANALYTICS_CACHE_ENABLED=false, analytics reads fail open to the
-    // database (no behavior change). TTL is in seconds.
+    // Uses REDIS_URL on a dedicated connection. Set ANALYTICS_CACHE_ENABLED=false
+    // to explicitly opt out; on any Redis error at runtime, analytics reads
+    // still fail open to the database (no behavior change). TTL is in seconds.
     ANALYTICS_CACHE_ENABLED: Joi.string().valid('true', 'false').default('true'),
     ANALYTICS_CACHE_TTL: Joi.number().default(60),
     // Raw analytics_events older than this are purged by the daily retention

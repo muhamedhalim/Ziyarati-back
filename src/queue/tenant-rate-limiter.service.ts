@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { QueueService } from './queue.service';
+import { AppRedisService } from './app-redis.service';
 
 export interface RateLimitPolicy {
   /** Per-minute throttle (token-bucket capacity & refill basis). */
@@ -24,6 +24,14 @@ export type RateLimitDecision =
  * drift under concurrency across many worker pods. A `RATE` denial is transient
  * (retry after the returned delay); a `*_CAP` denial is terminal for the period
  * (the recipient is SKIPPED, not retried).
+ *
+ * Runs on `AppRedisService.rateLimiter` — a dedicated, fail-fast connection
+ * (`commandTimeout`, no offline queue), NOT the BullMQ producer connection.
+ * Before Phase 0 this piggybacked on `QueueService.client()` (the producer
+ * profile), so every caller's "Redis unavailable → fail open/closed" branch
+ * (e.g. ApiKeyAuthGuard, the OAuth refresh lock) never actually ran during an
+ * outage — the call just hung for the producer's buffered-retry window
+ * instead. See docs/CACHING_QUEUES_AUDIT.md §0.2/§0.5 (C2).
  */
 @Injectable()
 export class TenantRateLimiterService {
@@ -80,14 +88,14 @@ export class TenantRateLimiterService {
     return {0, 0}
   `;
 
-  constructor(private readonly queue: QueueService) {}
+  constructor(private readonly appRedis: AppRedisService) {}
 
   async consume(
     tenantId: string,
     campaignId: string,
     policy: RateLimitPolicy,
   ): Promise<RateLimitDecision> {
-    const client = await this.queue.client();
+    const client = this.appRedis.rateLimiter;
 
     const capacity = Math.max(1, policy.ratePerMinute);
     const refillPerSec = capacity / 60;

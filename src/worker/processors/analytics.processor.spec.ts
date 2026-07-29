@@ -35,6 +35,7 @@ describe('AnalyticsProcessor', () => {
       tenants as unknown as WorkerTenantsService,
       queue as unknown as QueueService,
       new TenantContextService(),
+      { assertAuthorized: jest.fn().mockResolvedValue(undefined) } as any,
     );
   });
 

@@ -13,12 +13,16 @@
  *        → the ONE shared mutation pipeline
  *        → mapping / conflict / history / audit
  *
- * The queue leg is exercised for real: jobs are enqueued by the HTTP request and
- * then DRAINED by invoking the same service method the registered processor
- * calls, in the same tenant context. That is deliberate — the API process does
- * not run workers in this deployment, so spinning a second worker process here
- * would test the deployment topology rather than the pipeline. The job's
- * presence in Redis is asserted separately, so both halves are covered.
+ * The queue leg is exercised for real, then DRAINED by invoking the same
+ * service method the registered processor calls, in the same tenant context.
+ * That is deliberate — the API process does not run workers in this
+ * deployment, so spinning a second worker process here would test the
+ * deployment topology rather than the pipeline. Import/inbound creation goes
+ * through the transactional outbox (Phase 0 — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.5 item 4): the durable guarantee asserted
+ * here is the `outbox_jobs` row (PENDING, correct dedupe_key/payload), not a
+ * live BullMQ job — `OutboxRelayService` is what turns that row into a real
+ * job, and it isn't running in this e2e app (worker-only service).
  *
  * DATABASE ISOLATION: every fixture lives under a freshly created Tenant and is
  * deleted in FK-safe order in afterAll.
@@ -43,14 +47,15 @@ import { IntegrationIdMap } from '../src/entities/Integration/IntegrationIdMap';
 import { IntegrationConflict } from '../src/entities/Integration/IntegrationConflict';
 import { IntegrationInboundEvent } from '../src/entities/Integration/IntegrationInboundEvent';
 import { IntegrationStaffProvisioning } from '../src/entities/Integration/IntegrationStaffProvisioning';
+import { OutboxJob } from '../src/entities/Campaigns/OutboxJob';
+import { OutboxStatus } from '../src/entities/enums';
 
 import { IntegrationImportJobService } from '../src/modules/integration-platform/imports/integration-import-job.service';
 import { IntegrationInboundService } from '../src/modules/integration-platform/inbound/integration-inbound.service';
 import { IntegrationSyncService } from '../src/modules/integration-platform/sync/integration-sync.service';
-import { QueueService } from '../src/queue/queue.service';
-import { QUEUE } from '../src/queue/queue.constants';
 import { runInTenantContext } from '../src/queue/tenant-context.runner';
 import { TenantContextService } from '../src/core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../src/queue/worker-authorization.service';
 
 const API = '/api/v1';
 
@@ -101,18 +106,21 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
   let importJobs: IntegrationImportJobService;
   let inbound: IntegrationInboundService;
   let syncs: IntegrationSyncService;
-  let queue: QueueService;
   let ctx: TenantContextService;
+  let authz: WorkerAuthorizationService;
 
   const server = () => e2e.app.getHttpServer();
 
   /**
    * Runs a worker's entry point through the EXACT helper the registered
    * processors use (`runInTenantContext`), so the tenant ALS store is restored
-   * the same way it is in a real worker.
+   * the same way it is in a real worker — including the Phase 0 tenant/actor
+   * authorization check (see WorkerAuthorizationService), using the REAL
+   * service against the e2e app's DB so a genuinely-suspended-tenant test
+   * would actually be rejected here too.
    */
   const drain = <T>(tenantId: string, fn: () => Promise<T>): Promise<T> =>
-    runInTenantContext(ctx, { tenantId } as never, fn);
+    runInTenantContext(ctx, authz, { tenantId } as never, fn);
 
   beforeAll(async () => {
     e2e = await createE2eApp();
@@ -122,8 +130,8 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
     importJobs = e2e.app.get(IntegrationImportJobService);
     inbound = e2e.app.get(IntegrationInboundService);
     syncs = e2e.app.get(IntegrationSyncService);
-    queue = e2e.app.get(QueueService);
     ctx = e2e.app.get(TenantContextService);
+    authz = e2e.app.get(WorkerAuthorizationService);
 
     // Domain fixtures the appointment flow depends on.
     const services = e2e.dataSource.getRepository(Service);
@@ -531,9 +539,17 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       const jobId: string = created.body.jobId;
       expect(created.body.status).toBe('pending');
 
-      // The job really is in Redis under its deterministic id.
-      const bullJob = await queue.queue(QUEUE.INTEGRATION_IMPORT).getJob(`integration-import-${jobId}`);
-      expect(bullJob).toBeTruthy();
+      // Phase 0: creation now goes through the transactional outbox (see
+      // docs/CACHING_QUEUES_AUDIT.md §0.5 item 4) — the row + its enqueue-intent
+      // commit atomically, and OutboxRelayService (not running in this e2e app)
+      // is what later turns the PENDING row into a real BullMQ job. So the
+      // durable guarantee to check here is the outbox row, not a live job.
+      const outboxRow = await e2e.dataSource.getRepository(OutboxJob).findOne({
+        where: { dedupe_key: `integration-import-${jobId}` },
+      });
+      expect(outboxRow).toBeTruthy();
+      expect(outboxRow!.status).toBe(OutboxStatus.PENDING);
+      expect(outboxRow!.payload).toMatchObject({ tenantId: owner.tenantId, importJobId: jobId });
 
       // Drain through the same service entry point the processor calls.
       await drain(owner.tenantId, () => importJobs.process(jobId));
@@ -665,9 +681,16 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       });
       expect(row?.status).toBe('accepted');
 
-      // Durable BEFORE the ack, and really enqueued.
-      const bullJob = await queue.queue(QUEUE.INTEGRATION_INBOUND).getJob(`integration-inbound-${row!.id}`);
-      expect(bullJob).toBeTruthy();
+      // Durable BEFORE the ack, with its enqueue-intent committed in the SAME
+      // transaction (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5 item 4).
+      // The outbox row is the durable guarantee; OutboxRelayService (not
+      // running in this e2e app) is what later turns it into a real BullMQ job.
+      const outboxRow = await e2e.dataSource.getRepository(OutboxJob).findOne({
+        where: { dedupe_key: `integration-inbound-${row!.id}` },
+      });
+      expect(outboxRow).toBeTruthy();
+      expect(outboxRow!.status).toBe(OutboxStatus.PENDING);
+      expect(outboxRow!.payload).toMatchObject({ tenantId: owner.tenantId, inboundEventId: row!.id });
 
       // Worker leg → shared pipeline → mapping.
       await drain(owner.tenantId, () => inbound.process(row!.id));

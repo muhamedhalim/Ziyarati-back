@@ -1,14 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, In, LessThan, Repository } from 'typeorm';
 
 import { IntegrationImportJob } from '../../../entities/Integration/IntegrationImportJob';
 import { IntegrationImportItem } from '../../../entities/Integration/IntegrationImportItem';
 import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
 import { Tenant } from '../../../entities/SaaS-Core/Tenant';
 import { User } from '../../../entities/Auth&RBAC/User';
+import { OutboxJob } from '../../../entities/Campaigns/OutboxJob';
 import { AppError, ErrorCode } from '../../../common/errors';
 import { QueueService } from '../../../queue/queue.service';
+import { QUEUE, JOB } from '../../../queue/queue.constants';
 
 import { CreateImportJobDto } from '../dto/create-import-job.dto';
 import { QueryJobsDto } from '../dto/query-jobs.dto';
@@ -62,6 +64,7 @@ export class IntegrationImportJobService {
     private readonly queue: QueueService,
     private readonly admission: IntegrationAdmissionService,
     private readonly serviceAccount: IntegrationServiceAccountService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ── HTTP path ─────────────────────────────────────────────────────────────
@@ -99,29 +102,36 @@ export class IntegrationImportJobService {
 
     const payload = dto.records.map((r) => ({ externalId: r.externalId, data: r.data }));
 
-    const job = await this.jobs.save(
-      this.jobs.create({
-        tenant: { id: tenantId } as Tenant,
-        connection: { id: dto.connectionId } as IntegrationConnection,
-        resource_type: resource,
-        status: JOB_STATUS.PENDING,
-        mode: IMPORT_MODE.PARTIAL,
-        dry_run: !!dto.dryRun,
-        total: payload.length,
-        requested_by: actor.userId ? ({ id: actor.userId } as User) : null,
-        payload,
-      }),
-    );
-
-    // Persist-then-enqueue: the row already exists, so an enqueue failure never
-    // loses the job — it stays `pending` and the recovery sweep re-enqueues it.
-    try {
-      await this.queue.enqueueIntegrationImport({ tenantId, importJobId: job.id });
-    } catch (err) {
-      this.logger.error(
-        `import job ${job.id} enqueue failed (kept pending for recovery): ${(err as Error)?.message}`,
+    // Job row + enqueue-intent written in ONE transaction via the transactional
+    // outbox (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5 item 4 / original
+    // audit H6). Previously the enqueue happened after commit with only a
+    // try/catch — the job row itself already tolerated that gap (it stays
+    // `pending`), but nothing besides the never-wired `recoverStale()` sweep
+    // (see that method's own note) would ever re-enqueue it.
+    const job = await this.dataSource.transaction(async (mgr) => {
+      const created = await mgr.save(
+        mgr.create(IntegrationImportJob, {
+          tenant: { id: tenantId } as Tenant,
+          connection: { id: dto.connectionId } as IntegrationConnection,
+          resource_type: resource,
+          status: JOB_STATUS.PENDING,
+          mode: IMPORT_MODE.PARTIAL,
+          dry_run: !!dto.dryRun,
+          total: payload.length,
+          requested_by: actor.userId ? ({ id: actor.userId } as User) : null,
+          payload,
+        }),
       );
-    }
+      await mgr.save(
+        mgr.create(OutboxJob, {
+          queue: QUEUE.INTEGRATION_IMPORT,
+          job_name: JOB.INTEGRATION_IMPORT,
+          dedupe_key: `integration-import-${created.id}`,
+          payload: { tenantId, importJobId: created.id },
+        }),
+      );
+      return created;
+    });
 
     await this.audit.record(INTEGRATION_AUDIT_ACTION.IMPORT, tenantId, resource, job.id, actor, {
       connectionId: dto.connectionId, mode: 'async', total: payload.length, dryRun: !!dto.dryRun,
@@ -431,9 +441,17 @@ export class IntegrationImportJobService {
   // ── Recovery sweep (worker) ─────────────────────────────────────────────────
 
   /**
-   * Re-enqueue jobs left `pending` (enqueue failed) or `running` (worker died)
-   * so no accepted import silently disappears. Idempotent: the deterministic
-   * jobId collapses duplicates and terminal jobs short-circuit in `process`.
+   * Re-enqueue jobs left `running` (worker died mid-processing) so no accepted
+   * import silently disappears. Idempotent: the deterministic jobId collapses
+   * duplicates and terminal jobs short-circuit in `process`.
+   *
+   * NOTE (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md): a `pending` row can no
+   * longer result from an enqueue failure at `create()` time — that path now
+   * goes through the transactional outbox, whose own relay handles recovery.
+   * This method still matters for the case the outbox does NOT cover: a
+   * worker that dies AFTER dequeuing (row already `running`). Not currently
+   * wired to a scheduled sweep (found, not fixed, in this pass — flagged
+   * separately rather than silently left as dead code).
    */
   async recoverStale(olderThanMs = 60_000): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);

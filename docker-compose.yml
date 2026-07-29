@@ -16,6 +16,21 @@ services:
     image: redis:7-alpine
     container_name: ziyaratech-redis
     restart: unless-stopped
+    # Queue-durability flags (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5
+    # and docs/REDIS_CAPACITY.md for the full rationale + production sizing):
+    #  - appendonly/appendfsync: BullMQ job state must survive a Redis restart;
+    #    without AOF, a restart loses everything back to the last RDB snapshot.
+    #  - maxmemory-policy noeviction: this Redis holds queue state, NOT just a
+    #    cache — an eviction policy would silently drop queued jobs under memory
+    #    pressure instead of erroring loudly (which is what noeviction does).
+    #  - notify-keyspace-events Ex: expired-key notifications, for observability
+    #    tooling that wants to watch TTL'd cache/rate-limit keys expire live.
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      --notify-keyspace-events Ex
     ports:
       - "6379:6379"
     volumes:

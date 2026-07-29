@@ -7,6 +7,7 @@ import { QueueService } from '../../queue/queue.service';
 import { WorkflowActionJob, WorkflowRunJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WorkflowService } from '../../modules/workflow/workflow.service';
 import { WorkflowActionExecutor } from '../../modules/workflow/workflow-action.executor';
 
@@ -31,6 +32,7 @@ export class WorkflowProcessor extends WorkerHost {
     private readonly executor: WorkflowActionExecutor,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -44,7 +46,7 @@ export class WorkflowProcessor extends WorkerHost {
 
   private async handleRun(job: Job<WorkflowRunJob>) {
     const { tenantId, runId } = job.data;
-    return runInTenantContext(this.ctx, job.data, async () => {
+    return runInTenantContext(this.ctx, this.authz, job.data, async () => {
       const loaded = await this.workflows.getRunWithWorkflow(runId);
       if (!loaded) {
         this.logger.warn(`workflow run ${runId} not found — skipping`);
@@ -65,7 +67,7 @@ export class WorkflowProcessor extends WorkerHost {
 
   private async handleAction(job: Job<WorkflowActionJob>) {
     const { tenantId, runId, actionIndex } = job.data;
-    return runInTenantContext(this.ctx, job.data, async () => {
+    return runInTenantContext(this.ctx, this.authz, job.data, async () => {
       const loaded = await this.workflows.getRunWithWorkflow(runId);
       if (!loaded) return { skipped: true };
       const { run, workflow } = loaded;

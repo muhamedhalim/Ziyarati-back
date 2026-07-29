@@ -17,6 +17,7 @@ import {
 } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
 import { CampaignFanoutService } from '../../modules/campaigns/campaign-fanout.service';
 import { CampaignDispatchService } from '../../modules/campaigns/campaign-dispatch.service';
@@ -29,6 +30,7 @@ export class CampaignLaunchProcessor extends WorkerHost {
   constructor(
     private readonly fanout: CampaignFanoutService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
@@ -38,7 +40,7 @@ export class CampaignLaunchProcessor extends WorkerHost {
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] launch campaign=${data.campaignId} run=${data.runId}`,
     );
-    return runInTenantContext(this.ctx, data, () =>
+    return runInTenantContext(this.ctx, this.authz, data, () =>
       this.fanout.handleLaunch(data.tenantId, data.campaignId, data.runId, data.correlationId),
     );
   }
@@ -57,13 +59,14 @@ export class CampaignFanoutProcessor extends WorkerHost {
   constructor(
     private readonly fanout: CampaignFanoutService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
 
   async process(job: Job) {
     const data = job.data as CampaignFanoutChunkJob;
-    return runInTenantContext(this.ctx, data, () =>
+    return runInTenantContext(this.ctx, this.authz, data, () =>
       this.fanout.handleChunk(
         data.tenantId,
         data.campaignId,
@@ -101,13 +104,14 @@ export class CampaignDispatchProcessor extends WorkerHost {
     private readonly dispatch: CampaignDispatchService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
+    private readonly authz: WorkerAuthorizationService,
   ) {
     super();
   }
 
   async process(job: Job, token?: string) {
     const data = job.data as CampaignProcessRecipientJob;
-    return runInTenantContext(this.ctx, data, async () => {
+    return runInTenantContext(this.ctx, this.authz, data, async () => {
       const outcome = await this.dispatch.dispatch(
         data.tenantId,
         data.runId,

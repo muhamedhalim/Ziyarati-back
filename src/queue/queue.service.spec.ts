@@ -1,6 +1,7 @@
 import { QueueService } from './queue.service';
 import { ProducerQueues } from './producer-queues';
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
+import { AppRedisService } from './app-redis.service';
 import { ALL_QUEUES, QUEUE, JOB, QueueName } from './queue.constants';
 
 type MockBullQueue = {
@@ -8,24 +9,19 @@ type MockBullQueue = {
   addBulk: jest.Mock;
   getJob: jest.Mock;
   getJobCounts: jest.Mock;
-  client: Promise<{ ping: jest.Mock; get: jest.Mock; set: jest.Mock }>;
 };
 
 describe('QueueService (producer facade)', () => {
   let service: QueueService;
   let record: Record<QueueName, MockBullQueue>;
   let ctx: { getCorrelationId: jest.Mock; getUser: jest.Mock };
+  let appRedis: { application: { ping: jest.Mock; get: jest.Mock; set: jest.Mock } };
 
   const makeQueue = (): MockBullQueue => ({
     add: jest.fn(async () => ({ id: 'job-1' })),
     addBulk: jest.fn(async () => [{ id: 'job-1' }]),
     getJob: jest.fn(async () => null),
     getJobCounts: jest.fn(async () => ({ waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0 })),
-    client: Promise.resolve({
-      ping: jest.fn().mockResolvedValue('PONG'),
-      get: jest.fn().mockResolvedValue('v'),
-      set: jest.fn().mockResolvedValue('OK'),
-    }),
   });
 
   beforeEach(() => {
@@ -35,8 +31,19 @@ describe('QueueService (producer facade)', () => {
       getCorrelationId: jest.fn(() => 'cid-1'),
       getUser: jest.fn(() => ({ id: 'actor-1' })),
     };
+    appRedis = {
+      application: {
+        ping: jest.fn().mockResolvedValue('PONG'),
+        get: jest.fn().mockResolvedValue('v'),
+        set: jest.fn().mockResolvedValue('OK'),
+      },
+    };
     const producers = { record: () => record } as unknown as ProducerQueues;
-    service = new QueueService(producers, ctx as unknown as TenantContextService);
+    service = new QueueService(
+      producers,
+      ctx as unknown as TenantContextService,
+      appRedis as unknown as AppRedisService,
+    );
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -178,9 +185,11 @@ describe('QueueService (producer facade)', () => {
       await expect(service.dlqDepth(QUEUE.WHATSAPP_DLQ)).resolves.toBe(3);
     });
 
-    it('kvSet / kvGet proxy the shared redis client', async () => {
+    it('kvSet / kvGet proxy the dedicated application Redis client (not a BullMQ producer connection)', async () => {
       await service.kvSet('k', 'v', 60);
+      expect(appRedis.application.set).toHaveBeenCalledWith('k', 'v', 'EX', 60);
       await expect(service.kvGet('k')).resolves.toBe('v');
+      expect(appRedis.application.get).toHaveBeenCalledWith('k');
     });
 
     it('queueCounts aggregates job counts across all queues', async () => {

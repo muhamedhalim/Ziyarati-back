@@ -11,6 +11,7 @@ describe('AiProcessor cost attribution', () => {
       { cleanupExpired: jest.fn() } as any,
       { sweep: jest.fn() } as any,
       { reconcileProcessing: jest.fn() } as any,
+      { assertAuthorized: jest.fn().mockResolvedValue(undefined) } as any,
     );
     await processor.process({
       name: JOB.AI_EXECUTE,
