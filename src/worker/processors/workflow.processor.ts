@@ -74,20 +74,17 @@ export class WorkflowProcessor extends WorkerHost {
       const action = (workflow.actions ?? [])[actionIndex];
       if (!action) return { skipped: true };
 
-      // ALREADY-TERMINAL guard (gap-closure pass — see
-      // docs/CACHING_QUEUES_AUDIT.md §0.8.11 / original audit H8):
-      // `appendResult` already dedupes the RESULTS BOOKKEEPING per actionIndex
-      // (a repeat call replaces, not duplicates, the entry), but nothing
-      // previously stopped `executor.execute` — the REAL side effect
-      // (email/WhatsApp/webhook send) — from running again. A manual retry
-      // racing a BullMQ auto-retry, or a stalled job redelivered after the
-      // action already succeeded, would double-send. A `FAILED` result is
-      // NOT terminal here — that's exactly what a legitimate retry needs to
-      // re-attempt.
-      const existing = (run.results ?? []).find((r) => r.index === actionIndex);
-      if (existing && existing.status !== 'FAILED') {
-        this.logger.log(`workflow run ${runId} action ${actionIndex} already ${existing.status} — skipping duplicate execution`);
-        return { status: existing.status, detail: existing.detail };
+      // ATOMIC CLAIM (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md
+      // §0.8.3): replaces the prior check-then-execute guard, which read
+      // `run.results` in memory and could let two concurrent deliveries of the
+      // SAME action (a manual retry racing a BullMQ auto-retry, or a stalled
+      // job redelivered mid-send) both pass and both run the side effect. The
+      // claim is a single conditional DB write — only the caller that wins it
+      // proceeds; everyone else returns immediately without re-executing.
+      const claimed = await this.workflows.claimAction(runId, actionIndex, action.type);
+      if (!claimed) {
+        this.logger.log(`workflow run ${runId} action ${actionIndex} already claimed or completed — skipping duplicate execution`);
+        return { status: 'already-claimed' };
       }
 
       // Per-action gate (IF/ELSE branching in the visual builder): reuses the

@@ -93,9 +93,21 @@ describe('WorkerAuthorizationService', () => {
     });
   });
 
-  describe('unregistered job names (safety net)', () => {
-    it('falls back to system-or-tenant behaviour rather than throwing', async () => {
-      await expect(service.assertAuthorized('some.unregistered.job', { tenantId: null })).resolves.toBeUndefined();
+  describe('unregistered job names — FAIL CLOSED (gap-closure pass, §0.8.7)', () => {
+    it('rejects permanently (UnrecoverableError) rather than falling back to a permissive default', async () => {
+      await expect(service.assertAuthorized('some.unregistered.job', { tenantId: null })).rejects.toThrow(UnrecoverableError);
+    });
+
+    it('rejects a job with NO tenantId at all just as loudly — fail-closed applies regardless of payload shape', async () => {
+      await expect(service.assertAuthorized('some.other.unregistered.job', { tenantId: 't1' })).rejects.toThrow(
+        /No authorization policy registered/,
+      );
+    });
+
+    it('never reaches tenant/actor lookups for an unregistered job — rejected before any DB call', async () => {
+      await expect(service.assertAuthorized('yet.another.unregistered.job', { tenantId: 't1', actorId: 'u1' })).rejects.toThrow();
+      expect(tenantLookup.findById).not.toHaveBeenCalled();
+      expect(users.findOne).not.toHaveBeenCalled();
     });
   });
 

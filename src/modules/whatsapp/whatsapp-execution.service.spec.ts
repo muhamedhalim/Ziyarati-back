@@ -164,6 +164,39 @@ describe('WhatsappExecutionService', () => {
         expect(messaging.send).toHaveBeenCalled();
       });
     });
+
+    describe('claim recovery — stale SENDING is reclaimable (gap-closure pass, §0.8.5)', () => {
+      it('the claim WHERE clause allows a SENDING row whose claimed_at is stale/NULL, not just QUEUED — otherwise a crashed mid-send worker blocks retry forever', async () => {
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 1 });
+        (logs.findOneBy as jest.Mock).mockResolvedValueOnce({ id: 'log-1', status: WHATSAPP_DELIVERY_STATUS.SENT });
+
+        await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any, { logId: 'log-1' });
+
+        expect(qb.where).toHaveBeenCalledWith(
+          expect.stringContaining('status = :sending AND (claimed_at IS NULL OR claimed_at < :staleCutoff)'),
+          expect.objectContaining({ logId: 'log-1', tenantId: TENANT }),
+        );
+        // The claim itself stamps a fresh claimed_at, so a genuinely-fresh
+        // in-flight SENDING (not yet stale) is never matched by this same claim.
+        expect(qb.set).toHaveBeenCalledWith(expect.objectContaining({ claimed_at: expect.any(Function) }));
+      });
+
+      it('a redelivered job successfully reclaims a stale SENDING row and sends for real (does not report it as a duplicate)', async () => {
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        // affected: 1 simulates the WHERE clause's SENDING+stale branch matching.
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 1 });
+        (logs.findOneBy as jest.Mock).mockResolvedValueOnce({ id: 'log-1', status: WHATSAPP_DELIVERY_STATUS.SENT });
+
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any, { logId: 'log-1' });
+
+        expect(messaging.send).toHaveBeenCalled();
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+        expect((res as { duplicate?: boolean }).duplicate).toBeUndefined();
+      });
+    });
   });
 
   describe('scheduleMessage', () => {

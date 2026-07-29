@@ -44,6 +44,16 @@ export class NotificationLog {
   @Column({ type: 'timestamptz', nullable: true })
   sent_at?: Date;
 
+  /**
+   * When the QUEUED -> SENDING claim was taken (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.5). NULL for any row predating this
+   * column, or one never claimed at all. Lets the claim tell "in-flight"
+   * apart from "the claiming worker crashed and this is stuck" — see
+   * `WhatsappExecutionService.claimQueuedLog`.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  claimed_at?: Date;
+
   @CreateDateColumn()
   created_at!: Date;
 }

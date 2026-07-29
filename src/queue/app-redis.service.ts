@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
@@ -21,18 +21,20 @@ import { applicationConnectionOptions, rateLimiterConnectionOptions } from './re
  * worker).
  */
 @Injectable()
-export class AppRedisService implements OnModuleDestroy {
+export class AppRedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('AppRedisService');
   readonly application: Redis;
   readonly rateLimiter: Redis;
+  private readonly isProduction: boolean;
+  private readonly allowUnsafeMemoryConfig: boolean;
 
   constructor(
     private readonly config: ConfigService,
   ) {
     this.application = this.build(applicationConnectionOptions(config), 'application');
     this.rateLimiter = this.build(rateLimiterConnectionOptions(config), 'rate-limiter');
-    this.checkMaxmemoryPolicy();
-    this.checkMaxmemoryCeiling();
+    this.isProduction = config.get<string>('NODE_ENV') === 'production';
+    this.allowUnsafeMemoryConfig = config.get<string>('REDIS_ALLOW_UNSAFE_MEMORY_CONFIG') === 'true';
   }
 
   private build(options: ReturnType<typeof applicationConnectionOptions>, label: string): Redis {
@@ -43,56 +45,120 @@ export class AppRedisService implements OnModuleDestroy {
   }
 
   /**
-   * Non-fatal boot-time warning (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md
-   * §0.5 / original audit C1): this Redis holds BullMQ job state alongside
-   * caches, so an eviction policy (`allkeys-*`/`volatile-*`) can silently drop
-   * queued jobs under memory pressure. Logs a loud warning rather than
-   * refusing to boot — an existing deployment may have a deliberate reason,
-   * and failing hard here would be its own outage. `CONFIG GET` is best-effort:
-   * some managed Redis providers disable it for non-admin users, in which case
-   * this silently skips (logged at debug, not warn).
+   * Runs the maxmemory checks as a REAL, awaited Nest lifecycle hook (gap-
+   * closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.9) instead of
+   * fire-and-forget from the constructor. Two things this fixes at once:
+   *  1. The constructor's `client.connect()` is itself fire-and-forget, so the
+   *     old code could call `CONFIG GET` before the client was ready — with
+   *     `enableOfflineQueue: false` (fail-fast profile) that rejects
+   *     immediately, so the checks could silently never actually run.
+   *  2. `onModuleInit` is AWAITED by Nest during app bootstrap — a throw here
+   *     genuinely fails `app.listen()`/`app.init()`, which is what makes
+   *     "enforce" mean something. The old version could only ever log.
    */
-  private checkMaxmemoryPolicy(): void {
-    this.application
-      .config('GET', 'maxmemory-policy')
-      .then((res) => {
-        const policy = Array.isArray(res) ? res[1] : undefined;
-        if (policy && policy !== 'noeviction') {
-          this.logger.warn(
-            `⚠️  Redis maxmemory-policy is "${policy}", not "noeviction". This Redis holds ` +
-              'BullMQ queue state — an eviction policy can silently drop queued jobs under memory ' +
-              'pressure, with no error and no DLQ entry. See docs/REDIS_CAPACITY.md before changing ' +
-              'this in production, or split queue/cache onto separate Redis instances/databases.',
-          );
-        }
-      })
-      .catch((err) => this.logger.debug(`maxmemory-policy check skipped: ${(err as Error).message}`));
+  async onModuleInit(): Promise<void> {
+    const ready = await this.waitReady(this.application, 5000);
+    if (!ready) {
+      this.logger.warn(
+        'Redis application client was not ready within 5s at boot — skipping the maxmemory-policy/ceiling checks this run.',
+      );
+      return;
+    }
+    await this.checkMaxmemoryPolicy();
+    await this.checkMaxmemoryCeiling();
+  }
+
+  private waitReady(client: Redis, timeoutMs: number): Promise<boolean> {
+    if (client.status === 'ready') return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        client.off('ready', onReady);
+      };
+      const onReady = () => {
+        cleanup();
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+      client.once('ready', onReady);
+    });
   }
 
   /**
-   * Non-fatal boot-time warning (gap-closure pass — see
+   * PRODUCTION ENFORCEMENT (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.9 — replaces the previous warn-only
+   * behaviour, original audit C1): this Redis holds BullMQ job state alongside
+   * caches, so an eviction policy (`allkeys-*`/`volatile-*`) can silently drop
+   * queued jobs under memory pressure. In production this now FAILS BOOT
+   * unless `REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true` is explicitly set (an
+   * operator with a deliberate, reviewed reason) — outside production it still
+   * only warns, so local/staging work is never blocked by this. `CONFIG GET`
+   * is best-effort: some managed Redis providers disable it for non-admin
+   * users, in which case this silently skips (logged at debug), in EVERY
+   * environment including production — enforcing a check that structurally
+   * cannot run would only turn "managed Redis" into "can never deploy".
+   */
+  private async checkMaxmemoryPolicy(): Promise<void> {
+    let res: unknown;
+    try {
+      res = await this.application.config('GET', 'maxmemory-policy');
+    } catch (err) {
+      this.logger.debug(`maxmemory-policy check skipped: ${(err as Error).message}`);
+      return;
+    }
+    const policy = Array.isArray(res) ? res[1] : undefined;
+    if (!policy || policy === 'noeviction') return;
+
+    const message =
+      `Redis maxmemory-policy is "${policy}", not "noeviction". This Redis holds BullMQ queue state — ` +
+      'an eviction policy can silently drop queued jobs under memory pressure, with no error and no DLQ ' +
+      'entry. See docs/REDIS_CAPACITY.md before changing this in production, or split queue/cache onto ' +
+      'separate Redis instances/databases.';
+
+    if (this.isProduction && !this.allowUnsafeMemoryConfig) {
+      throw new Error(
+        `❌ ${message} Refusing to boot in production. Set REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true to ` +
+          'override once you have deliberately reviewed and accepted this risk.',
+      );
+    }
+    this.logger.warn(`⚠️  ${message}`);
+  }
+
+  /**
+   * PRODUCTION ENFORCEMENT (gap-closure pass — see
    * docs/CACHING_QUEUES_AUDIT.md §0.8.9): `noeviction` has nothing to enforce
    * against without an actual `maxmemory` ceiling — `0` means unlimited, which
    * in production means an out-of-memory condition is whatever the HOST runs
    * out of, not something Redis itself ever rejects a write for. Same
-   * best-effort `CONFIG GET` caveats as `checkMaxmemoryPolicy`.
+   * production-fail / escape-hatch / best-effort-CONFIG-GET rules as
+   * `checkMaxmemoryPolicy`.
    */
-  private checkMaxmemoryCeiling(): void {
-    const isProduction = this.config.get<string>('NODE_ENV') === 'production';
-    this.application
-      .config('GET', 'maxmemory')
-      .then((res) => {
-        const raw = Array.isArray(res) ? res[1] : undefined;
-        const bytes = Number(raw ?? 0);
-        if (isProduction && (!Number.isFinite(bytes) || bytes <= 0)) {
-          this.logger.warn(
-            '⚠️  Redis maxmemory is unset/unlimited (0) in production. "noeviction" cannot reject writes ' +
-              'before running out of space if there is no ceiling to hit — size this from real measured ' +
-              'traffic per docs/REDIS_CAPACITY.md before relying on it.',
-          );
-        }
-      })
-      .catch((err) => this.logger.debug(`maxmemory ceiling check skipped: ${(err as Error).message}`));
+  private async checkMaxmemoryCeiling(): Promise<void> {
+    let res: unknown;
+    try {
+      res = await this.application.config('GET', 'maxmemory');
+    } catch (err) {
+      this.logger.debug(`maxmemory ceiling check skipped: ${(err as Error).message}`);
+      return;
+    }
+    const raw = Array.isArray(res) ? res[1] : undefined;
+    const bytes = Number(raw ?? 0);
+    if (Number.isFinite(bytes) && bytes > 0) return;
+
+    const message =
+      'Redis maxmemory is unset/unlimited (0). "noeviction" cannot reject writes before running out of ' +
+      'space if there is no ceiling to hit — size this from real measured traffic per docs/REDIS_CAPACITY.md.';
+
+    if (this.isProduction && !this.allowUnsafeMemoryConfig) {
+      throw new Error(
+        `❌ ${message} Refusing to boot in production. Set REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true to ` +
+          'override once you have deliberately reviewed and accepted this risk.',
+      );
+    }
+    if (this.isProduction) this.logger.warn(`⚠️  ${message}`);
   }
 
   async onModuleDestroy(): Promise<void> {

@@ -13,6 +13,15 @@ import {
 } from './dto/usage-report-schedule.dto';
 
 /**
+ * Rolling window for `claimRun`'s concurrent-race guard (gap-closure pass —
+ * see docs/CACHING_QUEUES_AUDIT.md §0.8.6). Only needs to be larger than the
+ * real timing skew between a tick firing and a manual "Run now" click landing
+ * at nearly the same instant — a few seconds is generous margin for that,
+ * while staying far too short to ever delay a human-paced retry.
+ */
+const USAGE_REPORT_CLAIM_WINDOW_MS = 5_000;
+
+/**
  * Scheduled usage reports (PART 5). CRUD + generation + delivery. The report
  * BODY is assembled entirely from `PlatformUsageService` (summary + executive
  * insights) — no usage/quota is computed here. Delivery reuses the existing
@@ -124,42 +133,58 @@ export class UsageReportService {
    */
   async runSchedule(id: string): Promise<{ id: string; status: string }> {
     const schedule = await this.findOne(id);
-    if (!(await this.claimRun(id))) {
-      return { id, status: 'SKIPPED: already run for this minute' };
+    const claimedAt = new Date();
+    if (!(await this.claimRun(id, claimedAt))) {
+      return { id, status: 'SKIPPED: already run very recently (concurrent tick/manual-run race)' };
     }
     let status = 'SENT';
     try {
       const report = await this.buildReport(schedule);
-      await this.deliver(schedule, report);
+      await this.deliver(schedule, report, claimedAt);
     } catch (err) {
       status = `FAILED: ${(err as Error)?.message}`.slice(0, 240);
       this.logger.warn(`Report ${id} delivery failed: ${(err as Error)?.message}`);
     }
-    await this.schedules.update(id, { last_run_at: new Date(), last_status: status });
+    await this.schedules.update(id, { last_run_at: claimedAt, last_status: status });
     return { id, status };
   }
 
   /**
-   * Atomic claim: only one caller within the same minute bucket wins.
-   * `last_run_at` is overloaded as both the claim marker AND the "when did
-   * this last actually run" bookkeeping field — a deliberate minimal trade-off
-   * (no new column/migration) rather than a design that pretends they're
-   * unrelated; this schedule's own cadence never fires more than once a
-   * minute anyway, so a minute-bucket window is enough to catch the real race
-   * (tick + a simultaneous manual click) without needing sub-second precision.
+   * Atomic claim (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md
+   * §0.8.6). `last_run_at` is overloaded as both the claim marker AND the
+   * "when did this last actually run" bookkeeping field — a deliberate
+   * minimal trade-off (no new column/migration) rather than a design that
+   * pretends they're unrelated.
+   *
+   * TWO cases must both hold, and the original minute-aligned-bucket version
+   * only got the first one right:
+   *  - A tick and a simultaneous manual "Run now" click must not BOTH run —
+   *    guarded by the short `CLAIM_WINDOW_MS` rolling window (large enough to
+   *    absorb real concurrent-call timing skew, far too short to ever delay a
+   *    human-paced retry).
+   *  - A manual retry after a FAILURE must NEVER be blocked, no matter how
+   *    soon after the failure it happens — `last_status LIKE 'FAILED%'`
+   *    bypasses the window entirely. The previous version re-stamped
+   *    `last_run_at` to "now" even on failure and gated purely on wall-clock
+   *    MINUTE alignment, so a failure recorded at, say, :00:58 blocked a
+   *    retry attempted at :00:59 for a full extra minute — exactly the
+   *    "can't retry after a failure" bug this closes.
    */
-  private async claimRun(id: string): Promise<boolean> {
-    const bucketStart = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+  private async claimRun(id: string, at: Date): Promise<boolean> {
+    const shortCutoff = new Date(at.getTime() - USAGE_REPORT_CLAIM_WINDOW_MS);
     const result = await this.schedules
       .createQueryBuilder()
       .update(UsageReportSchedule)
-      .set({ last_run_at: new Date() })
-      .where('id = :id AND (last_run_at IS NULL OR last_run_at < :bucketStart)', { id, bucketStart })
+      .set({ last_run_at: at })
+      .where(
+        `id = :id AND (last_run_at IS NULL OR last_status LIKE 'FAILED%' OR last_run_at < :shortCutoff)`,
+        { id, shortCutoff },
+      )
       .execute();
     return (result.affected ?? 0) > 0;
   }
 
-  private async deliver(schedule: UsageReportSchedule, report: Record<string, unknown>): Promise<void> {
+  private async deliver(schedule: UsageReportSchedule, report: Record<string, unknown>, claimedAt: Date): Promise<void> {
     if (schedule.delivery === 'WEBHOOK') {
       const res = await fetch(schedule.target, {
         method: 'POST',
@@ -182,6 +207,13 @@ export class UsageReportService {
       to: schedule.target,
       title: `Platform Usage Report — ${schedule.name}`,
       message: `${schedule.frequency} usage report (${report.periodMonth}). ${digest}`,
+      // BUSINESS-PROCESS key (gap-closure pass — see
+      // docs/CACHING_QUEUES_AUDIT.md §0.8.4): keyed on THIS claimed run of
+      // THIS schedule, not on the rendered digest text. Two genuinely
+      // different periods whose totals happen to render identically (e.g. a
+      // quiet tenant, zero activity two months running) must both send —
+      // a content hash would wrongly collapse them into one.
+      idempotencyKey: `usage-report:${schedule.id}:${claimedAt.toISOString()}`,
     });
   }
 

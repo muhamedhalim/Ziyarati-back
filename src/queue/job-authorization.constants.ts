@@ -103,12 +103,24 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
 };
 
 /**
- * Resolves a job's policy. An unregistered job name falls back to
- * `system-or-tenant` (payload-shape inference — the OLD blanket behaviour) so
- * a job type someone forgets to register here degrades to the PRE-existing
- * behaviour rather than crashing outright; callers should log when this
- * fallback fires so the gap is visible operationally, not silent.
+ * Resolves a job's policy. FAIL CLOSED (gap-closure pass — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.8.7): an unregistered job name THROWS rather
+ * than degrading to a permissive default. The previous version silently fell
+ * back to `system-or-tenant` (the old blanket payload-shape inference) for
+ * anything missing from the registry — meaning a NEW job type someone forgot
+ * to register here would quietly run with the most permissive tier available
+ * instead of failing loudly, defeating the entire point of a per-job-name
+ * registry. `WorkerAuthorizationService.assertAuthorized` is expected to catch
+ * this and reject the job (`UnrecoverableError`, no retry) rather than let it
+ * propagate as an unhandled crash.
  */
 export function resolveJobAuthzPolicy(jobName: string): JobAuthzPolicy {
-  return JOB_AUTHZ_POLICY[jobName as JobName] ?? SYSTEM_OR_TENANT;
+  const policy = JOB_AUTHZ_POLICY[jobName as JobName];
+  if (!policy) {
+    throw new Error(
+      `No authorization policy registered for job "${jobName}" in JOB_AUTHZ_POLICY — ` +
+        'register an explicit tier in job-authorization.constants.ts before this job type can run.',
+    );
+  }
+  return policy;
 }

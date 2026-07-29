@@ -6,17 +6,18 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { JOB } from '../../queue/queue.constants';
 
-describe('WorkflowProcessor.handleAction — already-terminal guard (gap-closure pass, §0.8.11 / H8)', () => {
+describe('WorkflowProcessor.handleAction — atomic claim (gap-closure pass, §0.8.3)', () => {
   const action = { type: 'EMAIL', config: {}, conditions: undefined };
   const workflow = { id: 'wf-1', actions: [action] };
 
-  const build = (existingResults: Array<{ index: number; status: string; detail?: string }>) => {
+  const build = (claimResult: boolean) => {
     const workflows = {
       getRunWithWorkflow: jest.fn().mockResolvedValue({
-        run: { id: 'run-1', context: {}, results: existingResults },
+        run: { id: 'run-1', context: {}, results: [] },
         workflow,
       }),
       evaluateConditions: jest.fn().mockReturnValue(true),
+      claimAction: jest.fn().mockResolvedValue(claimResult),
       appendResult: jest.fn().mockResolvedValue(undefined),
       finalizeRun: jest.fn().mockResolvedValue(undefined),
       markRunning: jest.fn().mockResolvedValue(undefined),
@@ -40,36 +41,39 @@ describe('WorkflowProcessor.handleAction — already-terminal guard (gap-closure
     data: { tenantId: 't1', runId: 'run-1', actionIndex: 0 },
   } as any);
 
-  it('executes the action when no prior result exists', async () => {
-    const { processor, executor } = build([]);
+  it('claims the action, then executes it, when the claim succeeds', async () => {
+    const { processor, workflows, executor } = build(true);
     const res = await processor.process(actionJob());
+    expect(workflows.claimAction).toHaveBeenCalledWith('run-1', 0, 'EMAIL');
     expect(executor.execute).toHaveBeenCalled();
+    expect(workflows.appendResult).toHaveBeenCalledWith(
+      'run-1',
+      expect.objectContaining({ index: 0, status: 'SUCCEEDED', detail: 'sent' }),
+    );
     expect(res).toMatchObject({ status: 'SUCCEEDED' });
   });
 
-  it('SKIPS re-execution when the action already SUCCEEDED — the double-send this fix prevents', async () => {
-    const { processor, executor } = build([{ index: 0, status: 'SUCCEEDED', detail: 'sent earlier' }]);
+  it('NEVER calls execute when the claim is lost — the double-send this fix prevents', async () => {
+    const { processor, workflows, executor } = build(false);
     const res = await processor.process(actionJob());
+    expect(workflows.claimAction).toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
-    expect(res).toMatchObject({ status: 'SUCCEEDED', detail: 'sent earlier' });
+    expect(workflows.appendResult).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ status: 'already-claimed' });
   });
 
-  it('SKIPS re-execution when the action was already SKIPPED (conditions previously didn\'t match)', async () => {
-    const { processor, executor } = build([{ index: 0, status: 'SKIPPED', detail: 'conditions not met' }]);
+  it('claims BEFORE evaluating conditions, so a SKIPPED outcome still owns the claim (no re-evaluation race)', async () => {
+    const { processor, workflows } = build(true);
+    workflows.evaluateConditions.mockReturnValue(false);
     const res = await processor.process(actionJob());
-    expect(executor.execute).not.toHaveBeenCalled();
-    expect(res).toMatchObject({ status: 'SKIPPED' });
+    expect(workflows.claimAction).toHaveBeenCalled();
+    expect(workflows.appendResult).toHaveBeenCalledWith('run-1', expect.objectContaining({ status: 'SKIPPED' }));
+    expect(res).toMatchObject({ skipped: true });
   });
 
-  it('DOES re-execute when the prior result was FAILED — a legitimate retry must still run', async () => {
-    const { processor, executor } = build([{ index: 0, status: 'FAILED', detail: 'timeout' }]);
-    await processor.process(actionJob());
-    expect(executor.execute).toHaveBeenCalled();
-  });
-
-  it('a result for a DIFFERENT actionIndex does not block this one', async () => {
-    const { processor, executor } = build([{ index: 1, status: 'SUCCEEDED' }]);
-    await processor.process(actionJob());
-    expect(executor.execute).toHaveBeenCalled();
+  it('throws (for BullMQ retry) when the executed outcome is FAILED, even though the claim succeeded', async () => {
+    const { processor, executor } = build(true);
+    executor.execute.mockResolvedValue({ status: 'FAILED', detail: 'timeout' });
+    await expect(processor.process(actionJob())).rejects.toThrow(/failed/);
   });
 });

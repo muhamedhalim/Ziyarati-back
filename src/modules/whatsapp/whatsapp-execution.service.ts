@@ -20,6 +20,7 @@ import {
   WHATSAPP_CHANNEL,
   WHATSAPP_DELIVERY_STATUS,
   WHATSAPP_RECIPIENT_TYPE,
+  WHATSAPP_SENDING_STALE_MS,
 } from './whatsapp.constants';
 
 interface ResolvedRecipient {
@@ -59,16 +60,24 @@ export class WhatsappExecutionService {
   /**
    * Sends a template message immediately and records the outcome.
    *
-   * `claim` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11):
-   * when supplied — ONLY the queued/scheduled path does this — this method
-   * first atomically claims the given QUEUED `NotificationLog` row
-   * (QUEUED -> SENDING, `WHERE status = QUEUED`) before doing anything else.
-   * If the claim affects zero rows, the row has already been claimed or
-   * finished by a prior (possibly redelivered) invocation of the SAME job, so
-   * this call returns immediately without sending anything a second time —
-   * this queue previously had no jobId and no other idempotency guard at all.
-   * On completion the SAME row is updated in place (not a second `recordLog`
-   * insert, which is what happened before this fix).
+   * `claim` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11,
+   * recovery hardened further in §0.8.5): when supplied — ONLY the
+   * queued/scheduled path does this — this method first atomically claims the
+   * given `NotificationLog` row (-> SENDING) before doing anything else. If
+   * the claim affects zero rows, the row is currently claimed by a genuinely
+   * in-flight send, so this call returns immediately without sending anything
+   * a second time. On completion the SAME row is updated in place (not a
+   * second `recordLog` insert, which is what happened before this fix).
+   *
+   * RECOVERY (§0.8.5): the claim accepts a row in EITHER QUEUED (never
+   * claimed) or STALE SENDING (claimed more than `WHATSAPP_SENDING_STALE_MS`
+   * ago — the worker that claimed it crashed before ever writing SENT/FAILED).
+   * Before this fix the claim only matched `status = QUEUED`, so a worker
+   * crash mid-send left the row stuck in SENDING FOREVER: BullMQ's own
+   * stalled-job detection still redelivers that exact job (same jobId, same
+   * payload) to another worker, but the redelivered call's claim attempt was
+   * always rejected as "already claimed" — the message was simply never sent
+   * and never retried, silently.
    */
   async sendTemplateMessage(
     tenantId: string,
@@ -160,17 +169,31 @@ export class WhatsappExecutionService {
     };
   }
 
-  /** Atomic QUEUED -> SENDING claim. Returns false if the row was already claimed/handled (or doesn't exist). */
+  /**
+   * Atomic claim to SENDING. Matches a row that is either QUEUED (fresh) or a
+   * STALE SENDING (claimed more than `WHATSAPP_SENDING_STALE_MS` ago, or with
+   * no `claimed_at` at all — a row from before this column existed): both are
+   * legitimate to (re)claim. A row genuinely SENDING within the stale window
+   * is NOT matched, so a real in-flight send can never be claimed twice.
+   * Returns false if the row is currently in-flight, already SENT/FAILED, or
+   * doesn't exist.
+   */
   private async claimQueuedLog(tenantId: string, logId: string): Promise<boolean> {
+    const staleCutoff = new Date(Date.now() - WHATSAPP_SENDING_STALE_MS);
     const result = await this.logs
       .createQueryBuilder()
       .update(NotificationLog)
-      .set({ status: WHATSAPP_DELIVERY_STATUS.SENDING })
-      .where('id = :logId AND "tenantId" = :tenantId AND status = :queued', {
-        logId,
-        tenantId,
-        queued: WHATSAPP_DELIVERY_STATUS.QUEUED,
-      })
+      .set({ status: WHATSAPP_DELIVERY_STATUS.SENDING, claimed_at: () => 'NOW()' })
+      .where(
+        'id = :logId AND "tenantId" = :tenantId AND (status = :queued OR (status = :sending AND (claimed_at IS NULL OR claimed_at < :staleCutoff)))',
+        {
+          logId,
+          tenantId,
+          queued: WHATSAPP_DELIVERY_STATUS.QUEUED,
+          sending: WHATSAPP_DELIVERY_STATUS.SENDING,
+          staleCutoff,
+        },
+      )
       .execute();
     return (result.affected ?? 0) > 0;
   }

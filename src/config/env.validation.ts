@@ -39,6 +39,13 @@ export const validate = (config: Record<string, unknown>) => {
     // validation error to a confusing runtime one. Made required here so a
     // misconfigured deployment fails at boot, not on the first request.
     REDIS_URL: Joi.string().required(),
+    // Escape hatch for AppRedisService's production boot-time enforcement of
+    // maxmemory-policy=noeviction + a real maxmemory ceiling (gap-closure pass
+    // — see docs/CACHING_QUEUES_AUDIT.md §0.8.9). Default false = ENFORCE (the
+    // app refuses to boot in production against an unsafe Redis); set true
+    // only when an operator has a deliberate, reviewed reason to run without
+    // that guarantee (e.g. a managed Redis where CONFIG GET is unavailable).
+    REDIS_ALLOW_UNSAFE_MEMORY_CONFIG: Joi.string().valid('true', 'false').default('false'),
     QUEUE_DEFAULT_ATTEMPTS: Joi.number().default(5),
     QUEUE_BACKOFF_MS: Joi.number().default(3000),
     WORKER_CONCURRENCY: Joi.number().default(5),

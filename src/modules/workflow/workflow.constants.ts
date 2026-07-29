@@ -70,3 +70,14 @@ export const WORKFLOW_RUN_STATUS = {
   FAILED: 'FAILED',
   SKIPPED: 'SKIPPED',
 } as const;
+
+/**
+ * How long an IN_PROGRESS action claim (see `WorkflowService.claimAction`) is
+ * honored before it is treated as abandoned and reclaimable. Must exceed the
+ * slowest legitimate single-action execution (webhook capped at
+ * `WORKFLOW_WEBHOOK_TIMEOUT_MS`, ~8s by default; email/WhatsApp/AI calls are
+ * typically sub-second to a few seconds) with generous margin, so a real
+ * still-running action is never reclaimed out from under itself — only a
+ * claim whose owning process crashed without ever writing a terminal result.
+ */
+export const WORKFLOW_ACTION_CLAIM_STALE_MS = 10 * 60_000;

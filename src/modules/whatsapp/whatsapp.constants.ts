@@ -41,6 +41,16 @@ export type WhatsappDeliveryStatus =
   (typeof WHATSAPP_DELIVERY_STATUS)[keyof typeof WHATSAPP_DELIVERY_STATUS];
 
 /**
+ * How long a claimed (SENDING) send is honored before it is treated as
+ * abandoned and reclaimable (gap-closure pass — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.8.5). Must comfortably exceed a real Meta
+ * Cloud API call's worst-case latency, so a still-in-flight send is never
+ * reclaimed out from under itself — only a claim whose owning worker crashed
+ * (or was killed) before ever writing a terminal SENT/FAILED status.
+ */
+export const WHATSAPP_SENDING_STALE_MS = 5 * 60_000;
+
+/**
  * WhatsApp account mode (hybrid SaaS model). A branch may have BOTH:
  *  - a PLATFORM account (the shared SaaS number), and
  *  - a CUSTOM account (the clinic's own WhatsApp number).
