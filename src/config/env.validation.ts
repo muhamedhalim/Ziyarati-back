@@ -23,6 +23,13 @@ export const validate = (config: Record<string, unknown>) => {
     DB_POOL_MAX: Joi.number().default(15),
     DB_POOL_MIN: Joi.number().default(1),
     DB_POOL_IDLE_TIMEOUT: Joi.number().default(30000),
+    // Role-specific pool overrides (gap-closure pass — see
+    // docs/CACHING_QUEUES_AUDIT.md §0.8.6). Optional, no default: when unset,
+    // typeOrmFactory falls back to DB_POOL_MAX so an existing deployment that
+    // only sets DB_POOL_MAX is unaffected. Set these instead once the API and
+    // worker are separate deployments needing independently-sized pools.
+    API_DB_POOL_MAX: Joi.number(),
+    WORKER_DB_POOL_MAX: Joi.number(),
 
     // Redis / BullMQ. REQUIRED — the @Global QueueModule constructs
     // `ProducerQueues` (which throws without a REDIS_URL) unconditionally in

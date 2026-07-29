@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { ILike } from 'typeorm';
 
@@ -16,9 +16,20 @@ const SENSITIVE = /token|url|password|secret|code|otp/i;
 
 /**
  * Renders a template, sends it through the active provider, and records the
- * attempt in `email_logs`. Idempotent: a job whose idempotency key is already
- * SENT is skipped. Callable directly (sync mode) or by the worker's
+ * attempt in `email_logs`. Callable directly (sync mode) or by the worker's
  * EmailProcessor. Transient failures re-throw so BullMQ retries with backoff.
+ *
+ * IDEMPOTENCY (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11 /
+ * original audit H5): the PREVIOUS version checked-then-acted (`findOne`, then
+ * compare `status`) — a race window between two concurrent deliveries of the
+ * same key (a redelivered BullMQ job, or a duplicate `@OnEvent` fan-out) could
+ * both pass the check and both send. This version uses `email_logs`' existing
+ * UNIQUE `idempotency_key` index as an ATOMIC claim: `INSERT ... ON CONFLICT
+ * (idempotency_key) DO NOTHING RETURNING id`. Winning the insert means this
+ * call owns the send; losing it means a row already exists — `FOR UPDATE` on
+ * that row then decides SKIP (already SENT) vs RETRY (was FAILED/QUEUED, e.g.
+ * a prior attempt crashed mid-send) without a second race window, since the
+ * row is locked for the rest of the transaction either way.
  */
 @Injectable()
 export class EmailDeliveryService {
@@ -29,20 +40,47 @@ export class EmailDeliveryService {
     private readonly logs: Repository<EmailLog>,
     private readonly factory: EmailProviderFactory,
     private readonly config: ConfigService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async deliver(job: EmailSendJob): Promise<void> {
-    // Idempotency: don't re-send an already-delivered email.
-    if (job.idempotencyKey) {
-      const existing = await this.logs.findOne({
-        where: { idempotency_key: job.idempotencyKey },
-      });
-      if (existing?.status === 'SENT') {
-        this.logger.log(`Skipping duplicate email (${job.idempotencyKey})`);
-        return;
-      }
+    if (!job.idempotencyKey) {
+      // No key at all — a caller outside EmailService.send (which now always
+      // supplies one, see that service). No claim is possible without a key;
+      // send best-effort and log, same as the pre-fix behaviour for this edge.
+      return this.sendAndRecord(job, null);
     }
 
+    const claim = await this.claim(job.idempotencyKey);
+    if (claim === 'ALREADY_SENT') {
+      this.logger.log(`Skipping duplicate email (${job.idempotencyKey}) — already SENT`);
+      return;
+    }
+    // 'CLAIMED': either a brand-new row (this call is first) or a legitimate
+    // retry of a row left QUEUED/FAILED by a prior attempt.
+    await this.sendAndRecord(job, job.idempotencyKey);
+  }
+
+  /** Atomic claim via the UNIQUE idempotency_key index. Never races: the losing side locks the same row before deciding. */
+  private async claim(key: string): Promise<'CLAIMED' | 'ALREADY_SENT'> {
+    return this.dataSource.transaction(async (m) => {
+      const inserted = await m.query(
+        `INSERT INTO email_logs (idempotency_key, to_address, template, status)
+         VALUES ($1, '', '', 'QUEUED') ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+        [key],
+      );
+      if (inserted[0]?.id) return 'CLAIMED';
+
+      const [row] = await m.query(
+        `SELECT status FROM email_logs WHERE idempotency_key = $1 FOR UPDATE`,
+        [key],
+      );
+      if (row?.status === 'SENT') return 'ALREADY_SENT';
+      return 'CLAIMED'; // QUEUED or FAILED — retry
+    });
+  }
+
+  private async sendAndRecord(job: EmailSendJob, claimedKey: string | null): Promise<void> {
     const cfg = resolveEmailConfig(this.config);
     const ctx = {
       appUrl: cfg.appUrl,
@@ -63,7 +101,7 @@ export class EmailDeliveryService {
       tags: [{ name: 'template', value: job.template }],
     });
 
-    await this.record(job, rendered.subject, provider.name, ctx.locale, toAddr, result);
+    await this.record(job, rendered.subject, provider.name, ctx.locale, toAddr, result, claimedKey);
 
     if (!result.success && result.transient) {
       // Re-throw so BullMQ retries with the configured backoff.
@@ -78,10 +116,12 @@ export class EmailDeliveryService {
     locale: string,
     toAddr: string,
     result: { success: boolean; providerMessageId?: string; error?: string },
+    claimedKey: string | null,
   ): Promise<void> {
     try {
-      let log = job.idempotencyKey
-        ? await this.logs.findOne({ where: { idempotency_key: job.idempotencyKey } })
+      // The claim (if any) already created/located the row via `idempotency_key`.
+      let log = claimedKey
+        ? await this.logs.findOne({ where: { idempotency_key: claimedKey } })
         : null;
       if (!log) {
         log = this.logs.create({
@@ -90,6 +130,8 @@ export class EmailDeliveryService {
           tenant_id: job.tenantId ?? undefined,
         });
       }
+      log.to_address = toAddr;
+      log.tenant_id = job.tenantId ?? log.tenant_id;
       log.template = job.template;
       log.subject = subject;
       log.locale = locale;

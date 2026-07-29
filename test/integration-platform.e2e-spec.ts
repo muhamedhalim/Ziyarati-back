@@ -56,6 +56,9 @@ import { IntegrationSyncService } from '../src/modules/integration-platform/sync
 import { runInTenantContext } from '../src/queue/tenant-context.runner';
 import { TenantContextService } from '../src/core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../src/queue/worker-authorization.service';
+import { JOB, QUEUE } from '../src/queue/queue.constants';
+import { OutboxRelayService } from '../src/worker/outbox-relay.service';
+import { QueueService } from '../src/queue/queue.service';
 
 const API = '/api/v1';
 
@@ -108,6 +111,8 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
   let syncs: IntegrationSyncService;
   let ctx: TenantContextService;
   let authz: WorkerAuthorizationService;
+  let relay: OutboxRelayService;
+  let queueService: QueueService;
 
   const server = () => e2e.app.getHttpServer();
 
@@ -119,8 +124,21 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
    * service against the e2e app's DB so a genuinely-suspended-tenant test
    * would actually be rejected here too.
    */
-  const drain = <T>(tenantId: string, fn: () => Promise<T>): Promise<T> =>
-    runInTenantContext(ctx, authz, { tenantId } as never, fn);
+  const drain = <T>(tenantId: string, fn: () => Promise<T>, jobName: string = JOB.INTEGRATION_IMPORT): Promise<T> =>
+    runInTenantContext(ctx, authz, jobName, { tenantId } as never, fn);
+
+  /**
+   * Drives the REAL `OutboxRelayService` (not a reimplementation) through one
+   * claim -> publish -> mark cycle (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.1). `OutboxRelayService` isn't
+   * registered in `AppModule` (worker-only), so it's constructed directly here
+   * from the e2e app's real `DataSource`/`QueueService` — exactly the same
+   * pattern the `drain()` helper above already uses for `runInTenantContext`.
+   * `drainBatch` is private; invoked via a type assertion, the same technique
+   * `outbox-relay.service.spec.ts` already uses for its own unit tests.
+   */
+  const drainOutboxOnce = (): Promise<void> =>
+    (relay as unknown as { drainBatch: () => Promise<void> }).drainBatch();
 
   beforeAll(async () => {
     e2e = await createE2eApp();
@@ -132,6 +150,8 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
     syncs = e2e.app.get(IntegrationSyncService);
     ctx = e2e.app.get(TenantContextService);
     authz = e2e.app.get(WorkerAuthorizationService);
+    queueService = e2e.app.get(QueueService);
+    relay = new OutboxRelayService(e2e.dataSource, queueService);
 
     // Domain fixtures the appointment flow depends on.
     const services = e2e.dataSource.getRepository(Service);
@@ -166,6 +186,7 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
         provider: 'generic_rest',
         authType: 'api_key',
         credential: 'pms-secret-value',
+        config: { baseUrl: 'https://api.example.com', apiKey: { location: 'header', name: 'X-Api-Key' } },
         syncDirection: 'bidirectional',
         defaultConflictPolicy: 'external_wins',
       })
@@ -591,6 +612,42 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
         .send({ connectionId: temp.body.id, records: [{ externalId: 'X', data: { full_name: 'Y', phone: '+966500000099', email: `e2e-${randomUUID().slice(0, 8)}@example.test` } }] })
         .expect(422);
     });
+
+    it('the COMPLETE path: DB transaction -> outbox row -> REAL relay -> real BullMQ job (gap-closure pass, §0.8.1)', async () => {
+      const externalId = `IMPRELAY-${randomUUID().slice(0, 8)}`;
+      const created = await request(server())
+        .post(`${API}/platform/integrations/import-jobs/customer`)
+        .set(...authHeader(owner.token))
+        .send({
+          connectionId,
+          records: [{ externalId, data: { full_name: 'Relay Proof', phone: `+9665${(Date.now() + 13) % 100000000}`, email: `e2e-${randomUUID().slice(0, 8)}@example.test` } }],
+        })
+        .expect(201);
+      const jobId: string = created.body.jobId;
+      const dedupeKey = `integration-import-${jobId}`;
+
+      const pending = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      expect(pending?.status).toBe(OutboxStatus.PENDING);
+      // No BullMQ job exists yet — only the outbox row is durable so far.
+      expect(await queueService.queue(QUEUE.INTEGRATION_IMPORT).getJob(dedupeKey)).toBeFalsy();
+
+      // The REAL relay claims the row and publishes it — no reimplementation.
+      await drainOutboxOnce();
+
+      const published = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      expect(published?.status).toBe(OutboxStatus.PUBLISHED);
+      const bullJob = await queueService.queue(QUEUE.INTEGRATION_IMPORT).getJob(dedupeKey);
+      expect(bullJob).toBeTruthy();
+      expect(bullJob!.data).toMatchObject({ tenantId: owner.tenantId, importJobId: jobId });
+
+      // The worker leg (same entry point the real processor calls) completes the loop.
+      await drain(owner.tenantId, () => importJobs.process(jobId), JOB.INTEGRATION_IMPORT);
+      const status = await request(server())
+        .get(`${API}/platform/integrations/import-jobs/${jobId}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(status.body.status).toBe('completed');
+    }, 60_000);
   });
 
   // ── Sync: cursor progression + duplicate-active rejection ─────────────────
@@ -624,6 +681,37 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       expect(['completed', 'partially_completed']).toContain(status.body.status);
       expect(status.body.stopReason).toBeTruthy();
       expect(status.body.pagesFetched).toBeGreaterThanOrEqual(0);
+    }, 60_000);
+
+    it('the COMPLETE path: DB transaction -> outbox row -> REAL relay -> real BullMQ job (gap-closure pass, §0.8.1)', async () => {
+      // A different resource/direction tuple than the test above, so this run
+      // doesn't collide with its still-active-until-drained partial unique index.
+      const started = await request(server())
+        .post(`${API}/platform/integrations/sync`)
+        .set(...authHeader(owner.token))
+        .send({ connectionId, resourceType: 'service', direction: 'inbound', mode: 'incremental' })
+        .expect(200);
+      const syncJobId: string = started.body.id;
+      const dedupeKey = `integration-sync-${syncJobId}`;
+
+      const pending = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      expect(pending?.status).toBe(OutboxStatus.PENDING);
+      expect(await queueService.queue(QUEUE.INTEGRATION_SYNC).getJob(dedupeKey)).toBeFalsy();
+
+      await drainOutboxOnce();
+
+      const published = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      expect(published?.status).toBe(OutboxStatus.PUBLISHED);
+      const bullJob = await queueService.queue(QUEUE.INTEGRATION_SYNC).getJob(dedupeKey);
+      expect(bullJob).toBeTruthy();
+      expect(bullJob!.data).toMatchObject({ tenantId: owner.tenantId, syncJobId });
+
+      await drain(owner.tenantId, () => syncs.process(syncJobId), JOB.INTEGRATION_SYNC);
+      const status = await request(server())
+        .get(`${API}/platform/integrations/sync/${syncJobId}`)
+        .set(...authHeader(owner.token))
+        .expect(200);
+      expect(['completed', 'partially_completed']).toContain(status.body.status);
     }, 60_000);
   });
 
@@ -704,6 +792,49 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
         where: { tenant: { id: owner.tenantId }, external_id: externalId },
       });
       expect(map).toBeTruthy();
+    }, 60_000);
+
+    it('the COMPLETE path: DB transaction -> outbox row -> REAL relay -> real BullMQ job (gap-closure pass, §0.8.1)', async () => {
+      const eventId = `evt-relay-${randomUUID()}`;
+      const externalId = `WHRELAY-${randomUUID().slice(0, 8)}`;
+      const body = JSON.stringify({
+        externalId,
+        data: { full_name: 'Relay Proof Customer', phone: `+9665${(Date.now() + 17) % 100000000}`, email: `e2e-${randomUUID().slice(0, 8)}@example.test` },
+      });
+      const ts = nowSeconds();
+
+      const res = await request(server())
+        .post(`${API}/integrations/inbound/${connectionId}`)
+        .set('Content-Type', 'application/json')
+        .set('X-Ziyarati-Timestamp', ts)
+        .set('X-Ziyarati-Event-Id', eventId)
+        .set('X-Ziyarati-Event', 'customer.upserted')
+        .set('X-Ziyarati-Signature', signInbound(secret, ts, body))
+        .send(body)
+        .expect(202);
+      expect(res.body).toMatchObject({ received: true, status: 'accepted' });
+
+      const row = await e2e.dataSource.getRepository(IntegrationInboundEvent).findOne({
+        where: { tenant: { id: owner.tenantId }, provider_event_id: eventId },
+      });
+      const dedupeKey = `integration-inbound-${row!.id}`;
+
+      const pending = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      expect(pending?.status).toBe(OutboxStatus.PENDING);
+      expect(await queueService.queue(QUEUE.INTEGRATION_INBOUND).getJob(dedupeKey)).toBeFalsy();
+
+      // The REAL relay claims + publishes — no reimplementation of its logic.
+      await drainOutboxOnce();
+
+      const published = await e2e.dataSource.getRepository(OutboxJob).findOne({ where: { dedupe_key: dedupeKey } });
+      expect(published?.status).toBe(OutboxStatus.PUBLISHED);
+      const bullJob = await queueService.queue(QUEUE.INTEGRATION_INBOUND).getJob(dedupeKey);
+      expect(bullJob).toBeTruthy();
+      expect(bullJob!.data).toMatchObject({ tenantId: owner.tenantId, inboundEventId: row!.id });
+
+      await drain(owner.tenantId, () => inbound.process(row!.id), JOB.INTEGRATION_INBOUND);
+      const processed = await e2e.dataSource.getRepository(IntegrationInboundEvent).findOne({ where: { id: row!.id } });
+      expect(['processed', 'conflicted']).toContain(processed!.status);
     }, 60_000);
 
     it('REJECTS an invalid signature (403) and writes no history row', async () => {
@@ -937,7 +1068,7 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       const temp = await request(server())
         .post(`${API}/platform/integrations/connections`)
         .set(...authHeader(owner.token))
-        .send({ name: 'Reconnectable', provider: 'generic_rest', authType: 'api_key', credential: 'secret-1' })
+        .send({ name: 'Reconnectable', provider: 'generic_rest', authType: 'api_key', credential: 'secret-1', config: { baseUrl: 'https://api.example.com', apiKey: { location: 'header', name: 'X-Api-Key' } } })
         .expect(201);
       const tempId = temp.body.id;
 
@@ -1008,7 +1139,7 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       const strict = await request(server())
         .post(`${API}/platform/integrations/connections`)
         .set(...authHeader(owner.token))
-        .send({ name: 'Strict', provider: 'generic_rest', authType: 'none', defaultConflictPolicy: 'reject_and_report' })
+        .send({ name: 'Strict', provider: 'generic_rest', authType: 'none', defaultConflictPolicy: 'reject_and_report', config: { baseUrl: 'https://api.example.com' } })
         .expect(201);
 
       const externalId = `CF-${randomUUID().slice(0, 8)}`;

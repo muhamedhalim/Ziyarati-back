@@ -69,6 +69,16 @@ export interface WhatsappSendJob extends BaseJobData {
     variables?: Record<string, unknown>;
     scheduledAt?: string;
   };
+  /**
+   * The QUEUED `NotificationLog` row created at schedule time (gap-closure
+   * pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11). Lets the worker claim
+   * this SAME row atomically (QUEUED -> SENDING) before sending, so a
+   * redelivered/duplicated job — this queue previously had NO jobId at all —
+   * cannot double-send. Absent for any caller that hasn't been updated to the
+   * new claim path (defensive; there is currently only one producer,
+   * `WhatsappExecutionService.scheduleMessage`).
+   */
+  logId?: string;
 }
 
 /**

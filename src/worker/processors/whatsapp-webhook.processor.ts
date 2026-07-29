@@ -43,7 +43,7 @@ export class WhatsappWebhookProcessor extends WorkerHost {
     );
     // Open a tenant context so downstream services (AI bot actor, usage
     // metering) see the same principal/tenant they would on an HTTP request.
-    return runInTenantContext(this.ctx, this.authz, data, () =>
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.webhooks.processEvent(data.webhookEventId),
     );
   }

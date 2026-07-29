@@ -167,6 +167,13 @@ export class OutboxRelayService implements OnApplicationBootstrap, OnModuleDestr
    * concurrent relays for the same reason `claimBatch` is: this update only
    * matches rows already PUBLISHING and stale, so two recovery sweeps racing
    * each other just both issue a harmless no-op UPDATE on the same rows.
+   *
+   * `claimed_at IS NULL` is treated as immediately stale too (gap-closure pass
+   * — see docs/CACHING_QUEUES_AUDIT.md §0.8.3/§0.9): in SQL, `NULL < cutoff`
+   * evaluates to NULL (not true), so without this branch a row that somehow
+   * ends up PUBLISHING with no claim timestamp — a legacy writer, a manual DB
+   * fix, any future code path that sets status without the timestamp — would
+   * never be picked up by this sweep and would be stuck forever.
    */
   private async runRecovery(): Promise<void> {
     if (this.recovering || this.stopped) return;
@@ -177,7 +184,7 @@ export class OutboxRelayService implements OnApplicationBootstrap, OnModuleDestr
         .createQueryBuilder()
         .update(OutboxJob)
         .set({ status: OutboxStatus.PENDING, claimed_at: undefined })
-        .where('status = :publishing AND claimed_at < :cutoff', {
+        .where('status = :publishing AND (claimed_at IS NULL OR claimed_at < :cutoff)', {
           publishing: OutboxStatus.PUBLISHING,
           cutoff,
         })

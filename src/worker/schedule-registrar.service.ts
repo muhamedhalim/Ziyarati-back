@@ -54,7 +54,12 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
         { tenantId: null },
         this.config.get<string>('AI_BATCH_POLL_CRON', '*/5 * * * *'),
       );
-      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll)');
+      // Integration import/sync/inbound recovery sweep — every 2 minutes
+      // (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.8). Lock-
+      // guarded in IntegrationRecoveryProcessor so a stalled-job redelivery
+      // can't run the sweep twice concurrently.
+      await this.queue.addRepeatable(QUEUE.INTEGRATION_MAINTENANCE, JOB.INTEGRATION_RECOVER_STALE, { tenantId: null }, '*/2 * * * *');
+      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

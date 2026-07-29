@@ -59,6 +59,7 @@ import { IntegrationPlatformModule } from './modules/integration-platform/integr
 import { IntegrationImportProcessor } from './worker/processors/integration-import.processor';
 import { IntegrationSyncProcessor } from './worker/processors/integration-sync.processor';
 import { IntegrationInboundProcessor } from './worker/processors/integration-inbound.processor';
+import { IntegrationRecoveryProcessor } from './worker/processors/integration-recovery.processor';
 
 /**
  * Which processors/infra services this process instantiates, resolved ONCE at
@@ -83,6 +84,23 @@ import { IntegrationInboundProcessor } from './worker/processors/integration-inb
  * `critical`/`all` only, so a `dispatch`-role deployment doesn't duplicate
  * cron registration or double up on QueueEvents connections for no reason.
  */
+// Production must set WORKER_ROLE explicitly rather than silently falling
+// back to `all` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.5).
+// Checked against the RAW env var (never the Joi-defaulted ConfigService
+// value, which by validation time is always 'all'/'critical'/'dispatch' and
+// can no longer distinguish "unset" from "explicitly all") — mirrors how
+// `resolveWorkerRole()` itself reads `process.env.WORKER_ROLE` directly.
+// Deliberately NOT in the shared `env.validation.ts` `validate()`: that
+// function also gates the API process's boot, which has no reason to ever
+// set WORKER_ROLE, so a check there would wrongly fail API deployments too.
+if (process.env.NODE_ENV === 'production' && process.env.WORKER_ROLE === undefined) {
+  throw new Error(
+    '❌ WORKER_ROLE must be set explicitly in production — one of "all", "critical", or "dispatch". ' +
+      'See docs/CACHING_QUEUES_AUDIT.md §0.5/§0.8.5: silently defaulting to "all" in production ' +
+      'means every deployment gets the unsplit worker (shared DB pool, shared connection set) with no warning.',
+  );
+}
+
 const WORKER_ROLE = resolveWorkerRole();
 
 const DISPATCH_PROCESSORS = [CampaignDispatchProcessor];
@@ -110,6 +128,7 @@ const CRITICAL_PROCESSORS = [
   IntegrationImportProcessor,
   IntegrationSyncProcessor,
   IntegrationInboundProcessor,
+  IntegrationRecoveryProcessor,
 ];
 
 const CRITICAL_INFRA = [WorkerTenantsService, QueueMonitorService, ScheduleRegistrarService, OutboxRelayService];
@@ -144,7 +163,10 @@ const WORKER_PROVIDERS =
     // The API root registers this; the worker root must too, or DI fails at
     // boot — discovered by actually starting the worker process, not `tsc`.
     EventEmitterModule.forRoot({ global: true, wildcard: false }),
-    TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: typeOrmFactory }),
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => typeOrmFactory(config, 'worker'),
+    }),
     TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob]),
     TenantContextModule,
     // Workers decrypt tenant provider credentials on the send path, so the

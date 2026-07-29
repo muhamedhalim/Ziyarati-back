@@ -85,7 +85,7 @@ import { validate } from './config/env.validation';
 
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: typeOrmFactory,
+      useFactory: (config: ConfigService) => typeOrmFactory(config, 'api'),
     }),
 
     TenantContextModule,

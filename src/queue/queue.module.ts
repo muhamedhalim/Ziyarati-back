@@ -10,6 +10,8 @@ import { ProducerQueues } from './producer-queues';
 import { TenantRateLimiterService } from './tenant-rate-limiter.service';
 import { AppRedisService } from './app-redis.service';
 import { WorkerAuthorizationService } from './worker-authorization.service';
+import { DistributedLockService } from './distributed-lock.service';
+import { AuthModule } from '../modules/auth/auth.module';
 import { User } from '../entities/Auth&RBAC/User';
 
 /**
@@ -52,10 +54,14 @@ import { User } from '../entities/Auth&RBAC/User';
 @Global()
 @Module({
   imports: [
-    // WorkerAuthorizationService needs its own User repository (it never
-    // needs a full AuthenticatedUser — see that service's docstring — just
-    // existence/active/tenant-membership).
+    // WorkerAuthorizationService needs its own User repository for
+    // existence/active/tenant-membership checks, and — for the ONE job type
+    // that declares a `requiredPermission` (gap-closure pass, see
+    // docs/CACHING_QUEUES_AUDIT.md §0.8.10) — AuthModule's AuthService to
+    // reuse the SAME permission-resolution logic HTTP guards use, rather than
+    // reimplementing a second RBAC join.
     TypeOrmModule.forFeature([User]),
+    AuthModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -67,7 +73,7 @@ import { User } from '../entities/Auth&RBAC/User';
       }),
     }),
   ],
-  providers: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService],
-  exports: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, BullModule],
+  providers: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService],
+  exports: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService, BullModule],
 })
 export class QueueModule {}

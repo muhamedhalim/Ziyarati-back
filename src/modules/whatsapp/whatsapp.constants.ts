@@ -24,6 +24,13 @@ export const WHATSAPP_TEMPLATE_STATUSES: WhatsappTemplateStatus[] = Object.value
  */
 export const WHATSAPP_DELIVERY_STATUS = {
   QUEUED: 'QUEUED',
+  /**
+   * Claimed by the worker, send in flight (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.11). The atomic QUEUED -> SENDING
+   * transition is what makes a redelivered `whatsapp.send` job a safe no-op
+   * instead of a duplicate send — this queue has no other idempotency guard.
+   */
+  SENDING: 'SENDING',
   SENT: 'SENT',
   DELIVERED: 'DELIVERED',
   READ: 'READ',

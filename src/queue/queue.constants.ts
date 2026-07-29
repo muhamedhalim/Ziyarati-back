@@ -50,6 +50,13 @@ export const QUEUE = {
   INTEGRATION_SYNC: 'integration.sync',
   /** Inbound integration webhook processing (Phase 4). */
   INTEGRATION_INBOUND: 'integration.inbound',
+  /**
+   * Maintenance sweeps for the integration platform (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.8.8): recovers import/sync/inbound rows
+   * left in a running/processing state by a dead worker. Repeatable, system
+   * job (tenantId null), lock-guarded — see IntegrationRecoveryProcessor.
+   */
+  INTEGRATION_MAINTENANCE: 'integration.maintenance',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -101,6 +108,8 @@ export const JOB = {
   INTEGRATION_IMPORT_RECOVER: 'integration.importRecover',
   INTEGRATION_SYNC: 'integration.sync',
   INTEGRATION_INBOUND: 'integration.inbound',
+  /** Repeatable maintenance sweep — see QUEUE.INTEGRATION_MAINTENANCE. */
+  INTEGRATION_RECOVER_STALE: 'integration.recoverStale',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];
