@@ -29,6 +29,8 @@ interface ResolvedRecipient {
   recipientId?: string;
 }
 
+const PG_UNIQUE_VIOLATION = '23505';
+
 /**
  * Orchestrates WhatsApp sends: validates the account (active) + template
  * (approved) + recipient, delegates delivery to the provider abstraction, and
@@ -78,6 +80,20 @@ export class WhatsappExecutionService {
    * payload) to another worker, but the redelivered call's claim attempt was
    * always rejected as "already claimed" — the message was simply never sent
    * and never retried, silently.
+   *
+   * RECONCILIATION (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md
+   * §0.11): a STALE reclaim (as opposed to a fresh QUEUED claim) can mean the
+   * PRIOR attempt already got a successful response from Meta — a real
+   * `provider_ref` was persisted — and crashed only during the FINAL status
+   * write. Resending in that case would deliver the message to the customer
+   * TWICE. This is now checked explicitly: if the reclaimed row already
+   * carries a `provider_ref`, the provider is never called again — the row is
+   * reconciled to SENT using the `provider_ref` already on file instead. The
+   * one window this cannot close: a crash strictly BETWEEN the provider
+   * accepting the message and OUR immediate `provider_ref` write below — that
+   * remains a genuine, unavoidable at-least-once gap (no transactional
+   * coordination with Meta is possible), and is documented here rather than
+   * silently assumed away.
    */
   async sendTemplateMessage(
     tenantId: string,
@@ -85,9 +101,10 @@ export class WhatsappExecutionService {
     dto: SendTemplateMessageDto,
     claim?: { logId: string },
   ) {
+    let priorProviderRef: string | null | undefined;
     if (claim) {
-      const claimed = await this.claimQueuedLog(tenantId, claim.logId);
-      if (!claimed) {
+      const claimResult = await this.claimQueuedLog(tenantId, claim.logId);
+      if (!claimResult.claimed) {
         this.logger.warn(`whatsapp send job for log ${claim.logId} was already claimed/handled — skipping duplicate delivery`);
         return {
           status: WHATSAPP_DELIVERY_STATUS.SENDING,
@@ -98,6 +115,7 @@ export class WhatsappExecutionService {
           duplicate: true,
         };
       }
+      priorProviderRef = claimResult.priorProviderRef;
     }
 
     const account = await this.router.resolveForSend(tenantId, {
@@ -106,6 +124,29 @@ export class WhatsappExecutionService {
     });
     const template = await this.templates.getSendableTemplate(tenantId, templateId);
     const recipient = await this.resolveRecipient(tenantId, dto);
+
+    if (claim && priorProviderRef) {
+      // See RECONCILIATION above: the row we just reclaimed already has a
+      // provider_ref from a prior attempt that crashed before finalizing —
+      // treat it as already delivered rather than risk a real duplicate send.
+      this.logger.warn(
+        `whatsapp send job for log ${claim.logId} was reclaimed from a stale SENDING row that ALREADY has ` +
+          `provider_ref=${priorProviderRef} — a prior attempt reached the provider before crashing. Reconciling ` +
+          'to SENT WITHOUT resending, to avoid a guaranteed duplicate delivery.',
+      );
+      const log = await this.updateClaimedLog(claim.logId, template.id, recipient, WHATSAPP_DELIVERY_STATUS.SENT, {
+        sentAt: new Date(),
+        providerRef: priorProviderRef,
+      });
+      return {
+        status: WHATSAPP_DELIVERY_STATUS.SENT,
+        providerMessageId: priorProviderRef,
+        error: undefined,
+        recipient: { type: recipient.recipientType, id: recipient.recipientId, to: recipient.to },
+        logId: log.id,
+        reconciled: true,
+      };
+    }
 
     // Quota: WhatsApp messages are usage-limited. This is the single send seam
     // (immediate, scheduled-via-worker, and campaign sends all reuse it), so the
@@ -146,14 +187,20 @@ export class WhatsappExecutionService {
       await this.usage.increment(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
     }
 
+    // provider_ref is written REGARDLESS of what happens after this point —
+    // narrows (does not eliminate — see RECONCILIATION above) the crash
+    // window in which Meta has accepted the message but we have no durable
+    // record of it, and is what a stale reclaim checks on its next attempt.
     const log = claim
       ? await this.updateClaimedLog(claim.logId, template.id, recipient, status, {
           error: result.success ? undefined : result.error,
           sentAt: result.success ? new Date() : undefined,
+          providerRef: result.success ? result.providerMessageId : undefined,
         })
       : await this.recordLog(tenantId, template.id, recipient, status, {
           error: result.success ? undefined : result.error,
           sentAt: result.success ? new Date() : undefined,
+          providerRef: result.success ? result.providerMessageId : undefined,
         });
 
     return {
@@ -175,10 +222,20 @@ export class WhatsappExecutionService {
    * no `claimed_at` at all — a row from before this column existed): both are
    * legitimate to (re)claim. A row genuinely SENDING within the stale window
    * is NOT matched, so a real in-flight send can never be claimed twice.
-   * Returns false if the row is currently in-flight, already SENT/FAILED, or
-   * doesn't exist.
+   * Returns `claimed: false` if the row is currently in-flight, already
+   * SENT/FAILED, or doesn't exist.
+   *
+   * `priorProviderRef` (best-effort read, taken before the claim UPDATE — the
+   * UPDATE's WHERE clause remains the actual atomicity guard, this is purely
+   * informational) lets the caller detect a stale-SENDING reclaim whose prior
+   * attempt already reached the provider — see the RECONCILIATION docstring
+   * on `sendTemplateMessage`.
    */
-  private async claimQueuedLog(tenantId: string, logId: string): Promise<boolean> {
+  private async claimQueuedLog(
+    tenantId: string,
+    logId: string,
+  ): Promise<{ claimed: boolean; priorProviderRef?: string | null }> {
+    const existing = await this.logs.findOne({ where: { id: logId, tenant: { id: tenantId } } });
     const staleCutoff = new Date(Date.now() - WHATSAPP_SENDING_STALE_MS);
     const result = await this.logs
       .createQueryBuilder()
@@ -195,7 +252,58 @@ export class WhatsappExecutionService {
         },
       )
       .execute();
-    return (result.affected ?? 0) > 0;
+    const claimed = (result.affected ?? 0) > 0;
+    return { claimed, priorProviderRef: claimed ? existing?.provider_ref : undefined };
+  }
+
+  /**
+   * Claim-or-detect-duplicate for a business-keyed send that has NO
+   * pre-existing `NotificationLog` row of its own — e.g. the workflow
+   * engine's WHATSAPP action, which sends a free-form SESSION message via
+   * `WhatsappMessagingService.sendSession` directly and has no
+   * QUEUED/SENDING lifecycle to claim (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.11). Inserts a SENDING row keyed by
+   * `sourceRef`; the column's partial-unique index (migration
+   * `WorkflowActionSourceRef1730016000000`) makes a second insert for the
+   * SAME `sourceRef` fail with 23505 instead of silently succeeding — that is
+   * the actual atomicity guarantee, not the insert-then-check pattern this
+   * method's code happens to read like.
+   */
+  async claimBySourceRef(
+    tenantId: string,
+    channel: string,
+    sourceRef: string,
+  ): Promise<{ claimed: boolean; log: NotificationLog }> {
+    try {
+      const log = await this.logs.save(
+        this.logs.create({
+          tenant: { id: tenantId } as Tenant,
+          channel,
+          status: WHATSAPP_DELIVERY_STATUS.SENDING,
+          source_ref: sourceRef,
+          claimed_at: new Date(),
+        }),
+      );
+      return { claimed: true, log };
+    } catch (err) {
+      if ((err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
+        const existing = await this.logs.findOneBy({ source_ref: sourceRef });
+        if (existing) return { claimed: false, log: existing };
+      }
+      throw err;
+    }
+  }
+
+  /** Finalizes a row claimed via `claimBySourceRef` — same row, no second insert. */
+  async finalizeBySourceRef(
+    logId: string,
+    status: string,
+    opts: { providerRef?: string; error?: string; sentAt?: Date },
+  ): Promise<void> {
+    await this.logs.update(
+      { id: logId },
+      { status, provider_ref: opts.providerRef, error_message: opts.error, sent_at: opts.sentAt },
+    );
   }
 
   /**
@@ -301,7 +409,7 @@ export class WhatsappExecutionService {
     templateId: string,
     recipient: ResolvedRecipient,
     status: string,
-    opts: { error?: string; sentAt?: Date },
+    opts: { error?: string; sentAt?: Date; providerRef?: string },
   ): Promise<NotificationLog> {
     const log = this.logs.create({
       tenant: { id: tenantId } as Tenant,
@@ -312,6 +420,7 @@ export class WhatsappExecutionService {
       status,
       error_message: opts.error,
       sent_at: opts.sentAt,
+      provider_ref: opts.providerRef,
     });
     return this.logs.save(log);
   }
@@ -328,7 +437,7 @@ export class WhatsappExecutionService {
     templateId: string,
     recipient: ResolvedRecipient,
     status: string,
-    opts: { error?: string; sentAt?: Date },
+    opts: { error?: string; sentAt?: Date; providerRef?: string },
   ): Promise<NotificationLog> {
     await this.logs.update(
       { id: logId },
@@ -339,6 +448,7 @@ export class WhatsappExecutionService {
         status,
         error_message: opts.error,
         sent_at: opts.sentAt,
+        provider_ref: opts.providerRef,
       },
     );
     const updated = await this.logs.findOneBy({ id: logId });

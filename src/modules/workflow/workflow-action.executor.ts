@@ -9,6 +9,8 @@ import { NotificationSchedulerService } from '../notifications/notification-sche
 import { RECIPIENT_TYPE } from '../notifications/notification.constants';
 import { WhatsappMessagingService } from '../whatsapp/whatsapp-messaging.service';
 import { WhatsappMessageRouter } from '../whatsapp/routing/whatsapp-message.router';
+import { WhatsappExecutionService } from '../whatsapp/whatsapp-execution.service';
+import { WHATSAPP_CHANNEL, WHATSAPP_DELIVERY_STATUS } from '../whatsapp/whatsapp.constants';
 import type {
   WhatsappReplyButton,
   WhatsappListSection,
@@ -44,29 +46,45 @@ export class WorkflowActionExecutor {
     private readonly email: EmailService,
     private readonly whatsappMessaging: WhatsappMessagingService,
     private readonly whatsappRouter: WhatsappMessageRouter,
+    private readonly whatsappExecution: WhatsappExecutionService,
     private readonly notifications: NotificationSchedulerService,
     private readonly orchestrator: AiOrchestratorService,
   ) {}
 
+  /**
+   * `actionIndex` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.11)
+   * feeds a per-action BUSINESS idempotency key (`workflow-action:{runId}:
+   * {actionIndex}`), used below by whichever type-specific handler has a way
+   * to use it. This exists because `WorkflowService.claimAction`'s atomic
+   * claim only prevents CONCURRENT double-execution; it cannot prevent a
+   * crash AFTER the side effect below already ran and BEFORE the claim's
+   * result is recorded (see that method's docstring) from being reclaimed
+   * later and re-executed. Each handler closes that specific residual window
+   * using whatever mechanism fits its own operation type — a business key
+   * (EMAIL/AI, which already have content-addressed logs) or a database
+   * unique constraint (WHATSAPP/NOTIFICATION, which do not).
+   */
   async execute(
     tenantId: string,
     runId: string,
+    actionIndex: number,
     action: WorkflowActionSpec,
     context: Record<string, unknown>,
   ): Promise<ActionOutcome> {
     const cfg = action.config ?? {};
+    const idempotencyKey = `workflow-action:${runId}:${actionIndex}`;
     try {
       switch (action.type) {
         case WORKFLOW_ACTION_TYPE.EMAIL:
-          return await this.email_(tenantId, cfg, context);
+          return await this.email_(tenantId, cfg, context, idempotencyKey);
         case WORKFLOW_ACTION_TYPE.WHATSAPP:
-          return await this.whatsapp_(tenantId, cfg, context);
+          return await this.whatsapp_(tenantId, cfg, context, idempotencyKey);
         case WORKFLOW_ACTION_TYPE.NOTIFICATION:
-          return await this.notification_(tenantId, cfg, context);
+          return await this.notification_(tenantId, cfg, context, idempotencyKey);
         case WORKFLOW_ACTION_TYPE.WEBHOOK:
-          return await this.webhook_(tenantId, runId, cfg, context);
+          return await this.webhook_(tenantId, runId, cfg, context, idempotencyKey);
         case WORKFLOW_ACTION_TYPE.AI:
-          return await this.ai_(tenantId, cfg);
+          return await this.ai_(tenantId, cfg, idempotencyKey);
         default:
           return { status: 'FAILED', detail: `Unknown action type "${action.type}"` };
       }
@@ -81,6 +99,7 @@ export class WorkflowActionExecutor {
     tenantId: string,
     cfg: Record<string, unknown>,
     context: Record<string, unknown>,
+    idempotencyKey: string,
   ): Promise<ActionOutcome> {
     const to = this.recipients(cfg.to);
     if (!to) return { status: 'FAILED', detail: 'EMAIL action requires `to`' };
@@ -91,20 +110,38 @@ export class WorkflowActionExecutor {
       ...(this.str(cfg.body) ? { body: this.str(cfg.body), message: this.str(cfg.body) } : {}),
       context,
     };
-    await this.email.send({ to, template, variables, tenantId });
+    // Business key, NOT the content-hash fallback — a stale-reclaimed retry of
+    // THIS action must dedupe on being the SAME action, even if `context`
+    // (and therefore the rendered content) has since drifted.
+    await this.email.send({ to, template, variables, tenantId, idempotencyKey });
     return { status: 'SUCCEEDED', detail: `email "${template}" queued to ${Array.isArray(to) ? to.length + ' recipients' : to}` };
   }
 
   // ── WHATSAPP ──────────────────────────────────────────────────────────────
 
+  /**
+   * Unlike EMAIL (which reuses `email_logs`' own content-addressed claim),
+   * `sendSession` has NO persistence or idempotency of its own (see
+   * `WhatsappMessagingService` — "holds no persistence"). A stale-reclaimed
+   * retry of this action would otherwise send the WhatsApp message a second
+   * time with NOTHING stopping it. `WhatsappExecutionService.claimBySourceRef`
+   * gives it the same DB-unique-constraint floor NOTIFICATION gets below —
+   * see migration `WorkflowActionSourceRef1730016000000`.
+   */
   private async whatsapp_(
     tenantId: string,
     cfg: Record<string, unknown>,
     context: Record<string, unknown>,
+    idempotencyKey: string,
   ): Promise<ActionOutcome> {
     const to = this.str(cfg.to) ?? this.str(context.waId);
     const text = this.str(cfg.text);
     if (!to || !text) return { status: 'FAILED', detail: 'WHATSAPP action requires `to` and `text`' };
+
+    const claim = await this.whatsappExecution.claimBySourceRef(tenantId, WHATSAPP_CHANNEL, idempotencyKey);
+    if (!claim.claimed) {
+      return { status: 'SUCCEEDED', detail: `whatsapp already sent for this action (dedup via ${idempotencyKey})` };
+    }
 
     // The action can only send from this tenant's own connected number — there
     // is no shared platform number to fall back to, so an unresolvable account
@@ -113,7 +150,9 @@ export class WorkflowActionExecutor {
     try {
       account = await this.whatsappRouter.resolveForSend(tenantId, {});
     } catch (err) {
-      return { status: 'FAILED', detail: (err as Error)?.message ?? 'no usable WhatsApp account' };
+      const detail = (err as Error)?.message ?? 'no usable WhatsApp account';
+      await this.whatsappExecution.finalizeBySourceRef(claim.log.id, WHATSAPP_DELIVERY_STATUS.FAILED, { error: detail });
+      return { status: 'FAILED', detail };
     }
 
     const buttons = this.buttons(cfg.buttons);
@@ -127,6 +166,16 @@ export class WorkflowActionExecutor {
       text,
       ...(buttons || list ? { interactive: { ...(buttons ? { buttons } : {}), ...(list ? { list } : {}) } } : {}),
     });
+    // provider_ref is written REGARDLESS of outcome — narrows (does not
+    // eliminate; see WhatsappExecutionService.sendTemplateMessage's
+    // RECONCILIATION docstring for the same residual crash window here) the
+    // gap between the provider accepting the message and us durably
+    // recording that fact.
+    await this.whatsappExecution.finalizeBySourceRef(
+      claim.log.id,
+      res.success ? WHATSAPP_DELIVERY_STATUS.SENT : WHATSAPP_DELIVERY_STATUS.FAILED,
+      { providerRef: res.providerMessageId, error: res.success ? undefined : res.error, sentAt: res.success ? new Date() : undefined },
+    );
     return res.success
       ? { status: 'SUCCEEDED', detail: `whatsapp sent (${res.providerMessageId ?? 'ok'})` }
       : { status: 'FAILED', detail: res.error ?? 'whatsapp send failed' };
@@ -138,34 +187,59 @@ export class WorkflowActionExecutor {
     tenantId: string,
     cfg: Record<string, unknown>,
     context: Record<string, unknown>,
+    idempotencyKey: string,
   ): Promise<ActionOutcome> {
     const templateId = this.str(cfg.templateId);
     if (!templateId) return { status: 'FAILED', detail: 'NOTIFICATION action requires `templateId`' };
     const recipientId = this.str(cfg.recipientId) ?? this.str(context.customerId) ?? this.str(context.tenantId) ?? tenantId;
     const recipientType = this.str(cfg.recipientType) ?? (this.str(context.customerId) ? RECIPIENT_TYPE.CUSTOMER : RECIPIENT_TYPE.TENANT);
-    const scheduled = await this.notifications.schedule(tenantId, {
-      templateId,
-      appointmentId: this.str(context.appointmentId),
-      recipientType,
-      recipientId,
-      scheduledAt: new Date().toISOString(),
-    });
+    // sourceRef: a stale-reclaimed retry of this SAME action must not create a
+    // SECOND ScheduledNotification row (which would be dispatched
+    // independently) — see NotificationSchedulerService.schedule's docstring.
+    const scheduled = await this.notifications.schedule(
+      tenantId,
+      {
+        templateId,
+        appointmentId: this.str(context.appointmentId),
+        recipientType,
+        recipientId,
+        scheduledAt: new Date().toISOString(),
+      },
+      idempotencyKey,
+    );
     return { status: 'SUCCEEDED', detail: `notification scheduled (${scheduled.id})` };
   }
 
   // ── WEBHOOK ───────────────────────────────────────────────────────────────
 
+  /**
+   * AT-LEAST-ONCE BY DESIGN (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.11): unlike the other action types, this
+   * engine does not control the receiving endpoint, so it cannot GUARANTEE
+   * the receiver only acts on this once — the previous version did not even
+   * give the receiver the tools to try. `idempotencyKey` here is STABLE
+   * (derived from `runId`/`actionIndex`, not wall-clock) and sent both as a
+   * body field and a header, following the same pattern payment providers use
+   * (e.g. Stripe's `Idempotency-Key`): a receiver that wants exactly-once
+   * handling can dedupe on it; one that doesn't is no worse off than before.
+   * `sentAt` is kept alongside it for observability, but is NOT the
+   * identifier — it changes on every retry and must never be used for dedupe.
+   */
   private async webhook_(
     tenantId: string,
     runId: string,
     cfg: Record<string, unknown>,
     context: Record<string, unknown>,
+    idempotencyKey: string,
   ): Promise<ActionOutcome> {
     const url = this.str(cfg.url);
     if (!url || !/^https?:\/\//i.test(url)) return { status: 'FAILED', detail: 'WEBHOOK action requires a valid http(s) `url`' };
-    const body = JSON.stringify({ tenantId, runId, context, sentAt: new Date().toISOString() });
+    const body = JSON.stringify({ tenantId, runId, context, idempotencyKey, sentAt: new Date().toISOString() });
     const secret = this.str(cfg.secret);
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Workflow-Idempotency-Key': idempotencyKey,
+    };
     if (secret) headers['X-Workflow-Signature'] = createHmac('sha256', secret).update(body).digest('hex');
 
     const controller = new AbortController();
@@ -185,13 +259,14 @@ export class WorkflowActionExecutor {
 
   // ── AI ──────────────────────────────────────────────────────────────────
 
-  private async ai_(tenantId: string, cfg: Record<string, unknown>): Promise<ActionOutcome> {
+  private async ai_(tenantId: string, cfg: Record<string, unknown>, idempotencyKey: string): Promise<ActionOutcome> {
     const prompt = this.str(cfg.prompt);
     if (!prompt) return { status: 'FAILED', detail: 'AI action requires `prompt`' };
     const result = await this.orchestrator.handle(tenantId, {
       channel: AI_CHANNEL.API,
       content: prompt,
       agentId: this.str(cfg.agentId),
+      idempotencyKey,
     });
     return { status: 'SUCCEEDED', detail: `ai replied (conv ${result.aiConversationId})` };
   }

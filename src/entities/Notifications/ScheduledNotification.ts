@@ -84,6 +84,17 @@ export class ScheduledNotification {
   @Column({ type: 'timestamptz', nullable: true })
   delivered_at?: Date | null;
 
+  /**
+   * Caller-supplied business key (e.g. `workflow-action:{runId}:{actionIndex}`)
+   * — partial-unique (see migration `WorkflowActionSourceRef1730016000000`),
+   * so a caller that retries the SAME logical schedule request (not a new one)
+   * gets the database's own guarantee that only one row is ever created for
+   * it, instead of creating a second independently-dispatched row. NULL for
+   * rows from callers with no business key (e.g. direct HTTP scheduling).
+   */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  source_ref?: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 }

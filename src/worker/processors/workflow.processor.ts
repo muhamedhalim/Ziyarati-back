@@ -101,7 +101,7 @@ export class WorkflowProcessor extends WorkerHost {
         return { skipped: true };
       }
 
-      const outcome = await this.executor.execute(tenantId, runId, action, run.context ?? {});
+      const outcome = await this.executor.execute(tenantId, runId, actionIndex, action, run.context ?? {});
       await this.workflows.appendResult(runId, {
         index: actionIndex,
         type: action.type,

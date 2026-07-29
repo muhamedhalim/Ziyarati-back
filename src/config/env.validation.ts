@@ -43,9 +43,22 @@ export const validate = (config: Record<string, unknown>) => {
     // maxmemory-policy=noeviction + a real maxmemory ceiling (gap-closure pass
     // — see docs/CACHING_QUEUES_AUDIT.md §0.8.9). Default false = ENFORCE (the
     // app refuses to boot in production against an unsafe Redis); set true
-    // only when an operator has a deliberate, reviewed reason to run without
-    // that guarantee (e.g. a managed Redis where CONFIG GET is unavailable).
+    // only when an operator has a deliberate, reviewed reason to accept an
+    // UNSAFE config outright. For "CONFIG GET is unavailable but the config
+    // IS actually safe" (a managed Redis provider with the command disabled),
+    // use REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC instead — conflating the two
+    // under this one flag is exactly what §0.11 fixed.
     REDIS_ALLOW_UNSAFE_MEMORY_CONFIG: Joi.string().valid('true', 'false').default('false'),
+    // Operator attestation for AppRedisService when `CONFIG GET` itself is
+    // blocked (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.11):
+    // some managed Redis providers disable CONFIG GET for non-admin users, so
+    // the maxmemory-policy/ceiling check cannot run AT ALL. Default false
+    // means that case now FAILS BOOT in production rather than silently
+    // treating "couldn't check" as "checked and fine". Set true only after
+    // verifying maxmemory-policy=noeviction and a real maxmemory ceiling some
+    // OTHER way — the provider's own console, or Terraform/CloudFormation/IaC
+    // output — so skipping the runtime check is a recorded decision.
+    REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC: Joi.string().valid('true', 'false').default('false'),
     QUEUE_DEFAULT_ATTEMPTS: Joi.number().default(5),
     QUEUE_BACKOFF_MS: Joi.number().default(3000),
     WORKER_CONCURRENCY: Joi.number().default(5),

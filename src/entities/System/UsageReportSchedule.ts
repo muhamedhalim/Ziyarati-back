@@ -58,6 +58,17 @@ export class UsageReportSchedule {
   @Column({ type: 'text', nullable: true })
   last_status?: string;
 
+  /**
+   * Per-recipient `{ [target]: 'SENT' }` progress WITHIN the current due
+   * cycle (EMAIL delivery only — `target` may be a comma-separated list).
+   * Written incrementally, after each recipient send succeeds, so a hard
+   * process crash mid-loop leaves an accurate durable record of who has
+   * already been sent to; cleared to `{}` once every recipient succeeds.
+   * See `UsageReportService.deliver`.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  last_run_recipient_status?: Record<string, string> | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

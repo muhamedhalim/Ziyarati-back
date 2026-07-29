@@ -77,6 +77,15 @@ const prodConfigUnsafeAllowed = {
   },
 } as unknown as ConfigService;
 
+const prodConfigIacVerified = {
+  get: (k: string) => {
+    if (k === 'REDIS_URL') return 'redis://localhost:6379';
+    if (k === 'NODE_ENV') return 'production';
+    if (k === 'REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC') return 'true';
+    return undefined;
+  },
+} as unknown as ConfigService;
+
 describe('AppRedisService', () => {
   beforeEach(() => {
     FakeRedis.instances = [];
@@ -126,9 +135,33 @@ describe('AppRedisService', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not throw when CONFIG GET is disallowed by the provider (best-effort check)', async () => {
+    it('outside production: does not throw when CONFIG GET is disallowed by the provider (best-effort check)', async () => {
       FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
       const service = new AppRedisService(config);
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+    });
+
+    it('PRODUCTION, CONFIG GET blocked (gap-closure pass §0.11): throws — a check that cannot run is not evidence of safety', async () => {
+      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      const service = new AppRedisService(prodConfig);
+      await expect(service.onModuleInit()).rejects.toThrow(/could not be verified via CONFIG GET/);
+    });
+
+    it('PRODUCTION, CONFIG GET blocked, REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true: does not throw (explicit operator attestation)', async () => {
+      const nestCommon = require('@nestjs/common');
+      const logSpy = jest.spyOn(nestCommon.Logger.prototype, 'log').mockImplementation(() => undefined);
+
+      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      const service = new AppRedisService(prodConfigIacVerified);
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('VERIFIED_VIA_IAC'));
+      logSpy.mockRestore();
+    });
+
+    it('PRODUCTION, CONFIG GET blocked, REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true: does not throw (unsafe-config escape hatch also covers this)', async () => {
+      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      const service = new AppRedisService(prodConfigUnsafeAllowed);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
 
@@ -175,9 +208,21 @@ describe('AppRedisService', () => {
       warnSpy.mockRestore();
     });
 
-    it('does not throw when the maxmemory CONFIG GET is disallowed by the provider', async () => {
+    it('outside production: does not throw when the maxmemory CONFIG GET is disallowed by the provider', async () => {
+      FakeRedis.nextMaxmemoryResult = new Error('NOPERM this command is not allowed');
+      const service = new AppRedisService(config);
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+    });
+
+    it('PRODUCTION, maxmemory CONFIG GET blocked (gap-closure pass §0.11): throws without an IaC/unsafe-config escape hatch', async () => {
       FakeRedis.nextMaxmemoryResult = new Error('NOPERM this command is not allowed');
       const service = new AppRedisService(prodConfig);
+      await expect(service.onModuleInit()).rejects.toThrow(/could not be verified via CONFIG GET/);
+    });
+
+    it('PRODUCTION, maxmemory CONFIG GET blocked, REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true: does not throw', async () => {
+      FakeRedis.nextMaxmemoryResult = new Error('NOPERM this command is not allowed');
+      const service = new AppRedisService(prodConfigIacVerified);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
 

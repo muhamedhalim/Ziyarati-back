@@ -54,6 +54,16 @@ export class NotificationLog {
   @Column({ type: 'timestamptz', nullable: true })
   claimed_at?: Date;
 
+  /**
+   * Caller-supplied business key (e.g. `workflow-action:{runId}:{actionIndex}`)
+   * — partial-unique (see migration `WorkflowActionSourceRef1730016000000`) so
+   * the DATABASE rejects a second row for the same business operation, giving
+   * callers with no content-hash floor of their own (unlike email_logs) a real
+   * idempotency guarantee. NULL for rows from callers with no business key.
+   */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  source_ref?: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 }

@@ -130,6 +130,17 @@ export class UsageReportService {
    * new one — INSIDE this shared method, so both callers are covered without
    * changing either one's contract (the HTTP endpoint still returns real
    * delivery status synchronously).
+   *
+   * RECIPIENT-LEVEL IDEMPOTENCY WITHIN THE RUN (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.11): `deliver()` persists
+   * `last_run_recipient_status` incrementally (one DB write per recipient
+   * sent, not one write at the very end) — see its own docstring for why a
+   * single end-of-run write cannot survive a hard process crash mid-loop. On
+   * FULL success the map is reset to `{}` here, ready for the next due cycle;
+   * on any failure it is left exactly as `deliver()` last wrote it, so the
+   * NEXT `runSchedule` retry (whether via the claim's FAILED-bypass or the
+   * short-window bypass) skips every recipient already marked SENT instead of
+   * resubmitting to them.
    */
   async runSchedule(id: string): Promise<{ id: string; status: string }> {
     const schedule = await this.findOne(id);
@@ -140,7 +151,10 @@ export class UsageReportService {
     let status = 'SENT';
     try {
       const report = await this.buildReport(schedule);
-      await this.deliver(schedule, report, claimedAt);
+      await this.deliver(id, schedule, report, claimedAt);
+      // Full success — every recipient (or the single webhook target)
+      // delivered. Reset so the NEXT due cycle starts with a clean slate.
+      await this.schedules.update(id, { last_run_recipient_status: {} });
     } catch (err) {
       status = `FAILED: ${(err as Error)?.message}`.slice(0, 240);
       this.logger.warn(`Report ${id} delivery failed: ${(err as Error)?.message}`);
@@ -184,7 +198,28 @@ export class UsageReportService {
     return (result.affected ?? 0) > 0;
   }
 
-  private async deliver(schedule: UsageReportSchedule, report: Record<string, unknown>, claimedAt: Date): Promise<void> {
+  /**
+   * WEBHOOK: unchanged — a single target, one atomic call, already fully
+   * covered by `runSchedule`'s schedule-level claim (no per-recipient
+   * concept applies to one URL).
+   *
+   * EMAIL: `target` may be a COMMA-SEPARATED list (fully backward compatible
+   * — a single address parses to a one-element list, identical to before).
+   * Each recipient not already marked SENT in `schedule.last_run_recipient_status`
+   * (carried over from a prior FAILED/interrupted attempt at THIS due cycle)
+   * is sent to, and the status map is persisted to the DATABASE immediately
+   * after EACH send succeeds — deliberately NOT batched into one write at the
+   * end. A hard process crash (OS kill) between recipient #1 and #2 runs no
+   * further JS at all, so only an already-durable per-recipient write (not an
+   * in-memory accumulator flushed later) can make the NEXT attempt aware that
+   * recipient #1 must not be re-sent to.
+   */
+  private async deliver(
+    scheduleId: string,
+    schedule: UsageReportSchedule,
+    report: Record<string, unknown>,
+    claimedAt: Date,
+  ): Promise<void> {
     if (schedule.delivery === 'WEBHOOK') {
       const res = await fetch(schedule.target, {
         method: 'POST',
@@ -203,18 +238,31 @@ export class UsageReportService {
       `API calls: ${totals.totalApiCalls ?? 0}`,
       `Alerts: ${(report.alerts as unknown[])?.length ?? 0}`,
     ].join(' · ');
-    await this.email.sendDoctorNotification({
-      to: schedule.target,
-      title: `Platform Usage Report — ${schedule.name}`,
-      message: `${schedule.frequency} usage report (${report.periodMonth}). ${digest}`,
-      // BUSINESS-PROCESS key (gap-closure pass — see
-      // docs/CACHING_QUEUES_AUDIT.md §0.8.4): keyed on THIS claimed run of
-      // THIS schedule, not on the rendered digest text. Two genuinely
-      // different periods whose totals happen to render identically (e.g. a
-      // quiet tenant, zero activity two months running) must both send —
-      // a content hash would wrongly collapse them into one.
-      idempotencyKey: `usage-report:${schedule.id}:${claimedAt.toISOString()}`,
-    });
+
+    const recipients = schedule.target
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const sentStatus: Record<string, string> = { ...(schedule.last_run_recipient_status ?? {}) };
+
+    for (const recipient of recipients) {
+      if (sentStatus[recipient] === 'SENT') continue; // already delivered earlier in THIS due cycle
+      await this.email.sendDoctorNotification({
+        to: recipient,
+        title: `Platform Usage Report — ${schedule.name}`,
+        message: `${schedule.frequency} usage report (${report.periodMonth}). ${digest}`,
+        // BUSINESS-PROCESS key (gap-closure pass — see
+        // docs/CACHING_QUEUES_AUDIT.md §0.8.4), now per-recipient too: keyed
+        // on THIS claimed run of THIS schedule for THIS recipient, not on the
+        // rendered digest text. Two genuinely different periods whose totals
+        // happen to render identically (e.g. a quiet tenant, zero activity
+        // two months running) must both send — a content hash would wrongly
+        // collapse them into one.
+        idempotencyKey: `usage-report:${scheduleId}:${claimedAt.toISOString()}:${recipient}`,
+      });
+      sentStatus[recipient] = 'SENT';
+      await this.schedules.update(scheduleId, { last_run_recipient_status: { ...sentStatus } });
+    }
   }
 
   // ── Scheduling ──────────────────────────────────────────────────────────
