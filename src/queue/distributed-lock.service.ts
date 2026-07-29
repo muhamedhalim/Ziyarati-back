@@ -37,16 +37,33 @@ export class DistributedLockService {
     end
   `;
 
+  /** Lua renew: only extends the TTL if the key still holds THIS caller's token. */
+  private static readonly RENEW_SCRIPT = `
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+      return redis.call("pexpire", KEYS[1], ARGV[2])
+    else
+      return 0
+    end
+  `;
+
   constructor(private readonly redis: AppRedisService) {}
 
   /** Attempts to acquire `key` for `ttlMs`. Returns an ownership token on success, or `null` if already held. */
   async acquire(key: string, ttlMs: number): Promise<string | null> {
     const token = randomUUID();
     try {
-      const result = await this.redis.application.set(key, token, 'PX', ttlMs, 'NX');
+      const result = await this.redis.application.set(
+        key,
+        token,
+        'PX',
+        ttlMs,
+        'NX',
+      );
       return result === 'OK' ? token : null;
     } catch (err) {
-      this.logger.warn(`lock acquire failed for "${key}" (treated as not-acquired): ${(err as Error)?.message}`);
+      this.logger.warn(
+        `lock acquire failed for "${key}" (treated as not-acquired): ${(err as Error)?.message}`,
+      );
       return null;
     }
   }
@@ -54,9 +71,41 @@ export class DistributedLockService {
   /** Releases `key` ONLY if `token` still matches — a no-op if the lock already expired and was reclaimed by someone else. */
   async release(key: string, token: string): Promise<void> {
     try {
-      await this.redis.application.eval(DistributedLockService.RELEASE_SCRIPT, 1, key, token);
+      await this.redis.application.eval(
+        DistributedLockService.RELEASE_SCRIPT,
+        1,
+        key,
+        token,
+      );
     } catch (err) {
-      this.logger.warn(`lock release failed for "${key}" (will self-expire via TTL): ${(err as Error)?.message}`);
+      this.logger.warn(
+        `lock release failed for "${key}" (will self-expire via TTL): ${(err as Error)?.message}`,
+      );
+    }
+  }
+
+  /**
+   * Extends `key`'s TTL to `ttlMs` ONLY if `token` still matches — for a
+   * critical section that may outlast the original TTL (e.g. a slow external
+   * call). Returns `false` (never throws) if the lock was lost — the caller
+   * must treat that as "no longer holding the lock" and abort/re-acquire
+   * rather than continue assuming exclusivity.
+   */
+  async renew(key: string, token: string, ttlMs: number): Promise<boolean> {
+    try {
+      const result = await this.redis.application.eval(
+        DistributedLockService.RENEW_SCRIPT,
+        1,
+        key,
+        token,
+        String(ttlMs),
+      );
+      return result === 1;
+    } catch (err) {
+      this.logger.warn(
+        `lock renew failed for "${key}" (will self-expire via TTL): ${(err as Error)?.message}`,
+      );
+      return false;
     }
   }
 }

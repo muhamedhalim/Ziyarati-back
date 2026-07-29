@@ -1,17 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { LessThan, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 
 import { IntegrationOAuthState } from '../../../entities/Integration/IntegrationOAuthState';
 import { IntegrationConnection } from '../../../entities/Integration/IntegrationConnection';
 import { Tenant } from '../../../entities/SaaS-Core/Tenant';
 import { User } from '../../../entities/Auth&RBAC/User';
-import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
+import { AppError, ErrorCode } from '../../../common/errors';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
-import { TenantRateLimiterService } from '../../../queue/tenant-rate-limiter.service';
+import { DistributedLockService } from '../../../queue/distributed-lock.service';
 
 import { CONNECTION_STATUS } from '../integration-platform.constants';
-import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
+import {
+  IntegrationAuditService,
+  INTEGRATION_AUDIT_ACTION,
+} from '../integration-audit.service';
 import {
   isTestOAuthEnabled,
   oauthProviderKeys,
@@ -34,8 +37,15 @@ interface Actor {
 const STATE_TTL_MS = 10 * 60 * 1000;
 /** Refresh this long before actual expiry, so a request never races the clock. */
 const REFRESH_SKEW_MS = 60 * 1000;
-/** How long one worker may hold the refresh lock. */
+/**
+ * How long one worker may hold the refresh lock before it must renew — sized
+ * well above a normal provider round trip; the lock is renewed on a timer
+ * while the critical section runs (see `withRefreshLock`), so this bounds
+ * "how long a crashed holder blocks everyone else," not "how long a refresh
+ * may take."
+ */
 const REFRESH_LOCK_TTL_SECONDS = 30;
+const REFRESH_LOCK_TTL_MS = REFRESH_LOCK_TTL_SECONDS * 1000;
 
 /**
  * OAuth2 Authorization-Code + PKCE CLIENT (Phase 4).
@@ -60,9 +70,12 @@ const REFRESH_LOCK_TTL_SECONDS = 30;
  *                  serialized — the API exposes presence and expiry only.
  *  - Rotation      a refresh replaces the stored refresh token with the newly
  *                  issued one; the old value is discarded.
- *  - Locking       a Redis lock serialises concurrent refreshes, so two workers
- *                  cannot both redeem the same (single-use) refresh token and
- *                  invalidate each other's grant.
+ *  - Locking       a real Redis lock (`SET NX PX` + ownership token + renewal,
+ *                  via `DistributedLockService`) serialises concurrent
+ *                  refreshes, so two workers cannot both redeem the same
+ *                  (single-use) refresh token and invalidate each other's
+ *                  grant — see docs/CACHING_QUEUES_AUDIT.md H11 (previously a
+ *                  rate-limiter-as-mutex with no ownership or renewal).
  *  - invalid_grant treated as terminal: stored tokens are cleared and the
  *                  connection is marked as needing reconnection, instead of
  *                  retrying a grant the provider has already killed.
@@ -78,7 +91,7 @@ export class IntegrationOAuthService {
     private readonly connections: Repository<IntegrationConnection>,
     private readonly encryption: EncryptionService,
     private readonly audit: IntegrationAuditService,
-    private readonly locks: TenantRateLimiterService,
+    private readonly locks: DistributedLockService,
   ) {}
 
   /** Providers currently offering OAuth. Empty in production until one is configured. */
@@ -147,7 +160,11 @@ export class IntegrationOAuthService {
       actor,
       { provider: connection.provider },
     );
-    return { authorizationUrl: url.toString(), state, expiresInSeconds: STATE_TTL_MS / 1000 };
+    return {
+      authorizationUrl: url.toString(),
+      state,
+      expiresInSeconds: STATE_TTL_MS / 1000,
+    };
   }
 
   /**
@@ -165,14 +182,20 @@ export class IntegrationOAuthService {
       relations: { tenant: true, connection: true },
     });
     if (!row) {
-      throw new AppError(ErrorCode.FORBIDDEN, { message: 'Unknown or already-used authorization state' });
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'Unknown or already-used authorization state',
+      });
     }
     // OWNERSHIP: the state must belong to the tenant completing it.
     if ((row.tenant as Tenant)?.id !== tenantId) {
-      throw new AppError(ErrorCode.FORBIDDEN, { message: 'This authorization does not belong to your clinic' });
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'This authorization does not belong to your clinic',
+      });
     }
     if (row.consumed_at) {
-      throw new AppError(ErrorCode.FORBIDDEN, { message: 'This authorization state has already been used' });
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'This authorization state has already been used',
+      });
     }
     if (row.expires_at.getTime() < Date.now()) {
       await this.states.delete({ id: row.id });
@@ -191,7 +214,9 @@ export class IntegrationOAuthService {
       .andWhere('consumed_at IS NULL')
       .execute();
     if ((claim.affected ?? 0) === 0) {
-      throw new AppError(ErrorCode.FORBIDDEN, { message: 'This authorization state has already been used' });
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'This authorization state has already been used',
+      });
     }
 
     const connectionId = row.connection?.id as string;
@@ -222,7 +247,7 @@ export class IntegrationOAuthService {
         codeVerifier: row.code_verifier,
         redirectUri: row.redirect_uri,
       });
-    } catch (err) {
+    } catch {
       await this.audit.record(
         INTEGRATION_AUDIT_ACTION.OAUTH_CALLBACK_FAILED,
         tenantId,
@@ -232,7 +257,8 @@ export class IntegrationOAuthService {
         { provider: row.provider, reason: 'token_exchange_failed' },
       );
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'The provider rejected this authorization — start the connection again',
+        message:
+          'The provider rejected this authorization — start the connection again',
       });
     } finally {
       // The verifier is single-use; do not keep it around after redemption.
@@ -256,7 +282,10 @@ export class IntegrationOAuthService {
    * Concurrency-locked so two callers cannot both redeem the same single-use
    * refresh token and kill each other's grant.
    */
-  async getAccessToken(tenantId: string, connectionId: string): Promise<string> {
+  async getAccessToken(
+    tenantId: string,
+    connectionId: string,
+  ): Promise<string> {
     const connection = await this.ownedConnection(tenantId, connectionId);
     if (!connection.oauth_access_token_ciphertext) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -267,47 +296,52 @@ export class IntegrationOAuthService {
     if (expiresAt === null || expiresAt - REFRESH_SKEW_MS > Date.now()) {
       return this.decrypt(connection.oauth_access_token_ciphertext);
     }
-    const refreshed = await this.refresh(tenantId, connectionId, { userId: undefined });
+    const refreshed = await this.refresh(tenantId, connectionId, {
+      userId: undefined,
+    });
     return refreshed.accessToken;
   }
 
   /**
-   * Refresh the access token, ROTATING the refresh token. Serialised by a Redis
-   * lock; a caller that loses the lock re-reads the token the winner just
-   * stored rather than redeeming the (now dead) refresh token a second time.
+   * Refresh the access token, ROTATING the refresh token. Serialised by a real
+   * Redis lock (ownership token + renewal — see `runUnderRefreshLock`); a
+   * caller that loses the lock re-reads the token the winner just stored
+   * rather than redeeming the (now dead) refresh token a second time.
    */
-  async refresh(tenantId: string, connectionId: string, actor: Actor): Promise<{ accessToken: string }> {
+  async refresh(
+    tenantId: string,
+    connectionId: string,
+    actor: Actor,
+  ): Promise<{ accessToken: string }> {
     const connection = await this.ownedConnection(tenantId, connectionId);
     const adapter = this.adapterOrThrow(connection.provider);
-    if (!adapter.config.supportsRefresh || !connection.oauth_refresh_token_ciphertext) {
+    if (
+      !adapter.config.supportsRefresh ||
+      !connection.oauth_refresh_token_ciphertext
+    ) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'This connection has no refresh token — reconnect to the provider',
+        message:
+          'This connection has no refresh token — reconnect to the provider',
       });
     }
 
-    const lockKey = `oauth:refresh:${connectionId}`;
-    const gotLock = await this.acquireLock(tenantId, lockKey);
-    if (!gotLock) {
-      // Someone else is refreshing. Wait briefly, then use whatever they stored.
-      await sleep(750);
-      const fresh = await this.reload(connectionId);
-      if (fresh.oauth_access_token_ciphertext) {
-        return { accessToken: this.decrypt(fresh.oauth_access_token_ciphertext) };
-      }
-      throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
-        message: 'A token refresh is already in progress — retry shortly',
-      });
-    }
-
-    try {
+    const lockKey = `oauth:refresh:${tenantId}:${connectionId}`;
+    const locked = await this.runUnderRefreshLock(lockKey, async () => {
       // Re-read under the lock: the winner may have refreshed while we queued.
       const current = await this.reload(connectionId);
       const expiresAt = current.oauth_expires_at?.getTime() ?? 0;
-      if (current.oauth_access_token_ciphertext && expiresAt - REFRESH_SKEW_MS > Date.now()) {
-        return { accessToken: this.decrypt(current.oauth_access_token_ciphertext) };
+      if (
+        current.oauth_access_token_ciphertext &&
+        expiresAt - REFRESH_SKEW_MS > Date.now()
+      ) {
+        return {
+          accessToken: this.decrypt(current.oauth_access_token_ciphertext),
+        };
       }
 
-      const refreshToken = this.decrypt(current.oauth_refresh_token_ciphertext as string);
+      const refreshToken = this.decrypt(
+        current.oauth_refresh_token_ciphertext as string,
+      );
       let tokens: OAuthTokenSet;
       try {
         tokens = await adapter.refresh({ refreshToken });
@@ -322,10 +356,15 @@ export class IntegrationOAuthService {
             'IntegrationConnection',
             connectionId,
             actor,
-            { provider: current.provider, reason: 'invalid_grant', tokensCleared: true },
+            {
+              provider: current.provider,
+              reason: 'invalid_grant',
+              tokensCleared: true,
+            },
           );
           throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-            message: 'The provider revoked this connection — reconnect to restore it',
+            message:
+              'The provider revoked this connection — reconnect to restore it',
           });
         }
         throw err;
@@ -341,9 +380,19 @@ export class IntegrationOAuthService {
         { provider: current.provider, rotated: !!tokens.refreshToken },
       );
       return { accessToken: tokens.accessToken };
-    } finally {
-      await this.releaseLock(tenantId, lockKey);
+    });
+
+    if (locked.acquired) return locked.value;
+
+    // Someone else is refreshing. Wait briefly, then use whatever they stored.
+    await sleep(750);
+    const fresh = await this.reload(connectionId);
+    if (fresh.oauth_access_token_ciphertext) {
+      return { accessToken: this.decrypt(fresh.oauth_access_token_ciphertext) };
     }
+    throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+      message: 'A token refresh is already in progress — retry shortly',
+    });
   }
 
   /**
@@ -358,19 +407,24 @@ export class IntegrationOAuthService {
 
     if (adapter?.revoke && adapter.config.supportsRevocation) {
       const token =
-        connection.oauth_refresh_token_ciphertext ?? connection.oauth_access_token_ciphertext;
+        connection.oauth_refresh_token_ciphertext ??
+        connection.oauth_access_token_ciphertext;
       if (token) {
         try {
           await adapter.revoke({ token: this.decrypt(token) });
           revoked = true;
         } catch (e) {
-          this.logger.warn(`oauth revoke failed for ${connectionId}: ${(e as Error)?.message}`);
+          this.logger.warn(
+            `oauth revoke failed for ${connectionId}: ${(e as Error)?.message}`,
+          );
         }
       }
     }
 
     await this.clearTokens(connection);
-    await this.states.delete({ connection: { id: connectionId } }).catch(() => undefined);
+    await this.states
+      .delete({ connection: { id: connectionId } })
+      .catch(() => undefined);
     await this.audit.record(
       INTEGRATION_AUDIT_ACTION.OAUTH_DISCONNECTED,
       tenantId,
@@ -395,16 +449,24 @@ export class IntegrationOAuthService {
       .from(IntegrationOAuthState)
       .where('expires_at < :now', { now })
       .execute()
-      .catch(() => ({ affected: 0 } as { affected?: number | null }));
+      .catch(() => ({ affected: 0 }) as { affected?: number | null });
     return res.affected ?? 0;
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
   /** Tenant-scoped connection lookup — the cross-tenant guard for every method. */
-  private async ownedConnection(tenantId: string, id: string): Promise<IntegrationConnection> {
-    const c = await this.connections.findOne({ where: { id, tenant: { id: tenantId } } });
-    if (!c) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Integration connection not found' });
+  private async ownedConnection(
+    tenantId: string,
+    id: string,
+  ): Promise<IntegrationConnection> {
+    const c = await this.connections.findOne({
+      where: { id, tenant: { id: tenantId } },
+    });
+    if (!c)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Integration connection not found',
+      });
     if (c.status === CONNECTION_STATUS.DISCONNECTED) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'This connection is disconnected',
@@ -441,14 +503,20 @@ export class IntegrationOAuthService {
     // Typed loosely on purpose: TypeORM's QueryDeepPartialEntity rejects the
     // entity's `jsonb` index-signature column, which this patch never touches.
     const patch: Record<string, unknown> = {
-      oauth_access_token_ciphertext: this.encryption.encrypt(tokens.accessToken),
-      oauth_expires_at: tokens.expiresIn ? new Date(Date.now() + tokens.expiresIn * 1000) : null,
+      oauth_access_token_ciphertext: this.encryption.encrypt(
+        tokens.accessToken,
+      ),
+      oauth_expires_at: tokens.expiresIn
+        ? new Date(Date.now() + tokens.expiresIn * 1000)
+        : null,
       oauth_scope: tokens.scope ?? null,
     };
     // ROTATION: replace the stored refresh token whenever the provider issues a
     // new one. A provider that omits it keeps the existing token (per RFC 6749).
     if (tokens.refreshToken) {
-      patch.oauth_refresh_token_ciphertext = this.encryption.encrypt(tokens.refreshToken);
+      patch.oauth_refresh_token_ciphertext = this.encryption.encrypt(
+        tokens.refreshToken,
+      );
     }
     if (opts.refreshed) patch.oauth_refreshed_at = new Date();
     else patch.oauth_connected_at = new Date();
@@ -474,36 +542,50 @@ export class IntegrationOAuthService {
       return this.encryption.decrypt(ciphertext);
     } catch {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'Stored provider tokens could not be read — reconnect to the provider',
+        message:
+          'Stored provider tokens could not be read — reconnect to the provider',
       });
     }
   }
 
   /**
-   * Refresh mutex, built on the shared atomic Redis token bucket: capacity 1 at
-   * one permit per minute means the FIRST caller consumes the only token and
-   * every other caller is denied until it refills. That is exactly a
-   * self-expiring 60-second lock, and it is atomic (Lua) so two workers cannot
-   * both win.
+   * Runs `fn` under a real distributed lock (`SET NX PX` + ownership token,
+   * via `DistributedLockService` — see docs/CACHING_QUEUES_AUDIT.md H11).
+   * Replaces the previous rate-limiter-as-mutex, which had no ownership token
+   * and a no-op release: a refresh taking longer than its fixed window let the
+   * bucket refill and a second worker "acquire" the lock while the first was
+   * still in flight, which could redeem the same single-use refresh token
+   * twice and invalidate the grant.
    *
-   * Failing to reach Redis returns FALSE — "someone else may hold it" — never
-   * "proceed". Guessing "proceed" is what would let two workers redeem the same
-   * single-use refresh token and invalidate the grant.
+   * The lock is renewed on a timer (half the TTL) for the duration of `fn`, so
+   * a refresh that runs long does not lose the lock out from under it, and is
+   * always released (or left to self-expire on a crash) in a `finally`.
+   *
+   * Failing to acquire (Redis unavailable, or genuinely held by another
+   * worker) returns `{ acquired: false }` — never fabricates success. Guessing
+   * "proceed" is what would let two workers redeem the same single-use
+   * refresh token and invalidate each other's grant.
    */
-  private async acquireLock(tenantId: string, key: string): Promise<boolean> {
-    try {
-      const decision = await this.locks.consume(tenantId, key, { ratePerMinute: 1 });
-      return decision.allowed;
-    } catch (err) {
-      this.logger.warn(`oauth refresh lock unavailable (${key}): ${(err as Error)?.message}`);
-      return false;
-    }
-  }
+  private async runUnderRefreshLock<T>(
+    key: string,
+    fn: () => Promise<T>,
+  ): Promise<{ acquired: true; value: T } | { acquired: false }> {
+    const token = await this.locks.acquire(key, REFRESH_LOCK_TTL_MS);
+    if (!token) return { acquired: false };
 
-  private async releaseLock(_tenantId: string, _key: string): Promise<void> {
-    // Deliberately a no-op: the bucket refills on its own after the lock window.
-    // Releasing early would let a retry lap a refresh that is still in flight —
-    // the exact double-redeem this lock exists to prevent.
+    const renewTimer = setInterval(() => {
+      this.locks.renew(key, token, REFRESH_LOCK_TTL_MS).catch(() => undefined);
+    }, REFRESH_LOCK_TTL_MS / 2);
+    // Never let the renewal timer itself keep the process alive.
+    renewTimer.unref?.();
+
+    try {
+      const value = await fn();
+      return { acquired: true, value };
+    } finally {
+      clearInterval(renewTimer);
+      await this.locks.release(key, token);
+    }
   }
 
   /** Safe projection — presence and expiry only. NEVER a token value. */

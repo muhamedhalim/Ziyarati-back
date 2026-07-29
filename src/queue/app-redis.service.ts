@@ -27,6 +27,7 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
   readonly rateLimiter: Redis;
   private readonly isProduction: boolean;
   private readonly allowUnsafeMemoryConfig: boolean;
+  private readonly verifiedViaIac: boolean;
 
   constructor(
     private readonly config: ConfigService,
@@ -35,6 +36,7 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
     this.rateLimiter = this.build(rateLimiterConnectionOptions(config), 'rate-limiter');
     this.isProduction = config.get<string>('NODE_ENV') === 'production';
     this.allowUnsafeMemoryConfig = config.get<string>('REDIS_ALLOW_UNSAFE_MEMORY_CONFIG') === 'true';
+    this.verifiedViaIac = config.get<string>('REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC') === 'true';
   }
 
   private build(options: ReturnType<typeof applicationConnectionOptions>, label: string): Redis {
@@ -95,18 +97,29 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
    * queued jobs under memory pressure. In production this now FAILS BOOT
    * unless `REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true` is explicitly set (an
    * operator with a deliberate, reviewed reason) — outside production it still
-   * only warns, so local/staging work is never blocked by this. `CONFIG GET`
-   * is best-effort: some managed Redis providers disable it for non-admin
-   * users, in which case this silently skips (logged at debug), in EVERY
-   * environment including production — enforcing a check that structurally
-   * cannot run would only turn "managed Redis" into "can never deploy".
+   * only warns, so local/staging work is never blocked by this.
+   *
+   * `CONFIG GET` BLOCKED (gap-closure pass — see
+   * docs/CACHING_QUEUES_AUDIT.md §0.11 — replaces the previous silent-skip
+   * behaviour): some managed Redis providers (e.g. ElastiCache, Upstash,
+   * Memorystore under certain tiers) disable `CONFIG GET` for non-admin
+   * users, in which case this check structurally cannot run at all. The
+   * PREVIOUS version treated that identically to "checked and found safe" —
+   * a debug-level log line, easy to miss, silently bypassing the very
+   * enforcement this method exists for. It now fails boot in production
+   * UNLESS the operator has explicitly attested — via
+   * `REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true` — that maxmemory-policy/
+   * maxmemory were verified some OTHER way (Terraform/CloudFormation output,
+   * the provider's own console, a provisioning script) — see
+   * `checkConfigGetBlocked` for the shared logic. Outside production this
+   * still only warns, exactly like a genuinely-unsafe policy would.
    */
   private async checkMaxmemoryPolicy(): Promise<void> {
     let res: unknown;
     try {
       res = await this.application.config('GET', 'maxmemory-policy');
     } catch (err) {
-      this.logger.debug(`maxmemory-policy check skipped: ${(err as Error).message}`);
+      this.checkConfigGetBlocked('maxmemory-policy', err as Error);
       return;
     }
     const policy = Array.isArray(res) ? res[1] : undefined;
@@ -133,15 +146,15 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
    * against without an actual `maxmemory` ceiling — `0` means unlimited, which
    * in production means an out-of-memory condition is whatever the HOST runs
    * out of, not something Redis itself ever rejects a write for. Same
-   * production-fail / escape-hatch / best-effort-CONFIG-GET rules as
-   * `checkMaxmemoryPolicy`.
+   * production-fail / escape-hatch / CONFIG-GET-blocked rules as
+   * `checkMaxmemoryPolicy` — see `checkConfigGetBlocked`.
    */
   private async checkMaxmemoryCeiling(): Promise<void> {
     let res: unknown;
     try {
       res = await this.application.config('GET', 'maxmemory');
     } catch (err) {
-      this.logger.debug(`maxmemory ceiling check skipped: ${(err as Error).message}`);
+      this.checkConfigGetBlocked('maxmemory', err as Error);
       return;
     }
     const raw = Array.isArray(res) ? res[1] : undefined;
@@ -159,6 +172,43 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
       );
     }
     if (this.isProduction) this.logger.warn(`⚠️  ${message}`);
+  }
+
+  /**
+   * Shared handling for a `CONFIG GET` call that failed outright (managed
+   * Redis with the command disabled, insufficient ACL, etc.) — as opposed to
+   * one that SUCCEEDED and returned an unsafe value, which the two callers
+   * handle themselves. This is deliberately NOT a silent skip in production
+   * (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.11): a check that
+   * structurally cannot run is not evidence of safety, and treating it as
+   * such was the actual gap. `REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true` is
+   * the escape hatch — an explicit, logged, operator-supplied attestation
+   * that the setting was verified some OTHER way (provider console, IaC
+   * output), so the absence of a runtime check is a recorded decision, not an
+   * accident. `REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true` also satisfies this (an
+   * operator who has already accepted the risk of an unsafe config has, by
+   * definition, also accepted not being able to verify it).
+   */
+  private checkConfigGetBlocked(setting: string, err: Error): void {
+    if (!this.isProduction) {
+      this.logger.debug(`${setting} check skipped (non-production): ${err.message}`);
+      return;
+    }
+    if (this.verifiedViaIac || this.allowUnsafeMemoryConfig) {
+      this.logger.log(
+        `Redis ${setting} could not be checked via CONFIG GET (${err.message}) — proceeding because ` +
+          `${this.verifiedViaIac ? 'REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true (operator attested it was verified out-of-band)' : 'REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true'}.`,
+      );
+      return;
+    }
+    throw new Error(
+      `❌ Redis ${setting} could not be verified via CONFIG GET in production (${err.message}) — likely a ` +
+        'managed Redis provider with CONFIG GET disabled for this user. Refusing to boot rather than silently ' +
+        'assume the setting is safe. Either grant CONFIG GET access, set ' +
+        'REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true after verifying maxmemory-policy/maxmemory some other way ' +
+        '(provider console, Terraform/CloudFormation output), or set REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true to ' +
+        'accept the risk outright.',
+    );
   }
 
   async onModuleDestroy(): Promise<void> {

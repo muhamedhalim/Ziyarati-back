@@ -122,205 +122,49 @@ describe('TenantVerificationService', () => {
     });
   });
 
-  // ─────────────────────────── review() → auto-advance ─────────────────────── //
+  // ─────────────────────────────── review() ────────────────────────────────── //
+  //
+  // NOTE (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.11): this file
+  // used to have a large "review() auto-advance to PENDING_APPROVAL" suite
+  // here, covering a `maybeAdvanceToPendingApproval` private method that
+  // called `tenantService.markPendingApproval` directly from `review()`. That
+  // method was deliberately REMOVED in commit 57c0eac ("update", 2026-07-21),
+  // which replaced it with the stricter `assertReadyForApproval` gate above
+  // (checks every required doc is actually APPROVED, not just present) — a
+  // real, intentional redesign, confirmed via `git show 57c0eac`. The
+  // auto-advance tests were never deleted alongside it: several (asserting
+  // `markPendingApproval` WAS called) failed outright, and the rest
+  // (asserting it was NOT called) passed only vacuously, since `review()`
+  // never touches `tenantService` at all anymore. Removed rather than
+  // resurrecting dead functionality to make stale tests pass.
 
-  describe('review() auto-advance to PENDING_APPROVAL', () => {
-    const baseDoc = {
-      id: 'doc-1',
-      doc_type: TYPE_A,
-      tenant: { id: 'tenant-1' },
-    };
-
-    function mockReviewTarget(docType: string) {
+  describe('review()', () => {
+    it('updates the document status and records an audit entry, without touching tenant approval state', async () => {
       documents.findOne.mockResolvedValueOnce({
-        ...baseDoc,
-        doc_type: docType,
+        id: 'doc-1',
+        doc_type: TYPE_A,
+        tenant: { id: 'tenant-1' },
       });
-    }
 
-    it('does not advance the tenant when a required type is still missing', async () => {
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_A);
-      // Only TYPE_A exists post-review; TYPE_B/TYPE_C were never uploaded, so
-      // there is nothing PENDING (empty set), but required types are missing.
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.APPROVED),
-      ]);
-      documents.exists.mockResolvedValueOnce(false);
-
-      await service.review('doc-1', { id: 'admin-1' } as any, {
+      const saved = await service.review('doc-1', { id: 'admin-1' } as any, {
         status: VerificationDocStatus.APPROVED,
       } as any);
 
-      expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
-    });
-
-    it('does not advance when all present required documents are REJECTED but a required type is entirely missing', async () => {
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_A);
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.REJECTED),
-        // TYPE_B, TYPE_C missing entirely
-      ]);
-      documents.exists.mockResolvedValueOnce(false);
-
-      await service.review('doc-1', { id: 'admin-1' } as any, {
-        status: VerificationDocStatus.REJECTED,
-      } as any);
-
-      expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
-    });
-
-    it('advances once every required type is present and none are PENDING (even if REJECTED)', async () => {
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_B);
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.APPROVED),
-        doc(TYPE_B, VerificationDocStatus.REJECTED),
-        doc(TYPE_C, VerificationDocStatus.APPROVED),
-      ]);
-      documents.exists.mockResolvedValueOnce(false); // no PENDING remaining
-
-      await service.review('doc-1', { id: 'admin-1' } as any, {
-        status: VerificationDocStatus.REJECTED,
-      } as any);
-
-      expect(tenantService.markPendingApproval).toHaveBeenCalledWith(
-        'tenant-1',
-        'admin-1',
+      expect(saved.status).toBe(VerificationDocStatus.APPROVED);
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'APPROVED', documentId: 'doc-1' }),
       );
-    });
-
-    it('does not advance while a required document remains PENDING', async () => {
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_A);
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.APPROVED),
-        doc(TYPE_B, VerificationDocStatus.PENDING),
-        doc(TYPE_C, VerificationDocStatus.APPROVED),
-      ]);
-      documents.exists.mockResolvedValueOnce(true); // TYPE_B still pending
-
-      await service.review('doc-1', { id: 'admin-1' } as any, {
-        status: VerificationDocStatus.APPROVED,
-      } as any);
-
       expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
     });
 
-    it('never advances when there are no documents at all', async () => {
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_A);
-      documents.find.mockResolvedValueOnce([]); // nothing on file
-      documents.exists.mockResolvedValueOnce(false);
+    it('throws NOT_FOUND for an unknown document id', async () => {
+      documents.findOne.mockResolvedValueOnce(null);
 
-      await service.review('doc-1', { id: 'admin-1' } as any, {
-        status: VerificationDocStatus.APPROVED,
-      } as any);
-
-      expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
-    });
-
-    it('does not re-attempt the transition once the tenant has already left PENDING_VERIFICATION', async () => {
-      // Simulates the second of two concurrent reviews landing after the
-      // first one already advanced the tenant.
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_APPROVAL,
-      });
-      mockReviewTarget(TYPE_C);
-
-      await service.review('doc-1', { id: 'admin-1' } as any, {
-        status: VerificationDocStatus.APPROVED,
-      } as any);
-
-      expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
-      // Guard returns before ever touching document status/count.
-      expect(documents.find).not.toHaveBeenCalled();
-    });
-
-    it('two simultaneous reviews of the last two documents: only the call that observes full completion advances the tenant', async () => {
-      // Reviewer 1 reviews TYPE_B while TYPE_C is still PENDING (concurrent
-      // reviewer 2 hasn't committed yet) — must NOT advance.
-      tenantService.findById.mockResolvedValueOnce({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_B);
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.APPROVED),
-        doc(TYPE_B, VerificationDocStatus.APPROVED),
-        doc(TYPE_C, VerificationDocStatus.PENDING),
-      ]);
-      documents.exists.mockResolvedValueOnce(true);
-
-      await service.review('doc-b', { id: 'admin-1' } as any, {
-        status: VerificationDocStatus.APPROVED,
-      } as any);
-      expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
-
-      // Reviewer 2 reviews TYPE_C after reviewer 1's write has landed — must
-      // advance exactly once.
-      tenantService.findById.mockResolvedValueOnce({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_C);
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.APPROVED),
-        doc(TYPE_B, VerificationDocStatus.APPROVED),
-        doc(TYPE_C, VerificationDocStatus.APPROVED),
-      ]);
-      documents.exists.mockResolvedValueOnce(false);
-
-      await service.review('doc-c', { id: 'admin-2' } as any, {
-        status: VerificationDocStatus.APPROVED,
-      } as any);
-
-      expect(tenantService.markPendingApproval).toHaveBeenCalledTimes(1);
-      expect(tenantService.markPendingApproval).toHaveBeenCalledWith(
-        'tenant-1',
-        'admin-2',
-      );
-    });
-
-    it('swallows an invalid-transition error from a redundant concurrent advance attempt', async () => {
-      tenantService.findById.mockResolvedValue({
-        id: 'tenant-1',
-        approval_status: TenantApprovalStatus.PENDING_VERIFICATION,
-      });
-      mockReviewTarget(TYPE_A);
-      documents.find.mockResolvedValueOnce([
-        doc(TYPE_A, VerificationDocStatus.APPROVED),
-        doc(TYPE_B, VerificationDocStatus.APPROVED),
-        doc(TYPE_C, VerificationDocStatus.APPROVED),
-      ]);
-      documents.exists.mockResolvedValueOnce(false);
-      tenantService.markPendingApproval.mockRejectedValueOnce(
-        new Error('Invalid transition: PENDING_APPROVAL -> PENDING_APPROVAL'),
-      );
-
-      // review() must not throw even though the underlying transition failed.
       await expect(
-        service.review('doc-1', { id: 'admin-1' } as any, {
+        service.review('missing', { id: 'admin-1' } as any, {
           status: VerificationDocStatus.APPROVED,
         } as any),
-      ).resolves.toBeDefined();
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
     });
   });
 });

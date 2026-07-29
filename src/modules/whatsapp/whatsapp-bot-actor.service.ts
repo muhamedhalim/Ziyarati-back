@@ -16,6 +16,22 @@ const BOT_EMAIL = 'ai-bot@bot.internal';
 const BOT_ROLE_SLUG = ROLE.AI_BOT;
 
 /**
+ * How long a cached principal is trusted before being re-read from the DB
+ * (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md H4). Previously this
+ * cache had NO TTL at all — a super-admin revoking an `ai_bot` role
+ * permission (e.g. after an incident) would leave every already-running
+ * API/worker process granting the OLD permission set until it restarted.
+ * 60s bounds that window without meaningfully increasing DB load (the lookup
+ * is three cheap queries, and WhatsApp turns are seconds apart at most).
+ */
+const CACHE_TTL_MS = 60_000;
+
+interface CacheEntry {
+  principal: AuthenticatedUser;
+  cachedAt: number;
+}
+
+/**
  * Every tenant's dedicated AI Bot Actor — a REAL `users` row with a REAL,
  * minimally-scoped role, created lazily on first use via the EXISTING
  * auth/RBAC services (`RolesService`, `AuthService.buildAuthenticatedUser`) —
@@ -28,7 +44,7 @@ const BOT_ROLE_SLUG = ROLE.AI_BOT;
 @Injectable()
 export class WhatsappBotActorService {
   private readonly logger = new Logger('WhatsappBotActorService');
-  private readonly cache = new Map<string, AuthenticatedUser>();
+  private readonly cache = new Map<string, CacheEntry>();
 
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
@@ -36,10 +52,11 @@ export class WhatsappBotActorService {
     private readonly auth: AuthService,
   ) {}
 
-  /** Find-or-create the tenant's bot user + role + assignment; cached per tenant. */
+  /** Find-or-create the tenant's bot user + role + assignment; cached per tenant with a bounded TTL. */
   async ensureBotActor(tenantId: string): Promise<AuthenticatedUser> {
     const cached = this.cache.get(tenantId);
-    if (cached) return cached;
+    if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS)
+      return cached.principal;
 
     const userId = await this.ensureBotUser(tenantId);
     const roleId = await this.ensureBotRole(tenantId);
@@ -48,12 +65,24 @@ export class WhatsappBotActorService {
     // Reuse the EXACT same live roles/permissions lookup the REST JwtStrategy
     // and WsAuthService use — no second principal-building path.
     const principal = await this.auth.buildAuthenticatedUser(userId);
-    this.cache.set(tenantId, principal);
+    this.cache.set(tenantId, { principal, cachedAt: Date.now() });
     return principal;
   }
 
+  /**
+   * Explicit invalidation for a caller that just changed this tenant's bot
+   * permissions and does not want to wait out the TTL (e.g. an admin action
+   * with an immediate-effect expectation). Safe to call even when nothing is
+   * cached yet.
+   */
+  invalidate(tenantId: string): void {
+    this.cache.delete(tenantId);
+  }
+
   private async ensureBotUser(tenantId: string): Promise<string> {
-    const existing = await this.users.findOne({ where: { tenant: { id: tenantId }, email: BOT_EMAIL } });
+    const existing = await this.users.findOne({
+      where: { tenant: { id: tenantId }, email: BOT_EMAIL },
+    });
     if (existing) return existing.id;
 
     const created = await this.users.save(
@@ -72,7 +101,9 @@ export class WhatsappBotActorService {
 
   private async ensureBotRole(tenantId: string): Promise<string> {
     const existing = await this.roles.findAll(tenantId);
-    const found = existing.find((r) => r.slug === BOT_ROLE_SLUG && r.tenant?.id === tenantId);
+    const found = existing.find(
+      (r) => r.slug === BOT_ROLE_SLUG && r.tenant?.id === tenantId,
+    );
     if (found) return found.id;
 
     try {
@@ -80,7 +111,8 @@ export class WhatsappBotActorService {
         {
           name: 'AI Assistant',
           slug: BOT_ROLE_SLUG,
-          description: 'System role for the AI bot actor — booking-only, least privilege.',
+          description:
+            'System role for the AI bot actor — booking-only, least privilege.',
           permissionSlugs: AI_BOT_PERMISSIONS,
         },
         tenantId,
@@ -88,20 +120,33 @@ export class WhatsappBotActorService {
       return created.id;
     } catch (err) {
       // Race: another inbound message created it first — reload and use it.
-      if (err instanceof AppError && err.code === ErrorCode.ROLE_ALREADY_EXISTS) {
+      if (
+        err instanceof AppError &&
+        err.code === ErrorCode.ROLE_ALREADY_EXISTS
+      ) {
         const reloaded = await this.roles.findAll(tenantId);
-        const race = reloaded.find((r) => r.slug === BOT_ROLE_SLUG && r.tenant?.id === tenantId);
+        const race = reloaded.find(
+          (r) => r.slug === BOT_ROLE_SLUG && r.tenant?.id === tenantId,
+        );
         if (race) return race.id;
       }
       throw err;
     }
   }
 
-  private async ensureAssignment(userId: string, roleId: string, tenantId: string): Promise<void> {
+  private async ensureAssignment(
+    userId: string,
+    roleId: string,
+    tenantId: string,
+  ): Promise<void> {
     try {
       await this.roles.assignRoleToUser(userId, roleId, tenantId);
     } catch (err) {
-      if (err instanceof AppError && err.code === ErrorCode.ROLE_ASSIGNMENT_EXISTS) return;
+      if (
+        err instanceof AppError &&
+        err.code === ErrorCode.ROLE_ASSIGNMENT_EXISTS
+      )
+        return;
       throw err;
     }
   }

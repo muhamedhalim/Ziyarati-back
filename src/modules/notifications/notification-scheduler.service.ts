@@ -27,6 +27,8 @@ import {
   NotificationStatus,
 } from './notification.constants';
 
+const PG_UNIQUE_VIOLATION = '23505';
+
 /**
  * Manages the scheduled-notification queue (the "enqueue" seam). Creating a row
  * with status SCHEDULED is the produce step; a future BullMQ producer would also
@@ -49,9 +51,25 @@ export class NotificationSchedulerService {
     private readonly queue: QueueService,
   ) {}
 
+  /**
+   * `sourceRef` (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.11) is
+   * an INTERNAL-only business key — deliberately not part of
+   * `ScheduleNotificationDto`, so the public HTTP endpoint's contract is
+   * unchanged. Passed by callers that can be retried for the SAME logical
+   * request (e.g. the workflow engine's NOTIFICATION action, keyed
+   * `workflow-action:{runId}:{actionIndex}`): a retry with the same
+   * `sourceRef` hits the partial-unique index on `scheduled_notifications`
+   * and returns the ALREADY-CREATED row instead of inserting a second one
+   * that would be dispatched independently. Without this, a workflow action
+   * reclaimed after a crash (side effect already run, terminal result not yet
+   * recorded — see `WorkflowService.claimAction`) would schedule — and
+   * eventually send — the same notification twice, since each row has its own
+   * independent send lifecycle.
+   */
   async schedule(
     tenantId: string,
     dto: ScheduleNotificationDto,
+    sourceRef?: string,
   ): Promise<ScheduledNotification> {
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
     if (dto.appointmentId) await this.assertAppointment(tenantId, dto.appointmentId);
@@ -68,8 +86,22 @@ export class NotificationSchedulerService {
       recipient_id: dto.recipientId,
       scheduled_at: new Date(dto.scheduledAt),
       status: NOTIFICATION_STATUS.SCHEDULED,
+      source_ref: sourceRef,
     });
-    const saved = await this.scheduled.save(row);
+
+    let saved: ScheduledNotification;
+    try {
+      saved = await this.scheduled.save(row);
+    } catch (err) {
+      if (sourceRef && (err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
+        const existing = await this.scheduled.findOne({ where: { source_ref: sourceRef } });
+        // Already scheduled by a prior attempt for this EXACT business
+        // operation — return it as-is, WITHOUT enqueuing a second dispatch
+        // job (the first `schedule()` call already did that).
+        if (existing) return existing;
+      }
+      throw err;
+    }
     // Produce a DELAYED dispatch job; BullMQ fires it at scheduled_at. The worker
     // performs the send (NotificationDispatchService) — no in-process scheduler.
     await this.enqueueDispatch(tenantId, saved.id, saved.scheduled_at);

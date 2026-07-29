@@ -57,7 +57,11 @@ describe('StaffAccessService', () => {
   /** Wires the happy-path lookups: staff row → account → current roles. */
   const arrangeTarget = (opts?: {
     roles?: { id: string; slug: string }[];
-    user?: Partial<User>;
+    // `last_login_at` is widened to allow `null` on top of `Partial<User>`'s
+    // `Date | undefined`: the column is nullable (see the User entity) and a
+    // fresh account genuinely reads back `null`, not `undefined` — the
+    // entity's `?:` shorthand just doesn't spell out the DB truth precisely.
+    user?: Omit<Partial<User>, 'last_login_at'> & { last_login_at?: Date | null };
     staffFound?: boolean;
     userFound?: boolean;
   }) => {

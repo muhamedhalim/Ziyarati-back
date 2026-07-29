@@ -245,7 +245,12 @@ describe('Staff role scoping (Doctor / "Other") — HTTP e2e', () => {
   // ── "Other" custom role: creation, scoping, per-employee isolation ─────── //
 
   describe('"Other" role: custom permissions, per-employee isolation, reserved-permission blocking', () => {
-    const createOther = async (permissionSlugs: string[], label: string, callerToken = owner.token) => {
+    // NOT `async`: the body has no `await` of its own, and callers chain
+    // `.expect(...)` directly on the return value (e.g. `createOther(...).expect(201)`)
+    // before awaiting the whole thing — an `async` wrapper here would box the
+    // returned supertest `Test` (thenable AND `.expect()`-able) into a plain
+    // `Promise<Response>`, which has no `.expect()` of its own.
+    const createOther = (permissionSlugs: string[], label: string, callerToken = owner.token) => {
       return request(e2e.app.getHttpServer())
         .post(`${API}/staff/from-new-user`)
         .set(...authHeader(callerToken))

@@ -4,6 +4,9 @@ import { APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+
+import { AppRedisService } from './queue/app-redis.service';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -76,11 +79,30 @@ import { validate } from './config/env.validation';
     // abuse profile (webhook ingestion, Embedded Signup) set a tighter
     // per-route limit via @Throttle(). Relaxed to a no-op ceiling under Jest
     // (NODE_ENV=test) so the e2e suite's request bursts against one shared
-    // in-memory store never fail on request volume rather than assertions.
-    ThrottlerModule.forRoot({
-      throttlers: [
-        { name: 'default', ttl: 60_000, limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 300 },
-      ],
+    // storage never fail on request volume rather than assertions.
+    //
+    // Redis-backed storage (gap-closure pass — see
+    // docs/CACHING_QUEUES_AUDIT.md H9): the default in-memory `ThrottlerStorage`
+    // is per-process, so with N API replicas the effective limit was `300 × N`
+    // and it reset on every deploy — inconsistent with the tenant/campaign rate
+    // limiter, which was already correctly Redis-backed. Reuses
+    // `AppRedisService.application` (the existing fail-fast KV connection,
+    // already used for exactly this class of lightweight command) rather than
+    // opening a new socket — `ThrottlerStorageRedisService` does not manage a
+    // Redis instance passed to it directly, so `AppRedisService` keeps sole
+    // ownership of that connection's lifecycle (connect/close on shutdown).
+    ThrottlerModule.forRootAsync({
+      inject: [AppRedisService],
+      useFactory: (appRedis: AppRedisService) => ({
+        throttlers: [
+          {
+            name: 'default',
+            ttl: 60_000,
+            limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 300,
+          },
+        ],
+        storage: new ThrottlerStorageRedisService(appRedis.application),
+      }),
     }),
 
     TypeOrmModule.forRootAsync({

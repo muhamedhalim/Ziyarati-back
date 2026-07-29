@@ -197,6 +197,80 @@ describe('WhatsappExecutionService', () => {
         expect((res as { duplicate?: boolean }).duplicate).toBeUndefined();
       });
     });
+
+    describe('reconciliation — stale reclaim with a prior provider_ref already on file (gap-closure pass, §0.11)', () => {
+      it('does NOT call the provider again when the reclaimed row already has a provider_ref — reconciles to SENT instead', async () => {
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 1 });
+        // Pre-claim read (inside claimQueuedLog) finds a prior attempt already
+        // recorded a wamid before crashing — the row we are about to reclaim.
+        (logs.findOne as jest.Mock).mockResolvedValueOnce({ id: 'log-1', provider_ref: 'wamid.PRIOR' });
+        (logs.findOneBy as jest.Mock).mockResolvedValueOnce({ id: 'log-1', status: WHATSAPP_DELIVERY_STATUS.SENT });
+
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any, { logId: 'log-1' });
+
+        expect(messaging.send).not.toHaveBeenCalled();
+        expect(usage.increment).not.toHaveBeenCalled();
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT, providerMessageId: 'wamid.PRIOR', reconciled: true });
+        expect(logs.update).toHaveBeenCalledWith(
+          { id: 'log-1' },
+          expect.objectContaining({ status: WHATSAPP_DELIVERY_STATUS.SENT, provider_ref: 'wamid.PRIOR' }),
+        );
+      });
+
+      it('persists provider_ref on a normal (non-reconciled) successful send, so a FUTURE stale reclaim could detect it', async () => {
+        const qb = logs.createQueryBuilder();
+        (logs.createQueryBuilder as jest.Mock).mockReturnValue(qb);
+        (qb.execute as jest.Mock).mockResolvedValueOnce({ affected: 1 });
+        (logs.findOne as jest.Mock).mockResolvedValueOnce(null); // fresh QUEUED claim, no prior attempt
+        (logs.findOneBy as jest.Mock).mockResolvedValueOnce({ id: 'log-1', status: WHATSAPP_DELIVERY_STATUS.SENT });
+
+        await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any, { logId: 'log-1' });
+
+        expect(messaging.send).toHaveBeenCalled();
+        expect(logs.update).toHaveBeenCalledWith(
+          { id: 'log-1' },
+          expect.objectContaining({ provider_ref: 'wamid.1' }),
+        );
+      });
+    });
+  });
+
+  describe('claimBySourceRef / finalizeBySourceRef (gap-closure pass, §0.11 — workflow session-send idempotency)', () => {
+    it('claims by inserting a SENDING row keyed on sourceRef', async () => {
+      const res = await service.claimBySourceRef(TENANT, 'WHATSAPP', 'workflow-action:run-1:0');
+
+      expect(logs.create).toHaveBeenCalledWith(
+        expect.objectContaining({ channel: 'WHATSAPP', status: WHATSAPP_DELIVERY_STATUS.SENDING, source_ref: 'workflow-action:run-1:0' }),
+      );
+      expect(res.claimed).toBe(true);
+    });
+
+    it('reports NOT claimed and returns the existing row when the unique index rejects a second insert for the same sourceRef', async () => {
+      const existing = { id: 'log-existing', source_ref: 'workflow-action:run-1:0', status: WHATSAPP_DELIVERY_STATUS.SENT };
+      logs.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));
+      (logs.findOneBy as jest.Mock).mockResolvedValueOnce(existing);
+
+      const res = await service.claimBySourceRef(TENANT, 'WHATSAPP', 'workflow-action:run-1:0');
+
+      expect(res).toEqual({ claimed: false, log: existing });
+    });
+
+    it('propagates a non-unique-violation error rather than swallowing it', async () => {
+      logs.save.mockRejectedValueOnce(new Error('connection reset'));
+
+      await expect(service.claimBySourceRef(TENANT, 'WHATSAPP', 'workflow-action:run-1:0')).rejects.toThrow('connection reset');
+    });
+
+    it('finalizeBySourceRef updates the SAME claimed row in place', async () => {
+      await service.finalizeBySourceRef('log-1', WHATSAPP_DELIVERY_STATUS.SENT, { providerRef: 'wamid.9', sentAt: new Date() });
+
+      expect(logs.update).toHaveBeenCalledWith(
+        { id: 'log-1' },
+        expect.objectContaining({ status: WHATSAPP_DELIVERY_STATUS.SENT, provider_ref: 'wamid.9' }),
+      );
+    });
   });
 
   describe('scheduleMessage', () => {
