@@ -1,11 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 
 import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WebhookDeliverJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
@@ -60,11 +61,13 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     config: ConfigService,
   ) {
     super();
-    this.timeoutMs = config.get<number>('WEBHOOK_DELIVERY_TIMEOUT_MS', 10_000) ?? 10_000;
+    this.timeoutMs =
+      config.get<number>('WEBHOOK_DELIVERY_TIMEOUT_MS', 10_000) ?? 10_000;
   }
 
   async process(job: Job<WebhookDeliverJob>): Promise<void> {
     const data = job.data;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] delivery=${data.webhookDeliveryId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
@@ -73,17 +76,24 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     );
   }
 
-  private async deliver(deliveryId: string, attemptNumber: number): Promise<void> {
+  private async deliver(
+    deliveryId: string,
+    attemptNumber: number,
+  ): Promise<void> {
     const delivery = await this.deliveryService.loadForProcessing(deliveryId);
     if (!delivery) {
-      this.logger.warn(`Webhook delivery ${deliveryId} no longer exists — skipping`);
+      this.logger.warn(
+        `Webhook delivery ${deliveryId} no longer exists — skipping`,
+      );
       return;
     }
 
     // Idempotency short-circuit: a stalled-job re-execution must never re-send
     // an event that already succeeded.
     if (delivery.status === 'SUCCEEDED') {
-      this.logger.log(`Webhook delivery ${deliveryId} already succeeded — skipping duplicate processing`);
+      this.logger.log(
+        `Webhook delivery ${deliveryId} already succeeded — skipping duplicate processing`,
+      );
       return;
     }
 
@@ -97,7 +107,9 @@ export class WebhookDeliveryProcessor extends WorkerHost {
       return; // permanent — no throw, no retry
     }
 
-    const active = await this.endpoints.findActiveWithSecret(delivery.webhook_endpoint.id);
+    const active = await this.endpoints.findActiveWithSecret(
+      delivery.webhook_endpoint.id,
+    );
     if (!active) {
       await this.deliveryService.markFailedPermanent(
         deliveryId,
@@ -131,17 +143,30 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     // delayed by backoff — it is not "when the event happened" (that, where
     // relevant, is a field inside the immutable payload itself, e.g. `startAt`).
     const timestampSeconds = Math.floor(Date.now() / 1000);
-    const signature = computeWebhookSignature(secret, timestampSeconds, bodyString);
+    const signature = computeWebhookSignature(
+      secret,
+      timestampSeconds,
+      bodyString,
+    );
 
-    const result = await deliverWebhookRequest(endpoint.url, bodyString, {
-      [WEBHOOK_HEADER.ID]: delivery.id,
-      [WEBHOOK_HEADER.EVENT]: delivery.event_type,
-      [WEBHOOK_HEADER.TIMESTAMP]: String(timestampSeconds),
-      [WEBHOOK_HEADER.SIGNATURE]: signature,
-    }, this.timeoutMs);
+    const result = await deliverWebhookRequest(
+      endpoint.url,
+      bodyString,
+      {
+        [WEBHOOK_HEADER.ID]: delivery.id,
+        [WEBHOOK_HEADER.EVENT]: delivery.event_type,
+        [WEBHOOK_HEADER.TIMESTAMP]: String(timestampSeconds),
+        [WEBHOOK_HEADER.SIGNATURE]: signature,
+      },
+      this.timeoutMs,
+    );
 
     if (result.ok) {
-      await this.deliveryService.markSucceeded(deliveryId, result.httpStatus, result.bodyPreview);
+      await this.deliveryService.markSucceeded(
+        deliveryId,
+        result.httpStatus,
+        result.bodyPreview,
+      );
       return;
     }
 
@@ -173,7 +198,18 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     );
 
     const exhausted = (job?.attemptsMade ?? 0) >= (job?.opts?.attempts ?? 1);
-    if (!exhausted || !data) return;
+    // A job that fails via `UnrecoverableError` (payload validation, worker
+    // authorization) never retries — BullMQ's `shouldRetryJob` skips it
+    // unconditionally, so `attemptsMade` never climbs to `opts.attempts` and
+    // the `exhausted` check above alone would never become true for it. Left
+    // as `exhausted`-only, such a job would fail once, log one error line,
+    // and vanish with no DLQ park and no `DEAD_LETTERED` row — silently,
+    // since nothing else ever re-drives it (§18 test-plan gap, found while
+    // writing the "payload validation → DLQ, no retry" test). Treat an
+    // UnrecoverableError as terminal on its own, same as an exhausted retry
+    // budget, so it gets the same DLQ/operator visibility.
+    const permanent = err instanceof UnrecoverableError;
+    if ((!exhausted && !permanent) || !data) return;
 
     // Beyond this point retries are done. Mark the row terminal so the
     // tenant-facing delivery history + replay endpoint (DB-driven, never a
@@ -182,9 +218,14 @@ export class WebhookDeliveryProcessor extends WorkerHost {
     // this guarantees the transition happens exactly once even if BullMQ ever
     // emitted 'failed' more than once for the same exhausted job.
     const transitioned = await this.deliveryService
-      .markDeadLettered(data.webhookDeliveryId, err?.message ?? 'Exhausted retries')
+      .markDeadLettered(
+        data.webhookDeliveryId,
+        err?.message ?? 'Exhausted retries',
+      )
       .catch((e) => {
-        this.logger.error(`Failed to mark delivery dead-lettered: ${(e as Error)?.message}`);
+        this.logger.error(
+          `Failed to mark delivery dead-lettered: ${(e as Error)?.message}`,
+        );
         return false;
       });
     if (!transitioned) return;
@@ -203,6 +244,8 @@ export class WebhookDeliveryProcessor extends WorkerHost {
         attemptsMade: job?.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       })
-      .catch((e) => this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
+      .catch((e) =>
+        this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
+      );
   }
 }

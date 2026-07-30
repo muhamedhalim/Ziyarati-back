@@ -1,5 +1,10 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { AgentPresenceService } from './agent-presence.service';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -23,7 +28,10 @@ export class HandoverChatController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Snapshot of agent presence for this tenant', description: `**Protected — \`ai.handover.read\`.** Reflects the current in-process socket connections; live updates arrive over \`ai:presence\`.` })
+  @ApiOperation({
+    summary: 'Snapshot of agent presence for this tenant',
+    description: `**Protected — \`ai.handover.read\`.** Reflects the current Redis-backed presence state (correct across every API replica); live updates arrive over \`ai:presence\`.`,
+  })
   @ApiOkResponse({ description: 'Presence per agent.' })
   @Get('presence')
   @RequirePermissions(PERMISSION.AI_HANDOVER_READ)

@@ -23,7 +23,10 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
-import { JwtPayload, RefreshTokenPayload } from './interfaces/jwt-payload.interface';
+import {
+  JwtPayload,
+  RefreshTokenPayload,
+} from './interfaces/jwt-payload.interface';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { AuthResult, AuthTokens } from './interfaces/auth-tokens.interface';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -116,7 +119,12 @@ export class AuthService {
       const ownerRole = await this.resolveSystemRole(manager, ROLE.OWNER);
       const user = await this.createUserWithRole(
         manager,
-        { email, password: dto.password, fullName: dto.fullName, phone: dto.phone },
+        {
+          email,
+          password: dto.password,
+          fullName: dto.fullName,
+          phone: dto.phone,
+        },
         ownerRole,
         tenant.id,
       );
@@ -128,6 +136,7 @@ export class AuthService {
       to: email,
       name: dto.fullName,
       clinicName: dto.clinicName,
+      userId,
     });
 
     return this.issueAuthResult(userId, context);
@@ -180,7 +189,12 @@ export class AuthService {
       const role = await this.resolveSystemRole(manager, roleSlug);
       const user = await this.createUserWithRole(
         manager,
-        { email, password: dto.password, fullName: dto.fullName, phone: dto.phone },
+        {
+          email,
+          password: dto.password,
+          fullName: dto.fullName,
+          phone: dto.phone,
+        },
         role,
         actorTenantId,
       );
@@ -208,7 +222,12 @@ export class AuthService {
    */
   async createUserWithRole(
     manager: EntityManager,
-    input: { email: string; password: string; fullName: string; phone?: string },
+    input: {
+      email: string;
+      password: string;
+      fullName: string;
+      phone?: string;
+    },
     role: Role,
     tenantId: string,
   ): Promise<User> {
@@ -322,18 +341,26 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
 
   /** Rotates a refresh token: validates the old one, revokes it, issues a new pair. */
-  async refresh(refreshToken: string, context?: TokenContext): Promise<AuthResult> {
+  async refresh(
+    refreshToken: string,
+    context?: TokenContext,
+  ): Promise<AuthResult> {
     let payload: RefreshTokenPayload;
     try {
       payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
+        secret: this.config.get<string>(
+          'JWT_REFRESH_SECRET',
+          'dev-refresh-secret',
+        ),
       });
     } catch {
       throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
     }
 
     if (payload.type !== 'refresh') {
-      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN, { message: 'Invalid token type' });
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN, {
+        message: 'Invalid token type',
+      });
     }
 
     const stored = await this.refreshTokens.findOne({
@@ -369,7 +396,10 @@ export class AuthService {
     let payload: RefreshTokenPayload;
     try {
       payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
+        secret: this.config.get<string>(
+          'JWT_REFRESH_SECRET',
+          'dev-refresh-secret',
+        ),
       });
     } catch {
       return; // logging out with a bad token is a no-op
@@ -397,8 +427,12 @@ export class AuthService {
    * regardless of whether the email exists, to prevent account enumeration.
    * Returns the raw token so the caller (a mailer) can deliver it.
    */
-  async forgotPassword(dto: ForgotPasswordDto): Promise<{ resetToken?: string }> {
-    const tenantId = await this.resolveTenantId(dto.tenantSlug).catch(() => null);
+  async forgotPassword(
+    dto: ForgotPasswordDto,
+  ): Promise<{ resetToken?: string }> {
+    const tenantId = await this.resolveTenantId(dto.tenantSlug).catch(
+      () => null,
+    );
     const email = this.normalizeEmail(dto.email);
 
     const user = await this.users.findOne({
@@ -434,12 +468,12 @@ export class AuthService {
     });
 
     // The raw token is still returned so non-email deployments keep working; the
-      if (this.config.get<string>('NODE_ENV') !== 'production') {
-          return {
-              resetToken: rawToken,
-          };
-      }
-      return {};
+    if (this.config.get<string>('NODE_ENV') !== 'production') {
+      return {
+        resetToken: rawToken,
+      };
+    }
+    return {};
   }
 
   /**
@@ -521,9 +555,14 @@ export class AuthService {
       throw new AppError(ErrorCode.INVALID_CREDENTIALS);
     }
 
-    const matches = await bcrypt.compare(dto.currentPassword, user.password_hash);
+    const matches = await bcrypt.compare(
+      dto.currentPassword,
+      user.password_hash,
+    );
     if (!matches) {
-      throw new AppError(ErrorCode.INVALID_CREDENTIALS, { message: 'Current password is incorrect' });
+      throw new AppError(ErrorCode.INVALID_CREDENTIALS, {
+        message: 'Current password is incorrect',
+      });
     }
 
     user.password_hash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
@@ -655,7 +694,10 @@ export class AuthService {
       type: 'refresh',
     };
     const refreshToken = await this.jwt.signAsync(refreshPayload, {
-      secret: this.config.get<string>('JWT_REFRESH_SECRET', 'dev-refresh-secret'),
+      secret: this.config.get<string>(
+        'JWT_REFRESH_SECRET',
+        'dev-refresh-secret',
+      ),
       expiresIn: refreshTtl as JwtSignOptions['expiresIn'],
     });
 

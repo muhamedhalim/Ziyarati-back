@@ -2,9 +2,15 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
-import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import {
+  EXTENDED_LOCK_DURATION_MS,
+  JOB,
+  QUEUE,
+  workerConcurrency,
+} from '../../queue/queue.constants';
 import { AiExecuteJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { AiExecutionService } from '../../modules/ai/ai-execution.service';
@@ -18,7 +24,10 @@ import { AiMemoryService } from '../../modules/ai-memory/ai-memory.service';
  * meter usage/cost). Used for ASYNC AI workflows; the interactive chat endpoint
  * stays synchronous (latency-sensitive) and is intentionally not rerouted.
  */
-@Processor(QUEUE.AI, { concurrency: workerConcurrency() })
+@Processor(QUEUE.AI, {
+  concurrency: workerConcurrency(),
+  lockDuration: EXTENDED_LOCK_DURATION_MS,
+})
 export class AiProcessor extends WorkerHost {
   private readonly logger = new Logger('AiProcessor');
 
@@ -57,19 +66,27 @@ export class AiProcessor extends WorkerHost {
     }
 
     const data = job.data;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} conv=${data.aiConversationId} attempt=${job.attemptsMade + 1}`,
     );
     return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
-      this.exec.sendMessage(data.tenantId, data.aiConversationId, {
-        content: data.content,
-        idempotencyKey: data.idempotencyKey,
-      }, 'BACKGROUND_JOB'),
+      this.exec.sendMessage(
+        data.tenantId,
+        data.aiConversationId,
+        {
+          content: data.content,
+          idempotencyKey: data.idempotencyKey,
+        },
+        'BACKGROUND_JOB',
+      ),
     );
   }
 
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error) {
-    this.logger.error(`${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+    this.logger.error(
+      `${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
+    );
   }
 }

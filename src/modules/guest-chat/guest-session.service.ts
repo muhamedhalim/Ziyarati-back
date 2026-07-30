@@ -37,6 +37,13 @@ export interface GuestToken {
 @Injectable()
 export class GuestSessionService {
   private readonly logger = new Logger(GuestSessionService.name);
+  /**
+   * Memoized id of the single discovery tenant (L10 —
+   * docs/CACHING_QUEUES_AUDIT.md corrects the original finding here: this is
+   * a scalar memoizing ONE well-known singleton row, not a per-key map, so
+   * it is not "unbounded" in any sense — it holds exactly one value for the
+   * life of the process, same footprint on day one as on day one thousand).
+   */
   private discoveryTenantId: string | null = null;
 
   constructor(
@@ -52,7 +59,9 @@ export class GuestSessionService {
   async ensureDiscoveryTenant(): Promise<string> {
     if (this.discoveryTenantId) return this.discoveryTenantId;
 
-    let tenant = await this.tenants.findOne({ where: { slug: DISCOVERY_TENANT_SLUG } });
+    let tenant = await this.tenants.findOne({
+      where: { slug: DISCOVERY_TENANT_SLUG },
+    });
     if (!tenant) {
       tenant = await this.tenants.save(
         this.tenants.create({
@@ -67,8 +76,13 @@ export class GuestSessionService {
     // Unmetered access so anonymous turns are never blocked by plan quotas.
     if (!(await this.overrides.hasActive(tenant.id))) {
       await this.overrides
-        .grant(tenant.id, { reason: 'Guest discovery (system tenant)', durationDays: null })
-        .catch((err) => this.logger.warn(`override grant skipped: ${(err as Error).message}`));
+        .grant(tenant.id, {
+          reason: 'Guest discovery (system tenant)',
+          durationDays: null,
+        })
+        .catch((err) =>
+          this.logger.warn(`override grant skipped: ${(err as Error).message}`),
+        );
     }
     this.discoveryTenantId = tenant.id;
     return tenant.id;
@@ -82,7 +96,10 @@ export class GuestSessionService {
     const token = await this.jwt.signAsync(
       { sub: guestId, tenantId, guest: true },
       {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+        secret: this.config.get<string>(
+          'JWT_ACCESS_SECRET',
+          'dev-access-secret',
+        ),
         expiresIn: ttl as unknown as JwtSignOptions['expiresIn'],
       },
     );
@@ -96,8 +113,16 @@ export class GuestSessionService {
    * AiMemoryService). The original guest messages remain intact under the
    * discovery tenant. Returns the created memory (or null when nothing to carry).
    */
-  async convert(guestConversationId: string, targetTenantId: string, customerId?: string) {
-    const summary = await this.memory.summarizeConversation(targetTenantId, guestConversationId, customerId);
+  async convert(
+    guestConversationId: string,
+    targetTenantId: string,
+    customerId?: string,
+  ) {
+    const summary = await this.memory.summarizeConversation(
+      targetTenantId,
+      guestConversationId,
+      customerId,
+    );
     return { converted: true, memoryId: summary?.id ?? null };
   }
 }

@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { join } from 'node:path';
 
+import { runMigrationsWithAdvisoryLock } from './run-migrations-with-lock';
+
 /**
  * Shared TypeORM configuration factory.
  *
@@ -19,10 +21,10 @@ import { join } from 'node:path';
  * role-specific var is unset, so an existing deployment that only sets
  * `DB_POOL_MAX` is completely unaffected.
  */
-export function typeOrmFactory(
+export async function typeOrmFactory(
   config: ConfigService,
   poolRole: 'api' | 'worker' = 'api',
-): TypeOrmModuleOptions {
+): Promise<TypeOrmModuleOptions> {
   const logger = new Logger('TypeORM');
 
   const isProduction = config.get<string>('NODE_ENV') === 'production';
@@ -40,6 +42,19 @@ export function typeOrmFactory(
   }
   if (synchronize) {
     logger.warn('⚠️ TypeORM synchronize ENABLED (DEV ONLY)');
+  }
+
+  // Run migrations here — inside `useFactory`, before Nest's own
+  // `TypeOrmCoreModule` initializes the runtime `DataSource` and before ANY
+  // module's `onModuleInit()` fires — rather than relying on TypeORM's own
+  // `migrationsRun` option. `migrationsRun` runs once per process root with
+  // no cross-process coordination, so `AppModule` and `WorkerModule` booting
+  // together (or N replicas of either) could race the same migration
+  // (gap-closure — see docs/CACHING_QUEUES_AUDIT.md M11). Wrapping it in a
+  // Postgres advisory lock here serializes every booting process without
+  // changing WHEN migrations complete relative to the rest of app startup.
+  if (!synchronize) {
+    await runMigrationsWithAdvisoryLock(databaseUrl, isProduction);
   }
 
   return {
@@ -64,7 +79,10 @@ export function typeOrmFactory(
     entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
     migrations: [join(__dirname, '..', 'migrations', '!(*.spec).{ts,js}')],
     synchronize,
-    migrationsRun: !synchronize,
+    // Migrations already ran above (or were skipped because `synchronize` is
+    // on) — NOT delegated to TypeORM's own `migrationsRun`, which has no
+    // cross-process coordination (see the advisory-lock call above, M11).
+    migrationsRun: false,
     // Each migration commits independently (gap-closure pass — see
     // docs/CACHING_QUEUES_AUDIT.md §0.8.3): TypeORM's default groups every
     // pending migration from one boot into a single transaction, which would
@@ -97,6 +115,10 @@ export function typeOrmFactory(
 
 /** Role-specific pool size, falling back to the shared `DB_POOL_MAX` (default 15) when unset. */
 function poolMax(config: ConfigService, poolRole: 'api' | 'worker'): number {
-  const specific = config.get<number>(poolRole === 'worker' ? 'WORKER_DB_POOL_MAX' : 'API_DB_POOL_MAX');
-  return specific !== undefined && specific !== null ? specific : (config.get<number>('DB_POOL_MAX', 15) ?? 15);
+  const specific = config.get<number>(
+    poolRole === 'worker' ? 'WORKER_DB_POOL_MAX' : 'API_DB_POOL_MAX',
+  );
+  return specific !== undefined && specific !== null
+    ? specific
+    : (config.get<number>('DB_POOL_MAX', 15) ?? 15);
 }

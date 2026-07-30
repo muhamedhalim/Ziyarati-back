@@ -5,7 +5,10 @@ import { Not } from 'typeorm';
 
 import { WebhookDeliveryService } from './webhook-delivery.service';
 import { WebhookEndpointService } from './webhook-endpoint.service';
-import { WebhookAuditService, WEBHOOK_AUDIT_ACTION } from './webhook-audit.service';
+import {
+  WebhookAuditService,
+  WEBHOOK_AUDIT_ACTION,
+} from './webhook-audit.service';
 import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
 import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { QueueService } from '../../queue/queue.service';
@@ -27,14 +30,19 @@ describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
   let deliveries: MockRepository;
   let endpointsService: { findActiveSubscribers: jest.Mock };
-  let queue: { enqueueWebhookDeliver: jest.Mock; retryWebhookDeliver: jest.Mock };
+  let queue: {
+    enqueueWebhookDeliver: jest.Mock;
+    retryWebhookDeliver: jest.Mock;
+  };
   let audit: { record: jest.Mock };
   let manager: MockEntityManager;
   let dataSource: MockDataSource;
 
   beforeEach(async () => {
     deliveries = createMockRepository();
-    endpointsService = { findActiveSubscribers: jest.fn().mockResolvedValue([]) };
+    endpointsService = {
+      findActiveSubscribers: jest.fn().mockResolvedValue([]),
+    };
     queue = {
       enqueueWebhookDeliver: jest.fn().mockResolvedValue({ id: 'job-1' }),
       retryWebhookDeliver: jest.fn().mockResolvedValue({ id: 'job-2' }),
@@ -71,16 +79,25 @@ describe('WebhookDeliveryService', () => {
         { id: 'ep1' },
         { id: 'ep2' },
       ]);
-      manager.save.mockImplementation(async (d: any) => ({ ...d, id: d.id ?? `saved-${Math.random()}` }));
+      manager.save.mockImplementation(async (d: any) => ({
+        ...d,
+        id: d.id ?? `saved-${Math.random()}`,
+      }));
 
-      await service.dispatchEvent(TENANT, 'appointment.created', { appointmentId: 'a1' });
+      await service.dispatchEvent(TENANT, 'appointment.created', {
+        appointmentId: 'a1',
+      });
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(2); // one per endpoint
       // Never falls back to the direct-enqueue path — the whole point of the outbox.
       expect(queue.enqueueWebhookDeliver).not.toHaveBeenCalled();
 
-      const deliveryCreates = manager.create.mock.calls.filter((c) => c[0] === WebhookDelivery);
-      const outboxCreates = manager.create.mock.calls.filter((c) => c[0] === OutboxJob);
+      const deliveryCreates = manager.create.mock.calls.filter(
+        (c) => c[0] === WebhookDelivery,
+      );
+      const outboxCreates = manager.create.mock.calls.filter(
+        (c) => c[0] === OutboxJob,
+      );
       expect(deliveryCreates).toHaveLength(2);
       expect(outboxCreates).toHaveLength(2);
       expect(deliveryCreates[0][1]).toMatchObject({
@@ -108,7 +125,10 @@ describe('WebhookDeliveryService', () => {
     });
 
     it('one endpoint whose transaction fails does not block the others — and never leaves a half-written row', async () => {
-      endpointsService.findActiveSubscribers.mockResolvedValueOnce([{ id: 'ep1' }, { id: 'ep2' }]);
+      endpointsService.findActiveSubscribers.mockResolvedValueOnce([
+        { id: 'ep1' },
+        { id: 'ep2' },
+      ]);
       dataSource.transaction
         .mockRejectedValueOnce(new Error('db down'))
         .mockImplementationOnce(async (cb: any) => cb(manager));
@@ -122,8 +142,38 @@ describe('WebhookDeliveryService', () => {
     });
 
     it('a lookup failure for subscribers is caught and logged, never thrown', async () => {
-      endpointsService.findActiveSubscribers.mockRejectedValueOnce(new Error('db down'));
-      await expect(service.dispatchEvent(TENANT, 'appointment.created', {})).resolves.toBeUndefined();
+      endpointsService.findActiveSubscribers.mockRejectedValueOnce(
+        new Error('db down'),
+      );
+      await expect(
+        service.dispatchEvent(TENANT, 'appointment.created', {}),
+      ).resolves.toBeUndefined();
+    });
+
+    it('a mid-transaction failure (the OutboxJob save, AFTER the WebhookDelivery save already resolved) never falls back to a direct enqueue (§18 test-plan #23 — rollback must mean no job, not "job enqueued a different way")', async () => {
+      endpointsService.findActiveSubscribers.mockResolvedValueOnce([
+        { id: 'ep1' },
+      ]);
+      // First save (the WebhookDelivery row) succeeds; the second (the OutboxJob
+      // row, in the SAME transaction) fails — simulating a real Postgres
+      // ROLLBACK of the whole transaction, including the already-"saved" row.
+      manager.save
+        .mockImplementationOnce(async (d: any) => ({ ...d, id: 'delivery-1' }))
+        .mockRejectedValueOnce(
+          new Error('constraint violation on outbox_jobs'),
+        );
+
+      await expect(
+        service.dispatchEvent(TENANT, 'appointment.created', {
+          appointmentId: 'a1',
+        }),
+      ).resolves.toBeUndefined();
+
+      // The only way a webhook delivery job can ever reach the queue is via a
+      // row that survived its transaction and was later relayed by
+      // OutboxRelayService — there is no secondary/fallback enqueue path here
+      // that could let a job through despite the rollback.
+      expect(queue.enqueueWebhookDeliver).not.toHaveBeenCalled();
     });
   });
 
@@ -132,7 +182,11 @@ describe('WebhookDeliveryService', () => {
       deliveries.findOne.mockResolvedValueOnce({
         id: 'd1',
         status: 'SUCCEEDED',
-        webhook_endpoint: { id: 'ep1', is_active: true, url: 'https://example.com/hook' },
+        webhook_endpoint: {
+          id: 'ep1',
+          is_active: true,
+          url: 'https://example.com/hook',
+        },
       });
       await expect(service.replay(TENANT, 'd1', {})).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
@@ -144,7 +198,11 @@ describe('WebhookDeliveryService', () => {
       deliveries.findOne.mockResolvedValueOnce({
         id: 'd1',
         status: 'DEAD_LETTERED',
-        webhook_endpoint: { id: 'ep1', is_active: false, url: 'https://example.com/hook' },
+        webhook_endpoint: {
+          id: 'ep1',
+          is_active: false,
+          url: 'https://example.com/hook',
+        },
       });
       await expect(service.replay(TENANT, 'd1', {})).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
@@ -171,12 +229,22 @@ describe('WebhookDeliveryService', () => {
         attempt_count: 6,
         http_status: 500,
         last_error: 'boom',
-        webhook_endpoint: { id: 'ep1', is_active: true, url: 'https://example.com/hook' },
+        webhook_endpoint: {
+          id: 'ep1',
+          is_active: true,
+          url: 'https://example.com/hook',
+        },
       };
       deliveries.findOne.mockResolvedValueOnce(original);
-      deliveries.save.mockImplementationOnce(async (d: any) => ({ ...d, id: 'd-replay-1' }));
+      deliveries.save.mockImplementationOnce(async (d: any) => ({
+        ...d,
+        id: 'd-replay-1',
+      }));
 
-      const result = await service.replay(TENANT, 'd1', { userId: 'u1', ip: '1.2.3.4' });
+      const result = await service.replay(TENANT, 'd1', {
+        userId: 'u1',
+        ip: '1.2.3.4',
+      });
 
       expect(deliveries.save).toHaveBeenCalledTimes(1);
       const created = deliveries.save.mock.calls[0][0];
@@ -184,7 +252,9 @@ describe('WebhookDeliveryService', () => {
       expect(created.event_type).toBe('appointment.created');
       expect(created.payload).toEqual({ appointmentId: 'a1' });
       expect(created.replayed_from_id).toBe('d1');
-      expect(created.webhook_endpoint_url_snapshot).toBe('https://example.com/hook');
+      expect(created.webhook_endpoint_url_snapshot).toBe(
+        'https://example.com/hook',
+      );
       // The original keeps its terminal outcome — nothing about it was reset.
       expect(original.status).toBe('DEAD_LETTERED');
       expect(original.attempt_count).toBe(6);
@@ -200,14 +270,19 @@ describe('WebhookDeliveryService', () => {
         'WebhookDelivery',
         'd-replay-1',
         '1.2.3.4',
-        expect.objectContaining({ eventType: 'appointment.created', replayedFromId: 'd1' }),
+        expect.objectContaining({
+          eventType: 'appointment.created',
+          replayedFromId: 'd1',
+        }),
       );
       expect(result.id).toBe('d-replay-1');
     });
 
     it('404s for a delivery not owned by the tenant', async () => {
       deliveries.findOne.mockResolvedValueOnce(null);
-      await expect(service.replay(TENANT, 'x', {})).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.replay(TENANT, 'x', {})).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
     });
   });
 
@@ -216,7 +291,11 @@ describe('WebhookDeliveryService', () => {
       await service.markSucceeded('d1', 200, 'ok');
       expect(deliveries.update).toHaveBeenCalledWith(
         { id: 'd1' },
-        expect.objectContaining({ status: 'SUCCEEDED', http_status: 200, response_preview: 'ok' }),
+        expect.objectContaining({
+          status: 'SUCCEEDED',
+          http_status: 200,
+          response_preview: 'ok',
+        }),
       );
     });
 
@@ -233,7 +312,10 @@ describe('WebhookDeliveryService', () => {
       expect(result).toBe(true);
       expect(deliveries.update).toHaveBeenCalledWith(
         { id: 'd1', status: Not('DEAD_LETTERED') },
-        expect.objectContaining({ status: 'DEAD_LETTERED', last_error: 'exhausted' }),
+        expect.objectContaining({
+          status: 'DEAD_LETTERED',
+          last_error: 'exhausted',
+        }),
       );
     });
 

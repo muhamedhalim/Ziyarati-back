@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 
 import { QueueMonitorService } from './queue-monitor.service';
 import { QueueService } from '../queue/queue.service';
@@ -9,7 +10,10 @@ type Handler = (...args: unknown[]) => void;
 class FakeQueueEvents {
   static instances: FakeQueueEvents[] = [];
   handlers = new Map<string, Handler>();
-  constructor(public readonly name: string, public readonly opts: unknown) {
+  constructor(
+    public readonly name: string,
+    public readonly opts: unknown,
+  ) {
     FakeQueueEvents.instances.push(this);
   }
   on(event: string, handler: Handler) {
@@ -25,13 +29,16 @@ class FakeQueueEvents {
 }
 
 jest.mock('bullmq', () => ({
-  QueueEvents: jest.fn((name: string, opts: unknown) => new FakeQueueEvents(name, opts)),
+  QueueEvents: jest.fn(
+    (name: string, opts: unknown) => new FakeQueueEvents(name, opts),
+  ),
 }));
 
 describe('QueueMonitorService', () => {
   let service: QueueMonitorService;
   let config: ConfigService;
-  let queue: { dlqDepth: jest.Mock };
+  let queue: { dlqDepth: jest.Mock; queueCounts: jest.Mock };
+  let metrics: { recordJobEvent: jest.Mock; setQueueDepth: jest.Mock };
   let logSpy: jest.SpyInstance;
   let errorSpy: jest.SpyInstance;
   let warnSpy: jest.SpyInstance;
@@ -40,16 +47,32 @@ describe('QueueMonitorService', () => {
     FakeQueueEvents.instances = [];
     delete process.env.QUEUE_LOG_COMPLETED;
     config = {
-      get: (k: string, d?: unknown) => (k === 'REDIS_URL' ? 'redis://localhost:6379' : d),
+      get: (k: string, d?: unknown) =>
+        k === 'REDIS_URL' ? 'redis://localhost:6379' : d,
     } as unknown as ConfigService;
-    queue = { dlqDepth: jest.fn().mockResolvedValue(0) };
-    service = new QueueMonitorService(config, queue as unknown as QueueService);
+    queue = {
+      dlqDepth: jest.fn().mockResolvedValue(0),
+      queueCounts: jest.fn().mockResolvedValue({
+        [QUEUE.NOTIFICATIONS]: { waiting: 3, active: 1 },
+      }),
+    };
+    metrics = { recordJobEvent: jest.fn(), setQueueDepth: jest.fn() };
+    service = new QueueMonitorService(
+      config,
+      queue as unknown as QueueService,
+      metrics as any,
+    );
 
     // Silence + capture NestJS Logger output for assertions without noisy console output.
-    const nestCommon = require('@nestjs/common');
-    logSpy = jest.spyOn(nestCommon.Logger.prototype, 'log').mockImplementation(() => undefined);
-    errorSpy = jest.spyOn(nestCommon.Logger.prototype, 'error').mockImplementation(() => undefined);
-    warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+    logSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    errorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -63,20 +86,30 @@ describe('QueueMonitorService', () => {
     expect(FakeQueueEvents.instances).toHaveLength(ALL_QUEUES.length);
   });
 
-  it('does NOT log a `completed` event by default', () => {
+  it('does NOT log a `completed` event by default (still counts it for metrics — M14)', () => {
     service.onModuleInit();
     const qe = FakeQueueEvents.instances[0];
-    expect(qe.handlers.has('completed')).toBe(false);
+    qe.emit('completed', { jobId: 'j1' });
+    expect(logSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('completed job=j1'),
+    );
+    expect(metrics.recordJobEvent).toHaveBeenCalledWith(qe.name, 'completed');
   });
 
   it('logs `completed` events when QUEUE_LOG_COMPLETED=true', () => {
     process.env.QUEUE_LOG_COMPLETED = 'true';
-    service = new QueueMonitorService(config, queue as unknown as QueueService);
+    service = new QueueMonitorService(
+      config,
+      queue as unknown as QueueService,
+      metrics as any,
+    );
     service.onModuleInit();
     const qe = FakeQueueEvents.instances[0];
     expect(qe.handlers.has('completed')).toBe(true);
     qe.emit('completed', { jobId: 'j1' });
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('completed job=j1'));
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('completed job=j1'),
+    );
   });
 
   it('always logs `failed` and `stalled` events, regardless of QUEUE_LOG_COMPLETED', () => {
@@ -84,8 +117,45 @@ describe('QueueMonitorService', () => {
     const qe = FakeQueueEvents.instances[0];
     qe.emit('failed', { jobId: 'j1', failedReason: 'boom' });
     qe.emit('stalled', { jobId: 'j2' });
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('failed job=j1: boom'));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('stalled job=j2'));
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed job=j1: boom'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('stalled job=j2'),
+    );
+  });
+
+  describe('metrics (M14)', () => {
+    it('counts completed/failed/stalled job events UNCONDITIONALLY, even with completed-logging off', () => {
+      service.onModuleInit();
+      const qe = FakeQueueEvents.instances[0];
+      qe.emit('completed', { jobId: 'j0' });
+      qe.emit('failed', { jobId: 'j1', failedReason: 'boom' });
+      qe.emit('stalled', { jobId: 'j2' });
+
+      expect(metrics.recordJobEvent).toHaveBeenCalledWith(qe.name, 'completed');
+      expect(metrics.recordJobEvent).toHaveBeenCalledWith(qe.name, 'failed');
+      expect(metrics.recordJobEvent).toHaveBeenCalledWith(qe.name, 'stalled');
+    });
+
+    it('refreshes the queue-depth gauge on its own poll interval', async () => {
+      jest.useFakeTimers();
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      expect(queue.queueCounts).toHaveBeenCalled();
+      expect(metrics.setQueueDepth).toHaveBeenCalledWith(
+        QUEUE.NOTIFICATIONS,
+        'waiting',
+        3,
+      );
+      expect(metrics.setQueueDepth).toHaveBeenCalledWith(
+        QUEUE.NOTIFICATIONS,
+        'active',
+        1,
+      );
+      jest.useRealTimers();
+    });
   });
 
   describe('DLQ depth polling', () => {
@@ -119,7 +189,9 @@ describe('QueueMonitorService', () => {
 
   it('closes every QueueEvents connection on destroy', () => {
     service.onModuleInit();
-    const closeSpies = FakeQueueEvents.instances.map((qe) => jest.spyOn(qe, 'close'));
+    const closeSpies = FakeQueueEvents.instances.map((qe) =>
+      jest.spyOn(qe, 'close'),
+    );
     service.onModuleDestroy();
     for (const spy of closeSpies) expect(spy).toHaveBeenCalled();
   });

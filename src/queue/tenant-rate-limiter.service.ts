@@ -1,6 +1,34 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { AppRedisService } from './app-redis.service';
+import { cacheKeyPrefix } from './queue.constants';
+
+/**
+ * `rlConsume` (gap-closure — see docs/CACHING_QUEUES_AUDIT.md M16): registered
+ * via `client.defineCommand` in the constructor below so ioredis ships the
+ * script body once via `EVALSHA`/caches its SHA, instead of re-sending the
+ * full ~1.5KB Lua text on `EVAL` for every single rate-limit check (this
+ * script runs on every campaign-recipient send, at real volume). ioredis
+ * falls back to a plain `EVAL` automatically on a `NOSCRIPT` reply (e.g.
+ * after a `SCRIPT FLUSH` or a Redis restart), so this is purely a bandwidth/
+ * CPU optimization — no behavior change.
+ */
+declare module 'ioredis' {
+  interface Redis {
+    rlConsume(
+      bucketKey: string,
+      dailyKey: string,
+      monthlyKey: string,
+      capacity: string,
+      refillPerSec: string,
+      now: string,
+      dailyCap: string,
+      monthlyCap: string,
+      dailyTtl: string,
+      monthlyTtl: string,
+    ): Promise<[number, number]>;
+  }
+}
 
 export interface RateLimitPolicy {
   /** Per-minute throttle (token-bucket capacity & refill basis). */
@@ -88,7 +116,12 @@ export class TenantRateLimiterService {
     return {0, 0}
   `;
 
-  constructor(private readonly appRedis: AppRedisService) {}
+  constructor(private readonly appRedis: AppRedisService) {
+    this.appRedis.rateLimiter.defineCommand('rlConsume', {
+      numberOfKeys: 3,
+      lua: TenantRateLimiterService.SCRIPT,
+    });
+  }
 
   async consume(
     tenantId: string,
@@ -103,13 +136,14 @@ export class TenantRateLimiterService {
     const { dayKey, monthKey } = this.periodKeys(tenantId);
 
     // Per-campaign bucket so one campaign can't starve another in the tenant.
-    const bucketKey = `rl:bucket:${tenantId}:${campaignId}`;
-    const dailyKey = `rl:day:${tenantId}:${dayKey}`;
-    const monthlyKey = `rl:month:${tenantId}:${monthKey}`;
+    // Env-prefixed (M3 — docs/CACHING_QUEUES_AUDIT.md) so a mis-pointed
+    // REDIS_URL can't let one environment's rate limiter see another's.
+    const prefix = cacheKeyPrefix();
+    const bucketKey = `${prefix}rl:bucket:${tenantId}:${campaignId}`;
+    const dailyKey = `${prefix}rl:day:${tenantId}:${dayKey}`;
+    const monthlyKey = `${prefix}rl:month:${tenantId}:${monthKey}`;
 
-    const res = (await client.eval(
-      TenantRateLimiterService.SCRIPT,
-      3,
+    const res = await client.rlConsume(
       bucketKey,
       dailyKey,
       monthlyKey,
@@ -120,14 +154,18 @@ export class TenantRateLimiterService {
       String(policy.monthlyCap ?? -1),
       String(this.secondsUntilEndOfDay()),
       String(this.secondsUntilEndOfMonth()),
-    )) as [number, number];
+    );
 
     const [status, retryMs] = res;
     switch (status) {
       case 0:
         return { allowed: true };
       case 1:
-        return { allowed: false, reason: 'RATE', retryAfterMs: Math.max(250, retryMs) };
+        return {
+          allowed: false,
+          reason: 'RATE',
+          retryAfterMs: Math.max(250, retryMs),
+        };
       case 2:
         return { allowed: false, reason: 'DAILY_CAP' };
       default:
@@ -135,6 +173,18 @@ export class TenantRateLimiterService {
     }
   }
 
+  /**
+   * Daily/monthly caps roll over at UTC midnight, not the tenant's local
+   * midnight (L9 — docs/CACHING_QUEUES_AUDIT.md). For a Saudi Arabia tenant
+   * (UTC+3) that's 03:00 local, not 00:00 local — same as every cron-based
+   * sweep in this codebase (`@Cron` expressions run in the process's system
+   * timezone, which deployments run as UTC). Documented as almost certainly
+   * the intended behavior (a single, consistent, DST-free rollover instant
+   * for every tenant regardless of timezone, rather than N different
+   * rollover instants to track) rather than a bug — left unchanged; this
+   * comment exists so the mismatch is a documented decision, not a silent
+   * one, the next time someone traces why a cap resets mid-morning locally.
+   */
   private periodKeys(_tenantId: string): { dayKey: string; monthKey: string } {
     const d = new Date();
     const y = d.getUTCFullYear();
@@ -145,13 +195,17 @@ export class TenantRateLimiterService {
 
   private secondsUntilEndOfDay(): number {
     const now = new Date();
-    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    const end = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+    );
     return Math.max(60, Math.ceil((end.getTime() - now.getTime()) / 1000));
   }
 
   private secondsUntilEndOfMonth(): number {
     const now = new Date();
-    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const end = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+    );
     return Math.max(60, Math.ceil((end.getTime() - now.getTime()) / 1000));
   }
 }

@@ -13,6 +13,8 @@ import { AppService } from './app.service';
 import { typeOrmFactory } from './config/typeorm.config';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './health/health.module';
+import { MetricsModule } from './metrics/metrics.module';
+import { MetricsHttpModule } from './metrics/metrics-http.module';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
@@ -118,6 +120,8 @@ import { validate } from './config/env.validation';
     // enqueue. The HTTP API NEVER runs workers — processors live in WorkerModule.
     QueueModule,
     HealthModule,
+    MetricsModule,
+    MetricsHttpModule,
     AuthModule,
     TenantModule,
     AppointmentModule,

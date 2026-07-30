@@ -5,6 +5,7 @@ import { Job } from 'bullmq';
 import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WhatsappWebhookProcessJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WhatsappWebhookService } from '../../modules/whatsapp/whatsapp-webhook.service';
@@ -37,6 +38,7 @@ export class WhatsappWebhookProcessor extends WorkerHost {
 
   async process(job: Job<WhatsappWebhookProcessJob>) {
     const data = job.data;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} event=${data.webhookEventId} ` +
         `tenant=${data.tenantId ?? '-'} attempt=${job.attemptsMade + 1}`,
@@ -75,6 +77,8 @@ export class WhatsappWebhookProcessor extends WorkerHost {
         attemptsMade: job?.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       })
-      .catch((e) => this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
+      .catch((e) =>
+        this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
+      );
   }
 }

@@ -2,9 +2,14 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
-import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import {
+  EXTENDED_LOCK_DURATION_MS,
+  QUEUE,
+  workerConcurrency,
+} from '../../queue/queue.constants';
 import { IntegrationSyncJobData } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { IntegrationSyncService } from '../../modules/integration-platform/sync/integration-sync.service';
@@ -16,7 +21,10 @@ import { IntegrationSyncService } from '../../modules/integration-platform/sync/
  * idempotency, cursor progression, cancellation and resume. A mid-run failure
  * re-throws so BullMQ retries — the last successful cursor is the resume point.
  */
-@Processor(QUEUE.INTEGRATION_SYNC, { concurrency: workerConcurrency() })
+@Processor(QUEUE.INTEGRATION_SYNC, {
+  concurrency: workerConcurrency(),
+  lockDuration: EXTENDED_LOCK_DURATION_MS,
+})
 export class IntegrationSyncProcessor extends WorkerHost {
   private readonly logger = new Logger('IntegrationSyncProcessor');
 
@@ -30,15 +38,20 @@ export class IntegrationSyncProcessor extends WorkerHost {
 
   async process(job: Job<IntegrationSyncJobData>): Promise<void> {
     const data = job.data;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] sync job=${data.syncJobId} tenant=${data.tenantId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, job.name, data, () => this.sync.process(data.syncJobId));
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
+      this.sync.process(data.syncJobId),
+    );
   }
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job, err: Error) {
     const data = job?.data as IntegrationSyncJobData | undefined;
-    this.logger.error(`integration.sync job=${job?.id} sync=${data?.syncJobId} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+    this.logger.error(
+      `integration.sync job=${job?.id} sync=${data?.syncJobId} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
+    );
   }
 }

@@ -48,8 +48,13 @@ interface MessagePayload {
  * permission check happens explicitly here (same pattern already used by
  * `AiToolDispatchService` for tool-level gating over this same gateway).
  */
-@WebSocketGateway({ namespace: '/ai', cors: { origin: true, credentials: true } })
-export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
+@WebSocketGateway({
+  namespace: '/ai',
+  cors: { origin: true, credentials: true },
+})
+export class AiRealtimeGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   private readonly logger = new Logger('AiRealtimeGateway');
 
   @WebSocketServer()
@@ -74,53 +79,78 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
       client.data.tenantId = user.tenantId;
       client.data.user = user;
       client.join(room.tenant(user.tenantId!));
-      client.emit(AI_EVENT.CONNECTED, { userId: user.id, tenantId: user.tenantId });
+      client.emit(AI_EVENT.CONNECTED, {
+        userId: user.id,
+        tenantId: user.tenantId,
+      });
 
       // Presence: only meaningful for real staff users (guests/patients aren't
       // "agents"), gated on the same permission the Agent Inbox itself needs.
       if (user.permissions?.includes(PERMISSION.AI_HANDOVER_READ)) {
-        const p = this.presence.connect(user.tenantId!, user.id);
+        const p = await this.presence.connect(user.tenantId!, user.id);
         client.to(room.tenant(user.tenantId!)).emit(AI_EVENT.PRESENCE, p);
       }
     } catch (err) {
-      client.emit(AI_EVENT.ERROR, { message: (err as Error)?.message ?? 'Unauthorized' });
+      client.emit(AI_EVENT.ERROR, {
+        message: (err as Error)?.message ?? 'Unauthorized',
+      });
       client.disconnect(true);
     }
   }
 
-  handleDisconnect(client: Socket): void {
-    const { tenantId, userId, user } = client.data as { tenantId?: string; userId?: string; user?: AuthenticatedUser };
+  async handleDisconnect(client: Socket): Promise<void> {
+    const { tenantId, userId, user } = client.data as {
+      tenantId?: string;
+      userId?: string;
+      user?: AuthenticatedUser;
+    };
     if (!tenantId || !userId) return;
     if (user?.permissions?.includes(PERMISSION.AI_HANDOVER_READ)) {
-      const p = this.presence.disconnect(tenantId, userId);
+      const p = await this.presence.disconnect(tenantId, userId);
       if (p) client.to(room.tenant(tenantId)).emit(AI_EVENT.PRESENCE, p);
     }
   }
 
   @SubscribeMessage(AI_EVENT.JOIN)
-  onJoin(@ConnectedSocket() client: Socket, @MessageBody() body: { aiConversationId: string }) {
-    if (body?.aiConversationId) client.join(room.conversation(body.aiConversationId));
+  onJoin(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { aiConversationId: string },
+  ) {
+    if (body?.aiConversationId)
+      client.join(room.conversation(body.aiConversationId));
     return { joined: body?.aiConversationId ?? null };
   }
 
   @SubscribeMessage(AI_EVENT.LEAVE)
-  onLeave(@ConnectedSocket() client: Socket, @MessageBody() body: { aiConversationId: string }) {
-    if (body?.aiConversationId) client.leave(room.conversation(body.aiConversationId));
+  onLeave(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { aiConversationId: string },
+  ) {
+    if (body?.aiConversationId)
+      client.leave(room.conversation(body.aiConversationId));
     return { left: body?.aiConversationId ?? null };
   }
 
   @SubscribeMessage(AI_EVENT.TYPING)
-  onTyping(@ConnectedSocket() client: Socket, @MessageBody() body: { aiConversationId: string; typing: boolean }) {
+  onTyping(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { aiConversationId: string; typing: boolean },
+  ) {
     if (body?.aiConversationId) {
-      client.to(room.conversation(body.aiConversationId)).emit(AI_EVENT.TYPING, {
-        userId: client.data.userId,
-        typing: !!body.typing,
-      });
+      client
+        .to(room.conversation(body.aiConversationId))
+        .emit(AI_EVENT.TYPING, {
+          userId: client.data.userId,
+          typing: !!body.typing,
+        });
     }
   }
 
   @SubscribeMessage(AI_EVENT.SEEN)
-  onSeen(@ConnectedSocket() client: Socket, @MessageBody() body: { aiConversationId: string; messageId: string }) {
+  onSeen(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { aiConversationId: string; messageId: string },
+  ) {
     if (body?.aiConversationId) {
       client.to(room.conversation(body.aiConversationId)).emit(AI_EVENT.SEEN, {
         userId: client.data.userId,
@@ -131,18 +161,25 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
 
   /** Sets the caller's own presence status (Online/Busy/Away). */
   @SubscribeMessage(AI_EVENT.PRESENCE_UPDATE)
-  onPresenceUpdate(@ConnectedSocket() client: Socket, @MessageBody() body: { status: 'ONLINE' | 'BUSY' | 'AWAY' }) {
+  async onPresenceUpdate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { status: 'ONLINE' | 'BUSY' | 'AWAY' },
+  ) {
     const tenantId = client.data.tenantId as string | undefined;
     const userId = client.data.userId as string | undefined;
     if (!tenantId || !userId || !body?.status) return { ok: false };
-    const p = this.presence.setStatus(tenantId, userId, body.status as Exclude<PresenceStatus, 'OFFLINE'>);
+    const p = await this.presence.setStatus(
+      tenantId,
+      userId,
+      body.status as Exclude<PresenceStatus, 'OFFLINE'>,
+    );
     this.server.to(room.tenant(tenantId)).emit(AI_EVENT.PRESENCE, p);
     return { ok: true };
   }
 
   /** Returns the full tenant presence snapshot on demand (Inbox initial load). */
   @SubscribeMessage(AI_EVENT.PRESENCE_SNAPSHOT)
-  onPresenceSnapshot(@ConnectedSocket() client: Socket) {
+  async onPresenceSnapshot(@ConnectedSocket() client: Socket) {
     const tenantId = client.data.tenantId as string | undefined;
     return tenantId ? this.presence.snapshot(tenantId) : [];
   }
@@ -155,7 +192,10 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
    * thin trigger, no duplicated broadcast logic.
    */
   @SubscribeMessage(AI_EVENT.HANDOVER)
-  async onHandover(@ConnectedSocket() client: Socket, @MessageBody() body: { aiConversationId: string; reason?: string }) {
+  async onHandover(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { aiConversationId: string; reason?: string },
+  ) {
     const tenantId = client.data.tenantId as string | undefined;
     if (!tenantId || !body?.aiConversationId) {
       client.emit(AI_EVENT.ERROR, { message: 'Missing aiConversationId' });
@@ -169,7 +209,9 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
       return { ok: true, handoverId: handover.id };
     } catch (err) {
       this.logger.warn(`onHandover failed: ${(err as Error)?.message}`);
-      client.emit(AI_EVENT.ERROR, { message: (err as Error)?.message ?? 'Handover request failed' });
+      client.emit(AI_EVENT.ERROR, {
+        message: (err as Error)?.message ?? 'Handover request failed',
+      });
       return { ok: false };
     }
   }
@@ -183,7 +225,12 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
     const tenantId = client.data.tenantId as string | undefined;
     const userId = client.data.userId as string | undefined;
     const user = client.data.user as AuthenticatedUser | undefined;
-    if (!tenantId || !userId || !body?.aiConversationId || !body?.content?.trim()) {
+    if (
+      !tenantId ||
+      !userId ||
+      !body?.aiConversationId ||
+      !body?.content?.trim()
+    ) {
       client.emit(AI_EVENT.ERROR, { message: 'Missing fields' });
       return { ok: false };
     }
@@ -192,21 +239,33 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
       return { ok: false };
     }
     try {
-      const result = await this.handoverChat.sendAgentReply(tenantId, userId, body.aiConversationId, body.content.trim());
+      const result = await this.handoverChat.sendAgentReply(
+        tenantId,
+        userId,
+        body.aiConversationId,
+        body.content.trim(),
+      );
       return { ok: true, dispatchedToWhatsapp: result.dispatchedToWhatsapp };
     } catch (err) {
       this.logger.warn(`onAgentReply failed: ${(err as Error)?.message}`);
-      client.emit(AI_EVENT.ERROR, { message: (err as Error)?.message ?? 'Reply failed' });
+      client.emit(AI_EVENT.ERROR, {
+        message: (err as Error)?.message ?? 'Reply failed',
+      });
       return { ok: false };
     }
   }
 
   /** The streaming turn: orchestrate → stream tokens → final message. */
   @SubscribeMessage(AI_EVENT.MESSAGE)
-  async onMessage(@ConnectedSocket() client: Socket, @MessageBody() body: MessagePayload) {
+  async onMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: MessagePayload,
+  ) {
     const tenantId = client.data.tenantId as string;
     if (!tenantId || !body?.content?.trim()) {
-      client.emit(AI_EVENT.ERROR, { message: 'Empty message or unauthenticated socket' });
+      client.emit(AI_EVENT.ERROR, {
+        message: 'Empty message or unauthenticated socket',
+      });
       return;
     }
     const user = client.data.user as AuthenticatedUser | undefined;
@@ -219,9 +278,15 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
     });
   }
 
-  private async runMessage(client: Socket, body: MessagePayload, tenantId: string): Promise<void> {
+  private async runMessage(
+    client: Socket,
+    body: MessagePayload,
+    tenantId: string,
+  ): Promise<void> {
     client.emit(AI_EVENT.DELIVERED, { at: new Date().toISOString() });
-    client.emit(AI_EVENT.THINKING, { aiConversationId: body.aiConversationId ?? null });
+    client.emit(AI_EVENT.THINKING, {
+      aiConversationId: body.aiConversationId ?? null,
+    });
 
     try {
       const result = await this.orchestrator.handleStream(
@@ -236,7 +301,11 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
           useMemory: body.useMemory,
           autoRoute: body.autoRoute,
         },
-        (delta) => client.emit(AI_EVENT.TOKEN, { aiConversationId: body.aiConversationId ?? null, delta }),
+        (delta) =>
+          client.emit(AI_EVENT.TOKEN, {
+            aiConversationId: body.aiConversationId ?? null,
+            delta,
+          }),
       );
 
       // Ensure the sender is in the (possibly new) conversation room for future turns.
@@ -256,11 +325,17 @@ export class AiRealtimeGateway implements OnGatewayConnection, OnGatewayDisconne
       client.emit(AI_EVENT.DONE, done);
       // Notify other viewers of this conversation + the tenant's dashboards
       // (the Agent Inbox refreshes on this signal even while HANDED_OVER).
-      client.to(room.conversation(result.aiConversationId)).emit(AI_EVENT.CONVERSATION_UPDATE, done);
-      client.to(room.tenant(tenantId)).emit(AI_EVENT.CONVERSATION_UPDATE, { aiConversationId: result.aiConversationId });
+      client
+        .to(room.conversation(result.aiConversationId))
+        .emit(AI_EVENT.CONVERSATION_UPDATE, done);
+      client.to(room.tenant(tenantId)).emit(AI_EVENT.CONVERSATION_UPDATE, {
+        aiConversationId: result.aiConversationId,
+      });
     } catch (err) {
       this.logger.warn(`onMessage failed: ${(err as Error)?.message}`);
-      client.emit(AI_EVENT.ERROR, { message: (err as Error)?.message ?? 'AI turn failed' });
+      client.emit(AI_EVENT.ERROR, {
+        message: (err as Error)?.message ?? 'AI turn failed',
+      });
     }
   }
 }

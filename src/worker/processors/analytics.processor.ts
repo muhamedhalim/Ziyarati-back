@@ -2,7 +2,12 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
-import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import {
+  JOB,
+  QUEUE,
+  SWEEP_FANOUT_PAGE_SIZE,
+  workerConcurrency,
+} from '../../queue/queue.constants';
 import {
   AnalyticsAggregateJob,
   AnalyticsGenerateReportJob,
@@ -43,7 +48,9 @@ export class AnalyticsProcessor extends WorkerHost {
     if (job.name === JOB.ANALYTICS_AGGREGATE) {
       const data = job.data as AnalyticsAggregateJob;
       if (!data.tenantId) return this.sweepAggregate();
-      return runInTenantContext(this.ctx, this.authz, job.name, data, () => this.dashboard.refresh(data.tenantId!));
+      return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
+        this.dashboard.refresh(data.tenantId!),
+      );
     }
 
     if (job.name === JOB.ANALYTICS_CLEANUP) {
@@ -54,35 +61,81 @@ export class AnalyticsProcessor extends WorkerHost {
     // analytics.generateReport
     const data = job.data as AnalyticsGenerateReportJob;
     if (!data.tenantId) return this.sweepReports(data);
-    return runInTenantContext<unknown>(this.ctx, this.authz, job.name, data, async () => {
-      if (data.kind === 'monthly') {
-        return this.monthly.generate(data.tenantId!, { month: data.month!, branchId: data.branchId });
-      }
-      return this.daily.generate(data.tenantId!, { date: data.date!, branchId: data.branchId });
-    });
+    return runInTenantContext<unknown>(
+      this.ctx,
+      this.authz,
+      job.name,
+      data,
+      async () => {
+        if (data.kind === 'monthly') {
+          return this.monthly.generate(data.tenantId!, {
+            month: data.month!,
+            branchId: data.branchId,
+          });
+        }
+        return this.daily.generate(data.tenantId!, {
+          date: data.date!,
+          branchId: data.branchId,
+        });
+      },
+    );
   }
 
+  /**
+   * Pages through active tenants (M7 — docs/CACHING_QUEUES_AUDIT.md) instead
+   * of loading all of them in one unbounded query, and `addBulk`s each page
+   * in one round trip instead of one `add()` per tenant — bounded DB reads
+   * and Redis round trips regardless of tenant count.
+   */
   private async sweepAggregate() {
-    const ids = await this.tenants.activeTenantIds();
-    for (const tenantId of ids) {
-      await this.queue.enqueueAnalyticsAggregate({ tenantId });
+    let offset = 0;
+    let fannedOut = 0;
+    for (;;) {
+      const page = await this.tenants.activeTenantIdsPage(
+        offset,
+        SWEEP_FANOUT_PAGE_SIZE,
+      );
+      if (page.length === 0) break;
+      await this.queue.enqueueAnalyticsAggregateBulk(page);
+      fannedOut += page.length;
+      offset += page.length;
+      if (page.length < SWEEP_FANOUT_PAGE_SIZE) break;
     }
-    this.logger.log(`analytics.aggregate sweep fanned out ${ids.length} tenant(s)`);
-    return { fannedOut: ids.length };
+    this.logger.log(
+      `analytics.aggregate sweep fanned out ${fannedOut} tenant(s)`,
+    );
+    return { fannedOut };
   }
 
   private async sweepReports(template: AnalyticsGenerateReportJob) {
-    const date = template.date ?? new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const ids = await this.tenants.activeTenantIds();
-    for (const tenantId of ids) {
-      await this.queue.enqueueAnalyticsReport({ tenantId, kind: 'daily', date });
+    const date =
+      template.date ??
+      new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    let offset = 0;
+    let fannedOut = 0;
+    for (;;) {
+      const page = await this.tenants.activeTenantIdsPage(
+        offset,
+        SWEEP_FANOUT_PAGE_SIZE,
+      );
+      if (page.length === 0) break;
+      await this.queue.enqueueAnalyticsReportBulk(
+        page.map((tenantId) => ({ tenantId, date })),
+      );
+      fannedOut += page.length;
+      offset += page.length;
+      if (page.length < SWEEP_FANOUT_PAGE_SIZE) break;
     }
-    this.logger.log(`analytics.generateReport sweep (${date}) fanned out ${ids.length} tenant(s)`);
-    return { fannedOut: ids.length, date };
+    this.logger.log(
+      `analytics.generateReport sweep (${date}) fanned out ${fannedOut} tenant(s)`,
+    );
+    return { fannedOut, date };
   }
 
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error) {
-    this.logger.error(`${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+    this.logger.error(
+      `${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
+    );
   }
 }

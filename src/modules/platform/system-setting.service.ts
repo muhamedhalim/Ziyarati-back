@@ -29,8 +29,22 @@ import {
  */
 @Injectable()
 export class SystemSettingService {
-  /** Short-lived in-memory cache to avoid a DB hit on every request. */
-  private readonly typedCache = new Map<string, { value: unknown; expiresAt: number }>();
+  /**
+   * Short-lived in-memory cache to avoid a DB hit on every request.
+   *
+   * Multi-replica note (L7 — docs/CACHING_QUEUES_AUDIT.md): this cache is
+   * PER-PROCESS and `.delete()`/write-invalidation only clears the replica
+   * that handled the write. With >1 API replica, the others keep serving the
+   * old value for up to `CACHE_TTL_MS`. Accepted deliberately: these are
+   * platform-wide settings changed rarely by a super admin, not per-request
+   * tenant data, so a bounded 30s propagation lag across replicas is a much
+   * cheaper trade-off than a Redis-backed cross-replica cache (extra
+   * round-trip on every settings read) for something this low-churn.
+   */
+  private readonly typedCache = new Map<
+    string,
+    { value: unknown; expiresAt: number }
+  >();
   private static readonly CACHE_TTL_MS = 30_000;
 
   constructor(
@@ -54,7 +68,10 @@ export class SystemSettingService {
     const row = await this.settings.findOne({ where: { key } });
     const value = (row?.value ?? def.default) as T;
 
-    this.typedCache.set(key, { value, expiresAt: Date.now() + SystemSettingService.CACHE_TTL_MS });
+    this.typedCache.set(key, {
+      value,
+      expiresAt: Date.now() + SystemSettingService.CACHE_TTL_MS,
+    });
     return value;
   }
 
@@ -110,7 +127,10 @@ export class SystemSettingService {
     );
   }
 
-  async update(id: string, dto: UpdateSystemSettingDto): Promise<SystemSetting> {
+  async update(
+    id: string,
+    dto: UpdateSystemSettingDto,
+  ): Promise<SystemSetting> {
     const setting = await this.get(id);
     if (dto.key && dto.key !== setting.key) {
       await this.assertKeyUnique(dto.key);
@@ -138,7 +158,9 @@ export class SystemSettingService {
   async get(id: string): Promise<SystemSetting> {
     const setting = await this.settings.findOne({ where: { id } });
     if (!setting) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'System setting not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'System setting not found',
+      });
     }
     return setting;
   }
@@ -171,9 +193,13 @@ export class SystemSettingService {
         if (typeof value !== 'number' || Number.isNaN(value))
           throw new BadRequestException(`Setting "${key}" must be a number`);
         if (def.min !== undefined && value < def.min)
-          throw new BadRequestException(`Setting "${key}" must be ≥ ${def.min}`);
+          throw new BadRequestException(
+            `Setting "${key}" must be ≥ ${def.min}`,
+          );
         if (def.max !== undefined && value > def.max)
-          throw new BadRequestException(`Setting "${key}" must be ≤ ${def.max}`);
+          throw new BadRequestException(
+            `Setting "${key}" must be ≤ ${def.max}`,
+          );
         break;
       }
       case 'enum':

@@ -5,10 +5,22 @@ import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { NotificationDispatchJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
+import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { NotificationDispatchService } from '../../modules/notifications/notification-dispatch.service';
+import { MetricsService } from '../../metrics/metrics.service';
+
+const REAP_LOCK_KEY = 'lock:notifications-reap';
+/**
+ * Shorter than the repeatable job's own 1-minute cron interval (see
+ * ScheduleRegistrarService) so a crashed holder's lock cannot outlive the
+ * next scheduled tick, but enough for a 1000-row scan + bulk enqueue under
+ * load (gap-closure — see docs/CACHING_QUEUES_AUDIT.md M9).
+ */
+const REAP_LOCK_TTL_MS = 45_000;
 
 /**
  * Consumes the `notifications` queue.
@@ -17,6 +29,9 @@ import { NotificationDispatchService } from '../../modules/notifications/notific
  *      PERMANENT failures are recorded in-band (no throw, no retry).
  *  - notifications.reap     : maintenance sweep (reclaim stale PROCESSING +
  *      re-enqueue due-but-unsent rows). Durability / crash recovery.
+ *      Lock-guarded: an overlapping reap run doubles the DB scan/enqueue load
+ *      exactly when the system is already slow (M9) — not a correctness risk
+ *      (the reclaim itself is a conditional `UPDATE`), just wasted work.
  */
 @Processor(QUEUE.NOTIFICATIONS, { concurrency: workerConcurrency() })
 export class NotificationsProcessor extends WorkerHost {
@@ -27,30 +42,61 @@ export class NotificationsProcessor extends WorkerHost {
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
     private readonly authz: WorkerAuthorizationService,
+    private readonly lock: DistributedLockService,
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
 
   async process(job: Job, token?: string) {
     if (job.name === JOB.NOTIFICATIONS_REAP) {
-      const res = await this.dispatch.reapAndRequeue();
-      this.logger.log(`reap: reclaimed=${res.reclaimed} requeued=${res.requeued} purgedLogs=${res.purgedLogs}`);
-      return res;
+      const lockToken = await this.lock.acquire(
+        REAP_LOCK_KEY,
+        REAP_LOCK_TTL_MS,
+      );
+      if (!lockToken) {
+        this.logger.log(
+          'notifications reap sweep already in progress elsewhere — skipping this run',
+        );
+        return { skipped: true };
+      }
+      try {
+        const res = await this.dispatch.reapAndRequeue();
+        this.logger.log(
+          `reap: reclaimed=${res.reclaimed} requeued=${res.requeued} purgedLogs=${res.purgedLogs}`,
+        );
+        // Last-successful-run signal (M9's own deferred half, folded into
+        // M14 — see docs/CACHING_QUEUES_AUDIT.md).
+        this.metrics.setWorkerHeartbeat('notifications.reap');
+        return res;
+      } finally {
+        await this.lock.release(REAP_LOCK_KEY, lockToken);
+      }
     }
 
     const data = job.data as NotificationDispatchJob;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] dispatch tenant=${data.tenantId} id=${data.notificationId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
-      const outcome = await this.dispatch.processScheduled(data.tenantId, data.notificationId);
-      if (outcome.status === 'rate_limited') {
-        // Defer WITHOUT consuming an attempt (tenant pacing, not a failure).
-        await job.moveToDelayed(Date.now() + outcome.retryAfterMs, token);
-        throw new DelayedError();
-      }
-      return outcome;
-    });
+    return runInTenantContext(
+      this.ctx,
+      this.authz,
+      job.name,
+      data,
+      async () => {
+        const outcome = await this.dispatch.processScheduled(
+          data.tenantId,
+          data.notificationId,
+        );
+        if (outcome.status === 'rate_limited') {
+          // Defer WITHOUT consuming an attempt (tenant pacing, not a failure).
+          await job.moveToDelayed(Date.now() + outcome.retryAfterMs, token);
+          throw new DelayedError();
+        }
+        return outcome;
+      },
+    );
   }
 
   @OnWorkerEvent('failed')
@@ -66,11 +112,24 @@ export class NotificationsProcessor extends WorkerHost {
     this.logger.error(
       `dispatch job=${job?.id} id=${data?.notificationId} FAILED (attempt ${job?.attemptsMade}, permanent=${permanent}): ${err?.message}`,
     );
-    if (exhausted && !permanent && data?.tenantId && data?.notificationId) {
+    // `permanent` (UnrecoverableError — payload validation, worker
+    // authorization) never retries, so `attemptsMade` never reaches
+    // `opts.attempts` and `exhausted` alone would never fire for it: without
+    // the `|| permanent` branch such a job fails once and silently vanishes
+    // with no DLQ park (§18 test-plan gap, found while writing the "payload
+    // validation → DLQ, no retry" test). A permanent failure is just as
+    // terminal as an exhausted retry budget, so it gets the same DLQ park.
+    if ((exhausted || permanent) && data?.tenantId && data?.notificationId) {
       // Reconcile to terminal FAILED so the sweep stops re-queuing it…
       await this.dispatch
-        .markDeadLettered(data.tenantId, data.notificationId, err?.message ?? 'exhausted')
-        .catch((e) => this.logger.error(`DLQ reconcile failed: ${(e as Error)?.message}`));
+        .markDeadLettered(
+          data.tenantId,
+          data.notificationId,
+          err?.message ?? 'exhausted',
+        )
+        .catch((e) =>
+          this.logger.error(`DLQ reconcile failed: ${(e as Error)?.message}`),
+        );
       // …then park the envelope for inspection/replay.
       await this.queue
         .enqueueNotificationDlq({
@@ -84,7 +143,9 @@ export class NotificationsProcessor extends WorkerHost {
           attemptsMade: job?.attemptsMade ?? 0,
           diedAt: new Date().toISOString(),
         })
-        .catch((e) => this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
+        .catch((e) =>
+          this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
+        );
     }
   }
 }

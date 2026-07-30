@@ -8,6 +8,16 @@ export interface BaseJobData {
   correlationId?: string;
   /** The user who triggered the work, when known. */
   actorId?: string;
+  /**
+   * Payload schema version (gap-closure — see docs/CACHING_QUEUES_AUDIT.md
+   * M2). Optional/absent means "version 1," the only shape that has ever
+   * existed — nothing branches on this yet since no job payload has changed
+   * shape since this field was added. Reserved so a FUTURE breaking payload
+   * change has a place to signal it (old-shape jobs already in Redis during
+   * a rolling deploy would omit it and be treated as v1 by definition, never
+   * silently mis-parsed as the new shape).
+   */
+  v?: number;
 }
 
 // ── Refunds (R2 reaper sweep — platform-level, tenantId null) ───────────────
@@ -163,6 +173,20 @@ export interface CampaignDlqJob extends BaseJobData {
 }
 
 // ── AI ─────────────────────────────────────────────────────────────────────
+/**
+ * `enqueueAiExecute`/`ai.execute` currently has NO live caller anywhere in
+ * `src/` (confirmed by repo-wide grep, 2026-07-30) — this job type and its
+ * processor exist as scaffolding for a future async AI workflow, the
+ * interactive chat endpoint stays synchronous. `content` is the raw
+ * user/patient message text — flagged as PII in Redis job payloads (M1,
+ * docs/CACHING_QUEUES_AUDIT.md). A future caller should follow the pattern
+ * every OTHER job type in this file already uses: persist the message first
+ * (the `ai_conversations`/`ai_executions` tables already exist) and pass the
+ * row id instead of the raw text — NOT wire a caller that passes `content`
+ * directly. `removeOnFail` is already shortened defensively (see
+ * `PII_REMOVE_ON_FAIL_SECONDS` in `queue.constants.ts`) in case a caller is
+ * added before this field is ever removed.
+ */
 export interface AiExecuteJob extends BaseJobData {
   tenantId: string;
   aiConversationId: string;
@@ -173,7 +197,7 @@ export interface AiExecuteJob extends BaseJobData {
 
 // ── Analytics ──────────────────────────────────────────────────────────────
 /** tenantId null = scheduled sweep that fans out per-tenant jobs. */
-export interface AnalyticsAggregateJob extends BaseJobData {}
+export type AnalyticsAggregateJob = BaseJobData;
 export interface AnalyticsGenerateReportJob extends BaseJobData {
   kind?: 'daily' | 'monthly';
   date?: string; // YYYY-MM-DD (daily)
@@ -193,7 +217,7 @@ export interface SettlementsProcessJob extends BaseJobData {
 }
 
 // ── Subscriptions ──────────────────────────────────────────────────────────
-export interface SubscriptionsRenewalCheckJob extends BaseJobData {}
+export type SubscriptionsRenewalCheckJob = BaseJobData;
 
 // ── Workflow engine ─────────────────────────────────────────────────────────
 /** Kick off a workflow run: fan the run's actions out into delayed action jobs. */
