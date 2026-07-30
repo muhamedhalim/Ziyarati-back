@@ -8,13 +8,15 @@ import { AppError, ErrorCode } from '../../common/errors';
 describe('SettlementsProcessor', () => {
   let processor: SettlementsProcessor;
   let settlements: { generate: jest.Mock };
-  let tenants: { activeTenantIds: jest.Mock };
-  let queue: { enqueueSettlementsProcess: jest.Mock };
+  let tenants: { activeTenantIdsPage: jest.Mock };
+  let queue: { enqueueSettlementsProcessBulk: jest.Mock };
 
   beforeEach(() => {
     settlements = { generate: jest.fn() };
-    tenants = { activeTenantIds: jest.fn() };
-    queue = { enqueueSettlementsProcess: jest.fn().mockResolvedValue(undefined) };
+    tenants = { activeTenantIdsPage: jest.fn().mockResolvedValue([]) };
+    queue = {
+      enqueueSettlementsProcessBulk: jest.fn().mockResolvedValue(undefined),
+    };
 
     processor = new SettlementsProcessor(
       settlements as unknown as SettlementService,
@@ -28,10 +30,18 @@ describe('SettlementsProcessor', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  it('fans out a per-tenant job for every active tenant on the global sweep', async () => {
-    tenants.activeTenantIds.mockResolvedValueOnce(['t1', 't2', 't3']);
+  it('pages through active tenants and bulk-enqueues each page on the global sweep (M7)', async () => {
+    tenants.activeTenantIdsPage.mockReset();
+    tenants.activeTenantIdsPage
+      .mockResolvedValueOnce(['t1', 't2', 't3'])
+      .mockResolvedValue([]);
     const result = await processor.process({ data: { tenantId: null } } as any);
-    expect(queue.enqueueSettlementsProcess).toHaveBeenCalledTimes(3);
+    expect(queue.enqueueSettlementsProcessBulk).toHaveBeenCalledTimes(1);
+    expect(queue.enqueueSettlementsProcessBulk).toHaveBeenCalledWith([
+      expect.objectContaining({ tenantId: 't1' }),
+      expect.objectContaining({ tenantId: 't2' }),
+      expect.objectContaining({ tenantId: 't3' }),
+    ]);
     expect(result).toEqual({ fannedOut: 3 });
   });
 
@@ -44,7 +54,9 @@ describe('SettlementsProcessor', () => {
 
   it('treats "nothing to settle" as a successful no-op, not a failure', async () => {
     settlements.generate.mockRejectedValueOnce(
-      new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'nothing to settle' }),
+      new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'nothing to settle',
+      }),
     );
     const result = await processor.process({ data: { tenantId: 't1' } } as any);
     expect(result).toMatchObject({ settled: false });
@@ -52,6 +64,8 @@ describe('SettlementsProcessor', () => {
 
   it('rethrows unexpected errors so BullMQ can retry', async () => {
     settlements.generate.mockRejectedValueOnce(new Error('db exploded'));
-    await expect(processor.process({ data: { tenantId: 't1' } } as any)).rejects.toThrow('db exploded');
+    await expect(
+      processor.process({ data: { tenantId: 't1' } } as any),
+    ).rejects.toThrow('db exploded');
   });
 });

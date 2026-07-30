@@ -23,6 +23,15 @@ import {
  * path off the database without making the switch feel laggy. `set()` refreshes
  * the cache immediately so the operator sees their change at once.
  *
+ * Multi-replica note (L7 — docs/CACHING_QUEUES_AUDIT.md): `cached` is a
+ * PER-PROCESS field. `set()`'s immediate refresh only applies to the replica
+ * that handled the write; every other replica keeps serving the previous
+ * mode for up to `CACHE_TTL_MS`. Accepted for the same reason as
+ * `SystemSettingService`'s identical pattern: this changes rarely and
+ * deliberately, so a bounded 15s cross-replica lag is cheaper than making
+ * the hottest gate in the request path (every gated request) pay for a
+ * cross-replica-consistent cache.
+ *
  * Managed ONLY by the super admin (enforced at the controller via RolesGuard).
  */
 @Injectable()

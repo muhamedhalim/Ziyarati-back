@@ -1,10 +1,16 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { QueueEvents } from 'bullmq';
 
-import { ALL_QUEUES, QUEUE } from '../queue/queue.constants';
+import { ALL_QUEUES, bullPrefix, DLQ_QUEUES } from '../queue/queue.constants';
 import { eventsConnectionOptions } from '../queue/redis.config';
 import { QueueService } from '../queue/queue.service';
+import { MetricsService } from '../metrics/metrics.service';
 
 /**
  * Centralized queue observability via BullMQ QueueEvents. One listener per queue
@@ -25,68 +31,102 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('QueueMonitor');
   private readonly events: QueueEvents[] = [];
   private dlqTimer?: NodeJS.Timeout;
+  private depthTimer?: NodeJS.Timeout;
 
   private readonly dlqPollMs = Number(process.env.DLQ_POLL_MS ?? '30000');
   private readonly dlqWarnAt = Number(process.env.DLQ_WARN_THRESHOLD ?? '100');
   private readonly logCompleted = process.env.QUEUE_LOG_COMPLETED === 'true';
-
-  /**
-   * All four dead-letter parks in the system (verified against
-   * `queue.constants.ts` — the original audit overcounted this at "6").
-   * Previously only two were polled; an exhausted `notifications.dispatch` or
-   * `webhooks.deliver` job could accumulate in its DLQ with nothing surfacing it.
-   */
-  private static readonly ALL_DLQS = [
-    QUEUE.NOTIFICATIONS_DLQ,
-    QUEUE.WHATSAPP_DLQ,
-    QUEUE.CAMPAIGNS_DLQ,
-    QUEUE.WEBHOOKS_DLQ,
-  ] as const;
+  /** Queue-depth gauge poll interval (M14) — deliberately its own timer, not
+   *  reusing dlqPollMs, so tuning one doesn't silently retune the other. */
+  private readonly depthPollMs = Number(
+    process.env.METRICS_QUEUE_DEPTH_POLL_MS ?? '30000',
+  );
 
   constructor(
     private readonly config: ConfigService,
     private readonly queue: QueueService,
+    private readonly metrics: MetricsService,
   ) {}
 
   onModuleInit(): void {
     const connection = eventsConnectionOptions(this.config); // dedicated events profile
     for (const name of ALL_QUEUES) {
-      const qe = new QueueEvents(name, { connection });
-      if (this.logCompleted) {
-        qe.on('completed', ({ jobId }) => this.logger.log(`[${name}] ✓ completed job=${jobId}`));
-      }
-      qe.on('failed', ({ jobId, failedReason }) =>
-        this.logger.error(`[${name}] ✗ failed job=${jobId}: ${failedReason}`),
+      const qe = new QueueEvents(name, { connection, prefix: bullPrefix() });
+      // Counting is unconditional (M14 — docs/CACHING_QUEUES_AUDIT.md): unlike
+      // the per-job LOG line (deliberately gated behind QUEUE_LOG_COMPLETED,
+      // see H3), incrementing a counter is cheap even at campaign-recipient
+      // volume and is the whole point of "count instead of log."
+      qe.on('completed', ({ jobId }) => {
+        this.metrics.recordJobEvent(name, 'completed');
+        if (this.logCompleted)
+          this.logger.log(`[${name}] ✓ completed job=${jobId}`);
+      });
+      qe.on('failed', ({ jobId, failedReason }) => {
+        this.metrics.recordJobEvent(name, 'failed');
+        this.logger.error(`[${name}] ✗ failed job=${jobId}: ${failedReason}`);
+      });
+      qe.on('stalled', ({ jobId }) => {
+        this.metrics.recordJobEvent(name, 'stalled');
+        this.logger.warn(`[${name}] ⚠ stalled job=${jobId}`);
+      });
+      qe.on('error', (err) =>
+        this.logger.error(`[${name}] queue-events error: ${err?.message}`),
       );
-      qe.on('stalled', ({ jobId }) => this.logger.warn(`[${name}] ⚠ stalled job=${jobId}`));
-      qe.on('error', (err) => this.logger.error(`[${name}] queue-events error: ${err?.message}`));
       this.events.push(qe);
     }
     this.logger.log(
       `QueueEvents monitoring ${ALL_QUEUES.length} queues (completed-job logging ${this.logCompleted ? 'ON' : 'off'})`,
     );
 
-    this.dlqTimer = setInterval(() => void this.reportDlqDepths(), this.dlqPollMs);
+    this.dlqTimer = setInterval(
+      () => void this.reportDlqDepths(),
+      this.dlqPollMs,
+    );
+    this.depthTimer = setInterval(
+      () => void this.reportQueueDepths(),
+      this.depthPollMs,
+    );
   }
 
-  /** Polls every DLQ this worker parks jobs into (all four — see ALL_DLQS). */
+  /** Refreshes the `bullmq_queue_depth` gauge for every queue (M14). */
+  private async reportQueueDepths(): Promise<void> {
+    try {
+      const counts = await this.queue.queueCounts();
+      for (const [name, byState] of Object.entries(counts)) {
+        for (const [state, value] of Object.entries(byState)) {
+          this.metrics.setQueueDepth(name, state, value);
+        }
+      }
+    } catch (err) {
+      this.logger.error(
+        `Queue depth metrics poll failed: ${(err as Error)?.message}`,
+      );
+    }
+  }
+
+  /** Polls every DLQ this worker parks jobs into (all four — see `DLQ_QUEUES`). */
   private async reportDlqDepths(): Promise<void> {
-    for (const dlq of QueueMonitorService.ALL_DLQS) {
+    for (const dlq of DLQ_QUEUES) {
       try {
         const depth = await this.queue.dlqDepth(dlq);
         if (depth >= this.dlqWarnAt) {
-          this.logger.error(`[${dlq}] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`);
+          this.logger.error(
+            `[${dlq}] depth=${depth} ≥ threshold ${this.dlqWarnAt} — ALERT`,
+          );
         } else if (depth > 0) {
           this.logger.warn(`[${dlq}] depth=${depth}`);
         }
       } catch (err) {
-        this.logger.error(`DLQ depth poll failed for ${dlq}: ${(err as Error)?.message}`);
+        this.logger.error(
+          `DLQ depth poll failed for ${dlq}: ${(err as Error)?.message}`,
+        );
       }
     }
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.dlqTimer) clearInterval(this.dlqTimer);
+    if (this.depthTimer) clearInterval(this.depthTimer);
     await Promise.all(this.events.map((e) => e.close().catch(() => undefined)));
   }
 }

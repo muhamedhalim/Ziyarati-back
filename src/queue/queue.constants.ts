@@ -71,6 +71,21 @@ export const CAMPAIGN_QUEUES: QueueName[] = [
   QUEUE.CAMPAIGNS_DLQ,
 ];
 
+/**
+ * All four dead-letter parks in the system (single source of truth — see
+ * docs/CACHING_QUEUES_AUDIT.md §0.1 for the recount that corrected the
+ * original audit's "6 DLQs" claim to this real count of 4). Jobs only ever
+ * land here via `.add()` for parking/inspection/admin-replay; no `Worker`
+ * ever processes a DLQ queue, so `attempts`/backoff on jobs added to these
+ * queues is inert (see L2 — used by `ProducerQueues` to zero that out).
+ */
+export const DLQ_QUEUES: QueueName[] = [
+  QUEUE.NOTIFICATIONS_DLQ,
+  QUEUE.WHATSAPP_DLQ,
+  QUEUE.CAMPAIGNS_DLQ,
+  QUEUE.WEBHOOKS_DLQ,
+];
+
 /** Standardized job names — `<domain>.<action>`. */
 export const JOB = {
   NOTIFICATIONS_DISPATCH: 'notifications.dispatch',
@@ -105,7 +120,6 @@ export const JOB = {
   WEBHOOKS_DELIVER: 'webhooks.deliver',
   WEBHOOKS_DLQ: 'webhooks.dlq',
   INTEGRATION_IMPORT: 'integration.import',
-  INTEGRATION_IMPORT_RECOVER: 'integration.importRecover',
   INTEGRATION_SYNC: 'integration.sync',
   INTEGRATION_INBOUND: 'integration.inbound',
   /** Repeatable maintenance sweep — see QUEUE.INTEGRATION_MAINTENANCE. */
@@ -137,6 +151,70 @@ export function defaultJobOptions(config: ConfigService): DefaultJobOptions {
   };
 }
 
+/**
+ * Shorter failed-job retention for the queues whose payload carries
+ * patient-identifying content — `email.send` (recipient + template
+ * `variables`), `whatsapp.send`/`.retry` (template `variables`), `ai.execute`
+ * (raw message `content`, currently unreachable — see M1's §13 entry) —
+ * versus the default 7-day window (gap-closure — see
+ * docs/CACHING_QUEUES_AUDIT.md M1). A failed job's payload sits in Redis,
+ * readable by anyone with Redis access (a snapshot, a `MONITOR` session, an
+ * operator), for as long as `removeOnFail` allows; 6 hours is ample for the
+ * DLQ/on-call window this codebase already uses to inspect and replay a
+ * failure, without leaving a patient's message content sitting in Redis for
+ * a week. Passed as each PII-bearing enqueue method's own `removeOnFail`
+ * override (BullMQ's per-job `opts` wins over the queue's own
+ * `defaultJobOptions`), not a global change — every other queue keeps the
+ * 7-day default.
+ */
+export const PII_REMOVE_ON_FAIL_SECONDS = 6 * 3600;
+
+/**
+ * Optional BullMQ key prefix (default `bull`, i.e. unprefixed — matches every
+ * existing deployment exactly, so this is purely additive) — gap-closure
+ * pass, see docs/CACHING_QUEUES_AUDIT.md M3. Isolates one environment's
+ * queues from another's if they ever share a Redis instance/db index (an
+ * easy mistake with a copy-pasted `REDIS_URL`): without a prefix, a staging
+ * worker pointed at a production Redis by accident would happily consume and
+ * complete real production jobs.
+ *
+ * Deliberately opt-in (unset by default), NOT flipped on unconditionally:
+ * every queue name in an ALREADY-RUNNING deployment currently resolves to
+ * `bull:{name}:*` keys. Setting `QUEUE_ENV_PREFIX` changes every subsequent
+ * `Queue`/`Worker`/`QueueEvents` construction to `bull:{prefix}:{name}:*` —
+ * any job already enqueued under the OLD keys becomes invisible to the new
+ * prefix and is orphaned. Turning this on for an existing environment needs a
+ * coordinated deploy: drain every queue to empty (or accept the orphaned
+ * backlog), THEN roll out `QUEUE_ENV_PREFIX` everywhere that talks to that
+ * Redis (API + worker, every replica) in the same deploy. A brand-new
+ * environment can set it from day one with no drain needed.
+ */
+export function bullPrefix(): string | undefined {
+  const prefix = process.env.QUEUE_ENV_PREFIX?.trim();
+  return prefix && prefix.length > 0 ? prefix : undefined;
+}
+
+/**
+ * Same `QUEUE_ENV_PREFIX` opt-in (see `bullPrefix` above), formatted for
+ * direct string-concatenation into a cache key (`analytics:*`, `rl:*`) —
+ * `"{prefix}:"` when set, or `""` (a no-op prefix) when unset, so every call
+ * site can unconditionally write `` `${cacheKeyPrefix()}analytics:...` ``
+ * without an `if` at each of the ~6 key-building call sites.
+ */
+export function cacheKeyPrefix(): string {
+  const prefix = bullPrefix();
+  return prefix ? `${prefix}:` : '';
+}
+
+/**
+ * Page size for tenant-fan-out sweeps (analytics/settlements — gap-closure,
+ * see docs/CACHING_QUEUES_AUDIT.md M7): bounds both the DB read
+ * (`WorkerTenantsService.activeTenantIdsPage`) and the BullMQ `addBulk` call
+ * size, so a 5 000+-tenant deployment doesn't turn one sweep tick into a
+ * single unbounded query plus 5 000 sequential `add()` round trips.
+ */
+export const SWEEP_FANOUT_PAGE_SIZE = 500;
+
 /** Worker concurrency per process (read at decoration time in the worker app). */
 export function workerConcurrency(): number {
   const n = Number(process.env.WORKER_CONCURRENCY ?? '5');
@@ -158,6 +236,29 @@ export function dispatchLimiter(): { max: number; duration: number } {
   const max = Number(process.env.CAMPAIGN_GLOBAL_MAX_PER_SEC ?? '1000');
   return { max: Number.isFinite(max) && max > 0 ? max : 1000, duration: 1000 };
 }
+
+/**
+ * Extended BullMQ `lockDuration` (default is 30_000ms) for processors whose
+ * OWN bounded external-call timeout is already close to — or exceeds — that
+ * default (gap-closure — see docs/CACHING_QUEUES_AUDIT.md M8). Without this,
+ * ordinary tail latency on a healthy (non-hung) call can outlive the lock,
+ * and BullMQ's stall detector hands the job to a second worker while the
+ * first is still legitimately running it — a false stall, not a real hang.
+ * Examples: `ai.execute`'s OpenAI call alone is bounded at
+ * `OPENAI_REQUEST_TIMEOUT_MS` (default 30_000ms) — i.e. the SAME as the
+ * default lock, before any DB persistence/metering work after it; a
+ * multi-page `integration.sync`/`integration.import` run issues several
+ * sequential 8s-bounded REST calls, so total duration routinely exceeds 30s
+ * even though no single call hangs. `maxStalledCount` is deliberately left
+ * at BullMQ's own default (1, i.e. one stall-triggered redelivery permitted)
+ * rather than lowered to 0 — this codebase's claim-based idempotency
+ * (`WorkflowService.claimAction`, the email/WhatsApp/notification atomic
+ * claims, campaign recipient state re-checks) already makes a stall-redelivery
+ * SAFE for every processor that carries real side effects, so failing the job
+ * outright on the first stall would trade "safely retries" for "fails and
+ * needs the DLQ to notice," a net loss given those guards already exist.
+ */
+export const EXTENDED_LOCK_DURATION_MS = 60_000;
 
 /**
  * Exponential backoff WITH jitter — avoids a thundering herd when a provider
@@ -208,6 +309,7 @@ export const DISPATCH_ONLY_QUEUES: QueueName[] = [QUEUE.CAMPAIGNS_PROCESS];
  */
 export function queuesForRole(role: WorkerRole): QueueName[] {
   if (role === 'dispatch') return DISPATCH_ONLY_QUEUES;
-  if (role === 'critical') return ALL_QUEUES.filter((q) => !DISPATCH_ONLY_QUEUES.includes(q));
+  if (role === 'critical')
+    return ALL_QUEUES.filter((q) => !DISPATCH_ONLY_QUEUES.includes(q));
   return ALL_QUEUES;
 }

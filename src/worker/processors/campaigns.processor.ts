@@ -5,6 +5,7 @@ import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 import {
   dispatchConcurrency,
   dispatchLimiter,
+  EXTENDED_LOCK_DURATION_MS,
   expoJitterBackoff,
   JOB,
   QUEUE,
@@ -16,6 +17,7 @@ import {
   CampaignProcessRecipientJob,
 } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { QueueService } from '../../queue/queue.service';
@@ -37,11 +39,17 @@ export class CampaignLaunchProcessor extends WorkerHost {
 
   async process(job: Job) {
     const data = job.data as CampaignLaunchJob;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] launch campaign=${data.campaignId} run=${data.runId}`,
     );
     return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
-      this.fanout.handleLaunch(data.tenantId, data.campaignId, data.runId, data.correlationId),
+      this.fanout.handleLaunch(
+        data.tenantId,
+        data.campaignId,
+        data.runId,
+        data.correlationId,
+      ),
     );
   }
 
@@ -66,6 +74,7 @@ export class CampaignFanoutProcessor extends WorkerHost {
 
   async process(job: Job) {
     const data = job.data as CampaignFanoutChunkJob;
+    validateJobPayload(job.name, data);
     return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
       this.fanout.handleChunk(
         data.tenantId,
@@ -95,7 +104,10 @@ export class CampaignFanoutProcessor extends WorkerHost {
 @Processor(QUEUE.CAMPAIGNS_PROCESS, {
   concurrency: dispatchConcurrency(),
   limiter: dispatchLimiter(),
-  settings: { backoffStrategy: (attemptsMade: number) => expoJitterBackoff(attemptsMade) },
+  lockDuration: EXTENDED_LOCK_DURATION_MS,
+  settings: {
+    backoffStrategy: (attemptsMade: number) => expoJitterBackoff(attemptsMade),
+  },
 })
 export class CampaignDispatchProcessor extends WorkerHost {
   private readonly logger = new Logger('CampaignDispatchProcessor');
@@ -111,21 +123,31 @@ export class CampaignDispatchProcessor extends WorkerHost {
 
   async process(job: Job, token?: string) {
     const data = job.data as CampaignProcessRecipientJob;
-    return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
-      const outcome = await this.dispatch.dispatch(
-        data.tenantId,
-        data.runId,
-        data.recipientId,
-      );
-      if (outcome.status === 'rate_limited' || outcome.status === 'deferred') {
-        // Reschedule WITHOUT consuming an attempt:
-        //  - rate_limited: tenant pacing/cap throttle.
-        //  - deferred: run is PAUSED (DRAINING) — re-check after the pause window.
-        await job.moveToDelayed(Date.now() + outcome.retryAfterMs, token);
-        throw new DelayedError();
-      }
-      return outcome;
-    });
+    validateJobPayload(job.name, data);
+    return runInTenantContext(
+      this.ctx,
+      this.authz,
+      job.name,
+      data,
+      async () => {
+        const outcome = await this.dispatch.dispatch(
+          data.tenantId,
+          data.runId,
+          data.recipientId,
+        );
+        if (
+          outcome.status === 'rate_limited' ||
+          outcome.status === 'deferred'
+        ) {
+          // Reschedule WITHOUT consuming an attempt:
+          //  - rate_limited: tenant pacing/cap throttle.
+          //  - deferred: run is PAUSED (DRAINING) — re-check after the pause window.
+          await job.moveToDelayed(Date.now() + outcome.retryAfterMs, token);
+          throw new DelayedError();
+        }
+        return outcome;
+      },
+    );
   }
 
   @OnWorkerEvent('failed')
@@ -144,7 +166,11 @@ export class CampaignDispatchProcessor extends WorkerHost {
       // Without this the run would hang in PROCESSING forever.
       if (data?.runId && data?.recipientId) {
         await this.dispatch
-          .markDeadLettered(data.runId, data.recipientId, err?.message ?? 'exhausted')
+          .markDeadLettered(
+            data.runId,
+            data.recipientId,
+            err?.message ?? 'exhausted',
+          )
           .catch((e) =>
             this.logger.error(`DLQ reconcile failed: ${(e as Error)?.message}`),
           );
@@ -162,7 +188,9 @@ export class CampaignDispatchProcessor extends WorkerHost {
           attemptsMade: job?.attemptsMade ?? 0,
           diedAt: new Date().toISOString(),
         })
-        .catch((e) => this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
+        .catch((e) =>
+          this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
+        );
     }
   }
 }

@@ -8,13 +8,9 @@ export const validate = (config: Record<string, unknown>) => {
 
     DATABASE_URL: Joi.string().required(),
 
-    TYPEORM_SYNCHRONIZE: Joi.string()
-      .valid('true', 'false')
-      .default('false'),
+    TYPEORM_SYNCHRONIZE: Joi.string().valid('true', 'false').default('false'),
 
-    TYPEORM_LOGGING: Joi.string()
-      .valid('true', 'false')
-      .default('false'),
+    TYPEORM_LOGGING: Joi.string().valid('true', 'false').default('false'),
 
     // Default 15 (raised from 10 — Phase 0 correction, measured; see
     // docs/CACHING_QUEUES_AUDIT.md §0.3). Each deployment (API, critical
@@ -48,7 +44,9 @@ export const validate = (config: Record<string, unknown>) => {
     // IS actually safe" (a managed Redis provider with the command disabled),
     // use REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC instead — conflating the two
     // under this one flag is exactly what §0.11 fixed.
-    REDIS_ALLOW_UNSAFE_MEMORY_CONFIG: Joi.string().valid('true', 'false').default('false'),
+    REDIS_ALLOW_UNSAFE_MEMORY_CONFIG: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
     // Operator attestation for AppRedisService when `CONFIG GET` itself is
     // blocked (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.11):
     // some managed Redis providers disable CONFIG GET for non-admin users, so
@@ -58,7 +56,9 @@ export const validate = (config: Record<string, unknown>) => {
     // verifying maxmemory-policy=noeviction and a real maxmemory ceiling some
     // OTHER way — the provider's own console, or Terraform/CloudFormation/IaC
     // output — so skipping the runtime check is a recorded decision.
-    REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC: Joi.string().valid('true', 'false').default('false'),
+    REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
     QUEUE_DEFAULT_ATTEMPTS: Joi.number().default(5),
     QUEUE_BACKOFF_MS: Joi.number().default(3000),
     WORKER_CONCURRENCY: Joi.number().default(5),
@@ -68,14 +68,18 @@ export const validate = (config: Record<string, unknown>) => {
     // process. Set to `critical`/`dispatch` only when running the campaign
     // recipient-dispatch hot path as its own deployment (see
     // docs/CACHING_QUEUES_AUDIT.md §0.3/§0.5).
-    WORKER_ROLE: Joi.string().valid('all', 'critical', 'dispatch').default('all'),
+    WORKER_ROLE: Joi.string()
+      .valid('all', 'critical', 'dispatch')
+      .default('all'),
     CAMPAIGN_DISPATCH_CONCURRENCY: Joi.number().default(25),
 
     // ── Analytics read cache (Redis) ──────────────────────────────────────
     // Uses REDIS_URL on a dedicated connection. Set ANALYTICS_CACHE_ENABLED=false
     // to explicitly opt out; on any Redis error at runtime, analytics reads
     // still fail open to the database (no behavior change). TTL is in seconds.
-    ANALYTICS_CACHE_ENABLED: Joi.string().valid('true', 'false').default('true'),
+    ANALYTICS_CACHE_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('true'),
     ANALYTICS_CACHE_TTL: Joi.number().default(60),
     // Raw analytics_events older than this are purged by the daily retention
     // sweep. Floored at 1 day so a 0/negative value can't purge the whole table.
@@ -101,7 +105,9 @@ export const validate = (config: Record<string, unknown>) => {
     // Split payments (Moyasar `splits`) require a commercial Marketplace /
     // Platforms contract + per-clinic recipient ids. OFF until enabled by
     // Moyasar — a technically-supported feature is never assumed active.
-    MOYASAR_MARKETPLACE_ENABLED: Joi.string().valid('true', 'false').default('false'),
+    MOYASAR_MARKETPLACE_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
 
     // Marketplace platform commission frozen onto each payment at capture.
     // Both default to 0 (platform takes no cut) until a fee policy is set.
@@ -173,9 +179,21 @@ export const validate = (config: Record<string, unknown>) => {
     OPENAI_EMBEDDING_MODEL: Joi.string().default('text-embedding-3-small'),
     // Must match the vector(N) column dimension created by the pgvector bootstrap.
     OPENAI_EMBEDDING_DIM: Joi.number().default(1536),
-    OPENAI_REQUEST_TIMEOUT_MS: Joi.number().integer().min(1000).max(120000).default(30000),
-    OPENAI_PROVIDER_MAX_RETRIES: Joi.number().integer().min(0).max(3).default(2),
-    OPENAI_RETRY_BASE_MS: Joi.number().integer().min(50).max(10000).default(500),
+    OPENAI_REQUEST_TIMEOUT_MS: Joi.number()
+      .integer()
+      .min(1000)
+      .max(120000)
+      .default(30000),
+    OPENAI_PROVIDER_MAX_RETRIES: Joi.number()
+      .integer()
+      .min(0)
+      .max(3)
+      .default(2),
+    OPENAI_RETRY_BASE_MS: Joi.number()
+      .integer()
+      .min(50)
+      .max(10000)
+      .default(500),
     AI_PRICE_CATALOG_JSON: Joi.string().allow('', null),
     AI_PROMPT_SYSTEM_TOKENS: Joi.number().integer().min(128).default(2000),
     AI_PROMPT_HISTORY_TOKENS: Joi.number().integer().min(128).default(5000),
@@ -185,19 +203,41 @@ export const validate = (config: Record<string, unknown>) => {
     AI_PROMPT_TOOL_SCHEMA_TOKENS: Joi.number().integer().min(128).default(6000),
     AI_PROMPT_MAX_INPUT_TOKENS: Joi.number().integer().min(512).default(12000),
     AI_PROMPT_MAX_OUTPUT_TOKENS: Joi.number().integer().min(64).default(800),
-    AI_MODEL_CONTEXT_WINDOW_TOKENS: Joi.number().integer().min(1024).default(16384),
-    AI_MEMORY_RECALL_ENABLED: Joi.string().valid('true', 'false').default('false'),
-    AI_EMBEDDING_CACHE_ENABLED: Joi.string().valid('true', 'false').default('true'),
-    AI_EMBEDDING_QUERY_CACHE_TTL_SECONDS: Joi.number().integer().min(60).default(86400),
-    AI_EMBEDDING_CONTENT_CACHE_TTL_SECONDS: Joi.number().integer().min(60).default(2592000),
+    AI_MODEL_CONTEXT_WINDOW_TOKENS: Joi.number()
+      .integer()
+      .min(1024)
+      .default(16384),
+    AI_MEMORY_RECALL_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
+    AI_EMBEDDING_CACHE_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('true'),
+    AI_EMBEDDING_QUERY_CACHE_TTL_SECONDS: Joi.number()
+      .integer()
+      .min(60)
+      .default(86400),
+    AI_EMBEDDING_CONTENT_CACHE_TTL_SECONDS: Joi.number()
+      .integer()
+      .min(60)
+      .default(2592000),
     AI_EMBEDDING_VERSION: Joi.string().default('v1'),
-    AI_MODEL_ROUTING_ENABLED: Joi.string().valid('true', 'false').default('false'),
-    AI_MODEL_ROUTING_ROLLOUT_PERCENT: Joi.number().integer().min(0).max(100).default(0),
+    AI_MODEL_ROUTING_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
+    AI_MODEL_ROUTING_ROLLOUT_PERCENT: Joi.number()
+      .integer()
+      .min(0)
+      .max(100)
+      .default(0),
     AI_ECONOMY_MODEL: Joi.string().default('gpt-4.1-mini'),
     AI_POWERFUL_MODEL: Joi.string().allow('', null),
     AI_POWERFUL_FEATURES: Joi.string().allow('').default(''),
     AI_POWERFUL_ROUTES: Joi.string().allow('').default(''),
-    AI_TRAINING_FILE_MAX_BYTES: Joi.number().integer().min(1024).default(10 * 1024 * 1024),
+    AI_TRAINING_FILE_MAX_BYTES: Joi.number()
+      .integer()
+      .min(1024)
+      .default(10 * 1024 * 1024),
 
     // ── AI execution mode: Standard vs Batch (OpenAI Batch API) ───────────
     // Master switch for the async BATCH execution mode. Default OFF: with it
@@ -207,7 +247,10 @@ export const validate = (config: Record<string, unknown>) => {
     AI_BATCH_ENABLED: Joi.string().valid('true', 'false').default('false'),
     // Chunk count at/above which file indexing prefers the BATCH route. Small
     // files stay on the synchronous embedding path for immediate indexing.
-    AI_BATCH_EMBEDDING_CHUNK_THRESHOLD: Joi.number().integer().min(1).default(200),
+    AI_BATCH_EMBEDDING_CHUNK_THRESHOLD: Joi.number()
+      .integer()
+      .min(1)
+      .default(200),
     // OpenAI Batch completion window (only '24h' is currently supported).
     AI_BATCH_COMPLETION_WINDOW: Joi.string().default('24h'),
     // Cron cadence for the batch-status poll sweep (worker).
@@ -221,17 +264,29 @@ export const validate = (config: Record<string, unknown>) => {
     AI_STANDARD_MAX_EMBED_CHUNKS: Joi.number().integer().min(1).default(512),
     // Submission reconciliation: grace before revisiting a stuck submission, and
     // the max reconcile attempts before a job is left FAILED (manual-recovery-safe).
-    AI_BATCH_SUBMIT_RECONCILE_GRACE_SECONDS: Joi.number().integer().min(10).default(120),
+    AI_BATCH_SUBMIT_RECONCILE_GRACE_SECONDS: Joi.number()
+      .integer()
+      .min(10)
+      .default(120),
     AI_BATCH_SUBMIT_MAX_ATTEMPTS: Joi.number().integer().min(1).default(5),
     // Polling: page size per sweep, lease window (concurrency), backoff bounds,
     // and the max age after which a non-terminal job is expired.
     AI_BATCH_POLL_PAGE_SIZE: Joi.number().integer().min(1).max(500).default(25),
     AI_BATCH_POLL_LEASE_SECONDS: Joi.number().integer().min(5).default(60),
-    AI_BATCH_POLL_BACKOFF_BASE_SECONDS: Joi.number().integer().min(1).default(30),
-    AI_BATCH_POLL_BACKOFF_MAX_SECONDS: Joi.number().integer().min(1).default(900),
+    AI_BATCH_POLL_BACKOFF_BASE_SECONDS: Joi.number()
+      .integer()
+      .min(1)
+      .default(30),
+    AI_BATCH_POLL_BACKOFF_MAX_SECONDS: Joi.number()
+      .integer()
+      .min(1)
+      .default(900),
     AI_BATCH_MAX_AGE_HOURS: Joi.number().integer().min(1).default(26),
     // Grace before the reconciler finalizes a training file left in PROCESSING.
-    AI_TRAINING_FINALIZE_GRACE_MINUTES: Joi.number().integer().min(0).default(1),
+    AI_TRAINING_FINALIZE_GRACE_MINUTES: Joi.number()
+      .integer()
+      .min(0)
+      .default(1),
 
     // ── AI Data Residency (compliance policy — OFF by default) ────────────
     // Master switch for per-tenant regional OpenAI deployments. Default OFF: no
@@ -239,7 +294,9 @@ export const validate = (config: Record<string, unknown>) => {
     // a tenant whose deployment is enabled but unavailable FAILS CLOSED — the
     // request is never silently redirected to the global region. Enabling this
     // does NOT assert that data stays in any particular country.
-    AI_DATA_RESIDENCY_ENABLED: Joi.string().valid('true', 'false').default('false'),
+    AI_DATA_RESIDENCY_ENABLED: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
 
     RAG_TOP_K: Joi.number().default(5),
     // HNSW query-time recall/latency knob (higher = better recall, slower).
@@ -263,7 +320,9 @@ export const validate = (config: Record<string, unknown>) => {
     R2_PUBLIC_BASE_URL: Joi.string().allow('', null),
     // Per-file upload cap in bytes (default 10 MB). Enforced by the multer
     // interceptor and re-checked in the controller.
-    UPLOAD_MAX_BYTES: Joi.number().min(1).default(10 * 1024 * 1024),
+    UPLOAD_MAX_BYTES: Joi.number()
+      .min(1)
+      .default(10 * 1024 * 1024),
     // Signed-URL lifetime (seconds) for private object reads (default 5 min).
     SIGNED_URL_EXPIRES_SECONDS: Joi.number().min(30).default(300),
 
@@ -271,12 +330,32 @@ export const validate = (config: Record<string, unknown>) => {
     // Per-key token-bucket ceiling (ApiKeyAuthGuard, reusing the existing
     // Redis rate limiter). Redis-unavailable fails OPEN (see the guard's
     // docstring) — this is a courtesy limit, not the sole abuse defense.
-    INTEGRATION_API_RATE_LIMIT_PER_MINUTE: Joi.number().integer().min(1).default(120),
+    INTEGRATION_API_RATE_LIMIT_PER_MINUTE: Joi.number()
+      .integer()
+      .min(1)
+      .default(120),
 
     // ── Outbound webhooks (Phase 2 — Integration platform) ───────────────
-    WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number().integer().min(1000).default(10_000),
+    WEBHOOK_DELIVERY_TIMEOUT_MS: Joi.number()
+      .integer()
+      .min(1000)
+      .default(10_000),
     WEBHOOK_DELIVERY_MAX_ATTEMPTS: Joi.number().integer().min(1).default(6),
     WEBHOOK_DELIVERY_BACKOFF_MS: Joi.number().integer().min(100).default(5000),
+
+    // ── Observability (gap-closure — see docs/CACHING_QUEUES_AUDIT.md M14) ──
+    // Static bearer token a Prometheus scraper presents to GET /metrics — a
+    // scraper has no tenant/user JWT, so this is deliberately independent of
+    // the business auth stack, matching every other infra-scrape convention
+    // (e.g. a `bearer_token` scrape config). Required in production; in
+    // dev/test an unset token means the endpoint is open (matches this
+    // repo's existing "unconfigured secret ⇒ dev-only warning, not a hard
+    // failure" convention for e.g. MOYASAR_WEBHOOK_SECRET).
+    METRICS_TOKEN: Joi.string().allow('', null),
+    // Worker process only — the API exposes GET /metrics on its normal HTTP
+    // port via MetricsController; the worker has no HTTP adapter at all (see
+    // worker.ts), so it needs its OWN small listener on its own port.
+    WORKER_METRICS_PORT: Joi.number().integer().min(1).default(9091),
   });
 
   const { error, value } = schema.validate(config, {
@@ -285,9 +364,7 @@ export const validate = (config: Record<string, unknown>) => {
   });
 
   if (error) {
-    throw new Error(
-      `❌ Env validation error: ${error.message}`,
-    );
+    throw new Error(`❌ Env validation error: ${error.message}`);
   }
 
   // ── Payments fail-fast (production only) ─────────────────────────────────
@@ -298,8 +375,10 @@ export const validate = (config: Record<string, unknown>) => {
   // values. Opting out is explicit: PAYMENT_PROVIDER=noop.
   if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER !== 'noop') {
     const missing: string[] = [];
-    if (!String(value.MOYASAR_SECRET_KEY ?? '').trim()) missing.push('MOYASAR_SECRET_KEY');
-    if (!String(value.MOYASAR_WEBHOOK_SECRET ?? '').trim()) missing.push('MOYASAR_WEBHOOK_SECRET');
+    if (!String(value.MOYASAR_SECRET_KEY ?? '').trim())
+      missing.push('MOYASAR_SECRET_KEY');
+    if (!String(value.MOYASAR_WEBHOOK_SECRET ?? '').trim())
+      missing.push('MOYASAR_WEBHOOK_SECRET');
     if (missing.length > 0) {
       throw new Error(
         `❌ Env validation error: PAYMENT_PROVIDER is "${value.PAYMENT_PROVIDER}" but ` +

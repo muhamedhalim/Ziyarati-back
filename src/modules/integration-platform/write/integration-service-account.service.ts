@@ -42,10 +42,21 @@ import { isUniqueViolation } from '../../../common/errors';
 export class IntegrationServiceAccountService {
   private readonly logger = new Logger(IntegrationServiceAccountService.name);
 
-  /** Cache tenant → user id; the row is immutable once created. */
+  /**
+   * Cache tenant → user id; the row is immutable once created.
+   *
+   * Unbounded process-lifetime map (L10 — docs/CACHING_QUEUES_AUDIT.md):
+   * never evicted, grows by one entry per tenant for the life of the
+   * process. Left as-is deliberately — correctness is unaffected (values
+   * are immutable, so a stale entry is never a wrong entry) and memory is
+   * bounded by the tenant count, which is a small, slow-growing number
+   * compared to anything request- or job-scoped.
+   */
   private readonly cache = new Map<string, string>();
 
-  constructor(@InjectRepository(User) private readonly users: Repository<User>) {}
+  constructor(
+    @InjectRepository(User) private readonly users: Repository<User>,
+  ) {}
 
   /** Deterministic, non-deliverable address (reserved TLD, RFC 6761). */
   static emailFor(tenantId: string): string {
@@ -80,7 +91,9 @@ export class IntegrationServiceAccountService {
           is_active: false,
         }),
       );
-      this.logger.log(`integration service account created for tenant ${tenantId}`);
+      this.logger.log(
+        `integration service account created for tenant ${tenantId}`,
+      );
       this.cache.set(tenantId, created.id);
       return created.id;
     } catch (err) {
@@ -102,13 +115,19 @@ export class IntegrationServiceAccountService {
    * Resolve the actor to attribute a write to: a real signed-in user when there
    * is one, otherwise the tenant's service account. Never invents an id.
    */
-  async resolveActorUserId(tenantId: string, userId?: string | null): Promise<string> {
+  async resolveActorUserId(
+    tenantId: string,
+    userId?: string | null,
+  ): Promise<string> {
     if (userId && !userId.startsWith('apikey:')) return userId;
     return this.resolve(tenantId);
   }
 
   /** True when the id is this tenant's service account (for safe view labels). */
-  isServiceAccount(tenantId: string, userId: string | null | undefined): boolean {
+  isServiceAccount(
+    tenantId: string,
+    userId: string | null | undefined,
+  ): boolean {
     if (!userId) return false;
     return this.cache.get(tenantId) === userId;
   }

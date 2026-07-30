@@ -5,6 +5,7 @@ import { Job } from 'bullmq';
 import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WhatsappMediaDownloadJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WhatsappMediaService } from '../../modules/whatsapp/meta/whatsapp-media.service';
@@ -36,11 +37,14 @@ export class WhatsappMediaProcessor extends WorkerHost {
 
   async process(job: Job<WhatsappMediaDownloadJob>) {
     const data = job.data;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} ` +
         `type=${data.mediaType} message=${data.messageId} attempt=${job.attemptsMade + 1}`,
     );
-    return runInTenantContext(this.ctx, this.authz, job.name, data, () => this.media.downloadAndAttach(data));
+    return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
+      this.media.downloadAndAttach(data),
+    );
   }
 
   @OnWorkerEvent('failed')
@@ -70,6 +74,8 @@ export class WhatsappMediaProcessor extends WorkerHost {
         attemptsMade: job?.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       })
-      .catch((e) => this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
+      .catch((e) =>
+        this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
+      );
   }
 }

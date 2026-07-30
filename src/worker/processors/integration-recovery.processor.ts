@@ -8,6 +8,7 @@ import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { IntegrationImportJobService } from '../../modules/integration-platform/imports/integration-import-job.service';
 import { IntegrationSyncService } from '../../modules/integration-platform/sync/integration-sync.service';
 import { IntegrationInboundService } from '../../modules/integration-platform/inbound/integration-inbound.service';
+import { MetricsService } from '../../metrics/metrics.service';
 
 const LOCK_KEY = 'lock:integration-recover-stale';
 /**
@@ -42,6 +43,7 @@ export class IntegrationRecoveryProcessor extends WorkerHost {
     private readonly imports: IntegrationImportJobService,
     private readonly syncs: IntegrationSyncService,
     private readonly inbound: IntegrationInboundService,
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
@@ -49,19 +51,26 @@ export class IntegrationRecoveryProcessor extends WorkerHost {
   async process(_job: Job<BaseJobData>) {
     const token = await this.lock.acquire(LOCK_KEY, LOCK_TTL_MS);
     if (!token) {
-      this.logger.log('integration recovery sweep already in progress elsewhere — skipping this run');
+      this.logger.log(
+        'integration recovery sweep already in progress elsewhere — skipping this run',
+      );
       return { skipped: true };
     }
     try {
-      const [importsRequeued, syncsRequeued, inboundRequeued] = await Promise.all([
-        this.imports.recoverStale(),
-        this.syncs.recoverStale(),
-        this.inbound.recoverStale(),
-      ]);
+      const [importsRequeued, syncsRequeued, inboundRequeued] =
+        await Promise.all([
+          this.imports.recoverStale(),
+          this.syncs.recoverStale(),
+          this.inbound.recoverStale(),
+        ]);
       const summary = { importsRequeued, syncsRequeued, inboundRequeued };
       if (importsRequeued + syncsRequeued + inboundRequeued > 0) {
-        this.logger.log(`integration recovery sweep requeued: ${JSON.stringify(summary)}`);
+        this.logger.log(
+          `integration recovery sweep requeued: ${JSON.stringify(summary)}`,
+        );
       }
+      // Last-successful-run signal (M14 — docs/CACHING_QUEUES_AUDIT.md).
+      this.metrics.setWorkerHeartbeat('integration.recoverStale');
       return summary;
     } finally {
       await this.lock.release(LOCK_KEY, token);
@@ -70,6 +79,8 @@ export class IntegrationRecoveryProcessor extends WorkerHost {
 
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error) {
-    this.logger.error(`${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+    this.logger.error(
+      `${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
+    );
   }
 }

@@ -14,7 +14,12 @@ import { OutboxJob } from './entities/Campaigns/OutboxJob';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
-import { resolveWorkerRole, queuesForRole } from './queue/queue.constants';
+import { MetricsModule } from './metrics/metrics.module';
+import {
+  bullPrefix,
+  resolveWorkerRole,
+  queuesForRole,
+} from './queue/queue.constants';
 import { blockingConnectionOptions } from './queue/redis.config';
 
 // Domain modules whose EXISTING services the processors reuse (no logic copied).
@@ -93,7 +98,10 @@ import { IntegrationRecoveryProcessor } from './worker/processors/integration-re
 // Deliberately NOT in the shared `env.validation.ts` `validate()`: that
 // function also gates the API process's boot, which has no reason to ever
 // set WORKER_ROLE, so a check there would wrongly fail API deployments too.
-if (process.env.NODE_ENV === 'production' && process.env.WORKER_ROLE === undefined) {
+if (
+  process.env.NODE_ENV === 'production' &&
+  process.env.WORKER_ROLE === undefined
+) {
   throw new Error(
     '❌ WORKER_ROLE must be set explicitly in production — one of "all", "critical", or "dispatch". ' +
       'See docs/CACHING_QUEUES_AUDIT.md §0.5/§0.8.5: silently defaulting to "all" in production ' +
@@ -111,7 +119,10 @@ if (process.env.NODE_ENV === 'production' && process.env.WORKER_ROLE === undefin
 // WARNING, not a hard failure, so it doesn't block a deployment that
 // genuinely doesn't need the split; it just makes the choice visible in logs
 // rather than silent.
-if (process.env.NODE_ENV === 'production' && process.env.WORKER_ROLE === 'all') {
+if (
+  process.env.NODE_ENV === 'production' &&
+  process.env.WORKER_ROLE === 'all'
+) {
   new Logger('WorkerModule').warn(
     '⚠️  WORKER_ROLE=all in production — running the UNSPLIT worker (every processor + cron in one ' +
       'process, one shared DB pool). This is fine for a small deployment, but if you meant to isolate the ' +
@@ -150,7 +161,12 @@ const CRITICAL_PROCESSORS = [
   IntegrationRecoveryProcessor,
 ];
 
-const CRITICAL_INFRA = [WorkerTenantsService, QueueMonitorService, ScheduleRegistrarService, OutboxRelayService];
+const CRITICAL_INFRA = [
+  WorkerTenantsService,
+  QueueMonitorService,
+  ScheduleRegistrarService,
+  OutboxRelayService,
+];
 
 const WORKER_PROVIDERS =
   WORKER_ROLE === 'dispatch'
@@ -177,7 +193,12 @@ const WORKER_PROVIDERS =
  */
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env', cache: true, validate }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+      cache: true,
+      validate,
+    }),
     // Several reused services (e.g. SubscriptionService) inject EventEmitter2.
     // The API root registers this; the worker root must too, or DI fails at
     // boot — discovered by actually starting the worker process, not `tsc`.
@@ -192,6 +213,7 @@ const WORKER_PROVIDERS =
     // worker root needs this exactly as much as the API root does.
     CryptoModule,
     QueueModule,
+    MetricsModule,
     // `QueueModule` only calls `BullModule.forRootAsync` (shared config, no
     // per-queue registration — see its docstring). That alone never activates
     // `@nestjs/bullmq`'s `BullRegistrar`/`BullExplorer`: those are provided by
@@ -219,6 +241,7 @@ const WORKER_PROVIDERS =
         inject: [ConfigService],
         useFactory: (config: ConfigService) => ({
           connection: blockingConnectionOptions(config),
+          prefix: bullPrefix(),
         }),
       })),
     ),

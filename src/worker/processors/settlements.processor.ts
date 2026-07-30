@@ -2,7 +2,11 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
-import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import {
+  QUEUE,
+  SWEEP_FANOUT_PAGE_SIZE,
+  workerConcurrency,
+} from '../../queue/queue.constants';
 import { SettlementsProcessJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -37,43 +41,73 @@ export class SettlementsProcessor extends WorkerHost {
     const data = job.data;
 
     if (!data.tenantId) {
-      const ids = await this.tenants.activeTenantIds();
-      for (const tenantId of ids) {
-        await this.queue.enqueueSettlementsProcess({
-          tenantId,
-          periodStart: data.periodStart,
-          periodEnd: data.periodEnd,
-          feePercent: data.feePercent,
-          currency: data.currency,
-        });
+      // Pages through active tenants and `addBulk`s each page (M7 —
+      // docs/CACHING_QUEUES_AUDIT.md) instead of one unbounded tenant query
+      // plus one `add()` per tenant.
+      let offset = 0;
+      let fannedOut = 0;
+      for (;;) {
+        const page = await this.tenants.activeTenantIdsPage(
+          offset,
+          SWEEP_FANOUT_PAGE_SIZE,
+        );
+        if (page.length === 0) break;
+        await this.queue.enqueueSettlementsProcessBulk(
+          page.map((tenantId) => ({
+            tenantId,
+            periodStart: data.periodStart,
+            periodEnd: data.periodEnd,
+            feePercent: data.feePercent,
+            currency: data.currency,
+          })),
+        );
+        fannedOut += page.length;
+        offset += page.length;
+        if (page.length < SWEEP_FANOUT_PAGE_SIZE) break;
       }
-      this.logger.log(`settlements.process sweep fanned out ${ids.length} tenant(s)`);
-      return { fannedOut: ids.length };
+      this.logger.log(
+        `settlements.process sweep fanned out ${fannedOut} tenant(s)`,
+      );
+      return { fannedOut };
     }
 
-    return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
-      try {
-        const result = await this.settlements.generate(data.tenantId!, {
-          periodStart: data.periodStart,
-          periodEnd: data.periodEnd,
-          branchId: data.branchId,
-          feePercent: data.feePercent,
-          currency: data.currency,
-        });
-        return { settled: true, settlementId: (result as { id?: string })?.id };
-      } catch (err) {
-        // "Nothing to settle" is an expected no-op, not a job failure.
-        if (err instanceof AppError && err.code === ErrorCode.UNPROCESSABLE_ENTITY) {
-          this.logger.log(`tenant=${data.tenantId} has nothing to settle`);
-          return { settled: false, reason: err.message };
+    return runInTenantContext(
+      this.ctx,
+      this.authz,
+      job.name,
+      data,
+      async () => {
+        try {
+          const result = await this.settlements.generate(data.tenantId!, {
+            periodStart: data.periodStart,
+            periodEnd: data.periodEnd,
+            branchId: data.branchId,
+            feePercent: data.feePercent,
+            currency: data.currency,
+          });
+          return {
+            settled: true,
+            settlementId: (result as { id?: string })?.id,
+          };
+        } catch (err) {
+          // "Nothing to settle" is an expected no-op, not a job failure.
+          if (
+            err instanceof AppError &&
+            err.code === ErrorCode.UNPROCESSABLE_ENTITY
+          ) {
+            this.logger.log(`tenant=${data.tenantId} has nothing to settle`);
+            return { settled: false, reason: err.message };
+          }
+          throw err;
         }
-        throw err;
-      }
-    });
+      },
+    );
   }
 
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error) {
-    this.logger.error(`${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+    this.logger.error(
+      `${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
+    );
   }
 }

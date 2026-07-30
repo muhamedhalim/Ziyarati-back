@@ -1,4 +1,38 @@
-import { ALL_QUEUES, QUEUE, DISPATCH_ONLY_QUEUES, resolveWorkerRole, queuesForRole } from './queue.constants';
+import {
+  ALL_QUEUES,
+  QUEUE,
+  DISPATCH_ONLY_QUEUES,
+  resolveWorkerRole,
+  queuesForRole,
+  bullPrefix,
+  cacheKeyPrefix,
+} from './queue.constants';
+
+describe('bullPrefix / cacheKeyPrefix (M3 — environment prefix, opt-in)', () => {
+  const ORIGINAL = process.env.QUEUE_ENV_PREFIX;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.QUEUE_ENV_PREFIX;
+    else process.env.QUEUE_ENV_PREFIX = ORIGINAL;
+  });
+
+  it('defaults to undefined/empty when QUEUE_ENV_PREFIX is unset — zero behavior change for every existing deployment', () => {
+    delete process.env.QUEUE_ENV_PREFIX;
+    expect(bullPrefix()).toBeUndefined();
+    expect(cacheKeyPrefix()).toBe('');
+  });
+
+  it('is also a no-op for an empty/whitespace-only value', () => {
+    process.env.QUEUE_ENV_PREFIX = '   ';
+    expect(bullPrefix()).toBeUndefined();
+    expect(cacheKeyPrefix()).toBe('');
+  });
+
+  it('returns the trimmed prefix when set, and a colon-suffixed form for cache keys', () => {
+    process.env.QUEUE_ENV_PREFIX = ' staging ';
+    expect(bullPrefix()).toBe('staging');
+    expect(cacheKeyPrefix()).toBe('staging:');
+  });
+});
 
 describe('resolveWorkerRole (Phase 0 worker split)', () => {
   const ORIGINAL = process.env.WORKER_ROLE;
@@ -12,10 +46,13 @@ describe('resolveWorkerRole (Phase 0 worker split)', () => {
     expect(resolveWorkerRole()).toBe('all');
   });
 
-  it.each(['critical', 'dispatch', 'CRITICAL', ' dispatch '])('accepts "%s"', (raw) => {
-    process.env.WORKER_ROLE = raw;
-    expect(['critical', 'dispatch']).toContain(resolveWorkerRole());
-  });
+  it.each(['critical', 'dispatch', 'CRITICAL', ' dispatch '])(
+    'accepts "%s"',
+    (raw) => {
+      process.env.WORKER_ROLE = raw;
+      expect(['critical', 'dispatch']).toContain(resolveWorkerRole());
+    },
+  );
 
   it('falls back to "all" for an unrecognized value rather than crashing the worker boot', () => {
     process.env.WORKER_ROLE = 'bogus';

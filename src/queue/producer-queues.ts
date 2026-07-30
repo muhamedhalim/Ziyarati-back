@@ -2,7 +2,12 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
-import { QueueName, defaultJobOptions } from './queue.constants';
+import {
+  bullPrefix,
+  DLQ_QUEUES,
+  QueueName,
+  defaultJobOptions,
+} from './queue.constants';
 import { producerConnectionOptions } from './redis.config';
 
 /**
@@ -43,20 +48,31 @@ export class ProducerQueues implements OnModuleDestroy {
   private readonly logger = new Logger('ProducerQueues');
   private readonly connection: ReturnType<typeof producerConnectionOptions>;
   private readonly defaults: ReturnType<typeof defaultJobOptions>;
+  /** Same defaults, minus a retry policy that no consumer ever exercises (L2). */
+  private readonly dlqDefaults: ReturnType<typeof defaultJobOptions>;
   private readonly queues = new Map<QueueName, Queue>();
 
   constructor(config: ConfigService) {
     this.connection = producerConnectionOptions(config);
     this.defaults = defaultJobOptions(config);
+    this.dlqDefaults = { ...this.defaults, attempts: 1 };
   }
 
   /** Returns the queue's producer connection, opening it on first use. */
   get(name: QueueName): Queue {
     let q = this.queues.get(name);
     if (!q) {
-      q = new Queue(name, { connection: this.connection, defaultJobOptions: this.defaults });
+      q = new Queue(name, {
+        connection: this.connection,
+        defaultJobOptions: DLQ_QUEUES.includes(name)
+          ? this.dlqDefaults
+          : this.defaults,
+        prefix: bullPrefix(),
+      });
       this.queues.set(name, q);
-      this.logger.log(`Opened producer connection for queue "${name}" (${this.queues.size} open so far) [producer profile]`);
+      this.logger.log(
+        `Opened producer connection for queue "${name}" (${this.queues.size} open so far) [producer profile]`,
+      );
     }
     return q;
   }
@@ -68,13 +84,16 @@ export class ProducerQueues implements OnModuleDestroy {
    */
   record(): Record<QueueName, Queue> {
     return new Proxy({} as Record<QueueName, Queue>, {
-      get: (_target, prop) => (typeof prop === 'string' ? this.get(prop as QueueName) : undefined),
+      get: (_target, prop) =>
+        typeof prop === 'string' ? this.get(prop as QueueName) : undefined,
     });
   }
 
   async onModuleDestroy(): Promise<void> {
     await Promise.all(
-      Array.from(this.queues.values()).map((q) => q.close().catch(() => undefined)),
+      Array.from(this.queues.values()).map((q) =>
+        q.close().catch(() => undefined),
+      ),
     );
   }
 }

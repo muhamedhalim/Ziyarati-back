@@ -5,7 +5,14 @@ import { createHash } from 'node:crypto';
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
 import { ProducerQueues } from './producer-queues';
 import { AppRedisService } from './app-redis.service';
-import { ALL_QUEUES, BACKOFF_EXPO_JITTER, JOB, QUEUE, QueueName } from './queue.constants';
+import {
+  ALL_QUEUES,
+  BACKOFF_EXPO_JITTER,
+  JOB,
+  PII_REMOVE_ON_FAIL_SECONDS,
+  QUEUE,
+  QueueName,
+} from './queue.constants';
 import {
   AiExecuteJob,
   AnalyticsAggregateJob,
@@ -62,7 +69,10 @@ export class QueueService {
 
   // ── Typed producers ─────────────────────────────────────────────────────
 
-  enqueueNotificationDispatch(data: NotificationDispatchJob, opts?: JobsOptions) {
+  enqueueNotificationDispatch(
+    data: NotificationDispatchJob,
+    opts?: JobsOptions,
+  ) {
     return this.add(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_DISPATCH, data, {
       jobId: `notification-${data.notificationId}`, // idempotent (1 job per notification)
       ...opts,
@@ -79,7 +89,9 @@ export class QueueService {
 
   /** Best-effort removal of a scheduled (delayed) notification job. */
   async removeNotificationDispatch(notificationId: string): Promise<void> {
-    const job = await this.queues[QUEUE.NOTIFICATIONS].getJob(`notification-${notificationId}`);
+    const job = await this.queues[QUEUE.NOTIFICATIONS].getJob(
+      `notification-${notificationId}`,
+    );
     if (job) await job.remove().catch(() => undefined);
   }
 
@@ -104,11 +116,19 @@ export class QueueService {
   }
 
   enqueueWhatsappSend(data: WhatsappSendJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WHATSAPP_OUTBOUND, JOB.WHATSAPP_SEND, data, opts);
+    // `payload.variables` carries template variables — PII (M1). Shorter
+    // failed-job retention than the 7-day default.
+    return this.add(QUEUE.WHATSAPP_OUTBOUND, JOB.WHATSAPP_SEND, data, {
+      removeOnFail: { age: PII_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
+      ...opts,
+    });
   }
 
   enqueueWhatsappRetry(data: WhatsappSendJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WHATSAPP_OUTBOUND, JOB.WHATSAPP_RETRY, data, opts);
+    return this.add(QUEUE.WHATSAPP_OUTBOUND, JOB.WHATSAPP_RETRY, data, {
+      removeOnFail: { age: PII_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
+      ...opts,
+    });
   }
 
   /**
@@ -120,17 +140,25 @@ export class QueueService {
    * queue-level floor.
    */
   enqueueWhatsappWebhook(data: WhatsappWebhookProcessJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WHATSAPP_WEBHOOK, JOB.WHATSAPP_WEBHOOK_PROCESS, data, {
-      jobId: `wa-webhook-${data.webhookEventId}`,
-      ...opts,
-    });
+    return this.add(
+      QUEUE.WHATSAPP_WEBHOOK,
+      JOB.WHATSAPP_WEBHOOK_PROCESS,
+      data,
+      {
+        jobId: `wa-webhook-${data.webhookEventId}`,
+        ...opts,
+      },
+    );
   }
 
   /**
    * Download one inbound media object. Deduped per (message, media) so a
    * retried webhook cannot attach the same file twice.
    */
-  enqueueWhatsappMediaDownload(data: WhatsappMediaDownloadJob, opts?: JobsOptions) {
+  enqueueWhatsappMediaDownload(
+    data: WhatsappMediaDownloadJob,
+    opts?: JobsOptions,
+  ) {
     return this.add(QUEUE.WHATSAPP_MEDIA, JOB.WHATSAPP_MEDIA_DOWNLOAD, data, {
       jobId: `wa-media-${data.messageId}-${data.mediaId}`,
       ...opts,
@@ -168,11 +196,19 @@ export class QueueService {
   }
 
   /** Single recipient send. Idempotent per (run, recipient). */
-  enqueueCampaignRecipient(data: CampaignProcessRecipientJob, opts?: JobsOptions) {
-    return this.add(QUEUE.CAMPAIGNS_PROCESS, JOB.CAMPAIGNS_PROCESS_RECIPIENT, data, {
-      jobId: `campaign-recipient-${data.runId}-${data.recipientId}`,
-      ...opts,
-    });
+  enqueueCampaignRecipient(
+    data: CampaignProcessRecipientJob,
+    opts?: JobsOptions,
+  ) {
+    return this.add(
+      QUEUE.CAMPAIGNS_PROCESS,
+      JOB.CAMPAIGNS_PROCESS_RECIPIENT,
+      data,
+      {
+        jobId: `campaign-recipient-${data.runId}-${data.recipientId}`,
+        ...opts,
+      },
+    );
   }
 
   /**
@@ -211,6 +247,9 @@ export class QueueService {
       // Provider retries are owned by the provider adapter. BullMQ must never
       // replay a possibly-paid request or a completed tool side effect.
       attempts: 1,
+      // `content` is the raw message text — PII (M1). Shorter failed-job
+      // retention than the 7-day default.
+      removeOnFail: { age: PII_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
       ...opts,
     });
   }
@@ -219,8 +258,41 @@ export class QueueService {
     return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_AGGREGATE, data, opts);
   }
 
+  /**
+   * Bulk fan-out for the `analytics.aggregate` sweep (gap-closure — see
+   * docs/CACHING_QUEUES_AUDIT.md M7): one `addBulk` round trip per page
+   * instead of one `add()` per tenant, with a deterministic jobId so a
+   * retried sweep run can't enqueue a duplicate per-tenant job.
+   */
+  enqueueAnalyticsAggregateBulk(tenantIds: string[]) {
+    if (tenantIds.length === 0) return Promise.resolve([] as Job[]);
+    return this.queues[QUEUE.ANALYTICS].addBulk(
+      tenantIds.map((tenantId) => ({
+        name: JOB.ANALYTICS_AGGREGATE,
+        data: this.stamp({ tenantId } as AnalyticsAggregateJob),
+        opts: { jobId: `analytics-aggregate-${tenantId}` },
+      })),
+    );
+  }
+
   enqueueAnalyticsReport(data: AnalyticsGenerateReportJob, opts?: JobsOptions) {
     return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_GENERATE_REPORT, data, opts);
+  }
+
+  /** Bulk fan-out for the `analytics.generateReport` daily sweep (M7). Deterministic jobId per (tenant, date). */
+  enqueueAnalyticsReportBulk(items: Array<{ tenantId: string; date: string }>) {
+    if (items.length === 0) return Promise.resolve([] as Job[]);
+    return this.queues[QUEUE.ANALYTICS].addBulk(
+      items.map(({ tenantId, date }) => ({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: this.stamp({
+          tenantId,
+          kind: 'daily',
+          date,
+        } as AnalyticsGenerateReportJob),
+        opts: { jobId: `analytics-daily-${tenantId}-${date}` },
+      })),
+    );
   }
 
   enqueueAnalyticsCleanup(data: AnalyticsCleanupJob, opts?: JobsOptions) {
@@ -231,8 +303,36 @@ export class QueueService {
     return this.add(QUEUE.SETTLEMENTS, JOB.SETTLEMENTS_PROCESS, data, opts);
   }
 
-  enqueueSubscriptionsRenewalCheck(data: SubscriptionsRenewalCheckJob, opts?: JobsOptions) {
-    return this.add(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_CHECK, data, opts);
+  /**
+   * Bulk fan-out for the `settlements.process` sweep (M7). Deterministic
+   * jobId per (tenant, periodStart) — `periodStart` is the closest thing this
+   * sweep has to a "run" key; falling back to a fixed literal when unset
+   * still collapses duplicate ENQUEUES within the same sweep tick (BullMQ's
+   * own attempts/backoff still cover a mid-processing retry).
+   */
+  enqueueSettlementsProcessBulk(items: SettlementsProcessJob[]) {
+    if (items.length === 0) return Promise.resolve([] as Job[]);
+    return this.queues[QUEUE.SETTLEMENTS].addBulk(
+      items.map((data) => ({
+        name: JOB.SETTLEMENTS_PROCESS,
+        data: this.stamp(data),
+        opts: {
+          jobId: `settlements-${data.tenantId}-${data.periodStart ?? 'default'}`,
+        },
+      })),
+    );
+  }
+
+  enqueueSubscriptionsRenewalCheck(
+    data: SubscriptionsRenewalCheckJob,
+    opts?: JobsOptions,
+  ) {
+    return this.add(
+      QUEUE.SUBSCRIPTIONS,
+      JOB.SUBSCRIPTIONS_RENEWAL_CHECK,
+      data,
+      opts,
+    );
   }
 
   enqueueRefundsReap(data: RefundsReapJob, opts?: JobsOptions) {
@@ -249,8 +349,12 @@ export class QueueService {
    * layer in the delivery service).
    */
   enqueueEmail(data: EmailSendJob, opts?: JobsOptions) {
+    // `variables` carries template variables (patient name, appointment time,
+    // invoice details) — PII (M1). Shorter failed-job retention than the
+    // 7-day default.
     return this.add(QUEUE.EMAIL, JOB.EMAIL_SEND, data, {
       ...(data.idempotencyKey ? { jobId: `email-${data.idempotencyKey}` } : {}),
+      removeOnFail: { age: PII_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
       ...opts,
     });
   }
@@ -384,7 +488,10 @@ export class QueueService {
   }
 
   /** Enqueue inbound-webhook processing. Deterministic jobId → duplicate-safe. */
-  enqueueIntegrationInbound(data: IntegrationInboundJobData, opts?: JobsOptions) {
+  enqueueIntegrationInbound(
+    data: IntegrationInboundJobData,
+    opts?: JobsOptions,
+  ) {
     return this.add(QUEUE.INTEGRATION_INBOUND, JOB.INTEGRATION_INBOUND, data, {
       jobId: `integration-inbound-${data.inboundEventId}`,
       ...opts,
@@ -410,7 +517,12 @@ export class QueueService {
   // ── Repeatable (scheduled) jobs ──────────────────────────────────────────
 
   /** Idempotent: BullMQ dedups repeatables by their {name, repeat} key. */
-  addRepeatable(queue: QueueName, name: string, data: BaseJobData, cronPattern: string) {
+  addRepeatable(
+    queue: QueueName,
+    name: string,
+    data: BaseJobData,
+    cronPattern: string,
+  ) {
     return this.queues[queue].add(name, this.stamp(data), {
       repeat: { pattern: cronPattern },
     });
@@ -433,6 +545,17 @@ export class QueueService {
     return this.appRedis.application.get(key);
   }
 
+  /**
+   * Batched read (M5 — docs/CACHING_QUEUES_AUDIT.md): one `MGET` round trip
+   * for N keys instead of N sequential `GET`s. Used by the embedding cache's
+   * multi-text lookup. Empty input short-circuits (ioredis's own `mget()`
+   * rejects a zero-argument call).
+   */
+  async kvMget(keys: string[]): Promise<(string | null)[]> {
+    if (keys.length === 0) return [];
+    return this.appRedis.application.mget(...keys);
+  }
+
   async redisPing(): Promise<number> {
     const started = Date.now();
     await this.appRedis.application.ping();
@@ -443,7 +566,16 @@ export class QueueService {
     const entries = await Promise.all(
       ALL_QUEUES.map(
         async (name) =>
-          [name, await this.queues[name].getJobCounts('waiting', 'active', 'delayed', 'completed', 'failed')] as const,
+          [
+            name,
+            await this.queues[name].getJobCounts(
+              'waiting',
+              'active',
+              'delayed',
+              'completed',
+              'failed',
+            ),
+          ] as const,
       ),
     );
     return Object.fromEntries(entries);
@@ -479,7 +611,8 @@ export class QueueService {
   private stamp<T extends BaseJobData>(data: T): T {
     return {
       ...data,
-      correlationId: data.correlationId ?? this.ctx.getCorrelationId() ?? undefined,
+      correlationId:
+        data.correlationId ?? this.ctx.getCorrelationId() ?? undefined,
       actorId: data.actorId ?? this.ctx.getUser()?.id,
     };
   }

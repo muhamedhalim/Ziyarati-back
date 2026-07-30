@@ -6,29 +6,45 @@ import { IntegrationInboundService } from '../../modules/integration-platform/in
 
 describe('IntegrationRecoveryProcessor', () => {
   const build = (lockToken: string | null) => {
-    const lock = { acquire: jest.fn().mockResolvedValue(lockToken), release: jest.fn().mockResolvedValue(undefined) };
+    const lock = {
+      acquire: jest.fn().mockResolvedValue(lockToken),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
     const imports = { recoverStale: jest.fn().mockResolvedValue(2) };
     const syncs = { recoverStale: jest.fn().mockResolvedValue(1) };
     const inbound = { recoverStale: jest.fn().mockResolvedValue(3) };
+    const metrics = { setWorkerHeartbeat: jest.fn() };
     const processor = new IntegrationRecoveryProcessor(
       lock as unknown as DistributedLockService,
       imports as unknown as IntegrationImportJobService,
       syncs as unknown as IntegrationSyncService,
       inbound as unknown as IntegrationInboundService,
+      metrics as any,
     );
-    return { processor, lock, imports, syncs, inbound };
+    return { processor, lock, imports, syncs, inbound, metrics };
   };
 
   it('acquires the lock, sweeps all three services, and releases the lock afterwards', async () => {
-    const { processor, lock, imports, syncs, inbound } = build('token-abc');
+    const { processor, lock, imports, syncs, inbound, metrics } =
+      build('token-abc');
 
     const result = await processor.process({ data: { tenantId: null } } as any);
 
     expect(imports.recoverStale).toHaveBeenCalled();
     expect(syncs.recoverStale).toHaveBeenCalled();
     expect(inbound.recoverStale).toHaveBeenCalled();
-    expect(result).toEqual({ importsRequeued: 2, syncsRequeued: 1, inboundRequeued: 3 });
-    expect(lock.release).toHaveBeenCalledWith('lock:integration-recover-stale', 'token-abc');
+    expect(result).toEqual({
+      importsRequeued: 2,
+      syncsRequeued: 1,
+      inboundRequeued: 3,
+    });
+    expect(lock.release).toHaveBeenCalledWith(
+      'lock:integration-recover-stale',
+      'token-abc',
+    );
+    expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+      'integration.recoverStale',
+    );
   });
 
   it('skips the sweep entirely when the lock is already held elsewhere (prevents duplicate execution under a BullMQ stall-redelivery)', async () => {
@@ -47,7 +63,12 @@ describe('IntegrationRecoveryProcessor', () => {
     const { processor, lock, imports } = build('token-xyz');
     imports.recoverStale.mockRejectedValueOnce(new Error('db error'));
 
-    await expect(processor.process({ data: { tenantId: null } } as any)).rejects.toThrow('db error');
-    expect(lock.release).toHaveBeenCalledWith('lock:integration-recover-stale', 'token-xyz');
+    await expect(
+      processor.process({ data: { tenantId: null } } as any),
+    ).rejects.toThrow('db error');
+    expect(lock.release).toHaveBeenCalledWith(
+      'lock:integration-recover-stale',
+      'token-xyz',
+    );
   });
 });

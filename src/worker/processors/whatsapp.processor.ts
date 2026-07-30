@@ -5,6 +5,7 @@ import { Job } from 'bullmq';
 import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { WhatsappSendJob } from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
 import { WhatsappExecutionService } from '../../modules/whatsapp/whatsapp-execution.service';
@@ -30,6 +31,7 @@ export class WhatsappProcessor extends WorkerHost {
 
   async process(job: Job<WhatsappSendJob>) {
     const data = job.data;
+    validateJobPayload(job.name, data);
     this.logger.log(
       `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} template=${data.templateId} attempt=${job.attemptsMade + 1}`,
     );
@@ -45,6 +47,8 @@ export class WhatsappProcessor extends WorkerHost {
 
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error) {
-    this.logger.error(`${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`);
+    this.logger.error(
+      `${job?.name} job=${job?.id} FAILED (attempt ${job?.attemptsMade}): ${err?.message}`,
+    );
   }
 }

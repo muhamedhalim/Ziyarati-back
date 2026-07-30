@@ -1,7 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 
 import { WorkerModule } from './worker.module';
+import { MetricsService } from './metrics/metrics.service';
+import { startMetricsHttpServer } from './metrics/start-metrics-http-server';
 
 /**
  * Worker process entrypoint (deployed as a SEPARATE Railway service —
@@ -18,12 +21,23 @@ async function bootstrap(): Promise<void> {
     bufferLogs: false,
   });
 
+  // Minimal /metrics listener (M14 — docs/CACHING_QUEUES_AUDIT.md), a plain
+  // http.Server, NOT a Nest HTTP adapter — see this module's own docstring
+  // above on why the worker stays adapter-free otherwise.
+  const metricsServer = startMetricsHttpServer(
+    app.get(ConfigService),
+    app.get(MetricsService),
+  );
+
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.log(`Received ${signal} — draining workers and shutting down…`);
     try {
+      await new Promise<void>((resolve) =>
+        metricsServer.close(() => resolve()),
+      );
       await app.close(); // closes processors gracefully (finishes active jobs) + monitor
       logger.log('Worker shut down cleanly.');
       process.exit(0);
