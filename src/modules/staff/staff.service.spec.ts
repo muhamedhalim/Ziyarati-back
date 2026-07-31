@@ -43,6 +43,7 @@ describe('StaffService', () => {
   let rolesService: {
     findAssignableForStaff: jest.Mock;
     findAssignableRoleBySlug: jest.Mock;
+    findAssignableRolePermissions: jest.Mock;
     findGrantableForCaller: jest.Mock;
     validateCustomPermissions: jest.Mock;
     resolveCustomRole: jest.Mock;
@@ -76,6 +77,7 @@ describe('StaffService', () => {
       findAssignableRoleBySlug: jest
         .fn()
         .mockResolvedValue({ id: 'role-receptionist', slug: ROLE.RECEPTIONIST, name: 'Receptionist' }),
+      findAssignableRolePermissions: jest.fn().mockResolvedValue([]),
       findGrantableForCaller: jest.fn().mockResolvedValue([]),
       validateCustomPermissions: jest.fn(),
       resolveCustomRole: jest.fn(),
@@ -723,13 +725,87 @@ describe('StaffService', () => {
   });
 
   describe('findAssignablePermissions', () => {
-    it('delegates to RolesService.findGrantableForCaller', async () => {
-      const perms = [{ id: 'p1', slug: 'appointments.read', name: 'Read appointments', module: 'appointments' }];
+    it('delegates to RolesService.findGrantableForCaller and projects the assignable-permission view', async () => {
+      const perms = [
+        {
+          id: 'p1',
+          slug: PERMISSION.APPOINTMENTS_READ_OWN,
+          name: 'Read own appointments',
+          module: 'appointments',
+          description: 'View only the appointments the current user owns.',
+          scope: 'tenant',
+        },
+      ];
       rolesService.findGrantableForCaller.mockResolvedValueOnce(perms);
 
-      const callerPermissions = ['appointments.read'];
-      await expect(service.findAssignablePermissions(callerPermissions)).resolves.toEqual(perms);
+      const callerPermissions = [PERMISSION.APPOINTMENTS_READ_OWN];
+      await expect(service.findAssignablePermissions(callerPermissions)).resolves.toEqual([
+        {
+          id: 'p1',
+          slug: PERMISSION.APPOINTMENTS_READ_OWN,
+          name: 'Read own appointments',
+          module: 'appointments',
+          description: 'View only the appointments the current user owns.',
+          scope: 'tenant',
+          isOwnershipScoped: true,
+        },
+      ]);
       expect(rolesService.findGrantableForCaller).toHaveBeenCalledWith(callerPermissions);
+    });
+  });
+
+  describe('findAssignableRolePermissions', () => {
+    it("delegates to RolesService.findAssignableRolePermissions and projects the role's full permission set", async () => {
+      const perms = [
+        {
+          id: 'p1',
+          slug: PERMISSION.APPOINTMENTS_READ_OWN,
+          name: 'Read own appointments',
+          module: 'appointments',
+          description: 'View only the appointments the current user owns.',
+          scope: 'tenant',
+        },
+        {
+          id: 'p2',
+          slug: PERMISSION.DASHBOARD_ACCESS,
+          name: 'Access clinic dashboard',
+          module: 'general',
+          description: null,
+          scope: 'tenant',
+        },
+      ];
+      rolesService.findAssignableRolePermissions.mockResolvedValueOnce(perms);
+
+      await expect(
+        service.findAssignableRolePermissions('role-doctor', TENANT),
+      ).resolves.toEqual([
+        {
+          id: 'p1',
+          slug: PERMISSION.APPOINTMENTS_READ_OWN,
+          name: 'Read own appointments',
+          module: 'appointments',
+          description: 'View only the appointments the current user owns.',
+          scope: 'tenant',
+          isOwnershipScoped: true,
+        },
+        {
+          id: 'p2',
+          slug: PERMISSION.DASHBOARD_ACCESS,
+          name: 'Access clinic dashboard',
+          module: 'general',
+          description: null,
+          scope: 'tenant',
+          isOwnershipScoped: false,
+        },
+      ]);
+      expect(rolesService.findAssignableRolePermissions).toHaveBeenCalledWith('role-doctor', TENANT);
+    });
+
+    it('returns an empty array when the role grants nothing', async () => {
+      rolesService.findAssignableRolePermissions.mockResolvedValueOnce([]);
+      await expect(
+        service.findAssignableRolePermissions('role-empty', TENANT),
+      ).resolves.toEqual([]);
     });
   });
 
