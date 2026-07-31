@@ -263,6 +263,64 @@ describe('RolesService', () => {
     });
   });
 
+  describe('findAssignableRolePermissions', () => {
+    it("returns the role's full permission set, sorted by module then name", async () => {
+      roles.findOne.mockResolvedValueOnce({
+        id: 'role-doctor',
+        slug: ROLE.DOCTOR,
+        tenant: null,
+        is_system: true,
+        rolePermissions: [
+          {
+            permission: {
+              id: 'p2',
+              slug: PERMISSION.DASHBOARD_ACCESS,
+              name: 'Access clinic dashboard',
+              module: 'general',
+            },
+          },
+          {
+            permission: {
+              id: 'p1',
+              slug: PERMISSION.APPOINTMENTS_READ_OWN,
+              name: 'Read own appointments',
+              module: 'appointments',
+            },
+          },
+        ],
+      });
+
+      const result = await service.findAssignableRolePermissions('role-doctor', TENANT);
+
+      expect(result.map((p) => p.slug)).toEqual([
+        PERMISSION.APPOINTMENTS_READ_OWN,
+        PERMISSION.DASHBOARD_ACCESS,
+      ]);
+    });
+
+    it('rejects a role that cannot be assigned to staff (e.g. owner/super_admin)', async () => {
+      roles.findOne.mockResolvedValueOnce({
+        id: 'role-owner',
+        slug: ROLE.OWNER,
+        tenant: null,
+        is_system: true,
+        rolePermissions: [],
+      });
+
+      await expect(
+        service.findAssignableRolePermissions('role-owner', TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    });
+
+    it('throws ROLE_NOT_FOUND when the role is not visible to this tenant', async () => {
+      roles.findOne.mockResolvedValueOnce(null);
+
+      await expect(
+        service.findAssignableRolePermissions('nonexistent', TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.ROLE_NOT_FOUND });
+    });
+  });
+
   describe('user-role assignments', () => {
     it('lists a user roles', async () => {
       users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });

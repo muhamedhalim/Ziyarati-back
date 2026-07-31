@@ -221,6 +221,37 @@ export class RolesService {
   }
 
   /**
+   * The FULL permission set granted by a role assignable to staff — same
+   * visibility + {@link NON_STAFF_ROLE_SLUGS} guard as
+   * {@link findAssignableForStaff}, so this can only ever return permissions
+   * for a role the Add/Edit Staff role selector itself offered. Unlike
+   * {@link findGrantableForCaller}, this is NEVER filtered to what the caller
+   * holds — it backs a read-only PREVIEW of what a predefined role
+   * (Doctor/Manager/Receptionist/a tenant custom role) actually grants,
+   * shown before the staff member is created. Purely informational: it does
+   * not change what gets granted on submit (see StaffService.createWithNewUser,
+   * which re-resolves the role's permissions server-side regardless).
+   */
+  async findAssignableRolePermissions(
+    roleId: string,
+    tenantId: string,
+  ): Promise<Permission[]> {
+    const role = await this.findOne(roleId, tenantId); // enforces visibility
+    if (NON_STAFF_ROLE_SLUGS.includes(role.slug as RoleSlug)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Role "${role.slug}" cannot be assigned to staff`,
+      });
+    }
+    return role.rolePermissions
+      .map((rp) => rp.permission)
+      .sort(
+        (a, b) =>
+          (a.module ?? '').localeCompare(b.module ?? '') ||
+          a.name.localeCompare(b.name),
+      );
+  }
+
+  /**
    * The permission catalogue entries the CALLER may grant to someone else —
    * always a subset of the caller's own `permissions` (never the full
    * catalogue), and never {@link RESERVED_PERMISSION_SLUGS} or

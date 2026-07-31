@@ -35,7 +35,9 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import {
   CUSTOM_ROLE_SENTINEL,
+  OWNERSHIP_SCOPED_PERMISSIONS,
   PERMISSION,
+  PermissionSlug,
   ROLE,
   RoleSlug,
 } from '../../rbac/rbac.constants';
@@ -57,6 +59,37 @@ interface AuditRoleSnapshot {
   name: string;
   isCustom: boolean;
   permissionSlugs?: string[];
+}
+
+/**
+ * Permission catalogue entry as shown to the Add/Edit Staff role selector —
+ * backs both the "Other" checklist (`findAssignablePermissions`) and the
+ * predefined-role permissions preview (`findAssignableRolePermissions`), so
+ * the two panels render identically. `isOwnershipScoped` mirrors
+ * `OWNERSHIP_SCOPED_PERMISSIONS` (rbac.constants.ts) — never re-derived from
+ * the slug string on the frontend, since that set is a curated editorial
+ * decision, not a naming convention.
+ */
+export interface AssignablePermissionView {
+  id: string;
+  slug: string;
+  name: string;
+  module?: string | null;
+  description?: string | null;
+  scope?: string;
+  isOwnershipScoped: boolean;
+}
+
+function toAssignablePermissionView(p: Permission): AssignablePermissionView {
+  return {
+    id: p.id,
+    slug: p.slug,
+    name: p.name,
+    module: p.module,
+    description: p.description ?? null,
+    scope: p.scope,
+    isOwnershipScoped: OWNERSHIP_SCOPED_PERMISSIONS.has(p.slug as PermissionSlug),
+  };
 }
 
 /**
@@ -138,9 +171,25 @@ export class StaffService {
    */
   async findAssignablePermissions(
     callerPermissions: string[],
-  ): Promise<{ id: string; slug: string; name: string; module?: string | null }[]> {
+  ): Promise<AssignablePermissionView[]> {
     const perms = await this.rolesService.findGrantableForCaller(callerPermissions);
-    return perms.map((p) => ({ id: p.id, slug: p.slug, name: p.name, module: p.module }));
+    return perms.map(toAssignablePermissionView);
+  }
+
+  /**
+   * The FULL permission set a predefined or custom role grants — never
+   * filtered to what the caller holds (unlike `findAssignablePermissions`).
+   * Backs the read-only permissions preview shown under the role selector
+   * once Doctor/Manager/Receptionist/a tenant custom role is picked, so the
+   * clinic owner sees exactly what that role grants before creating the
+   * employee. Purely informational — see `RolesService.findAssignableRolePermissions`.
+   */
+  async findAssignableRolePermissions(
+    roleId: string,
+    tenantId: string,
+  ): Promise<AssignablePermissionView[]> {
+    const perms = await this.rolesService.findAssignableRolePermissions(roleId, tenantId);
+    return perms.map(toAssignablePermissionView);
   }
 
   /**

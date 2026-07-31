@@ -479,6 +479,9 @@ regardless of what the client sends).
           slug: { type: 'string', example: 'appointments.read' },
           name: { type: 'string', example: 'Read appointments' },
           module: { type: 'string', nullable: true, example: 'appointments' },
+          description: { type: 'string', nullable: true },
+          scope: { type: 'string', example: 'tenant' },
+          isOwnershipScoped: { type: 'boolean' },
         },
       },
     },
@@ -489,6 +492,58 @@ regardless of what the client sends).
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   findAssignablePermissions(@CurrentUser('permissions') callerPermissions: string[]) {
     return this.staff.findAssignablePermissions(callerPermissions);
+  }
+
+  @ApiOperation({
+    summary: "Preview a role's full permission set (informational only)",
+    description: `
+**Protected — requires \`staff.create\`. Clinic must be active.**
+
+Returns the FULL permission set granted by a role from \`GET
+/staff/assignable-roles\` — grouped/labelled for the read-only preview shown
+under the role selector once a predefined role (Doctor/Manager/Receptionist)
+or a tenant custom role is picked, so the clinic owner sees exactly what that
+role grants before the employee is created.
+
+Unlike \`GET /staff/assignable-permissions\` (which is filtered to what the
+CALLER holds, for the "Other" checklist), this always returns the role's
+actual permission set, whoever the caller is — it is a preview, not a grant
+selector. Creating the staff member re-resolves and enforces the role's
+permissions server-side exactly as today; this endpoint changes nothing
+about what gets granted.
+
+**Who can call this:** Owner, Manager (\`staff.create\`).
+    `.trim(),
+  })
+  @ApiParam({ name: 'roleId', description: 'A role id from `GET /staff/assignable-roles`.' })
+  @ApiOkResponse({
+    description: "The role's permissions.",
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          slug: { type: 'string', example: 'appointments.read_own' },
+          name: { type: 'string', example: 'Read own appointments' },
+          module: { type: 'string', nullable: true, example: 'appointments' },
+          description: { type: 'string', nullable: true },
+          scope: { type: 'string', example: 'tenant' },
+          isOwnershipScoped: { type: 'boolean' },
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.create`, the role cannot be assigned to staff, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({ description: 'Role not found or not visible to this tenant.', schema: S_ERROR })
+  @Get('assignable-roles/:roleId/permissions')
+  @RequirePermissions(PERMISSION.STAFF_CREATE)
+  findAssignableRolePermissions(@Param('roleId', ParseUUIDPipe) roleId: string) {
+    return this.staff.findAssignableRolePermissions(roleId, this.ctx.requireTenantId());
   }
 
   @ApiOperation({
