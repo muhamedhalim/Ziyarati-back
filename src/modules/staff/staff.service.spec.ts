@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { DataSource } from 'typeorm';
+import { DataSource, QueryFailedError } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { StaffService } from './staff.service';
@@ -129,17 +129,43 @@ describe('StaffService', () => {
       staff.save.mockResolvedValueOnce({ id: 'staff-1' });
       staff.findOne.mockResolvedValueOnce({ id: 'staff-1' }); // reload
       await expect(service.create(TENANT, { userId: 'u1' } as any)).resolves.toEqual({ id: 'staff-1' });
+      expect(staff.create).toHaveBeenCalledWith(
+        expect.objectContaining({ user: { id: 'u1' }, tenant: { id: TENANT } }),
+      );
     });
 
     it('rejects a user not in the clinic', async () => {
       users.findOne.mockResolvedValueOnce(null);
       await expect(service.create(TENANT, { userId: 'x' } as any)).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(users.findOne).toHaveBeenCalledWith({
+        where: { id: 'x', tenant: { id: TENANT } },
+      });
+      expect(staff.findOne).not.toHaveBeenCalled();
     });
 
     it('rejects a duplicate staff profile for a user', async () => {
       users.findOne.mockResolvedValueOnce({ id: 'u1' });
       staff.findOne.mockResolvedValueOnce({ id: 'existing' });
       await expect(service.create(TENANT, { userId: 'u1' } as any)).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(staff.findOne).toHaveBeenCalledWith({
+        where: { user: { id: 'u1' } },
+        withDeleted: true,
+      });
+    });
+
+    it('rejects a concurrent duplicate insert with the same clear conflict', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1' });
+      staff.findOne.mockResolvedValueOnce(null);
+      staff.save.mockRejectedValueOnce(
+        Object.assign(new QueryFailedError('INSERT', [], new Error('duplicate key')), {
+          code: '23505',
+        }),
+      );
+
+      await expect(service.create(TENANT, { userId: 'u1' } as any)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+        message: 'This user already has a staff profile',
+      });
     });
   });
 
@@ -337,6 +363,9 @@ describe('StaffService', () => {
 
       const res = await service.findEligibleUsers(TENANT, { page: 1, limit: 10 } as any);
 
+      expect(staff.find).toHaveBeenCalledWith(
+        expect.objectContaining({ withDeleted: true }),
+      );
       expect(res.total).toBe(2);
       expect(res.data[0]).toEqual({
         id: 'u1',

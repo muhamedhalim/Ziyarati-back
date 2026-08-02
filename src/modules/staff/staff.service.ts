@@ -15,7 +15,7 @@ import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
-import { AppError, ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto } from './dto/query-staff.dto';
@@ -273,8 +273,12 @@ export class StaffService {
       });
     }
 
+    // `user_id` is globally unique on staff_profiles. Include soft-deleted
+    // rows here: a deleted profile still owns that user_id in PostgreSQL, so
+    // treating it as eligible would only defer the conflict to INSERT.
     const existing = await this.staff.findOne({
-      where: { user: { id: dto.userId }, tenant: { id: tenantId } },
+      where: { user: { id: dto.userId } },
+      withDeleted: true,
     });
     if (existing) {
       throw new AppError(ErrorCode.CONFLICT, {
@@ -295,7 +299,20 @@ export class StaffService {
       booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
       is_available_for_booking: dto.isAvailableForBooking ?? true,
     });
-    const saved = await this.staff.save(profile);
+    let saved: StaffProfile;
+    try {
+      saved = await this.staff.save(profile);
+    } catch (error) {
+      // The pre-insert existence check gives a clear response for ordinary
+      // duplicate requests. The unique index remains the race-safe backstop
+      // when two requests pass that check concurrently.
+      if (isUniqueViolation(error)) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: 'This user already has a staff profile',
+        });
+      }
+      throw error;
+    }
     return this.findOne(tenantId, saved.id);
   }
 
@@ -510,16 +527,19 @@ export class StaffService {
 
   /**
    * Users this tenant can turn into staff via "Link existing user": active,
-   * belong to the tenant, and don't already have a (non-deleted) staff
-   * profile. Two plain queries rather than a NOT EXISTS/anti-join — simple,
-   * fully typed, and staff/user counts per clinic are small enough that this
-   * never becomes a bottleneck.
+   * belong to the tenant, and don't already have a staff profile (including a
+   * soft-deleted one, because the one-to-one database constraint still retains
+   * that user ID). Two bulk queries rather than per-user staff lookups, so
+   * this stays free of N+1 queries while retaining typed repository access.
    */
   async findEligibleUsers(tenantId: string, query: EligibleUsersQueryDto) {
+    // This deliberately has no tenant condition: the database relationship is
+    // one-to-one globally, so a corrupted cross-tenant row must still prevent
+    // this picker from advertising a user that cannot be linked.
     const linked = await this.staff.find({
-      where: { tenant: { id: tenantId } },
       relations: { user: true },
       select: { id: true, user: { id: true } },
+      withDeleted: true,
     });
     const linkedIds = linked.map((sp) => sp.user.id);
 
