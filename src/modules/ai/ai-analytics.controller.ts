@@ -46,58 +46,76 @@ export class AiAnalyticsController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Usage analytics', description: `**Protected — \`ai.analytics.read\`. Clinic active.** Token consumption, request counts, monthly trends, top agents (from ai_usage_logs).` })
+  @ApiOperation({
+    summary: 'Usage analytics',
+    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Token consumption, request counts, monthly trends, top agents (from ai_usage_logs).`,
+  })
   @ApiOkResponse({ description: 'Usage analytics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('usage')
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   usage(@Query() filter: AiAnalyticsFilterDto) {
     return this.analytics.usage(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Cost analytics', description: `**Protected — \`ai.analytics.read\`. Clinic active.** Total + monthly spend (from ai_cost_logs; tenant-level — no agent dimension).` })
-  @ApiOkResponse({ description: 'Cost analytics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
-  @Get('cost')
-  @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
-  cost(@Query() filter: AiAnalyticsFilterDto) {
-    return this.analytics.cost(this.ctx.requireTenantId(), filter);
-  }
-
-  @ApiOperation({ summary: 'Cost attribution by feature, route, channel, model, and request kind' })
-  @ApiOkResponse({ description: 'Tenant-isolated exact AI cost ledger aggregation.' })
-  @Get('cost-attribution')
-  @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
-  costAttribution(@Query() filter: AiAnalyticsFilterDto) {
-    return this.analytics.costAttribution(this.ctx.requireTenantId(), filter);
-  }
-
-  @ApiOperation({ summary: 'Conversation analytics', description: `**Protected — \`ai.analytics.read\`. Clinic active.** Totals, status mix, total messages, handover & AI-resolution rates, active agents.` })
+  @ApiOperation({
+    summary: 'Conversation analytics',
+    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Totals, status mix, total messages, handover & AI-resolution rates, active agents.`,
+  })
   @ApiOkResponse({ description: 'Conversation analytics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('conversations')
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   conversations(@Query() filter: AiAnalyticsFilterDto) {
     return this.analytics.conversations(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Agent analytics', description: `**Protected — \`ai.analytics.read\`. Clinic active.** Per-agent tokens/requests + active-agent count.` })
+  @ApiOperation({
+    summary: 'Agent analytics',
+    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Per-agent tokens/requests + active-agent count.`,
+  })
   @ApiOkResponse({ description: 'Agent analytics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('agents')
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   agents(@Query() filter: AiAnalyticsFilterDto) {
     return this.analytics.agents_(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Knowledge analytics', description: `**Protected — \`ai.analytics.read\`. Clinic active.** Knowledge-chunk inventory per agent (retrieval frequency not tracked at schema level).` })
+  @ApiOperation({
+    summary: 'Knowledge analytics',
+    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Knowledge-chunk inventory per agent (retrieval frequency not tracked at schema level).`,
+  })
   @ApiOkResponse({ description: 'Knowledge analytics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('knowledge')
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   knowledge() {

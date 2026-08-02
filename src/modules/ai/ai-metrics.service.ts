@@ -108,7 +108,7 @@ export class AiMetricsService {
     }
   }
 
-  /** Tenant-scoped aggregate summary: latency percentiles, tokens, cost, tool/error rates. */
+  /** Tenant-scoped aggregate summary: latency percentiles, tokens, and tool/error rates. */
   async summary(tenantId: string, filter: AiAnalyticsFilterDto) {
     const { where, params } = this.scope(tenantId, filter);
     const [row] = await this.dataSource.query(
@@ -134,7 +134,6 @@ export class AiMetricsService {
          COALESCE(sum(prompt_tokens), 0)::bigint AS prompt_tokens,
          COALESCE(sum(completion_tokens), 0)::bigint AS completion_tokens,
          COALESCE(sum(total_tokens), 0)::bigint AS total_tokens,
-         COALESCE(sum(cost_usd), 0) AS total_cost_usd,
          COALESCE(sum(total_latency_ms), 0)::bigint AS total_latency_ms_sum
        FROM ai_execution_metrics
        ${where}`,
@@ -145,12 +144,11 @@ export class AiMetricsService {
       `SELECT model,
               count(*)::int AS requests,
               COALESCE(sum(total_tokens), 0)::bigint AS tokens,
-              COALESCE(sum(cost_usd), 0) AS cost_usd,
               COALESCE(avg(total_latency_ms), 0) AS avg_latency_ms
          FROM ai_execution_metrics
          ${where}
         GROUP BY model
-        ORDER BY cost_usd DESC`,
+        ORDER BY requests DESC`,
       params,
     );
 
@@ -183,26 +181,30 @@ export class AiMetricsService {
         calls: n(row?.tool_calls),
         succeeded: n(row?.tool_success),
         failed: n(row?.tool_failure),
-        successRate: n(row?.tool_calls) > 0 ? n(row?.tool_success) / n(row?.tool_calls) : null,
+        successRate:
+          n(row?.tool_calls) > 0
+            ? n(row?.tool_success) / n(row?.tool_calls)
+            : null,
       },
       tokens: {
         prompt: n(row?.prompt_tokens),
         completion: completionTokens,
         total: n(row?.total_tokens),
-        perSecond: totalLatencySumSec > 0 ? +(completionTokens / totalLatencySumSec).toFixed(2) : 0,
+        perSecond:
+          totalLatencySumSec > 0
+            ? +(completionTokens / totalLatencySumSec).toFixed(2)
+            : 0,
       },
-      costUsd: +n(row?.total_cost_usd).toFixed(6),
       byModel: byModel.map((m: Record<string, unknown>) => ({
         model: m.model as string,
         requests: n(m.requests),
         tokens: n(m.tokens),
-        costUsd: +n(m.cost_usd).toFixed(6),
         avgLatencyMs: n(m.avg_latency_ms),
       })),
     };
   }
 
-  /** Daily time series for charts: requests, avg latency, tokens, cost, errors. */
+  /** Daily time series for charts: requests, avg latency, tokens, and errors. */
   async timeSeries(tenantId: string, filter: AiAnalyticsFilterDto) {
     const { where, params } = this.scope(tenantId, filter);
     const rows = await this.dataSource.query(
@@ -210,7 +212,6 @@ export class AiMetricsService {
               count(*)::int AS requests,
               COALESCE(avg(total_latency_ms), 0) AS avg_latency_ms,
               COALESCE(sum(total_tokens), 0)::bigint AS tokens,
-              COALESCE(sum(cost_usd), 0) AS cost_usd,
               count(*) FILTER (WHERE success = false)::int AS errors
          FROM ai_execution_metrics
          ${where}
@@ -223,12 +224,14 @@ export class AiMetricsService {
       requests: n(r.requests),
       avgLatencyMs: n(r.avg_latency_ms),
       tokens: n(r.tokens),
-      costUsd: +n(r.cost_usd).toFixed(6),
       errors: n(r.errors),
     }));
   }
 
-  private scope(tenantId: string, filter: AiAnalyticsFilterDto): { where: string; params: unknown[] } {
+  private scope(
+    tenantId: string,
+    filter: AiAnalyticsFilterDto,
+  ): { where: string; params: unknown[] } {
     const params: unknown[] = [tenantId];
     let where = `WHERE "tenantId" = $1`;
     if (filter.from) {

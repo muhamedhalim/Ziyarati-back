@@ -34,7 +34,7 @@ const S_ERROR = {
  * Advanced AI Monitoring (tenant-scoped). Reads `ai_execution_metrics`, written
  * best-effort by `AiExecutionService` after every turn. Guarded identically to
  * `AiAnalyticsController` (same permission — this is the same "AI Analytics"
- * capability, just a different lens: latency/cost/tool health vs. usage volume).
+ * capability, just a different lens: latency/tool health vs. usage volume).
  */
 @ApiTags('AI Analytics')
 @ApiBearerAuth('JWT-auth')
@@ -50,11 +50,17 @@ export class AiMetricsController {
 
   @ApiOperation({
     summary: 'AI execution metrics summary',
-    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Latency (avg/P50/P95/P99, total + first-token), streaming duration, RAG/embedding/tool timing, tool success/failure rate, error rate, token/sec, cost — overall and per model.`,
+    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Latency (avg/P50/P95/P99, total + first-token), streaming duration, RAG/embedding/tool timing, tool success/failure rate, error rate, and token/sec.`,
   })
   @ApiOkResponse({ description: 'Execution metrics summary.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('summary')
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   summary(@Query() filter: AiAnalyticsFilterDto) {
@@ -63,11 +69,17 @@ export class AiMetricsController {
 
   @ApiOperation({
     summary: 'AI execution metrics time series',
-    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Daily requests, average latency, tokens, cost and error count — for historical charts.`,
+    description: `**Protected — \`ai.analytics.read\`. Clinic active.** Daily requests, average latency, tokens, and error count — for historical charts.`,
   })
   @ApiOkResponse({ description: 'Daily time series.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('timeseries')
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   timeSeries(@Query() filter: AiAnalyticsFilterDto) {
