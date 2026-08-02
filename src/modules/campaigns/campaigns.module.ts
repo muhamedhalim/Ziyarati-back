@@ -8,6 +8,7 @@ import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Customer } from '../../entities/CRM/Customer';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
@@ -61,6 +62,7 @@ import {
       // the tenant. Account lifecycle stays in WhatsappModule.
       WhatsappAccount,
       Customer,
+      Tenant,
     ]),
     SubscriptionBillingModule,
     // Real WhatsApp delivery: WhatsappCampaignDeliveryProvider delegates to
@@ -93,9 +95,9 @@ import {
     // now only serves channels with no real adapter yet (SMS/EMAIL/PUSH/IN_APP).
     {
       provide: CAMPAIGN_DELIVERY_PROVIDERS,
-      useFactory: (whatsapp: WhatsappCampaignDeliveryProvider): CampaignDeliveryProvider[] => [
-        whatsapp,
-      ],
+      useFactory: (
+        whatsapp: WhatsappCampaignDeliveryProvider,
+      ): CampaignDeliveryProvider[] => [whatsapp],
       inject: [WhatsappCampaignDeliveryProvider],
     },
   ],

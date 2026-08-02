@@ -17,7 +17,11 @@ import { AiToolCall } from '../providers/ai-provider.interface';
 import { AiAnalyticsService } from '../ai-analytics.service';
 import { HandoverRequestService } from '../handover-request.service';
 import { AI_TOOL } from './ai-tools.constants';
-import { AI_ADMIN_TOOL, AI_ADMIN_TOOL_PERMISSION, AiAdminToolName } from './ai-admin-tools.constants';
+import {
+  AI_ADMIN_TOOL,
+  AI_ADMIN_TOOL_PERMISSION,
+  AiAdminToolName,
+} from './ai-admin-tools.constants';
 import { PERMISSION } from '../../../rbac/rbac.constants';
 
 /** Context for a tool execution, all bound server-side (never from the model). */
@@ -87,7 +91,10 @@ export class AiToolDispatchService {
     try {
       args = call.arguments ? JSON.parse(call.arguments) : {};
     } catch {
-      return { success: false, error: 'Invalid tool arguments (not valid JSON).' };
+      return {
+        success: false,
+        error: 'Invalid tool arguments (not valid JSON).',
+      };
     }
 
     try {
@@ -115,7 +122,6 @@ export class AiToolDispatchService {
         case AI_ADMIN_TOOL.GET_PATIENT_OVERVIEW:
         case AI_ADMIN_TOOL.GET_STAFF_OVERVIEW:
         case AI_ADMIN_TOOL.GET_AI_USAGE_REPORT:
-        case AI_ADMIN_TOOL.GET_AI_COST_REPORT:
         case AI_ADMIN_TOOL.GET_AI_MONITORING_SUMMARY:
           return await this.executeAdminTool(ctx, call.name, args);
         default:
@@ -142,13 +148,25 @@ export class AiToolDispatchService {
   ): Promise<ToolResult> {
     const required = AI_ADMIN_TOOL_PERMISSION[name];
     if (!(ctx.permissions ?? []).includes(required)) {
-      return { success: false, error: `Forbidden: this question requires the "${required}" permission.` };
+      return {
+        success: false,
+        error: `Forbidden: this question requires the "${required}" permission.`,
+      };
     }
 
-    return this.run(ctx, name, `admin:${name}:${randomUUID()}`, args, async () => {
-      const data = await this.runAdminTool(ctx, name, args);
-      return { toolResult: { success: true, ...data }, resultJson: { tool: name } };
-    });
+    return this.run(
+      ctx,
+      name,
+      `admin:${name}:${randomUUID()}`,
+      args,
+      async () => {
+        const data = await this.runAdminTool(ctx, name, args);
+        return {
+          toolResult: { success: true, ...data },
+          resultJson: { tool: name },
+        };
+      },
+    );
   }
 
   private async runAdminTool(
@@ -160,7 +178,9 @@ export class AiToolDispatchService {
       case AI_ADMIN_TOOL.GET_DASHBOARD_KPIS: {
         const rows = await this.dashboardMetrics.getMetrics(ctx.tenantId, {});
         const kpis: Record<string, unknown> = {};
-        for (const r of rows) kpis[r.metric_key] = r.metric_value != null ? Number(r.metric_value) : null;
+        for (const r of rows)
+          kpis[r.metric_key] =
+            r.metric_value != null ? Number(r.metric_value) : null;
         return { kpis };
       }
       case AI_ADMIN_TOOL.GET_SUBSCRIPTION_STATUS: {
@@ -187,11 +207,15 @@ export class AiToolDispatchService {
           } as never,
           { id: ctx.actorUserId ?? '', permissions: ctx.permissions ?? [] },
         );
-        return { totalAppointments: result.total, filters: { status: args.status, from: args.from, to: args.to } };
+        return {
+          totalAppointments: result.total,
+          filters: { status: args.status, from: args.from, to: args.to },
+        };
       }
       case AI_ADMIN_TOOL.GET_PATIENT_OVERVIEW: {
         const result = await this.customers.list(ctx.tenantId, {
-          isActive: typeof args.isActive === 'boolean' ? args.isActive : undefined,
+          isActive:
+            typeof args.isActive === 'boolean' ? args.isActive : undefined,
           page: 1,
           limit: 1,
         } as never);
@@ -206,11 +230,15 @@ export class AiToolDispatchService {
         return { totalStaff: result.total };
       }
       case AI_ADMIN_TOOL.GET_AI_USAGE_REPORT:
-        return this.aiAnalytics.usage(ctx.tenantId, { from: this.str(args.from), to: this.str(args.to) });
-      case AI_ADMIN_TOOL.GET_AI_COST_REPORT:
-        return this.aiAnalytics.cost(ctx.tenantId, { from: this.str(args.from), to: this.str(args.to) });
+        return this.aiAnalytics.usage(ctx.tenantId, {
+          from: this.str(args.from),
+          to: this.str(args.to),
+        });
       case AI_ADMIN_TOOL.GET_AI_MONITORING_SUMMARY:
-        return this.aiAnalytics.conversations(ctx.tenantId, { from: this.str(args.from), to: this.str(args.to) });
+        return this.aiAnalytics.conversations(ctx.tenantId, {
+          from: this.str(args.from),
+          to: this.str(args.to),
+        });
       default:
         return {};
     }
@@ -219,74 +247,129 @@ export class AiToolDispatchService {
   // ───────────────────────── Public discovery tools ──────────────────────── //
 
   /** Cross-tenant public clinic search — read-only, safe for anonymous chats. */
-  private async searchClinics(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async searchClinics(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     const query = this.str(args.query);
     const limit = typeof args.limit === 'number' ? args.limit : undefined;
-    return this.run(ctx, AI_TOOL.SEARCH_CLINICS, `search_clinics:${randomUUID()}`, args, async () => {
-      const clinics = await this.discovery.searchClinics(query, limit);
-      return {
-        toolResult: { success: true, count: clinics.length, clinics },
-        resultJson: { count: clinics.length },
-      };
-    });
+    return this.run(
+      ctx,
+      AI_TOOL.SEARCH_CLINICS,
+      `search_clinics:${randomUUID()}`,
+      args,
+      async () => {
+        const clinics = await this.discovery.searchClinics(query, limit);
+        return {
+          toolResult: { success: true, count: clinics.length, clinics },
+          resultJson: { count: clinics.length },
+        };
+      },
+    );
   }
 
   /** Branches, doctors and services (with prices) for a chosen clinic. */
-  private async getClinicDetails(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async getClinicDetails(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     const clinicId = this.str(args.clinicId);
     if (!clinicId) return { success: false, error: 'clinicId is required.' };
-    return this.run(ctx, AI_TOOL.GET_CLINIC_DETAILS, `clinic_details:${randomUUID()}`, args, async () => {
-      const detail = await this.discovery.clinicDetail(clinicId);
-      return { toolResult: { success: true, ...detail }, resultJson: { clinicId } };
-    });
+    return this.run(
+      ctx,
+      AI_TOOL.GET_CLINIC_DETAILS,
+      `clinic_details:${randomUUID()}`,
+      args,
+      async () => {
+        const detail = await this.discovery.clinicDetail(clinicId);
+        return {
+          toolResult: { success: true, ...detail },
+          resultJson: { clinicId },
+        };
+      },
+    );
   }
 
   /** Free slots for a publicly-discovered clinic's branch + doctor on a day. */
-  private async searchPublicAvailability(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async searchPublicAvailability(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     const branchId = this.str(args.branchId);
     const staffId = this.str(args.staffId);
     const date = this.str(args.date);
     if (!branchId || !staffId || !date) {
-      return { success: false, error: 'branchId, staffId and date are required.' };
+      return {
+        success: false,
+        error: 'branchId, staffId and date are required.',
+      };
     }
-    return this.run(ctx, AI_TOOL.SEARCH_PUBLIC_AVAILABILITY, `pub_avail:${randomUUID()}`, args, async () => {
-      const result = await this.discovery.publicAvailability(
-        branchId,
-        staffId,
-        date,
-        typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
-      );
-      return { toolResult: { success: true, ...result }, resultJson: result };
-    });
+    return this.run(
+      ctx,
+      AI_TOOL.SEARCH_PUBLIC_AVAILABILITY,
+      `pub_avail:${randomUUID()}`,
+      args,
+      async () => {
+        const result = await this.discovery.publicAvailability(
+          branchId,
+          staffId,
+          date,
+          typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
+        );
+        return { toolResult: { success: true, ...result }, resultJson: result };
+      },
+    );
   }
 
   // ─────────────────────────────── Tools ─────────────────────────────────── //
 
   /** Read-only — no idempotency dedup, but still audited. */
-  private async checkAvailability(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async checkAvailability(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     const branchId = this.str(args.branchId);
     const staffId = this.str(args.staffId);
     const date = this.str(args.date);
     if (!branchId || !staffId || !date) {
-      return { success: false, error: 'branchId, staffId and date are required.' };
+      return {
+        success: false,
+        error: 'branchId, staffId and date are required.',
+      };
     }
-    return this.run(ctx, AI_TOOL.CHECK_AVAILABILITY, `check:${randomUUID()}`, args, async () => {
-      const result = await this.availability.windows(ctx.tenantId, {
-        branchId,
-        staffId,
-        date,
-        slotMinutes: typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
-      } as never);
-      return { toolResult: { success: true, ...result }, resultJson: result };
-    });
+    return this.run(
+      ctx,
+      AI_TOOL.CHECK_AVAILABILITY,
+      `check:${randomUUID()}`,
+      args,
+      async () => {
+        const result = await this.availability.windows(ctx.tenantId, {
+          branchId,
+          staffId,
+          date,
+          slotMinutes:
+            typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
+        } as never);
+        return { toolResult: { success: true, ...result }, resultJson: result };
+      },
+    );
   }
 
-  private async bookAppointment(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async bookAppointment(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     if (!ctx.actorUserId) {
-      return { success: false, error: 'Booking is not available in this context (no acting user).' };
+      return {
+        success: false,
+        error: 'Booking is not available in this context (no acting user).',
+      };
     }
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CREATE)) {
-      return { success: false, error: `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.` };
+      return {
+        success: false,
+        error: `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.`,
+      };
     }
     const branchId = this.str(args.branchId);
     // The model supplies customerId when it knows one; otherwise fall back to
@@ -295,7 +378,10 @@ export class AiToolDispatchService {
     const staffId = this.str(args.staffId);
     const startAt = this.str(args.startAt);
     if (!branchId || !customerId || !staffId || !startAt) {
-      return { success: false, error: 'branchId, customerId, staffId and startAt are required.' };
+      return {
+        success: false,
+        error: 'branchId, customerId, staffId and startAt are required.',
+      };
     }
     const serviceIds = Array.isArray(args.serviceIds)
       ? args.serviceIds.filter((s): s is string => typeof s === 'string')
@@ -306,18 +392,27 @@ export class AiToolDispatchService {
     const key = `book:${ctx.aiConversationId}:${staffId}:${startAt}`;
 
     return this.run(ctx, AI_TOOL.BOOK_APPOINTMENT, key, args, async () => {
-      const appt = await this.appointments.create(ctx.tenantId, ctx.actorUserId!, {
-        branchId,
-        customerId,
-        staffId,
-        startAt,
-        serviceIds,
-        notes: this.str(args.notes),
-        source: AppointmentSource.WHATSAPP_BOT,
-      });
+      const appt = await this.appointments.create(
+        ctx.tenantId,
+        ctx.actorUserId!,
+        {
+          branchId,
+          customerId,
+          staffId,
+          startAt,
+          serviceIds,
+          notes: this.str(args.notes),
+          source: AppointmentSource.WHATSAPP_BOT,
+        },
+      );
       return {
         appointmentId: appt.id,
-        resultJson: { appointmentId: appt.id, status: appt.status, startAt: appt.start_at, endAt: appt.end_at },
+        resultJson: {
+          appointmentId: appt.id,
+          status: appt.status,
+          startAt: appt.start_at,
+          endAt: appt.end_at,
+        },
         toolResult: {
           success: true,
           appointmentId: appt.id,
@@ -329,39 +424,81 @@ export class AiToolDispatchService {
     });
   }
 
-  private async rescheduleAppointment(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async rescheduleAppointment(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     if (!ctx.actorUserId) {
-      return { success: false, error: 'Reschedule is not available in this context (no acting user).' };
+      return {
+        success: false,
+        error: 'Reschedule is not available in this context (no acting user).',
+      };
     }
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_RESCHEDULE)) {
-      return { success: false, error: `Forbidden: rescheduling requires the "${PERMISSION.APPOINTMENTS_RESCHEDULE}" permission.` };
+      return {
+        success: false,
+        error: `Forbidden: rescheduling requires the "${PERMISSION.APPOINTMENTS_RESCHEDULE}" permission.`,
+      };
     }
     const appointmentId = this.str(args.appointmentId);
     const newStartAt = this.str(args.newStartAt);
     if (!appointmentId || !newStartAt) {
-      return { success: false, error: 'appointmentId and newStartAt are required.' };
+      return {
+        success: false,
+        error: 'appointmentId and newStartAt are required.',
+      };
     }
     const key = `reschedule:${appointmentId}:${newStartAt}`;
 
-    return this.run(ctx, AI_TOOL.RESCHEDULE_APPOINTMENT, key, args, async () => {
-      const appt = await this.appointments.reschedule(ctx.tenantId, ctx.actorUserId!, appointmentId, {
-        newStartAt,
-        reason: this.str(args.reason),
-      });
-      return {
-        appointmentId: appt.id,
-        resultJson: { appointmentId: appt.id, startAt: appt.start_at, endAt: appt.end_at },
-        toolResult: { success: true, appointmentId: appt.id, startAt: appt.start_at, endAt: appt.end_at },
-      };
-    });
+    return this.run(
+      ctx,
+      AI_TOOL.RESCHEDULE_APPOINTMENT,
+      key,
+      args,
+      async () => {
+        const appt = await this.appointments.reschedule(
+          ctx.tenantId,
+          ctx.actorUserId!,
+          appointmentId,
+          {
+            newStartAt,
+            reason: this.str(args.reason),
+          },
+        );
+        return {
+          appointmentId: appt.id,
+          resultJson: {
+            appointmentId: appt.id,
+            startAt: appt.start_at,
+            endAt: appt.end_at,
+          },
+          toolResult: {
+            success: true,
+            appointmentId: appt.id,
+            startAt: appt.start_at,
+            endAt: appt.end_at,
+          },
+        };
+      },
+    );
   }
 
-  private async cancelAppointment(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  private async cancelAppointment(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
     if (!ctx.actorUserId) {
-      return { success: false, error: 'Cancellation is not available in this context (no acting user).' };
+      return {
+        success: false,
+        error:
+          'Cancellation is not available in this context (no acting user).',
+      };
     }
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CANCEL)) {
-      return { success: false, error: `Forbidden: cancellation requires the "${PERMISSION.APPOINTMENTS_CANCEL}" permission.` };
+      return {
+        success: false,
+        error: `Forbidden: cancellation requires the "${PERMISSION.APPOINTMENTS_CANCEL}" permission.`,
+      };
     }
     const appointmentId = this.str(args.appointmentId);
     if (!appointmentId) {
@@ -370,13 +507,22 @@ export class AiToolDispatchService {
     const key = `cancel:${appointmentId}`;
 
     return this.run(ctx, AI_TOOL.CANCEL_APPOINTMENT, key, args, async () => {
-      const appt = await this.appointments.cancel(ctx.tenantId, ctx.actorUserId!, appointmentId, {
-        reason: this.str(args.reason),
-      });
+      const appt = await this.appointments.cancel(
+        ctx.tenantId,
+        ctx.actorUserId!,
+        appointmentId,
+        {
+          reason: this.str(args.reason),
+        },
+      );
       return {
         appointmentId: appt.id,
         resultJson: { appointmentId: appt.id, status: appt.status },
-        toolResult: { success: true, appointmentId: appt.id, status: appt.status },
+        toolResult: {
+          success: true,
+          appointmentId: appt.id,
+          status: appt.status,
+        },
       };
     });
   }
@@ -389,24 +535,36 @@ export class AiToolDispatchService {
    * `HandoverRequestService.create` (same service the socket path and the
    * REST endpoint use) — no duplicated escalation logic.
    */
-  private async requestHumanHandover(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
-    const reason = this.str(args.reason) ?? 'Requested by the customer during an AI conversation.';
+  private async requestHumanHandover(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const reason =
+      this.str(args.reason) ??
+      'Requested by the customer during an AI conversation.';
     const key = `handover:${ctx.aiConversationId}`;
 
-    return this.run(ctx, AI_TOOL.REQUEST_HUMAN_HANDOVER, key, args, async () => {
-      const handover = await this.handovers.create(ctx.tenantId, {
-        aiConversationId: ctx.aiConversationId,
-        reason,
-      });
-      return {
-        toolResult: {
-          success: true,
-          handoverId: handover.id,
-          message: 'A human agent has been notified and will join this conversation shortly.',
-        },
-        resultJson: { handoverId: handover.id },
-      };
-    });
+    return this.run(
+      ctx,
+      AI_TOOL.REQUEST_HUMAN_HANDOVER,
+      key,
+      args,
+      async () => {
+        const handover = await this.handovers.create(ctx.tenantId, {
+          aiConversationId: ctx.aiConversationId,
+          reason,
+        });
+        return {
+          toolResult: {
+            success: true,
+            handoverId: handover.id,
+            message:
+              'A human agent has been notified and will join this conversation shortly.',
+          },
+          resultJson: { handoverId: handover.id },
+        };
+      },
+    );
   }
 
   // ───────────────── Idempotent execution + audit ledger ──────────────────── //
@@ -421,7 +579,11 @@ export class AiToolDispatchService {
     toolName: string,
     key: string,
     args: Record<string, unknown>,
-    executor: () => Promise<{ toolResult: ToolResult; resultJson: unknown; appointmentId?: string }>,
+    executor: () => Promise<{
+      toolResult: ToolResult;
+      resultJson: unknown;
+      appointmentId?: string;
+    }>,
   ): Promise<ToolResult> {
     const existing = await this.findByKey(ctx.tenantId, key);
     if (existing) {
@@ -429,10 +591,17 @@ export class AiToolDispatchService {
         return { ...(existing.result as ToolResult), idempotentReplay: true };
       }
       if (existing.status === 'PENDING' || existing.status === 'EXECUTING') {
-        return { success: false, error: 'A matching action is already in progress.' };
+        return {
+          success: false,
+          error: 'A matching action is already in progress.',
+        };
       }
       // FAILED → allow a retry by reopening the same ledger row.
-      return { success: false, error: 'This action was already attempted and requires manual verification.' };
+      return {
+        success: false,
+        error:
+          'This action was already attempted and requires manual verification.',
+      };
     }
 
     // Claim atomically; on a concurrent race the conflicting row already owns it.
@@ -441,13 +610,24 @@ export class AiToolDispatchService {
        VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', $6)
        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
        RETURNING id`,
-      [ctx.tenantId, ctx.aiConversationId, ctx.conversationId ?? null, toolName, JSON.stringify(args), key],
+      [
+        ctx.tenantId,
+        ctx.aiConversationId,
+        ctx.conversationId ?? null,
+        toolName,
+        JSON.stringify(args),
+        key,
+      ],
     );
     const id: string | undefined = claimed[0]?.id;
     if (!id) {
       const raced = await this.findByKey(ctx.tenantId, key);
-      if (raced?.status === 'SUCCEEDED') return { ...(raced.result as ToolResult), idempotentReplay: true };
-      return { success: false, error: 'A matching action is already in progress.' };
+      if (raced?.status === 'SUCCEEDED')
+        return { ...(raced.result as ToolResult), idempotentReplay: true };
+      return {
+        success: false,
+        error: 'A matching action is already in progress.',
+      };
     }
 
     return this.executeAndRecord(id, executor);
@@ -455,7 +635,11 @@ export class AiToolDispatchService {
 
   private async executeAndRecord(
     id: string,
-    executor: () => Promise<{ toolResult: ToolResult; resultJson: unknown; appointmentId?: string }>,
+    executor: () => Promise<{
+      toolResult: ToolResult;
+      resultJson: unknown;
+      appointmentId?: string;
+    }>,
   ): Promise<ToolResult> {
     try {
       await this.dataSource.query(
@@ -471,10 +655,12 @@ export class AiToolDispatchService {
       );
       return toolResult;
     } catch (err) {
-      const state = err instanceof AppError ? 'FAILED_PERMANENT' : 'UNKNOWN_OUTCOME';
-      const message = err instanceof AppError
-        ? this.msg(err)
-        : 'Unknown execution outcome; manual verification is required.';
+      const state =
+        err instanceof AppError ? 'FAILED_PERMANENT' : 'UNKNOWN_OUTCOME';
+      const message =
+        err instanceof AppError
+          ? this.msg(err)
+          : 'Unknown execution outcome; manual verification is required.';
       await this.dataSource.query(
         `UPDATE ai_tool_calls SET status=$2, error=$3, completed_at=now() WHERE id=$1`,
         [id, state, message],

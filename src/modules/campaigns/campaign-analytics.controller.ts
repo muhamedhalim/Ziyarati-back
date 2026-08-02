@@ -1,4 +1,11 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -35,14 +42,21 @@ const S_ERROR = {
 const S_DASHBOARD = {
   type: 'object',
   properties: {
-    tenantId: { type: 'string', format: 'uuid' },
+    clinicName: { type: 'string', example: 'Al Noor Clinic' },
     totalCampaigns: { type: 'number', example: 24 },
-    campaignsByStatus: { type: 'object', additionalProperties: { type: 'number' }, example: { DRAFT: 3, RUNNING: 2, COMPLETED: 18 } },
+    campaignsByStatus: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
+      example: { DRAFT: 3, RUNNING: 2, COMPLETED: 18 },
+    },
     totalRecipients: { type: 'number', example: 12500 },
     deliveredCount: { type: 'number', example: 11800 },
     failedCount: { type: 'number', example: 320 },
     deliveryRate: { type: 'number', example: 94.4 },
-    recipientsByStatus: { type: 'object', additionalProperties: { type: 'number' } },
+    recipientsByStatus: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
+    },
   },
 };
 
@@ -91,8 +105,14 @@ delivered/failed and overall delivery rate. Powers the marketing dashboard.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Dashboard metrics.', schema: S_DASHBOARD })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('dashboard')
   @RequirePermissions(PERMISSION.CAMPAIGN_ANALYTICS_READ)
   dashboard() {
@@ -114,14 +134,20 @@ Campaign counts grouped by status with optional \`status\`/\`type\`/date filters
     schema: {
       type: 'object',
       properties: {
-        tenantId: { type: 'string', format: 'uuid' },
+        clinicName: { type: 'string', example: 'Al Noor Clinic' },
         totalCampaigns: { type: 'number' },
         byStatus: { type: 'object', additionalProperties: { type: 'number' } },
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('statistics')
   @RequirePermissions(PERMISSION.CAMPAIGN_ANALYTICS_READ)
   statistics(@Query() filter: CampaignAnalyticsFilterDto) {
@@ -140,8 +166,14 @@ campaign, filterable by status/type/date range.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Campaign history (paginated).' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('history')
   @RequirePermissions(PERMISSION.CAMPAIGN_ANALYTICS_READ)
   history(@Query() filter: CampaignAnalyticsFilterDto) {
@@ -161,11 +193,28 @@ plus delivery rate and completion rate, and the full per-status breakdown.
 **Tenant scoping:** A campaign from another tenant returns 404.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Campaign performance.', schema: S_PERFORMANCE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Campaign performance.',
+    schema: S_PERFORMANCE,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('campaigns/:id/performance')
   @RequirePermissions(PERMISSION.CAMPAIGN_ANALYTICS_READ)
   performance(@Param('id', ParseUUIDPipe) id: string) {

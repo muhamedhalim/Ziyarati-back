@@ -4,6 +4,7 @@ import { IsNull, Repository, SelectQueryBuilder } from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { CampaignRun } from '../../entities/Campaigns/CampaignRun';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { CampaignAnalyticsFilterDto } from './dto/campaign-analytics-filter.dto';
@@ -25,6 +26,8 @@ export class CampaignAnalyticsService {
     private readonly campaigns: Repository<Campaign>,
     @InjectRepository(CampaignRun)
     private readonly runs: Repository<CampaignRun>,
+    @InjectRepository(Tenant)
+    private readonly tenants: Repository<Tenant>,
   ) {}
 
   /** Per-campaign performance from the latest run's counters. */
@@ -47,7 +50,14 @@ export class CampaignAnalyticsService {
         processedCount: 0,
         deliveryRate: 0,
         completionRate: 0,
-        counters: { queued: 0, sent: 0, delivered: 0, read: 0, failed: 0, skipped: 0 },
+        counters: {
+          queued: 0,
+          sent: 0,
+          delivered: 0,
+          read: 0,
+          failed: 0,
+          skipped: 0,
+        },
       };
     }
 
@@ -57,7 +67,8 @@ export class CampaignAnalyticsService {
     // summed with `run.read` — read is a subset.
     const delivered = run.delivered;
     const processed = run.sent + run.failed + run.skipped;
-    const rate = (n: number) => (total === 0 ? 0 : +((n / total) * 100).toFixed(2));
+    const rate = (n: number) =>
+      total === 0 ? 0 : +((n / total) * 100).toFixed(2);
 
     return {
       campaignId,
@@ -84,6 +95,7 @@ export class CampaignAnalyticsService {
 
   /** Tenant-wide campaign counts grouped by lifecycle (with optional filters). */
   async statistics(tenantId: string, filter: CampaignAnalyticsFilterDto) {
+    const clinicName = await this.clinicName(tenantId);
     const qb = this.scopedCampaigns(tenantId, filter)
       .select('campaign.lifecycle', 'lifecycle')
       .addSelect('COUNT(*)', 'count')
@@ -97,7 +109,7 @@ export class CampaignAnalyticsService {
       byLifecycle[r.lifecycle] = c;
       totalCampaigns += c;
     }
-    return { tenantId, totalCampaigns, byLifecycle };
+    return { clinicName, totalCampaigns, byLifecycle };
   }
 
   /** Paginated campaign history with the latest run's recipient total. */
@@ -121,7 +133,8 @@ export class CampaignAnalyticsService {
         .where('c.id IN (:...ids)', { ids })
         .groupBy('c.id')
         .getRawMany<{ campaignId: string; recipients: string }>();
-      for (const row of rows) totals.set(row.campaignId, Number(row.recipients));
+      for (const row of rows)
+        totals.set(row.campaignId, Number(row.recipients));
     }
 
     const data = campaigns.map((c) => ({
@@ -133,6 +146,7 @@ export class CampaignAnalyticsService {
 
   /** Tenant dashboard: campaigns by lifecycle + aggregate run outcomes. */
   async dashboard(tenantId: string) {
+    const clinicName = await this.clinicName(tenantId);
     const campaignRows = await this.campaigns
       .createQueryBuilder('campaign')
       .leftJoin('campaign.tenant', 'tenant')
@@ -177,7 +191,7 @@ export class CampaignAnalyticsService {
     const failed = Number(agg?.failed ?? 0);
 
     return {
-      tenantId,
+      clinicName,
       totalCampaigns,
       campaignsByLifecycle,
       totalRecipients,
@@ -185,7 +199,9 @@ export class CampaignAnalyticsService {
       readCount: Number(agg?.read ?? 0),
       failedCount: failed,
       deliveryRate:
-        totalRecipients === 0 ? 0 : +((delivered / totalRecipients) * 100).toFixed(2),
+        totalRecipients === 0
+          ? 0
+          : +((delivered / totalRecipients) * 100).toFixed(2),
       counters: {
         sent: Number(agg?.sent ?? 0),
         delivered: Number(agg?.delivered ?? 0),
@@ -207,19 +223,44 @@ export class CampaignAnalyticsService {
       .leftJoin('campaign.tenant', 'tenant')
       .where('tenant.id = :tenantId', { tenantId })
       .andWhere('campaign.deleted_at IS NULL');
-    if (filter.lifecycle) qb.andWhere('campaign.lifecycle = :lifecycle', { lifecycle: filter.lifecycle });
-    if (filter.type) qb.andWhere('campaign.type = :type', { type: filter.type });
-    if (filter.from) qb.andWhere('campaign.created_at >= :from', { from: new Date(filter.from) });
-    if (filter.to) qb.andWhere('campaign.created_at < :to', { to: new Date(filter.to) });
+    if (filter.lifecycle)
+      qb.andWhere('campaign.lifecycle = :lifecycle', {
+        lifecycle: filter.lifecycle,
+      });
+    if (filter.type)
+      qb.andWhere('campaign.type = :type', { type: filter.type });
+    if (filter.from)
+      qb.andWhere('campaign.created_at >= :from', {
+        from: new Date(filter.from),
+      });
+    if (filter.to)
+      qb.andWhere('campaign.created_at < :to', { to: new Date(filter.to) });
     return qb;
   }
 
-  private async assertCampaign(tenantId: string, campaignId: string): Promise<void> {
+  private async assertCampaign(
+    tenantId: string,
+    campaignId: string,
+  ): Promise<void> {
     const ok = await this.campaigns.exists({
       where: { id: campaignId, tenant: { id: tenantId }, deleted_at: IsNull() },
     });
     if (!ok) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Campaign not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Campaign not found',
+      });
     }
+  }
+
+  /** The authenticated tenant only; never resolves an arbitrary tenant ID. */
+  private async clinicName(tenantId: string): Promise<string> {
+    const tenant = await this.tenants.findOne({
+      where: { id: tenantId },
+      select: { id: true, name: true },
+    });
+    if (!tenant) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Clinic not found' });
+    }
+    return tenant.name;
   }
 }
