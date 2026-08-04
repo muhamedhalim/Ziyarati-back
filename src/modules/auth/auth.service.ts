@@ -12,6 +12,7 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { RegisterOwnerDto } from './dto/register-owner.dto';
 import {
@@ -36,6 +37,7 @@ import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import { EmailService } from '../email/email.service';
+import { LoginProtectionService } from './login-protection.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -50,12 +52,14 @@ export class AuthService {
     @InjectRepository(PasswordReset)
     private readonly passwordResets: Repository<PasswordReset>,
     @InjectRepository(Tenant) private readonly tenants: Repository<Tenant>,
+    @InjectRepository(AuditLog) private readonly auditLogs: Repository<AuditLog>,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     private readonly usage: UsageService,
     private readonly platformSettings: SystemSettingService,
     private readonly email: EmailService,
+    private readonly loginProtection: LoginProtectionService,
   ) {}
 
   /** Base URL for links embedded in emails (APP_URL, else first FRONTEND_ORIGIN). */
@@ -245,18 +249,96 @@ export class AuthService {
     return user;
   }
 
-  /** Verifies credentials and returns a token pair on success. */
+  /**
+   * Verifies credentials and returns a token pair on success.
+   *
+   * FND-008 — account-aware brute-force protection wraps credential
+   * validation:
+   *  1. The identity (normalised email, independent of `tenantSlug` — see
+   *     LoginProtectionService) is checked BEFORE any credential lookup, so
+   *     a locked identity is refused identically whether or not the account
+   *     actually exists (no enumeration oracle).
+   *  2. Any credential-validation failure records one failure. All of
+   *     validateCredentials' rejection paths (unknown tenant, no user, no
+   *     password hash, inactive account, wrong password) already collapse
+   *     to the same INVALID_CREDENTIALS error, so this treats them
+   *     uniformly, exactly as it must.
+   *  3. A successful login fully clears the failure state.
+   */
   async login(dto: LoginDto, context?: TokenContext): Promise<AuthResult> {
-    const user = await this.validateCredentials(
-      dto.email,
-      dto.password,
-      dto.tenantSlug,
-    );
+    const identity = this.normalizeEmail(dto.email);
+
+    if (await this.loginProtection.isLocked(identity)) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many failed login attempts. Please try again later.',
+      });
+    }
+
+    let user: User;
+    try {
+      user = await this.validateCredentials(
+        dto.email,
+        dto.password,
+        dto.tenantSlug,
+      );
+    } catch (err) {
+      const justEngaged = await this.loginProtection.recordFailure(identity);
+      if (justEngaged) {
+        await this.auditLoginProtectionEvent(
+          'auth.login.protection_engaged',
+          identity,
+          context,
+        );
+      }
+      throw err;
+    }
+
+    const hadState = await this.loginProtection.clear(identity);
+    if (hadState) {
+      await this.auditLoginProtectionEvent(
+        'auth.login.protection_cleared',
+        identity,
+        context,
+      );
+    }
 
     user.last_login_at = new Date();
     await this.users.save(user);
 
     return this.issueAuthResult(user.id, context);
+  }
+
+  /**
+   * Safe audit record (FR-020a's counterpart in the durable trail — OB-001,
+   * OB-002). Mirrors Feature 002's `WhatsappDlqService.audit` helper:
+   * identifiers and outcome only, never a credential. `tenant`/`user` are
+   * left null — login is `@Public()`, so a failed attempt has no
+   * authenticated actor to attribute the row to; the identity is recorded
+   * ONLY as its hash, exactly as {@link LoginProtectionService} derives its
+   * Redis key, so the raw email never reaches `audit_logs` either. Wrapped
+   * so a write failure logs a warning and never blocks the security
+   * decision it records.
+   */
+  private async auditLoginProtectionEvent(
+    action: 'auth.login.protection_engaged' | 'auth.login.protection_cleared',
+    identity: string,
+    context?: TokenContext,
+  ): Promise<void> {
+    try {
+      const identityHash = createHash('sha256')
+        .update(identity.trim().toLowerCase())
+        .digest('hex');
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          action,
+          entity_type: 'login_identity',
+          ip_address: context?.ipAddress,
+          new_values: { identityHash, result: action },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`Login-protection audit write failed: ${(err as Error).message}`);
+    }
   }
 
   /**
@@ -423,13 +505,30 @@ export class AuthService {
   // ----------------------------------------------------------------------- //
 
   /**
-   * Issues a single-use password-reset token. Always resolves the same way
-   * regardless of whether the email exists, to prevent account enumeration.
-   * Returns the raw token so the caller (a mailer) can deliver it.
+   * A single uniform message returned by {@link forgotPassword} in EVERY case
+   * — known email, unknown email, any environment. Matches the response this
+   * endpoint's own Swagger contract already documents (auth.controller.ts).
+   */
+  private static readonly FORGOT_PASSWORD_MESSAGE =
+    'If that email is registered, a reset link has been sent.';
+
+  /**
+   * Issues a single-use password-reset token and delivers it BY EMAIL ONLY
+   * (FND-006). Always resolves to the identical `{ message }` shape
+   * regardless of whether the email exists, so the response itself cannot be
+   * used to enumerate accounts — this is STRONGER than the pre-fix behaviour,
+   * where a non-production response shape differed between the two cases.
+   *
+   * The raw token is NEVER present in this method's return type. The only
+   * legitimate delivery channel is {@link EmailService.sendPasswordReset}
+   * above. A narrow, explicitly-gated local-development exception exists
+   * below (`AUTH_EXPOSE_RESET_TOKEN`) for a developer with no mail transport
+   * configured — it logs the token, it never returns it, and production
+   * refuses to boot if the flag is left on (see env.validation.ts).
    */
   async forgotPassword(
     dto: ForgotPasswordDto,
-  ): Promise<{ resetToken?: string }> {
+  ): Promise<{ message: string }> {
     const tenantId = await this.resolveTenantId(dto.tenantSlug).catch(
       () => null,
     );
@@ -443,7 +542,7 @@ export class AuthService {
     });
 
     if (!user) {
-      return {};
+      return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
     }
 
     const rawToken = randomBytes(32).toString('hex');
@@ -467,13 +566,21 @@ export class AuthService {
       tenantId: tenantId ?? undefined,
     });
 
-    // The raw token is still returned so non-email deployments keep working; the
-    if (this.config.get<string>('NODE_ENV') !== 'production') {
-      return {
-        resetToken: rawToken,
-      };
+    // Local-development-only fallback for a developer with no mail transport
+    // configured: logs the token (never returns it). Requires BOTH the
+    // explicit opt-in flag AND a non-production environment — production
+    // cannot reach this branch at all (env.validation.ts refuses to boot
+    // with the flag on in production), so this is not a runtime risk.
+    if (
+      this.config.get<string>('AUTH_EXPOSE_RESET_TOKEN') === 'true' &&
+      this.config.get<string>('NODE_ENV') !== 'production'
+    ) {
+      this.logger.warn(
+        `AUTH_EXPOSE_RESET_TOKEN is enabled — reset token for user ${user.id}: ${rawToken} (development only, never logged in production)`,
+      );
     }
-    return {};
+
+    return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
   }
 
   /**

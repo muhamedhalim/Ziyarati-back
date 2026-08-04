@@ -58,6 +58,15 @@ describe('MetricsService (M14)', () => {
     expect(Number(match![1])).toBeGreaterThanOrEqual(before);
   });
 
+  it('renders auth_login_protection_events_total after recordLoginProtectionEvent, labeled by event', async () => {
+    service.recordLoginProtectionEvent('engaged');
+    service.recordLoginProtectionEvent('store_unavailable');
+    const body = await service.render();
+    expect(body).toContain('auth_login_protection_events_total');
+    expect(body).toContain('event="engaged"');
+    expect(body).toContain('event="store_unavailable"');
+  });
+
   it('two instances use independent registries — no cross-instance metric leakage', async () => {
     const other = new MetricsService();
     service.recordJobEvent('q1', 'completed');

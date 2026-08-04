@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { EntityManager, In, IsNull, Repository } from 'typeorm';
@@ -8,10 +8,13 @@ import { Permission } from '../../entities/Auth&RBAC/Permission';
 import { RolePermission } from '../../entities/Auth&RBAC/RolePermission';
 import { User } from '../../entities/Auth&RBAC/User';
 import { UserRole } from '../../entities/Auth&RBAC/UserRole';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { AppError, ErrorCode } from '../../common/errors';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import {
   CUSTOM_ROLE_SENTINEL,
   NON_STAFF_ROLE_SLUGS,
@@ -45,6 +48,8 @@ const API_PROTECTED_ROLE_SLUGS: readonly string[] = [
  */
 @Injectable()
 export class RolesService {
+  private readonly logger = new Logger(RolesService.name);
+
   constructor(
     @InjectRepository(Role) private readonly roles: Repository<Role>,
     @InjectRepository(Permission)
@@ -54,9 +59,16 @@ export class RolesService {
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(UserRole)
     private readonly userRoles: Repository<UserRole>,
+    @InjectRepository(AuditLog)
+    private readonly auditLogs: Repository<AuditLog>,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
-  async create(dto: CreateRoleDto, tenantId: string | null): Promise<Role> {
+  async create(
+    dto: CreateRoleDto,
+    tenantId: string | null,
+    callerPermissions: string[] = [],
+  ): Promise<Role> {
     if (dto.slug === CUSTOM_ROLE_SENTINEL) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: `Slug "${CUSTOM_ROLE_SENTINEL}" is reserved and cannot be used for a role`,
@@ -71,6 +83,19 @@ export class RolesService {
     });
     if (duplicate) {
       throw new AppError(ErrorCode.ROLE_ALREADY_EXISTS);
+    }
+
+    // FND-009 — validated BEFORE any row is written, so a refused request
+    // creates nothing at all (mirrors validateCustomPermissions' own
+    // "fail fast before any transaction opens" rule).
+    if (dto.permissionSlugs?.length) {
+      await this.assertMutationPermissionsAllowed(
+        dto.permissionSlugs,
+        callerPermissions,
+        tenantId,
+        undefined,
+        'create',
+      );
     }
 
     const role = this.roles.create({
@@ -127,8 +152,26 @@ export class RolesService {
     id: string,
     dto: UpdateRoleDto,
     tenantId: string | null,
+    callerPermissions: string[] = [],
   ): Promise<Role> {
     const role = await this.assertMutable(id, tenantId);
+
+    // FND-009 — a role that ALREADY holds a reserved permission is detected
+    // on mutation attempt and refused outright (never silently altered),
+    // even for a metadata-only change. Exempt on the platform path, where
+    // legitimately-reserved global roles (owner/super_admin) live.
+    await this.assertNoStoredReservedPermission(role, tenantId, 'update');
+
+    if (dto.permissionSlugs) {
+      await this.assertMutationPermissionsAllowed(
+        dto.permissionSlugs,
+        callerPermissions,
+        tenantId,
+        id,
+        'update',
+      );
+    }
+
     Object.assign(role, {
       name: dto.name ?? role.name,
       description: dto.description ?? role.description,
@@ -159,17 +202,32 @@ export class RolesService {
     roleId: string,
     permissionIds: string[],
     tenantId: string | null,
+    callerPermissions: string[] = [],
   ): Promise<Role> {
     const role = await this.assertMutable(roleId, tenantId);
+    await this.assertNoStoredReservedPermission(role, tenantId, 'setPermissions');
 
+    let found: Permission[] = [];
     if (permissionIds.length) {
-      const found = await this.permissions.find({
+      found = await this.permissions.find({
         where: { id: In(permissionIds) },
       });
       if (found.length !== permissionIds.length) {
         throw new AppError(ErrorCode.PERMISSION_NOT_FOUND, { message: 'One or more permissions do not exist' });
       }
     }
+
+    // FND-009 — the DTO carries permission UUIDs, not slugs; derive slugs
+    // from the rows ALREADY loaded above to verify existence, so this adds
+    // no extra query (PR-008).
+    await this.assertMutationPermissionsAllowed(
+      found.map((p) => p.slug),
+      callerPermissions,
+      tenantId,
+      roleId,
+      'setPermissions',
+    );
+
     await this.replaceRolePermissions(role, permissionIds);
     return this.findOne(roleId, tenantId);
   }
@@ -444,8 +502,17 @@ export class RolesService {
     tenantId: string | null,
   ): Promise<UserRole> {
     const user = await this.assertUserInTenant(userId, tenantId);
-    const role = await this.findOne(roleId, tenantId); // enforces visibility
+    const role = await this.findOne(roleId, tenantId); // enforces visibility, loads rolePermissions.permission
     this.assertRoleAssignableViaApi(role); // blocks super_admin / owner
+
+    // FND-009 — defence in depth: assignment must not be a bypass of the
+    // create/update/setPermissions restriction. In practice already covered
+    // for every role that actually exists (API_PROTECTED_ROLE_SLUGS blocks
+    // the only two roles that hold a reserved permission today), but this
+    // closes the path for a hypothetical tenant-scoped role that somehow
+    // carries one. Zero extra queries — `findOne` above already loaded
+    // `rolePermissions.permission`.
+    await this.assertNoStoredReservedPermission(role, tenantId, 'assign');
 
     const existing = await this.userRoles.findOne({
       where: { user: { id: user.id }, role: { id: role.id } },
@@ -497,20 +564,32 @@ export class RolesService {
     }
   }
 
-  /** Loads a role and asserts the caller's tenant is allowed to mutate it. */
+  /**
+   * Loads a role and asserts the caller's tenant is allowed to mutate it.
+   * Also loads `rolePermissions.permission` (FND-009) so
+   * {@link assertNoStoredReservedPermission} can check the role's CURRENT
+   * stored permissions with no extra query — `update` and `setPermissions`
+   * both call this before touching anything else.
+   */
   private async assertMutable(
     id: string,
     tenantId: string | null,
   ): Promise<Role> {
     const role = await this.roles.findOne({
       where: { id },
-      relations: { tenant: true },
+      relations: { tenant: true, rolePermissions: { permission: true } },
     });
     if (!role) {
       throw new AppError(ErrorCode.ROLE_NOT_FOUND);
     }
     // A tenant can only mutate roles it owns. System roles (tenant null) are
     // mutable only by the super-admin (tenantId null) — handled by equality.
+    //
+    // FND-009 note: this equality check is ALSO what makes the platform
+    // exemption below reduce to a single `tenantId === null` test — a role
+    // can only reach that point once its tenant scope already equals the
+    // caller's, so "global role AND platform caller" and "platform caller"
+    // are equivalent here by construction.
     if ((role.tenant?.id ?? null) !== tenantId) {
       throw new AppError(ErrorCode.ROLE_IMMUTABLE, { message: 'You cannot modify this role' });
     }
@@ -518,6 +597,117 @@ export class RolesService {
       throw new AppError(ErrorCode.ROLE_IMMUTABLE, { message: 'System roles cannot be modified' });
     }
     return role;
+  }
+
+  /**
+   * FND-009 — the reserved-slug + caller-must-hold guard shared by
+   * `create`/`update`/`setPermissions`. Deliberately SEPARATE from
+   * {@link validateCustomPermissions} (the staff "Other"-role flow), whose
+   * reject-empty-selection rule would wrongly break `update`'s documented
+   * "omit the field to leave permissions unchanged / send `[]` to clear
+   * everything" contract (`SetRolePermissionsDto`).
+   *
+   * Exemption: skipped ENTIRELY when `tenantId === null` — the platform
+   * path, which legitimately manages global system roles
+   * (`owner`/`super_admin`) that hold reserved permissions. Because
+   * {@link assertMutable} already guarantees the target role's tenant scope
+   * equals the caller's, this single check is equivalent to "the target
+   * role is global AND the caller is platform-scoped" — never decided from
+   * role-name membership, and never from a client-supplied value.
+   */
+  private async assertMutationPermissionsAllowed(
+    slugs: string[],
+    callerPermissions: string[],
+    tenantId: string | null,
+    roleId: string | undefined,
+    operation: 'create' | 'update' | 'setPermissions',
+  ): Promise<void> {
+    if (slugs.length === 0) return; // explicit empty selection — clear-all, always allowed
+    if (tenantId === null) return; // platform path — exempt
+
+    const reserved = slugs.filter((s) => RESERVED_PERMISSION_SLUGS.has(s as PermissionSlug));
+    if (reserved.length) {
+      await this.auditRejectedMutation(roleId, reserved, operation);
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `These permissions can never be granted to a tenant role: ${reserved.join(', ')}`,
+      });
+    }
+
+    const callerSet = new Set(callerPermissions);
+    const notHeld = slugs.filter((s) => !callerSet.has(s));
+    if (notHeld.length) {
+      await this.auditRejectedMutation(roleId, notHeld, operation);
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `You cannot grant a permission you do not hold: ${notHeld.join(', ')}`,
+      });
+    }
+  }
+
+  /**
+   * FND-009 — a role that ALREADY holds a reserved permission (measured
+   * population today: zero) is detected on mutation attempt only — no
+   * startup sweep, no reporting endpoint — and the mutation is refused
+   * outright, so a stored violation is never silently altered. Reads and
+   * existing grants are unaffected; only mutation is gated. Exempt on the
+   * platform path for the same reason as the sibling check above.
+   */
+  private async assertNoStoredReservedPermission(
+    role: Role,
+    tenantId: string | null,
+    operation: 'update' | 'setPermissions' | 'assign',
+  ): Promise<void> {
+    if (tenantId === null) return; // platform path — exempt
+
+    const offending = Array.from(
+      new Set(
+        (role.rolePermissions ?? [])
+          .map((rp) => rp.permission?.slug)
+          .filter((slug): slug is PermissionSlug =>
+            RESERVED_PERMISSION_SLUGS.has(slug as PermissionSlug),
+          ),
+      ),
+    );
+    if (offending.length) {
+      await this.auditRejectedMutation(role.id, offending, operation);
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message:
+          'This role already holds a reserved permission and cannot be mutated. Contact a platform administrator.',
+      });
+    }
+  }
+
+  /**
+   * Safe audit record (OB-003, OB-005, OB-006) mirroring Feature 002's
+   * `WhatsappDlqService.audit` helper: identifiers and outcome only, never a
+   * credential or request body. Wrapped so a write failure logs a warning
+   * and never masks or blocks the security decision it records.
+   */
+  private async auditRejectedMutation(
+    roleId: string | undefined,
+    rejectedSlugs: string[],
+    operation: string,
+  ): Promise<void> {
+    try {
+      const tenantId = this.tenantContext.getTenantId();
+      const userId = this.tenantContext.getUser()?.id;
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
+          user: userId ? ({ id: userId } as User) : undefined,
+          action: 'rbac.role.permissions_rejected',
+          entity_type: 'role',
+          entity_id: roleId,
+          new_values: {
+            result: 'rejected',
+            rejectedSlugs,
+            operation,
+            correlationId: this.tenantContext.getCorrelationId() ?? null,
+          },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(`Role mutation audit write failed: ${(err as Error).message}`);
+    }
   }
 
   private async assertUserInTenant(

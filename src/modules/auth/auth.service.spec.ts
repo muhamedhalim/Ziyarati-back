@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -7,10 +8,12 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 
 import { AuthService } from './auth.service';
+import { LoginProtectionService } from './login-protection.service';
 import { User } from '../../entities/Auth&RBAC/User';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { UsageService } from '../subscription-billing/usage.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { EmailService } from '../email/email.service';
@@ -65,11 +68,14 @@ describe('AuthService', () => {
   let refreshTokens: MockRepository;
   let passwordResets: MockRepository;
   let tenants: MockRepository;
+  let auditLogs: MockRepository;
   let dataSource: MockDataSource;
   let jwt: ReturnType<typeof createMockJwtService>;
   let usage: { assertCountWithinLimit: jest.Mock };
   let platformSettings: { getTyped: jest.Mock };
   let email: { sendWelcome: jest.Mock; sendPasswordReset: jest.Mock };
+  let config: ReturnType<typeof createMockConfigService>;
+  let loginProtection: { isLocked: jest.Mock; recordFailure: jest.Mock; clear: jest.Mock };
   const bcryptHash = bcrypt.hash as unknown as jest.Mock;
   const bcryptCompare = bcrypt.compare as unknown as jest.Mock;
 
@@ -78,6 +84,7 @@ describe('AuthService', () => {
     refreshTokens = createMockRepository();
     passwordResets = createMockRepository();
     tenants = createMockRepository();
+    auditLogs = createMockRepository();
     dataSource = createMockDataSource();
     jwt = createMockJwtService();
     usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
@@ -90,6 +97,18 @@ describe('AuthService', () => {
     bcryptHash.mockResolvedValue('hashed-password');
     bcryptCompare.mockResolvedValue(true);
 
+    config = createMockConfigService();
+    // FND-008 — required so AuthService's widened constructor resolves in
+    // every test in this file, not just the new login-protection cases
+    // (research §R2h: a missing provider fails DI for the whole file).
+    // Defaults to "not locked" / no-op so every pre-existing test is
+    // unaffected until login() is actually wired to call these (T025).
+    loginProtection = {
+      isLocked: jest.fn().mockResolvedValue(false),
+      recordFailure: jest.fn().mockResolvedValue(false),
+      clear: jest.fn().mockResolvedValue(false),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -97,12 +116,14 @@ describe('AuthService', () => {
         { provide: getRepositoryToken(RefreshToken), useValue: refreshTokens },
         { provide: getRepositoryToken(PasswordReset), useValue: passwordResets },
         { provide: getRepositoryToken(Tenant), useValue: tenants },
+        { provide: getRepositoryToken(AuditLog), useValue: auditLogs },
         { provide: JwtService, useValue: jwt },
-        { provide: ConfigService, useValue: createMockConfigService() },
+        { provide: ConfigService, useValue: config },
         { provide: DataSource, useValue: dataSource },
         { provide: UsageService, useValue: usage },
         { provide: SystemSettingService, useValue: platformSettings },
         { provide: EmailService, useValue: email },
+        { provide: LoginProtectionService, useValue: loginProtection },
       ],
     }).compile();
 
@@ -230,13 +251,14 @@ describe('AuthService', () => {
 
   // ────────────────────────────────── login ─────────────────────────────────
   describe('login', () => {
+    const credUser = {
+      id: 'user-1',
+      password_hash: 'hashed-password',
+      is_active: true,
+      tenant: { id: 'tenant-1' },
+    };
+
     it('verifies credentials, stamps last_login_at and returns tokens', async () => {
-      const credUser = {
-        id: 'user-1',
-        password_hash: 'hashed-password',
-        is_active: true,
-        tenant: { id: 'tenant-1' },
-      };
       users.find.mockResolvedValueOnce([credUser]); // validateCredentials
       users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
       bcryptCompare.mockResolvedValueOnce(true);
@@ -247,6 +269,148 @@ describe('AuthService', () => {
         expect.objectContaining({ last_login_at: expect.any(Date) }),
       );
       expect(result.user).toEqual(expectedPrincipal);
+    });
+
+    // ─────────────────── FND-008: account-aware protection ───────────────────
+    // login() must NOT yet be wired to call LoginProtectionService — that is
+    // Track B's real implementation (T025). These assertions are the red-phase
+    // pin: they fail until login() actually consults isLocked/recordFailure/clear.
+
+    it('checks login protection BEFORE validating credentials', async () => {
+      users.find.mockResolvedValueOnce([credUser]);
+      users.findOne.mockResolvedValueOnce(principalRow());
+      bcryptCompare.mockResolvedValueOnce(true);
+
+      await service.login({ email: 'OWNER@Clinic.com ', password: 'pw' } as any);
+
+      // The identity passed to the protection layer must be normalised
+      // (trim + lower-case) the SAME way validateCredentials normalises it.
+      expect(loginProtection.isLocked).toHaveBeenCalledWith('owner@clinic.com');
+      const isLockedOrder = loginProtection.isLocked.mock.invocationCallOrder[0];
+      const findOrder = users.find.mock.invocationCallOrder[0];
+      expect(isLockedOrder).toBeLessThan(findOrder);
+    });
+
+    it('refuses with RATE_LIMITED when protection is engaged, WITHOUT reaching credential validation', async () => {
+      loginProtection.isLocked.mockResolvedValueOnce(true);
+
+      await expect(
+        service.login({ email: 'attacker@clinic.com', password: 'pw' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.RATE_LIMITED });
+      expect(users.find).not.toHaveBeenCalled();
+    });
+
+    it('the RATE_LIMITED refusal is identical for an unknown and a known account — no enumeration oracle', async () => {
+      loginProtection.isLocked.mockResolvedValueOnce(true);
+      const unknownErr = await service
+        .login({ email: 'ghost-account@clinic.com', password: 'pw' } as any)
+        .catch((e) => e);
+
+      loginProtection.isLocked.mockResolvedValueOnce(true);
+      const knownErr = await service
+        .login({ email: 'owner@clinic.com', password: 'pw' } as any)
+        .catch((e) => e);
+
+      expect(unknownErr.code).toEqual(knownErr.code);
+      expect(unknownErr.message).toEqual(knownErr.message);
+    });
+
+    it('records a failure when credentials are invalid', async () => {
+      users.find.mockResolvedValueOnce([]); // no such user -> INVALID_CREDENTIALS
+
+      await expect(
+        service.login({ email: 'nope@clinic.com', password: 'pw' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
+      expect(loginProtection.recordFailure).toHaveBeenCalledWith('nope@clinic.com');
+    });
+
+    it('records a failure on a wrong password too', async () => {
+      users.find.mockResolvedValueOnce([credUser]);
+      bcryptCompare.mockResolvedValueOnce(false);
+
+      await expect(
+        service.login({ email: 'owner@clinic.com', password: 'wrong' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
+      expect(loginProtection.recordFailure).toHaveBeenCalledWith('owner@clinic.com');
+    });
+
+    it('clears protection state on a successful login', async () => {
+      users.find.mockResolvedValueOnce([credUser]);
+      users.findOne.mockResolvedValueOnce(principalRow());
+      bcryptCompare.mockResolvedValueOnce(true);
+
+      await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
+
+      expect(loginProtection.clear).toHaveBeenCalledWith('owner@clinic.com');
+    });
+
+    // ─────────────────────── FND-008: safe audit records ──────────────────────
+    it('writes a safe audit record ONLY when this failure actually engages protection', async () => {
+      loginProtection.recordFailure.mockResolvedValueOnce(true); // the threshold-crossing call
+      users.find.mockResolvedValueOnce([]); // unknown user -> INVALID_CREDENTIALS
+
+      await service
+        .login({ email: 'attacker@clinic.com', password: 'pw' } as any)
+        .catch(() => undefined);
+
+      expect(auditLogs.save).toHaveBeenCalledTimes(1);
+      const saved = JSON.stringify(auditLogs.save.mock.calls[0][0]);
+      expect(saved).toContain('auth.login.protection_engaged');
+      expect(saved).not.toContain('attacker@clinic.com'); // raw email never in the row
+      expect(saved).not.toMatch(/password|pw"/i);
+    });
+
+    it('does NOT write an audit record on an ordinary failed attempt below the threshold', async () => {
+      loginProtection.recordFailure.mockResolvedValueOnce(false); // not yet engaged
+      users.find.mockResolvedValueOnce([]);
+
+      await service
+        .login({ email: 'someone@clinic.com', password: 'pw' } as any)
+        .catch(() => undefined);
+
+      expect(auditLogs.save).not.toHaveBeenCalled();
+    });
+
+    it('writes a safe audit record when a successful login clears an ACTIVE protection state', async () => {
+      loginProtection.clear.mockResolvedValueOnce(true); // there was something to clear
+      users.find.mockResolvedValueOnce([credUser]);
+      users.findOne.mockResolvedValueOnce(principalRow());
+      bcryptCompare.mockResolvedValueOnce(true);
+
+      await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
+
+      expect(auditLogs.save).toHaveBeenCalledTimes(1);
+      const saved = JSON.stringify(auditLogs.save.mock.calls[0][0]);
+      expect(saved).toContain('auth.login.protection_cleared');
+      expect(saved).not.toContain('owner@clinic.com');
+    });
+
+    it('does NOT write an audit record on an ordinary successful login with no prior failures', async () => {
+      loginProtection.clear.mockResolvedValueOnce(false); // nothing to clear
+      users.find.mockResolvedValueOnce([credUser]);
+      users.findOne.mockResolvedValueOnce(principalRow());
+      bcryptCompare.mockResolvedValueOnce(true);
+
+      await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
+
+      expect(auditLogs.save).not.toHaveBeenCalled();
+    });
+
+    it('varying tenantSlug does NOT change the protection identity — cannot bypass by switching slugs', async () => {
+      loginProtection.isLocked.mockResolvedValueOnce(true);
+      await service
+        .login({ email: 'owner@clinic.com', password: 'pw', tenantSlug: 'clinic-a' } as any)
+        .catch(() => undefined);
+
+      loginProtection.isLocked.mockResolvedValueOnce(true);
+      await service
+        .login({ email: 'owner@clinic.com', password: 'pw', tenantSlug: 'clinic-b' } as any)
+        .catch(() => undefined);
+
+      expect(loginProtection.isLocked).toHaveBeenCalledTimes(2);
+      const [firstCallIdentity] = loginProtection.isLocked.mock.calls[0] ?? [];
+      const [secondCallIdentity] = loginProtection.isLocked.mock.calls[1] ?? [];
+      expect(firstCallIdentity).toEqual(secondCallIdentity);
     });
   });
 
@@ -457,19 +621,42 @@ describe('AuthService', () => {
   });
 
   // ──────────────────────────────── forgotPassword ──────────────────────────
+  // FND-006: the reset token must NEVER appear in the response, in ANY
+  // environment. This block intentionally INVERTS the pre-fix assertion
+  // that used to require `result.resetToken` to be a string — that was the
+  // vulnerability itself, encoded as a passing test (Feature 003, TR-003).
   describe('forgotPassword', () => {
-    it('issues a reset token when the email exists', async () => {
+    it('never includes a reset credential in the response when the email exists', async () => {
       users.findOne.mockResolvedValueOnce({ id: 'user-1' });
       const result = await service.forgotPassword({ email: 'a@b.com' } as any);
-      expect(result.resetToken).toEqual(expect.any(String));
+      expect(result).not.toHaveProperty('resetToken');
+      expect((result as Record<string, unknown>).token).toBeUndefined();
+      expect(result).toEqual({ message: expect.any(String) });
       expect(passwordResets.save).toHaveBeenCalledTimes(1);
     });
 
-    it('returns the SAME shape (no token, no save) for an unknown email — anti-enumeration', async () => {
+    it.each(['production', 'development', 'test', undefined])(
+      'never includes a reset credential regardless of NODE_ENV (%s)',
+      async (envValue) => {
+        (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) =>
+          key === 'NODE_ENV' ? envValue : def,
+        );
+        users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+        const result = await service.forgotPassword({ email: 'a@b.com' } as any);
+        expect(result).not.toHaveProperty('resetToken');
+        expect(JSON.stringify(result)).not.toMatch(/[0-9a-f]{64}/); // no raw 32-byte hex token anywhere in the body
+      },
+    );
+
+    it('returns a response identical to the known-email case for an unknown email — anti-enumeration', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      const knownResult = await service.forgotPassword({ email: 'a@b.com' } as any);
+
       users.findOne.mockResolvedValueOnce(null);
-      const result = await service.forgotPassword({ email: 'ghost@b.com' } as any);
-      expect(result).toEqual({});
-      expect(passwordResets.save).not.toHaveBeenCalled();
+      const unknownResult = await service.forgotPassword({ email: 'ghost@b.com' } as any);
+
+      expect(unknownResult).toEqual(knownResult);
+      expect(passwordResets.save).toHaveBeenCalledTimes(1); // only for the known-email case
     });
 
     it('tolerates a tenant-slug resolution failure and still does not leak', async () => {
@@ -477,7 +664,62 @@ describe('AuthService', () => {
       users.findOne.mockResolvedValueOnce(null);
       await expect(
         service.forgotPassword({ email: 'a@b.com', tenantSlug: 'x' } as any),
-      ).resolves.toEqual({});
+      ).resolves.toEqual({ message: expect.any(String) });
+    });
+
+    it('still dispatches the reset email and persists the token hash', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      await service.forgotPassword({ email: 'a@b.com' } as any);
+      expect(passwordResets.save).toHaveBeenCalledTimes(1);
+      expect(email.sendPasswordReset).toHaveBeenCalledTimes(1);
+    });
+
+    // ─────────────── FND-006: no credential may enter any log ───────────────
+    it('with AUTH_EXPOSE_RESET_TOKEN off (the default), no log line contains the token', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) => {
+        if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'false';
+        if (key === 'NODE_ENV') return 'development';
+        return def;
+      });
+      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+
+      await service.forgotPassword({ email: 'a@b.com' } as any);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('with AUTH_EXPOSE_RESET_TOKEN on in production, no log line contains the token — production never reaches this branch', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) => {
+        if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'true';
+        if (key === 'NODE_ENV') return 'production';
+        return def;
+      });
+      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+
+      await service.forgotPassword({ email: 'a@b.com' } as any);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('with the flag explicitly on AND a non-production environment, the token is logged via the gated dev channel ONLY (never returned)', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) => {
+        if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'true';
+        if (key === 'NODE_ENV') return 'development';
+        return def;
+      });
+      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+
+      const result = await service.forgotPassword({ email: 'a@b.com' } as any);
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/[0-9a-f]{64}/); // the token IS in the log here
+      expect(result).not.toHaveProperty('resetToken'); // but NEVER in the response, even here
+      warnSpy.mockRestore();
     });
   });
 
@@ -641,12 +883,18 @@ describe('AuthService', () => {
         refreshTokens as any,
         passwordResets as any,
         tenants as any,
+        auditLogs as any,
         jwt as any,
         createMockConfigService(overrides) as any,
         dataSource as any,
         usage as any,
         platformSettings as any,
         email as any,
+        {
+          isLocked: jest.fn().mockResolvedValue(false),
+          recordFailure: jest.fn().mockResolvedValue(false),
+          clear: jest.fn().mockResolvedValue(false),
+        } as any,
       );
 
     const primeLogin = () => {
