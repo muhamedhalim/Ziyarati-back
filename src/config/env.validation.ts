@@ -91,6 +91,22 @@ export const validate = (config: Record<string, unknown>) => {
     JWT_ACCESS_TTL: Joi.string().default('15m'),
     JWT_REFRESH_TTL: Joi.string().default('7d'),
 
+    // ── Password-reset token exposure (FND-006 remediation) ────────────────
+    // The raw reset token must NEVER appear in the forgotPassword HTTP
+    // response — see auth.service.ts. This flag gates a LOCAL-DEVELOPMENT-ONLY
+    // fallback that logs the token instead (never the response), for a
+    // developer with no mail transport configured. Off by default. The
+    // production fail-fast below (mirroring the payments fail-fast pattern)
+    // makes enabling it in production a boot-time error, not a runtime risk.
+    AUTH_EXPOSE_RESET_TOKEN: Joi.string().valid('true', 'false').default('false'),
+
+    // ── Account-aware login brute-force protection (FND-008 remediation) ───
+    // Consecutive-failure threshold and protection-window TTL for
+    // LoginProtectionService. Floored at 1 so a 0/negative value is a boot
+    // failure rather than a silently disabled control or a zero-TTL key.
+    AUTH_LOGIN_MAX_FAILED_ATTEMPTS: Joi.number().integer().min(1).default(5),
+    AUTH_LOGIN_LOCKOUT_TTL_SECONDS: Joi.number().integer().min(1).default(900),
+
     // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
     // PAYMENT_PROVIDER is the single, central gateway selection. In dev/test
     // the keys may stay unset (the factory falls back to the Noop provider so
@@ -387,6 +403,21 @@ export const validate = (config: Record<string, unknown>) => {
           `Set the missing variable(s), or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
       );
     }
+  }
+
+  // ── Reset-token exposure fail-fast (production only) ──────────────────────
+  // Mirrors the payments fail-fast above (the reference pattern for refusing
+  // to boot on an insecure/simulated production configuration — FND-006). A
+  // production process with the local-development token-logging channel
+  // enabled must never start. The message names ONLY the variable, never a
+  // value — there is no value to name here, since this is a boolean switch.
+  if (value.NODE_ENV === 'production' && value.AUTH_EXPOSE_RESET_TOKEN === 'true') {
+    throw new Error(
+      `❌ Env validation error: AUTH_EXPOSE_RESET_TOKEN is "true" but NODE_ENV is ` +
+        `"production". This local-development-only reset-token exposure channel ` +
+        `must never be enabled in production. Set AUTH_EXPOSE_RESET_TOKEN=false, ` +
+        `or unset it entirely.`,
+    );
   }
 
   return value;

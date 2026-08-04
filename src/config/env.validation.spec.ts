@@ -96,4 +96,81 @@ describe('env.validation', () => {
       expect(() => validate({ ...base, PAYMENT_PROVIDER: 'stripe' })).toThrow(/Env validation error/);
     });
   });
+
+  // FND-006: an insecure local-development reset-token exposure channel
+  // must never be enabled in production. Mirrors the payments fail-fast
+  // pattern above — the reference pattern constitution XXIX names.
+  describe('reset-token exposure fail-fast (production)', () => {
+    it('FAILS the boot in production when AUTH_EXPOSE_RESET_TOKEN=true', () => {
+      expect(() =>
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          PAYMENT_PROVIDER: 'noop',
+          AUTH_EXPOSE_RESET_TOKEN: 'true',
+        }),
+      ).toThrow(/AUTH_EXPOSE_RESET_TOKEN/);
+    });
+
+    it('names ONLY the variable, never a value', () => {
+      try {
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          PAYMENT_PROVIDER: 'noop',
+          AUTH_EXPOSE_RESET_TOKEN: 'true',
+        });
+        fail('expected validation to throw');
+      } catch (err) {
+        expect((err as Error).message).toContain('AUTH_EXPOSE_RESET_TOKEN');
+        // The message must never contain a token-shaped value or the literal 'true'
+        // as a quoted assigned value — only the variable's name is permitted.
+        expect((err as Error).message).not.toMatch(/[0-9a-f]{64}/);
+      }
+    });
+
+    it('boots in production when AUTH_EXPOSE_RESET_TOKEN is false (default)', () => {
+      const value = validate({ ...base, NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' });
+      expect(value.AUTH_EXPOSE_RESET_TOKEN).toBe('false');
+    });
+
+    it('boots outside production even when AUTH_EXPOSE_RESET_TOKEN=true', () => {
+      const value = validate({ ...base, AUTH_EXPOSE_RESET_TOKEN: 'true' });
+      expect(value.AUTH_EXPOSE_RESET_TOKEN).toBe('true');
+    });
+
+    it('rejects a non-boolean-string value for AUTH_EXPOSE_RESET_TOKEN', () => {
+      expect(() => validate({ ...base, AUTH_EXPOSE_RESET_TOKEN: 'yes' })).toThrow(/Env validation error/);
+    });
+  });
+
+  // FND-008: account-aware login-protection thresholds must be configurable
+  // and floored so a misconfiguration cannot silently disable the control.
+  describe('login-protection configuration', () => {
+    it('applies the documented defaults (5 attempts / 900s window)', () => {
+      const value = validate({ ...base });
+      expect(value.AUTH_LOGIN_MAX_FAILED_ATTEMPTS).toBe(5);
+      expect(value.AUTH_LOGIN_LOCKOUT_TTL_SECONDS).toBe(900);
+    });
+
+    it('rejects a zero or negative AUTH_LOGIN_MAX_FAILED_ATTEMPTS', () => {
+      expect(() => validate({ ...base, AUTH_LOGIN_MAX_FAILED_ATTEMPTS: 0 })).toThrow(/Env validation error/);
+      expect(() => validate({ ...base, AUTH_LOGIN_MAX_FAILED_ATTEMPTS: -1 })).toThrow(/Env validation error/);
+    });
+
+    it('rejects a zero or negative AUTH_LOGIN_LOCKOUT_TTL_SECONDS', () => {
+      expect(() => validate({ ...base, AUTH_LOGIN_LOCKOUT_TTL_SECONDS: 0 })).toThrow(/Env validation error/);
+      expect(() => validate({ ...base, AUTH_LOGIN_LOCKOUT_TTL_SECONDS: -1 })).toThrow(/Env validation error/);
+    });
+
+    it('accepts configured overrides', () => {
+      const value = validate({
+        ...base,
+        AUTH_LOGIN_MAX_FAILED_ATTEMPTS: 10,
+        AUTH_LOGIN_LOCKOUT_TTL_SECONDS: 300,
+      });
+      expect(value.AUTH_LOGIN_MAX_FAILED_ATTEMPTS).toBe(10);
+      expect(value.AUTH_LOGIN_LOCKOUT_TTL_SECONDS).toBe(300);
+    });
+  });
 });

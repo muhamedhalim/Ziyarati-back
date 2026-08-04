@@ -51,6 +51,21 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * FND-008 — account-aware login-protection events. `store_unavailable` is
+   * the load-bearing label: it is what makes a silent, indefinite loss of
+   * brute-force protection (Redis fail-open — see LoginProtectionService)
+   * externally observable rather than a quiet regression. No label carries
+   * an email, identity hash, or IP — the label set is bounded, so there is
+   * no cardinality risk.
+   */
+  private readonly loginProtectionEvents = new Counter({
+    name: 'auth_login_protection_events_total',
+    help: 'Account-aware login brute-force protection events by outcome.',
+    labelNames: ['event'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -78,6 +93,12 @@ export class MetricsService {
     timestampSeconds: number = Date.now() / 1000,
   ): void {
     this.workerHeartbeat.set({ worker }, timestampSeconds);
+  }
+
+  recordLoginProtectionEvent(
+    event: 'engaged' | 'blocked' | 'cleared' | 'store_unavailable',
+  ): void {
+    this.loginProtectionEvents.inc({ event });
   }
 
   get contentType(): string {

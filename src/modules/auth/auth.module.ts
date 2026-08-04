@@ -13,12 +13,14 @@ import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { Patient } from '../../entities/Patients/Patient';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { AuthService } from './auth.service';
 import { RolesService } from './roles.service';
 import { PermissionsService } from './permissions.service';
 import { PatientService } from './patient.service';
 import { CookieService } from './cookie.service';
+import { LoginProtectionService } from './login-protection.service';
 
 import { AuthController } from './auth.controller';
 import { RolesController } from './roles.controller';
@@ -44,6 +46,7 @@ import { PlatformModule } from '../platform/platform.module';
       PasswordReset,
       Tenant,
       Patient,
+      AuditLog,
     ]),
     PassportModule,
     // Per-operation secrets/TTLs are passed explicitly when signing (access vs
@@ -65,6 +68,7 @@ import { PlatformModule } from '../platform/platform.module';
     PermissionsService,
     PatientService,
     CookieService,
+    LoginProtectionService,
     JwtStrategy,
     JwtAuthGuard,
     RolesGuard,

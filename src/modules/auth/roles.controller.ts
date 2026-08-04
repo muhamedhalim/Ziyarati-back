@@ -149,8 +149,9 @@ Super-admins (\`tenantId = null\`) create global system roles.
   create(
     @Body() dto: CreateRoleDto,
     @CurrentUser('tenantId') tenantId: string | null,
+    @CurrentUser('permissions') callerPermissions: string[],
   ) {
-    return this.rolesService.create(dto, tenantId);
+    return this.rolesService.create(dto, tenantId, callerPermissions);
   }
 
   @ApiOperation({
@@ -252,8 +253,9 @@ mutable.
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateRoleDto,
     @CurrentUser('tenantId') tenantId: string | null,
+    @CurrentUser('permissions') callerPermissions: string[],
   ) {
-    return this.rolesService.update(id, dto, tenantId);
+    return this.rolesService.update(id, dto, tenantId, callerPermissions);
   }
 
   @ApiOperation({
@@ -335,8 +337,9 @@ add/remove operations are not supported — always send the full desired set.
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SetRolePermissionsDto,
     @CurrentUser('tenantId') tenantId: string | null,
+    @CurrentUser('permissions') callerPermissions: string[],
   ) {
-    return this.rolesService.setPermissions(id, dto.permissionIds, tenantId);
+    return this.rolesService.setPermissions(id, dto.permissionIds, tenantId, callerPermissions);
   }
 
   // ──────────────────────── User assignment ──────────────────────────────── //

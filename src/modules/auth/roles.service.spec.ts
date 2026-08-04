@@ -7,6 +7,8 @@ import { Permission } from '../../entities/Auth&RBAC/Permission';
 import { RolePermission } from '../../entities/Auth&RBAC/RolePermission';
 import { User } from '../../entities/Auth&RBAC/User';
 import { UserRole } from '../../entities/Auth&RBAC/UserRole';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ErrorCode } from '../../common/errors';
 import { CUSTOM_ROLE_SENTINEL, PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import {
@@ -23,6 +25,12 @@ describe('RolesService', () => {
   let rolePermissions: MockRepository;
   let users: MockRepository;
   let userRoles: MockRepository;
+  let auditLogs: MockRepository;
+  let tenantContext: {
+    getTenantId: jest.Mock;
+    getUser: jest.Mock;
+    getCorrelationId: jest.Mock;
+  };
 
   const TENANT = 'tenant-1';
 
@@ -32,6 +40,12 @@ describe('RolesService', () => {
     rolePermissions = createMockRepository();
     users = createMockRepository();
     userRoles = createMockRepository();
+    auditLogs = createMockRepository();
+    tenantContext = {
+      getTenantId: jest.fn().mockReturnValue(TENANT),
+      getUser: jest.fn().mockReturnValue({ id: 'actor-1' }),
+      getCorrelationId: jest.fn().mockReturnValue('corr-1'),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -41,6 +55,8 @@ describe('RolesService', () => {
         { provide: getRepositoryToken(RolePermission), useValue: rolePermissions },
         { provide: getRepositoryToken(User), useValue: users },
         { provide: getRepositoryToken(UserRole), useValue: userRoles },
+        { provide: getRepositoryToken(AuditLog), useValue: auditLogs },
+        { provide: TenantContextService, useValue: tenantContext },
       ],
     }).compile();
     service = moduleRef.get(RolesService);
@@ -170,27 +186,39 @@ describe('RolesService', () => {
       });
     });
 
-    it('replaces the permission set when all ids exist', async () => {
+    it('replaces the permission set when all ids exist and the caller holds every granted slug', async () => {
       roles.findOne
-        .mockResolvedValueOnce({ id: 'r1', is_system: false, tenant: { id: TENANT } }) // assertMutable
+        .mockResolvedValueOnce({ id: 'r1', is_system: false, tenant: { id: TENANT }, rolePermissions: [] }) // assertMutable
         .mockResolvedValueOnce({ id: 'r1', is_system: false, tenant: { id: TENANT } }); // findOne reload
-      permissions.find.mockResolvedValueOnce([{ id: 'p1' }, { id: 'p2' }]);
+      permissions.find.mockResolvedValueOnce([
+        { id: 'p1', slug: PERMISSION.APPOINTMENTS_READ },
+        { id: 'p2', slug: PERMISSION.APPOINTMENTS_CREATE },
+      ]);
 
-      await service.setPermissions('r1', ['p1', 'p2'], TENANT);
+      await (service as any).setPermissions(
+        'r1',
+        ['p1', 'p2'],
+        TENANT,
+        [PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_CREATE],
+      );
       expect(rolePermissions.delete).toHaveBeenCalledWith({ role: { id: 'r1' } });
       expect(rolePermissions.save).toHaveBeenCalled();
     });
   });
 
   describe('create with permissions', () => {
-    it('attaches the given permission slugs on creation', async () => {
+    it('attaches the given permission slugs on creation when the caller holds them', async () => {
       roles.findOne
         .mockResolvedValueOnce(null) // duplicate check
         .mockResolvedValueOnce({ id: 'r1', is_system: false, tenant: { id: TENANT } }); // findOne reload
       roles.save.mockResolvedValueOnce({ id: 'r1' });
-      permissions.find.mockResolvedValueOnce([{ id: 'p1' }]);
+      permissions.find.mockResolvedValueOnce([{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }]);
 
-      await service.create({ slug: 'role', name: 'Role', permissionSlugs: ['a.b'] } as any, TENANT);
+      await (service as any).create(
+        { slug: 'role', name: 'Role', permissionSlugs: [PERMISSION.APPOINTMENTS_READ] },
+        TENANT,
+        [PERMISSION.APPOINTMENTS_READ],
+      );
       expect(permissions.find).toHaveBeenCalled();
       expect(rolePermissions.save).toHaveBeenCalled();
     });
@@ -428,6 +456,284 @@ describe('RolesService', () => {
       await expect(
         service.validateCustomPermissions([PERMISSION.APPOINTMENTS_READ], CALLER),
       ).resolves.toEqual(found);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // FND-009 — reserved-permission enforcement on create/update/setPermissions
+  // /assignment. `(service as any)` casts below call the NOT-YET-EXISTING
+  // 3rd/4th `callerPermissions` parameter — this is deliberate: the red
+  // phase proves these entry points currently accept a reserved permission
+  // at all, regardless of arity. The pre-existing tests above are untouched
+  // and must keep passing unmodified (TR-002).
+  // ═══════════════════════════════════════════════════════════════════════
+  describe('FND-009 — create() rejects reserved/unheld permissions', () => {
+    const HELD = [PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_CREATE];
+
+    it('rejects a reserved permission even when the caller holds it', async () => {
+      roles.findOne.mockResolvedValueOnce(null); // duplicate check
+      const callerHoldsReserved = [...HELD, PERMISSION.ROLES_MANAGE];
+
+      await expect(
+        (service as any).create(
+          { slug: 'escalate', name: 'Escalate', permissionSlugs: [PERMISSION.ROLES_MANAGE] },
+          TENANT,
+          callerHoldsReserved,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      // A refused request must create NOTHING at all.
+      expect(roles.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a permission the caller does not hold', async () => {
+      roles.findOne.mockResolvedValueOnce(null);
+
+      await expect(
+        (service as any).create(
+          { slug: 'over-reach', name: 'Over Reach', permissionSlugs: [PERMISSION.BILLING_MANAGE] },
+          TENANT,
+          HELD, // does not include billing.manage
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(roles.save).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when every requested permission is non-reserved and held by the caller', async () => {
+      roles.findOne
+        .mockResolvedValueOnce(null) // duplicate check
+        .mockResolvedValueOnce({ id: 'r1', is_system: false, tenant: { id: TENANT }, rolePermissions: [] });
+      roles.save.mockResolvedValueOnce({ id: 'r1' });
+      permissions.find.mockResolvedValueOnce([{ id: 'p1', slug: PERMISSION.APPOINTMENTS_READ }]);
+
+      await expect(
+        (service as any).create(
+          { slug: 'front-desk-2', name: 'Front Desk 2', permissionSlugs: [PERMISSION.APPOINTMENTS_READ] },
+          TENANT,
+          HELD,
+        ),
+      ).resolves.toEqual(expect.objectContaining({ id: 'r1' }));
+      expect(roles.save).toHaveBeenCalled();
+    });
+
+    it('writes a safe audit record on refusal, naming the role-less rejection and never a credential', async () => {
+      roles.findOne.mockResolvedValueOnce(null);
+
+      await expect(
+        (service as any).create(
+          { slug: 'escalate-2', name: 'Escalate 2', permissionSlugs: [PERMISSION.USERS_MANAGE] },
+          TENANT,
+          HELD,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+
+      expect(auditLogs.save).toHaveBeenCalledTimes(1);
+      const saved = JSON.stringify(auditLogs.save.mock.calls[0][0]);
+      expect(saved).toContain(PERMISSION.USERS_MANAGE);
+      expect(saved).not.toMatch(/password|token|secret/i);
+    });
+  });
+
+  describe('FND-009 — update() reserved permissions, and the empty-vs-omitted rule', () => {
+    const HELD = [PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_CREATE];
+    const mutableRole = () => ({
+      id: 'r1',
+      name: 'Front Desk',
+      is_system: false,
+      tenant: { id: TENANT },
+      rolePermissions: [],
+    });
+
+    it('rejects adding a reserved permission even when the caller holds it', async () => {
+      roles.findOne.mockResolvedValueOnce(mutableRole()); // assertMutable
+      const callerHoldsReserved = [...HELD, PERMISSION.TENANTS_MANAGE];
+
+      await expect(
+        (service as any).update(
+          'r1',
+          { permissionSlugs: [PERMISSION.TENANTS_MANAGE] },
+          TENANT,
+          callerHoldsReserved,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(rolePermissions.delete).not.toHaveBeenCalled();
+    });
+
+    it('an OMITTED permissionSlugs field leaves the stored permission set unchanged (metadata-only edit still succeeds)', async () => {
+      roles.findOne
+        .mockResolvedValueOnce(mutableRole()) // assertMutable
+        .mockResolvedValueOnce({ ...mutableRole(), name: 'Renamed' }); // reload
+
+      await expect(
+        (service as any).update('r1', { name: 'Renamed' }, TENANT, HELD),
+      ).resolves.toEqual(expect.objectContaining({ name: 'Renamed' }));
+      expect(rolePermissions.delete).not.toHaveBeenCalled();
+      expect(roles.save).toHaveBeenCalled(); // the name change itself still applies
+    });
+
+    it('an EXPLICITLY EMPTY permissionSlugs list still clears all permissions and is exempt from any rule', async () => {
+      roles.findOne
+        .mockResolvedValueOnce(mutableRole())
+        .mockResolvedValueOnce({ ...mutableRole(), rolePermissions: [] });
+
+      await (service as any).update('r1', { permissionSlugs: [] }, TENANT, []); // caller holds NOTHING
+      expect(rolePermissions.delete).toHaveBeenCalledWith({ role: { id: 'r1' } });
+      expect(permissions.find).not.toHaveBeenCalled(); // no lookup needed for an empty set
+    });
+  });
+
+  describe('FND-009 — setPermissions() derives slugs from already-loaded rows, no extra query', () => {
+    const HELD = [PERMISSION.APPOINTMENTS_READ];
+    const mutableRole = () => ({
+      id: 'r1',
+      is_system: false,
+      tenant: { id: TENANT },
+      rolePermissions: [],
+    });
+
+    it('rejects a reserved permission resolved from the supplied permission ids', async () => {
+      roles.findOne.mockResolvedValueOnce(mutableRole()); // assertMutable
+      permissions.find.mockResolvedValueOnce([
+        { id: 'p-reserved', slug: PERMISSION.ROLES_MANAGE },
+      ]);
+
+      await expect(
+        (service as any).setPermissions('r1', ['p-reserved'], TENANT, [
+          ...HELD,
+          PERMISSION.ROLES_MANAGE,
+        ]),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(rolePermissions.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects a permission the caller does not hold', async () => {
+      roles.findOne.mockResolvedValueOnce(mutableRole());
+      permissions.find.mockResolvedValueOnce([
+        { id: 'p-billing', slug: PERMISSION.BILLING_MANAGE },
+      ]);
+
+      await expect(
+        (service as any).setPermissions('r1', ['p-billing'], TENANT, HELD),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    });
+
+    it('an empty permissionIds array still clears without any permission lookup', async () => {
+      roles.findOne
+        .mockResolvedValueOnce(mutableRole())
+        .mockResolvedValueOnce({ ...mutableRole(), rolePermissions: [] });
+
+      await (service as any).setPermissions('r1', [], TENANT, []);
+      expect(permissions.find).not.toHaveBeenCalled();
+      expect(rolePermissions.delete).toHaveBeenCalledWith({ role: { id: 'r1' } });
+    });
+  });
+
+  describe('FND-009 — the platform exemption applies ONLY when BOTH sides are platform-scoped', () => {
+    it('EXEMPTS a platform caller (tenantId=null) creating a GLOBAL role with a reserved permission', async () => {
+      roles.findOne
+        .mockResolvedValueOnce(null) // duplicate check
+        .mockResolvedValueOnce({ id: 'sys-new', is_system: true, tenant: null, rolePermissions: [] });
+      roles.save.mockResolvedValueOnce({ id: 'sys-new' });
+      permissions.find.mockResolvedValueOnce([{ id: 'p1', slug: PERMISSION.ROLES_MANAGE }]);
+
+      await expect(
+        (service as any).create(
+          { slug: 'platform-role', name: 'Platform Role', permissionSlugs: [PERMISSION.ROLES_MANAGE] },
+          null, // platform caller
+          [], // caller holds nothing — irrelevant on the exempt path
+        ),
+      ).resolves.toEqual(expect.objectContaining({ id: 'sys-new' }));
+    });
+
+    it('a TENANT caller on a truly GLOBAL role (tenant=null) is refused by the EXISTING assertMutable — not the new reserved-permission error', async () => {
+      roles.findOne.mockResolvedValueOnce({ id: 'sys', is_system: true, tenant: null, rolePermissions: [] });
+
+      await expect(
+        (service as any).update('sys', { name: 'x' }, TENANT, []),
+      ).rejects.toMatchObject({ code: ErrorCode.ROLE_IMMUTABLE });
+    });
+
+    it('a PLATFORM caller (tenantId=null) on a TENANT-SCOPED role is refused by the EXISTING assertMutable — not the new reserved-permission error', async () => {
+      roles.findOne.mockResolvedValueOnce({ id: 'r1', is_system: false, tenant: { id: TENANT }, rolePermissions: [] });
+
+      await expect(
+        (service as any).update('r1', { name: 'x' }, null, []),
+      ).rejects.toMatchObject({ code: ErrorCode.ROLE_IMMUTABLE });
+    });
+  });
+
+  describe('FND-009 — assignment cannot bypass the restriction (defence in depth)', () => {
+    it('refuses to assign a role that already carries a reserved permission', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });
+      roles.findOne.mockResolvedValueOnce({
+        id: 'r-bad',
+        slug: 'somehow-reserved',
+        is_system: false,
+        tenant: { id: TENANT },
+        rolePermissions: [{ permission: { slug: PERMISSION.ROLES_MANAGE } }],
+      });
+
+      await expect(
+        service.assignRoleToUser('u1', 'r-bad', TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(userRoles.save).not.toHaveBeenCalled();
+    });
+
+    it('still allows assigning a legitimate role holding no reserved permission', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });
+      roles.findOne.mockResolvedValueOnce({
+        id: 'r-rec',
+        slug: ROLE.RECEPTIONIST,
+        is_system: false,
+        tenant: { id: TENANT },
+        rolePermissions: [{ permission: { slug: PERMISSION.APPOINTMENTS_READ } }],
+      });
+      userRoles.findOne.mockResolvedValueOnce(null);
+      userRoles.save.mockResolvedValueOnce({ id: 'ur1' });
+
+      await expect(service.assignRoleToUser('u1', 'r-rec', TENANT)).resolves.toEqual({ id: 'ur1' });
+    });
+  });
+
+  describe('FND-009 — an existing stored role already holding a reserved permission is detected on mutation, never silently altered', () => {
+    const affectedRole = () => ({
+      id: 'r-legacy',
+      name: 'Legacy Role',
+      is_system: false,
+      tenant: { id: TENANT },
+      rolePermissions: [{ permission: { slug: PERMISSION.ROLES_MANAGE } }],
+    });
+
+    it('refuses even a metadata-only (name) update, and writes a safe audit record', async () => {
+      roles.findOne.mockResolvedValueOnce(affectedRole());
+
+      await expect(
+        (service as any).update('r-legacy', { name: 'Renamed' }, TENANT, []),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+
+      // The stored permission is untouched — no delete/save of role_permissions.
+      expect(rolePermissions.delete).not.toHaveBeenCalled();
+      expect(roles.save).not.toHaveBeenCalled();
+      expect(auditLogs.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT apply to the platform path — a platform caller may still mutate a GLOBAL role holding a reserved permission (e.g. owner/super_admin)', async () => {
+      // Must be a genuinely global role (tenant: null) for a platform caller
+      // (tenantId=null) to pass assertMutable's tenant-match check at all —
+      // this mirrors the real owner/super_admin system rows.
+      const globalReservedRole = () => ({
+        id: 'sys-owner',
+        name: 'Owner',
+        is_system: true,
+        tenant: null,
+        rolePermissions: [{ permission: { slug: PERMISSION.ROLES_MANAGE } }],
+      });
+      roles.findOne
+        .mockResolvedValueOnce(globalReservedRole())
+        .mockResolvedValueOnce({ ...globalReservedRole(), name: 'Renamed' });
+
+      await expect(
+        (service as any).update('sys-owner', { name: 'Renamed' }, null, []),
+      ).resolves.toEqual(expect.objectContaining({ name: 'Renamed' }));
     });
   });
 
