@@ -1,0 +1,86 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { User } from '../../entities/Auth&RBAC/User';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+
+/** FND-015 — additive action values only; never repurpose an existing one (Principle XX). */
+export const PLATFORM_ADMIN_AUDIT_ACTION = {
+  BILLING_MODE_SET: 'platform_admin.billing_mode.set',
+  PLAN_CREATE: 'platform_admin.plan.create',
+  PLAN_UPDATE: 'platform_admin.plan.update',
+  PLAN_UPDATE_REJECTED: 'platform_admin.plan.update_rejected',
+  PLAN_ACTIVATE: 'platform_admin.plan.activate',
+  PLAN_DEACTIVATE: 'platform_admin.plan.deactivate',
+  OVERRIDE_GRANT: 'platform_admin.override.grant',
+  OVERRIDE_GRANT_REJECTED: 'platform_admin.override.grant_rejected',
+  OVERRIDE_EXTEND: 'platform_admin.override.extend',
+  OVERRIDE_REVOKE: 'platform_admin.override.revoke',
+  SETTING_CREATE: 'platform_admin.system_setting.create',
+  SETTING_CREATE_REJECTED: 'platform_admin.system_setting.create_rejected',
+  SETTING_UPDATE: 'platform_admin.system_setting.update',
+  SETTING_DELETE: 'platform_admin.system_setting.delete',
+  SETTING_UPSERT: 'platform_admin.system_setting.upsert',
+  GATEWAY_CREATE: 'platform_admin.payment_gateway.create',
+  GATEWAY_UPDATE: 'platform_admin.payment_gateway.update',
+} as const;
+
+export type PlatformAdminAuditAction =
+  (typeof PLATFORM_ADMIN_AUDIT_ACTION)[keyof typeof PLATFORM_ADMIN_AUDIT_ACTION];
+
+export interface PlatformAdminAuditInput {
+  action: PlatformAdminAuditAction;
+  /** The acting super admin. Undefined only for a system-initiated call (no HTTP caller). */
+  userId?: string | null;
+  entityType: string;
+  entityId?: string | null;
+  /** The tenant this mutation concerns (free-access overrides only) — NOT the actor's tenant. */
+  tenantId?: string | null;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+}
+
+/**
+ * Records platform-admin financial/config mutations to the shared `audit_logs`
+ * table, mirroring `ApiKeyAuditService`'s pattern (same file shape, same
+ * best-effort save-and-log-on-failure). Covers the 5 mutation groups FND-015
+ * found unaudited: global billing mode, plan CRUD, system settings (incl.
+ * maintenance mode), free-access overrides, and payment-gateway config.
+ *
+ * Called from the SERVICE layer (never the controller) so no caller — existing
+ * or future, HTTP or internal — can bypass it (AD-14). Best-effort: a logging
+ * failure never blocks the mutation it accompanies; these routes are already
+ * super-admin-gated, so this trail is for accountability and incident review,
+ * not access control.
+ */
+@Injectable()
+export class PlatformAdminAuditService {
+  private readonly logger = new Logger(PlatformAdminAuditService.name);
+
+  constructor(
+    @InjectRepository(AuditLog)
+    private readonly auditLogs: Repository<AuditLog>,
+  ) {}
+
+  async record(input: PlatformAdminAuditInput): Promise<void> {
+    try {
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          tenant: input.tenantId ? ({ id: input.tenantId } as Tenant) : undefined,
+          user: input.userId ? ({ id: input.userId } as User) : undefined,
+          action: input.action,
+          entity_type: input.entityType,
+          entity_id: input.entityId ?? undefined,
+          old_values: input.before ?? undefined,
+          new_values: input.after ?? undefined,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Platform-admin audit write failed (${input.action}): ${(err as Error)?.message}`,
+      );
+    }
+  }
+}

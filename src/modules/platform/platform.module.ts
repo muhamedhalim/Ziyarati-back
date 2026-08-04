@@ -14,6 +14,7 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { ApiKeyService } from './api-key.service';
 import { ApiKeyAuditService } from './api-key-audit.service';
+import { PlatformAdminAuditService } from './platform-admin-audit.service';
 import { ApiLogService } from './api-log.service';
 import { WebhookLogService } from './webhook-log.service';
 import { WebhookEndpointService } from './webhook-endpoint.service';
@@ -65,6 +66,9 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
  *
  * SystemSettingService and MaintenanceGuard are exported so other modules can
  * consume typed settings without duplicating the entity registration.
+ * PlatformAdminAuditService is exported so Payments and Subscription-Billing
+ * (both of which already import this module) can record platform-admin
+ * mutations at their own service seam without a second audit mechanism (FND-015).
  */
 @Module({
   imports: [
@@ -92,6 +96,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
   providers: [
     ApiKeyService,
     ApiKeyAuditService,
+    PlatformAdminAuditService,
     ApiLogService,
     WebhookLogService,
     WebhookEndpointService,
@@ -117,6 +122,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     IntegrationScopeGuard,
     SystemSettingService,
     MaintenanceGuard,
+    PlatformAdminAuditService,
   ],
 })
 export class PlatformModule {}

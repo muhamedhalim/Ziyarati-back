@@ -165,6 +165,17 @@ export class RefundRecoveryService {
         }
       }
 
+      // FND-026 / T018: defense-in-depth re-clamp, matching RefundService's
+      // completion phase. The gateway-headroom branch above is already
+      // clamped to `payment.amount` (`gatewayRefundedCents` is `Math.min`-ed
+      // against it), so this is redundant there by construction; the
+      // internal-refund branch (`!payment.gateway_payment_id`) has no such
+      // clamp of its own, so this is its only guard against ever finalizing
+      // past the payment amount.
+      if (succeed && succeededCents + thisCents > toCents(locked.amount)) {
+        succeed = false;
+      }
+
       if (succeed) {
         fresh.status = REFUND_STATUS.SUCCEEDED;
         if (!fresh.gateway_refund_id) fresh.gateway_refund_id = `reaper:${fresh.id}`;

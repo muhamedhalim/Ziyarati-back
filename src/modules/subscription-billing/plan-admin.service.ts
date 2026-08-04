@@ -6,6 +6,11 @@ import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import {
+  PlatformAdminAuditService,
+  PLATFORM_ADMIN_AUDIT_ACTION,
+} from '../platform/platform-admin-audit.service';
 
 import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
 
@@ -46,6 +51,8 @@ export class PlanAdminService {
     private readonly plans: Repository<SubscriptionPlan>,
     @InjectRepository(Subscription)
     private readonly subscriptions: Repository<Subscription>,
+    private readonly audit: PlatformAdminAuditService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   /** Full catalogue including inactive plans (admin view). */
@@ -61,8 +68,8 @@ export class PlanAdminService {
     return plan;
   }
 
-  create(dto: CreatePlanDto): Promise<SubscriptionPlan> {
-    return this.plans.save(
+  async create(dto: CreatePlanDto): Promise<SubscriptionPlan> {
+    const result = await this.plans.save(
       this.plans.create({
         name: dto.name,
         price: dto.price.toFixed(2),
@@ -77,6 +84,15 @@ export class PlanAdminService {
         is_custom: dto.isCustom ?? false,
       }),
     );
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.PLAN_CREATE,
+      userId: this.actorId(),
+      entityType: 'subscription_plan',
+      entityId: result.id,
+      before: null,
+      after: this.snapshot(result),
+    });
+    return result;
   }
 
   /**
@@ -85,6 +101,7 @@ export class PlanAdminService {
    */
   async update(id: string, dto: UpdatePlanDto): Promise<SubscriptionPlan> {
     const plan = await this.get(id);
+    const before = this.snapshot(plan);
 
     const desiredTerms = this.toTermPatch(dto);
     const changesTerms = Object.entries(desiredTerms).some(
@@ -92,6 +109,17 @@ export class PlanAdminService {
     );
 
     if (changesTerms && (await this.isInUse(id))) {
+      // FND-015 / AD-14: both success and refusal are recorded — an attempt
+      // to change frozen economic terms on an in-use plan is exactly the kind
+      // of thing platform support needs visibility into.
+      await this.audit.record({
+        action: PLATFORM_ADMIN_AUDIT_ACTION.PLAN_UPDATE_REJECTED,
+        userId: this.actorId(),
+        entityType: 'subscription_plan',
+        entityId: id,
+        before,
+        after: { attemptedTerms: desiredTerms, result: 'rejected: plan is in use' },
+      });
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
           'Pricing, billing cycle and limits are immutable once a plan has active subscribers. Create a new plan version instead (existing subscriptions keep their terms).',
@@ -114,14 +142,35 @@ export class PlanAdminService {
     if (dto.maxCampaigns !== undefined) plan.max_campaigns = dto.maxCampaigns ?? undefined;
     if (dto.isCustom !== undefined) plan.is_custom = dto.isCustom;
 
-    return this.plans.save(plan);
+    const result = await this.plans.save(plan);
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.PLAN_UPDATE,
+      userId: this.actorId(),
+      entityType: 'subscription_plan',
+      entityId: result.id,
+      before,
+      after: this.snapshot(result),
+    });
+    return result;
   }
 
   /** Activate / deactivate. Deactivating only hides the plan from the catalogue. */
   async setActive(id: string, isActive: boolean): Promise<SubscriptionPlan> {
     const plan = await this.get(id);
+    const wasActive = plan.is_active;
     plan.is_active = isActive;
-    return this.plans.save(plan);
+    const result = await this.plans.save(plan);
+    await this.audit.record({
+      action: isActive
+        ? PLATFORM_ADMIN_AUDIT_ACTION.PLAN_ACTIVATE
+        : PLATFORM_ADMIN_AUDIT_ACTION.PLAN_DEACTIVATE,
+      userId: this.actorId(),
+      entityType: 'subscription_plan',
+      entityId: result.id,
+      before: { isActive: wasActive },
+      after: { isActive },
+    });
+    return result;
   }
 
   /** How many non-cancelled subscriptions reference this plan (compat check). */
@@ -134,6 +183,27 @@ export class PlanAdminService {
       },
     });
     return count > 0;
+  }
+
+  private actorId(): string | undefined {
+    return this.tenantContext.getUser()?.id;
+  }
+
+  /** Compact, audit-safe snapshot of a plan's economically-relevant fields. */
+  private snapshot(plan: SubscriptionPlan): Record<string, unknown> {
+    return {
+      name: plan.name,
+      price: plan.price,
+      billingCycle: plan.billing_cycle,
+      maxBranches: plan.max_branches,
+      maxUsers: plan.max_users,
+      maxAiTokens: plan.max_ai_tokens,
+      maxWhatsappMessages: plan.max_whatsapp_messages,
+      maxAppointments: plan.max_appointments,
+      maxCampaigns: plan.max_campaigns,
+      isActive: plan.is_active,
+      isCustom: plan.is_custom,
+    };
   }
 
   private toTermPatch(dto: UpdatePlanDto): Partial<Record<keyof SubscriptionPlan, unknown>> {

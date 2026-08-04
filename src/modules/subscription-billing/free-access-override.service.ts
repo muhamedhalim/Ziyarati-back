@@ -3,6 +3,11 @@ import { DataSource } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { AppError, ErrorCode } from '../../common/errors';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import {
+  PlatformAdminAuditService,
+  PLATFORM_ADMIN_AUDIT_ACTION,
+} from '../platform/platform-admin-audit.service';
 import { OverrideStatus } from './platform-billing.constants';
 
 export interface FreeAccessOverride {
@@ -41,7 +46,11 @@ export interface GrantOverrideInput {
  */
 @Injectable()
 export class FreeAccessOverrideService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly audit: PlatformAdminAuditService,
+    private readonly tenantContext: TenantContextService,
+  ) {}
 
   /** True when the tenant currently has an ACTIVE, time-valid override. */
   async hasActive(tenantId: string): Promise<boolean> {
@@ -79,6 +88,17 @@ export class FreeAccessOverrideService {
     input: GrantOverrideInput,
   ): Promise<FreeAccessOverride> {
     if (await this.hasActive(tenantId)) {
+      // FND-015 / AD-14: refusals are recorded too — a duplicate-grant attempt
+      // on a tenant that already has free access is worth a support/incident
+      // record even though it changes nothing.
+      await this.audit.record({
+        action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_GRANT_REJECTED,
+        userId: this.actorId(),
+        entityType: 'free_access_override',
+        tenantId,
+        before: null,
+        after: { attemptedReason: input.reason ?? null, result: 'rejected: override already active' },
+      });
       throw new AppError(ErrorCode.CONFLICT, {
         message:
           'This tenant already has an active free-access override — extend or revoke it instead',
@@ -92,7 +112,17 @@ export class FreeAccessOverrideService {
        RETURNING *`,
       [randomUUID(), tenantId, input.grantedBy ?? null, input.reason ?? null, endsAt],
     );
-    return this.map(rows[0]);
+    const result = this.map(rows[0]);
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_GRANT,
+      userId: this.actorId(),
+      entityType: 'free_access_override',
+      entityId: result.id,
+      tenantId,
+      before: null,
+      after: { reason: result.reason, endsAt: result.ends_at },
+    });
+    return result;
   }
 
   /**
@@ -124,7 +154,17 @@ export class FreeAccessOverrideService {
        WHERE id = $1 RETURNING *`,
       [active.id, endsAt],
     );
-    return this.map(rows[0]);
+    const result = this.map(rows[0]);
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_EXTEND,
+      userId: this.actorId(),
+      entityType: 'free_access_override',
+      entityId: result.id,
+      tenantId,
+      before: { endsAt: active.ends_at },
+      after: { endsAt: result.ends_at },
+    });
+    return result;
   }
 
   /** Revoke the tenant's active override immediately. 404 if none active. */
@@ -132,17 +172,32 @@ export class FreeAccessOverrideService {
     const res = await this.dataSource.query(
       `UPDATE free_access_overrides
        SET status = 'REVOKED', updated_at = now()
-       WHERE tenant_id = $1 AND status = 'ACTIVE'`,
+       WHERE tenant_id = $1 AND status = 'ACTIVE'
+       RETURNING id`,
       [tenantId],
     );
-    // node-postgres UPDATE returns [ , affectedCount ] via TypeORM's raw driver.
+    // node-postgres UPDATE returns [ rows, affectedCount ] via TypeORM's raw driver.
+    const rows = Array.isArray(res) ? (res[0] as Array<{ id: string }>) : [];
     const affected = Array.isArray(res) ? res[1] : (res as { rowCount?: number })?.rowCount;
     if (!affected) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'No active free-access override to revoke',
       });
     }
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_REVOKE,
+      userId: this.actorId(),
+      entityType: 'free_access_override',
+      entityId: rows[0]?.id,
+      tenantId,
+      before: { status: 'ACTIVE' },
+      after: { status: 'REVOKED' },
+    });
     return { revoked: true };
+  }
+
+  private actorId(): string | undefined {
+    return this.tenantContext.getUser()?.id;
   }
 
   private endsFromDuration(

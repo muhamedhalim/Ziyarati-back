@@ -201,4 +201,78 @@ describe('PaymentService.create (booking payments)', () => {
     expect(res.payment).toBe(winner);
     expect(gateway.createPayment).not.toHaveBeenCalled();
   });
+
+  // FND-027 / AD-02 — manual (no-appointment) payments get a server-derived
+  // idempotency key when the client supplies none. Companion to the real-PG
+  // proof in test/payment-idempotency.e2e-spec.ts (VR-001: mocks alone are
+  // never evidence for the concurrency property, only for this arithmetic).
+  describe('FND-027 — server-derived idempotency key (manual payments)', () => {
+    it('derives and stores a key when the client supplies none', async () => {
+      await service.create(TENANT, { amount: 75, customerId: 'cust-1' } as any);
+
+      expect(payments.save).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotency_key: expect.any(String) }),
+      );
+      const saved = payments.save.mock.calls[0][0];
+      expect(saved.idempotency_key.length).toBeGreaterThan(0);
+    });
+
+    it('two DIFFERENT customers at the same amount get DIFFERENT derived keys', async () => {
+      await service.create(TENANT, { amount: 75, customerId: 'cust-1' } as any);
+      const keyA = payments.save.mock.calls[0][0].idempotency_key;
+
+      await service.create(TENANT, { amount: 75, customerId: 'cust-2' } as any);
+      const keyB = payments.save.mock.calls[1][0].idempotency_key;
+
+      expect(keyA).not.toBe(keyB);
+    });
+
+    it('the SAME tenant+customer+amount within the same call derives the SAME key (the double-click case)', async () => {
+      await service.create(TENANT, { amount: 75, customerId: 'cust-1' } as any);
+      const keyA = payments.save.mock.calls[0][0].idempotency_key;
+
+      await service.create(TENANT, { amount: 75, customerId: 'cust-1' } as any);
+      const keyB = payments.save.mock.calls[1][0].idempotency_key;
+
+      expect(keyA).toBe(keyB);
+    });
+
+    it('the derived key embeds the tenant id (the underlying unique index is GLOBAL, not tenant-scoped)', async () => {
+      await service.create('tenant-A', { amount: 75, customerId: 'cust-1' } as any);
+      const keyA = payments.save.mock.calls[0][0].idempotency_key;
+
+      await service.create('tenant-B', { amount: 75, customerId: 'cust-1' } as any);
+      const keyB = payments.save.mock.calls[1][0].idempotency_key;
+
+      // Same customer+amount, DIFFERENT tenants — must never collide, since
+      // `UQ_59dcef70bd19850783c84f840e5` on `payments.idempotency_key` is a
+      // plain global unique constraint (no tenant column in it at all).
+      expect(keyA).not.toBe(keyB);
+    });
+
+    it('does NOT derive a key for a booking (appointmentId) payment — that path has its own floor', async () => {
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+      await service.create(TENANT, { appointmentId: 'appt-1' } as any);
+
+      const saved = payments.save.mock.calls[0][0];
+      expect(saved.idempotency_key).toBeUndefined();
+    });
+
+    it('an explicit client-supplied key on a manual payment is honored as-is (never overridden by the derived one)', async () => {
+      await service.create(TENANT, { amount: 75, customerId: 'cust-1', idempotencyKey: 'client-key-1' } as any);
+      expect(payments.save).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotency_key: 'client-key-1' }),
+      );
+    });
+
+    it('lost the derived-key race (concurrent manual double-submit) → returns the winner, no second charge', async () => {
+      payments.save.mockRejectedValueOnce({ code: '23505' });
+      const winner = { id: 'pay-2', status: PaymentStatus.PENDING, metadata: {} };
+      payments.findOne.mockResolvedValueOnce(winner);
+
+      const res = await service.create(TENANT, { amount: 75, customerId: 'cust-1' } as any);
+      expect(res.payment).toBe(winner);
+      expect(gateway.createPayment).not.toHaveBeenCalled();
+    });
+  });
 });

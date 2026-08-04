@@ -60,10 +60,24 @@ export class PaymentService {
   ) {}
 
   async create(tenantId: string, dto: CreatePaymentDto) {
+    // FND-027 / AD-02: a manual (no-appointment) payment carries neither the
+    // appointment-based PENDING floor nor, usually, a client-supplied key —
+    // the "New payment" UI never sends one. When the client supplies none on
+    // that path, derive one deterministically (tenant + customer + amount +
+    // a coarse time bucket) so the existing per-tenant unique index still
+    // catches a double-submit. Appointment-based payments keep relying on
+    // their own floor (the partial unique index + the "already paid"/"reuse
+    // PENDING" checks in resolveBookingPrice) and are left untouched.
+    const idempotencyKey =
+      dto.idempotencyKey ??
+      (!dto.appointmentId
+        ? this.deriveManualIdempotencyKey(tenantId, dto)
+        : undefined);
+
     // Idempotent create: a retry with the same key returns the existing payment.
-    if (dto.idempotencyKey) {
+    if (idempotencyKey) {
       const existing = await this.payments.findOne({
-        where: { tenant: { id: tenantId }, idempotency_key: dto.idempotencyKey },
+        where: { tenant: { id: tenantId }, idempotency_key: idempotencyKey },
       });
       if (existing) {
         return { payment: existing, status: existing.status, redirectUrl: undefined };
@@ -115,23 +129,38 @@ export class PaymentService {
           currency,
           status: PaymentStatus.PENDING,
           gateway: provider.name,
-          idempotency_key: dto.idempotencyKey,
+          idempotency_key: idempotencyKey,
           sub_merchant_id: split?.recipientId,
         }),
       );
     } catch (err) {
+      const isUniqueViolation = (err as { code?: string })?.code === '23505';
+
       // Lost the one-PENDING-per-appointment unique race (double click /
       // concurrent tabs): return the winner instead of a second charge.
-      if (
-        dto.appointmentId &&
-        (err as { code?: string })?.code === '23505'
-      ) {
+      if (dto.appointmentId && isUniqueViolation) {
         const winner = await this.payments.findOne({
           where: {
             tenant: { id: tenantId },
             appointment: { id: dto.appointmentId },
             status: PaymentStatus.PENDING,
           },
+        });
+        if (winner) {
+          return {
+            payment: winner,
+            status: winner.status,
+            redirectUrl: winner.metadata?.redirect_url as string | undefined,
+          };
+        }
+      }
+
+      // FND-027: lost the idempotency-key race (concurrent manual double
+      // submit, derived or client-supplied) — same recovery pattern as
+      // RefundService.create's idempotencyKey race.
+      if (idempotencyKey && isUniqueViolation) {
+        const winner = await this.payments.findOne({
+          where: { tenant: { id: tenantId }, idempotency_key: idempotencyKey },
         });
         if (winner) {
           return {
@@ -218,6 +247,31 @@ export class PaymentService {
     }
 
     return { payment, status: payment.status, redirectUrl };
+  }
+
+  /**
+   * FND-027 / AD-02 — deterministic idempotency key for a manual (no-
+   * appointment) payment when the client supplies none: tenant + customer +
+   * amount + a 1-minute time bucket (same coarse-bucket pattern as
+   * `queue.service.ts#enqueueUsageReportRun`). A double-click collides
+   * (deduplicated); a genuinely later distinct payment (next bucket, or a
+   * different amount/customer) does not.
+   *
+   * The existing `idempotency_key` unique constraint is GLOBAL (not
+   * tenant-scoped — `UQ_59dcef70bd19850783c84f840e5` on `payments`, unlike
+   * `refunds`' tenant-scoped `uq_refund_idem`), so the tenant id is embedded
+   * directly in the derived string: this makes the key self-namespaced and
+   * collision-safe regardless of that constraint shape, without requiring a
+   * schema change.
+   */
+  private deriveManualIdempotencyKey(
+    tenantId: string,
+    dto: CreatePaymentDto,
+  ): string {
+    const amountKey = dto.amount != null ? Math.round(dto.amount * 100) : 'na';
+    const customerKey = dto.customerId ?? 'anon';
+    const minuteBucket = Math.floor(Date.now() / 60_000);
+    return `mp:${tenantId}:${customerKey}:${amountKey}:${minuteBucket}`;
   }
 
   /**
