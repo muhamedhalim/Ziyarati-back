@@ -181,10 +181,11 @@ export const validate = (config: Record<string, unknown>) => {
     WHATSAPP_VERIFY_TOKEN: Joi.string().allow('', null),
 
     // ── Credential encryption (encrypt-at-rest for provider secrets) ──────
-    // 32 bytes, base64 or hex: `openssl rand -base64 32`. Optional so the app
-    // boots without it, but EncryptionService throws on any encrypt/decrypt of
-    // a real secret while it is unset — an unset key cannot silently downgrade
-    // storage back to plaintext.
+    // 32 bytes, base64 or hex: `openssl rand -base64 32`. Optional here
+    // (dev/test boot without it; EncryptionService throws on any
+    // encrypt/decrypt of a real secret while it is unset, so an unset key
+    // cannot silently downgrade storage back to plaintext) but REQUIRED in
+    // production — see the fail-fast check below (HRD-001).
     CREDENTIALS_ENCRYPTION_KEY: Joi.string().allow('', null),
 
     // ── AI / OpenAI + pgvector RAG ────────────────────────────────────────
@@ -401,6 +402,38 @@ export const validate = (config: Record<string, unknown>) => {
           `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
           `Payments cannot run in production without gateway credentials. ` +
           `Set the missing variable(s), or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
+      );
+    }
+  }
+
+  // ── Credential-encryption fail-fast (production only, HRD-001) ────────────
+  // Mirrors the payments fail-fast above (the reference pattern constitution
+  // XXIX names). Without this key, provider credentials (WhatsApp/OAuth
+  // tokens) cannot be encrypted at rest, and EncryptionService today only
+  // throws at first USE (encrypt/decrypt call) — long after the platform is
+  // already serving traffic. Refusing to boot is the stronger, earlier
+  // contract. The 32-byte decode check mirrors EncryptionService.loadKey()
+  // (single source of truth for the format), duplicated here so the earliest
+  // possible boot phase — Joi validation, before any provider is constructed
+  // — already enforces it. The message names ONLY the variable, never a value.
+  if (value.NODE_ENV === 'production') {
+    const key = String(value.CREDENTIALS_ENCRYPTION_KEY ?? '').trim();
+    if (!key) {
+      throw new Error(
+        `❌ Env validation error: CREDENTIALS_ENCRYPTION_KEY is not set. ` +
+          `Production cannot boot without it — provider credentials would have ` +
+          `no way to be encrypted at rest. Set CREDENTIALS_ENCRYPTION_KEY to a ` +
+          `32-byte base64 or hex key (openssl rand -base64 32).`,
+      );
+    }
+    const decoded = /^[0-9a-fA-F]{64}$/.test(key)
+      ? Buffer.from(key, 'hex')
+      : Buffer.from(key, 'base64');
+    if (decoded.length !== 32) {
+      throw new Error(
+        `❌ Env validation error: CREDENTIALS_ENCRYPTION_KEY must decode to ` +
+          `exactly 32 bytes (got ${decoded.length}). Generate one with: ` +
+          `openssl rand -base64 32`,
       );
     }
   }

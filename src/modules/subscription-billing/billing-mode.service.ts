@@ -3,6 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import {
+  PlatformAdminAuditService,
+  PLATFORM_ADMIN_AUDIT_ACTION,
+} from '../platform/platform-admin-audit.service';
 import {
   BillingMode,
   BILLING_MODE_SETTING_KEY,
@@ -44,6 +49,8 @@ export class BillingModeService {
   constructor(
     @InjectRepository(SystemSetting)
     private readonly settings: Repository<SystemSetting>,
+    private readonly audit: PlatformAdminAuditService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   /** The active global mode (cached). Defaults to FREE when never configured. */
@@ -67,6 +74,7 @@ export class BillingModeService {
     let setting = await this.settings.findOne({
       where: { key: BILLING_MODE_SETTING_KEY },
     });
+    const previousMode = (setting?.value as { mode?: string } | undefined)?.mode ?? DEFAULT_BILLING_MODE;
     if (setting) {
       setting.value = { mode };
     } else {
@@ -75,9 +83,19 @@ export class BillingModeService {
         value: { mode },
       });
     }
-    await this.settings.save(setting);
+    const saved = await this.settings.save(setting);
     this.cached = { mode, at: Date.now() };
     this.logger.log(`Global billing mode set to "${mode}"`);
+    // FND-015: this is a platform-wide, immediately-effective switch — every
+    // change is audited, whether it's a genuine flip or a no-op re-set.
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.BILLING_MODE_SET,
+      userId: this.tenantContext.getUser()?.id,
+      entityType: 'billing_mode',
+      entityId: saved.id,
+      before: { mode: previousMode },
+      after: { mode },
+    });
     return { mode };
   }
 

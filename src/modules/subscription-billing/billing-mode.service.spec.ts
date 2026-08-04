@@ -5,15 +5,26 @@ import { BillingModeService } from './billing-mode.service';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { BillingMode } from './platform-billing.constants';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import { PlatformAdminAuditService } from '../platform/platform-admin-audit.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
 describe('BillingModeService', () => {
   let service: BillingModeService;
   let settings: MockRepository;
+  let audit: { record: jest.Mock };
+  let tenantContext: { getUser: jest.Mock };
 
   beforeEach(async () => {
     settings = createMockRepository();
+    audit = { record: jest.fn().mockResolvedValue(undefined) };
+    tenantContext = { getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }) };
     const moduleRef: TestingModule = await Test.createTestingModule({
-      providers: [BillingModeService, { provide: getRepositoryToken(SystemSetting), useValue: settings }],
+      providers: [
+        BillingModeService,
+        { provide: getRepositoryToken(SystemSetting), useValue: settings },
+        { provide: PlatformAdminAuditService, useValue: audit },
+        { provide: TenantContextService, useValue: tenantContext },
+      ],
     }).compile();
     service = moduleRef.get(BillingModeService);
   });
@@ -52,5 +63,42 @@ describe('BillingModeService', () => {
     await service.set(BillingMode.PAID);
     const saved = settings.save.mock.calls[0][0];
     expect(saved.value).toEqual({ mode: BillingMode.PAID });
+  });
+
+  // FND-015 — this platform-wide switch previously wrote NO audit entry.
+  it('audits a mode switch with the acting super admin and the before/after mode', async () => {
+    settings.findOne.mockResolvedValueOnce({
+      id: 'setting-1',
+      key: 'billing.mode',
+      value: { mode: BillingMode.FREE },
+    });
+    settings.save.mockImplementationOnce(async (s: any) => s);
+
+    await service.set(BillingMode.PAID);
+
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'platform_admin.billing_mode.set',
+        userId: 'super-admin-1',
+        entityType: 'billing_mode',
+        entityId: 'setting-1',
+        before: { mode: BillingMode.FREE },
+        after: { mode: BillingMode.PAID },
+      }),
+    );
+  });
+
+  it('audits the FIRST-ever mode switch (no prior row) against the documented default', async () => {
+    settings.findOne.mockResolvedValueOnce(null);
+    settings.save.mockImplementationOnce(async (s: any) => ({ id: 'setting-1', ...s }));
+
+    await service.set(BillingMode.PAID);
+
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        before: { mode: BillingMode.FREE },
+        after: { mode: BillingMode.PAID },
+      }),
+    );
   });
 });

@@ -7,6 +7,11 @@ const base = {
   REDIS_URL: 'redis://localhost:6379',
 };
 
+// A valid 32-byte key (HRD-001 requires one in production) — shared by every
+// test below that needs production to boot cleanly past that check so it can
+// exercise its OWN, unrelated concern.
+const PROD_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+
 describe('env.validation', () => {
   it('accepts a minimal valid config and applies defaults', () => {
     const value = validate({ ...base });
@@ -77,12 +82,18 @@ describe('env.validation', () => {
         NODE_ENV: 'production',
         MOYASAR_SECRET_KEY: 'sk',
         MOYASAR_WEBHOOK_SECRET: 'whs',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.PAYMENT_PROVIDER).toBe('moyasar');
     });
 
     it('boots in production with payments explicitly disabled (PAYMENT_PROVIDER=noop)', () => {
-      const value = validate({ ...base, NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' });
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        PAYMENT_PROVIDER: 'noop',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      });
       expect(value.PAYMENT_PROVIDER).toBe('noop');
     });
 
@@ -107,6 +118,7 @@ describe('env.validation', () => {
           ...base,
           NODE_ENV: 'production',
           PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           AUTH_EXPOSE_RESET_TOKEN: 'true',
         }),
       ).toThrow(/AUTH_EXPOSE_RESET_TOKEN/);
@@ -118,6 +130,7 @@ describe('env.validation', () => {
           ...base,
           NODE_ENV: 'production',
           PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
           AUTH_EXPOSE_RESET_TOKEN: 'true',
         });
         fail('expected validation to throw');
@@ -130,7 +143,12 @@ describe('env.validation', () => {
     });
 
     it('boots in production when AUTH_EXPOSE_RESET_TOKEN is false (default)', () => {
-      const value = validate({ ...base, NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' });
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        PAYMENT_PROVIDER: 'noop',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      });
       expect(value.AUTH_EXPOSE_RESET_TOKEN).toBe('false');
     });
 
@@ -141,6 +159,82 @@ describe('env.validation', () => {
 
     it('rejects a non-boolean-string value for AUTH_EXPOSE_RESET_TOKEN', () => {
       expect(() => validate({ ...base, AUTH_EXPOSE_RESET_TOKEN: 'yes' })).toThrow(/Env validation error/);
+    });
+  });
+
+  // HRD-001: production must refuse to boot without a usable credential
+  // encryption key — today it boots fine and only fails later, at first USE,
+  // inside EncryptionService. Mirrors the payments fail-fast pattern above.
+  describe('credential-encryption fail-fast (production)', () => {
+    it('FAILS the boot in production when CREDENTIALS_ENCRYPTION_KEY is unset', () => {
+      expect(() =>
+        validate({ ...base, NODE_ENV: 'production', PAYMENT_PROVIDER: 'noop' }),
+      ).toThrow(/CREDENTIALS_ENCRYPTION_KEY/);
+    });
+
+    it('FAILS the boot in production when CREDENTIALS_ENCRYPTION_KEY is an empty string', () => {
+      expect(() =>
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: '',
+        }),
+      ).toThrow(/CREDENTIALS_ENCRYPTION_KEY/);
+    });
+
+    it('FAILS the boot in production when the key does not decode to 32 bytes', () => {
+      expect(() =>
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: Buffer.from('too-short').toString('base64'),
+        }),
+      ).toThrow(/CREDENTIALS_ENCRYPTION_KEY/);
+    });
+
+    it('names ONLY the variable, never the key value', () => {
+      const key = Buffer.alloc(32, 7).toString('base64');
+      try {
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: 'sk',
+        });
+        fail('expected validation to throw');
+      } catch (err) {
+        expect((err as Error).message).toContain('CREDENTIALS_ENCRYPTION_KEY');
+        expect((err as Error).message).not.toContain(key);
+      }
+    });
+
+    it('boots in production once a valid 32-byte base64 key is set', () => {
+      const key = Buffer.alloc(32, 7).toString('base64');
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        PAYMENT_PROVIDER: 'noop',
+        CREDENTIALS_ENCRYPTION_KEY: key,
+      });
+      expect(value.CREDENTIALS_ENCRYPTION_KEY).toBe(key);
+    });
+
+    it('boots in production once a valid 32-byte hex key is set', () => {
+      const key = Buffer.alloc(32, 7).toString('hex');
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        PAYMENT_PROVIDER: 'noop',
+        CREDENTIALS_ENCRYPTION_KEY: key,
+      });
+      expect(value.CREDENTIALS_ENCRYPTION_KEY).toBe(key);
+    });
+
+    it('boots keyless outside production (dev/test unaffected)', () => {
+      const value = validate({ ...base });
+      expect(value.CREDENTIALS_ENCRYPTION_KEY).toBeUndefined();
     });
   });
 

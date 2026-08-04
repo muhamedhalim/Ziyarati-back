@@ -117,6 +117,23 @@ export class RefundService {
       const refundRepo = m.getRepository(Refund);
       const refund = await refundRepo.findOneByOrFail({ id: intent.refundId });
 
+      // FND-026 / T018: re-clamp before trusting the gateway's `ok`. Phase 1's
+      // admission check is the primary guarantee, but this is the last point
+      // before a refund becomes irrevocably SUCCEEDED — recompute the ACTUAL
+      // succeeded total fresh, under this same lock, and refuse rather than
+      // admit past the payment amount. In the ordinary path this never
+      // triggers (admission already reserved the room); it exists for
+      // whatever the admission check didn't anticipate.
+      if (ok && payment) {
+        const succeededSoFarC = await this.sumSucceededCents(m, payment.id);
+        if (succeededSoFarC + intent.amountC > toCents(payment.amount)) {
+          ok = false;
+          failureReason =
+            failureReason ??
+            'Refund would exceed the remaining refundable balance at completion';
+        }
+      }
+
       refund.status = ok ? REFUND_STATUS.SUCCEEDED : REFUND_STATUS.FAILED;
       // Persist the provider refund id for traceability + cross-checking against
       // refund webhooks (H2 reconciliation).
@@ -224,8 +241,8 @@ export class RefundService {
       });
     }
 
-    const refundedC = await this.sumSucceededCents(m, payment.id);
-    const remainingC = toCents(payment.amount) - refundedC;
+    const admittedC = await this.sumAdmittedCents(m, payment.id);
+    const remainingC = toCents(payment.amount) - admittedC;
     const amountC = dto.amount != null ? toCents(dto.amount) : remainingC;
 
     if (amountC <= 0 || amountC > remainingC) {
@@ -257,7 +274,13 @@ export class RefundService {
     };
   }
 
-  /** Exact sum (SQL `numeric`) of succeeded refunds for a payment, in integer cents. */
+  /**
+   * Exact sum (SQL `numeric`) of SUCCEEDED refunds for a payment, in integer
+   * cents. This is the actually-completed ledger total — used to derive
+   * `payment.refunded_amount`/`status` and, at completion, to re-clamp before
+   * trusting a gateway `ok` (T018). Deliberately excludes `PENDING`: a
+   * still-in-flight refund has not actually moved money yet.
+   */
   private async sumSucceededCents(
     m: EntityManager,
     paymentId: string,
@@ -268,6 +291,31 @@ export class RefundService {
       .select('COALESCE(SUM(r.amount), 0)', 'sum')
       .where('p.id = :pid', { pid: paymentId })
       .andWhere('r.status = :s', { s: REFUND_STATUS.SUCCEEDED })
+      .getRawOne<{ sum: string }>();
+    return toCents(row?.sum ?? 0);
+  }
+
+  /**
+   * FND-026 / AD-01 — the ADMISSION sum: `PENDING` **and** `SUCCEEDED`, in
+   * integer cents. Used only to decide whether a NEW refund fits the
+   * remaining balance (`persistIntent`). A concurrent refund that already
+   * reserved money by going PENDING must count against the balance even
+   * before its own gateway call resolves — otherwise two concurrent refunds
+   * can each see "nothing admitted yet" and both be let through. `FAILED` is
+   * excluded: a failed refund releases the capacity it had reserved.
+   */
+  private async sumAdmittedCents(
+    m: EntityManager,
+    paymentId: string,
+  ): Promise<number> {
+    const row = await m
+      .createQueryBuilder(Refund, 'r')
+      .innerJoin('r.payment', 'p')
+      .select('COALESCE(SUM(r.amount), 0)', 'sum')
+      .where('p.id = :pid', { pid: paymentId })
+      .andWhere('r.status IN (:...statuses)', {
+        statuses: [REFUND_STATUS.PENDING, REFUND_STATUS.SUCCEEDED],
+      })
       .getRawOne<{ sum: string }>();
     return toCents(row?.sum ?? 0);
   }

@@ -4,6 +4,7 @@ import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { AppError, ErrorCode } from '../../common/errors';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
 import { CreateSystemSettingDto } from './dto/create-system-setting.dto';
 import { UpdateSystemSettingDto } from './dto/update-system-setting.dto';
@@ -14,6 +15,10 @@ import {
   SettingDefinition,
   SettingKey,
 } from './settings.registry';
+import {
+  PlatformAdminAuditService,
+  PLATFORM_ADMIN_AUDIT_ACTION,
+} from './platform-admin-audit.service';
 
 /**
  * PLATFORM-OWNED global settings (`system_settings`).
@@ -50,6 +55,8 @@ export class SystemSettingService {
   constructor(
     @InjectRepository(SystemSetting)
     private readonly settings: Repository<SystemSetting>,
+    private readonly audit: PlatformAdminAuditService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   // ──────────────────────────── Typed API ──────────────────────────────── //
@@ -83,6 +90,7 @@ export class SystemSettingService {
     this.validateValue(key, value);
 
     const existing = await this.settings.findOne({ where: { key } });
+    const before = existing ? { key: existing.key, value: existing.value } : null;
     let result: SystemSetting;
 
     if (existing) {
@@ -93,6 +101,14 @@ export class SystemSettingService {
     }
 
     this.typedCache.delete(key);
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_UPSERT,
+      userId: this.actorId(),
+      entityType: 'system_setting',
+      entityId: result.id,
+      before,
+      after: { key: result.key, value: result.value },
+    });
     return result;
   }
 
@@ -122,9 +138,18 @@ export class SystemSettingService {
     if (KNOWN_SETTING_KEYS.has(dto.key)) {
       this.validateValue(dto.key as SettingKey, dto.value);
     }
-    return this.settings.save(
+    const result = await this.settings.save(
       this.settings.create({ key: dto.key, value: dto.value }),
     );
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_CREATE,
+      userId: this.actorId(),
+      entityType: 'system_setting',
+      entityId: result.id,
+      before: null,
+      after: { key: result.key, value: result.value },
+    });
+    return result;
   }
 
   async update(
@@ -132,6 +157,7 @@ export class SystemSettingService {
     dto: UpdateSystemSettingDto,
   ): Promise<SystemSetting> {
     const setting = await this.get(id);
+    const before = { key: setting.key, value: setting.value };
     if (dto.key && dto.key !== setting.key) {
       await this.assertKeyUnique(dto.key);
       setting.key = dto.key;
@@ -145,6 +171,14 @@ export class SystemSettingService {
     }
     const result = await this.settings.save(setting);
     this.typedCache.delete(setting.key);
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_UPDATE,
+      userId: this.actorId(),
+      entityType: 'system_setting',
+      entityId: result.id,
+      before,
+      after: { key: result.key, value: result.value },
+    });
     return result;
   }
 
@@ -152,6 +186,14 @@ export class SystemSettingService {
     const setting = await this.get(id);
     await this.settings.remove(setting);
     this.typedCache.delete(setting.key);
+    await this.audit.record({
+      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_DELETE,
+      userId: this.actorId(),
+      entityType: 'system_setting',
+      entityId: id,
+      before: { key: setting.key, value: setting.value },
+      after: null,
+    });
     return { id, deleted: true };
   }
 
@@ -215,9 +257,23 @@ export class SystemSettingService {
     }
   }
 
-  private async assertKeyUnique(key: string): Promise<void> {
+  /** The acting super admin, when this call has an HTTP caller (ALS-scoped). */
+  private actorId(): string | undefined {
+    return this.tenantContext.getUser()?.id;
+  }
+
+  /** FND-015: a refused key-collision is audited too (AD-14) — `entityId` is the row already holding the key, when known. */
+  private async assertKeyUnique(key: string, entityId: string | null = null): Promise<void> {
     const existing = await this.settings.findOne({ where: { key } });
     if (existing) {
+      await this.audit.record({
+        action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_CREATE_REJECTED,
+        userId: this.actorId(),
+        entityType: 'system_setting',
+        entityId: entityId ?? existing.id,
+        before: null,
+        after: { attemptedKey: key, result: 'rejected: key already exists' },
+      });
       throw new AppError(ErrorCode.CONFLICT, {
         message: 'A system setting with this key already exists',
       });
