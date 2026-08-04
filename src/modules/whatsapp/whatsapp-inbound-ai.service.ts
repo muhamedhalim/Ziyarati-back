@@ -13,6 +13,9 @@ import { WhatsappBotActorService } from './whatsapp-bot-actor.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
+import { isOptOutMessage } from './opt-out.util';
 import type {
   WhatsappListSection,
   WhatsappSessionPayload,
@@ -71,6 +74,7 @@ export class WhatsappInboundAiService {
     private readonly botActor: WhatsappBotActorService,
     private readonly customers: CustomerService,
     private readonly ctx: TenantContextService,
+    private readonly settings: SystemSettingService,
   ) {}
 
   /** Process the inbound messages in a resolved Meta change value. */
@@ -117,6 +121,23 @@ export class WhatsappInboundAiService {
   ): Promise<void> {
     const displayName = value?.contacts?.find((c) => c.wa_id === message.from)?.profile?.name;
     const contact = await this.findOrCreateContact(tenantId, waId, displayName);
+
+    // FND-024: an inbound opt-out is recorded and the turn stops HERE — no AI
+    // reply, no booking turn. Checked before the orchestrator call so a
+    // customer who just said "STOP" never gets a chatbot response back
+    // (confusing at best, a compliance problem at worst). Keyword set is data
+    // (whatsapp.opt_out_keywords), never hardcoded — extensible without a
+    // deploy (AD-05-adjacent: exact-message match only, not substring, so an
+    // unrelated sentence containing a keyword-shaped word is never mistaken
+    // for an opt-out).
+    if (contact.customer?.id) {
+      const keywordsCsv = await this.settings.getTyped<string>(SettingKey.WHATSAPP_OPT_OUT_KEYWORDS);
+      if (isOptOutMessage(content, keywordsCsv)) {
+        await this.customers.recordOptOut(tenantId, contact.customer.id, 'inbound_keyword');
+        this.logger.log(`Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`);
+        return;
+      }
+    }
 
     // Continue the contact's single conversation (shared history/session/memory/
     // agent). First inbound turn has none → the orchestrator creates + routes one.

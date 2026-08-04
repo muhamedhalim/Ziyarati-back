@@ -54,6 +54,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module';
 import { AuthModule } from '../auth/auth.module';
 import { CrmModule } from '../crm/crm.module';
+// FND-024: opt-out keyword list is a platform SystemSetting (data, not
+// hardcoded — extensible without a deploy). PlatformModule imports no other
+// feature module, so this introduces no circular dependency.
+import { PlatformModule } from '../platform/platform.module';
 // Not imported via CampaignsModule (which itself imports WhatsappModule —
 // that would make it circular). RecipientDeliveryService depends only on
 // DataSource, so providing the same stateless class here too is the minimal
@@ -109,6 +113,7 @@ import { RecipientDeliveryService } from '../campaigns/recipient-delivery.servic
     // business logic, just composing the existing services.
     AuthModule,
     CrmModule,
+    PlatformModule,
     // Inbound media is stored in the SAME private R2 bucket as verification
     // documents (tenant-prefixed keys, signed-URL reads) — no second storage
     // implementation, just a different upload policy.

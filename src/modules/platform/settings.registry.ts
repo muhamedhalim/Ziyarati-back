@@ -20,10 +20,11 @@ export enum SettingKey {
   TENANT_QUOTA_GB     = 'uploads.tenant_quota_gb',
   AI_DEFAULT_MODEL    = 'ai.default_model',
   AI_DEFAULT_TEMP     = 'ai.default_temperature',
+  WHATSAPP_OPT_OUT_KEYWORDS = 'whatsapp.opt_out_keywords',
 }
 
 export type SettingType = 'boolean' | 'number' | 'string' | 'enum';
-export type SettingCategory = 'general' | 'billing' | 'uploads' | 'ai';
+export type SettingCategory = 'general' | 'billing' | 'uploads' | 'ai' | 'whatsapp';
 
 export interface SettingDefinition {
   key: SettingKey;
@@ -127,6 +128,15 @@ export const SETTINGS_REGISTRY: Readonly<Record<SettingKey, SettingDefinition>> 
     min: 0,
     max: 2,
     step: 0.1,
+  },
+  [SettingKey.WHATSAPP_OPT_OUT_KEYWORDS]: {
+    key: SettingKey.WHATSAPP_OPT_OUT_KEYWORDS,
+    type: 'string',
+    category: 'whatsapp',
+    label: 'WhatsApp Opt-Out Keywords',
+    description:
+      'Comma-separated inbound keywords (any language/case) that mark a customer as opted out of WhatsApp messaging (FND-024). Matched on the whole message after trimming and case-folding — extend here, no deploy needed.',
+    default: 'stop,unsubscribe,cancel,opt out,optout,إلغاء,إيقاف,توقف,الغاء الاشتراك',
   },
 };
 

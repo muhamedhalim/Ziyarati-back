@@ -64,7 +64,7 @@ export class CustomerController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Create a customer', description: '**Protected — `crm.customers.manage`. Clinic active.** Phone is unique per tenant; email is globally unique (409 on conflict).' })
+  @ApiOperation({ summary: 'Create a customer', description: '**Protected — `crm.customers.manage`. Clinic active.** Phone and email are both unique per tenant (409 on conflict).' })
   @ApiCreatedResponse({ description: 'Customer created.' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller lacks `crm.customers.manage`, or clinic inactive.', schema: S_ERROR })

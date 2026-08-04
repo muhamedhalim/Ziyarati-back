@@ -6,6 +6,7 @@ import { NotificationRule } from '../../entities/Notifications/NotificationRule'
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { NotificationTemplateService } from './notification-template.service';
 import { NotificationRuleService } from './notification-rule.service';
@@ -14,6 +15,7 @@ import { NotificationLogService } from './notification-log.service';
 import { NotificationDispatchService } from './notification-dispatch.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { NotificationEventListener } from './notification-event.listener';
+import { NotificationAuditService } from './notification-audit.service';
 
 import { NotificationTemplateController } from './notification-template.controller';
 import { NotificationRuleController } from './notification-rule.controller';
@@ -45,6 +47,7 @@ import { WhatsappModule } from '../whatsapp/whatsapp.module';
       ScheduledNotification,
       NotificationLog,
       Appointment,
+      AuditLog,
     ]),
     forwardRef(() => WhatsappModule),
   ],
@@ -62,6 +65,7 @@ import { WhatsappModule } from '../whatsapp/whatsapp.module';
     NotificationDispatchService,
     NotificationDeliveryService,
     NotificationEventListener,
+    NotificationAuditService,
   ],
   exports: [
     NotificationTemplateService,

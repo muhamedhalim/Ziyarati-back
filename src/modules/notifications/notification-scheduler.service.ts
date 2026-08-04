@@ -16,6 +16,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { NotificationDispatchService } from './notification-dispatch.service';
 import { QueueService } from '../../queue/queue.service';
+import { NotificationAuditService, NOTIFICATION_AUDIT_ACTION } from './notification-audit.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ScheduleNotificationDto } from './dto/schedule-notification.dto';
 import { UpdateScheduledNotificationDto } from './dto/update-scheduled-notification.dto';
 import { RescheduleNotificationDto } from './dto/reschedule-notification.dto';
@@ -24,6 +26,7 @@ import {
   CANCELLABLE_STATUSES,
   NOTIFICATION_STATUS,
   RESCHEDULABLE_STATUSES,
+  RETRYABLE_STATUSES,
   NotificationStatus,
 } from './notification.constants';
 
@@ -49,6 +52,8 @@ export class NotificationSchedulerService {
     private readonly appointments: Repository<Appointment>,
     private readonly dispatch: NotificationDispatchService,
     private readonly queue: QueueService,
+    private readonly audit: NotificationAuditService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   /**
@@ -226,18 +231,29 @@ export class NotificationSchedulerService {
    * Asynchronous by design — returns a queue acknowledgement, not the delivery
    * result. The dispatcher itself remains the single send seam (reused, not
    * reimplemented).
+   *
+   * AD-03 (FND-013): this is the ONE place permitted to clear the at-most-once
+   * `send_attempted` guard. Doing so here — an explicit, audited operator
+   * action — is safe in a way an automated sweep clearing it never would be:
+   * the operator is asserting the prior attempt did not reach the customer
+   * (typically after checking the provider console), and is accountable for
+   * that call. Every retry is audited, regardless of the row's prior
+   * `send_attempted` value, since a retry is itself a sensitive action
+   * (constitution Principle XXVI).
    */
   async retry(tenantId: string, id: string) {
     const row = await this.findOne(tenantId, id);
-    if (row.status !== NOTIFICATION_STATUS.FAILED) {
+    if (!RETRYABLE_STATUSES.includes(row.status as NotificationStatus)) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'Only failed notifications can be retried',
+        message: 'Only failed or send-uncertain notifications can be retried',
         publicContext: { currentStatus: row.status },
       });
     }
     // Reset to SCHEDULED so the worker's atomic claim (SCHEDULED/PENDING only)
-    // will pick it up; clear the prior failure + provider_ref for a clean attempt.
-    // `findOne` above already verified tenant ownership, so update by id is safe.
+    // will pick it up; clear the prior failure + provider_ref for a clean
+    // attempt, AND clear send_attempted so the dispatcher's send-phase guard
+    // does not immediately re-reject this as a duplicate. `findOne` above
+    // already verified tenant ownership, so update by id is safe.
     await this.scheduled.update(
       { id },
       {
@@ -245,7 +261,15 @@ export class NotificationSchedulerService {
         processing_at: null,
         failure_reason: null,
         provider_ref: null,
+        send_attempted: false,
       },
+    );
+    await this.audit.record(
+      NOTIFICATION_AUDIT_ACTION.RETRY_OVERRIDE,
+      tenantId,
+      this.tenantContext.getUser()?.id,
+      id,
+      { previousStatus: row.status, previousSendAttempted: row.send_attempted },
     );
     const job = await this.queue.retryNotificationDispatch({ tenantId, notificationId: id });
     return { queued: true, notificationId: id, jobId: job.id };

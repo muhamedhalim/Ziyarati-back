@@ -16,6 +16,17 @@ export const NOTIFICATION_STATUS = {
   DELIVERED: 'DELIVERED', // legacy; delivery now tracked on DELIVERY_STATUS
   FAILED: 'FAILED',
   CANCELLED: 'CANCELLED',
+  /**
+   * FND-013/AD-03: a stale-PROCESSING reclaim found `send_attempted=true` —
+   * the row entered the provider send phase before the worker crashed/died,
+   * so whether the message actually reached the customer is genuinely
+   * unknown. The maintenance sweep routes such rows HERE instead of silently
+   * resetting them to SCHEDULED (which would risk a real duplicate send).
+   * Distinct from FAILED so operators can tell "declined/errored" apart from
+   * "we don't know — check the provider console before retrying". Retryable
+   * via the same audited `retry()` override as FAILED.
+   */
+  SEND_UNCERTAIN: 'SEND_UNCERTAIN',
 } as const;
 
 export type NotificationStatus =
@@ -54,6 +65,13 @@ export const CANCELLABLE_STATUSES: NotificationStatus[] = [
   NOTIFICATION_STATUS.PENDING,
   NOTIFICATION_STATUS.SCHEDULED,
   NOTIFICATION_STATUS.FAILED,
+  NOTIFICATION_STATUS.SEND_UNCERTAIN,
+];
+
+/** States from which an operator's audited retry() override can force a resend. */
+export const RETRYABLE_STATUSES: NotificationStatus[] = [
+  NOTIFICATION_STATUS.FAILED,
+  NOTIFICATION_STATUS.SEND_UNCERTAIN,
 ];
 
 /** States from which a notification can be (re)scheduled. */

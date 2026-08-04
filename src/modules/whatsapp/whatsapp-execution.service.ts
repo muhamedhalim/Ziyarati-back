@@ -22,11 +22,14 @@ import {
   WHATSAPP_RECIPIENT_TYPE,
   WHATSAPP_SENDING_STALE_MS,
 } from './whatsapp.constants';
+import { missingVariables } from './template-variables.util';
 
 interface ResolvedRecipient {
   to: string;
   recipientType: string;
   recipientId?: string;
+  /** FND-024: set only when the recipient resolved to a known CRM customer who has opted out. */
+  optedOutAt?: Date | null;
 }
 
 const PG_UNIQUE_VIOLATION = '23505';
@@ -146,6 +149,35 @@ export class WhatsappExecutionService {
         logId: log.id,
         reconciled: true,
       };
+    }
+
+    // FND-021: refuse a send that is missing a placeholder the template's
+    // BODY component actually declares, BEFORE the provider call. Same
+    // shared seam as the opt-out check below — the scheduled/automation path
+    // already supplies every required variable (it is the reference
+    // implementation), so this passes harmlessly there; it is the manual
+    // Send dialog that previously had no variable input at all.
+    const missing = missingVariables(template.components, dto.variables);
+    if (missing.length > 0) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Missing required template variable(s): ${missing.join(', ')}`,
+        publicContext: { missing },
+      });
+    }
+
+    // FND-024: refuse a send to a customer who has opted out, BEFORE the
+    // provider call — this is the single send seam (immediate,
+    // scheduled-via-worker, and campaign sends via
+    // WhatsappCampaignDeliveryProvider all reuse it), so this one check
+    // covers the ad-hoc/direct path (which had NO consent check at all) and
+    // backstops the campaign path (which already gates earlier, at
+    // CampaignDispatchService.checkConsent, for its own SKIPPED bookkeeping).
+    // An opt-out that arrives after a job was enqueued is honored here, at
+    // dispatch time, not just at enqueue time.
+    if (recipient.optedOutAt) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'This customer has opted out of WhatsApp messages',
+      });
     }
 
     // Quota: WhatsApp messages are usage-limited. This is the single send seam
@@ -392,7 +424,12 @@ export class WhatsappExecutionService {
       if (!customer) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Customer not found' });
       }
-      return { to: customer.phone, recipientType: WHATSAPP_RECIPIENT_TYPE.CUSTOMER, recipientId: customer.id };
+      return {
+        to: customer.phone,
+        recipientType: WHATSAPP_RECIPIENT_TYPE.CUSTOMER,
+        recipientId: customer.id,
+        optedOutAt: customer.opted_out_at,
+      };
     }
 
     if (dto.toWaId) {

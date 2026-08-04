@@ -70,6 +70,20 @@ export const RUNNING_EXECUTIONS: CampaignExecution[] = [
   CampaignExecution.PROCESSING,
 ];
 
+/**
+ * Execution states in which CampaignRunService.currentEditable() targets the
+ * EXISTING run rather than forking a new one (FND-019). IDLE = never
+ * launched. DRAINING = paused — not claiming new work, but not abandoning
+ * its still-PENDING recipients either; appending more PENDING recipients to
+ * it is safe and is what lets resume()'s re-fanout pick everything up in one
+ * pass. ENQUEUEING/PROCESSING are deliberately excluded — a run actively
+ * claiming work must never be mutated mid-fanout.
+ */
+export const EDITABLE_RUN_EXECUTIONS: CampaignExecution[] = [
+  CampaignExecution.IDLE,
+  CampaignExecution.DRAINING,
+];
+
 /** Processing states considered terminal (the recipient has left the pipeline). */
 export const TERMINAL_PROCESSING: RecipientProcessing[] = [
   RecipientProcessing.DISPATCHED,

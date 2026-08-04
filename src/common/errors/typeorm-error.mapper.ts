@@ -35,6 +35,14 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   uq_role_tenant_slug: 'A role with this slug already exists',
   appointments_no_overlap:
     'This time slot was just booked for the selected staff member. Please choose another time.',
+  // FND-040/M-01: both mapped to the SAME tenant-scoped message so the
+  // client-visible error is identical regardless of which shape fires during
+  // the migration → backend deploy window — the new constraint
+  // (UQ_customers_tenant_email) once the migration has run, or the old
+  // global one (its literal name — a TypeORM-generated hash, not a
+  // hand-written identifier) beforehand.
+  UQ_customers_tenant_email: 'A customer with this email already exists',
+  UQ_8536b8b85c06969f84f0c098b03: 'A customer with this email already exists',
 };
 
 /**

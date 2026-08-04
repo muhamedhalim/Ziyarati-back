@@ -74,6 +74,11 @@ export class CampaignRecipientService {
       .execute();
 
     const added = result.identifiers.filter(Boolean).length;
+    // Keeps the run's materialized counters accurate immediately when
+    // appending to an already-launched (DRAINING) run — a no-op on a
+    // not-yet-launched IDLE run, since launch() recomputes both from a fresh
+    // COUNT query anyway (FND-019).
+    await this.runs.incrementCounters(run.id, added);
     return {
       runId: run.id,
       requested: dto.customerIds.length,
