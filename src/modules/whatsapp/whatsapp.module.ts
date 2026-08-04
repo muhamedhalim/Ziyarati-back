@@ -10,6 +10,7 @@ import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { Message } from '../../entities/Conversations/Message';
 import { MessageAttachment } from '../../entities/Conversations/MessageAttachment';
 
@@ -92,6 +93,8 @@ import { RecipientDeliveryService } from '../campaigns/recipient-delivery.servic
       // ConversationsModule.
       Message,
       MessageAttachment,
+      // DLQ admin actions write a safe audit record (FND-002, FR-013).
+      AuditLog,
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,

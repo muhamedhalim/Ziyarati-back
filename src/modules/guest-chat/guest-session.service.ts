@@ -6,9 +6,12 @@ import { Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { TenantApprovalStatus } from '../../entities/enums';
 import { FreeAccessOverrideService } from '../subscription-billing/free-access-override.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
+import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
+import { AppError, ErrorCode } from '../../common/errors';
 
 /** Slug of the singleton system tenant that hosts anonymous/guest conversations. */
 const DISCOVERY_TENANT_SLUG = '__guest_discovery__';
@@ -53,6 +56,8 @@ export class GuestSessionService {
     private readonly config: ConfigService,
     private readonly overrides: FreeAccessOverrideService,
     private readonly memory: AiMemoryService,
+    @InjectRepository(AiConversation)
+    private readonly conversations: Repository<AiConversation>,
   ) {}
 
   /** Find-or-create the guest discovery tenant + ensure it is unmetered. Cached. */
@@ -111,18 +116,83 @@ export class GuestSessionService {
    * visitor books / becomes a patient — WITHOUT losing history: the guest thread's
    * key points are summarised into the PATIENT tenant's long-term memory (reuses
    * AiMemoryService). The original guest messages remain intact under the
-   * discovery tenant. Returns the created memory (or null when nothing to carry).
+   * discovery tenant.
+   *
+   * SECURITY (FND-001). Two independent trusted anchors, neither caller-asserted:
+   *  - TARGET tenant — from the authenticated principal (supplied by the caller
+   *    of this method as `targetTenantId`, which the controller reads from
+   *    `TenantContextService.requireTenantId()`). Never from the request body.
+   *  - SOURCE conversation — proven to belong to the presented `guest_token` by
+   *    comparing the conversation's recorded `session.guestSubject` against the
+   *    token's verified `sub`. This is what prevents one guest converting
+   *    another guest's conversation inside the shared discovery tenant.
+   *
+   * Every failure below raises the SAME not-found error so a caller cannot learn
+   * whether a session, conversation, binding or prior conversion exists.
    */
   async convert(
     guestConversationId: string,
     targetTenantId: string,
+    guestToken: string | undefined,
     customerId?: string,
   ) {
+    // (2) A guest token must be presented.
+    if (!guestToken) throw this.notFound();
+
+    // (3) Verify signature + expiry, and require the guest marker.
+    let claims: { sub?: string; tenantId?: string; guest?: boolean };
+    try {
+      claims = await this.jwt.verifyAsync(guestToken, {
+        secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+      });
+    } catch {
+      throw this.notFound();
+    }
+    if (!claims?.guest || !claims.sub || !claims.tenantId) throw this.notFound();
+
+    // (4) The token must belong to the discovery tenant.
+    const discoveryTenantId = await this.ensureDiscoveryTenant();
+    if (claims.tenantId !== discoveryTenantId) throw this.notFound();
+
+    // (5) Load the source conversation, scoped to the discovery tenant.
+    const conversation = await this.conversations.findOne({
+      where: { id: guestConversationId, tenant: { id: discoveryTenantId } },
+    });
+    if (!conversation) throw this.notFound();
+
+    // (6) Ownership: the conversation must be bound to THIS guest session.
+    // Absent binding (pre-existing conversations) is treated as not owned.
+    const boundSubject = (conversation.session as { guestSubject?: string } | null)?.guestSubject;
+    if (!boundSubject || boundSubject !== claims.sub) throw this.notFound();
+
+    // (7) Claim the conversion atomically. A conditional UPDATE — never
+    // `save()`, which is a read-modify-write and would lose the update under
+    // concurrency. Zero affected rows means someone else already converted it.
+    const claimed = await this.conversations
+      .createQueryBuilder()
+      .update(AiConversation)
+      .set({ status: AI_CONVERSATION_STATUS.CONVERTED })
+      .where('id = :id', { id: guestConversationId })
+      .andWhere('tenant_id = :tenantId', { tenantId: discoveryTenantId })
+      .andWhere('status = :active', { active: AI_CONVERSATION_STATUS.ACTIVE })
+      .execute();
+    if ((claimed.affected ?? 0) === 0) throw this.notFound();
+
+    // (8)+(9) Read scoped to the discovery tenant; write to the target tenant.
     const summary = await this.memory.summarizeConversation(
       targetTenantId,
       guestConversationId,
       customerId,
+      discoveryTenantId,
     );
     return { converted: true, memoryId: summary?.id ?? null };
+  }
+
+  /**
+   * The single rejection used by every ownership failure mode. Identical code and
+   * message throughout, so the endpoint is not an existence oracle (SR-011).
+   */
+  private notFound(): AppError {
+    return new AppError(ErrorCode.NOT_FOUND, { message: 'Guest conversation not found' });
   }
 }

@@ -34,7 +34,7 @@ const { execFileSync } = require('node:child_process');
 const HOST = process.env.DB_HOST || 'localhost';
 const PORT = Number(process.env.DB_PORT || 5432);
 const USER = process.env.DB_USERNAME || 'postgres';
-const PASSWORD = process.env.DB_PASSWORD || 'password@12345';
+const PASSWORD = process.env.DB_PASSWORD;
 const SOURCE_DB = process.env.E2E_RBAC_SOURCE_DB || 'ziyarati';
 const TARGET_DB = process.env.E2E_DB_NAME || 'ziyarati_e2e';
 

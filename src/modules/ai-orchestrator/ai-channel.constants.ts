@@ -50,6 +50,18 @@ export interface AiSession {
   /** Free-form working context carried between turns. */
   context?: Record<string, unknown>;
 
+  /**
+   * The guest-token `sub` that created this conversation, recorded only when the
+   * acting principal is scoped to the guest discovery tenant (FND-001).
+   *
+   * This is the source-conversation ownership binding: guest conversion compares
+   * it against the `sub` of the verified `guest_token`. It is written once at
+   * creation and never updated. **Absence means NOT convertible (fail closed)** —
+   * never "unowned, therefore allowed". Conversations created before this field
+   * existed carry no value and are deliberately non-convertible.
+   */
+  guestSubject?: string;
+
   // ── Omnichannel continuity (Feature 3) ──────────────────────────────────
   /** The channel this turn is being served on. */
   activeChannel?: AiChannel;

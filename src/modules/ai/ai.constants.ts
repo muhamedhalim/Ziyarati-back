@@ -34,6 +34,12 @@ export const AI_CONVERSATION_STATUS = {
   COMPLETED: 'COMPLETED',
   HANDED_OVER: 'HANDED_OVER',
   ARCHIVED: 'ARCHIVED',
+  /**
+   * Terminal for guest conversion (FND-001). Set by a conditional UPDATE guarded
+   * on `status = 'ACTIVE'`, so a concurrent or repeated conversion affects zero
+   * rows and is rejected — at most one memory record is ever written.
+   */
+  CONVERTED: 'CONVERTED',
 } as const;
 export type AiConversationStatus =
   (typeof AI_CONVERSATION_STATUS)[keyof typeof AI_CONVERSATION_STATUS];
