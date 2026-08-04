@@ -168,8 +168,24 @@ export class NotificationDispatchService {
     }
   }
 
-  /** Maintenance sweep: reclaim stale PROCESSING, re-enqueue due rows, purge old logs. */
-  async reapAndRequeue(batch = 1000): Promise<{ reclaimed: number; requeued: number; purgedLogs: number }> {
+  /**
+   * Maintenance sweep: reclaim stale PROCESSING, re-enqueue due rows, purge
+   * old logs.
+   *
+   * FND-013/AD-03: stale-PROCESSING rows split into two disjoint groups by
+   * `send_attempted`. A row that never reached the send-phase guard
+   * (`send_attempted=false`) is safe to resume automatically — it's exactly
+   * as if it had never been claimed. A row that DID reach the guard
+   * (`send_attempted=true`) may have already sent; resetting it to SCHEDULED
+   * would let the worker re-claim it, hit the guard, and cycle forever as
+   * `duplicate-send-prevented` with no operator-visible way out — the
+   * defect this fix closes. Such rows are routed to SEND_UNCERTAIN instead,
+   * a distinct terminal state an operator can inspect and, if the provider
+   * console confirms no send occurred, force via the audited retry() override.
+   */
+  async reapAndRequeue(
+    batch = 1000,
+  ): Promise<{ reclaimed: number; strandedForReview: number; requeued: number; purgedLogs: number }> {
     const staleBefore = new Date(Date.now() - PROCESSING_STALE_MS);
     const reclaim = await this.scheduled
       .createQueryBuilder()
@@ -177,6 +193,20 @@ export class NotificationDispatchService {
       .set({ status: NOTIFICATION_STATUS.SCHEDULED, processing_at: null })
       .where('status = :proc', { proc: NOTIFICATION_STATUS.PROCESSING })
       .andWhere('processing_at < :staleBefore', { staleBefore })
+      .andWhere('send_attempted = :attempted', { attempted: false })
+      .execute();
+
+    const strand = await this.scheduled
+      .createQueryBuilder()
+      .update(ScheduledNotification)
+      .set({
+        status: NOTIFICATION_STATUS.SEND_UNCERTAIN,
+        processing_at: null,
+        failure_reason: 'stale-processing-after-send-attempt: verify with the provider before retrying',
+      })
+      .where('status = :proc', { proc: NOTIFICATION_STATUS.PROCESSING })
+      .andWhere('processing_at < :staleBefore', { staleBefore })
+      .andWhere('send_attempted = :attempted', { attempted: true })
       .execute();
 
     const due = await this.scheduled
@@ -195,7 +225,12 @@ export class NotificationDispatchService {
     }
 
     const purgedLogs = await this.logs.purgeOlderThan(LOG_RETENTION_DAYS, 5000);
-    return { reclaimed: reclaim.affected ?? 0, requeued: due.length, purgedLogs };
+    return {
+      reclaimed: reclaim.affected ?? 0,
+      strandedForReview: strand.affected ?? 0,
+      requeued: due.length,
+      purgedLogs,
+    };
   }
 
   // ──────────────────────────── helpers ──────────────────────────── //

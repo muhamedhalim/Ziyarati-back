@@ -63,7 +63,7 @@ export class NotificationsProcessor extends WorkerHost {
       try {
         const res = await this.dispatch.reapAndRequeue();
         this.logger.log(
-          `reap: reclaimed=${res.reclaimed} requeued=${res.requeued} purgedLogs=${res.purgedLogs}`,
+          `reap: reclaimed=${res.reclaimed} strandedForReview=${res.strandedForReview} requeued=${res.requeued} purgedLogs=${res.purgedLogs}`,
         );
         // Last-successful-run signal (M9's own deferred half, folded into
         // M14 — see docs/CACHING_QUEUES_AUDIT.md).

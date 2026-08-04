@@ -247,13 +247,18 @@ Moves the notification to a new \`scheduledAt\` and resets status to
   }
 
   @ApiOperation({
-    summary: 'Retry a failed notification',
+    summary: 'Retry a failed or send-uncertain notification',
     description: `
 **Protected — requires \`notifications.manage\`. Clinic must be active.**
 
-Re-attempts delivery of a \`FAILED\` notification via the dispatcher (resolves
-the channel provider, sends, and writes a fresh delivery log). 422 if the
-notification is not in \`FAILED\` status.
+Re-attempts delivery of a \`FAILED\` or \`SEND_UNCERTAIN\` notification via the
+dispatcher (resolves the channel provider, sends, and writes a fresh delivery
+log). 422 if the notification is in neither status.
+
+\`SEND_UNCERTAIN\` means a prior attempt reached the provider send phase
+before the worker crashed — whether it actually sent is genuinely unknown.
+Retrying it is an explicit, audited human override of the platform's
+at-most-once guarantee (verify with the provider console first).
 
 In production this is also the operation a BullMQ retry/backoff policy would
 invoke automatically.
@@ -266,7 +271,7 @@ invoke automatically.
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller lacks `notifications.manage`, or clinic inactive.', schema: S_ERROR })
   @ApiNotFoundResponse({ description: 'Not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Notification is not in FAILED status.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({ description: 'Notification is not in FAILED or SEND_UNCERTAIN status.', schema: S_ERROR })
   @Post(':id/retry')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.NOTIFICATIONS_MANAGE)

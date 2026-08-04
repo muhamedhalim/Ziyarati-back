@@ -21,6 +21,9 @@ import { CustomerTagRelation } from '../CRM/CustomerTagRelation';
 
 @Entity('customers')
 @Index(['tenant', 'phone'], { unique: true })
+// FND-040/M-01: tenant-scoped, matching the sibling phone index above — was
+// UNIQUE (email) globally (migration CustomerTenantScopedEmail1730019000000).
+@Index(['tenant', 'email'], { unique: true })
 export class Customer {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -40,8 +43,13 @@ export class Customer {
   @Column({ nullable: true })
   whatsapp_name?: string;
 
-@Column({ unique: true })
-  email?: string;
+  // NOT NULL at the DB level (verified live, D-1) — tightened from the
+  // previous `email?: string` so application code cannot attempt an insert
+  // the column would reject. Uniqueness is expressed by the tenant-scoped
+  // class-level @Index above, not `unique: true` here (that would be a
+  // GLOBAL constraint, which is exactly the defect FND-040 fixes).
+  @Column()
+  email!: string;
 
   @Column({ nullable: true })
   gender?: string;
@@ -54,6 +62,19 @@ export class Customer {
 
   @Column({ default: false })
   marketing_opt_in!: boolean;
+
+  /**
+   * FND-024/M-05: when an inbound opt-out (e.g. "STOP") was detected. `NULL`
+   * means never opted out — no backfill on migration. Additive to, not a
+   * replacement for, `marketing_opt_in`: this records WHEN/HOW, which the
+   * boolean alone cannot express.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  opted_out_at?: Date | null;
+
+  /** How the opt-out was registered (e.g. `inbound_keyword`, `manual`) — for audit. NULL until opted_out_at is set. */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  opt_out_source?: string | null;
 
   @Column({ default: true })
   is_active!: boolean;

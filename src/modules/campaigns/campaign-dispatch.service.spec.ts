@@ -204,6 +204,32 @@ describe('CampaignDispatchService.dispatch', () => {
       // that must settle the recipient, or the run's counters never sum.
       expect(manager.update).toHaveBeenCalled();
     });
+
+    // ── FND-024 — RED: checkConsent() only ever reads marketing_opt_in. A
+    // customer who opted IN at signup (marketing_opt_in stays true — nothing
+    // flips it) and later replies "STOP" over WhatsApp has no way today to
+    // stop campaign sends, because nothing records or checks that inbound
+    // signal. (Placed here, not in campaign.service.spec.ts as tasks.md
+    // names it — that file is pure Campaign CRUD with no dispatch/consent
+    // logic; checkConsent() genuinely lives in campaign-dispatch.service.ts.)
+    it('[FND-024] does NOT send to a customer who opted in but later opted out via an inbound message', async () => {
+      withCustomer({
+        id: 'cust-1',
+        marketing_opt_in: true,
+        is_active: true,
+        phone: '+9665',
+        opted_out_at: new Date('2026-01-01T00:00:00Z'),
+      });
+      // Stubbed so that, absent the fix, the call reaches a clean "sent"
+      // outcome instead of crashing on an unrelated unstubbed mock — the
+      // assertion below is what must fail, not an incidental TypeError.
+      send.mockResolvedValueOnce({ success: true, providerRef: 'wamid-should-never-be-sent' });
+
+      const res = await service.dispatch(TENANT, RUN, RECIPIENT);
+
+      expect(res).toMatchObject({ status: 'skipped' });
+      expect(send).not.toHaveBeenCalled();
+    });
   });
 
   it('sends from the campaign\'s own WhatsApp account when one is bound', async () => {

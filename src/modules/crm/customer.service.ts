@@ -18,10 +18,14 @@ import { SearchCustomersDto } from './dto/search-customers.dto';
  * query filters `where: { tenant: { id: tenantId } }` and the tenant always comes
  * from TenantContext (never from input). Supports soft delete (`deleted_at`).
  *
- * Schema notes (frozen): `phone` is unique per tenant; `email` is a NOT-NULL,
- * globally-unique column. Phone uniqueness is pre-checked tenant-scoped for a
- * friendly 409; email uniqueness is enforced by the DB constraint (mapped to 409)
- * to avoid any cross-tenant read.
+ * Schema notes: `phone` and `email` are both NOT-NULL and unique PER TENANT
+ * (FND-040/M-01 — email was globally unique before; two tenants can now
+ * legitimately share a customer's email). Phone uniqueness is pre-checked
+ * tenant-scoped for a friendly 409; email uniqueness is enforced by the DB
+ * constraint alone (mapped to 409 by `typeorm-error.mapper.ts`, which
+ * tolerates both the old global and new tenant-scoped constraint names
+ * during the deploy window) — deliberately not pre-checked here, to avoid
+ * any cross-tenant read.
  */
 @Injectable()
 export class CustomerService {
@@ -127,6 +131,19 @@ export class CustomerService {
       take: dto.limit,
     });
     return { data, total, page: dto.page, limit: dto.limit };
+  }
+
+  /**
+   * System-initiated consent-state write (FND-024). Deliberately NOT exposed
+   * via `UpdateCustomerDto` / the public update endpoint — an opt-out must
+   * only ever be set by genuine inbound-keyword detection (or another
+   * verified system path), never spoofable through a normal PATCH request.
+   */
+  async recordOptOut(tenantId: string, customerId: string, source: string): Promise<void> {
+    await this.customers.update(
+      { id: customerId, tenant: { id: tenantId } },
+      { opted_out_at: new Date(), opt_out_source: source },
+    );
   }
 
   /** Bare ownership/existence check — reused by the sub-resource services. */

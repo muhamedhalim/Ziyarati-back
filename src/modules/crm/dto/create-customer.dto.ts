@@ -27,7 +27,7 @@ export class CreateCustomerDto {
   @MaxLength(20)
   phone!: string;
 
-  @ApiProperty({ description: 'Email (globally unique).', example: 'sara@example.com' })
+  @ApiProperty({ description: 'Email (unique within this tenant).', example: 'sara@example.com' })
   @IsEmail()
   @MaxLength(255)
   email!: string;

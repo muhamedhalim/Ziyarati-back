@@ -69,14 +69,4 @@ export class SendTemplateMessageDto {
   @IsOptional()
   @IsISO8601()
   scheduledAt?: string;
-
-  @ApiPropertyOptional({
-    description: 'Optional idempotency key to de-duplicate retries.',
-    example: 'appt-50-reminder-24h',
-    maxLength: 255,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  idempotencyKey?: string;
 }

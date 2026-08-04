@@ -232,16 +232,27 @@ export class CampaignDispatchService {
    *
    * A missing phone is treated the same way — there is nothing to send to, and
    * retrying cannot conjure a number.
+   *
+   * FND-024: `opted_out_at` is checked IN ADDITION to `marketing_opt_in` — a
+   * customer who opted in at signup keeps `marketing_opt_in=true` forever
+   * (nothing flips it), so an inbound "STOP" is recorded separately via
+   * `opted_out_at`/`opt_out_source` (M-05) and must be consulted here too, or
+   * a customer who opted out after their original opt-in would still receive
+   * campaign sends. This is the primary SKIP gate for campaigns (with its own
+   * counted reason); `WhatsappExecutionService.sendTemplateMessage` enforces
+   * the same signal as a backstop for every send path, including this one.
    */
   private checkConsent(customer?: {
     marketing_opt_in?: boolean;
     is_active?: boolean;
     phone?: string;
+    opted_out_at?: Date | null;
   }): { allowed: true } | { allowed: false; reason: string } {
     if (!customer) return { allowed: false, reason: 'customer-missing' };
     if (customer.marketing_opt_in !== true) {
       return { allowed: false, reason: 'no-marketing-consent' };
     }
+    if (customer.opted_out_at) return { allowed: false, reason: 'opted-out' };
     if (customer.is_active === false) return { allowed: false, reason: 'customer-inactive' };
     if (!customer.phone) return { allowed: false, reason: 'customer-has-no-phone' };
     return { allowed: true };

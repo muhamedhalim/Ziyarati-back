@@ -27,6 +27,19 @@ const SENSITIVE_KEY_PATTERNS = [
   'ssn',
 ];
 
+/**
+ * PII field names (FND-043). EXACT-match only, deliberately separate from
+ * SENSITIVE_KEY_PATTERNS above — these names are common SUBSTRINGS of
+ * legitimate, non-PII operational keys (`emailEnabled`, `emailProvider`,
+ * `emailTemplateId`, `emailDefaultLocale`, ...), so substring-matching them
+ * the way credentials/tokens are matched would redact exactly the
+ * diagnostic fields an engineer needs when debugging a delivery failure
+ * (AD-05). Compared against the SAME normalized (lowercased, separator-
+ * stripped) key as the substring set, so `full_name`/`fullName`/`FULL-NAME`
+ * all match one entry.
+ */
+const SENSITIVE_KEY_EXACT = ['email', 'phone', 'fullname', 'dateofbirth'];
+
 const REDACTED = '[REDACTED]';
 const MAX_DEPTH = 6;
 
@@ -37,7 +50,10 @@ function normalizeKey(key: string): string {
 
 function isSensitiveKey(key: string): boolean {
   const normalized = normalizeKey(key);
-  return SENSITIVE_KEY_PATTERNS.some((p) => normalized.includes(p));
+  return (
+    SENSITIVE_KEY_PATTERNS.some((p) => normalized.includes(p)) ||
+    SENSITIVE_KEY_EXACT.includes(normalized)
+  );
 }
 
 /**

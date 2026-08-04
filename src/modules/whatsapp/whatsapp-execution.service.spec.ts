@@ -120,6 +120,110 @@ describe('WhatsappExecutionService', () => {
       expect(messaging.send).not.toHaveBeenCalled();
     });
 
+    // ── FND-024 — RED: this is the "ad-hoc path checks consent not at all"
+    // half of the finding. resolveRecipient() only ever reads
+    // `customer.phone`; nothing here reads an opt-out signal, so a customer
+    // who has told the business "STOP" over WhatsApp still receives manual/
+    // scheduled sends through this seam. The campaign path is a SEPARATE gap
+    // — see campaign-dispatch.service.spec.ts's consent block, corrected to
+    // that file since campaign.service.ts (named in tasks.md) is pure CRUD
+    // with no dispatch/consent logic.
+    describe('opt-out suppression (FND-024 — ad-hoc/direct send path)', () => {
+      it('[FND-024] refuses to send to a customer who has opted out via an inbound message, before ever calling the provider', async () => {
+        customers.findOne.mockResolvedValueOnce({
+          id: 'cust-1',
+          phone: '966500000000',
+          opted_out_at: new Date('2026-01-01T00:00:00Z'),
+        });
+
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-1', { customerId: 'cust-1' } as any),
+        ).rejects.toThrow();
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('still sends to a customer who has never opted out (regression guard)', async () => {
+        customers.findOne.mockResolvedValueOnce({
+          id: 'cust-1',
+          phone: '966500000000',
+          opted_out_at: null,
+        });
+
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { customerId: 'cust-1' } as any);
+
+        expect(messaging.send).toHaveBeenCalled();
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+      });
+
+      it('a raw toWaId send with no linked customer is unaffected — nothing to check consent against (regression guard)', async () => {
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+
+        expect(messaging.send).toHaveBeenCalled();
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+      });
+    });
+
+    // ── FND-021 — RED: the DTO already declares an optional `variables` field
+    // (contrary to contracts/api-contracts.md's framing of it as a NEW field —
+    // recorded here since the actual gap is narrower: no pre-flight check that
+    // a template's declared placeholders are actually satisfied before the
+    // provider call, and the manual Send dialog has no UI to enter them at
+    // all). `template.components` uses the REAL stored shape
+    // (`{ components: [{ type: 'BODY', text: '...' }] }` — confirmed in
+    // whatsapp-template-sync.service.spec.ts's "wraps Meta's array into the
+    // jsonb object column").
+    describe('template-variable completeness (FND-021 — manual templated send)', () => {
+      const TEMPLATE_WITH_VARS = {
+        id: 'tpl-2',
+        name: 'appointment_reminder',
+        language: 'en',
+        components: { components: [{ type: 'BODY', text: 'Hi {{1}}, your appointment is on {{2}}.' }] },
+      };
+
+      it('[FND-021] refuses a send missing a declared placeholder, before ever calling the provider', async () => {
+        templates.getSendableTemplate.mockResolvedValueOnce(TEMPLATE_WITH_VARS);
+
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-2', {
+            toWaId: '966500000000',
+            variables: { '1': 'Sara' }, // missing "2"
+          } as any),
+        ).rejects.toThrow();
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('[FND-021] refuses a send with no variables at all when the template declares placeholders', async () => {
+        templates.getSendableTemplate.mockResolvedValueOnce(TEMPLATE_WITH_VARS);
+
+        await expect(
+          service.sendTemplateMessage(TENANT, 'tpl-2', { toWaId: '966500000000' } as any),
+        ).rejects.toThrow();
+        expect(messaging.send).not.toHaveBeenCalled();
+      });
+
+      it('sends when every declared placeholder is supplied (regression guard)', async () => {
+        templates.getSendableTemplate.mockResolvedValueOnce(TEMPLATE_WITH_VARS);
+
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-2', {
+          toWaId: '966500000000',
+          variables: { '1': 'Sara', '2': '2026-06-15 10:00' },
+        } as any);
+
+        expect(messaging.send).toHaveBeenCalledWith(
+          expect.objectContaining({ variables: { '1': 'Sara', '2': '2026-06-15 10:00' } }),
+        );
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+      });
+
+      it('a template with no recorded components imposes no variable requirement (regression guard — pre-existing/not-yet-synced templates)', async () => {
+        // TEMPLATE (the default fixture) has no `components` at all.
+        const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
+
+        expect(messaging.send).toHaveBeenCalled();
+        expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT });
+      });
+    });
+
     describe('claim (gap-closure pass — atomic QUEUED -> SENDING, §0.8.11)', () => {
       it('claims the log row (QUEUED -> SENDING) before sending, then updates that SAME row in place', async () => {
         const qb = logs.createQueryBuilder();
