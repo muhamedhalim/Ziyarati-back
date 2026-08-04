@@ -80,7 +80,10 @@ export class AiMemoryController {
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)
   summarize(@Param('aiConversationId', ParseUUIDPipe) aiConversationId: string) {
-    return this.memory.summarizeConversation(this.ctx.requireTenantId(), aiConversationId);
+    // Authenticated tenant-scoped path: the conversation being summarised and the
+    // memory being written both belong to the caller's own tenant.
+    const tenantId = this.ctx.requireTenantId();
+    return this.memory.summarizeConversation(tenantId, aiConversationId, undefined, tenantId);
   }
 
   @ApiOperation({ summary: 'Purge expired memories (tenant)', description: 'Physically deletes this tenant\'s expired memories.' })

@@ -9,6 +9,7 @@ import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Customer } from '../../entities/CRM/Customer';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
@@ -63,6 +64,8 @@ import {
       WhatsappAccount,
       Customer,
       Tenant,
+      // DLQ admin actions write a safe audit record (FND-003, FR-013).
+      AuditLog,
     ]),
     SubscriptionBillingModule,
     // Real WhatsApp delivery: WhatsappCampaignDeliveryProvider delegates to

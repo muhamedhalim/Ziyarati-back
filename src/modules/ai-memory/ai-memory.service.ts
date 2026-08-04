@@ -137,13 +137,20 @@ export class AiMemoryService {
   async summarizeConversation(
     tenantId: string,
     aiConversationId: string,
-    customerId?: string,
+    customerId: string | undefined,
+    sourceTenantId: string,
   ): Promise<AiMemory | null> {
+    // FND-001: the source read MUST carry a tenant predicate. Without it, a
+    // caller who can name (or guess) a conversation id reads another tenant's
+    // messages. `sourceTenantId` is required — there is no unscoped overload —
+    // and it is deliberately separate from `tenantId` (the write target), since
+    // guest conversion legitimately reads from the discovery tenant and writes
+    // into the authenticated principal's tenant.
     const rows = await this.dataSource.query(
       `SELECT content FROM ai_messages
-        WHERE ai_conversation_id = $1 AND role = 'user'
+        WHERE ai_conversation_id = $1 AND tenant_id = $2 AND role = 'user'
         ORDER BY created_at DESC LIMIT 6`,
-      [aiConversationId],
+      [aiConversationId, sourceTenantId],
     );
     if (!rows.length) return null;
     const summary = rows

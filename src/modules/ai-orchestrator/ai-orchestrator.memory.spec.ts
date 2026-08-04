@@ -34,6 +34,8 @@ describe('AiOrchestratorService memory consent gate', () => {
       { findOne: jest.fn().mockResolvedValue(conv) } as any,
       execution as any, sessions as any, { route: jest.fn() } as any, memory as any,
       new ConfigService({ AI_MEMORY_RECALL_ENABLED: enabled ? 'true' : 'false' }),
+      // Non-guest principal: no guest ownership binding is recorded (FND-001).
+      { getUser: jest.fn().mockReturnValue({ id: 'user-1', tenantId: 'tenant-1', roles: [], permissions: [] }) } as any,
     );
     return { service, memory, execution, sessions };
   }

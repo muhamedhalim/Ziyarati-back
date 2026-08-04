@@ -8,6 +8,7 @@ import { AiMemoryService } from '../ai-memory/ai-memory.service';
 import { AiChannel, AiSession } from './ai-channel.constants';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { ConfigService } from '@nestjs/config';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
 export interface OrchestrateInput {
   channel: AiChannel;
@@ -63,6 +64,7 @@ export class AiOrchestratorService {
     private readonly router: AgentRouterService,
     private readonly memory: AiMemoryService,
     private readonly config: ConfigService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   /** Synchronous turn (REST). Delegates to the engine's sendMessage. */
@@ -188,6 +190,16 @@ export class AiOrchestratorService {
         routedRole = routed.role;
       }
       conv = await this.conversations.start(tenantId, { agentId, conversationId: input.conversationId });
+      // FND-001: bind an anonymous guest conversation to the guest session that
+      // created it. Guest conversion later requires this to equal the `sub` of
+      // the presented `guest_token`, which is what stops one guest converting
+      // another guest's conversation inside the shared discovery tenant. The
+      // principal is server-verified (WsAuthService checks the signature before
+      // setting `guest`); nothing here is client-asserted.
+      const principal = this.tenantContext.getUser();
+      if (principal?.guest && principal.id) {
+        await this.sessions.patch(tenantId, conv.id, { guestSubject: principal.id });
+      }
       if (routedRole) await this.sessions.setAgent(tenantId, conv.id, conv.agent?.id ?? null, routedRole);
     }
 

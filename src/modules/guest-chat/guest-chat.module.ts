@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { AiMemoryModule } from '../ai-memory/ai-memory.module';
 
@@ -18,7 +19,7 @@ import { GuestChatController } from './guest-chat.controller';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Tenant]),
+    TypeOrmModule.forFeature([Tenant, AiConversation]),
     SubscriptionBillingModule,
     AiMemoryModule,
     JwtModule.registerAsync({

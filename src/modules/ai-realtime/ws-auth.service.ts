@@ -44,7 +44,7 @@ export class WsAuthService {
     // Guests are not real `users` rows (see GuestSessionService) — no roles or
     // permissions, scoped to the data-less discovery tenant.
     if (payload.guest) {
-      return { id: payload.sub, tenantId: payload.tenantId, email: null, roles: [], permissions: [] };
+      return { id: payload.sub, tenantId: payload.tenantId, email: null, roles: [], permissions: [], guest: true };
     }
 
     // Real principal: reuse the EXACT same lookup JwtStrategy uses for REST, so

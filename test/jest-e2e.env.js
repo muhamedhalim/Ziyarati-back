@@ -22,7 +22,7 @@
 const HOST = process.env.DB_HOST || 'localhost';
 const PORT = process.env.DB_PORT || '5432';
 const USER = process.env.DB_USERNAME || 'postgres';
-const PASSWORD = process.env.DB_PASSWORD || 'password@12345';
+const PASSWORD = process.env.DB_PASSWORD;
 const DB_NAME = process.env.E2E_DB_NAME || 'ziyarati_e2e';
 
 process.env.DB_NAME = DB_NAME;
