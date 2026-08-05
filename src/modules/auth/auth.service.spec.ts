@@ -184,6 +184,38 @@ describe('AuthService', () => {
         code: ErrorCode.ROLE_NOT_FOUND,
       });
     });
+
+    // M-08 / CAP-I18N — the locale the owner registered from is the ONLY
+    // signal available at creation time (no stored preference exists yet);
+    // it must be persisted on the new user AND used for the welcome email.
+    it('persists dto.locale as the new user\'s preferred_locale and passes it to the welcome email', async () => {
+      tenants.findOne.mockResolvedValueOnce(null);
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-owner', slug: 'owner' });
+      users.findOne.mockResolvedValueOnce(principalRow());
+
+      await service.registerOwner({ ...dto, locale: 'ar' });
+
+      expect(dataSource.manager.create).toHaveBeenCalledWith(
+        User,
+        expect.objectContaining({ preferred_locale: 'ar' }),
+      );
+      expect(email.sendWelcome).toHaveBeenCalledWith(
+        expect.objectContaining({ locale: 'ar' }),
+      );
+    });
+
+    it('omits preferred_locale (leaves it NULL) when the request supplies no locale', async () => {
+      tenants.findOne.mockResolvedValueOnce(null);
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-owner', slug: 'owner' });
+      users.findOne.mockResolvedValueOnce(principalRow());
+
+      await service.registerOwner(dto);
+
+      expect(dataSource.manager.create).toHaveBeenCalledWith(
+        User,
+        expect.objectContaining({ preferred_locale: undefined }),
+      );
+    });
   });
 
   // ──────────────────────────── createTenantUser ────────────────────────────

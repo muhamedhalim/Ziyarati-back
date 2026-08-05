@@ -59,6 +59,22 @@ describe('env.validation', () => {
     expect(value.SOME_OTHER_KEY).toBe('x');
   });
 
+  describe('DEFAULT_LOCALE (T159 / CAP-I18N / FR-H002)', () => {
+    it('defaults to "en" when unset', () => {
+      const value = validate({ ...base });
+      expect(value.DEFAULT_LOCALE).toBe('en');
+    });
+
+    it('accepts every locale in the supported set', () => {
+      expect(validate({ ...base, DEFAULT_LOCALE: 'en' }).DEFAULT_LOCALE).toBe('en');
+      expect(validate({ ...base, DEFAULT_LOCALE: 'ar' }).DEFAULT_LOCALE).toBe('ar');
+    });
+
+    it('rejects a locale outside the supported set — constrained, not a free-form string', () => {
+      expect(() => validate({ ...base, DEFAULT_LOCALE: 'fr' })).toThrow(/Env validation error/);
+    });
+  });
+
   describe('payments fail-fast (production)', () => {
     it('FAILS the boot in production when the real provider has no credentials', () => {
       expect(() => validate({ ...base, NODE_ENV: 'production' })).toThrow(

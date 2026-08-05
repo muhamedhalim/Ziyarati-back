@@ -160,6 +160,15 @@ export const validate = (config: Record<string, unknown>) => {
     // Base URL used to build links inside emails (falls back to FRONTEND_ORIGIN).
     APP_URL: Joi.string().allow('', null),
 
+    // ── Localization (CAP-I18N) ────────────────────────────────────────────
+    // Platform-wide default locale (AD-09 step 4: the last fallback in the
+    // frontend's URL segment -> cookie -> Accept-Language -> default resolution
+    // order) — constrained to the supported-locale set, unlike the looser
+    // free-form EMAIL_DEFAULT_LOCALE above. Backend-rendered content (T156)
+    // reads this the same way EMAIL_DEFAULT_LOCALE is read; no second locale
+    // mechanism is introduced (LR-003).
+    DEFAULT_LOCALE: Joi.string().valid('en', 'ar').default('en'),
+
     // ── Meta App (PLATFORM APP config only — Independent Tech Provider) ───
     // These configure ZiyaraTech's single Meta App — they are NOT a sending
     // identity. Every clinic's own WABA / phone number / access token lives on

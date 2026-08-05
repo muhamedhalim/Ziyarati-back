@@ -547,7 +547,32 @@ async function main() {
   // FND-020 evidence). Deliberately not attempted here — stated, not silently
   // skipped.
 
-  // ── Cascading down migrations for FND-020/M-03/M-02/M-04 ───────────────────
+  // ── M-08 (CAP-I18N): users.preferred_locale ─────────────────────────────────
+  check('users.preferred_locale', await colExists('users', 'preferred_locale'));
+  const localeColNullable = (
+    await q(
+      `SELECT is_nullable FROM information_schema.columns WHERE table_name='users' AND column_name='preferred_locale'`,
+    )
+  )[0]?.is_nullable as string;
+  check(
+    'preferred_locale is nullable (NULL means "use AD-09 detection", never backfilled)',
+    localeColNullable === 'YES',
+  );
+
+  // ── Cascading down migrations for M-08/FND-020/M-03/M-02/M-04 ──────────────
+  // M-08 (Wave 5) ships chronologically AFTER all four Wave-3 migrations below,
+  // so it is now the TRUE tail of the whole chain — popped first, exactly the
+  // same chronological-drift reasoning already documented for this cascade
+  // (see T106/the block below): `undoLastMigration()` always targets whichever
+  // migration is chronologically newest among the still-applied ones, never an
+  // arbitrary earlier one. Once M-08 is off the top, FND-020 genuinely becomes
+  // the tail and the original four-deep cascade below is unaffected.
+  await ds.undoLastMigration(); // UserPreferredLocale down (no-op)
+  check(
+    'M-08 down completes without dropping users.preferred_locale (R-DB6)',
+    await colExists('users', 'preferred_locale'),
+  );
+
   // These four are the newest four migrations in the whole 61-migration chain
   // (in that reverse order), so — unlike every block above, each of which
   // could safely undo-then-immediately-reapply its own single migration in
@@ -628,10 +653,11 @@ async function main() {
 
   await ds.runMigrations();
   check(
-    're-applied M-04/M-02/M-03/FND-020 (idempotent)',
+    're-applied M-08/M-04/M-02/M-03/FND-020 (idempotent)',
     (await idxExists('UQ_sub_invoice_open_per_subscription')) &&
       (await colExists('subscriptions', 'grace_started_at')) &&
-      (await colExists('campaign_recipients', 'dlq_recorded_at')),
+      (await colExists('campaign_recipients', 'dlq_recorded_at')) &&
+      (await colExists('users', 'preferred_locale')),
   );
 
   await ds.destroy();

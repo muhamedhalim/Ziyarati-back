@@ -76,6 +76,8 @@ export class EmailService {
     clinicName?: string;
     tenantId?: string;
     userId: string;
+    /** Recipient's locale (e.g. `User.preferred_locale`) — honored per FR-H014; falls back to `DEFAULT_LOCALE` when unset. */
+    locale?: string;
   }) {
     // Keyed on the new user's own row id (L4 — docs/CACHING_QUEUES_AUDIT.md),
     // not on `to`+`tenantId` alone: those two are durable-forever attributes,
@@ -89,6 +91,7 @@ export class EmailService {
       template: 'welcome',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: `welcome:${p.userId}`,
     });
   }
@@ -99,12 +102,14 @@ export class EmailService {
     verifyUrl: string;
     tenantId?: string;
     token?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'email_verification',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.token ? `verify:${p.token}` : undefined,
     });
   }
@@ -115,12 +120,14 @@ export class EmailService {
     resetUrl: string;
     tenantId?: string;
     token?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'password_reset',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.token ? `reset:${p.token}` : undefined,
     });
   }
@@ -134,12 +141,14 @@ export class EmailService {
     detailsUrl?: string;
     appointmentId?: string;
     tenantId?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'appointment_confirmation',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.appointmentId
         ? `appt-confirm:${p.appointmentId}`
         : undefined,
@@ -156,12 +165,14 @@ export class EmailService {
     appointmentId?: string;
     when?: string;
     tenantId?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'appointment_reminder',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.appointmentId
         ? `appt-remind:${p.appointmentId}:${p.when ?? ''}`
         : undefined,
@@ -176,12 +187,14 @@ export class EmailService {
     planName?: string;
     invoiceUrl?: string;
     tenantId?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'subscription_invoice',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.invoiceNumber
         ? `invoice:${p.invoiceNumber}`
         : undefined,
@@ -195,12 +208,14 @@ export class EmailService {
     reason?: string;
     tenantId?: string;
     paymentId?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'payment_failed',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.paymentId ? `pay-failed:${p.paymentId}` : undefined,
     });
   }
@@ -210,12 +225,14 @@ export class EmailService {
     name?: string;
     daysLeft?: number;
     tenantId?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'trial_ending',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.tenantId
         ? `trial-end:${p.tenantId}:${p.daysLeft ?? ''}`
         : undefined,
@@ -231,12 +248,14 @@ export class EmailService {
     invitationUrl: string;
     tenantId?: string;
     token?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'staff_invitation',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.token ? `invite:${p.token}` : undefined,
     });
   }
@@ -258,6 +277,7 @@ export class EmailService {
     graceEndsAt?: string;
     tenantId?: string;
     idempotencyKey?: string;
+    locale?: string;
   }) {
     const template = (
       {
@@ -274,6 +294,7 @@ export class EmailService {
       template,
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.idempotencyKey,
     });
   }
@@ -287,12 +308,14 @@ export class EmailService {
     actionLabel?: string;
     tenantId?: string;
     idempotencyKey?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'doctor_notification',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.idempotencyKey,
     });
   }
@@ -306,12 +329,14 @@ export class EmailService {
     actionLabel?: string;
     tenantId?: string;
     idempotencyKey?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'patient_notification',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.idempotencyKey,
     });
   }
@@ -323,12 +348,14 @@ export class EmailService {
     actionUrl?: string;
     tenantId?: string;
     idempotencyKey?: string;
+    locale?: string;
   }) {
     return this.send({
       to: p.to,
       template: 'security_alert',
       variables: p,
       tenantId: p.tenantId,
+      locale: p.locale,
       idempotencyKey: p.idempotencyKey,
     });
   }
