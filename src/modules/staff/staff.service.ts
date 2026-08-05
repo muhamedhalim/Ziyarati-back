@@ -251,10 +251,14 @@ export class StaffService {
    * before private storage. Mutates the loaded entity in place; nothing is
    * persisted back to the DB.
    */
-  private async withResolvedAvatar<T extends StaffProfile>(profile: T): Promise<T> {
+  private async withResolvedAvatar<T extends StaffProfile>(
+    profile: T,
+    tenantId: string,
+  ): Promise<T> {
     if (profile.avatar_storage_key) {
       profile.avatar_url = await this.storage.getSignedDownloadUrl(
         profile.avatar_storage_key,
+        tenantId,
       );
     }
     return profile;
@@ -510,7 +514,7 @@ export class StaffService {
       take: query.limit,
     });
 
-    await Promise.all(data.map((profile) => this.withResolvedAvatar(profile)));
+    await Promise.all(data.map((profile) => this.withResolvedAvatar(profile, tenantId)));
     return {
       data: await this.withRoleDetail(await this.withAccessState(data)),
       total,
@@ -602,7 +606,7 @@ export class StaffService {
 
   async findOne(tenantId: string, id: string): Promise<StaffProfile> {
     const profile = await this.loadProfile(tenantId, id);
-    await this.withResolvedAvatar(profile);
+    await this.withResolvedAvatar(profile, tenantId);
     const [withAccess] = await this.withAccessState([profile]);
     const [decorated] = await this.withRoleDetail([withAccess]);
     return decorated;
@@ -653,7 +657,7 @@ export class StaffService {
 
     if (previousKey && previousKey !== profile.avatar_storage_key) {
       try {
-        await this.storage.deleteObject(previousKey);
+        await this.storage.deleteObject(previousKey, tenantId);
       } catch {
         /* best-effort cleanup — never fail the update over a stale R2 object */
       }

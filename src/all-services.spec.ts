@@ -40,7 +40,6 @@ function autoMock(): any {
 }
 
 const PATHS: string[] = [
-  'app.service',
   'core/tenant-context/tenant-lookup.service', 'core/tenant-context/tenant-context.service',
   'modules/auth/permissions.service', 'modules/auth/patient.service', 'modules/auth/roles.service',
   'modules/auth/cookie.service', 'modules/auth/auth.service',

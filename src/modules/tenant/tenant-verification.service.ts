@@ -95,7 +95,7 @@ export class TenantVerificationService {
     ) {
       // Discard the duplicate object we just uploaded; reuse the existing one.
       if (storageKey !== existing.storage_key) {
-        await this.safeDeleteObject(storageKey);
+        await this.safeDeleteObject(storageKey, tenantId);
       }
       existing.status = VerificationDocStatus.PENDING;
       existing.review_note = undefined;
@@ -128,7 +128,7 @@ export class TenantVerificationService {
       const replaced = await this.documents.save(existing);
 
       if (oldKey && oldKey !== storageKey) {
-        await this.safeDeleteObject(oldKey);
+        await this.safeDeleteObject(oldKey, tenantId);
       }
       await this.audit.record({
         tenantId,
@@ -274,7 +274,7 @@ export class TenantVerificationService {
     });
 
     if (doc.storage_key) {
-      const url = await this.storage.getSignedDownloadUrl(doc.storage_key);
+      const url = await this.storage.getSignedDownloadUrl(doc.storage_key, doc.tenant.id);
       return { url, expiresIn: this.storage.signedUrlTtlSeconds };
     }
     if (doc.file_url) {
@@ -405,9 +405,9 @@ export class TenantVerificationService {
   }
 
   /** Deletes an R2 object, swallowing failures (cleanup must not block flow). */
-  private async safeDeleteObject(key: string): Promise<void> {
+  private async safeDeleteObject(key: string, tenantId: string): Promise<void> {
     try {
-      await this.storage.deleteObject(key);
+      await this.storage.deleteObject(key, tenantId);
     } catch (err) {
       this.logger.warn(
         `Failed to delete replaced/duplicate object ${key}: ${(err as Error)?.message}`,

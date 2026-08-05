@@ -28,6 +28,9 @@ import { MetricsService } from '../metrics/metrics.service';
  */
 @Injectable()
 export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
+  /** Bounded scan per DLQ per sweep (FND-037) — never an unbounded queue walk. */
+  private static readonly DLQ_SWEEP_SCAN_CAP = 500;
+
   private readonly logger = new Logger('QueueMonitor');
   private readonly events: QueueEvents[] = [];
   private dlqTimer?: NodeJS.Timeout;
@@ -78,10 +81,10 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
       `QueueEvents monitoring ${ALL_QUEUES.length} queues (completed-job logging ${this.logCompleted ? 'ON' : 'off'})`,
     );
 
-    this.dlqTimer = setInterval(
-      () => void this.reportDlqDepths(),
-      this.dlqPollMs,
-    );
+    this.dlqTimer = setInterval(() => {
+      void this.reportDlqDepths();
+      void this.sweepExpiredDlqJobs();
+    }, this.dlqPollMs);
     this.depthTimer = setInterval(
       () => void this.reportQueueDepths(),
       this.depthPollMs,
@@ -119,6 +122,50 @@ export class QueueMonitorService implements OnModuleInit, OnModuleDestroy {
       } catch (err) {
         this.logger.error(
           `DLQ depth poll failed for ${dlq}: ${(err as Error)?.message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * FND-037 — actually expires parked DLQ jobs. No Worker ever processes a
+   * DLQ queue (see `DLQ_QUEUES`'s own doc comment), so BullMQ's
+   * `removeOnComplete`/`removeOnFail` job options never fire for them; this
+   * sweep is the only mechanism that can enforce the retention class
+   * `dlqExpiresAt` stamps at enqueue time (`queue.constants.ts`). Runs on the
+   * same interval as the depth poll — the DLQs are already low-volume/parked
+   * data, so a shared cadence needs no separate timer or config key.
+   *
+   * A job parked BEFORE this fix shipped has no `expiresAt` at all — left
+   * alone (its previously-unenforced retention persists), never retroactively
+   * swept the moment this code deploys.
+   */
+  private async sweepExpiredDlqJobs(): Promise<void> {
+    const now = Date.now();
+    for (const dlq of DLQ_QUEUES) {
+      try {
+        const queue = this.queue.queue(dlq);
+        const jobs = await queue.getJobs(
+          ['waiting', 'delayed'],
+          0,
+          QueueMonitorService.DLQ_SWEEP_SCAN_CAP - 1,
+          false,
+        );
+        let removed = 0;
+        for (const job of jobs) {
+          const expiresAt = (job.data as { expiresAt?: string } | undefined)?.expiresAt;
+          if (!expiresAt) continue;
+          if (new Date(expiresAt).getTime() <= now) {
+            await job.remove().catch(() => undefined);
+            removed += 1;
+          }
+        }
+        if (removed > 0) {
+          this.logger.log(`[${dlq}] expired ${removed} retention-window DLQ job(s)`);
+        }
+      } catch (err) {
+        this.logger.error(
+          `DLQ expiry sweep failed for ${dlq}: ${(err as Error)?.message}`,
         );
       }
     }

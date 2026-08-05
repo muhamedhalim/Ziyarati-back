@@ -293,10 +293,17 @@ export class IntegrationImportJobService {
     let cancelled = false;
 
     for (const record of records) {
-      const fresh = await this.jobs.findOne({ where: { id: jobId }, select: { cancel_requested: true } });
-      if (fresh?.cancel_requested) {
-        cancelled = true;
-        break;
+      // Hoisted out of the per-record path (FND-041): a `findOne` per record is
+      // an N+1 that scales with batch size (up to MAX_ASYNC_IMPORT_BATCH). Check
+      // on the same cadence as the progress flush below instead — mirrors
+      // integration-sync.service.ts's once-per-page cancellation check, the
+      // established batch/prefetch pattern elsewhere in this module.
+      if (job.processed % IntegrationImportJobService.PROGRESS_FLUSH_EVERY === 0) {
+        const fresh = await this.jobs.findOne({ where: { id: jobId }, select: { cancel_requested: true } });
+        if (fresh?.cancel_requested) {
+          cancelled = true;
+          break;
+        }
       }
 
       if (seen.has(record.externalId)) {

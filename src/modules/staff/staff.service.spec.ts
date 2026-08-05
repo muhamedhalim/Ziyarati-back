@@ -215,7 +215,7 @@ describe('StaffService', () => {
     it('findOne resolves a signed URL when avatar_storage_key is set', async () => {
       staff.findOne.mockResolvedValueOnce({ id: 'staff-1', avatar_storage_key: 't1/staff-avatar/x.jpg' });
       const result = await service.findOne(TENANT, 'staff-1');
-      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('t1/staff-avatar/x.jpg');
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('t1/staff-avatar/x.jpg', TENANT);
       expect(result.avatar_url).toBe('https://signed.example.com/avatar');
     });
 
@@ -246,7 +246,7 @@ describe('StaffService', () => {
 
       expect(storage.assertKeyBelongsToTenant).toHaveBeenCalledWith('new-key.jpg', TENANT);
       expect(staff.save).toHaveBeenCalledWith(expect.objectContaining({ avatar_storage_key: 'new-key.jpg' }));
-      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg');
+      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg', TENANT);
     });
 
     it('update(null) removes the avatar and best-effort deletes the old object', async () => {
@@ -260,7 +260,7 @@ describe('StaffService', () => {
       // `undefined` properties on UPDATE, which would silently fail to clear
       // the column (the actual bug this test guards against).
       expect(staff.save).toHaveBeenCalledWith(expect.objectContaining({ avatar_storage_key: null }));
-      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg');
+      expect(storage.deleteObject).toHaveBeenCalledWith('old-key.jpg', TENANT);
     });
 
     it('update leaves the avatar untouched when avatarStorageKey is omitted', async () => {

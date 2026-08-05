@@ -72,7 +72,7 @@ export class CustomerFileService {
         storage_key: stored.storageKey,
       }),
     );
-    return this.withResolvedUrl(file);
+    return this.withResolvedUrl(file, tenantId);
   }
 
   async remove(tenantId: string, customerId: string, fileId: string) {
@@ -81,7 +81,7 @@ export class CustomerFileService {
 
     if (file.storage_key) {
       try {
-        await this.storage.deleteObject(file.storage_key);
+        await this.storage.deleteObject(file.storage_key, tenantId);
       } catch (err) {
         this.logger.warn(
           `Failed to delete R2 object ${file.storage_key}: ${(err as Error)?.message}`,
@@ -104,7 +104,7 @@ export class CustomerFileService {
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
-    await Promise.all(data.map((file) => this.withResolvedUrl(file)));
+    await Promise.all(data.map((file) => this.withResolvedUrl(file, tenantId)));
     return { data, total, page: query.page, limit: query.limit };
   }
 
@@ -115,7 +115,7 @@ export class CustomerFileService {
     fileId: string,
   ): Promise<CustomerFile> {
     const file = await this.findOwned(tenantId, customerId, fileId);
-    return this.withResolvedUrl(file);
+    return this.withResolvedUrl(file, tenantId);
   }
 
   /**
@@ -138,9 +138,9 @@ export class CustomerFileService {
     return file;
   }
 
-  private async withResolvedUrl<T extends CustomerFile>(file: T): Promise<T> {
+  private async withResolvedUrl<T extends CustomerFile>(file: T, tenantId: string): Promise<T> {
     if (file.storage_key) {
-      file.file_url = await this.storage.getSignedDownloadUrl(file.storage_key);
+      file.file_url = await this.storage.getSignedDownloadUrl(file.storage_key, tenantId);
     }
     return file;
   }

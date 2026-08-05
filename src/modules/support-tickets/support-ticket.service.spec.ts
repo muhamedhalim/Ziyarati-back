@@ -178,7 +178,7 @@ describe('SupportTicketService', () => {
     });
 
     it('super-admin read is not tenant-filtered', async () => {
-      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1' });
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([]);
 
       await service.getForAdmin('ticket-1');
@@ -207,6 +207,7 @@ describe('SupportTicketService', () => {
       status: 'open',
       resolved_at: null,
       closed_at: null,
+      tenant: { id: TENANT },
     });
 
     it('rejects a no-op transition to the current status', async () => {
@@ -267,7 +268,7 @@ describe('SupportTicketService', () => {
       });
       tickets.save.mockImplementationOnce(async (t: any) => t);
       events.save.mockImplementationOnce(async (e: any) => e);
-      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'open' });
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'open', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([]);
 
       await service.updateStatus('ticket-1', ACTOR, { status: 'open' } as any);
@@ -292,7 +293,7 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', priority: 'low' });
       tickets.save.mockImplementationOnce(async (t: any) => t);
       events.save.mockImplementationOnce(async (e: any) => e);
-      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', priority: 'urgent' });
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', priority: 'urgent', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([]);
 
       await service.updatePriority('ticket-1', ACTOR, { priority: 'urgent' } as any);
@@ -309,7 +310,7 @@ describe('SupportTicketService', () => {
     it('records the note as internal_only — never visible to tenant reads', async () => {
       tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1' });
       events.save.mockImplementationOnce(async (e: any) => e);
-      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1' });
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([]);
 
       await service.addNote('ticket-1', ACTOR, { note: 'Escalated to engineering.' } as any);
@@ -320,7 +321,7 @@ describe('SupportTicketService', () => {
     });
 
     it('admin detail view separates history (tenant-visible) from notes (internal)', async () => {
-      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1' });
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([
         { id: 'e1', type: 'STATUS_CHANGED', internal_only: false, created_at: new Date() },
         { id: 'e2', type: 'NOTE_ADDED', internal_only: true, created_at: new Date() },

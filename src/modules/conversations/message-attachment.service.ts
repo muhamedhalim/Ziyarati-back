@@ -95,7 +95,7 @@ export class MessageAttachmentService {
 
     let url: string | null = null;
     if (this.storage.isConfigured()) {
-      url = await this.storage.getSignedDownloadUrl(stored);
+      url = await this.storage.getSignedDownloadUrl(stored, tenantId);
     }
     return {
       attachmentId: attachment.id,

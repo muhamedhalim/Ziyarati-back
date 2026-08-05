@@ -143,6 +143,56 @@ describe('IntegrationImportJobService', () => {
       expect(upsert.upsertOne).not.toHaveBeenCalled();
     });
 
+    // FND-041 — the cancellation check at :295-296 issues a `findOne` for EVERY
+    // record in the batch (N+1). It must be hoisted so the query count scales
+    // per batch (mirrors integration-sync.service.ts's once-per-page check),
+    // not per record, while still honoring a mid-run cancellation promptly.
+    it('checks cancellation once per batch, not once per record (query count scales per batch)', async () => {
+      const records = Array.from({ length: 50 }, (_, i) => ({ externalId: `E${i}`, data: {} }));
+      const job: any = {
+        id: 'job-1', status: JOB_STATUS.PENDING, tenant: { id: tenantId }, connection: { id: 'c1' },
+        resource_type: 'customer', dry_run: false, total: 50, processed: 0,
+        created_count: 0, updated_count: 0, linked_count: 0, skipped_count: 0, conflicted_count: 0, failed_count: 0,
+        duplicates_in_batch: 0, requested_by: null, payload: records,
+      };
+      const qb: any = { addSelect: () => qb, leftJoinAndSelect: () => qb, where: () => qb, getOne: jest.fn().mockResolvedValue(job) };
+      const findOne = jest.fn().mockResolvedValue({ cancel_requested: false });
+      const jobs = jobsRepoMock({ createQueryBuilder: jest.fn(() => qb), findOne });
+      const upsert = { upsertOne: jest.fn(async (_t: any, _r: any, _c: any, _p: any, externalId: string) => ({ outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: `int-${externalId}` })) };
+      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connectionsMock(), upsert as any, auditMock(), { enqueueIntegrationImport: jest.fn() } as any, admissionMock(), serviceAccountMock(), createMockDataSource() as any);
+
+      await svc.process('job-1');
+
+      expect(job.processed).toBe(50);
+      // Batch-scaled (every PROGRESS_FLUSH_EVERY=25 records): 2 checks for 50 records.
+      // The pre-fix code calls `findOne` once per record — 50 times — for the same input.
+      expect(findOne).toHaveBeenCalledTimes(2);
+    });
+
+    it('still honors a mid-run cancellation promptly under the batched check', async () => {
+      const records = Array.from({ length: 50 }, (_, i) => ({ externalId: `E${i}`, data: {} }));
+      const job: any = {
+        id: 'job-1', status: JOB_STATUS.PENDING, tenant: { id: tenantId }, connection: { id: 'c1' },
+        resource_type: 'customer', dry_run: false, total: 50, processed: 0,
+        created_count: 0, updated_count: 0, linked_count: 0, skipped_count: 0, conflicted_count: 0, failed_count: 0,
+        duplicates_in_batch: 0, requested_by: null, payload: records,
+      };
+      const qb: any = { addSelect: () => qb, leftJoinAndSelect: () => qb, where: () => qb, getOne: jest.fn().mockResolvedValue(job) };
+      // First check (before record 0) says "not cancelled"; second check (before record 25) says "cancelled".
+      const findOne = jest.fn()
+        .mockResolvedValueOnce({ cancel_requested: false })
+        .mockResolvedValueOnce({ cancel_requested: true });
+      const jobs = jobsRepoMock({ createQueryBuilder: jest.fn(() => qb), findOne });
+      const upsert = { upsertOne: jest.fn(async (_t: any, _r: any, _c: any, _p: any, externalId: string) => ({ outcome: UPSERT_OUTCOME.CREATED, externalId, internalId: `int-${externalId}` })) };
+      const svc = new IntegrationImportJobService(jobs, itemsRepoMock(), connectionsMock(), upsert as any, auditMock(), { enqueueIntegrationImport: jest.fn() } as any, admissionMock(), serviceAccountMock(), createMockDataSource() as any);
+
+      await svc.process('job-1');
+
+      expect(job.status).toBe(JOB_STATUS.CANCELLED);
+      // Stopped at the batch boundary (record 25), not after draining all 50.
+      expect(upsert.upsertOne).toHaveBeenCalledTimes(25);
+    });
+
     it('fails the job cleanly when the connection is no longer active', async () => {
       const job: any = {
         id: 'job-1', status: JOB_STATUS.PENDING, tenant: { id: tenantId }, connection: { id: 'c1' },

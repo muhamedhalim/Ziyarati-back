@@ -229,3 +229,38 @@ describe('IntegrationOAuthService.refresh — distributed lock (H11)', () => {
     );
   });
 });
+
+// GAP-003 — `status()` (the controller's `GET :connectionId/status`) is the
+// canonical OAuth "status" endpoint; `tokenView()` is its private mapper.
+// Regression guard proving it stays presence/scope/expiry-only, never a token
+// value — the sibling gap (the connections "detail"/list endpoint's
+// `toSafe()`) was the one actually broken; this locks the endpoint that was
+// already correct so it cannot silently regress.
+describe('IntegrationOAuthService.status — token non-exposure (GAP-003)', () => {
+  it('never returns the access or refresh token value, ciphertext or plaintext, only presence/scope/expiry', async () => {
+    const connection = baseConnection({
+      oauth_access_token_ciphertext: 'ENC:super-secret-access-token',
+      oauth_refresh_token_ciphertext: 'ENC:super-secret-refresh-token',
+      oauth_scope: 'read write',
+    });
+    const connections = repoMock({ findOne: jest.fn().mockResolvedValue(connection) });
+    const svc = build(connections, lockMock());
+
+    const result = await svc.status(tenantId, connectionId);
+
+    expect(result).not.toHaveProperty('oauth_access_token_ciphertext');
+    expect(result).not.toHaveProperty('oauth_refresh_token_ciphertext');
+    expect(JSON.stringify(result)).not.toContain('super-secret');
+    expect(result).toEqual({
+      connectionId,
+      provider: TEST_PROVIDER_KEY,
+      connected: true,
+      hasRefreshToken: true,
+      expiresAt: connection.oauth_expires_at,
+      expired: true,
+      scope: 'read write',
+      connectedAt: null,
+      refreshedAt: null,
+    });
+  });
+});

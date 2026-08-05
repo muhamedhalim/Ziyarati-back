@@ -41,9 +41,22 @@ import {
 /** Age after which a connection with no fresh success is considered stale/offline. */
 const HEALTH_STALE_SUCCESS_MS = 24 * 3600 * 1000;
 
-/** Connection with the encrypted credential stripped — the shape returned to clients. */
-export type SafeConnection = Omit<IntegrationConnection, 'credentials_ciphertext'> & {
+/**
+ * Connection with every encrypted secret stripped — the shape returned to
+ * clients. GAP-003: `oauth_access_token_ciphertext`/`oauth_refresh_token_ciphertext`
+ * are stripped alongside `credentials_ciphertext` — `oauth.controller.ts`'s own
+ * `IntegrationOAuthService.status()` is the ONE place OAuth connectivity is
+ * reported (presence/scope/expiry only, never a token), so this "detail"/list
+ * view exposes only a presence boolean, matching `hasCredential`'s existing
+ * shape (never consumed by the frontend as a real field — verified by grep).
+ */
+export type SafeConnection = Omit<
+  IntegrationConnection,
+  'credentials_ciphertext' | 'oauth_access_token_ciphertext' | 'oauth_refresh_token_ciphertext'
+> & {
   hasCredential: boolean;
+  hasOAuthAccessToken: boolean;
+  hasOAuthRefreshToken: boolean;
   /** Derived health state (healthy|degraded|offline|disabled) — never row existence. */
   healthState: HealthState;
 };
@@ -625,10 +638,17 @@ export class IntegrationConnectionService {
   }
 
   private toSafe(c: IntegrationConnection): SafeConnection {
-    const { credentials_ciphertext, ...rest } = c;
+    const {
+      credentials_ciphertext,
+      oauth_access_token_ciphertext,
+      oauth_refresh_token_ciphertext,
+      ...rest
+    } = c;
     return {
       ...rest,
       hasCredential: !!credentials_ciphertext,
+      hasOAuthAccessToken: !!oauth_access_token_ciphertext,
+      hasOAuthRefreshToken: !!oauth_refresh_token_ciphertext,
       healthState: this.deriveHealthState(c),
     } as SafeConnection;
   }

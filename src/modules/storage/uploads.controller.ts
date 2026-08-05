@@ -171,13 +171,14 @@ export class UploadsController {
   ) {
     const superAdmin = this.ctx.isSuperAdmin();
     const tenantId = superAdmin ? '' : this.ctx.requireTenantId();
-    if (!superAdmin) {
-      this.storage.assertKeyBelongsToTenant(query.key, tenantId);
-    }
-    const url = await this.storage.getSignedDownloadUrl(query.key);
+    // Super-admins are not scoped to one tenant, so the "owning" tenant is
+    // derived from the key itself — assertKeyBelongsToTenant still blocks
+    // path traversal, it just no longer restricts *which* tenant's prefix.
+    const effectiveTenantId = tenantId || query.key.split('/')[0];
+    const url = await this.storage.getSignedDownloadUrl(query.key, effectiveTenantId);
 
     await this.audit.record({
-      tenantId: tenantId || query.key.split('/')[0],
+      tenantId: effectiveTenantId,
       action: 'VIEWED',
       actor: { id: userId, role: this.actorRole(), ip, userAgent },
       metadata: { storageKey: query.key, superAdmin },
@@ -205,8 +206,7 @@ export class UploadsController {
     @Headers('user-agent') userAgent: string,
   ) {
     const tenantId = this.ctx.requireTenantId();
-    this.storage.assertKeyBelongsToTenant(query.key, tenantId);
-    await this.storage.deleteObject(query.key);
+    await this.storage.deleteObject(query.key, tenantId);
 
     await this.audit.record({
       tenantId,

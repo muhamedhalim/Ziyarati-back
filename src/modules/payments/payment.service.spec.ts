@@ -313,4 +313,159 @@ describe('PaymentService.create (booking payments)', () => {
       expect(result.failure_reason).toBeUndefined();
     });
   });
+
+  // VER-011 (REQ-PAY-042, P1) — confirm() is the "server-side status query"
+  // FR-B012 requires as an authoritative source alongside the webhook. Had
+  // ZERO prior test coverage (confirmed: no `confirm(` reference anywhere in
+  // this file before this block). `ConfirmPaymentDto` accepts only an
+  // optional `gatewayPaymentId` (a REFERENCE for client-side-created flows)
+  // — never a status — so the client structurally cannot supply the
+  // resulting state; every transition here is driven by
+  // `gateways.resolve().verifyPayment()`, a real server-to-server call.
+  describe('confirm (VER-011 — server-side status verification, FR-B012)', () => {
+    function pendingPayment(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'pay-1', status: PaymentStatus.PENDING, amount: 100, currency: 'SAR',
+        gateway: 'moyasar', gateway_payment_id: 'gw-1', ...overrides,
+      };
+    }
+
+    it('PENDING → PAID: books PAID only once the gateway independently verifies "paid", never from the caller\'s claim alone', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment());
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+      const result = await service.confirm(TENANT, 'pay-1', {});
+
+      expect(gateway.verifyPayment).toHaveBeenCalledWith('gw-1');
+      expect(result.status).toBe(PaymentStatus.PAID);
+      expect(result.paid_at).toBeInstanceOf(Date);
+    });
+
+    it('ANTI-TAMPERING: a gateway-verified "paid" with a MISMATCHED captured amount is REJECTED (422), never booked PAID', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ amount: 100 }));
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', capturedMinorUnits: 5000, raw: {} }); // 50.00, not 100.00
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(paymentRepo.save).not.toHaveBeenCalledWith(expect.objectContaining({ status: PaymentStatus.PAID }));
+    });
+
+    it('ANTI-TAMPERING: a mismatched captured CURRENCY is also rejected', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ currency: 'SAR' }));
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', capturedCurrency: 'USD', raw: {} });
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+    });
+
+    it('PENDING → FAILED: books FAILED when the gateway verifies failure', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment());
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'failed', raw: {} });
+
+      const result = await service.confirm(TENANT, 'pay-1', {});
+      expect(result.status).toBe(PaymentStatus.FAILED);
+    });
+
+    it('IDEMPOTENT: an already-PAID payment short-circuits WITHOUT calling the gateway at all', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ status: PaymentStatus.PAID }));
+
+      const result = await service.confirm(TENANT, 'pay-1', {});
+
+      expect(result.status).toBe(PaymentStatus.PAID);
+      expect(gateway.verifyPayment).not.toHaveBeenCalled();
+    });
+
+    it('REFUSES (422) to confirm a REFUNDED payment — a terminal refund state is never reopened via this path', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ status: PaymentStatus.REFUNDED }));
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(gateway.verifyPayment).not.toHaveBeenCalled();
+    });
+
+    it('REFUSES (422) to confirm a PARTIALLY_REFUNDED payment for the same reason', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ status: PaymentStatus.PARTIALLY_REFUNDED }));
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+    });
+
+    it('REFUSES (422) when there is no gateway payment id to verify at all', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ gateway_payment_id: null }));
+
+      await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(gateway.verifyPayment).not.toHaveBeenCalled();
+    });
+
+    it('links a client-side-created gatewayPaymentId when the row has none yet, THEN verifies it — never trusts the client\'s status, only the reference id', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ gateway_payment_id: null }));
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+      await service.confirm(TENANT, 'pay-1', { gatewayPaymentId: 'client-supplied-gw-id' });
+
+      expect(gateway.verifyPayment).toHaveBeenCalledWith('client-supplied-gw-id');
+    });
+
+    it('RACE GUARD: a webhook settles the payment to PAID between phase 1 and phase 3 — confirm() never regresses or double-processes it', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      // Phase 1 sees PENDING (still has a gateway id to verify)...
+      paymentRepo.findOne
+        .mockResolvedValueOnce(pendingPayment())
+        // ...but by phase 3's re-lock, a concurrent webhook already booked it PAID.
+        .mockResolvedValueOnce(pendingPayment({ status: PaymentStatus.PAID }));
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+      const result = await service.confirm(TENANT, 'pay-1', {});
+
+      expect(result.status).toBe(PaymentStatus.PAID);
+      // Financials/paid_at must not be reapplied — the webhook path already owns that.
+      expect(paymentRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('a genuinely missing payment is NOT_FOUND', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(null);
+      await expect(service.confirm(TENANT, 'nonexistent', {})).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+    });
+
+    it('FAILED → PAID: a previously-failed attempt that the gateway now reports as paid (e.g. a delayed capture) IS transitioned — still gated by the same amount/currency anti-tampering check, never trusted blindly', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment({ status: PaymentStatus.FAILED }));
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+      const result = await service.confirm(TENANT, 'pay-1', {});
+      expect(result.status).toBe(PaymentStatus.PAID);
+    });
+
+    it('a "pending"/unresolved gateway status leaves the payment untouched (no premature transition)', async () => {
+      const paymentRepo = manager.getRepository(Payment) as MockRepository;
+      paymentRepo.findOne.mockResolvedValue(pendingPayment());
+      paymentRepo.save.mockImplementation(async (p: any) => p);
+      gateway.verifyPayment.mockResolvedValueOnce({ status: 'pending', raw: {} });
+
+      const result = await service.confirm(TENANT, 'pay-1', {});
+      expect(result.status).toBe(PaymentStatus.PENDING);
+    });
+  });
 });

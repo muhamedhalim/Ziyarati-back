@@ -108,6 +108,101 @@ describe('env.validation', () => {
     });
   });
 
+  // HRD-002: the platform Meta App config stays legitimately OPTIONAL in
+  // production (many deployments never use WhatsApp — same reasoning as
+  // FND-035/AD-08's AI fail-fast, not the unconditional payments/HRD-001
+  // pattern). What must fail fast is a PARTIAL configuration: an operator who
+  // has started setting Meta keys but left the set incomplete would otherwise
+  // silently get a half-working (or, for the webhook signature pair
+  // specifically, insecurely inconsistent) integration with no boot-time
+  // signal. Mirrors `MetaConfig.embeddedSignupConfigured`'s own existing
+  // "all of appId + embeddedSignupConfigId + appSecret" definition of
+  // configured, extended with `webhookVerifyToken` (the signature pair's
+  // other half) — the coherent set this check enforces.
+  describe('Meta app config fail-fast (production, HRD-002)', () => {
+    it('boots in production with NO Meta config at all (legitimately optional — not every deployment uses WhatsApp)', () => {
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        MOYASAR_SECRET_KEY: 'sk',
+        MOYASAR_WEBHOOK_SECRET: 'whs',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      });
+      expect(value.META_APP_ID).toBeUndefined();
+    });
+
+    it('FAILS the boot in production when only META_APP_ID is set (partial config)', () => {
+      expect(() =>
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          MOYASAR_SECRET_KEY: 'sk',
+          MOYASAR_WEBHOOK_SECRET: 'whs',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          META_APP_ID: 'app-123',
+        }),
+      ).toThrow(/META_APP_SECRET.*META_EMBEDDED_SIGNUP_CONFIG_ID.*META_WEBHOOK_VERIFY_TOKEN|META_APP_SECRET, META_EMBEDDED_SIGNUP_CONFIG_ID, META_WEBHOOK_VERIFY_TOKEN/);
+    });
+
+    it('FAILS when 3 of 4 are set, naming only the ONE missing variable', () => {
+      let thrown: Error | undefined;
+      try {
+        validate({
+          ...base,
+          NODE_ENV: 'production',
+          MOYASAR_SECRET_KEY: 'sk',
+          MOYASAR_WEBHOOK_SECRET: 'whs',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          META_APP_ID: 'app-123',
+          META_APP_SECRET: 'top-secret-value',
+          META_EMBEDDED_SIGNUP_CONFIG_ID: 'config-123',
+          // META_WEBHOOK_VERIFY_TOKEN deliberately omitted
+        });
+      } catch (err) {
+        thrown = err as Error;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown!.message).toContain('META_WEBHOOK_VERIFY_TOKEN');
+      expect(thrown!.message).not.toContain('META_APP_ID');
+      expect(thrown!.message).not.toContain('top-secret-value');
+    });
+
+    it('boots in production once all four Meta variables are set', () => {
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        MOYASAR_SECRET_KEY: 'sk',
+        MOYASAR_WEBHOOK_SECRET: 'whs',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+        META_APP_ID: 'app-123',
+        META_APP_SECRET: 'top-secret-value',
+        META_EMBEDDED_SIGNUP_CONFIG_ID: 'config-123',
+        META_WEBHOOK_VERIFY_TOKEN: 'verify-123',
+      });
+      expect(value.META_APP_ID).toBe('app-123');
+    });
+
+    it('the legacy WHATSAPP_APP_SECRET/WHATSAPP_VERIFY_TOKEN aliases also count as configured (MetaConfig honours them as a fallback — this check must not force a premature migration)', () => {
+      const value = validate({
+        ...base,
+        NODE_ENV: 'production',
+        MOYASAR_SECRET_KEY: 'sk',
+        MOYASAR_WEBHOOK_SECRET: 'whs',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+        META_APP_ID: 'app-123',
+        META_EMBEDDED_SIGNUP_CONFIG_ID: 'config-123',
+        WHATSAPP_APP_SECRET: 'legacy-secret',
+        WHATSAPP_VERIFY_TOKEN: 'legacy-verify',
+      });
+      expect(value.META_APP_ID).toBe('app-123');
+    });
+
+    it('does not fail-fast outside production, even with a partial Meta config (dev/test keep the flexible path)', () => {
+      const value = validate({ ...base, META_APP_ID: 'app-123' });
+      expect(value.META_APP_ID).toBe('app-123');
+    });
+  });
+
   // FND-006: an insecure local-development reset-token exposure channel
   // must never be enabled in production. Mirrors the payments fail-fast
   // pattern above — the reference pattern constitution XXIX names.

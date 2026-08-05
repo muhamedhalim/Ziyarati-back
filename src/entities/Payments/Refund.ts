@@ -9,6 +9,7 @@ import {
 import { Tenant } from '../SaaS-Core/Tenant';
 import { Payment } from './Payment';
 import { User } from '../Auth&RBAC/User';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('refunds')
 export class Refund {
@@ -25,6 +26,7 @@ export class Refund {
     type: 'decimal',
     precision: 14,
     scale: 2,
+    transformer: decimalTransformer,
   })
   amount!: number;
 

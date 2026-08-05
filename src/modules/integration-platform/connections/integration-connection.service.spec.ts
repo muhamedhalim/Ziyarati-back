@@ -300,3 +300,71 @@ describe('IntegrationConnectionService.rotateAuth — safe auth rotation', () =>
     expect(createdSavedArg.default_conflict_policy).toBe('external_wins');
   });
 });
+
+// GAP-003 — `oauth.controller.ts` states "Tokens are never returned by any
+// route: only presence, scope and expiry" and `IntegrationOAuthService`'s own
+// `tokenView()` upholds that. `IntegrationConnectionService`'s `toSafe()` is a
+// SEPARATE mapper (used by the "detail"/"list"/"update" connection endpoints,
+// a different controller entirely) that only strips `credentials_ciphertext`
+// — `oauth_access_token_ciphertext`/`oauth_refresh_token_ciphertext` are NOT
+// in that Omit, so they pass through `{ ...rest }` unstripped.
+describe('IntegrationConnectionService — OAuth token non-exposure (GAP-003)', () => {
+  function connectionWithOAuthTokens() {
+    return {
+      id: 'c1',
+      tenant: { id: tenantId },
+      provider: 'test_oauth',
+      auth_type: CONNECTION_AUTH_TYPE.OAUTH2,
+      credentials_ciphertext: null,
+      oauth_access_token_ciphertext: 'ENC:super-secret-access-token',
+      oauth_refresh_token_ciphertext: 'ENC:super-secret-refresh-token',
+      oauth_expires_at: new Date('2030-01-01T00:00:00.000Z'),
+      oauth_scope: 'read write',
+      oauth_connected_at: new Date('2026-01-01T00:00:00.000Z'),
+      oauth_refreshed_at: null,
+      status: CONNECTION_STATUS.ACTIVE,
+      deleted_at: null,
+      consecutive_failures: 0,
+      last_success_at: null,
+    } as any;
+  }
+
+  it('get(): never returns the OAuth access/refresh token ciphertext', async () => {
+    const repo = repoMock({ findOne: jest.fn().mockResolvedValue(connectionWithOAuthTokens()) });
+    const result = await build(repo).get(tenantId, 'c1');
+
+    expect(result).not.toHaveProperty('oauth_access_token_ciphertext');
+    expect(result).not.toHaveProperty('oauth_refresh_token_ciphertext');
+    expect(JSON.stringify(result)).not.toContain('super-secret');
+  });
+
+  it('list(): never returns the OAuth access/refresh token ciphertext for any row', async () => {
+    const repo = repoMock({
+      findAndCount: jest.fn().mockResolvedValue([[connectionWithOAuthTokens()], 1]),
+    });
+    const result = await build(repo).list(tenantId, { page: 1, limit: 20 } as any);
+
+    expect(result.data[0]).not.toHaveProperty('oauth_access_token_ciphertext');
+    expect(result.data[0]).not.toHaveProperty('oauth_refresh_token_ciphertext');
+    expect(JSON.stringify(result)).not.toContain('super-secret');
+  });
+
+  it('update(): never returns the OAuth access/refresh token ciphertext', async () => {
+    const existing = connectionWithOAuthTokens();
+    const repo = repoMock({
+      findOne: jest.fn().mockResolvedValue(existing),
+      save: jest.fn((x) => Promise.resolve({ ...existing, ...x })),
+    });
+    const result = await build(repo).update(tenantId, 'c1', { name: 'Renamed' } as any, actor);
+
+    expect(result).not.toHaveProperty('oauth_access_token_ciphertext');
+    expect(result).not.toHaveProperty('oauth_refresh_token_ciphertext');
+  });
+
+  it('health()/checkHealth() safe views never carried the tokens either (regression guard)', async () => {
+    const repo = repoMock({ findOne: jest.fn().mockResolvedValue(connectionWithOAuthTokens()) });
+    const result = await build(repo).health(tenantId, 'c1');
+
+    expect(JSON.stringify(result)).not.toContain('super-secret');
+  });
+});

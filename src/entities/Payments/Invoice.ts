@@ -12,6 +12,7 @@ import { Tenant } from '../SaaS-Core/Tenant';
 import { Appointment } from '../Calendar&Appointments/Appointment';
 import { Customer } from '../CRM/Customer';
 import { InvoiceStatus } from '../enums';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('invoices')
 @Unique(['tenant', 'invoice_number'])
@@ -40,6 +41,7 @@ export class Invoice {
     precision: 14,
     scale: 2,
     default: 0,
+    transformer: decimalTransformer,
   })
   total_amount!: number;
 
