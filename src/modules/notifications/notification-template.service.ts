@@ -7,6 +7,7 @@ import { NotificationRule } from '../../entities/Notifications/NotificationRule'
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
+import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
 
 import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto';
 import { UpdateNotificationTemplateDto } from './dto/update-notification-template.dto';
@@ -28,12 +29,20 @@ export class NotificationTemplateService {
     private readonly rules: Repository<NotificationRule>,
     @InjectRepository(ScheduledNotification)
     private readonly scheduled: Repository<ScheduledNotification>,
+    private readonly whatsappTemplates: WhatsappTemplateService,
   ) {}
 
   async create(
     tenantId: string,
     dto: CreateNotificationTemplateDto,
   ): Promise<NotificationTemplate> {
+    const providerTemplateId = dto.providerTemplateId
+      ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateId)
+      : undefined;
+    const providerTemplateIdAr = dto.providerTemplateIdAr
+      ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateIdAr, 'ar')
+      : undefined;
+
     const template = this.templates.create({
       tenant: { id: tenantId } as Tenant,
       name: dto.name,
@@ -42,8 +51,37 @@ export class NotificationTemplateService {
       content_ar: dto.contentAr,
       content_en: dto.contentEn,
       is_active: dto.isActive ?? true,
+      provider_template_id: providerTemplateId,
+      provider_template_id_ar: providerTemplateIdAr,
     });
     return this.templates.save(template);
+  }
+
+  /**
+   * T157 gap-closure: `provider_template_id`/`provider_template_id_ar` name a
+   * `WhatsappTemplate` (its own local UUID, not Meta's id — see that
+   * entity's field of the same name). Re-validates tenant ownership
+   * (mirrors NotificationRuleService.assertTemplate's pattern) and, for the
+   * Arabic-variant column, that the linked template's own `language` field
+   * (FR-H015: "using the existing template language field") is actually
+   * Arabic — otherwise the locale-based selection in
+   * NotificationDispatchService would silently send the wrong language.
+   */
+  private async assertWhatsappTemplate(
+    tenantId: string,
+    id: string,
+    expectLanguagePrefix?: string,
+  ): Promise<string> {
+    const template = await this.whatsappTemplates.findOne(tenantId, id);
+    if (
+      expectLanguagePrefix &&
+      !template.language?.toLowerCase().startsWith(expectLanguagePrefix)
+    ) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `WhatsApp template "${template.name}" is not a "${expectLanguagePrefix}" language variant (its language is "${template.language}")`,
+      });
+    }
+    return id;
   }
 
   async findAll(tenantId: string, filter: NotificationTemplateFilterDto) {
@@ -86,6 +124,16 @@ export class NotificationTemplateService {
     if (dto.contentAr !== undefined) template.content_ar = dto.contentAr;
     if (dto.contentEn !== undefined) template.content_en = dto.contentEn;
     if (dto.isActive !== undefined) template.is_active = dto.isActive;
+    if (dto.providerTemplateId !== undefined) {
+      template.provider_template_id = dto.providerTemplateId
+        ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateId)
+        : undefined;
+    }
+    if (dto.providerTemplateIdAr !== undefined) {
+      template.provider_template_id_ar = dto.providerTemplateIdAr
+        ? await this.assertWhatsappTemplate(tenantId, dto.providerTemplateIdAr, 'ar')
+        : undefined;
+    }
     return this.templates.save(template);
   }
 

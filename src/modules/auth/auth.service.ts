@@ -567,6 +567,10 @@ export class AuthService {
       resetUrl,
       token: rawToken,
       tenantId: tenantId ?? undefined,
+      // FR-H014/T156 gap-closure: the user row is already loaded here, so
+      // honoring their recorded locale (M-08) is a free, no-risk win — falls
+      // back to EMAIL_DEFAULT_LOCALE exactly as before when unset.
+      locale: user.preferred_locale ?? undefined,
     });
 
     // Local-development-only fallback for a developer with no mail transport

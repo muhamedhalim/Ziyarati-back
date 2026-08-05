@@ -35,6 +35,27 @@ describe('CustomerService', () => {
         code: ErrorCode.CONFLICT,
       });
     });
+
+    // M-09/T157 gap-closure: recipient locale must be persisted at create time
+    // (the only settable-by-staff signal, since customers have no
+    // authenticated UI of their own to declare a locale — see data-model.md §2.6).
+    it('[M-09] persists preferred_locale when provided', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+        preferred_locale: 'ar',
+      } as any);
+      expect(res).toEqual(expect.objectContaining({ preferred_locale: 'ar' }));
+    });
+
+    it('[M-09] leaves preferred_locale undefined (not a guessed default) when omitted', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
+      expect(res.preferred_locale).toBeUndefined();
+    });
   });
 
   describe('update', () => {
@@ -59,6 +80,13 @@ describe('CustomerService', () => {
       await expect(service.update(TENANT, 'c1', { phone: '+966511' } as any)).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
+    });
+
+    it('[M-09] updates preferred_locale via the generic field loop', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500', preferred_locale: undefined });
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.update(TENANT, 'c1', { preferred_locale: 'ar' } as any);
+      expect(res).toEqual(expect.objectContaining({ preferred_locale: 'ar' }));
     });
   });
 

@@ -254,9 +254,14 @@ export class SubscriptionsProcessor extends WorkerHost {
     event: 'expiring_soon' | 'entered_grace' | 'grace_ending_soon',
     variables: { idempotencyKey: string } & Record<string, unknown>,
   ): Promise<void> {
-    const recipients = new Set<string>();
+    // FR-H014/T156 gap-closure: map recipient -> locale (not just a flat
+    // Set<string>) so each recipient's own preference (M-08) reaches the
+    // email. `tenant.contact_email` has no linked User row, so it has no
+    // locale signal available and falls back to EMAIL_DEFAULT_LOCALE — that
+    // is unchanged, pre-existing behavior, not a new gap.
+    const recipients = new Map<string, string | undefined>();
     if (subscription.tenant?.contact_email) {
-      recipients.add(subscription.tenant.contact_email);
+      recipients.set(subscription.tenant.contact_email, undefined);
     }
     const operators = await this.users
       .createQueryBuilder('u')
@@ -266,14 +271,16 @@ export class SubscriptionsProcessor extends WorkerHost {
       })
       .where('u.is_active = true')
       .select('u.email', 'email')
-      .getRawMany<{ email: string }>();
-    for (const o of operators) recipients.add(o.email);
+      .addSelect('u.preferred_locale', 'preferredLocale')
+      .getRawMany<{ email: string; preferredLocale: string | null }>();
+    for (const o of operators) recipients.set(o.email, o.preferredLocale ?? undefined);
 
-    for (const to of recipients) {
+    for (const [to, locale] of recipients) {
       this.email.sendSubscriptionNotification({
         to,
         event,
         tenantId: subscription.tenant?.id,
+        locale,
         ...variables,
         // Recipient-scoped — the SAME logical event must still dedupe
         // per-recipient, not just per-subscription (two different people

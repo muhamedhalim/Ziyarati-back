@@ -3,6 +3,7 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -68,4 +69,24 @@ export class CreateNotificationTemplateDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'For channel=WHATSAPP: the approved WhatsappTemplate id to send (default/fallback variant). Must belong to the caller\'s tenant.',
+    format: 'uuid',
+    example: 'a1b2c3d4-0000-0000-0000-000000000300',
+  })
+  @IsOptional()
+  @IsUUID()
+  providerTemplateId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "M-10/CAP-I18N: optional Arabic-language sibling WhatsappTemplate (FR-H015 — connects template language selection to the recipient customer's locale choice). Its own `language` field must be Arabic. Must belong to the caller's tenant.",
+    format: 'uuid',
+    example: 'a1b2c3d4-0000-0000-0000-000000000301',
+  })
+  @IsOptional()
+  @IsUUID()
+  providerTemplateIdAr?: string;
 }
