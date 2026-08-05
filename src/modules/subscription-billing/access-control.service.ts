@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 
@@ -42,6 +43,7 @@ export class AccessControlService {
     private readonly subscriptions: Repository<Subscription>,
     private readonly billingMode: BillingModeService,
     private readonly overrides: FreeAccessOverrideService,
+    private readonly config: ConfigService,
   ) {}
 
   /** Resolve the access decision for a tenant, applying the full priority chain. */
@@ -103,6 +105,21 @@ export class AccessControlService {
     return true;
   }
 
+  /**
+   * FND-031/T082 — the NARROW, write-specific gate: true unless the tenant's
+   * effective state is GRACE_EXPIRED. Deliberately separate from
+   * `assertUsable`/`isEnforced` (which govern the WHOLE platform, reads
+   * included) — read access must be preserved even once grace-expired
+   * (FR-B007d), so this must never be folded into those.
+   */
+  async isBillableAllowed(tenantId: string): Promise<boolean> {
+    if (!(await this.billingMode.isPaidMode())) return true;
+    if (await this.overrides.hasActive(tenantId)) return true;
+    const subscription = await this.findCurrent(tenantId);
+    if (!subscription) return true; // no subscription = AccessControlService's broader gate already refused the request
+    return this.effective(subscription) !== SubscriptionStatus.GRACE_EXPIRED;
+  }
+
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   private findCurrent(tenantId: string): Promise<Subscription | null> {
@@ -112,20 +129,50 @@ export class AccessControlService {
     });
   }
 
+  /**
+   * FND-031 — usable (the BROAD platform-access gate) means anything
+   * non-terminal: ACTIVE, TRIAL, PAST_DUE ("expired-in-grace" — full
+   * capabilities, unchanged), AND GRACE_EXPIRED (read access preserved —
+   * FR-B007d; only billable/usage-increasing actions are refused there, via
+   * `isBillableAllowed`, never here). Only CANCELLED/SUSPENDED are not usable.
+   */
   private isUsable(subscription: Subscription): boolean {
     const status = this.effective(subscription);
-    return status === SubscriptionStatus.ACTIVE || status === SubscriptionStatus.TRIAL;
+    return (
+      status !== SubscriptionStatus.CANCELLED &&
+      status !== SubscriptionStatus.SUSPENDED
+    );
   }
 
-  /** ACTIVE/TRIAL past their `ends_at` are effectively EXPIRED. */
-  private effective(subscription: Subscription): SubscriptionStatus | 'EXPIRED' {
+  /**
+   * Live-derives past the raw `status` column exactly like
+   * `SubscriptionService.getEffectiveStatus` (duplicated rather than
+   * depended-on — this service must stay dependency-free of
+   * SubscriptionService/UsageService, see the class docstring): ACTIVE/TRIAL
+   * past `ends_at` reads as PAST_DUE; PAST_DUE whose grace window has
+   * elapsed reads as GRACE_EXPIRED. Never a race against the background
+   * transition sweep (`subscriptions.processor.ts`).
+   */
+  private effective(subscription: Subscription): SubscriptionStatus {
+    const now = new Date();
     if (
-      (subscription.status === SubscriptionStatus.ACTIVE ||
-        subscription.status === SubscriptionStatus.TRIAL) &&
-      subscription.ends_at < new Date()
+      subscription.status === SubscriptionStatus.CANCELLED ||
+      subscription.status === SubscriptionStatus.SUSPENDED ||
+      subscription.status === SubscriptionStatus.GRACE_EXPIRED
     ) {
-      return 'EXPIRED';
+      return subscription.status;
     }
+    if (subscription.status === SubscriptionStatus.PAST_DUE) {
+      if (subscription.grace_started_at) {
+        const graceDays = this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14);
+        const graceEndsAt = new Date(
+          subscription.grace_started_at.getTime() + graceDays * 86_400_000,
+        );
+        if (graceEndsAt < now) return SubscriptionStatus.GRACE_EXPIRED;
+      }
+      return SubscriptionStatus.PAST_DUE;
+    }
+    if (subscription.ends_at < now) return SubscriptionStatus.PAST_DUE;
     return subscription.status;
   }
 }

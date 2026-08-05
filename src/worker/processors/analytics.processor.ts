@@ -12,6 +12,7 @@ import {
   AnalyticsAggregateJob,
   AnalyticsGenerateReportJob,
 } from '../../queue/job-data.interface';
+import { previousMonthUtc } from '../../modules/analytics/analytics.constants';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
@@ -60,7 +61,11 @@ export class AnalyticsProcessor extends WorkerHost {
 
     // analytics.generateReport
     const data = job.data as AnalyticsGenerateReportJob;
-    if (!data.tenantId) return this.sweepReports(data);
+    if (!data.tenantId) {
+      return data.kind === 'monthly'
+        ? this.sweepMonthlyReports(data)
+        : this.sweepReports(data);
+    }
     return runInTenantContext<unknown>(
       this.ctx,
       this.authz,
@@ -130,6 +135,38 @@ export class AnalyticsProcessor extends WorkerHost {
       `analytics.generateReport sweep (${date}) fanned out ${fannedOut} tenant(s)`,
     );
     return { fannedOut, date };
+  }
+
+  /**
+   * Monthly sweep (FND-014). Targets the month that just completed in UTC —
+   * the tick fires shortly after month rollover (see ScheduleRegistrarService)
+   * — unless a month is given explicitly (a manual re-trigger reusing this
+   * same sweep path). Same bounded-paging/bulk-enqueue shape as sweepReports;
+   * duplicate generation for a month is prevented twice over: the deterministic
+   * per-(tenant,month) jobId here, and MonthlyReportService's own DB-level
+   * (tenant, branch, period_month) unique upsert on the RUN side.
+   */
+  private async sweepMonthlyReports(template: AnalyticsGenerateReportJob) {
+    const month = template.month ?? previousMonthUtc(new Date());
+    let offset = 0;
+    let fannedOut = 0;
+    for (;;) {
+      const page = await this.tenants.activeTenantIdsPage(
+        offset,
+        SWEEP_FANOUT_PAGE_SIZE,
+      );
+      if (page.length === 0) break;
+      await this.queue.enqueueAnalyticsReportMonthlyBulk(
+        page.map((tenantId) => ({ tenantId, month })),
+      );
+      fannedOut += page.length;
+      offset += page.length;
+      if (page.length < SWEEP_FANOUT_PAGE_SIZE) break;
+    }
+    this.logger.log(
+      `analytics.generateReport monthly sweep (${month}) fanned out ${fannedOut} tenant(s)`,
+    );
+    return { fannedOut, month };
   }
 
   @OnWorkerEvent('failed')

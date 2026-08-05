@@ -43,6 +43,10 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   // hand-written identifier) beforehand.
   UQ_customers_tenant_email: 'A customer with this email already exists',
   UQ_8536b8b85c06969f84f0c098b03: 'A customer with this email already exists',
+  // FND-032/M-04: a second concurrent request lost the race to open a new
+  // invoice for a subscription that already has one OPEN.
+  UQ_sub_invoice_open_per_subscription:
+    'This subscription already has an open invoice. Pay or resolve it before requesting another.',
 };
 
 /**

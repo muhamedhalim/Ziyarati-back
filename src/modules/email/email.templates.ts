@@ -22,6 +22,9 @@ export type EmailTemplateKey =
   | 'subscription_activated'
   | 'subscription_renewed'
   | 'subscription_cancelled'
+  | 'subscription_expiring_soon'
+  | 'subscription_entered_grace'
+  | 'subscription_grace_ending_soon'
   | 'staff_invitation'
   | 'security_alert'
   | 'doctor_notification'
@@ -162,6 +165,24 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
     action('Subscription cancelled', `Hi ${name(v)},`,
       `Your subscription has been cancelled${v.endsAt ? ` and access continues until ${s(v.endsAt)}` : ''}.`,
       { label: 'Reactivate', url: `${ctx.appUrl}/app/billing` }, '', ctx),
+
+  // FND-031 — the three grace-lifecycle notification points (before expiry,
+  // at expiry, before grace end). No automatic re-billing is implied or
+  // performed by any of these — informational only.
+  subscription_expiring_soon: (v, ctx) =>
+    action('Your subscription is ending soon', `Hi ${name(v)},`,
+      `Your ${s(v.planName, '')} subscription ends on ${s(v.endsAt)}. Renew to avoid any interruption.`,
+      { label: 'Manage subscription', url: `${ctx.appUrl}/app/billing` }, '', ctx),
+
+  subscription_entered_grace: (v, ctx) =>
+    action('Your subscription has ended — grace period active', `Hi ${name(v)},`,
+      `Your ${s(v.planName, '')} subscription ended on ${s(v.endsAt)}. You keep full access until ${s(v.graceEndsAt)} while you renew — nothing has been charged automatically.`,
+      { label: 'Renew now', url: `${ctx.appUrl}/app/billing` }, '', ctx),
+
+  subscription_grace_ending_soon: (v, ctx) =>
+    action('Your grace period is ending soon', `Hi ${name(v)},`,
+      `Your grace period ends on ${s(v.graceEndsAt)}. After that, new billable actions will be paused until you renew — your existing data stays fully accessible.`,
+      { label: 'Renew now', url: `${ctx.appUrl}/app/billing` }, '', ctx),
 
   staff_invitation: (v, ctx) =>
     action('You\'ve been invited', `Hi ${name(v)},`,

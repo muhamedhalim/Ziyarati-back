@@ -31,6 +31,7 @@ export class WhatsappTemplateService {
   ) {}
 
   async create(tenantId: string, dto: CreateWhatsappTemplateDto): Promise<WhatsappTemplate> {
+    this.assertNotSettingApproved(dto.status);
     if (dto.accountId) await this.assertAccount(tenantId, dto.accountId);
 
     const duplicate = await this.templates.findOne({
@@ -90,6 +91,7 @@ export class WhatsappTemplateService {
     id: string,
     dto: UpdateWhatsappTemplateDto,
   ): Promise<WhatsappTemplate> {
+    this.assertNotSettingApproved(dto.status);
     const template = await this.findOne(tenantId, id);
     if (dto.accountId !== undefined) {
       if (dto.accountId) {
@@ -107,11 +109,12 @@ export class WhatsappTemplateService {
     return this.templates.save(template);
   }
 
-  /** Updates the review status (draft/pending_review/approved/rejected/disabled). */
+  /** Updates the review status (draft/pending_review/rejected/disabled — never approved, see assertNotSettingApproved). */
   async setStatus(tenantId: string, id: string, status: string): Promise<WhatsappTemplate> {
     if (!WHATSAPP_TEMPLATE_STATUSES.includes(status as never)) {
       throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Invalid template status' });
     }
+    this.assertNotSettingApproved(status);
     const template = await this.findOne(tenantId, id);
     template.status = status;
     return this.templates.save(template);
@@ -131,6 +134,26 @@ export class WhatsappTemplateService {
       });
     }
     return template;
+  }
+
+  /**
+   * GAP-002 — `approved` may only ever be reached via the Meta callback
+   * (`WhatsappTemplateSyncService`, which mirrors Meta's own review verdict
+   * onto `Repository<WhatsappTemplate>` DIRECTLY — a structurally separate
+   * path with no client input, never routed through this service). Every
+   * client-facing entry point that can write `status` (create/update/
+   * setStatus) funnels through this ONE guard, so a tenant can never
+   * self-approve a template Meta never actually reviewed and make it
+   * sendable (`getSendableTemplate` above trusts `status === APPROVED`
+   * unconditionally, which is exactly what made this exploitable).
+   */
+  private assertNotSettingApproved(status: string | undefined): void {
+    if (status === WHATSAPP_TEMPLATE_STATUS.APPROVED) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message:
+          'Templates can only be approved through WhatsApp/Meta\'s review process, not set directly.',
+      });
+    }
   }
 
   private async assertAccount(tenantId: string, accountId: string): Promise<void> {

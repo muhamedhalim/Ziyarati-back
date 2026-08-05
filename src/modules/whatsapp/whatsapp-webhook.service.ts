@@ -11,6 +11,7 @@ import {
 
 import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
+import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
@@ -18,6 +19,7 @@ import { NotificationDeliveryService } from '../notifications/notification-deliv
 import { DELIVERY_STATUS, DeliveryStatus } from '../notifications/notification.constants';
 import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
 import { RecipientDelivery } from '../../entities/enums';
+import { MessageStatusService } from '../conversations/message-status.service';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { MetaConfig } from './meta/meta.config';
@@ -54,11 +56,14 @@ export class WhatsappWebhookService {
     private readonly webhooks: Repository<WhatsappWebhook>,
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
+    @InjectRepository(Message)
+    private readonly messages: Repository<Message>,
     private readonly verifier: WebhookSignatureVerifier,
     private readonly meta: MetaConfig,
     @Inject(forwardRef(() => NotificationDeliveryService))
     private readonly notifDelivery: NotificationDeliveryService,
     private readonly recipientDelivery: RecipientDeliveryService,
+    private readonly messageStatus: MessageStatusService,
     private readonly inboundAi: WhatsappInboundAiService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
@@ -171,19 +176,21 @@ export class WhatsappWebhookService {
   }
 
   /**
-   * Extract Meta statuses and forward each to BOTH delivery axes that key off
-   * `provider_ref`/`wamid`:
+   * Extract Meta statuses and forward each to THREE delivery axes that key
+   * off `provider_ref`/`wamid`:
    *  - NotificationDeliveryService (`notification_logs` — template sends via
    *    WhatsappTemplateController/ExecutionService);
-   *  - RecipientDeliveryService (`campaign_recipients` — campaign sends).
-   * A given `wamid` only ever matches rows in ONE of the two tables, so calling
-   * both unconditionally is safe: the non-matching one is a cheap, harmless
-   * no-op (`recipient-not-found`). Without this second call campaign delivery/
-   * read counters never move past `sent`, no matter how many Meta status
-   * events arrive — this was the actual gap ("delivered"/"read" in the
-   * campaign metrics UI would stay 0 forever for real WhatsApp sends).
+   *  - RecipientDeliveryService (`campaign_recipients` — campaign sends);
+   *  - the unified conversation timeline (`messages.wa_message_id` — agent
+   *    and bot replies, FND-023).
+   * A given `wamid` only ever matches rows in ONE of the three tables, so
+   * calling all three unconditionally is safe: the non-matching ones are a
+   * cheap, harmless no-op. Without the second call campaign delivery/read
+   * counters never move past `sent`; without the third, an agent's or bot's
+   * reply never shows delivered/read ticks in the conversation UI, no matter
+   * how many Meta status events arrive — both were real gaps this closes.
    */
-  private async applyDeliveryStatuses(body: WhatsappWebhookBody): Promise<void> {
+  private async applyDeliveryStatuses(body: WhatsappWebhookBody, tenantId: string): Promise<void> {
     const value = this.firstChangeValue(body);
     const statuses = (value?.statuses ?? []) as Array<{ id?: string; status?: string }>;
     for (const st of statuses) {
@@ -193,9 +200,42 @@ export class WhatsappWebhookService {
 
       const recipientEvent = this.mapRecipientDelivery(st.status);
       if (recipientEvent) {
-        await this.recipientDelivery.recordDelivery({ providerRef: st.id, event: recipientEvent });
+        // FND-004 — tenantId is THIS webhook event's own resolved tenant
+        // (event.tenant.id, above), never client input.
+        await this.recipientDelivery.recordDelivery({
+          providerRef: st.id,
+          event: recipientEvent,
+          tenantId,
+        });
       }
+
+      await this.applyMessageTimelineStatus(tenantId, st.id, st.status);
     }
+  }
+
+  /**
+   * FND-023 — the conversation-timeline axis. `sent` is not forwarded: the
+   * initial SENT status log is already written at message-creation time
+   * (ConversationExecutionService), before any provider callback can arrive.
+   * `MessageStatusService`'s own forward-only transition guard makes an
+   * out-of-order or duplicate webhook (at-least-once delivery) safe to call
+   * unconditionally here too.
+   */
+  private async applyMessageTimelineStatus(
+    tenantId: string,
+    waMessageId: string,
+    status?: string,
+  ): Promise<void> {
+    if (status !== 'delivered' && status !== 'read' && status !== 'failed') return;
+
+    const message = await this.messages.findOne({
+      where: { tenant: { id: tenantId }, wa_message_id: waMessageId },
+    });
+    if (!message) return;
+
+    if (status === 'delivered') await this.messageStatus.markDelivered(tenantId, message.id);
+    else if (status === 'read') await this.messageStatus.markRead(tenantId, message.id);
+    else await this.messageStatus.markFailed(tenantId, message.id);
   }
 
   private mapDeliveryStatus(status?: string): DeliveryStatus | null {
@@ -333,7 +373,7 @@ export class WhatsappWebhookService {
 
     switch (event.event_type) {
       case 'message_status':
-        await this.applyDeliveryStatuses(body);
+        await this.applyDeliveryStatuses(body, tenantId);
         break;
       case 'messages': {
         const value = this.firstChangeValue(body);

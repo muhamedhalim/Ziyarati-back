@@ -57,6 +57,16 @@ export const QUEUE = {
    * job (tenantId null), lock-guarded — see IntegrationRecoveryProcessor.
    */
   INTEGRATION_MAINTENANCE: 'integration.maintenance',
+  /**
+   * Maintenance sweeps for campaigns (FND-020), mirroring
+   * INTEGRATION_MAINTENANCE's shape exactly: recovers dead-lettered
+   * recipients whose DLQ write itself was never confirmed (a Redis hiccup at
+   * the moment of enqueue) — separate from the hot CAMPAIGNS_PROCESS queue so
+   * a low-frequency system sweep never contends with its dispatch
+   * concurrency/rate-limiter settings. Repeatable, system job (tenantId
+   * null), lock-guarded — see CampaignDlqRecoveryProcessor.
+   */
+  CAMPAIGNS_MAINTENANCE: 'campaigns.maintenance',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -124,6 +134,8 @@ export const JOB = {
   INTEGRATION_INBOUND: 'integration.inbound',
   /** Repeatable maintenance sweep — see QUEUE.INTEGRATION_MAINTENANCE. */
   INTEGRATION_RECOVER_STALE: 'integration.recoverStale',
+  /** Repeatable maintenance sweep — see QUEUE.CAMPAIGNS_MAINTENANCE. */
+  CAMPAIGNS_RECOVER_DLQ: 'campaigns.recoverDlq',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

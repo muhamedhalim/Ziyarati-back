@@ -55,11 +55,46 @@ describe('WhatsappTemplateService', () => {
     await expect(service.setStatus(TENANT, 'tpl1', 'bogus')).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
   });
 
-  it('setStatus applies a valid status', async () => {
+  it('setStatus applies a valid, tenant-settable status', async () => {
     templates.findOne.mockResolvedValueOnce({ id: 'tpl1', status: 'DRAFT' });
     templates.save.mockImplementationOnce(async (t: any) => t);
-    const res = await service.setStatus(TENANT, 'tpl1', WHATSAPP_TEMPLATE_STATUS.APPROVED);
-    expect(res.status).toBe(WHATSAPP_TEMPLATE_STATUS.APPROVED);
+    // GAP-002 corrected this test: it used to assert APPROVED was settable
+    // here — that WAS the vulnerability (see the describe block below). Any
+    // OTHER status remains freely tenant-settable, e.g. DISABLED (hide a
+    // template from use without deleting it).
+    const res = await service.setStatus(TENANT, 'tpl1', WHATSAPP_TEMPLATE_STATUS.DISABLED);
+    expect(res.status).toBe(WHATSAPP_TEMPLATE_STATUS.DISABLED);
+  });
+
+  // ─────────────────── GAP-002: centralized transition guard ────────────────
+  describe('GAP-002 — `approved` is reachable only via the Meta provider callback', () => {
+    it('setStatus refuses to set APPROVED directly', async () => {
+      templates.findOne.mockResolvedValueOnce({ id: 'tpl1', status: 'PENDING_REVIEW' });
+      await expect(
+        service.setStatus(TENANT, 'tpl1', WHATSAPP_TEMPLATE_STATUS.APPROVED),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(templates.save).not.toHaveBeenCalled();
+    });
+
+    it('update() refuses to set APPROVED directly', async () => {
+      templates.findOne.mockResolvedValueOnce({ id: 'tpl1', status: 'PENDING_REVIEW' });
+      await expect(
+        service.update(TENANT, 'tpl1', { status: WHATSAPP_TEMPLATE_STATUS.APPROVED } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(templates.save).not.toHaveBeenCalled();
+    });
+
+    it('create() refuses to set APPROVED directly', async () => {
+      templates.findOne.mockResolvedValueOnce(null); // no duplicate
+      await expect(
+        service.create(TENANT, {
+          name: 'welcome',
+          language: 'en',
+          status: WHATSAPP_TEMPLATE_STATUS.APPROVED,
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(templates.save).not.toHaveBeenCalled();
+    });
   });
 
   it('getSendableTemplate requires APPROVED status', async () => {

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, ILike, IsNull, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, ILike, IsNull, Repository } from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
@@ -12,6 +12,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
@@ -39,6 +40,8 @@ export class CampaignService {
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
     private readonly usage: UsageService,
+    private readonly dataSource: DataSource,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   async create(
@@ -46,33 +49,56 @@ export class CampaignService {
     userId: string,
     dto: CreateCampaignDto,
   ): Promise<Campaign> {
-    // Quota: campaigns are a usage-limited resource (per-month). No-op under
-    // free mode / override; throws 422 when the plan's limit is reached.
-    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.CAMPAIGNS, 1);
-
+    // FND-031: also enforced at the route level (SubscriptionAccessGuard, for
+    // the HTTP path) — repeated here so a QUEUED/worker-triggered call into
+    // this same seam is covered too (background paths never go through a guard).
+    await this.subscriptions.assertBillableActionAllowed(tenantId);
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
     if (dto.whatsappAccountId) await this.assertAccount(tenantId, dto.whatsappAccountId);
 
-    const campaign = this.campaigns.create({
-      tenant: { id: tenantId } as Tenant,
-      type: dto.type,
-      name: dto.name,
-      template: dto.templateId
-        ? ({ id: dto.templateId } as WhatsappTemplate)
-        : undefined,
-      whatsapp_account: dto.whatsappAccountId
-        ? ({ id: dto.whatsappAccountId } as WhatsappAccount)
-        : undefined,
-      lifecycle: CampaignLifecycle.DRAFT,
-      segment: dto.segment,
-      scheduled_at: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
-      throttle_per_minute: dto.throttlePerMinute ?? 30,
-      daily_cap: dto.dailyCap,
-      monthly_cap: dto.monthlyCap,
-      created_by: { id: userId } as User,
+    // FND-034: the quota check-and-increment runs INSIDE the same transaction
+    // as the campaign insert, atomically (see UsageService.incrementIfWithinLimit)
+    // — a rollback (any failure below) undoes the increment too, and a second
+    // concurrent request blocks on the usage row's lock until this one commits.
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const admission = await this.usage.incrementIfWithinLimit(
+        tenantId,
+        USAGE_METRIC.CAMPAIGNS,
+        1,
+        manager,
+      );
+      if (!admission.applied) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: `Usage limit reached for ${USAGE_METRIC.CAMPAIGNS} (${admission.used}/${admission.limit})`,
+          publicContext: {
+            metric: USAGE_METRIC.CAMPAIGNS,
+            used: admission.used,
+            limit: admission.limit,
+            requested: 1,
+          },
+        });
+      }
+
+      const campaign = manager.getRepository(Campaign).create({
+        tenant: { id: tenantId } as Tenant,
+        type: dto.type,
+        name: dto.name,
+        template: dto.templateId
+          ? ({ id: dto.templateId } as WhatsappTemplate)
+          : undefined,
+        whatsapp_account: dto.whatsappAccountId
+          ? ({ id: dto.whatsappAccountId } as WhatsappAccount)
+          : undefined,
+        lifecycle: CampaignLifecycle.DRAFT,
+        segment: dto.segment,
+        scheduled_at: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+        throttle_per_minute: dto.throttlePerMinute ?? 30,
+        daily_cap: dto.dailyCap,
+        monthly_cap: dto.monthlyCap,
+        created_by: { id: userId } as User,
+      });
+      return manager.getRepository(Campaign).save(campaign);
     });
-    const saved = await this.campaigns.save(campaign);
-    await this.usage.increment(tenantId, USAGE_METRIC.CAMPAIGNS, 1);
     return this.findOne(tenantId, saved.id);
   }
 

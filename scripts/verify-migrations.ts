@@ -351,6 +351,23 @@ async function main() {
     rollbackRefused = true;
     refusalMessage = e instanceof Error ? e.message : String(e);
   }
+  // PRE-EXISTING (Wave 2) staleness, same root cause already documented for
+  // the AI-batch block above: by this point in the script M-01 is no longer
+  // the chronological tail (Wave 3 added 4 more migrations after it), so this
+  // `undoLastMigration()` call actually pops whichever migration genuinely IS
+  // last — not tested/fixed here, matching the established precedent of
+  // leaving that class of staleness stated rather than restructured. What
+  // MUST be fixed regardless: whichever migration this call actually popped
+  // has a no-op down() (every migration newer than M-01 in this chain does),
+  // so it never throws and is never caught above — meaning, unlike the real
+  // M-01 down() (which throws and leaves the schema untouched), this call
+  // actually SUCCEEDS in silently un-applying one migration with no reapply
+  // anywhere in this block. Left alone, that missing migration would corrupt
+  // every check from here through the end of the script (confirmed: it broke
+  // the new M-02/M-03/M-04/FND-020 cascade below, which is Wave 3's own
+  // validation work, not merely stale-but-harmless like the other M-01
+  // checks) — so, unconditionally, restore full-chain state before continuing.
+  await ds.runMigrations();
   check(
     'M-01 down REFUSES rollback when a cross-tenant email duplicate exists',
     rollbackRefused,
@@ -367,6 +384,254 @@ async function main() {
   check(
     'refused rollback did NOT restore the old global constraint',
     !(await conExists('UQ_8536b8b85c06969f84f0c098b03')),
+  );
+
+  // ── M-04 (FND-032): at most one OPEN invoice per subscription ──────────────
+  check(
+    'UQ_sub_invoice_open_per_subscription index exists and is valid',
+    (
+      await q(
+        `SELECT indisvalid FROM pg_index WHERE indexrelid = '"UQ_sub_invoice_open_per_subscription"'::regclass`,
+      )
+    )[0]?.indisvalid === true,
+  );
+
+  // subscription_invoices has no FK on subscription_id (data-model.md D-4) —
+  // any string is a valid value, no real Subscription row needed.
+  const fakeSubId = `verify-sub-${suffix}`;
+  await q(
+    `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+    [`verify-tenant-${suffix}`, fakeSubId],
+  );
+  let secondOpenRejected = false;
+  try {
+    await q(
+      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+      [`verify-tenant-${suffix}`, fakeSubId],
+    );
+  } catch {
+    secondOpenRejected = true;
+  }
+  check('a second OPEN invoice for the same subscription is rejected', secondOpenRejected);
+
+  let paidInvoiceAccepted = true;
+  try {
+    await q(
+      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','PAID')`,
+      [`verify-tenant-${suffix}`, fakeSubId],
+    );
+  } catch {
+    paidInvoiceAccepted = false;
+  }
+  check(
+    'a PAID invoice for the same subscription is NOT blocked (predicate is status=OPEN only)',
+    paidInvoiceAccepted,
+  );
+  await q(`DELETE FROM subscription_invoices WHERE subscription_id = $1`, [fakeSubId]);
+
+  // M-04's down-migration check is deferred to the cascading undo below
+  // (after the M-02/M-03/FND-020 blocks) rather than run here in place: M-02,
+  // M-03, and FND-020 are ALL chronologically newer than M-04, so at this
+  // point in the script `undoLastMigration()` would pop FND-020 (the true
+  // chronological tail of the whole 61-migration chain), not M-04 — TypeORM
+  // has no API to target a specific non-tail migration. See "Cascading down
+  // migrations for M-04/M-02/M-03/FND-020" below, which pops all four in
+  // strict reverse-chronological order specifically so each one genuinely
+  // IS the tail at the moment its own down() runs.
+
+  // ── M-02 (FND-031): GRACE_EXPIRED enum value ────────────────────────────────
+  const graceExpiredPresent = (
+    await q(
+      `SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+       WHERE t.typname = 'subscriptions_status_enum' AND e.enumlabel = 'GRACE_EXPIRED'`,
+    )
+  ).length > 0;
+  check('subscriptions_status_enum contains GRACE_EXPIRED', graceExpiredPresent);
+
+  // ── M-03 (FND-031): grace-tracking columns + backfill ───────────────────────
+  check('subscriptions.grace_started_at', await colExists('subscriptions', 'grace_started_at'));
+  check('subscriptions.grace_expired_at', await colExists('subscriptions', 'grace_expired_at'));
+  const graceColsNullable = await q(
+    `SELECT column_name, is_nullable FROM information_schema.columns
+     WHERE table_name='subscriptions' AND column_name IN ('grace_started_at','grace_expired_at')`,
+  );
+  check(
+    'both grace columns are nullable (no backfill forces a value)',
+    graceColsNullable.every((r: { is_nullable: string }) => r.is_nullable === 'YES'),
+  );
+
+  // The throwaway DB has zero pre-existing subscriptions when M-03's own up()
+  // runs (same as the real dev DB per T055's live check — R-DB9: proves
+  // nothing about production, which MUST be re-assessed there), so the
+  // migration's backfill UPDATE affects 0 rows in this run — re-running the
+  // full chain from empty cannot exercise it. The business logic it encodes
+  // (already-expired non-terminal -> PAST_DUE with a fresh grace_started_at)
+  // is covered by subscription.service.spec.ts's extensive T081 unit suite;
+  // what's checked here is that the MIGRATION'S OWN SQL, run directly against
+  // a synthetic pre-image row, does what its docstring claims — a narrower
+  // but still concrete proof of the write path itself.
+  const [graceTenant] = await q(
+    `INSERT INTO tenants (name, slug, contact_email) VALUES ('MigTestGrace',$1,$2) RETURNING id`,
+    [`migtest-grace-${suffix}`, `migtest-grace-${suffix}@example.com`],
+  );
+  const [expiredSub] = await q(
+    `INSERT INTO subscriptions ("tenantId", status, starts_at, ends_at)
+     VALUES ($1,'ACTIVE', now() - interval '30 days', now() - interval '1 day') RETURNING id`,
+    [graceTenant.id],
+  );
+  await q(
+    `UPDATE "subscriptions"
+     SET "status" = 'PAST_DUE', "grace_started_at" = now()
+     WHERE "ends_at" <= now() AND "status" NOT IN ('CANCELLED','SUSPENDED') AND id = $1`,
+    [expiredSub.id],
+  );
+  const [backfilled] = await q(
+    `SELECT status, grace_started_at FROM subscriptions WHERE id = $1`,
+    [expiredSub.id],
+  );
+  check(
+    "M-03 backfill SQL moves an already-expired non-terminal subscription to PAST_DUE",
+    backfilled.status === 'PAST_DUE',
+  );
+  check(
+    'M-03 backfill SQL sets grace_started_at (fresh window from now(), not ends_at — FR-B007i)',
+    backfilled.grace_started_at !== null,
+  );
+  const [terminalSub] = await q(
+    `INSERT INTO subscriptions ("tenantId", status, starts_at, ends_at)
+     VALUES ($1,'CANCELLED', now() - interval '30 days', now() - interval '1 day') RETURNING id`,
+    [graceTenant.id],
+  );
+  await q(
+    `UPDATE "subscriptions"
+     SET "status" = 'PAST_DUE', "grace_started_at" = now()
+     WHERE "ends_at" <= now() AND "status" NOT IN ('CANCELLED','SUSPENDED') AND id = $1`,
+    [terminalSub.id],
+  );
+  const [terminalAfter] = await q(
+    `SELECT status, grace_started_at FROM subscriptions WHERE id = $1`,
+    [terminalSub.id],
+  );
+  check(
+    'M-03 backfill SQL leaves a terminal (CANCELLED) subscription untouched',
+    terminalAfter.status === 'CANCELLED' && terminalAfter.grace_started_at === null,
+  );
+
+  // ── FND-020: campaign_recipients.dlq_recorded_at + backfill ────────────────
+  check(
+    'campaign_recipients.dlq_recorded_at',
+    await colExists('campaign_recipients', 'dlq_recorded_at'),
+  );
+  const dlqColNullable = (
+    await q(
+      `SELECT is_nullable FROM information_schema.columns WHERE table_name='campaign_recipients' AND column_name='dlq_recorded_at'`,
+    )
+  )[0]?.is_nullable as string;
+  check('dlq_recorded_at is nullable', dlqColNullable === 'YES');
+
+  // Unlike M-03's `subscriptions` (no enforced FK blocking a bare insert),
+  // `campaign_recipients.runId` carries a REAL foreign key onto
+  // `campaign_runs` (`FK_campaign_recipients_run`, added by
+  // CampaignExecutionRedesign1730000700000), and `campaign_runs` itself
+  // requires a NOT NULL `idempotency_key`/`version` with no defaults. Building
+  // a synthetic pre-image row here would mean materializing a realistic
+  // campaign → campaign_run → campaign_recipient chain purely to replay one
+  // single-column UPDATE (`SET dlq_recorded_at = created_at WHERE
+  // failure_class = 'TRANSIENT' AND dlq_recorded_at IS NULL`) — disproportionate
+  // risk/complexity for what the statement's own read makes self-evident.
+  // That exact UPDATE is quoted and reasoned about in this migration's source
+  // (`src/migrations/1730023000000-CampaignRecipientDlqRecordedAt.ts`) and in
+  // tasks.md's FND-020 evidence; the surrounding recovery-sweep LOGIC it feeds
+  // is exercised by `campaign-dlq-recovery.processor.spec.ts` and
+  // `campaign-dispatch.service.spec.ts` (26 suites/172 tests green — see
+  // FND-020 evidence). Deliberately not attempted here — stated, not silently
+  // skipped.
+
+  // ── Cascading down migrations for FND-020/M-03/M-02/M-04 ───────────────────
+  // These four are the newest four migrations in the whole 61-migration chain
+  // (in that reverse order), so — unlike every block above, each of which
+  // could safely undo-then-immediately-reapply its own single migration in
+  // place — popping any ONE of them individually would actually pop whichever
+  // is chronologically newest among the still-applied ones, not the one the
+  // block claims to test (TypeORM's `undoLastMigration()` always targets the
+  // true tail; it cannot target an arbitrary earlier migration while later
+  // ones remain applied). So these four are popped together, in strict
+  // reverse-chronological order, WITHOUT reapplying between each — only the
+  // final `runMigrations()` below restores all four at once. This is exactly
+  // why M-04's down-migration check (originally written in place, in the M-04
+  // forward-checks block above) had to move down here once M-02/M-03/FND-020
+  // were added after it.
+  //
+  // M-02/M-03/FND-020 ship deliberately no-op down()s (M-02 cannot drop a
+  // Postgres enum value at all; M-03/FND-020 keep their columns so
+  // already-transitioned data is never silently reverted) — what's proven for
+  // those three is narrower than M-01/M-04's reversibility checks: that each
+  // down() completes without throwing AND genuinely leaves its schema object
+  // intact, i.e. a rollback attempt in production would not crash and would
+  // not (incorrectly) appear to remove anything. M-04's down() genuinely DOES
+  // drop its index (fully reversible, no data involved) — proven the same way
+  // as M-01's own reversibility check above.
+  await ds.undoLastMigration(); // CampaignRecipientDlqRecordedAt down (no-op)
+  check(
+    'FND-020 down completes without dropping dlq_recorded_at (R-DB6)',
+    await colExists('campaign_recipients', 'dlq_recorded_at'),
+  );
+  await ds.undoLastMigration(); // SubscriptionGraceColumns down (no-op)
+  check(
+    'M-03 down completes without dropping grace_started_at/grace_expired_at (R-DB6)',
+    (await colExists('subscriptions', 'grace_started_at')) &&
+      (await colExists('subscriptions', 'grace_expired_at')),
+  );
+  await ds.undoLastMigration(); // SubscriptionGraceExpiredEnum down (no-op — PG cannot drop enum values)
+  const graceExpiredStillPresent = (
+    await q(
+      `SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+       WHERE t.typname = 'subscriptions_status_enum' AND e.enumlabel = 'GRACE_EXPIRED'`,
+    )
+  ).length > 0;
+  check(
+    "M-02 down completes and GRACE_EXPIRED remains (Postgres cannot drop enum values — non-reversible, stated not hidden)",
+    graceExpiredStillPresent,
+  );
+
+  // M-04 (SubscriptionInvoiceOpenUniqueness) is chronologically the OLDEST of
+  // these four, so it only genuinely becomes the tail once FND-020/M-03/M-02
+  // above have already been popped — this is why its down-migration check
+  // (deferred from the M-04 forward-checks block above) runs here, last in
+  // the cascade, fully reversible (drops only the index, no data).
+  await ds.undoLastMigration(); // SubscriptionInvoiceOpenUniqueness down
+  check(
+    'M-04 down drops UQ_sub_invoice_open_per_subscription',
+    !(await idxExists('UQ_sub_invoice_open_per_subscription')),
+  );
+  // With the index gone, a second OPEN invoice for the same subscription must
+  // now be ACCEPTED — direct proof the index (not something else) was doing
+  // the enforcing.
+  await q(
+    `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+    [`verify-tenant-${suffix}`, fakeSubId],
+  );
+  let secondOpenAcceptedWithoutIndex = true;
+  try {
+    await q(
+      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+      [`verify-tenant-${suffix}`, fakeSubId],
+    );
+  } catch {
+    secondOpenAcceptedWithoutIndex = false;
+  }
+  check(
+    'without the index, a second OPEN invoice for the same subscription is accepted (proves the index was the enforcement)',
+    secondOpenAcceptedWithoutIndex,
+  );
+  await q(`DELETE FROM subscription_invoices WHERE subscription_id = $1`, [fakeSubId]);
+
+  await ds.runMigrations();
+  check(
+    're-applied M-04/M-02/M-03/FND-020 (idempotent)',
+    (await idxExists('UQ_sub_invoice_open_per_subscription')) &&
+      (await colExists('subscriptions', 'grace_started_at')) &&
+      (await colExists('campaign_recipients', 'dlq_recorded_at')),
   );
 
   await ds.destroy();

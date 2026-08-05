@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { CampaignRun } from '../../entities/Campaigns/CampaignRun';
@@ -15,11 +15,30 @@ import {
 import { CampaignDeliveryFactory } from './delivery/campaign-delivery.factory';
 import { CampaignDeliveryResult } from './delivery/campaign-delivery.provider.interface';
 import { TenantRateLimiterService } from '../../queue/tenant-rate-limiter.service';
+import { QueueService } from '../../queue/queue.service';
+import { JOB, QUEUE } from '../../queue/queue.constants';
 import { CAMPAIGN_CHANNEL } from './campaign.constants';
 import {
   PermanentDispatchError,
   TransientDispatchError,
 } from './dispatch/dispatch-errors';
+
+/** Caller-supplied context for recording a dead-lettered recipient's DLQ entry (FND-020). */
+export interface DlqRecoveryContext {
+  tenantId: string | null;
+  correlationId?: string;
+  attemptsMade?: number;
+}
+
+/**
+ * How long a dead-lettered recipient must sit with `dlq_recorded_at IS NULL`
+ * before the recovery sweep re-attempts its DLQ write — comfortably above
+ * how long the LIVE path's own enqueue takes, so the sweep never races (and
+ * duplicate-enqueues, though harmlessly, against) an attempt still in flight.
+ */
+const DLQ_RECOVERY_GRACE_MS = 60_000;
+/** Bounds one sweep pass — a system-wide sweep must never be an unbounded scan. */
+const DLQ_RECOVERY_BATCH_SIZE = 500;
 
 export type DispatchOutcome =
   | { status: 'dispatched'; providerRef: string }
@@ -61,6 +80,7 @@ export class CampaignDispatchService {
     private readonly campaigns: Repository<Campaign>,
     private readonly delivery: CampaignDeliveryFactory,
     private readonly rateLimiter: TenantRateLimiterService,
+    private readonly queue: QueueService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -212,14 +232,110 @@ export class CampaignDispatchService {
    * when a job is routed to the DLQ — WITHOUT this the run can never complete
    * (its counters would never sum to total_recipients). Idempotent via the
    * claimable-state guard so a re-fire doesn't double-count.
+   *
+   * FND-020: when `dlqContext` is supplied, this ALSO attempts the DLQ write
+   * itself and stamps `dlq_recorded_at` on success — folding what used to be
+   * two independent, unlinked operations (this reconcile, and a separate
+   * `queue.enqueueCampaignDlq` call in the processor's `onFailed` handler)
+   * into one durable-then-best-effort sequence: the Postgres reconcile always
+   * lands first (so the run can always complete regardless of what happens
+   * next), and the queue write's success is now RECORDED rather than merely
+   * attempted-and-forgotten, which is what makes `recoverDeadLetters` below
+   * possible at all. A caller with no DLQ context (there is currently none —
+   * every call site has one) simply skips the queue write.
    */
   async markDeadLettered(
     runId: string,
     recipientId: string,
     reason: string,
+    dlqContext?: DlqRecoveryContext,
   ): Promise<void> {
     await this.markTerminalFailed(runId, recipientId, FailureClass.TRANSIENT, reason);
     await this.checkCompletion(runId);
+    if (dlqContext) {
+      await this.recordDlqEntry(recipientId, runId, reason, dlqContext);
+    }
+  }
+
+  /**
+   * Attempts the DLQ write for one recipient; records success via
+   * `dlq_recorded_at`. Never throws — a queue outage here must not crash the
+   * live dispatch path (matching the processor's previous `.catch()`) nor
+   * abort the recovery sweep's loop over the rest of its batch.
+   *
+   * `originalJobId: recipientId` (rather than the ephemeral BullMQ job id the
+   * processor used to pass) is deliberate: it is a STABLE identifier both the
+   * live path and every future recovery attempt can reconstruct identically,
+   * which is what makes the DLQ enqueue's deterministic jobId
+   * (`dlq-${sourceQueue}-${originalJobId}`, see QueueService.enqueueCampaignDlq)
+   * safe to retry any number of times — a redundant enqueue for an
+   * already-confirmed entry collapses onto the same BullMQ job, a harmless no-op.
+   */
+  private async recordDlqEntry(
+    recipientId: string,
+    runId: string,
+    reason: string,
+    ctx: DlqRecoveryContext,
+  ): Promise<boolean> {
+    try {
+      await this.queue.enqueueCampaignDlq({
+        tenantId: ctx.tenantId,
+        correlationId: ctx.correlationId,
+        sourceQueue: QUEUE.CAMPAIGNS_PROCESS,
+        sourceJobName: JOB.CAMPAIGNS_PROCESS_RECIPIENT,
+        originalJobId: recipientId,
+        originalData: { tenantId: ctx.tenantId, runId, recipientId },
+        failedReason: reason,
+        attemptsMade: ctx.attemptsMade ?? 0,
+        diedAt: new Date().toISOString(),
+      });
+      await this.recipients.update(recipientId, { dlq_recorded_at: new Date() });
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `DLQ enqueue failed for recipient=${recipientId}: ${(err as Error)?.message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Recovery sweep (FND-020) — mirrors OutboxRelayService.runRecovery()'s
+   * concept (a periodic sweep that finds work stuck in an unconfirmed
+   * intermediate state and safely retries it), adapted to what's actually
+   * durable here: `campaign_recipients` rows already ARE the outbox — a row
+   * with `failure_class = TRANSIENT` (dead-lettered) and
+   * `dlq_recorded_at IS NULL` (DLQ write never confirmed) is exactly a
+   * "stuck" row. `DLQ_RECOVERY_GRACE_MS` avoids racing the live path's own
+   * first attempt; batch-bounded so a system-wide sweep is never an
+   * unbounded scan.
+   */
+  async recoverDeadLetters(): Promise<{ recovered: number; attempted: number }> {
+    const cutoff = new Date(Date.now() - DLQ_RECOVERY_GRACE_MS);
+    const stranded = await this.recipients.find({
+      where: {
+        failure_class: FailureClass.TRANSIENT,
+        dlq_recorded_at: IsNull(),
+        created_at: LessThan(cutoff),
+      },
+      relations: { run: { tenant: true } },
+      take: DLQ_RECOVERY_BATCH_SIZE,
+    });
+
+    let recovered = 0;
+    for (const r of stranded) {
+      const ok = await this.recordDlqEntry(r.id, r.run.id, r.failure_reason ?? 'exhausted', {
+        tenantId: r.run.tenant?.id ?? null,
+        attemptsMade: r.attempts,
+      });
+      if (ok) recovered++;
+    }
+    if (stranded.length > 0) {
+      this.logger.log(
+        `dead-letter recovery sweep: ${recovered}/${stranded.length} DLQ write(s) recovered`,
+      );
+    }
+    return { recovered, attempted: stranded.length };
   }
 
   /**

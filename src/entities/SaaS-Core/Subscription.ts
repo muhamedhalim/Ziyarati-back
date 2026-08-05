@@ -40,6 +40,14 @@ export class Subscription {
   @Column({ default: true })
   auto_renew!: boolean;
 
+  /** FND-031/M-03: when PAST_DUE was entered — the grace boundary is this plus the configured duration. NULL = never entered grace (still active, or terminal). */
+  @Column({ type: 'timestamptz', nullable: true })
+  grace_started_at?: Date | null;
+
+  /** FND-031/M-03: when GRACE_EXPIRED was entered — makes the transition auditable and verifiable without recomputation. */
+  @Column({ type: 'timestamptz', nullable: true })
+  grace_expired_at?: Date | null;
+
   @CreateDateColumn()
   created_at!: Date;
 

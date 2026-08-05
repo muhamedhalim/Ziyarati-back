@@ -13,6 +13,8 @@ export const VERIFICATION_AUDIT_ACTIONS = [
   'APPROVED',
   'REJECTED',
   'SUBMITTED',
+  /** GAP-001 — a review attempt on an already-decided document was refused. */
+  'RE_DECISION_REFUSED',
 ] as const;
 
 export type VerificationAuditAction =

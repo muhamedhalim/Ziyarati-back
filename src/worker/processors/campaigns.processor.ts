@@ -7,7 +7,6 @@ import {
   dispatchLimiter,
   EXTENDED_LOCK_DURATION_MS,
   expoJitterBackoff,
-  JOB,
   QUEUE,
   workerConcurrency,
 } from '../../queue/queue.constants';
@@ -20,7 +19,6 @@ import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
-import { QueueService } from '../../queue/queue.service';
 import { CampaignFanoutService } from '../../modules/campaigns/campaign-fanout.service';
 import { CampaignDispatchService } from '../../modules/campaigns/campaign-dispatch.service';
 
@@ -114,7 +112,6 @@ export class CampaignDispatchProcessor extends WorkerHost {
 
   constructor(
     private readonly dispatch: CampaignDispatchService,
-    private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
     private readonly authz: WorkerAuthorizationService,
   ) {
@@ -161,36 +158,29 @@ export class CampaignDispatchProcessor extends WorkerHost {
         `(attempt ${job?.attemptsMade}, permanent=${permanent}): ${err?.message}`,
     );
     if (exhausted && !permanent) {
-      // Reconcile the run FIRST: mark the recipient terminally FAILED + advance
-      // counters, so the run can complete even though this one is dead-lettered.
-      // Without this the run would hang in PROCESSING forever.
+      // Reconcile the run FIRST (recipient → terminal FAILED, run counters
+      // advanced — so the run can complete even though this one is
+      // dead-lettered), THEN attempt the DLQ write itself — both folded into
+      // one call (FND-020) so a failed DLQ write is recorded as such
+      // (`dlq_recorded_at` stays null) rather than merely logged-and-lost;
+      // `CampaignDispatchService.recoverDeadLetters()`'s periodic sweep picks
+      // up anything that doesn't land here.
       if (data?.runId && data?.recipientId) {
         await this.dispatch
           .markDeadLettered(
             data.runId,
             data.recipientId,
             err?.message ?? 'exhausted',
+            {
+              tenantId: data?.tenantId ?? null,
+              correlationId: data?.correlationId,
+              attemptsMade: job?.attemptsMade ?? 0,
+            },
           )
           .catch((e) =>
             this.logger.error(`DLQ reconcile failed: ${(e as Error)?.message}`),
           );
       }
-      // Poison transient failure → park in the DLQ for admin replay.
-      await this.queue
-        .enqueueCampaignDlq({
-          tenantId: data?.tenantId ?? null,
-          correlationId: data?.correlationId,
-          sourceQueue: QUEUE.CAMPAIGNS_PROCESS,
-          sourceJobName: JOB.CAMPAIGNS_PROCESS_RECIPIENT,
-          originalJobId: String(job?.id ?? ''),
-          originalData: data as unknown as Record<string, unknown>,
-          failedReason: err?.message ?? 'unknown',
-          attemptsMade: job?.attemptsMade ?? 0,
-          diedAt: new Date().toISOString(),
-        })
-        .catch((e) =>
-          this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
-        );
     }
   }
 }

@@ -142,6 +142,11 @@ export class AiOrchestratorService {
       retrievedChunks: result.retrievedChunks,
       streamed: result.streamed,
       lastTool: result.lastTool,
+      // FND-023 — the mirrored BOT reply's timeline-message id (or null),
+      // passed straight through so a channel bridge (e.g.
+      // WhatsappInboundAiService.sendReply) can attach the provider message
+      // id once its own send completes.
+      mirroredMessageId: result.mirroredMessageId,
       handedOver: false as const,
     };
   }
@@ -163,6 +168,9 @@ export class AiOrchestratorService {
       retrievedChunks: 0,
       streamed: false,
       lastTool: undefined,
+      // No bot reply is sent when handed over (see class docblock) — nothing
+      // to attach a provider id to.
+      mirroredMessageId: null,
       handedOver: true as const,
     };
   }

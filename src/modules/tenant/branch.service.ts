@@ -12,6 +12,26 @@ import { UpdateBranchDto } from './dto/update-branch.dto';
 import { AppError, ErrorCode } from '../../common/errors';
 import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
+import { AppRedisService } from '../../queue/app-redis.service';
+import { PERMISSION } from '../../rbac/rbac.constants';
+
+/** Caller identity for the branches.update_own ownership check (FND-017). */
+export interface BranchCaller {
+  id: string;
+  permissions: string[];
+}
+
+/**
+ * Bounds staleness of the ABAC branch-membership cache below (FND-017): a
+ * staff member reassigned to a different branch may still be able to update
+ * their PREVIOUS branch, or be refused their NEW one, for up to this long.
+ * TTL-only (no explicit invalidation on `StaffService.assignBranches`) is a
+ * deliberate trade-off — this is an authorization-adjacent read, not a hard
+ * security boundary (tenant isolation and possession of `branches.update`/
+ * `_own` are still fully enforced regardless of staleness), so a short TTL is
+ * ample without building a write-side invalidation pipeline for one query.
+ */
+const BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS = 60;
 
 /**
  * Branches are a child aggregate of Tenant. EVERY method is scoped to a
@@ -27,6 +47,7 @@ export class BranchService {
     @InjectRepository(Appointment)
     private readonly appointments: Repository<Appointment>,
     private readonly usage: UsageService,
+    private readonly redis: AppRedisService,
   ) {}
 
   async create(tenantId: string, dto: CreateBranchDto): Promise<Branch> {
@@ -72,8 +93,17 @@ export class BranchService {
     tenantId: string,
     id: string,
     dto: UpdateBranchDto,
+    caller?: BranchCaller,
   ): Promise<Branch> {
     const branch = await this.findOne(tenantId, id);
+    // FND-017 — a caller holding only branches.update_own (not the
+    // tenant-wide branches.update) may update ONLY a branch they're
+    // assigned to. Mirrors the APPOINTMENTS_READ_OWN pattern: the guard
+    // only checks flat possession of either slug, so the actual ownership
+    // narrowing happens here in the service.
+    if (caller && !caller.permissions.includes(PERMISSION.BRANCHES_UPDATE)) {
+      await this.assertOwnBranch(tenantId, id, caller.id);
+    }
     Object.assign(branch, {
       name: dto.name ?? branch.name,
       address: dto.address ?? branch.address,
@@ -133,5 +163,53 @@ export class BranchService {
     }
 
     await this.branches.softRemove(branch);
+  }
+
+  // ─────────────────────── FND-017: branch ABAC ──────────────────────── //
+
+  private async assertOwnBranch(
+    tenantId: string,
+    branchId: string,
+    userId: string,
+  ): Promise<void> {
+    const ownBranchIds = await this.resolveOwnBranchIds(tenantId, userId);
+    if (!ownBranchIds.includes(branchId)) {
+      throw new AppError(ErrorCode.PERMISSION_DENIED, {
+        message: 'You can only update a branch you are assigned to',
+      });
+    }
+  }
+
+  /**
+   * The branch ids `userId` is assigned to in this tenant (via `branch_users`),
+   * Redis-cached with a tenant-qualified key (PR-006) so this ABAC check adds
+   * at most one scoped read per `BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS` window
+   * rather than one per request. Fails open to a real DB read on any cache
+   * error (`AppRedisService`'s own client already fails open at the connection
+   * level — this call site never lets a Redis hiccup turn into a 500).
+   */
+  private async resolveOwnBranchIds(
+    tenantId: string,
+    userId: string,
+  ): Promise<string[]> {
+    const cacheKey = `branch-membership:${tenantId}:${userId}`;
+    const cached = await this.redis.application.get(cacheKey).catch(() => null);
+    if (cached !== null) {
+      try {
+        return JSON.parse(cached) as string[];
+      } catch {
+        // Corrupt cache entry — fall through to a real read below.
+      }
+    }
+
+    const rows = await this.branchUsers.find({
+      where: { tenant: { id: tenantId }, user: { id: userId } },
+      relations: { branch: true },
+    });
+    const branchIds = rows.map((r) => r.branch.id);
+    await this.redis.application
+      .set(cacheKey, JSON.stringify(branchIds), 'EX', BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS)
+      .catch(() => undefined);
+    return branchIds;
   }
 }

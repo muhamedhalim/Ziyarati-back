@@ -172,8 +172,12 @@ duplicate returns 409. An optional account is validated against the tenant.
     description: `
 **Protected — requires \`whatsapp.templates.manage\`. Clinic must be active.**
 
-Tracks the approval lifecycle: \`draft\` → \`pending_review\` → \`approved\` /
-\`rejected\`, or \`disabled\`. Only \`approved\` templates can be sent.
+Tracks the approval lifecycle: \`draft\` → \`pending_review\` → \`rejected\` or
+\`disabled\`. Only \`approved\` templates can be sent.
+
+**\`approved\` cannot be set here (GAP-002).** It is reachable ONLY through
+WhatsApp/Meta's own review callback — never via this endpoint, regardless of
+caller or permission. Attempting to set it is refused with 403.
 
 **Who can call this:** Owner, Manager (\`whatsapp.templates.manage\`).
     `.trim(),
@@ -183,13 +187,22 @@ Tracks the approval lifecycle: \`draft\` → \`pending_review\` → \`approved\`
     schema: {
       type: 'object',
       required: ['status'],
-      properties: { status: { type: 'string', enum: WHATSAPP_TEMPLATE_STATUSES as unknown as string[] } },
+      properties: {
+        status: {
+          type: 'string',
+          enum: WHATSAPP_TEMPLATE_STATUSES as unknown as string[],
+          description: '`approved` is rejected — see the operation description.',
+        },
+      },
     },
   })
   @ApiOkResponse({ description: 'Status updated.', schema: S_TEMPLATE })
   @ApiBadRequestResponse({ description: 'Invalid status value.', schema: S_ERROR })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.templates.manage`, the clinic is inactive, or `status` was `approved` (GAP-002 — Meta-callback-only).',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Patch(':id/status')
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)

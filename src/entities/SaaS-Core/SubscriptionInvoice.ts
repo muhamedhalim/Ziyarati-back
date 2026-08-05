@@ -1,7 +1,16 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, Index } from 'typeorm';
 import { InvoiceStatus } from '../enums';
 
+// FND-032/M-04: at most one OPEN invoice per subscription at a time (a
+// closed/paid invoice does NOT block a later one — the predicate scopes to
+// status='OPEN' only). See migration SubscriptionInvoiceOpenUniqueness for
+// the full rationale (no period column exists on this table — data-model.md
+// D-4 — so this is deliberately not "tenant + period").
 @Entity('subscription_invoices')
+@Index('UQ_sub_invoice_open_per_subscription', ['subscription_id'], {
+  unique: true,
+  where: `"status" = 'OPEN'`,
+})
 export class SubscriptionInvoice {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

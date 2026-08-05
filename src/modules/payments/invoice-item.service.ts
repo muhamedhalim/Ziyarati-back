@@ -57,7 +57,16 @@ export class InvoiceItemService {
     });
   }
 
-  /** Recomputes the parent invoice total from its items (within the caller's tx). */
+  /**
+   * Recomputes the parent invoice total from its items (within the caller's
+   * tx). FND-029/FR-B005: sums in INTEGER MINOR UNITS (cents), not major-unit
+   * floats — each `total_price` is converted to an exact integer cent count
+   * (`Math.round`, matching how it was itself produced — see `addItems`)
+   * before summing, so the total is exact by construction rather than
+   * relying on `round2` to mask any accumulated float representation error
+   * (e.g. `81.45 + 134.27 === 215.72000000000003`, not `215.72`, in raw JS
+   * float arithmetic).
+   */
   async recalcTotal(
     tenantId: string,
     invoiceId: string,
@@ -66,7 +75,11 @@ export class InvoiceItemService {
     const items = await manager.getRepository(InvoiceItem).find({
       where: { invoice: { id: invoiceId }, tenant: { id: tenantId } },
     });
-    const total = round2(items.reduce((sum, it) => sum + Number(it.total_price), 0));
+    const totalCents = items.reduce(
+      (sum, it) => sum + Math.round(Number(it.total_price) * 100),
+      0,
+    );
+    const total = totalCents / 100;
     await manager
       .getRepository(Invoice)
       .update({ id: invoiceId }, { total_amount: total });

@@ -16,6 +16,11 @@ export default new DataSource({
   // See typeorm.config.ts for why this excludes *.spec — same loader, same gotcha.
   entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
   migrations: [join(__dirname, '..', 'migrations', '!(*.spec).{ts,js}')],
+  // Matches run-migrations-with-lock.ts and scripts/verify-migrations.ts:
+  // TypeORM's default ('all') forbids any individual migration from
+  // overriding `transaction`, which the CONCURRENTLY-based migrations need
+  // (CREATE INDEX CONCURRENTLY cannot run inside a transaction block).
+  migrationsTransactionMode: 'each',
   synchronize: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });

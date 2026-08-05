@@ -302,6 +302,14 @@ export class TenantVerificationService {
    * Super-admin: approve or reject a single document (audited). Granular review
    * remains available for requesting a re-upload of a specific document, but
    * clinic approval is gated separately by {@link assertReadyForApproval}.
+   *
+   * GAP-001 — only a `PENDING` document can be decided. A document that was
+   * already `APPROVED`/`REJECTED` refuses a second decision (409) rather than
+   * silently overwriting the first one — re-deciding is never a distinguishable
+   * no-op vs a real change from the caller's point of view, so a refusal is
+   * the honest response. The normal path for "change your mind" is: reject →
+   * the tenant re-submits via `submit()` (which resets to a fresh `PENDING`
+   * row) → review again. The refused attempt is still audited.
    */
   async review(
     documentId: string,
@@ -315,6 +323,24 @@ export class TenantVerificationService {
     if (!doc) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'Verification document not found',
+      });
+    }
+
+    if (doc.status !== VerificationDocStatus.PENDING) {
+      await this.audit.record({
+        tenantId: doc.tenant.id,
+        action: 'RE_DECISION_REFUSED',
+        documentId: doc.id,
+        docType: doc.doc_type,
+        actor: reviewer,
+        metadata: {
+          currentStatus: doc.status,
+          attemptedStatus: dto.status,
+          reviewNote: dto.reviewNote ?? null,
+        },
+      });
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: `This document was already ${doc.status.toLowerCase()} and cannot be re-decided.`,
       });
     }
 

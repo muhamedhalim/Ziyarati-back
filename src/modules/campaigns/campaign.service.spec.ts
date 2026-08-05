@@ -1,11 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 
 import { CampaignService } from './campaign.service';
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { UsageService } from '../subscription-billing/usage.service';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { CampaignLifecycle } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
@@ -18,7 +20,9 @@ describe('CampaignService', () => {
   let campaigns: MockRepository;
   let templates: MockRepository;
   let accounts: MockRepository;
-  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock };
+  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock; incrementIfWithinLimit: jest.Mock };
+  let subscriptions: { assertBillableActionAllowed: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     campaigns = createMockRepository();
@@ -29,6 +33,16 @@ describe('CampaignService', () => {
     usage = {
       assertWithinLimit: jest.fn().mockResolvedValue(undefined),
       increment: jest.fn().mockResolvedValue(undefined),
+      incrementIfWithinLimit: jest.fn().mockResolvedValue({ applied: true, used: 0, limit: 100 }),
+    };
+    subscriptions = { assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined) };
+    // FND-034: CampaignService.create now runs inside a transaction — the
+    // fake manager routes getRepository(Campaign) back to the SAME mock repo
+    // so existing assertions on campaigns.create/save keep working unchanged.
+    dataSource = {
+      transaction: jest.fn(async (fn: (manager: unknown) => Promise<unknown>) =>
+        fn({ getRepository: () => campaigns }),
+      ),
     };
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -37,6 +51,8 @@ describe('CampaignService', () => {
         { provide: getRepositoryToken(WhatsappTemplate), useValue: templates },
         { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
         { provide: UsageService, useValue: usage },
+        { provide: DataSource, useValue: dataSource },
+        { provide: SubscriptionService, useValue: subscriptions },
       ],
     }).compile();
     service = moduleRef.get(CampaignService);
@@ -45,14 +61,41 @@ describe('CampaignService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('create', () => {
-    it('enforces quota, creates a DRAFT, and counts usage', async () => {
+    it('enforces quota atomically (inside the transaction) and creates a DRAFT', async () => {
       campaigns.save.mockResolvedValueOnce({ id: 'camp1' });
       campaigns.findOne.mockResolvedValueOnce({ id: 'camp1' });
       await service.create(TENANT, USER, { name: 'Promo', templateId: 'tpl1' } as any);
-      expect(usage.assertWithinLimit).toHaveBeenCalledWith(TENANT, 'CAMPAIGNS', 1);
-      expect(usage.increment).toHaveBeenCalledWith(TENANT, 'CAMPAIGNS', 1);
+      expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(
+        TENANT,
+        'CAMPAIGNS',
+        1,
+        expect.anything(), // the transaction's manager
+      );
       const created = campaigns.create.mock.calls[0][0];
       expect(created.lifecycle).toBe(CampaignLifecycle.DRAFT);
+    });
+
+    // FND-034 regression guard: quota exhaustion refuses the create, and — since
+    // the check now runs inside the same transaction as the insert — nothing
+    // is created.
+    it('refuses to create when the quota is exhausted', async () => {
+      usage.incrementIfWithinLimit.mockResolvedValueOnce({ applied: false, used: 100, limit: 100 });
+      await expect(
+        service.create(TENANT, USER, { name: 'Promo', templateId: 'tpl1' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(campaigns.save).not.toHaveBeenCalled();
+    });
+
+    // FND-031/T082 — repeated at this shared seam so a queued/worker call is
+    // covered too, not just the HTTP path (SubscriptionAccessGuard).
+    it('refuses to create once grace-expired', async () => {
+      subscriptions.assertBillableActionAllowed.mockRejectedValueOnce(
+        Object.assign(new Error('grace expired'), { code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED }),
+      );
+      await expect(service.create(TENANT, USER, { name: 'x', templateId: 'tpl1' } as any)).rejects.toMatchObject({
+        code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
+      });
+      expect(campaigns.save).not.toHaveBeenCalled();
     });
 
     it('rejects a template not in the tenant with 422', async () => {

@@ -10,6 +10,7 @@ import { validate } from './config/env.validation';
 import { Tenant } from './entities/SaaS-Core/Tenant';
 import { Subscription } from './entities/SaaS-Core/Subscription';
 import { OutboxJob } from './entities/Campaigns/OutboxJob';
+import { User } from './entities/Auth&RBAC/User';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { CryptoModule } from './common/crypto/crypto.module';
@@ -46,6 +47,7 @@ import {
   CampaignFanoutProcessor,
   CampaignDispatchProcessor,
 } from './worker/processors/campaigns.processor';
+import { CampaignDlqRecoveryProcessor } from './worker/processors/campaign-dlq-recovery.processor';
 import { AiProcessor } from './worker/processors/ai.processor';
 import { AnalyticsProcessor } from './worker/processors/analytics.processor';
 import { SettlementsProcessor } from './worker/processors/settlements.processor';
@@ -144,6 +146,7 @@ const CRITICAL_PROCESSORS = [
   WhatsappMediaProcessor,
   CampaignLaunchProcessor,
   CampaignFanoutProcessor,
+  CampaignDlqRecoveryProcessor,
   AiProcessor,
   AnalyticsProcessor,
   SettlementsProcessor,
@@ -207,7 +210,7 @@ const WORKER_PROVIDERS =
       inject: [ConfigService],
       useFactory: (config: ConfigService) => typeOrmFactory(config, 'worker'),
     }),
-    TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob]),
+    TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob, User]),
     TenantContextModule,
     // Workers decrypt tenant provider credentials on the send path, so the
     // worker root needs this exactly as much as the API root does.

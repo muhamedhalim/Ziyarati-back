@@ -55,6 +55,14 @@ export enum ErrorCode {
   INVALID_REQUEST_STATUS = 'INVALID_REQUEST_STATUS',
   REQUEST_NOT_QUOTED = 'REQUEST_NOT_QUOTED',
   QUOTE_EXPIRED = 'QUOTE_EXPIRED',
+
+  // ── Subscription grace lifecycle (FND-031) ────────────────────────────
+  /** The subscription's grace window has elapsed with no settlement — new billable/usage-increasing actions are refused; read access is unaffected. */
+  SUBSCRIPTION_GRACE_EXPIRED = 'SUBSCRIPTION_GRACE_EXPIRED',
+
+  // ── Services (FND-012) ─────────────────────────────────────────────────
+  /** A VARIABLE-priced service was selected for booking — no booking-time pricing mechanism exists yet (AD-11: blocked, not built); a zero price is never snapshotted. */
+  VARIABLE_PRICING_UNSUPPORTED = 'VARIABLE_PRICING_UNSUPPORTED',
 }
 
 export interface ErrorCodeMeta {
@@ -205,5 +213,15 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.QUOTE_EXPIRED]: {
     status: HttpStatus.CONFLICT,
     message: 'This quote has expired — ask the platform to re-quote the request',
+  },
+
+  [ErrorCode.SUBSCRIPTION_GRACE_EXPIRED]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'Your subscription grace period has ended. Renew or contact support to continue this action — your existing data remains fully accessible.',
+  },
+
+  [ErrorCode.VARIABLE_PRICING_UNSUPPORTED]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'This service uses variable pricing, which cannot be booked online yet. Please arrange this booking directly with the clinic.',
   },
 };

@@ -295,6 +295,28 @@ export class QueueService {
     );
   }
 
+  /**
+   * Bulk fan-out for the `analytics.generateReport` MONTHLY sweep (FND-014,
+   * mirrors the daily M7 fan-out above). Deterministic jobId per (tenant,
+   * month) — the queue-layer half of duplicate prevention; the DB-level half
+   * is `MonthlyReportService`'s pre-existing `(tenant, branch, period_month)`
+   * unique upsert.
+   */
+  enqueueAnalyticsReportMonthlyBulk(items: Array<{ tenantId: string; month: string }>) {
+    if (items.length === 0) return Promise.resolve([] as Job[]);
+    return this.queues[QUEUE.ANALYTICS].addBulk(
+      items.map(({ tenantId, month }) => ({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: this.stamp({
+          tenantId,
+          kind: 'monthly',
+          month,
+        } as AnalyticsGenerateReportJob),
+        opts: { jobId: `analytics-monthly-${tenantId}-${month}` },
+      })),
+    );
+  }
+
   enqueueAnalyticsCleanup(data: AnalyticsCleanupJob, opts?: JobsOptions) {
     return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_CLEANUP, data, opts);
   }

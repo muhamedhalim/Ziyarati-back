@@ -23,6 +23,7 @@ import {
   RESERVED_PERMISSION_SLUGS,
   ROLE,
   RoleSlug,
+  UNENFORCED_PERMISSION_SLUGS,
 } from '../../rbac/rbac.constants';
 
 /**
@@ -513,6 +514,7 @@ export class RolesService {
     // carries one. Zero extra queries — `findOne` above already loaded
     // `rolePermissions.permission`.
     await this.assertNoStoredReservedPermission(role, tenantId, 'assign');
+    await this.assertNoUnenforcedPermission(role);
 
     const existing = await this.userRoles.findOne({
       where: { user: { id: user.id }, role: { id: role.id } },
@@ -672,6 +674,36 @@ export class RolesService {
       throw new AppError(ErrorCode.FORBIDDEN, {
         message:
           'This role already holds a reserved permission and cannot be mutated. Contact a platform administrator.',
+      });
+    }
+  }
+
+  /**
+   * FND-010 — refuses to let a role carrying a permission with no verified
+   * enforcing consumer (`UNENFORCED_PERMISSION_SLUGS`) become assignable to a
+   * user. Converts a latent gap into a structurally impossible state: today
+   * only `profile.update_own` (held by `ROLE.CUSTOMER`) qualifies, and no
+   * code path currently assigns `customer` to anyone — this guard is what
+   * keeps that true once something eventually tries. Unlike
+   * {@link assertNoStoredReservedPermission}, this runs for EVERY caller
+   * including the platform path (no `tenantId === null` exemption) — an
+   * unenforced permission is unenforced regardless of who assigns the role.
+   */
+  private async assertNoUnenforcedPermission(role: Role): Promise<void> {
+    const offending = Array.from(
+      new Set(
+        (role.rolePermissions ?? [])
+          .map((rp) => rp.permission?.slug)
+          .filter((slug): slug is PermissionSlug =>
+            UNENFORCED_PERMISSION_SLUGS.has(slug as PermissionSlug),
+          ),
+      ),
+    );
+    if (offending.length) {
+      await this.auditRejectedMutation(role.id, offending, 'assign');
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message:
+          'This role carries a permission with no enforced authorization path and cannot be assigned.',
       });
     }
   }

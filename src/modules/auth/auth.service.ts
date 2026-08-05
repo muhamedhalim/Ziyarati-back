@@ -33,7 +33,6 @@ import { AuthResult, AuthTokens } from './interfaces/auth-tokens.interface';
 import { AppError, ErrorCode } from '../../common/errors';
 import { ROLE, RoleSlug } from '../../rbac/rbac.constants';
 import { UsageService } from '../subscription-billing/usage.service';
-import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import { EmailService } from '../email/email.service';
@@ -176,20 +175,16 @@ export class AuthService {
       throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
     }
 
-    // Plan limit: max_users. Counts the tenant's existing users and rejects
-    // (422) when adding another would exceed the cap. Self-signup of the owner
-    // (registerOwner) is deliberately NOT limited — only adding staff to an
-    // existing tenant is. No-op under free mode / active override.
-    const currentUsers = await this.users.count({
-      where: { tenant: { id: actorTenantId } },
-    });
-    await this.usage.assertCountWithinLimit(
-      actorTenantId,
-      COUNT_LIMIT.USERS,
-      currentUsers,
-    );
-
+    // Plan limit: max_users. Self-signup of the owner (registerOwner) is
+    // deliberately NOT limited — only adding staff to an existing tenant is.
+    // No-op under free mode / active override.
+    //
+    // FND-007: the count-and-assert now runs ATOMICALLY inside the SAME
+    // transaction as the insert (see UsageService.assertUserSeatWithinLimit)
+    // — a tenant-row lock serializes concurrent seat additions instead of
+    // both racing a stale pre-transaction count.
     const userId = await this.dataSource.transaction(async (manager) => {
+      await this.usage.assertUserSeatWithinLimit(actorTenantId, manager);
       const role = await this.resolveSystemRole(manager, roleSlug);
       const user = await this.createUserWithRole(
         manager,

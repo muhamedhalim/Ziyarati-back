@@ -569,7 +569,12 @@ export class PaymentService {
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
-    return { data, total, page: query.page, limit: query.limit };
+    return {
+      data: data.map((p) => this.sanitizeForClient(p)),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
 
   async findOne(tenantId: string, id: string): Promise<Payment> {
@@ -579,6 +584,22 @@ export class PaymentService {
     if (!payment) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
     }
-    return payment;
+    return this.sanitizeForClient(payment);
+  }
+
+  /**
+   * FND-030 — `failure_reason` is populated from RAW, unvalidated gateway
+   * webhook text (`payment-webhook.service.ts`: `event.data?.source?.message`
+   * verbatim) — never safe to return to a client as-is (could contain
+   * card-adjacent fragments, internal gateway jargon, or anything the
+   * provider chose to put there). Sanitized VALUE only, on READ — the field
+   * name/type are unchanged, and the raw text is never touched in the
+   * database (kept for support/reconciliation, e.g.
+   * `payment-reconciliation.service.ts`/`marketplace-finance.service.ts`,
+   * both internal-only reads).
+   */
+  private sanitizeForClient(payment: Payment): Payment {
+    if (!payment.failure_reason) return payment;
+    return { ...payment, failure_reason: 'Payment was declined by the provider.' };
   }
 }

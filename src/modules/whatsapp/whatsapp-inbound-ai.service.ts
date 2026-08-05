@@ -7,6 +7,7 @@ import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
+import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { CustomerService } from '../crm/customer.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WhatsappBotActorService } from './whatsapp-bot-actor.service';
@@ -69,6 +70,7 @@ export class WhatsappInboundAiService {
     private readonly messages: Repository<Message>,
     private readonly media: WhatsappMediaService,
     private readonly orchestrator: AiOrchestratorService,
+    private readonly conversationExecution: ConversationExecutionService,
     private readonly messaging: WhatsappMessagingService,
     private readonly router: WhatsappMessageRouter,
     private readonly botActor: WhatsappBotActorService,
@@ -182,7 +184,7 @@ export class WhatsappInboundAiService {
     const reply = result.reply?.content?.trim();
     if (!reply) return;
     const interactive = this.buildInteractive(result.lastTool);
-    await this.sendReply(tenantId, waId, reply, interactive);
+    await this.sendReply(tenantId, waId, reply, interactive, result.mirroredMessageId);
   }
 
   /**
@@ -223,6 +225,7 @@ export class WhatsappInboundAiService {
     to: string,
     text: string,
     interactive?: WhatsappSessionPayload['interactive'],
+    mirroredMessageId?: string | null,
   ): Promise<void> {
     // A reply can only go out from THIS clinic's own connected number — there is
     // no shared platform number to fall back to. If the tenant has no usable
@@ -246,7 +249,19 @@ export class WhatsappInboundAiService {
       text,
       interactive,
     });
-    if (!res.success) this.logger.warn(`WhatsApp reply send failed: ${res.error}`);
+    if (!res.success) {
+      this.logger.warn(`WhatsApp reply send failed: ${res.error}`);
+      return;
+    }
+    if (mirroredMessageId && res.providerMessageId) {
+      // FND-023 — lets a later delivery/read webhook (matched by wamid) find
+      // its way back to this bot reply on the unified timeline.
+      await this.conversationExecution
+        .recordProviderMessageId(tenantId, mirroredMessageId, res.providerMessageId)
+        .catch((err) =>
+          this.logger.warn(`could not record provider message id: ${(err as Error)?.message}`),
+        );
+    }
   }
 
   /**

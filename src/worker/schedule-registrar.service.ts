@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { JOB, QUEUE } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
+import { AnalyticsGenerateReportJob } from '../queue/job-data.interface';
 
 /**
  * Registers the platform's REPEATABLE (cron) jobs on worker startup, using
@@ -25,6 +26,12 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
     try {
       // Daily report generation sweep — 00:30 UTC.
       await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_GENERATE_REPORT, { tenantId: null }, '30 0 * * *');
+      // Monthly report generation sweep (FND-014 — previously manual-only) —
+      // 00:35 UTC on the 1st of each month: offset 5 minutes after the daily
+      // tick above so the two sweeps don't contend for the same instant, and
+      // scheduled for the 1st so it reports on the month that just completed.
+      const monthlyReportTick: AnalyticsGenerateReportJob = { tenantId: null, kind: 'monthly' };
+      await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_GENERATE_REPORT, monthlyReportTick, '35 0 1 * *');
       // Dashboard metric aggregation sweep — hourly.
       await this.queue.addRepeatable(QUEUE.ANALYTICS, JOB.ANALYTICS_AGGREGATE, { tenantId: null }, '0 * * * *');
       // Analytics event retention purge — 03:15 UTC daily.
@@ -59,7 +66,13 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // guarded in IntegrationRecoveryProcessor so a stalled-job redelivery
       // can't run the sweep twice concurrently.
       await this.queue.addRepeatable(QUEUE.INTEGRATION_MAINTENANCE, JOB.INTEGRATION_RECOVER_STALE, { tenantId: null }, '*/2 * * * *');
-      this.logger.log('Repeatable jobs registered (analytics ×3, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale)');
+      // Campaign dead-letter recovery sweep (FND-020) — every 5 minutes.
+      // Lock-guarded in CampaignDlqRecoveryProcessor, mirrors the integration
+      // recovery sweep above exactly. A dead-lettered recipient whose DLQ
+      // write failed sits for at most DLQ_RECOVERY_GRACE_MS (60s) before the
+      // NEXT tick picks it up.
+      await this.queue.addRepeatable(QUEUE.CAMPAIGNS_MAINTENANCE, JOB.CAMPAIGNS_RECOVER_DLQ, { tenantId: null }, '*/5 * * * *');
+      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, campaigns-recover-dlq)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

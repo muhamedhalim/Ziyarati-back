@@ -1,9 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Not, Repository } from 'typeorm';
+import { EntityManager, IsNull, Not, Repository } from 'typeorm';
 
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { User } from '../../entities/Auth&RBAC/User';
 import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
@@ -93,9 +95,194 @@ export class UsageService {
   }
 
   /**
+   * FND-034 — releases a reservation taken by `incrementIfWithinLimit` when
+   * the operation it was reserved for did not actually happen (e.g. a
+   * WhatsApp/AI provider call failed after admission). NOT `increment()`
+   * with a negative amount — `increment()` guards `amount <= 0` as a no-op,
+   * by design, for its own (always-positive) callers. Clamps at zero
+   * (`GREATEST`) so a duplicate/late release can never drive usage negative.
+   */
+  async release(
+    tenantId: string,
+    metric: UsageMetric,
+    amount = 1,
+  ): Promise<void> {
+    if (amount <= 0) return;
+    const subscription = await this.findCurrentSubscription(tenantId);
+    if (!subscription) return;
+    const { usageColumn } = USAGE_METRIC_MAP[metric];
+    const period = currentPeriodMonth();
+
+    await this.usage
+      .createQueryBuilder()
+      .update(SubscriptionUsage)
+      .set({
+        [usageColumn]: () => `GREATEST("${usageColumn}" - :amount, 0)`,
+        updated_at: () => 'now()',
+      })
+      .where('subscription_id = :sid AND period_month = :pm', {
+        sid: subscription.id,
+        pm: period,
+      })
+      .setParameter('amount', amount)
+      .execute();
+  }
+
+  /**
+   * FND-034 — atomic check-and-increment. Replaces the `assertWithinLimit`
+   * (read) then, later, `increment()` (write) PAIR at a call site: that gap
+   * is a check-then-act race — two concurrent callers can both read
+   * "under limit" before either has incremented, admitting both. This folds
+   * the boundary check into the SAME `UPDATE`'s `WHERE` clause as the
+   * increment, so Postgres's own per-row lock is the arbiter: a second
+   * concurrent UPDATE against the same row blocks until the first commits,
+   * then re-evaluates the WHERE clause against the NEW value.
+   *
+   * Returns `{applied, used, limit}` rather than throwing — the call site
+   * decides how to react (e.g. throw its existing 422, or release/roll back
+   * whatever else it was about to do). `used`/`limit` are populated only
+   * when `applied` is false (a follow-up read, purely for the error
+   * message — not itself part of the atomic decision).
+   *
+   * Pass `manager` to run inside a caller's own transaction — e.g. so a
+   * later rollback (a downstream failure) undoes the increment too. Without
+   * one, the increment commits on its own as soon as this call returns; a
+   * caller on that path that can't wrap a DB transaction around the rest of
+   * its work (e.g. an external provider call) must explicitly call
+   * `increment(tenantId, metric, -1)` to release the reservation on failure.
+   *
+   * Free mode / an active override / an unlimited (null) plan limit are
+   * unmetered, exactly like `assertWithinLimit` — always `applied: true`.
+   */
+  async incrementIfWithinLimit(
+    tenantId: string,
+    metric: UsageMetric,
+    amount = 1,
+    manager?: EntityManager,
+  ): Promise<{ applied: boolean; used: number; limit: number | null }> {
+    const repo = manager
+      ? manager.getRepository(SubscriptionUsage)
+      : this.usage;
+
+    if (!(await this.access.isEnforced(tenantId))) {
+      await this.rawIncrement(repo, tenantId, metric, amount);
+      return { applied: true, used: 0, limit: null };
+    }
+
+    const subscription = await this.resolveSubscription(tenantId, true);
+    const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[limitColumn];
+    if (limitRaw === null || limitRaw === undefined) {
+      await this.rawIncrement(repo, tenantId, metric, amount);
+      return { applied: true, used: 0, limit: null }; // unlimited
+    }
+
+    const override = await this.limitOverrides.getActive(tenantId, metric);
+    const limit = override
+      ? Math.max(Number(limitRaw), Number(override.override_limit))
+      : Number(limitRaw);
+    const period = currentPeriodMonth();
+
+    // Ensure the (subscription, period) row exists first — same idempotent
+    // upsert `increment()` uses. Harmless under concurrency (ON CONFLICT DO
+    // NOTHING); the atomic decision happens in the UPDATE below, not here.
+    await repo
+      .createQueryBuilder()
+      .insert()
+      .into(SubscriptionUsage)
+      .values({
+        tenant_id: tenantId,
+        subscription_id: subscription.id,
+        period_month: period,
+        ai_tokens_used: '0',
+        whatsapp_messages_used: 0,
+        appointments_used: 0,
+        campaigns_used: 0,
+      })
+      .orIgnore()
+      .execute();
+
+    const result = await repo
+      .createQueryBuilder()
+      .update(SubscriptionUsage)
+      .set({
+        [usageColumn]: () => `"${usageColumn}" + :amount`,
+        updated_at: () => 'now()',
+      })
+      .where(
+        `subscription_id = :sid AND period_month = :pm AND "${usageColumn}" + :amount <= :limit`,
+        { sid: subscription.id, pm: period, amount, limit },
+      )
+      .execute();
+
+    const applied = (result.affected ?? 0) > 0;
+    if (applied) return { applied: true, used: 0, limit };
+
+    // Not applied — a fresh read purely to report the current value; no
+    // decision is made from it (the UPDATE above already made the decision
+    // atomically), so a race between this read and another writer cannot
+    // reintroduce the bug — it can only make the reported `used` figure
+    // slightly stale by the time the caller logs/returns it.
+    const row = await repo.findOne({
+      where: { subscription_id: subscription.id, period_month: period },
+    });
+    const used = row
+      ? Number((row as unknown as Record<string, unknown>)[usageColumn])
+      : 0;
+    return { applied: false, used, limit };
+  }
+
+  /** Shared increment body, repo-parametrized so `incrementIfWithinLimit` can target a caller's manager. */
+  private async rawIncrement(
+    repo: Repository<SubscriptionUsage>,
+    tenantId: string,
+    metric: UsageMetric,
+    amount: number,
+  ): Promise<void> {
+    const subscription = await this.findCurrentSubscription(tenantId);
+    if (!subscription) return;
+    const { usageColumn } = USAGE_METRIC_MAP[metric];
+    const period = currentPeriodMonth();
+
+    await repo
+      .createQueryBuilder()
+      .insert()
+      .into(SubscriptionUsage)
+      .values({
+        tenant_id: tenantId,
+        subscription_id: subscription.id,
+        period_month: period,
+        ai_tokens_used: '0',
+        whatsapp_messages_used: 0,
+        appointments_used: 0,
+        campaigns_used: 0,
+      })
+      .orIgnore()
+      .execute();
+
+    await repo
+      .createQueryBuilder()
+      .update(SubscriptionUsage)
+      .set({
+        [usageColumn]: () => `"${usageColumn}" + :amount`,
+        updated_at: () => 'now()',
+      })
+      .where('subscription_id = :sid AND period_month = :pm', {
+        sid: subscription.id,
+        pm: period,
+      })
+      .setParameter('amount', amount)
+      .execute();
+  }
+
+  /**
    * Throws (422) if incrementing `metric` by `amount` would exceed the plan
    * limit. A null/absent limit means unlimited. Use before `increment()` to
    * enforce a quota.
+   *
+   * Superseded by `incrementIfWithinLimit` at the 4 call sites that need
+   * concurrency-safety (FND-034) — kept here for any read-only/preview use
+   * that wants a plain assertion without also mutating usage.
    */
   async assertWithinLimit(
     tenantId: string,
@@ -160,6 +347,67 @@ export class UsageService {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
         publicContext: { limit: limitColumn, current: currentCount, max: limit, requested: amount },
+      });
+    }
+  }
+
+  /**
+   * FND-007 — atomic seat-cap (`max_users`) check-and-admit. Unlike the
+   * metered metrics above, there is no accumulator column for a live
+   * COUNT-based cap — `assertCountWithinLimit` reads a caller-supplied count
+   * that was fetched BEFORE this call, which is exactly the check-then-act
+   * gap: two concurrent callers can both count N, both see room for one
+   * more, and both insert. Fixed here by locking the TENANT row (a natural
+   * per-tenant mutex) for the remainder of `manager`'s transaction — a
+   * second concurrent call blocks on that lock until the first commits (or
+   * rolls back), then re-counts and sees the TRUE post-insert total. Must be
+   * called INSIDE the same transaction as the user INSERT it is guarding,
+   * with the insert placed AFTER this returns.
+   *
+   * Seat additions are a rare, low-frequency admin action (not a hot metered
+   * path), so the row lock's serialization cost — the concern AD-10 raised
+   * against `SELECT … FOR UPDATE` for the high-frequency quota metrics — does
+   * not apply here.
+   */
+  async assertUserSeatWithinLimit(
+    tenantId: string,
+    manager: EntityManager,
+    amount = 1,
+  ): Promise<void> {
+    if (!(await this.access.isEnforced(tenantId))) return;
+
+    await manager.query('SELECT id FROM tenants WHERE id = $1 FOR UPDATE', [tenantId]);
+
+    const subscription = await manager.getRepository(Subscription).findOne({
+      where: {
+        tenant: { id: tenantId },
+        status: Not(SubscriptionStatus.CANCELLED),
+        deleted_at: IsNull(),
+      },
+      relations: { plan: true },
+      order: { created_at: 'DESC' },
+    });
+    if (!subscription) {
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'No active subscription found for this tenant',
+      });
+    }
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>).max_users;
+    if (limitRaw === null || limitRaw === undefined) return; // unlimited
+
+    const limit = Number(limitRaw);
+    const currentUsers = await manager
+      .getRepository(User)
+      .count({ where: { tenant: { id: tenantId } as Tenant } });
+    if (currentUsers + amount > limit) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Plan limit reached for max_users (${currentUsers}/${limit})`,
+        publicContext: {
+          limit: 'max_users',
+          current: currentUsers,
+          max: limit,
+          requested: amount,
+        },
       });
     }
   }

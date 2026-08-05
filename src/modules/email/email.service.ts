@@ -244,10 +244,18 @@ export class EmailService {
   sendSubscriptionNotification(p: {
     to: string;
     name?: string;
-    event: 'activated' | 'renewed' | 'cancelled';
+    event:
+      | 'activated'
+      | 'renewed'
+      | 'cancelled'
+      // FND-031 — the three grace-lifecycle notification points.
+      | 'expiring_soon'
+      | 'entered_grace'
+      | 'grace_ending_soon';
     planName?: string;
     nextRenewal?: string;
     endsAt?: string;
+    graceEndsAt?: string;
     tenantId?: string;
     idempotencyKey?: string;
   }) {
@@ -256,6 +264,9 @@ export class EmailService {
         activated: 'subscription_activated',
         renewed: 'subscription_renewed',
         cancelled: 'subscription_cancelled',
+        expiring_soon: 'subscription_expiring_soon',
+        entered_grace: 'subscription_entered_grace',
+        grace_ending_soon: 'subscription_grace_ending_soon',
       } as const
     )[p.event];
     return this.send({

@@ -144,6 +144,7 @@ describe('TenantVerificationService', () => {
         id: 'doc-1',
         doc_type: TYPE_A,
         tenant: { id: 'tenant-1' },
+        status: VerificationDocStatus.PENDING,
       });
 
       const saved = await service.review('doc-1', { id: 'admin-1' } as any, {
@@ -165,6 +166,64 @@ describe('TenantVerificationService', () => {
           status: VerificationDocStatus.APPROVED,
         } as any),
       ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+
+    // ── GAP-001 — re-deciding an already-decided document ──────────────────
+    describe('GAP-001 — refuses a re-decision on an already-decided document', () => {
+      it('refuses to re-decide an already-APPROVED document, and audits the attempt', async () => {
+        documents.findOne.mockResolvedValueOnce({
+          id: 'doc-1',
+          doc_type: TYPE_A,
+          tenant: { id: 'tenant-1' },
+          status: VerificationDocStatus.APPROVED,
+        });
+
+        await expect(
+          service.review('doc-1', { id: 'admin-1' } as any, {
+            status: VerificationDocStatus.REJECTED,
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+
+        expect(documents.save).not.toHaveBeenCalled();
+        expect(audit.record).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'RE_DECISION_REFUSED',
+            documentId: 'doc-1',
+            tenantId: 'tenant-1',
+          }),
+        );
+      });
+
+      it('refuses to re-decide an already-REJECTED document (not just APPROVED → * )', async () => {
+        documents.findOne.mockResolvedValueOnce({
+          id: 'doc-2',
+          doc_type: TYPE_B,
+          tenant: { id: 'tenant-1' },
+          status: VerificationDocStatus.REJECTED,
+        });
+
+        await expect(
+          service.review('doc-2', { id: 'admin-1' } as any, {
+            status: VerificationDocStatus.APPROVED,
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(documents.save).not.toHaveBeenCalled();
+      });
+
+      it('still allows deciding a genuinely PENDING document (the guard is not overly broad)', async () => {
+        documents.findOne.mockResolvedValueOnce({
+          id: 'doc-3',
+          doc_type: TYPE_C,
+          tenant: { id: 'tenant-1' },
+          status: VerificationDocStatus.PENDING,
+        });
+        documents.save.mockImplementationOnce(async (d: unknown) => d);
+
+        const saved = await service.review('doc-3', { id: 'admin-1' } as any, {
+          status: VerificationDocStatus.APPROVED,
+        } as any);
+        expect(saved.status).toBe(VerificationDocStatus.APPROVED);
+      });
     });
   });
 });

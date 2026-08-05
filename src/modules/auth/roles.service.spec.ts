@@ -737,6 +737,57 @@ describe('RolesService', () => {
     });
   });
 
+  describe('FND-010 — assignment refuses a role carrying an unenforced permission', () => {
+    it('refuses to assign the customer role (holds profile.update_own, which has no enforcing route)', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });
+      roles.findOne.mockResolvedValueOnce({
+        id: 'r-customer',
+        slug: ROLE.CUSTOMER,
+        is_system: true,
+        tenant: null,
+        rolePermissions: [
+          { permission: { slug: PERMISSION.APPOINTMENTS_CREATE } },
+          { permission: { slug: PERMISSION.PROFILE_UPDATE_OWN } },
+        ],
+      });
+
+      await expect(
+        service.assignRoleToUser('u1', 'r-customer', TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(userRoles.save).not.toHaveBeenCalled();
+    });
+
+    it('applies even on the platform path (no tenantId=null exemption, unlike the reserved-permission check)', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: null });
+      roles.findOne.mockResolvedValueOnce({
+        id: 'r-customer',
+        slug: ROLE.CUSTOMER,
+        is_system: true,
+        tenant: null,
+        rolePermissions: [{ permission: { slug: PERMISSION.PROFILE_UPDATE_OWN } }],
+      });
+
+      await expect(
+        service.assignRoleToUser('u1', 'r-customer', null),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    });
+
+    it('still allows assigning a role holding no unenforced permission', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });
+      roles.findOne.mockResolvedValueOnce({
+        id: 'r-rec',
+        slug: ROLE.RECEPTIONIST,
+        is_system: false,
+        tenant: { id: TENANT },
+        rolePermissions: [{ permission: { slug: PERMISSION.APPOINTMENTS_READ } }],
+      });
+      userRoles.findOne.mockResolvedValueOnce(null);
+      userRoles.save.mockResolvedValueOnce({ id: 'ur1' });
+
+      await expect(service.assignRoleToUser('u1', 'r-rec', TENANT)).resolves.toEqual({ id: 'ur1' });
+    });
+  });
+
   describe('resolveCustomRole ("Other" role — transactional write phase)', () => {
     let manager: MockEntityManager;
     let mRoles: MockRepository;

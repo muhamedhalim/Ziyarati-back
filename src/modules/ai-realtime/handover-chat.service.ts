@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HandoverRequestService } from '../ai/handover-request.service';
 import { WhatsappMessagingService } from '../whatsapp/whatsapp-messaging.service';
 import { WhatsappMessageRouter } from '../whatsapp/routing/whatsapp-message.router';
+import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { Message } from '../../entities/Conversations/Message';
 
 /**
@@ -24,6 +25,7 @@ export class HandoverChatService {
     private readonly handovers: HandoverRequestService,
     private readonly messaging: WhatsappMessagingService,
     private readonly router: WhatsappMessageRouter,
+    private readonly conversationExecution: ConversationExecutionService,
   ) {}
 
   async sendAgentReply(
@@ -48,6 +50,15 @@ export class HandoverChatService {
           text: content,
         });
         dispatchedToWhatsapp = res.success;
+        if (res.success && res.providerMessageId) {
+          // FND-023 — lets a later delivery/read webhook (matched by wamid)
+          // find its way back to this reply on the unified timeline.
+          await this.conversationExecution
+            .recordProviderMessageId(tenantId, message.id, res.providerMessageId)
+            .catch((e) =>
+              this.logger.warn(`could not record provider message id: ${(e as Error)?.message}`),
+            );
+        }
         if (!res.success) this.logger.warn(`agent reply WhatsApp send failed: ${res.error}`);
       } catch (err) {
         this.logger.warn(`agent reply WhatsApp dispatch failed: ${(err as Error)?.message}`);

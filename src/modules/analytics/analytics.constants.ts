@@ -77,3 +77,15 @@ export function monthDateBounds(monthStr: string): {
   );
   return { firstDay: `${monthStr}-01`, lastDay: lastDate.toISOString().slice(0, 10) };
 }
+
+/**
+ * The calendar month immediately before `now`, in UTC, as `'YYYY-MM'`
+ * (FND-014). Explicit UTC arithmetic (never `getMonth()`/`getFullYear()`,
+ * which read the server's local timezone) so the scheduled monthly-report
+ * sweep — which fires just after month rollover to report on the month that
+ * just ended — targets the same month regardless of the worker host's TZ.
+ */
+export function previousMonthUtc(now: Date = new Date()): ReportMonth {
+  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
+}
