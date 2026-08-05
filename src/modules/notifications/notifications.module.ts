@@ -7,6 +7,7 @@ import { ScheduledNotification } from '../../entities/Notifications/ScheduledNot
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { Customer } from '../../entities/CRM/Customer';
 
 import { NotificationTemplateService } from './notification-template.service';
 import { NotificationRuleService } from './notification-rule.service';
@@ -48,6 +49,7 @@ import { WhatsappModule } from '../whatsapp/whatsapp.module';
       NotificationLog,
       Appointment,
       AuditLog,
+      Customer,
     ]),
     forwardRef(() => WhatsappModule),
   ],

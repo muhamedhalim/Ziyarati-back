@@ -1,8 +1,10 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
+import { Customer } from '../../entities/CRM/Customer';
 import { AppError } from '../../common/errors';
 
 import { NotificationLogService } from './notification-log.service';
@@ -53,11 +55,14 @@ export class NotificationDispatchService {
   constructor(
     @InjectRepository(ScheduledNotification)
     private readonly scheduled: Repository<ScheduledNotification>,
+    @InjectRepository(Customer)
+    private readonly customers: Repository<Customer>,
     private readonly logs: NotificationLogService,
     private readonly queue: QueueService,
     private readonly rateLimiter: TenantRateLimiterService,
     @Inject(forwardRef(() => WhatsappExecutionService))
     private readonly whatsapp: WhatsappExecutionService,
+    private readonly config: ConfigService,
   ) {}
 
   async processScheduled(tenantId: string, id: string): Promise<DispatchOutcome> {
@@ -82,12 +87,12 @@ export class NotificationDispatchService {
     if (channel !== NOTIFICATION_CHANNEL.WHATSAPP) {
       return this.permanent(tenantId, notification, channel, `no provider for channel "${channel}"`);
     }
-    const providerTemplateId = notification.template?.provider_template_id;
-    if (!providerTemplateId) {
-      return this.permanent(tenantId, notification, channel, 'template not linked to an approved WhatsApp template');
-    }
     if (notification.recipient_type !== RECIPIENT_TYPE.CUSTOMER || !notification.recipient_id) {
       return this.permanent(tenantId, notification, channel, 'WhatsApp notifications require a CUSTOMER recipient');
+    }
+    const providerTemplateId = await this.resolveProviderTemplateId(tenantId, notification);
+    if (!providerTemplateId) {
+      return this.permanent(tenantId, notification, channel, 'template not linked to an approved WhatsApp template');
     }
 
     // 2. RATE LIMIT (per tenant).
@@ -234,6 +239,33 @@ export class NotificationDispatchService {
   }
 
   // ──────────────────────────── helpers ──────────────────────────── //
+
+  /**
+   * T157/LG-8 — connects WhatsApp template LANGUAGE selection to the
+   * recipient's locale CHOICE (FR-H015), using the existing template
+   * language field (M-10's `provider_template_id_ar`, validated at
+   * write-time in NotificationTemplateService to actually be an Arabic
+   * WhatsappTemplate). Falls back to `provider_template_id` (the
+   * pre-existing default) whenever the customer has no recorded preference,
+   * prefers a language with no linked variant, or the customer row itself
+   * cannot be loaded — so a lookup failure never blocks a send that would
+   * otherwise have gone through.
+   */
+  private async resolveProviderTemplateId(
+    tenantId: string,
+    notification: ScheduledNotification,
+  ): Promise<string | undefined> {
+    const template = notification.template;
+    if (template?.provider_template_id_ar) {
+      const customer = await this.customers.findOne({
+        where: { id: notification.recipient_id, tenant: { id: tenantId } },
+        select: { id: true, preferred_locale: true },
+      });
+      const locale = customer?.preferred_locale ?? this.config.get<string>('DEFAULT_LOCALE');
+      if (locale === 'ar') return template.provider_template_id_ar;
+    }
+    return template?.provider_template_id;
+  }
 
   private async markSent(
     tenantId: string,

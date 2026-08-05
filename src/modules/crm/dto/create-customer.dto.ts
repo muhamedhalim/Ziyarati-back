@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
   IsEmail,
+  IsIn,
   IsISO8601,
   IsOptional,
   IsString,
@@ -70,4 +71,14 @@ export class CreateCustomerDto {
   @IsOptional()
   @IsBoolean()
   is_active?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Recipient locale for customer-facing notifications (M-09/CAP-I18N). Unset falls back to DEFAULT_LOCALE.',
+    example: 'ar',
+    enum: ['en', 'ar'],
+  })
+  @IsOptional()
+  @IsIn(['en', 'ar'])
+  preferred_locale?: string;
 }

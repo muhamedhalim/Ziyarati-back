@@ -79,6 +79,15 @@ export class Customer {
   @Column({ default: true })
   is_active!: boolean;
 
+  /**
+   * M-09/CAP-I18N: persisted locale preference for recipient-locale
+   * notifications (FR-H014/FR-H015). `NULL` means "no explicit choice
+   * recorded, fall back to `DEFAULT_LOCALE`" — never backfilled, mirrors
+   * `User.preferred_locale`'s (M-08) exact semantics.
+   */
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  preferred_locale?: string | null;
+
   @OneToOne(() => CustomerProfile, (profile) => profile.customer)
   profile?: CustomerProfile;
 

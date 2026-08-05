@@ -50,6 +50,7 @@ export class CustomerService {
       source: dto.source,
       marketing_opt_in: dto.marketing_opt_in ?? false,
       is_active: dto.is_active ?? true,
+      preferred_locale: dto.preferred_locale,
     });
     return this.customers.save(customer);
   }

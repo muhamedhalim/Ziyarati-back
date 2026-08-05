@@ -713,6 +713,24 @@ describe('AuthService', () => {
       expect(email.sendPasswordReset).toHaveBeenCalledTimes(1);
     });
 
+    // FR-H014/T156 gap-closure: the user row is already loaded here, so its
+    // recorded locale (M-08) must reach the email — a free, no-risk win.
+    it('[T156] forwards the user\'s preferred_locale to the reset email', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'user-1', preferred_locale: 'ar' });
+      await service.forgotPassword({ email: 'a@b.com' } as any);
+      expect(email.sendPasswordReset).toHaveBeenCalledWith(
+        expect.objectContaining({ locale: 'ar' }),
+      );
+    });
+
+    it('[T156] leaves locale undefined (not a guess) when the user never set one', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      await service.forgotPassword({ email: 'a@b.com' } as any);
+      expect(email.sendPasswordReset).toHaveBeenCalledWith(
+        expect.objectContaining({ locale: undefined }),
+      );
+    });
+
     // ─────────────── FND-006: no credential may enter any log ───────────────
     it('with AUTH_EXPOSE_RESET_TOKEN off (the default), no log line contains the token', async () => {
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);

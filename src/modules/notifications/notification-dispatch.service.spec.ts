@@ -1,9 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 
 import { NotificationDispatchService } from './notification-dispatch.service';
 import { NotificationLogService } from './notification-log.service';
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
+import { Customer } from '../../entities/CRM/Customer';
 import { QueueService } from '../../queue/queue.service';
 import { TenantRateLimiterService } from '../../queue/tenant-rate-limiter.service';
 import { WhatsappExecutionService } from '../whatsapp/whatsapp-execution.service';
@@ -21,10 +23,12 @@ const ID = 'notif-1';
 describe('NotificationDispatchService.processScheduled', () => {
   let service: NotificationDispatchService;
   let scheduled: MockRepository;
+  let customers: MockRepository;
   let logs: { record: jest.Mock; purgeOlderThan: jest.Mock };
   let queue: { enqueueNotificationDispatchBulk: jest.Mock };
   let rateLimiter: { consume: jest.Mock };
   let whatsapp: { sendTemplateMessage: jest.Mock };
+  let config: { get: jest.Mock };
 
   const whatsappNotification = (overrides: Record<string, unknown> = {}) => ({
     id: ID,
@@ -38,19 +42,24 @@ describe('NotificationDispatchService.processScheduled', () => {
 
   beforeEach(async () => {
     scheduled = createMockRepository();
+    customers = createMockRepository();
+    customers.findOne.mockResolvedValue({ id: 'cust-1', preferred_locale: null });
     logs = { record: jest.fn().mockResolvedValue(undefined), purgeOlderThan: jest.fn().mockResolvedValue(0) };
     queue = { enqueueNotificationDispatchBulk: jest.fn().mockResolvedValue([]) };
     rateLimiter = { consume: jest.fn().mockResolvedValue({ allowed: true }) };
     whatsapp = { sendTemplateMessage: jest.fn() };
+    config = { get: jest.fn().mockReturnValue('en') };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         NotificationDispatchService,
         { provide: getRepositoryToken(ScheduledNotification), useValue: scheduled },
+        { provide: getRepositoryToken(Customer), useValue: customers },
         { provide: NotificationLogService, useValue: logs },
         { provide: QueueService, useValue: queue },
         { provide: TenantRateLimiterService, useValue: rateLimiter },
         { provide: WhatsappExecutionService, useValue: whatsapp },
+        { provide: ConfigService, useValue: config },
       ],
     }).compile();
     service = moduleRef.get(NotificationDispatchService);
@@ -92,6 +101,80 @@ describe('NotificationDispatchService.processScheduled', () => {
     );
     const res = await service.processScheduled(TENANT, ID);
     expect(res).toMatchObject({ status: 'failed_permanent' });
+  });
+
+  // ── T157 gap-closure: locale-based WhatsApp template selection (LG-8) ────
+  describe('[T157] locale-based template selection', () => {
+    it('sends the DEFAULT provider_template_id when the customer has no recorded locale', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'cust-1', preferred_locale: null });
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: {
+            id: 'tmpl-1',
+            channel: NOTIFICATION_CHANNEL.WHATSAPP,
+            provider_template_id: 'ptid-default',
+            provider_template_id_ar: 'ptid-ar',
+            variables: {},
+          },
+        }),
+      );
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'w1' });
+      await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'ptid-default', expect.anything());
+    });
+
+    it('sends provider_template_id_ar when the recipient customer prefers Arabic', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'cust-1', preferred_locale: 'ar' });
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: {
+            id: 'tmpl-1',
+            channel: NOTIFICATION_CHANNEL.WHATSAPP,
+            provider_template_id: 'ptid-default',
+            provider_template_id_ar: 'ptid-ar',
+            variables: {},
+          },
+        }),
+      );
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'w1' });
+      await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'ptid-ar', expect.anything());
+    });
+
+    it('falls back to provider_template_id when the customer prefers Arabic but no Arabic variant is linked (no regression)', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'cust-1', preferred_locale: 'ar' });
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: {
+            id: 'tmpl-1',
+            channel: NOTIFICATION_CHANNEL.WHATSAPP,
+            provider_template_id: 'ptid-default',
+            variables: {},
+          },
+        }),
+      );
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'w1' });
+      await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'ptid-default', expect.anything());
+    });
+
+    it('falls back to DEFAULT_LOCALE when the customer row itself is missing (never blocks the send)', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: {
+            id: 'tmpl-1',
+            channel: NOTIFICATION_CHANNEL.WHATSAPP,
+            provider_template_id: 'ptid-default',
+            provider_template_id_ar: 'ptid-ar',
+            variables: {},
+          },
+        }),
+      );
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'w1' });
+      await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'ptid-default', expect.anything());
+    });
   });
 
   it('marks PERMANENT when the recipient is not a CUSTOMER', async () => {

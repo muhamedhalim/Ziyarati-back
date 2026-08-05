@@ -194,6 +194,34 @@ describe('SubscriptionsProcessor', () => {
       expect(recipients).toEqual(expect.arrayContaining(['clinic@example.test', 'admin@platform.test']));
     });
 
+    // FR-H014/T156 gap-closure: an operator's own recorded locale (M-08) must
+    // reach their copy of the notification; the tenant's raw contact_email
+    // has no linked User row, so it has no locale signal (falls back to
+    // EMAIL_DEFAULT_LOCALE) — pre-existing, unchanged behavior, not a gap.
+    it('[T156] forwards each operator\'s own preferred_locale, leaving the tenant contact email\'s locale unset', async () => {
+      (qb.getRawMany as jest.Mock).mockResolvedValueOnce([
+        { email: 'admin@platform.test', preferredLocale: 'ar' },
+      ]);
+      const sub = {
+        id: 'sub-5b',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: new Date(Date.now() - 86_400_000),
+        tenant: TENANT,
+        plan: {},
+      };
+      primeEmptyExcept({ 2: [sub] });
+
+      await processor.process({} as any);
+
+      const calls = (email.sendSubscriptionNotification as jest.Mock).mock.calls.map((c) => c[0]);
+      expect(calls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ to: 'admin@platform.test', locale: 'ar' }),
+          expect.objectContaining({ to: 'clinic@example.test', locale: undefined }),
+        ]),
+      );
+    });
+
     // FR-B007 — no automatic re-billing anywhere in this flow.
     it('never calls anything resembling a charge/invoice on any transition', async () => {
       const sub = {
