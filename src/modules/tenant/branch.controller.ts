@@ -30,9 +30,12 @@ import { BranchService } from './branch.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
 
-import { Roles } from '../auth/decorators/roles.decorator';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { ROLE } from '../../rbac/rbac.constants';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
@@ -82,7 +85,7 @@ const S_BRANCH_DETAIL = {
  */
 @ApiTags('Branches')
 @Controller('branches')
-@UseGuards(RolesGuard, ActiveTenantGuard)
+@UseGuards(PermissionsGuard, ActiveTenantGuard)
 @ApiBearerAuth('JWT-auth')
 export class BranchController {
   constructor(
@@ -93,7 +96,7 @@ export class BranchController {
   @ApiOperation({
     summary: 'Create a new clinic branch',
     description: `
-**Protected — \`owner\` or \`manager\` role required. Tenant must be active.**
+**Protected — \`branches.create\` required (granted to \`owner\`/\`manager\` today). Tenant must be active.**
 
 Creates a new physical branch (location) for the caller's clinic.
 Each branch can have its own phone number, WhatsApp number, city, and
@@ -118,11 +121,11 @@ The tenantId comes from the JWT — never from the request body.
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({
     description:
-      'Caller is not `owner` or `manager`, OR the clinic is not approved/active (ActiveTenantGuard).',
+      'Caller lacks `branches.create`, OR the clinic is not approved/active (ActiveTenantGuard).',
     schema: S_ERROR,
   })
   @Post()
-  @Roles(ROLE.OWNER, ROLE.MANAGER)
+  @RequirePermissions(PERMISSION.BRANCHES_CREATE)
   create(@Body() dto: CreateBranchDto) {
     return this.branchService.create(this.ctx.requireTenantId(), dto);
   }
@@ -189,7 +192,7 @@ tenant before returning data.
   @ApiOperation({
     summary: 'Update a branch',
     description: `
-**Protected — \`owner\` or \`manager\` role required. Tenant must be active.**
+**Protected — requires \`branches.update\` OR \`branches.update_own\`. Tenant must be active.**
 
 Partially updates a branch's details. Only the supplied fields are
 changed. To deactivate a branch without deleting it, set
@@ -200,7 +203,10 @@ changed. To deactivate a branch without deleting it, set
 - Correcting the address after a relocation.
 - Toggling \`isActive\` to temporarily hide a branch from bookings.
 
-**Who can call this:** Clinic Owner or Manager.
+**Who can call this:** Clinic Owner or Manager (\`branches.update\`,
+tenant-wide) — plus, delegably, any custom role holding
+\`branches.update_own\` (FND-017), restricted to the branch(es) that
+caller is assigned to via staff branch membership.
 
 **Tenant scoping:** Only branches belonging to the caller's clinic
 can be updated.
@@ -211,23 +217,28 @@ can be updated.
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({
-    description: 'Caller is not `owner` or `manager`, or the clinic is not active.',
+    description:
+      'Caller lacks `branches.update`/`branches.update_own`, holds only `branches.update_own` for a DIFFERENT branch, or the clinic is not active.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({ description: 'Branch not found.', schema: S_ERROR })
   @Patch(':id')
-  @Roles(ROLE.OWNER, ROLE.MANAGER)
+  @RequireAnyPermission(PERMISSION.BRANCHES_UPDATE, PERMISSION.BRANCHES_UPDATE_OWN)
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateBranchDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.branchService.update(this.ctx.requireTenantId(), id, dto);
+    return this.branchService.update(this.ctx.requireTenantId(), id, dto, {
+      id: user.id,
+      permissions: user.permissions,
+    });
   }
 
   @ApiOperation({
     summary: 'Delete a branch (owner only)',
     description: `
-**Protected — \`owner\` role required. Tenant must be active.**
+**Protected — \`branches.delete\` required (granted only to \`owner\` today). Tenant must be active.**
 
 Soft-deletes a branch — rejected with 409 unless deletion is safe:
 - it is not the clinic's only branch (at least one must always remain),
@@ -247,7 +258,7 @@ can be deleted.
   @ApiNoContentResponse({ description: 'Branch deleted.' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({
-    description: 'Caller is not `owner`, or the clinic is not active.',
+    description: 'Caller lacks `branches.delete`, or the clinic is not active.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({ description: 'Branch not found.', schema: S_ERROR })
@@ -258,7 +269,7 @@ can be deleted.
   })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @Roles(ROLE.OWNER)
+  @RequirePermissions(PERMISSION.BRANCHES_DELETE)
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.branchService.remove(this.ctx.requireTenantId(), id);
   }

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
+import { Message } from '../../entities/Conversations/Message';
 import { AiAgent } from '../../entities/AI Agent/AiAgent';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -16,6 +17,7 @@ import { AiChatMessage, AiCompletionResult } from './providers/ai-provider.inter
 import { SendMessageDto } from './dto/send-message.dto';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { AiToolDispatchService, ToolContext } from './tools/ai-tool-dispatch.service';
@@ -99,6 +101,7 @@ export class AiExecutionService {
     private readonly costs: AiCostLedgerService,
     private readonly requests: AiRequestExecutionService,
     private readonly modelRouter: AiModelRouterService,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   async sendMessage(
@@ -112,6 +115,7 @@ export class AiExecutionService {
     const requestKey = dto.idempotencyKey ?? randomUUID();
     let requestClaimed = false;
     let providerStarted = false;
+    let quotaReserved = false;
     let channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
@@ -154,8 +158,31 @@ export class AiExecutionService {
       // mirrored into the unified Message timeline (see mirrorToTimeline).
       const linkedConversationId = aiConv.conversation?.id;
 
+      // FND-031: also enforced at the route level (SubscriptionAccessGuard,
+      // for the HTTP path) — repeated here so a QUEUED/worker-triggered call
+      // into this same seam is covered too.
+      await this.subscriptions.assertBillableActionAllowed(tenantId);
+
       // Quota pre-check (blocks a tenant already over its monthly token cap).
-      await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      // FND-034: reserves 1 token's worth of headroom ATOMICALLY (closing the
+      // check-then-act race — see UsageService.incrementIfWithinLimit). The
+      // true cost (totalTokens) is only known after the provider call
+      // completes, so the final tally below adds the REMAINDER
+      // (totalTokens - 1), and the catch block releases this reservation if
+      // the turn fails before reaching that point.
+      const admission = await this.usage.incrementIfWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      if (!admission.applied) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: `Usage limit reached for ${USAGE_METRIC.AI_TOKENS} (${admission.used}/${admission.limit})`,
+          publicContext: {
+            metric: USAGE_METRIC.AI_TOKENS,
+            used: admission.used,
+            limit: admission.limit,
+            requested: 1,
+          },
+        });
+      }
+      quotaReserved = true;
       // From this point onward the turn can persist input, buy a RAG embedding,
       // or execute a provider/tool. A crash has an unknown replay outcome.
       await this.requests.markProviderStarted(tenantId, requestKey);
@@ -312,7 +339,11 @@ export class AiExecutionService {
         return saved;
       });
 
-      await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens);
+      // 1 was already reserved atomically by the pre-check above — add only
+      // the remainder so the total recorded equals totalTokens, exactly as
+      // before this fix (a no-op via increment()'s own guard if totalTokens
+      // is somehow <= 1).
+      await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1);
 
       // Mirror the bot reply into the unified timeline (after the assistant row is
       // committed, so its timestamp follows the customer turn).
@@ -359,6 +390,12 @@ export class AiExecutionService {
       await this.requests.complete(tenantId, requestKey, response);
       return response;
     } catch (err) {
+      if (quotaReserved) {
+        // FND-034: the turn didn't reach the final tally, so the 1-token
+        // reservation above was never topped up or consumed — release it.
+        // Best-effort: a release failure must not mask the real error.
+        await this.usage.release(tenantId, USAGE_METRIC.AI_TOKENS, 1).catch(() => undefined);
+      }
       if (providerStarted) {
         await this.costs.record({
           tenantId, aiConversationId, idempotencyKey: `${requestKey}:failure`,
@@ -511,6 +548,7 @@ export class AiExecutionService {
     const requestKey = dto.idempotencyKey ?? origin?.waMessageId ?? randomUUID();
     let requestClaimed = false;
     let providerStarted = false;
+    let quotaReserved = false;
     let channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
@@ -535,6 +573,10 @@ export class AiExecutionService {
           message: AiMessage; retrievedChunks: number;
           usage: { promptTokens: number; completionTokens: number; totalTokens: number };
           streamed: boolean; lastTool?: { name: string; result: Record<string, unknown> };
+          // FND-023 — optional: a response PERSISTED before this field existed
+          // replays without it, which is fine (undefined, not a crash) — the
+          // caller already treats a missing/null id as "nothing to attach".
+          mirroredMessageId?: string | null;
         }>(tenantId, requestKey);
         if (replay) {
           if (replay.message?.content) onToken(replay.message.content);
@@ -552,7 +594,25 @@ export class AiExecutionService {
       const agent = aiConv.agent;
       const linkedConversationId = aiConv.conversation?.id;
 
-      await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      // FND-031: same route-level-plus-worker-path enforcement as the
+      // non-streaming path above.
+      await this.subscriptions.assertBillableActionAllowed(tenantId);
+
+      // FND-034: same atomic reservation as the non-streaming path above —
+      // see its comment for the full rationale.
+      const admission = await this.usage.incrementIfWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      if (!admission.applied) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: `Usage limit reached for ${USAGE_METRIC.AI_TOKENS} (${admission.used}/${admission.limit})`,
+          publicContext: {
+            metric: USAGE_METRIC.AI_TOKENS,
+            used: admission.used,
+            limit: admission.limit,
+            requested: 1,
+          },
+        });
+      }
+      quotaReserved = true;
       await this.requests.markProviderStarted(tenantId, requestKey);
       providerStarted = true;
 
@@ -782,9 +842,12 @@ export class AiExecutionService {
         return saved;
       });
 
-      await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens);
+      // 1 was already reserved atomically by the pre-check above.
+      await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1);
+      let mirroredMessageId: string | null = null;
       if (linkedConversationId && full) {
-        await this.mirrorToTimeline(tenantId, linkedConversationId, 'BOT', full);
+        const mirrored = await this.mirrorToTimeline(tenantId, linkedConversationId, 'BOT', full);
+        mirroredMessageId = mirrored?.id ?? null;
       }
 
       await this.metrics.record({
@@ -824,10 +887,21 @@ export class AiExecutionService {
         usage: { promptTokens, completionTokens, totalTokens },
         streamed,
         lastTool,
+        // FND-023 — the mirrored BOT reply's timeline-message id, if one was
+        // written this turn. The caller (WhatsappInboundAiService.sendReply)
+        // uses it to attach the provider message id once the actual send
+        // completes.
+        mirroredMessageId,
       };
       await this.requests.complete(tenantId, requestKey, response);
       return response;
     } catch (err) {
+      if (quotaReserved) {
+        // FND-034: the turn didn't reach the final tally, so the 1-token
+        // reservation above was never topped up or consumed — release it.
+        // Best-effort: a release failure must not mask the real error.
+        await this.usage.release(tenantId, USAGE_METRIC.AI_TOKENS, 1).catch(() => undefined);
+      }
       if (providerStarted) {
         await this.costs.record({
           tenantId, aiConversationId, idempotencyKey: `${requestKey}:failure`,
@@ -880,15 +954,23 @@ export class AiExecutionService {
    * read. A mirror failure must NOT break the AI turn (the bot stays available),
    * so it is logged rather than thrown.
    */
+  /**
+   * Returns the mirrored Message row (FND-023) — callers on the OUTBOUND/BOT
+   * side use its id to later attach the provider message id once the actual
+   * WhatsApp send completes (see `mirroredMessageId` on `streamMessage`'s
+   * response), which is what lets a delivery/read webhook find its way back
+   * to this reply. `null` on failure (mirroring is best-effort; a timeline
+   * write must never fail the AI turn itself).
+   */
   private async mirrorToTimeline(
     tenantId: string,
     conversationId: string,
     senderType: 'CUSTOMER' | 'BOT',
     content: string,
     origin?: { waMessageId?: string; messageType?: string },
-  ): Promise<void> {
+  ): Promise<Message | null> {
     try {
-      await this.timeline.recordChannelMessage(
+      return await this.timeline.recordChannelMessage(
         tenantId,
         conversationId,
         senderType,
@@ -902,6 +984,7 @@ export class AiExecutionService {
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return null;
     }
   }
 

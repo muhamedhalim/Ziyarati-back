@@ -10,6 +10,13 @@ export interface DeliveryReceipt {
   providerRef: string;
   /** The delivery event reported by the provider/carrier. */
   event: RecipientDelivery;
+  /**
+   * The caller's tenant (FND-004) — from `TenantContextService` on the HTTP
+   * path, or the webhook event's resolved `tenant.id` on the internal path.
+   * Never client-supplied. Required (not optional) so no call site can
+   * silently skip tenant scoping.
+   */
+  tenantId: string;
 }
 
 export type DeliveryResult =
@@ -39,12 +46,18 @@ export class RecipientDeliveryService {
   constructor(private readonly dataSource: DataSource) {}
 
   async recordDelivery(receipt: DeliveryReceipt): Promise<DeliveryResult> {
-    const { providerRef, event } = receipt;
+    const { providerRef, event, tenantId } = receipt;
     if (!providerRef) return { updated: false, reason: 'missing-provider-ref' };
 
     return this.dataSource.transaction(async (mgr) => {
+      // FND-004 — tenant-scoped in the SAME query, not a post-hoc check: a
+      // foreign-tenant provider_ref simply doesn't match, exactly like every
+      // other tenant-isolated lookup in this codebase (cross-tenant = "not
+      // found", never a distinguishable 403). CampaignRecipient carries no
+      // tenant column of its own — scoped via its run's tenant instead (the
+      // same relation `relations: { run: true }` already loads).
       const rec = await mgr.findOne(CampaignRecipient, {
-        where: { provider_ref: providerRef },
+        where: { provider_ref: providerRef, run: { tenant: { id: tenantId } } },
         relations: { run: true },
       });
       if (!rec?.run) return { updated: false, reason: 'recipient-not-found' };

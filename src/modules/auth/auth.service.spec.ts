@@ -71,7 +71,7 @@ describe('AuthService', () => {
   let auditLogs: MockRepository;
   let dataSource: MockDataSource;
   let jwt: ReturnType<typeof createMockJwtService>;
-  let usage: { assertCountWithinLimit: jest.Mock };
+  let usage: { assertCountWithinLimit: jest.Mock; assertUserSeatWithinLimit: jest.Mock };
   let platformSettings: { getTyped: jest.Mock };
   let email: { sendWelcome: jest.Mock; sendPasswordReset: jest.Mock };
   let config: ReturnType<typeof createMockConfigService>;
@@ -87,7 +87,10 @@ describe('AuthService', () => {
     auditLogs = createMockRepository();
     dataSource = createMockDataSource();
     jwt = createMockJwtService();
-    usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
+    usage = {
+      assertCountWithinLimit: jest.fn().mockResolvedValue(undefined),
+      assertUserSeatWithinLimit: jest.fn().mockResolvedValue(undefined),
+    };
     platformSettings = { getTyped: jest.fn().mockResolvedValue(true) };
     email = {
       sendWelcome: jest.fn().mockResolvedValue(undefined),
@@ -194,19 +197,20 @@ describe('AuthService', () => {
 
     it('creates a receptionist by default within the actor tenant (success path)', async () => {
       users.findOne.mockResolvedValueOnce(null); // no existing email
-      users.count.mockResolvedValueOnce(3);
       dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-rec', slug: ROLE.RECEPTIONIST });
       users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
 
       const result = await service.createTenantUser(dto, 'tenant-1');
 
-      expect(usage.assertCountWithinLimit).toHaveBeenCalledWith('tenant-1', 'max_users', 3);
+      // FND-007: the seat-cap check now runs atomically INSIDE the same
+      // transaction as the insert (tenant-row lock — see
+      // UsageService.assertUserSeatWithinLimit), not from a pre-fetched count.
+      expect(usage.assertUserSeatWithinLimit).toHaveBeenCalledWith('tenant-1', dataSource.manager);
       expect(result).toEqual(expectedPrincipal);
     });
 
     it('accepts an explicit assignable role (manager)', async () => {
       users.findOne.mockResolvedValueOnce(null);
-      users.count.mockResolvedValueOnce(0);
       dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-mgr', slug: ROLE.MANAGER });
       users.findOne.mockResolvedValueOnce(principalRow());
 
@@ -235,17 +239,20 @@ describe('AuthService', () => {
       });
     });
 
+    // FND-007: the check now runs INSIDE the transaction (first thing, before
+    // role resolution) — a rejection there still means nothing was created,
+    // but `dataSource.transaction` itself IS invoked (and its callback fails
+    // immediately, before touching the role).
     it('propagates the plan user-limit failure from UsageService', async () => {
       users.findOne.mockResolvedValueOnce(null);
-      users.count.mockResolvedValueOnce(10);
-      usage.assertCountWithinLimit.mockRejectedValueOnce(
+      usage.assertUserSeatWithinLimit.mockRejectedValueOnce(
         new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'user limit reached' }),
       );
 
       await expect(service.createTenantUser(dto, 'tenant-1')).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(dataSource.manager.findOne).not.toHaveBeenCalled(); // role resolution never reached
     });
   });
 

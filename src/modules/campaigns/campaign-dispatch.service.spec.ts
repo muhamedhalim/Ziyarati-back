@@ -9,6 +9,7 @@ import { CampaignRecipient } from '../../entities/Campaigns/CampaignRecipient';
 import { CampaignExecution, RecipientProcessing } from '../../entities/enums';
 import { CampaignDeliveryFactory } from './delivery/campaign-delivery.factory';
 import { TenantRateLimiterService } from '../../queue/tenant-rate-limiter.service';
+import { QueueService } from '../../queue/queue.service';
 import { TransientDispatchError } from './dispatch/dispatch-errors';
 import {
   createMockRepository,
@@ -34,6 +35,7 @@ describe('CampaignDispatchService.dispatch', () => {
   let delivery: { resolve: jest.Mock };
   let send: jest.Mock;
   let rateLimiter: { consume: jest.Mock };
+  let queue: { enqueueCampaignDlq: jest.Mock };
 
   /** Make the atomic CLAIM update affect `n` rows. */
   const claimAffects = (n: number) => {
@@ -51,6 +53,7 @@ describe('CampaignDispatchService.dispatch', () => {
     send = jest.fn();
     delivery = { resolve: jest.fn().mockReturnValue({ send }) };
     rateLimiter = { consume: jest.fn().mockResolvedValue({ allowed: true }) };
+    queue = { enqueueCampaignDlq: jest.fn().mockResolvedValue(undefined) };
 
     claimAffects(1); // default: claim succeeds
     runs.findOne.mockResolvedValue({ id: RUN, execution: CampaignExecution.PROCESSING });
@@ -81,6 +84,7 @@ describe('CampaignDispatchService.dispatch', () => {
         { provide: getRepositoryToken(Campaign), useValue: campaigns },
         { provide: CampaignDeliveryFactory, useValue: delivery },
         { provide: TenantRateLimiterService, useValue: rateLimiter },
+        { provide: QueueService, useValue: queue },
         { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
@@ -268,5 +272,109 @@ describe('CampaignDispatchService.dispatch', () => {
   it('markDeadLettered reconciles a poison recipient to terminal FAILED + completion', async () => {
     await expect(service.markDeadLettered(RUN, RECIPIENT, 'exhausted')).resolves.toBeUndefined();
     expect(manager.update).toHaveBeenCalled(); // terminal FAILED transition
+  });
+
+  // ─────────────────────── FND-020: DLQ write reliability ─────────────────── //
+  describe('FND-020 — dead-letter write reliability', () => {
+    it('markDeadLettered, given a dlqContext, also records the DLQ entry and stamps dlq_recorded_at', async () => {
+      await service.markDeadLettered(RUN, RECIPIENT, 'exhausted', {
+        tenantId: TENANT,
+        correlationId: 'cid-1',
+        attemptsMade: 5,
+      });
+
+      expect(queue.enqueueCampaignDlq).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenantId: TENANT,
+          correlationId: 'cid-1',
+          originalJobId: RECIPIENT,
+          failedReason: 'exhausted',
+          attemptsMade: 5,
+        }),
+      );
+      expect(recipients.update).toHaveBeenCalledWith(
+        RECIPIENT,
+        expect.objectContaining({ dlq_recorded_at: expect.any(Date) }),
+      );
+    });
+
+    it('markDeadLettered with no dlqContext skips the DLQ write entirely (internal/system callers unaffected)', async () => {
+      await service.markDeadLettered(RUN, RECIPIENT, 'exhausted');
+      expect(queue.enqueueCampaignDlq).not.toHaveBeenCalled();
+    });
+
+    it('a DLQ enqueue failure is swallowed (logged), never thrown back to the caller', async () => {
+      queue.enqueueCampaignDlq.mockRejectedValueOnce(new Error('redis down'));
+      await expect(
+        service.markDeadLettered(RUN, RECIPIENT, 'exhausted', { tenantId: TENANT }),
+      ).resolves.toBeUndefined();
+      expect(recipients.update).not.toHaveBeenCalledWith(
+        RECIPIENT,
+        expect.objectContaining({ dlq_recorded_at: expect.anything() }),
+      );
+    });
+
+    describe('recoverDeadLetters — the recovery sweep', () => {
+      it('re-attempts the DLQ write for every stranded recipient (dead-lettered, never confirmed in the DLQ)', async () => {
+        recipients.find.mockResolvedValueOnce([
+          {
+            id: 'rec-a',
+            failure_reason: 'boom-a',
+            attempts: 3,
+            run: { id: 'run-a', tenant: { id: 'tenant-a' } },
+          },
+          {
+            id: 'rec-b',
+            failure_reason: 'boom-b',
+            attempts: 1,
+            run: { id: 'run-b', tenant: { id: 'tenant-b' } },
+          },
+        ]);
+
+        const result = await service.recoverDeadLetters();
+
+        expect(queue.enqueueCampaignDlq).toHaveBeenCalledTimes(2);
+        expect(queue.enqueueCampaignDlq).toHaveBeenCalledWith(
+          expect.objectContaining({ tenantId: 'tenant-a', originalJobId: 'rec-a', failedReason: 'boom-a' }),
+        );
+        expect(queue.enqueueCampaignDlq).toHaveBeenCalledWith(
+          expect.objectContaining({ tenantId: 'tenant-b', originalJobId: 'rec-b', failedReason: 'boom-b' }),
+        );
+        expect(recipients.update).toHaveBeenCalledWith('rec-a', expect.objectContaining({ dlq_recorded_at: expect.any(Date) }));
+        expect(recipients.update).toHaveBeenCalledWith('rec-b', expect.objectContaining({ dlq_recorded_at: expect.any(Date) }));
+        expect(result).toEqual({ recovered: 2, attempted: 2 });
+      });
+
+      it('only queries recipients with failure_class=TRANSIENT and dlq_recorded_at IS NULL', async () => {
+        recipients.find.mockResolvedValueOnce([]);
+        await service.recoverDeadLetters();
+        expect(recipients.find).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({
+              failure_class: 'TRANSIENT',
+              dlq_recorded_at: expect.anything(), // IsNull() FindOperator
+            }),
+          }),
+        );
+      });
+
+      it('reports a partial recovery count when some re-attempts still fail', async () => {
+        recipients.find.mockResolvedValueOnce([
+          { id: 'rec-a', failure_reason: 'x', attempts: 1, run: { id: 'run-a', tenant: { id: 't-a' } } },
+          { id: 'rec-b', failure_reason: 'x', attempts: 1, run: { id: 'run-b', tenant: { id: 't-b' } } },
+        ]);
+        queue.enqueueCampaignDlq
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('still down'));
+
+        const result = await service.recoverDeadLetters();
+        expect(result).toEqual({ recovered: 1, attempted: 2 });
+      });
+
+      it('is a harmless no-op when nothing is stranded', async () => {
+        recipients.find.mockResolvedValueOnce([]);
+        await expect(service.recoverDeadLetters()).resolves.toEqual({ recovered: 0, attempted: 0 });
+      });
+    });
   });
 });

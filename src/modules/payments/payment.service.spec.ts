@@ -275,4 +275,42 @@ describe('PaymentService.create (booking payments)', () => {
       expect(gateway.createPayment).not.toHaveBeenCalled();
     });
   });
+
+  describe('FND-030 — raw provider decline text sanitized on read', () => {
+    const RAW_TEXT = 'do_not_honor: card issuer declined txn ref=4111********1111 code=51';
+
+    it('findOne returns a sanitized failure_reason, not the raw gateway text', async () => {
+      payments.findOne.mockResolvedValueOnce({
+        id: 'pay-1',
+        status: PaymentStatus.FAILED,
+        failure_reason: RAW_TEXT,
+      });
+
+      const result = await service.findOne(TENANT, 'pay-1');
+
+      expect(result.failure_reason).not.toBe(RAW_TEXT);
+      expect(result.failure_reason).toBe('Payment was declined by the provider.');
+    });
+
+    it('list sanitizes failure_reason across every row', async () => {
+      payments.findAndCount.mockResolvedValueOnce([
+        [
+          { id: 'pay-1', status: PaymentStatus.FAILED, failure_reason: RAW_TEXT },
+          { id: 'pay-2', status: PaymentStatus.PAID, failure_reason: undefined },
+        ],
+        2,
+      ]);
+
+      const result = await service.list(TENANT, { page: 1, limit: 20 } as any);
+
+      expect(result.data[0].failure_reason).toBe('Payment was declined by the provider.');
+      expect(result.data[1].failure_reason).toBeUndefined();
+    });
+
+    it('a payment with no failure_reason is unaffected', async () => {
+      payments.findOne.mockResolvedValueOnce({ id: 'pay-1', status: PaymentStatus.PAID, failure_reason: undefined });
+      const result = await service.findOne(TENANT, 'pay-1');
+      expect(result.failure_reason).toBeUndefined();
+    });
+  });
 });

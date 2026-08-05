@@ -32,7 +32,6 @@ import {
 } from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
-import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import {
   CUSTOM_ROLE_SENTINEL,
   OWNERSHIP_SCOPED_PERMISSIONS,
@@ -380,16 +379,6 @@ export class StaffService {
       throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
     }
 
-    // Plan limit: max_users — same rule POST /auth/register-user enforces.
-    const currentUsers = await this.users.count({
-      where: { tenant: { id: tenantId } },
-    });
-    await this.usage.assertCountWithinLimit(
-      tenantId,
-      COUNT_LIMIT.USERS,
-      currentUsers,
-    );
-
     if (dto.avatarStorageKey) {
       this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
     }
@@ -399,6 +388,11 @@ export class StaffService {
     let assignedRole!: Role;
     const { profileId, userId } = await this.dataSource.transaction(
       async (manager) => {
+        // Plan limit: max_users — same rule POST /auth/register-user
+        // enforces, via the SAME atomic (tenant-row-locked) check (FND-007)
+        // — INSIDE this transaction, before the insert.
+        await this.usage.assertUserSeatWithinLimit(tenantId, manager);
+
         // User creation, custom-role creation, role-permission assignment
         // and user-role assignment all happen inside THIS one transaction.
         assignedRole = isCustom

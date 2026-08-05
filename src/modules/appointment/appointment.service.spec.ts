@@ -14,9 +14,10 @@ import { AppointmentCancellation } from '../../entities/Calendar&Appointments/Ap
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
-import { Service } from '../../entities/Services/Service';
+import { Service, PricingType } from '../../entities/Services/Service';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 import {
   AppointmentStatus,
   AppointmentPaymentStatus,
@@ -41,7 +42,8 @@ describe('AppointmentsService', () => {
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
   let availability: { assertBookable: jest.Mock };
-  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock };
+  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock; incrementIfWithinLimit: jest.Mock };
+  let subscriptions: { assertBillableActionAllowed: jest.Mock };
   let notesRepo: MockRepository;
   let historyRepo: MockRepository;
   let statusLogsRepo: MockRepository;
@@ -71,7 +73,9 @@ describe('AppointmentsService', () => {
     usage = {
       assertWithinLimit: jest.fn().mockResolvedValue(undefined),
       increment: jest.fn().mockResolvedValue(undefined),
+      incrementIfWithinLimit: jest.fn().mockResolvedValue({ applied: true, used: 0, limit: 100 }),
     };
+    subscriptions = { assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined) };
     notesRepo = createMockRepository();
     historyRepo = createMockRepository();
     statusLogsRepo = createMockRepository();
@@ -93,6 +97,7 @@ describe('AppointmentsService', () => {
         { provide: AvailabilityService, useValue: availability },
         { provide: UsageService, useValue: usage },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: SubscriptionService, useValue: subscriptions },
       ],
     }).compile();
     service = moduleRef.get(AppointmentsService);
@@ -123,13 +128,15 @@ describe('AppointmentsService', () => {
       repo(Appointment).save.mockImplementation(async (e: any) => ({ id: 'appt-1', ...e }));
     };
 
-    it('books through the availability engine and counts the quota (success)', async () => {
+    it('books through the availability engine and counts the quota atomically (success)', async () => {
       primeValidRefs();
 
       const result = await service.create(TENANT, USER, dto);
 
-      expect(usage.assertWithinLimit).toHaveBeenCalledWith(TENANT, 'APPOINTMENTS', 1);
-      // Availability is validated INSIDE the transaction (manager passed through).
+      // FND-034: the quota check-and-increment is now ONE atomic call, INSIDE
+      // the transaction (manager passed through), after availability —
+      // replacing the old assertWithinLimit-then-later-increment pair.
+      expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(TENANT, 'APPOINTMENTS', 1, manager);
       expect(availability.assertBookable).toHaveBeenCalledWith(
         TENANT,
         'b1',
@@ -142,15 +149,30 @@ describe('AppointmentsService', () => {
       const created = repo(Appointment).create.mock.calls[0][0];
       expect(created.status).toBe(AppointmentStatus.PENDING_PAYMENT);
       expect(created.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
-      expect(usage.increment).toHaveBeenCalledWith(TENANT, 'APPOINTMENTS', 1);
       expect(result).toBe(reloaded);
     });
 
-    it('rejects when the plan appointment quota is exceeded (before any work)', async () => {
-      usage.assertWithinLimit.mockRejectedValueOnce(
-        Object.assign(new Error('limit'), { code: ErrorCode.UNPROCESSABLE_ENTITY }),
+    // FND-034: the quota check now runs INSIDE the transaction (after
+    // availability, so only a genuine quota exhaustion reaches it) — a
+    // rejection there rolls the transaction back, so nothing is created.
+    it('rejects when the plan appointment quota is exceeded (transaction rolls back)', async () => {
+      primeValidRefs();
+      usage.incrementIfWithinLimit.mockResolvedValueOnce({ applied: false, used: 10, limit: 10 });
+      await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+    });
+
+    // FND-031/T082 — repeated at this shared seam so a queued/worker call is
+    // covered too, not just the HTTP path (SubscriptionAccessGuard).
+    it('refuses to create once grace-expired (before any work)', async () => {
+      subscriptions.assertBillableActionAllowed.mockRejectedValueOnce(
+        Object.assign(new Error('grace expired'), { code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED }),
       );
-      await expect(service.create(TENANT, USER, dto)).rejects.toBeDefined();
+      await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
+        code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
+      });
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
@@ -179,7 +201,35 @@ describe('AppointmentsService', () => {
       await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
-      expect(usage.increment).not.toHaveBeenCalled();
+      // Availability is checked BEFORE the quota gate — a conflict never reaches it.
+      expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
+    });
+
+    // FND-012 — a VARIABLE-priced service currently books silently at price 0
+    // (`base_price ?? 0` in computeWindowAndTotal/persistServices — a
+    // VARIABLE service's base_price is null by design, "determined at time
+    // of service").
+    it('refuses to book a VARIABLE-priced service (no booking-time pricing mechanism exists)', async () => {
+      repo(Branch).exists.mockResolvedValue(true);
+      repo(Customer).exists.mockResolvedValue(true);
+      repo(StaffProfile).exists.mockResolvedValue(true);
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc1', duration_minutes: 30, base_price: null, pricing_type: PricingType.VARIABLE, is_active: true },
+      ]);
+
+      await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
+        code: ErrorCode.VARIABLE_PRICING_UNSUPPORTED,
+      });
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+    });
+
+    it('still books normally when every service is FIXED-priced (regression guard)', async () => {
+      primeValidRefs();
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc1', duration_minutes: 30, base_price: 100, pricing_type: PricingType.FIXED, is_active: true },
+      ]);
+
+      await expect(service.create(TENANT, USER, dto)).resolves.toBeDefined();
     });
   });
 

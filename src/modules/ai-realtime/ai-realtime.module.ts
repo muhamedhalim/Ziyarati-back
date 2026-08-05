@@ -6,6 +6,7 @@ import { AiOrchestratorModule } from '../ai-orchestrator/ai-orchestrator.module'
 import { AuthModule } from '../auth/auth.module';
 import { AiModule } from '../ai/ai.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 import { AiRealtimeGateway } from './ai-realtime.gateway';
 import { WsAuthService } from './ws-auth.service';
 import { AgentPresenceService } from './agent-presence.service';
@@ -28,7 +29,10 @@ import { HandoverChatController } from './handover-chat.controller';
  * thread). Neither module imports AiRealtimeModule back, so this stays
  * acyclic — the alternative (importing WhatsappModule into AiModule instead)
  * WOULD cycle, since WhatsappModule already imports AiOrchestratorModule which
- * imports AiModule.
+ * imports AiModule. `ConversationsModule` (FND-023 — recording the provider
+ * message id an agent's WhatsApp send returns, onto the timeline message) is
+ * safe to import directly, no forwardRef needed: it imports only
+ * StorageModule, so there is no path back to AiRealtimeModule.
  */
 @Module({
   imports: [
@@ -36,6 +40,7 @@ import { HandoverChatController } from './handover-chat.controller';
     AuthModule,
     AiModule,
     WhatsappModule,
+    ConversationsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

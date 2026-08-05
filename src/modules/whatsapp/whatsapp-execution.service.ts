@@ -16,6 +16,7 @@ import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { SendTemplateMessageDto } from './dto/send-template-message.dto';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 import {
   WHATSAPP_CHANNEL,
   WHATSAPP_DELIVERY_STATUS,
@@ -60,6 +61,7 @@ export class WhatsappExecutionService {
     private readonly queue: QueueService,
     private readonly usage: UsageService,
     private readonly ctx: TenantContextService,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   /**
@@ -120,6 +122,14 @@ export class WhatsappExecutionService {
       }
       priorProviderRef = claimResult.priorProviderRef;
     }
+
+    // FND-031: also enforced at the route level (SubscriptionAccessGuard, for
+    // the HTTP path) — repeated here so a QUEUED/worker-triggered call into
+    // this same seam is covered too (background paths never go through a
+    // guard). Placed after the reconciliation early-return above (RECLAIMING
+    // an already-sent message is not a NEW send) but before resolving
+    // account/template/recipient (fail fast on a genuinely new send).
+    await this.subscriptions.assertBillableActionAllowed(tenantId);
 
     const account = await this.router.resolveForSend(tenantId, {
       accountId: dto.accountId,
@@ -184,7 +194,29 @@ export class WhatsappExecutionService {
     // (immediate, scheduled-via-worker, and campaign sends all reuse it), so the
     // check/meter here covers every path — including background jobs. No-op under
     // free mode / override; throws 422 when the monthly message cap is reached.
-    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
+    //
+    // FND-034: reserved ATOMICALLY before the provider call (closing the
+    // check-then-act race — see UsageService.incrementIfWithinLimit), then
+    // released (decremented back) below if the send doesn't actually succeed.
+    // A DB transaction can't wrap the provider call (external HTTP, and
+    // holding a transaction open across a slow network call would be its own
+    // bug), so release-on-failure is explicit here rather than a rollback.
+    const admission = await this.usage.incrementIfWithinLimit(
+      tenantId,
+      USAGE_METRIC.WHATSAPP_MESSAGES,
+      1,
+    );
+    if (!admission.applied) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Usage limit reached for ${USAGE_METRIC.WHATSAPP_MESSAGES} (${admission.used}/${admission.limit})`,
+        publicContext: {
+          metric: USAGE_METRIC.WHATSAPP_MESSAGES,
+          used: admission.used,
+          limit: admission.limit,
+          requested: 1,
+        },
+      });
+    }
 
     let result;
     try {
@@ -214,9 +246,10 @@ export class WhatsappExecutionService {
       ? WHATSAPP_DELIVERY_STATUS.SENT
       : WHATSAPP_DELIVERY_STATUS.FAILED;
 
-    // Meter only successful sends against the monthly quota (best-effort).
-    if (result.success) {
-      await this.usage.increment(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
+    // Only successful sends actually cost quota (unchanged, pre-existing
+    // behavior) — a failure releases the reservation taken above.
+    if (!result.success) {
+      await this.usage.release(tenantId, USAGE_METRIC.WHATSAPP_MESSAGES, 1);
     }
 
     // provider_ref is written REGARDLESS of what happens after this point —

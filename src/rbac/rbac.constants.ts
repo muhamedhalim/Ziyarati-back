@@ -205,6 +205,12 @@ export const PERMISSION = {
   USERS_MANAGE: 'users.manage',
   ROLES_MANAGE: 'roles.manage',
   TENANTS_MANAGE: 'tenants.manage',
+
+  // Branches (FND-017 — branch administration, delegable per-branch)
+  BRANCHES_CREATE: 'branches.create',
+  BRANCHES_UPDATE: 'branches.update',
+  BRANCHES_UPDATE_OWN: 'branches.update_own', // ABAC — see below
+  BRANCHES_DELETE: 'branches.delete',
 } as const;
 
 export type PermissionSlug = (typeof PERMISSION)[keyof typeof PERMISSION];
@@ -226,6 +232,81 @@ export const ALL_PERMISSION_SLUGS: PermissionSlug[] = Object.values(PERMISSION);
 export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> = new Set([
   PERMISSION.APPOINTMENTS_READ_OWN,
   PERMISSION.PROFILE_UPDATE_OWN,
+  PERMISSION.BRANCHES_UPDATE_OWN,
+]);
+
+/**
+ * Permissions in the catalogue with NO verified enforcing consumer — no
+ * controller route checks for it (no `@RequirePermissions`/
+ * `@RequireAnyPermission` referencing it) and no service-layer ABAC policy
+ * references it either (FND-010). `PROFILE_UPDATE_OWN` is the one known case:
+ * it is granted to `ROLE.CUSTOMER`, but no seeder or signup flow assigns that
+ * role and no route consumes the permission — a catalogue entry without a
+ * consumer, per the Feature 004 spec decision: **keep the permission, do not
+ * build the route, do not introduce a customer self-service feature.**
+ *
+ * This set is deliberately explicit and tested both ways —
+ * `rbac.constants.spec.ts`'s catalogue-coverage test fails if the codebase's
+ * real enforcement coverage ever drifts from this list, whether a permission
+ * goes unenforced without being added here, or an entry here turns out to
+ * actually be enforced (stale). `RolesService.assignRoleToUser` additionally
+ * refuses to let any role carrying one of these become assignable to a user
+ * (see `assertNoUnenforcedPermission`) — converting the latent gap into a
+ * structurally impossible state rather than a live one, so a future change
+ * that starts assigning `customer` cannot silently ship the gap live.
+ */
+export const UNENFORCED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
+  PERMISSION.PROFILE_UPDATE_OWN,
+]);
+
+/**
+ * Catalogue permissions verified to be enforced via ROLE-IDENTITY gating
+ * (`@Roles(ROLE.SUPER_ADMIN)` + `RolesGuard`) rather than permission-slug
+ * checking — held only by `super_admin` via the `ALL_PERMISSIONS` wildcard,
+ * never listed individually in any role's explicit permission array. The
+ * catalogue-coverage test (`rbac.constants.spec.ts`) greps for literal
+ * `PERMISSION.<KEY>` references and can't see role-identity gating (those
+ * routes reference `ROLE.SUPER_ADMIN`, never the permission slug at all), so
+ * these are excluded from its "unenforced" computation via this explicit,
+ * human-verified allow-list rather than read as a false-positive gap.
+ */
+export const ROLE_GATED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
+  PERMISSION.PLATFORM_SETTINGS_READ, // system-setting.controller.ts:70, @Roles(ROLE.SUPER_ADMIN)
+  PERMISSION.PLATFORM_SETTINGS_MANAGE, // ditto — same blanket controller-level gate
+  PERMISSION.TENANTS_MANAGE, // tenant.controller.ts:151 (class) + per-method @Roles(ROLE.SUPER_ADMIN)
+]);
+
+/**
+ * Additional catalogue permissions the coverage test discovered to have NO
+ * enforcing consumer, beyond `PROFILE_UPDATE_OWN` (FND-010's own finding) —
+ * found BY writing this test, not part of Wave 3's finding list, so building
+ * enforcement for them is out of scope for this remediation. Recorded here
+ * rather than silently ignored, so the coverage test passes for the RIGHT
+ * reason and a future wave can triage each individually:
+ *
+ *   - CUSTOMERS_CREATE / CUSTOMERS_UPDATE — `CustomerController` (the real,
+ *     live route) checks `CRM_CUSTOMERS_MANAGE` instead; these look like
+ *     leftovers from before the `crm.*` namespace was split out.
+ *   - REPORTS_READ / REPORTS_EXPORT — no `reports.controller.ts` exists; the
+ *     equivalent read is `ANALYTICS_REPORTS_READ` (daily/monthly report
+ *     controllers), and no export feature exists anywhere in the codebase.
+ *   - AI_CHAT — both AI message routes check `AI_CONVERSATIONS_MANAGE`
+ *     instead.
+ *
+ * Deliberately NOT added to `UNENFORCED_PERMISSION_SLUGS` / guarded by
+ * `RolesService.assertNoUnenforcedPermission`: every role below is ALREADY
+ * actively assigned via the live tenant-registration/staff-creation flow
+ * (OWNER, MANAGER, RECEPTIONIST all hold at least one of these), so refusing
+ * their assignment the way FND-010 does for the never-assigned `customer`
+ * role would break real signup today — a regression this task must not
+ * introduce for a problem it wasn't asked to fix.
+ */
+export const UNTRIAGED_COVERAGE_GAP_SLUGS: ReadonlySet<PermissionSlug> = new Set([
+  PERMISSION.CUSTOMERS_CREATE,
+  PERMISSION.CUSTOMERS_UPDATE,
+  PERMISSION.REPORTS_READ,
+  PERMISSION.REPORTS_EXPORT,
+  PERMISSION.AI_CHAT,
 ]);
 
 /**
@@ -455,6 +536,11 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.USERS_MANAGE, name: 'Manage users', module: 'admin' },
   { slug: PERMISSION.ROLES_MANAGE, name: 'Manage roles', module: 'admin' },
   { slug: PERMISSION.TENANTS_MANAGE, name: 'Manage tenants', module: 'admin' },
+
+  { slug: PERMISSION.BRANCHES_CREATE, name: 'Create branches', module: 'branches' },
+  { slug: PERMISSION.BRANCHES_UPDATE, name: 'Update branches', module: 'branches' },
+  { slug: PERMISSION.BRANCHES_UPDATE_OWN, name: 'Update own assigned branch', module: 'branches' },
+  { slug: PERMISSION.BRANCHES_DELETE, name: 'Delete branches', module: 'branches' },
 ];
 
 export const ROLES: RoleDef[] = [
@@ -644,6 +730,9 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PLATFORM_INTEGRATIONS_MANAGE,
     PERMISSION.PLATFORM_FILES_READ,
     PERMISSION.PLATFORM_FILES_MANAGE,
+    PERMISSION.BRANCHES_CREATE,
+    PERMISSION.BRANCHES_UPDATE,
+    PERMISSION.BRANCHES_DELETE,
   ],
 
   // Operations manager: appointments + customers + staff + reports.
@@ -747,6 +836,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PLATFORM_WEBHOOKS_READ,
     PERMISSION.PLATFORM_FILES_READ,
     PERMISSION.PLATFORM_FILES_MANAGE,
+    PERMISSION.BRANCHES_CREATE,
+    PERMISSION.BRANCHES_UPDATE,
   ],
 
   // Front desk: books appointments, manages customer records, WhatsApp replies.

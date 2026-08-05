@@ -5,6 +5,15 @@ import type { Request } from 'express';
 import { REQUIRE_ACTIVE_SUBSCRIPTION_KEY } from '../decorators/require-active-subscription.decorator';
 import { AccessControlService } from '../access-control.service';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
+import { AppError, ErrorCode } from '../../../common/errors';
+
+/**
+ * DELETE is deliberately NOT gated by the grace-expired billable-action
+ * refusal (FND-031/T082): removing something never increases usage or bills
+ * the tenant, so blocking it during grace-expired would only make cleanup
+ * harder for no protective purpose the finding asks for.
+ */
+const BILLABLE_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 /**
  * Enforces platform access on routes annotated with `@RequireActiveSubscription()`.
@@ -38,13 +47,22 @@ export class SubscriptionAccessGuard implements CanActivate {
     );
     if (!required) return true; // route not gated
 
-    const user = context.switchToHttp().getRequest<Request>().user as
-      | AuthenticatedUser
-      | undefined;
+    const request = context.switchToHttp().getRequest<Request>();
+    const user = request.user as AuthenticatedUser | undefined;
     // Unauthenticated is handled by JwtAuthGuard; super-admin/no-tenant bypasses.
     if (!user?.tenantId) return true;
 
-    await this.access.assertUsable(user.tenantId); // throws 403 when denied
+    await this.access.assertUsable(user.tenantId); // throws 403 when denied (broad gate — reads included)
+
+    // FND-031/T082: narrower write-specific gate — read access (and DELETE,
+    // which never increases usage) is preserved even once grace-expired;
+    // only a genuinely billable/usage-increasing write is refused here.
+    if (BILLABLE_METHODS.has(request.method.toUpperCase())) {
+      const billable = await this.access.isBillableAllowed(user.tenantId);
+      if (!billable) {
+        throw new AppError(ErrorCode.SUBSCRIPTION_GRACE_EXPIRED);
+      }
+    }
     return true;
   }
 }

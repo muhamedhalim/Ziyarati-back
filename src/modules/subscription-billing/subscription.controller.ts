@@ -70,20 +70,34 @@ const S_SUBSCRIPTION = {
       type: 'object',
       properties: {
         id: { type: 'string', format: 'uuid' },
-        status: { type: 'string', enum: ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'SUSPENDED'], example: 'ACTIVE' },
+        status: { type: 'string', enum: ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'SUSPENDED', 'GRACE_EXPIRED'], example: 'ACTIVE' },
         starts_at: { type: 'string', format: 'date-time' },
         ends_at: { type: 'string', format: 'date-time' },
+        grace_started_at: { type: 'string', format: 'date-time', nullable: true, description: 'FND-031: when PAST_DUE ("expired-in-grace") was entered.' },
+        grace_expired_at: { type: 'string', format: 'date-time', nullable: true, description: 'FND-031: when GRACE_EXPIRED was entered.' },
         auto_renew: { type: 'boolean', example: true },
         plan: S_PLAN,
       },
     },
     effectiveStatus: {
       type: 'string',
-      enum: ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'SUSPENDED', 'EXPIRED'],
+      enum: ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'SUSPENDED', 'GRACE_EXPIRED'],
       example: 'ACTIVE',
-      description: 'Derived status; EXPIRED when an active/trial subscription is past its ends_at.',
+      description: 'Live-derived status: ACTIVE/TRIAL past ends_at reads as PAST_DUE; PAST_DUE whose grace window has elapsed reads as GRACE_EXPIRED — never a race against the background transition sweep.',
     },
-    isUsable: { type: 'boolean', example: true },
+    isUsable: { type: 'boolean', example: true, description: 'Read access — true for every state except CANCELLED/SUSPENDED (FR-B007d).' },
+    accessState: {
+      type: 'string',
+      enum: ['active', 'expired-in-grace', 'grace-expired', 'terminal'],
+      example: 'active',
+      description: 'FND-031 — the three (plus terminal) access states named in the finding. Additive; never derive this from `status` client-side (LG-10).',
+    },
+    graceEndsAt: {
+      type: 'string',
+      format: 'date-time',
+      nullable: true,
+      description: 'FND-031 — set only while accessState is "expired-in-grace"; when new billable/usage-increasing actions will start being refused.',
+    },
   },
 };
 

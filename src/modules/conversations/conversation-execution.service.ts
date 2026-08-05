@@ -121,6 +121,25 @@ export class ConversationExecutionService {
   }
 
   /**
+   * Records the provider's message id onto an ALREADY-CREATED message
+   * (FND-023), once an outbound WhatsApp send completes. `sendMessage`/
+   * `recordChannelMessage` persist the row BEFORE the channel send even
+   * happens (so a message is never lost if the send fails), so the provider
+   * id can only be attached afterward — this is what lets a LATER delivery/
+   * read webhook (matched by wamid) find its way back to the right row.
+   */
+  async recordProviderMessageId(
+    tenantId: string,
+    messageId: string,
+    waMessageId: string,
+  ): Promise<void> {
+    await this.messages.update(
+      { id: messageId, tenant: { id: tenantId } },
+      { wa_message_id: waMessageId },
+    );
+  }
+
+  /**
    * Persist a non-agent channel message (CUSTOMER inbound, BOT/AI reply, or
    * SYSTEM note) into the unified Conversation/Message timeline — the seam used
    * by the AI engine to MIRROR each turn so agents, inbox, search and analytics

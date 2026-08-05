@@ -11,8 +11,10 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { Conversation } from '../../entities/Conversations/Conversation';
 import { Message } from '../../entities/Conversations/Message';
 import { MessageAttachment } from '../../entities/Conversations/MessageAttachment';
+import { MessageStatusLog } from '../../entities/Conversations/MessageStatusLog';
 
 import { WhatsappAccountService } from './whatsapp-account.service';
 import { WhatsappTemplateService } from './whatsapp-template.service';
@@ -64,6 +66,19 @@ import { PlatformModule } from '../platform/platform.module';
 // way to close the "campaign delivery status never updates from the real
 // Meta webhook" gap without restructuring module boundaries.
 import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
+// FND-023 — same reasoning as RecipientDeliveryService immediately above:
+// not imported via ConversationsModule (avoids reasoning about a second
+// potential cycle through it) — MessageStatusService depends only on the
+// Message/MessageStatusLog repositories (both registered below), so
+// providing the same stateless class here too is the minimal way to route
+// delivery/read status to the unified conversation timeline.
+import { MessageStatusService } from '../conversations/message-status.service';
+// FND-023 — same reasoning again: ConversationExecutionService depends only
+// on Message/Conversation repositories + MessageStatusService (all available
+// in this module already) + DataSource, so it's provided directly rather
+// than importing ConversationsModule. Used by WhatsappInboundAiService to
+// attach a bot reply's provider message id once its send completes.
+import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 
 /**
  * WhatsApp Domain.
@@ -97,6 +112,10 @@ import { RecipientDeliveryService } from '../campaigns/recipient-delivery.servic
       // ConversationsModule.
       Message,
       MessageAttachment,
+      // FND-023 — MessageStatusService's and ConversationExecutionService's
+      // own repository dependencies (see the provider import comments below).
+      MessageStatusLog,
+      Conversation,
       // DLQ admin actions write a safe audit record (FND-002, FR-013).
       AuditLog,
     ]),
@@ -153,6 +172,8 @@ import { RecipientDeliveryService } from '../campaigns/recipient-delivery.servic
     WhatsappTemplateSyncService,
     WhatsappMediaService,
     RecipientDeliveryService,
+    MessageStatusService,
+    ConversationExecutionService,
     // REAL provider registered into the strategy token (per-tenant credentials,
     // approved template sends). NoopWhatsappProvider stays only as the factory's
     // typed fallback dependency and is never resolved (Meta supports() === true).

@@ -24,6 +24,8 @@ export enum SubscriptionStatus {
   PAST_DUE = 'PAST_DUE',
   CANCELLED = 'CANCELLED',
   SUSPENDED = 'SUSPENDED',
+  /** FND-031/M-02 — grace window elapsed with no settlement. New billable/usage-increasing actions refused; read access preserved. */
+  GRACE_EXPIRED = 'GRACE_EXPIRED',
 }
 
 export enum InvoiceStatus {

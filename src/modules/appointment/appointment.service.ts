@@ -23,7 +23,7 @@ import { AppointmentCancellation } from '../../entities/Calendar&Appointments/Ap
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
-import { Service } from '../../entities/Services/Service';
+import { Service, PricingType } from '../../entities/Services/Service';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
 
@@ -36,6 +36,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { PERMISSION } from '../../rbac/rbac.constants';
 
 /** Authenticated principal's identity + permission set — enough to apply ownership scoping. */
@@ -142,6 +143,7 @@ export class AppointmentsService {
     private readonly availability: AvailabilityService,
     private readonly usage: UsageService,
     private readonly emitter: EventEmitter2,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   // ───────────────────────────── Queries ─────────────────────────────────── //
@@ -269,9 +271,10 @@ export class AppointmentsService {
     userId: string,
     dto: CreateAppointmentDto,
   ): Promise<Appointment> {
-    // Quota: appointments are a usage-limited resource. No-op under free mode /
-    // override; throws 422 when the plan's monthly appointment limit is reached.
-    await this.usage.assertWithinLimit(tenantId, USAGE_METRIC.APPOINTMENTS, 1);
+    // FND-031: also enforced at the route level (SubscriptionAccessGuard, for
+    // the HTTP path) — repeated here so a QUEUED/worker-triggered call into
+    // this same seam is covered too (background paths never go through a guard).
+    await this.subscriptions.assertBillableActionAllowed(tenantId);
 
     const created = await this.dataSource.transaction(async (manager) => {
       // All references validated within the SAME tenant scope.
@@ -300,6 +303,29 @@ export class AppointmentsService {
         endAt,
         { manager },
       );
+
+      // FND-034: quota check-and-increment, atomic, INSIDE this transaction —
+      // a rollback (any failure below, or a concurrent double-booking loss)
+      // undoes the increment too; a second concurrent request blocks on the
+      // usage row's lock until this one commits. Placed after every other
+      // validation so only a genuine quota exhaustion reaches this point.
+      const admission = await this.usage.incrementIfWithinLimit(
+        tenantId,
+        USAGE_METRIC.APPOINTMENTS,
+        1,
+        manager,
+      );
+      if (!admission.applied) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: `Usage limit reached for ${USAGE_METRIC.APPOINTMENTS} (${admission.used}/${admission.limit})`,
+          publicContext: {
+            metric: USAGE_METRIC.APPOINTMENTS,
+            used: admission.used,
+            limit: admission.limit,
+            requested: 1,
+          },
+        });
+      }
 
       const repo = manager.getRepository(Appointment);
       const status = AppointmentStatus.PENDING_PAYMENT;
@@ -343,9 +369,6 @@ export class AppointmentsService {
 
       return saved;
     });
-
-    // Count the booking against the tenant's monthly quota (best-effort).
-    await this.usage.increment(tenantId, USAGE_METRIC.APPOINTMENTS, 1);
 
     const appointment = await this.findOne(tenantId, created.id);
     this.emitter.emit(
@@ -950,6 +973,21 @@ export class AppointmentsService {
         message: 'One or more services were not found or are inactive',
       });
     }
+
+    // FND-012/AD-11: variable pricing is BLOCKED, not built — there is no
+    // booking-time pricing mechanism (the operator would need to enter a
+    // price at time of service, a workflow this feature does not add). A
+    // VARIABLE service's `base_price` is null by design; without this check
+    // `computeWindowAndTotal`/`persistServices`'s `base_price ?? 0` would
+    // silently record the booking at a zero price. Shared by both `create`
+    // and `setServices` (both call this method).
+    const variable = services.filter((s) => s.pricing_type === PricingType.VARIABLE);
+    if (variable.length > 0) {
+      throw new AppError(ErrorCode.VARIABLE_PRICING_UNSUPPORTED, {
+        publicContext: { serviceIds: variable.map((s) => s.id) },
+      });
+    }
+
     return services;
   }
 

@@ -10,6 +10,7 @@ import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { QueueService } from '../../queue/queue.service';
 import { UsageService } from '../subscription-billing/usage.service';
+import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WHATSAPP_DELIVERY_STATUS } from './whatsapp.constants';
 import { ErrorCode } from '../../common/errors';
@@ -28,7 +29,8 @@ describe('WhatsappExecutionService', () => {
   let templates: { getSendableTemplate: jest.Mock };
   let messaging: { send: jest.Mock };
   let queue: { enqueueWhatsappSend: jest.Mock };
-  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock };
+  let subscriptions: { assertBillableActionAllowed: jest.Mock };
+  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock; incrementIfWithinLimit: jest.Mock; release: jest.Mock };
 
   beforeEach(async () => {
     logs = createMockRepository();
@@ -44,7 +46,10 @@ describe('WhatsappExecutionService', () => {
     usage = {
       assertWithinLimit: jest.fn().mockResolvedValue(undefined),
       increment: jest.fn().mockResolvedValue(undefined),
+      incrementIfWithinLimit: jest.fn().mockResolvedValue({ applied: true, used: 0, limit: 100 }),
+      release: jest.fn().mockResolvedValue(undefined),
     };
+    subscriptions = { assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -58,6 +63,7 @@ describe('WhatsappExecutionService', () => {
         { provide: QueueService, useValue: queue },
         { provide: UsageService, useValue: usage },
         { provide: TenantContextService, useValue: new TenantContextService() },
+        { provide: SubscriptionService, useValue: subscriptions },
       ],
     }).compile();
     service = moduleRef.get(WhatsappExecutionService);
@@ -66,33 +72,38 @@ describe('WhatsappExecutionService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('sendTemplateMessage', () => {
-    it('resolves account/template/recipient, checks quota, sends, and records a SENT log', async () => {
+    it('resolves account/template/recipient, reserves quota atomically, sends, and records a SENT log', async () => {
       const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
 
-      expect(usage.assertWithinLimit).toHaveBeenCalledWith(TENANT, expect.any(String), 1);
+      // FND-034: reserved atomically BEFORE the provider call (no separate
+      // later increment() — see UsageService.incrementIfWithinLimit).
+      expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(TENANT, expect.any(String), 1);
       expect(messaging.send).toHaveBeenCalledWith(
         expect.objectContaining({ tenantId: TENANT, accountId: ACCOUNT.id, to: '966500000000', templateId: TEMPLATE.id }),
       );
-      expect(usage.increment).toHaveBeenCalledWith(TENANT, expect.any(String), 1);
+      expect(usage.release).not.toHaveBeenCalled();
       expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT, providerMessageId: 'wamid.1' });
     });
 
-    it('does NOT meter usage when the provider reports failure', async () => {
+    // FND-034: quota is reserved BEFORE the send now, so a provider failure
+    // must RELEASE it — net cost is still zero for a failed send, unchanged.
+    it('releases the reservation when the provider reports failure', async () => {
       messaging.send.mockResolvedValueOnce({ success: false, error: 'template paused' });
 
       const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
 
-      expect(usage.increment).not.toHaveBeenCalled();
+      expect(usage.incrementIfWithinLimit).toHaveBeenCalled();
+      expect(usage.release).toHaveBeenCalledWith(TENANT, expect.any(String), 1);
       expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.FAILED, error: 'template paused' });
     });
 
-    it('catches a provider throw and records it as a failed send rather than propagating', async () => {
+    it('catches a provider throw, releases the reservation, and records it as a failed send rather than propagating', async () => {
       messaging.send.mockRejectedValueOnce(new Error('ECONNRESET'));
 
       const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any);
 
       expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.FAILED, error: 'ECONNRESET' });
-      expect(usage.increment).not.toHaveBeenCalled();
+      expect(usage.release).toHaveBeenCalledWith(TENANT, expect.any(String), 1);
     });
 
     it('resolves a contact recipient and rejects one with no wa_id', async () => {
@@ -103,6 +114,18 @@ describe('WhatsappExecutionService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
 
+    // FND-031/T082 — repeated at this shared seam so a queued/worker call is
+    // covered too, not just the HTTP path (SubscriptionAccessGuard).
+    it('refuses to send once grace-expired (before ever calling the provider)', async () => {
+      subscriptions.assertBillableActionAllowed.mockRejectedValueOnce(
+        Object.assign(new Error('grace expired'), { code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED }),
+      );
+      await expect(
+        service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED });
+      expect(messaging.send).not.toHaveBeenCalled();
+    });
+
     it('requires exactly one recipient selector', async () => {
       await expect(
         service.sendTemplateMessage(TENANT, 'tpl-1', {} as any),
@@ -110,13 +133,11 @@ describe('WhatsappExecutionService', () => {
     });
 
     it('propagates quota exhaustion before ever calling the provider', async () => {
-      usage.assertWithinLimit.mockRejectedValueOnce(
-        Object.assign(new Error('quota exceeded'), { code: ErrorCode.UNPROCESSABLE_ENTITY }),
-      );
+      usage.incrementIfWithinLimit.mockResolvedValueOnce({ applied: false, used: 100, limit: 100 });
 
       await expect(
         service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
-      ).rejects.toThrow('quota exceeded');
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
       expect(messaging.send).not.toHaveBeenCalled();
     });
 
@@ -315,7 +336,7 @@ describe('WhatsappExecutionService', () => {
         const res = await service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any, { logId: 'log-1' });
 
         expect(messaging.send).not.toHaveBeenCalled();
-        expect(usage.increment).not.toHaveBeenCalled();
+        expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
         expect(res).toMatchObject({ status: WHATSAPP_DELIVERY_STATUS.SENT, providerMessageId: 'wamid.PRIOR', reconciled: true });
         expect(logs.update).toHaveBeenCalledWith(
           { id: 'log-1' },

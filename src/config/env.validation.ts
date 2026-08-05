@@ -85,6 +85,13 @@ export const validate = (config: Record<string, unknown>) => {
     // sweep. Floored at 1 day so a 0/negative value can't purge the whole table.
     ANALYTICS_EVENT_RETENTION_DAYS: Joi.number().min(1).default(90),
 
+    // FND-031: how long a PAST_DUE ("expired-in-grace") subscription keeps its
+    // full, unchanged capabilities before becoming GRACE_EXPIRED (new billable/
+    // usage-increasing actions refused; reads stay available regardless).
+    // Floored at 1 day so an unset/zero value can never mean "no grace at
+    // all" (FR-B007g — configurable, never hardcoded, and never silently zero).
+    SUBSCRIPTION_GRACE_DAYS: Joi.number().min(1).default(14),
+
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_REFRESH_SECRET: Joi.string().required(),
 

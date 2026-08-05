@@ -18,6 +18,7 @@ describe('AnalyticsProcessor', () => {
   let queue: {
     enqueueAnalyticsAggregateBulk: jest.Mock;
     enqueueAnalyticsReportBulk: jest.Mock;
+    enqueueAnalyticsReportMonthlyBulk: jest.Mock;
   };
 
   beforeEach(() => {
@@ -36,6 +37,7 @@ describe('AnalyticsProcessor', () => {
     queue = {
       enqueueAnalyticsAggregateBulk: jest.fn().mockResolvedValue(undefined),
       enqueueAnalyticsReportBulk: jest.fn().mockResolvedValue(undefined),
+      enqueueAnalyticsReportMonthlyBulk: jest.fn().mockResolvedValue(undefined),
     };
     processor = new AnalyticsProcessor(
       dashboard as unknown as DashboardMetricService,
@@ -122,5 +124,46 @@ describe('AnalyticsProcessor', () => {
       't1',
       expect.objectContaining({ month: '2026-07' }),
     );
+  });
+
+  /**
+   * FND-014 — before the fix, a `kind: 'monthly'` sweep (tenantId null) fell
+   * through to the DAILY sweep unconditionally (it never inspected `kind`),
+   * silently fanning out `kind: 'daily'` per-tenant jobs for "yesterday"
+   * instead of monthly reports for the completed month. Fails today because
+   * `enqueueAnalyticsReportMonthlyBulk` is never called.
+   */
+  it('generateReport monthly sweep pages through tenants and bulk-enqueues monthly reports for the explicit month (FND-014)', async () => {
+    const res = await processor.process({
+      name: JOB.ANALYTICS_GENERATE_REPORT,
+      data: { tenantId: null, kind: 'monthly', month: '2026-07' },
+    } as any);
+    expect(queue.enqueueAnalyticsReportMonthlyBulk).toHaveBeenCalledTimes(1);
+    expect(queue.enqueueAnalyticsReportMonthlyBulk).toHaveBeenCalledWith([
+      { tenantId: 't1', month: '2026-07' },
+      { tenantId: 't2', month: '2026-07' },
+    ]);
+    expect(queue.enqueueAnalyticsReportBulk).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ fannedOut: 2, month: '2026-07' });
+  });
+
+  it('generateReport monthly sweep defaults to the completed UTC month when none is given (FND-014)', async () => {
+    const fixed = new Date('2026-08-01T00:35:00.000Z');
+    jest.useFakeTimers().setSystemTime(fixed);
+    try {
+      const res = await processor.process({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: { tenantId: null, kind: 'monthly' },
+      } as any);
+      // Timezone-explicit (UTC), not server-local: fires just after month
+      // rollover, targets the month that JUST completed.
+      expect(queue.enqueueAnalyticsReportMonthlyBulk).toHaveBeenCalledWith([
+        { tenantId: 't1', month: '2026-07' },
+        { tenantId: 't2', month: '2026-07' },
+      ]);
+      expect(res).toMatchObject({ fannedOut: 2, month: '2026-07' });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

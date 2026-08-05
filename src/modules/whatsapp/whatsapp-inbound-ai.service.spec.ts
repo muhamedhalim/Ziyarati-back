@@ -6,6 +6,7 @@ import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { Message } from '../../entities/Conversations/Message';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
+import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { WhatsappBotActorService } from './whatsapp-bot-actor.service';
@@ -25,6 +26,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let customers: { recordOptOut: jest.Mock; search: jest.Mock; create: jest.Mock };
   let settings: { getTyped: jest.Mock };
   let messaging: { sendSession: jest.Mock };
+  let conversationExecution: { recordProviderMessageId: jest.Mock };
 
   const CUSTOMER = { id: 'cust-1' };
   const EXISTING_CONTACT = {
@@ -44,6 +46,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     };
     settings = { getTyped: jest.fn().mockResolvedValue(KEYWORDS) };
     messaging = { sendSession: jest.fn().mockResolvedValue({ success: true }) };
+    conversationExecution = { recordProviderMessageId: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -52,6 +55,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         { provide: getRepositoryToken(Message), useValue: createMockRepository() },
         { provide: WhatsappMediaService, useValue: { enqueueForMessage: jest.fn() } },
         { provide: AiOrchestratorService, useValue: orchestrator },
+        { provide: ConversationExecutionService, useValue: conversationExecution },
         { provide: WhatsappMessagingService, useValue: messaging },
         { provide: WhatsappMessageRouter, useValue: { resolveForSend: jest.fn().mockResolvedValue({ id: 'acc-1', phoneNumberId: 'p1', mode: 'REAL' }) } },
         { provide: WhatsappBotActorService, useValue: { ensureBotActor: jest.fn().mockResolvedValue({ id: 'bot-1', tenantId: TENANT, email: null, roles: [], permissions: [] }) } },
@@ -90,6 +94,38 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
 
     expect(customers.recordOptOut).not.toHaveBeenCalled();
     expect(orchestrator.handleStream).toHaveBeenCalled();
+  });
+
+  it('[FND-023] records the provider message id onto the mirrored bot reply after a successful send', async () => {
+    orchestrator.handleStream.mockResolvedValueOnce({
+      reply: { content: 'We open at 9am' },
+      mirroredMessageId: 'msg-bot-1',
+    });
+    messaging.sendSession.mockResolvedValueOnce({ success: true, providerMessageId: 'wamid.bot-reply-1' });
+
+    await service.handleInboundValue(TENANT, {
+      messages: [{ id: 'wamid-5', from: '966500000000', type: 'text', text: { body: 'What time do you open?' } }],
+    } as never);
+
+    expect(conversationExecution.recordProviderMessageId).toHaveBeenCalledWith(
+      TENANT,
+      'msg-bot-1',
+      'wamid.bot-reply-1',
+    );
+  });
+
+  it('[FND-023] does not attempt to record a provider id when the orchestrator mirrored nothing (no linked conversation)', async () => {
+    orchestrator.handleStream.mockResolvedValueOnce({
+      reply: { content: 'We open at 9am' },
+      mirroredMessageId: null,
+    });
+    messaging.sendSession.mockResolvedValueOnce({ success: true, providerMessageId: 'wamid.bot-reply-2' });
+
+    await service.handleInboundValue(TENANT, {
+      messages: [{ id: 'wamid-6', from: '966500000000', type: 'text', text: { body: 'What time do you open?' } }],
+    } as never);
+
+    expect(conversationExecution.recordProviderMessageId).not.toHaveBeenCalled();
   });
 
   it('does not check consent (and proceeds normally) when the contact has no linked customer yet', async () => {

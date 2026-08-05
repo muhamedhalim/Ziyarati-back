@@ -56,7 +56,7 @@ describe('StaffService', () => {
     getSignedDownloadUrl: jest.Mock;
     deleteObject: jest.Mock;
   };
-  let usage: { assertCountWithinLimit: jest.Mock };
+  let usage: { assertCountWithinLimit: jest.Mock; assertUserSeatWithinLimit: jest.Mock };
   let staffAccess: { getAccessStates: jest.Mock };
 
   beforeEach(async () => {
@@ -85,7 +85,10 @@ describe('StaffService', () => {
       listUserRoles: jest.fn().mockResolvedValue([]),
       findOne: jest.fn(),
     };
-    usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
+    usage = {
+      assertCountWithinLimit: jest.fn().mockResolvedValue(undefined),
+      assertUserSeatWithinLimit: jest.fn().mockResolvedValue(undefined),
+    };
     staffAccess = { getAccessStates: jest.fn().mockResolvedValue(new Map()) };
     storage = {
       assertKeyBelongsToTenant: jest.fn(),
@@ -426,17 +429,20 @@ describe('StaffService', () => {
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
+    // FND-007: the seat-cap check now runs atomically INSIDE the transaction
+    // (tenant-row lock — see UsageService.assertUserSeatWithinLimit), first
+    // thing, before role resolution — `dataSource.transaction` IS invoked,
+    // its callback just fails immediately.
     it('propagates the plan user-limit failure from UsageService', async () => {
       users.findOne.mockResolvedValueOnce(null);
-      users.count.mockResolvedValueOnce(10);
-      usage.assertCountWithinLimit.mockRejectedValueOnce(
+      usage.assertUserSeatWithinLimit.mockRejectedValueOnce(
         new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'user limit reached' }),
       );
 
       await expect(service.createWithNewUser(TENANT, dto)).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(authService.createUserWithRole).not.toHaveBeenCalled();
     });
 
     it('creates the user, role and profile atomically and returns a one-time temporary password', async () => {
@@ -448,6 +454,8 @@ describe('StaffService', () => {
       const result = await service.createWithNewUser(TENANT, dto);
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      // FND-007: atomic, inside the transaction, before role resolution.
+      expect(usage.assertUserSeatWithinLimit).toHaveBeenCalledWith(TENANT, manager);
       expect(rolesService.findAssignableRoleBySlug).toHaveBeenCalledWith(ROLE.RECEPTIONIST, TENANT);
       expect(authService.createUserWithRole).toHaveBeenCalledWith(
         manager,

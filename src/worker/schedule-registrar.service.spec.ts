@@ -1,0 +1,67 @@
+import { ScheduleRegistrarService } from './schedule-registrar.service';
+import { QueueService } from '../queue/queue.service';
+import { JOB, QUEUE } from '../queue/queue.constants';
+
+describe('ScheduleRegistrarService', () => {
+  let service: ScheduleRegistrarService;
+  let queue: { addRepeatable: jest.Mock };
+  let config: { get: jest.Mock };
+
+  beforeEach(() => {
+    queue = { addRepeatable: jest.fn().mockResolvedValue(undefined) };
+    config = { get: jest.fn((_key: string, fallback?: unknown) => fallback) };
+    service = new ScheduleRegistrarService(
+      queue as unknown as QueueService,
+      config as any,
+    );
+  });
+
+  /**
+   * FND-014 — monthly reports had no scheduled fallback (manual-only). Fails
+   * today because no `kind: 'monthly'` repeatable is registered at all — the
+   * only `QUEUE.ANALYTICS`/`JOB.ANALYTICS_GENERATE_REPORT` registration is the
+   * pre-existing DAILY sweep (`kind` absent).
+   */
+  it('registers a monthly report tick, offset from the daily analytics.generateReport cron', async () => {
+    await service.onApplicationBootstrap();
+
+    const monthlyCall = queue.addRepeatable.mock.calls.find(
+      ([q, name, data]) =>
+        q === QUEUE.ANALYTICS &&
+        name === JOB.ANALYTICS_GENERATE_REPORT &&
+        (data as { kind?: string })?.kind === 'monthly',
+    );
+    expect(monthlyCall).toBeDefined();
+    const [, , data, cron] = monthlyCall!;
+    expect(data).toMatchObject({ tenantId: null, kind: 'monthly' });
+    // Runs monthly (not daily), and strictly after the daily 00:30 UTC tick.
+    expect(cron).toBe('35 0 1 * *');
+  });
+
+  it('still registers the pre-existing daily analytics.generateReport sweep unchanged', async () => {
+    await service.onApplicationBootstrap();
+
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.ANALYTICS,
+      JOB.ANALYTICS_GENERATE_REPORT,
+      { tenantId: null },
+      '30 0 * * *',
+    );
+  });
+
+  it('registers the campaign DLQ recovery sweep, every 5 minutes (FND-020)', async () => {
+    await service.onApplicationBootstrap();
+
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.CAMPAIGNS_MAINTENANCE,
+      JOB.CAMPAIGNS_RECOVER_DLQ,
+      { tenantId: null },
+      '*/5 * * * *',
+    );
+  });
+
+  it('does not throw when the queue is unreachable (fail-soft boot)', async () => {
+    queue.addRepeatable.mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
+  });
+});

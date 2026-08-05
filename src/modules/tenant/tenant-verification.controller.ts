@@ -14,6 +14,7 @@ import {
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
@@ -360,6 +361,12 @@ Records the platform reviewer's decision on a submitted document.
 approve the tenant — that requires a separate explicit action at
 \`POST /tenants/:id/approve\`.
 
+**Re-decision (GAP-001):** a document already \`approved\` or
+\`rejected\` refuses a second decision (409) rather than silently
+overwriting the first one — the refused attempt is still audited. To
+change an outcome, reject the document so the clinic re-submits (which
+opens a fresh \`pending\` document) and review that instead.
+
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
@@ -375,6 +382,10 @@ approve the tenant — that requires a separate explicit action at
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
   @ApiNotFoundResponse({ description: 'Document not found.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'This document was already approved/rejected and cannot be re-decided.',
+    schema: S_ERROR,
+  })
   @Patch(':documentId/review')
   @Roles(ROLE.SUPER_ADMIN)
   review(

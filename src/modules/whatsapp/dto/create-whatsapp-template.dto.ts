@@ -52,7 +52,8 @@ export class CreateWhatsappTemplateDto {
   accountId?: string;
 
   @ApiPropertyOptional({
-    description: 'Initial review status. Defaults to `draft`.',
+    description:
+      'Initial review status. Defaults to `draft`. `approved` is always rejected (403) — reachable only through WhatsApp/Meta\'s own review callback, never client input (GAP-002).',
     enum: WHATSAPP_TEMPLATE_STATUSES,
     example: 'draft',
     default: 'draft',

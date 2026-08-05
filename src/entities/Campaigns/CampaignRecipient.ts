@@ -76,6 +76,16 @@ export class CampaignRecipient {
   @Column({ type: 'timestamptz', nullable: true })
   delivered_at?: Date | null;
 
+  /**
+   * When this recipient's dead-letter entry was CONFIRMED written to
+   * `campaigns.dlq` (FND-020) — null means either not dead-lettered, or
+   * dead-lettered but the DLQ write itself hasn't been confirmed yet (the
+   * enqueue failed, or a recovery sweep hasn't run since). Distinguishing
+   * these is exactly what makes the recovery sweep possible.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  dlq_recorded_at?: Date | null;
+
   @CreateDateColumn()
   created_at!: Date;
 }

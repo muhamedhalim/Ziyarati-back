@@ -8,8 +8,10 @@ import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { MetaConfig } from './meta/meta.config';
 import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
+import { Message } from '../../entities/Conversations/Message';
 import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
 import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
+import { MessageStatusService } from '../conversations/message-status.service';
 import { QueueService } from '../../queue/queue.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ErrorCode } from '../../common/errors';
@@ -62,6 +64,8 @@ describe('WhatsappWebhookService', () => {
   let notifDelivery: { recordDelivery: jest.Mock };
   let recipientDelivery: { recordDelivery: jest.Mock };
   let queue: { enqueueWhatsappWebhook: jest.Mock };
+  let messages: MockRepository;
+  let messageStatus: { markDelivered: jest.Mock; markRead: jest.Mock; markFailed: jest.Mock };
 
   beforeEach(async () => {
     webhooks = createMockRepository();
@@ -75,15 +79,24 @@ describe('WhatsappWebhookService', () => {
     notifDelivery = { recordDelivery: jest.fn().mockResolvedValue(undefined) };
     recipientDelivery = { recordDelivery: jest.fn().mockResolvedValue({ updated: false, reason: 'recipient-not-found' }) };
     queue = { enqueueWhatsappWebhook: jest.fn().mockResolvedValue(undefined) };
+    messages = createMockRepository();
+    messages.findOne.mockResolvedValue(null); // default: no matching conversation message
+    messageStatus = {
+      markDelivered: jest.fn().mockResolvedValue(undefined),
+      markRead: jest.fn().mockResolvedValue(undefined),
+      markFailed: jest.fn().mockResolvedValue(undefined),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         WhatsappWebhookService,
         { provide: getRepositoryToken(WhatsappWebhook), useValue: webhooks },
         { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
+        { provide: getRepositoryToken(Message), useValue: messages },
         { provide: WebhookSignatureVerifier, useValue: verifier },
         { provide: NotificationDeliveryService, useValue: notifDelivery },
         { provide: RecipientDeliveryService, useValue: recipientDelivery },
+        { provide: MessageStatusService, useValue: messageStatus },
         { provide: WhatsappInboundAiService, useValue: inboundAi },
         { provide: QueueService, useValue: queue },
         { provide: TenantContextService, useValue: new TenantContextService() },
@@ -258,6 +271,7 @@ describe('WhatsappWebhookService', () => {
       expect(recipientDelivery.recordDelivery).toHaveBeenCalledWith({
         providerRef: 'wamid.9',
         event: 'DELIVERED',
+        tenantId: TENANT,
       });
     });
 
@@ -273,6 +287,7 @@ describe('WhatsappWebhookService', () => {
       expect(recipientDelivery.recordDelivery).toHaveBeenCalledWith({
         providerRef: 'wamid.10',
         event: 'READ',
+        tenantId: TENANT,
       });
 
       webhooks.findOne.mockResolvedValueOnce({
@@ -286,6 +301,93 @@ describe('WhatsappWebhookService', () => {
       expect(recipientDelivery.recordDelivery).toHaveBeenCalledWith({
         providerRef: 'wamid.11',
         event: 'BOUNCED',
+        tenantId: TENANT,
+      });
+    });
+
+    // ── FND-023: routes status to the unified conversation timeline ────────
+    describe('FND-023 — also routes status to the unified conversation timeline', () => {
+      it('a delivered status for a matching conversation message calls markDelivered', async () => {
+        messages.findOne.mockResolvedValueOnce({ id: 'msg-1' });
+        webhooks.findOne.mockResolvedValueOnce({
+          id: 'evt-6',
+          processed: false,
+          event_type: 'message_status',
+          payload: statusBody('wamid.20', 'delivered'),
+          tenant: { id: TENANT },
+        });
+
+        await service.processEvent('evt-6');
+
+        expect(messages.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { tenant: { id: TENANT }, wa_message_id: 'wamid.20' },
+          }),
+        );
+        expect(messageStatus.markDelivered).toHaveBeenCalledWith(TENANT, 'msg-1');
+        expect(messageStatus.markRead).not.toHaveBeenCalled();
+      });
+
+      it('a read status for a matching conversation message calls markRead', async () => {
+        messages.findOne.mockResolvedValueOnce({ id: 'msg-2' });
+        webhooks.findOne.mockResolvedValueOnce({
+          id: 'evt-7',
+          processed: false,
+          event_type: 'message_status',
+          payload: statusBody('wamid.21', 'read'),
+          tenant: { id: TENANT },
+        });
+
+        await service.processEvent('evt-7');
+
+        expect(messageStatus.markRead).toHaveBeenCalledWith(TENANT, 'msg-2');
+        expect(messageStatus.markDelivered).not.toHaveBeenCalled();
+      });
+
+      it('a failed status for a matching conversation message calls markFailed', async () => {
+        messages.findOne.mockResolvedValueOnce({ id: 'msg-3' });
+        webhooks.findOne.mockResolvedValueOnce({
+          id: 'evt-8',
+          processed: false,
+          event_type: 'message_status',
+          payload: statusBody('wamid.22', 'failed'),
+          tenant: { id: TENANT },
+        });
+
+        await service.processEvent('evt-8');
+
+        expect(messageStatus.markFailed).toHaveBeenCalledWith(TENANT, 'msg-3');
+      });
+
+      it('a wamid matching no conversation message is a harmless no-op (notification/campaign send, not a conversation reply)', async () => {
+        messages.findOne.mockResolvedValueOnce(null);
+        webhooks.findOne.mockResolvedValueOnce({
+          id: 'evt-9',
+          processed: false,
+          event_type: 'message_status',
+          payload: statusBody('wamid.23', 'delivered'),
+          tenant: { id: TENANT },
+        });
+
+        await service.processEvent('evt-9');
+
+        expect(messageStatus.markDelivered).not.toHaveBeenCalled();
+        // The OTHER two axes still ran — a wamid only ever matches one table.
+        expect(recipientDelivery.recordDelivery).toHaveBeenCalled();
+      });
+
+      it("a 'sent' status is not forwarded to the timeline (SENT is already recorded at message creation)", async () => {
+        webhooks.findOne.mockResolvedValueOnce({
+          id: 'evt-10',
+          processed: false,
+          event_type: 'message_status',
+          payload: statusBody('wamid.24', 'sent'),
+          tenant: { id: TENANT },
+        });
+
+        await service.processEvent('evt-10');
+
+        expect(messages.findOne).not.toHaveBeenCalled();
       });
     });
 

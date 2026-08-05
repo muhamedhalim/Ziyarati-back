@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Not, Repository } from 'typeorm';
@@ -24,13 +25,33 @@ import {
   SubscriptionTrialStartedEvent,
 } from '../../events/subscription.events';
 
-/** Effective (computed) status — adds the derived EXPIRED state on top of the enum. */
-export type EffectiveStatus = SubscriptionStatus | 'EXPIRED';
+/**
+ * Effective (computed) status. FND-031: previously this bolted on a separate
+ * 'EXPIRED' string for "ACTIVE/TRIAL past ends_at" — that WAS the silent-lapse
+ * bug (a tenant past its end date became unusable forever, with no grace, no
+ * notice, no path back). It now live-derives straight into the real
+ * PAST_DUE/GRACE_EXPIRED enum values the state machine defines, so a
+ * subscription whose column hasn't been swept yet by the background
+ * transition job (`subscriptions.processor.ts`) is still treated exactly as
+ * if it had been — never a race between "what the column says" and
+ * "what's actually true".
+ */
+export type EffectiveStatus = SubscriptionStatus;
+
+/**
+ * FND-031/T086 — the three access states named in the finding/spec, additive
+ * to (never replacing or translating) the underlying `status` enum (LG-10).
+ */
+export type AccessState = 'active' | 'expired-in-grace' | 'grace-expired' | 'terminal';
 
 export interface SubscriptionView {
   subscription: Subscription;
   effectiveStatus: EffectiveStatus;
   isUsable: boolean;
+  /** Additive — FND-031/T086. Never derived by the client from `status` (LG-10: machine values are never translated). */
+  accessState: AccessState;
+  /** Additive — FND-031/T086. Null unless currently in `expired-in-grace` (PAST_DUE). */
+  graceEndsAt: Date | null;
 }
 
 /**
@@ -55,6 +76,7 @@ export class SubscriptionService {
     private readonly access: AccessControlService,
     private readonly platformSettings: SystemSettingService,
     private readonly emitter: EventEmitter2,
+    private readonly config: ConfigService,
   ) {}
 
   // ───────────────────────────── Plans ───────────────────────────────────── //
@@ -243,17 +265,68 @@ export class SubscriptionService {
 
   // ─────────────────── Cross-module access validation ────────────────────── //
 
-  /** Computes the effective status (incl. derived EXPIRED) and usability. */
-  getEffectiveStatus(subscription: Subscription): EffectiveStatus {
+  /**
+   * Computes the effective status, live-deriving past the raw column when the
+   * background transition sweep (`subscriptions.processor.ts`) hasn't caught
+   * up yet: ACTIVE/TRIAL past `ends_at` reads as PAST_DUE; PAST_DUE whose
+   * grace window (from `grace_started_at` + `graceDurationDays`) has elapsed
+   * reads as GRACE_EXPIRED. CANCELLED/SUSPENDED (terminal) and an
+   * already-GRACE_EXPIRED row pass through unchanged.
+   */
+  getEffectiveStatus(
+    subscription: Subscription,
+    graceDurationDays: number = this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14),
+  ): EffectiveStatus {
     const now = new Date();
     if (
-      (subscription.status === SubscriptionStatus.ACTIVE ||
-        subscription.status === SubscriptionStatus.TRIAL) &&
-      subscription.ends_at < now
+      subscription.status === SubscriptionStatus.CANCELLED ||
+      subscription.status === SubscriptionStatus.SUSPENDED ||
+      subscription.status === SubscriptionStatus.GRACE_EXPIRED
     ) {
-      return 'EXPIRED';
+      return subscription.status;
     }
+    if (subscription.status === SubscriptionStatus.PAST_DUE) {
+      if (subscription.grace_started_at) {
+        const graceEndsAt = new Date(
+          subscription.grace_started_at.getTime() + graceDurationDays * 86_400_000,
+        );
+        if (graceEndsAt < now) return SubscriptionStatus.GRACE_EXPIRED;
+      }
+      return SubscriptionStatus.PAST_DUE;
+    }
+    // ACTIVE / TRIAL
+    if (subscription.ends_at < now) return SubscriptionStatus.PAST_DUE;
     return subscription.status;
+  }
+
+  /**
+   * Read access is preserved in EVERY non-terminal state (FR-B007d) — only
+   * CANCELLED/SUSPENDED are not usable. Distinct from
+   * `assertBillableActionAllowed`, which is the narrower, write-specific gate.
+   */
+  isUsable(subscription: Subscription, graceDurationDays?: number): boolean {
+    const effective = this.getEffectiveStatus(subscription, graceDurationDays);
+    return (
+      effective !== SubscriptionStatus.CANCELLED &&
+      effective !== SubscriptionStatus.SUSPENDED
+    );
+  }
+
+  /**
+   * FND-031/FR-B007 — throws once a subscription is GRACE_EXPIRED. Callers
+   * are the same call sites FND-034 already gates (appointments, campaigns,
+   * WhatsApp sends, AI turns) plus any other billable/state-mutating action —
+   * read-only endpoints must NEVER call this.
+   */
+  async assertBillableActionAllowed(tenantId: string): Promise<void> {
+    const subscription = await this.subscriptions.findOne({
+      where: { tenant: { id: tenantId }, deleted_at: IsNull() },
+      order: { created_at: 'DESC' },
+    });
+    if (!subscription) return; // no subscription at all is AccessControlService's concern, not this gate's
+    if (this.getEffectiveStatus(subscription) === SubscriptionStatus.GRACE_EXPIRED) {
+      throw new AppError(ErrorCode.SUBSCRIPTION_GRACE_EXPIRED);
+    }
   }
 
   /**
@@ -269,11 +342,33 @@ export class SubscriptionService {
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   private view(subscription: Subscription): SubscriptionView {
-    const effectiveStatus = this.getEffectiveStatus(subscription);
-    const isUsable =
-      effectiveStatus === SubscriptionStatus.ACTIVE ||
-      effectiveStatus === SubscriptionStatus.TRIAL;
-    return { subscription, effectiveStatus, isUsable };
+    const graceDurationDays = this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14);
+    const effectiveStatus = this.getEffectiveStatus(subscription, graceDurationDays);
+    const isUsable = this.isUsable(subscription, graceDurationDays);
+
+    let accessState: AccessState;
+    let graceEndsAt: Date | null = null;
+    switch (effectiveStatus) {
+      case SubscriptionStatus.CANCELLED:
+      case SubscriptionStatus.SUSPENDED:
+        accessState = 'terminal';
+        break;
+      case SubscriptionStatus.GRACE_EXPIRED:
+        accessState = 'grace-expired';
+        break;
+      case SubscriptionStatus.PAST_DUE:
+        accessState = 'expired-in-grace';
+        if (subscription.grace_started_at) {
+          graceEndsAt = new Date(
+            subscription.grace_started_at.getTime() + graceDurationDays * 86_400_000,
+          );
+        }
+        break;
+      default: // ACTIVE / TRIAL
+        accessState = 'active';
+    }
+
+    return { subscription, effectiveStatus, isUsable, accessState, graceEndsAt };
   }
 
   private async getActivePlan(planId: string): Promise<SubscriptionPlan> {
