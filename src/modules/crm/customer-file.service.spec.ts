@@ -100,7 +100,10 @@ describe('CustomerFileService', () => {
 
       const result = await service.upload(TENANT, CUSTOMER, uploadInput, 'user-1');
 
-      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith(`${TENANT}/customer-file/x.pdf`);
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith(
+        `${TENANT}/customer-file/x.pdf`,
+        TENANT,
+      );
       expect(result.file_url).toBe('https://signed.example.com/file');
     });
   });
@@ -114,7 +117,7 @@ describe('CustomerFileService', () => {
     it('resolves a signed URL when a storage_key is present', async () => {
       files.findOne.mockResolvedValueOnce({ id: 'f1', storage_key: 'k1' });
       const result = await service.getMetadata(TENANT, CUSTOMER, 'f1');
-      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('k1');
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('k1', TENANT);
       expect(result.file_url).toBe('https://signed.example.com/file');
     });
 
@@ -130,7 +133,7 @@ describe('CustomerFileService', () => {
     it('removes the row and best-effort deletes the R2 object', async () => {
       files.findOne.mockResolvedValueOnce({ id: 'f1', storage_key: 'k1' });
       await expect(service.remove(TENANT, CUSTOMER, 'f1')).resolves.toEqual({ id: 'f1', deleted: true });
-      expect(storage.deleteObject).toHaveBeenCalledWith('k1');
+      expect(storage.deleteObject).toHaveBeenCalledWith('k1', TENANT);
     });
 
     it('does not call storage.getSignedDownloadUrl while removing (raw load only)', async () => {
@@ -161,7 +164,7 @@ describe('CustomerFileService', () => {
       const result = await service.list(TENANT, CUSTOMER, { page: 1, limit: 10 } as any);
       expect(result).toMatchObject({ total: 2 });
       expect(storage.getSignedDownloadUrl).toHaveBeenCalledTimes(1);
-      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('k1');
+      expect(storage.getSignedDownloadUrl).toHaveBeenCalledWith('k1', TENANT);
     });
   });
 });

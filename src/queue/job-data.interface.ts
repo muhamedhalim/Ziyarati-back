@@ -64,6 +64,8 @@ export interface NotificationDlqJob extends BaseJobData {
   failedReason: string;
   attemptsMade: number;
   diedAt: string;
+  /** FND-037 — ISO deadline for the retention sweep; absent = parked before the fix (left alone). */
+  expiresAt?: string;
 }
 
 // ── WhatsApp ───────────────────────────────────────────────────────────────
@@ -138,6 +140,8 @@ export interface WhatsappDlqJob extends BaseJobData {
   failedReason: string;
   attemptsMade: number;
   diedAt: string;
+  /** FND-037 — ISO deadline for the retention sweep; absent = parked before the fix (left alone). */
+  expiresAt?: string;
 }
 
 // ── Campaigns ──────────────────────────────────────────────────────────────
@@ -170,6 +174,8 @@ export interface CampaignDlqJob extends BaseJobData {
   failedReason: string;
   attemptsMade: number;
   diedAt: string;
+  /** FND-037 — ISO deadline for the retention sweep; absent = parked before the fix (left alone). */
+  expiresAt?: string;
 }
 
 // ── AI ─────────────────────────────────────────────────────────────────────
@@ -256,6 +262,8 @@ export interface WebhookDlqJob extends BaseJobData {
   failedReason: string;
   attemptsMade: number;
   diedAt: string;
+  /** FND-037 — ISO deadline for the retention sweep; absent = parked before the fix (left alone). */
+  expiresAt?: string;
 }
 
 /**

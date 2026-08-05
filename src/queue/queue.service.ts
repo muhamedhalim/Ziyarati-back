@@ -8,6 +8,7 @@ import { AppRedisService } from './app-redis.service';
 import {
   ALL_QUEUES,
   BACKOFF_EXPO_JITTER,
+  dlqExpiresAt,
   JOB,
   PII_REMOVE_ON_FAIL_SECONDS,
   QUEUE,
@@ -109,7 +110,8 @@ export class QueueService {
 
   /** Park an exhausted notification dispatch in the DLQ (never auto-processed). */
   enqueueNotificationDlq(data: NotificationDlqJob, opts?: JobsOptions) {
-    return this.add(QUEUE.NOTIFICATIONS_DLQ, JOB.NOTIFICATIONS_DLQ, data, {
+    // `notificationId` is the only payload field — no raw PII (FND-037: standard class).
+    return this.add(QUEUE.NOTIFICATIONS_DLQ, JOB.NOTIFICATIONS_DLQ, { ...data, expiresAt: dlqExpiresAt(false) }, {
       jobId: `notif-dlq-${data.notificationId}-${Date.now()}`,
       ...opts,
     });
@@ -171,7 +173,8 @@ export class QueueService {
    * `enqueueCampaignDlq`).
    */
   enqueueWhatsappDlq(data: WhatsappDlqJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WHATSAPP_DLQ, JOB.WHATSAPP_DLQ, data, {
+    // `originalData` carries template variables — PII (FND-037: short class).
+    return this.add(QUEUE.WHATSAPP_DLQ, JOB.WHATSAPP_DLQ, { ...data, expiresAt: dlqExpiresAt(true) }, {
       jobId: `dlq-${data.sourceQueue}-${data.originalJobId ?? Date.now()}`,
       ...opts,
     });
@@ -235,7 +238,8 @@ export class QueueService {
 
   /** Park a dead-letter job (never auto-processed; replayed by admin tooling). */
   enqueueCampaignDlq(data: CampaignDlqJob, opts?: JobsOptions) {
-    return this.add(QUEUE.CAMPAIGNS_DLQ, JOB.CAMPAIGNS_DLQ, data, {
+    // `originalData` carries only internal ids (tenantId/runId/recipientId/campaignId/cursor) — no raw PII (FND-037: standard class).
+    return this.add(QUEUE.CAMPAIGNS_DLQ, JOB.CAMPAIGNS_DLQ, { ...data, expiresAt: dlqExpiresAt(false) }, {
       jobId: `dlq-${data.sourceQueue}-${data.originalJobId ?? Date.now()}`,
       ...opts,
     });
@@ -469,7 +473,8 @@ export class QueueService {
    * never read or replay another tenant's parked job by guessing a jobId).
    */
   enqueueWebhookDlq(data: WebhookDlqJob, opts?: JobsOptions) {
-    return this.add(QUEUE.WEBHOOKS_DLQ, JOB.WEBHOOKS_DLQ, data, {
+    // Only `webhookDeliveryId` (an internal id) — no raw PII (FND-037: standard class).
+    return this.add(QUEUE.WEBHOOKS_DLQ, JOB.WEBHOOKS_DLQ, { ...data, expiresAt: dlqExpiresAt(false) }, {
       jobId: `webhook-dlq-${data.originalJobId ?? Date.now()}`,
       ...opts,
     });

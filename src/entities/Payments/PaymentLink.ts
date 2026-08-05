@@ -8,6 +8,7 @@ import {
 
 import { Tenant } from '../SaaS-Core/Tenant';
 import { Appointment } from '../Calendar&Appointments/Appointment';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('payment_links')
 export class PaymentLink {
@@ -26,6 +27,7 @@ export class PaymentLink {
     type: 'decimal',
     precision: 14,
     scale: 2,
+    transformer: decimalTransformer,
   })
   amount!: number;
 

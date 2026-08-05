@@ -10,6 +10,7 @@ import {
 import { Tenant } from '../SaaS-Core/Tenant';
 import { Branch } from '../SaaS-Core/Branch';
 import { PayoutStatus } from '../enums';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('settlements')
 export class Settlement {
@@ -41,6 +42,7 @@ export class Settlement {
     precision: 14,
     scale: 2,
     default: 0,
+    transformer: decimalTransformer,
   })
   gross_amount!: number;
 
@@ -49,6 +51,7 @@ export class Settlement {
     precision: 14,
     scale: 2,
     default: 0,
+    transformer: decimalTransformer,
   })
   fee_amount!: number;
 
@@ -57,6 +60,7 @@ export class Settlement {
     precision: 14,
     scale: 2,
     default: 0,
+    transformer: decimalTransformer,
   })
   net_amount!: number;
 

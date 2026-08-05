@@ -323,8 +323,7 @@ export class AiTrainingFileService {
     const file = await this.findOne(tenantId, id);
     await this.ingestion.cleanupSource(tenantId, id);
     if (!/^https?:\/\//i.test(file.file_url)) {
-      this.storage.assertKeyBelongsToTenant(file.file_url, tenantId);
-      await this.storage.deleteObject(file.file_url);
+      await this.storage.deleteObject(file.file_url, tenantId);
     }
     await this.files.remove(file);
   }

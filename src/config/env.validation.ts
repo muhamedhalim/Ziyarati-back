@@ -445,6 +445,48 @@ export const validate = (config: Record<string, unknown>) => {
     }
   }
 
+  // ── Meta app config fail-fast (production only, HRD-002) ──────────────────
+  // Meta/WhatsApp stays legitimately OPTIONAL in production (not every
+  // deployment uses it — same reasoning FND-035/AD-08 established for AI, not
+  // the unconditional payments/HRD-001 pattern). What must fail fast is a
+  // PARTIAL configuration: an operator midway through setup, or a rotated/
+  // dropped variable, would otherwise silently leave the webhook signature
+  // pair or Embedded Signup half-configured with no boot-time signal. Mirrors
+  // `MetaConfig.embeddedSignupConfigured`'s existing "appId + configId +
+  // appSecret" definition of configured, extended with `webhookVerifyToken`
+  // (the signature pair's other half — MetaConfig.webhookVerifyToken). The
+  // legacy WHATSAPP_APP_SECRET/WHATSAPP_VERIFY_TOKEN aliases count too,
+  // exactly as MetaConfig itself already honours them as a fallback. The
+  // message names ONLY the missing variables, never values.
+  {
+    const metaAppId = String(value.META_APP_ID ?? '').trim();
+    const metaAppSecret = String(
+      value.META_APP_SECRET || value.WHATSAPP_APP_SECRET || '',
+    ).trim();
+    const metaConfigId = String(value.META_EMBEDDED_SIGNUP_CONFIG_ID ?? '').trim();
+    const metaVerifyToken = String(
+      value.META_WEBHOOK_VERIFY_TOKEN || value.WHATSAPP_VERIFY_TOKEN || '',
+    ).trim();
+    const anyMetaKeySet = !!(metaAppId || metaAppSecret || metaConfigId || metaVerifyToken);
+
+    if (value.NODE_ENV === 'production' && anyMetaKeySet) {
+      const missing: string[] = [];
+      if (!metaAppId) missing.push('META_APP_ID');
+      if (!metaAppSecret) missing.push('META_APP_SECRET');
+      if (!metaConfigId) missing.push('META_EMBEDDED_SIGNUP_CONFIG_ID');
+      if (!metaVerifyToken) missing.push('META_WEBHOOK_VERIFY_TOKEN');
+      if (missing.length > 0) {
+        throw new Error(
+          `❌ Env validation error: the platform Meta App config is partially set but ` +
+            `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not. ` +
+            `A partial Meta configuration leaves WhatsApp/Embedded Signup silently ` +
+            `broken. Set the missing variable(s), or unset every META_*/WHATSAPP_* ` +
+            `variable to explicitly leave WhatsApp disabled.`,
+        );
+      }
+    }
+  }
+
   // ── Reset-token exposure fail-fast (production only) ──────────────────────
   // Mirrors the payments fail-fast above (the reference pattern for refusing
   // to boot on an insecure/simulated production configuration — FND-006). A

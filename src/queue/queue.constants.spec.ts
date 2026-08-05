@@ -6,7 +6,40 @@ import {
   queuesForRole,
   bullPrefix,
   cacheKeyPrefix,
+  dlqExpiresAt,
+  PII_REMOVE_ON_FAIL_SECONDS,
+  STANDARD_REMOVE_ON_FAIL_SECONDS,
 } from './queue.constants';
+
+// FND-037 — a DLQ-parked job is never processed by any Worker (see
+// DLQ_QUEUES's own doc comment), so BullMQ's `removeOnComplete`/`removeOnFail`
+// job options never fire for it — those only trigger on the corresponding
+// state transition. Today PII-adjacent DLQ payloads (WHATSAPP_DLQ) sit under
+// no enforced expiry at all — effectively the LONG class forever, not the
+// SHORT PII class `PII_REMOVE_ON_FAIL_SECONDS` already defines and already
+// applies correctly to the pre-DLQ `removeOnFail` window. `dlqExpiresAt`
+// stamps an explicit deadline at enqueue time so an external sweep
+// (QueueMonitorService) can actually remove it once elapsed.
+describe('dlqExpiresAt (FND-037 — DLQ retention class)', () => {
+  const now = new Date('2026-01-01T00:00:00.000Z');
+
+  it('stamps the SHORT PII-adjacent class (6h) for a PII-bearing DLQ (e.g. WHATSAPP_DLQ)', () => {
+    const expected = new Date(now.getTime() + PII_REMOVE_ON_FAIL_SECONDS * 1000).toISOString();
+    expect(dlqExpiresAt(true, now)).toBe(expected);
+    expect(PII_REMOVE_ON_FAIL_SECONDS).toBe(6 * 3600); // sanity: matches the existing pre-DLQ constant exactly, no drift
+  });
+
+  it('stamps the STANDARD class (7d) for a non-PII-bearing DLQ (e.g. CAMPAIGNS_DLQ, NOTIFICATIONS_DLQ, WEBHOOKS_DLQ)', () => {
+    const expected = new Date(now.getTime() + STANDARD_REMOVE_ON_FAIL_SECONDS * 1000).toISOString();
+    expect(dlqExpiresAt(false, now)).toBe(expected);
+    expect(STANDARD_REMOVE_ON_FAIL_SECONDS).toBe(7 * 24 * 3600); // matches defaultJobOptions' removeOnFail.age exactly
+  });
+
+  it('the two classes are genuinely different (the whole point of the finding)', () => {
+    expect(dlqExpiresAt(true, now)).not.toBe(dlqExpiresAt(false, now));
+    expect(PII_REMOVE_ON_FAIL_SECONDS).toBeLessThan(STANDARD_REMOVE_ON_FAIL_SECONDS);
+  });
+});
 
 describe('bullPrefix / cacheKeyPrefix (M3 — environment prefix, opt-in)', () => {
   const ORIGINAL = process.env.QUEUE_ENV_PREFIX;

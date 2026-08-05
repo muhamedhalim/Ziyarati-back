@@ -200,6 +200,18 @@ export class CampaignDispatchService {
 
     // 4 + 5. CLASSIFY & PERSIST.
     if (result.success && result.providerRef) {
+      // FND-025 — under correct configuration this is unreachable (the real
+      // WhatsApp provider unconditionally supports the hardcoded 'whatsapp'
+      // channel), so noop here signals a genuine misconfiguration (or a new
+      // channel added with no real provider registered yet). The recipient
+      // still settles — a run must still be able to complete in dev/test,
+      // where noop is the legitimate, expected path — but a simulated send
+      // completing a PRODUCTION run must never look identical to a real one.
+      if (provider.name === 'noop') {
+        this.logger.error(
+          `Campaign recipient ${recipientId} (run ${runId}) dispatched via the NOOP delivery provider — NO REAL MESSAGE WAS SENT. Verify CAMPAIGN_DELIVERY_PROVIDERS registration for this channel.`,
+        );
+      }
       await this.markDispatched(runId, recipientId, result.providerRef);
       await this.checkCompletion(runId);
       return { status: 'dispatched', providerRef: result.providerRef };

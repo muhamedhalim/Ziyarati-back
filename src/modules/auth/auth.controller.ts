@@ -25,10 +25,8 @@ import {
 } from '@nestjs/swagger';
 
 import { AuthService, TokenContext } from './auth.service';
-import { PatientService } from './patient.service';
 import { RegisterOwnerDto } from './dto/register-owner.dto';
 import { RegisterUserDto } from './dto/register-user.dto';
-import { RegisterPatientDto } from './dto/register-patient.dto';
 import { LoginDto } from './dto/login.dto';
 import { CookieService } from './cookie.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
@@ -133,7 +131,6 @@ const S_TOKEN_PAIR = {
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
-    private readonly patientService: PatientService,
     private readonly cookies: CookieService,
   ) {}
 
@@ -270,56 +267,6 @@ permission.
     }
 
     return this.authService.createTenantUser(dto, tenantId);
-  }
-
-  // ────────────────────────── Patient signup ─────────────────────────────── //
-
-  @ApiOperation({
-    summary: 'Register as a patient (B2C)',
-    description: `
-**Public endpoint — no authentication required.**
-
-Creates a standalone patient account with **no tenant affiliation and no
-RBAC roles**. Patients are completely isolated from the clinic staff/owner
-model — they live in a separate \`patients\` table.
-
-The returned tokens carry \`type: "patient"\` in the JWT payload and are
-**automatically rejected by all tenant/staff endpoints** (JwtStrategy
-rejects any token whose \`type !== "access"\`). Patient tokens can only be
-used with patient-specific routes (e.g. appointment booking portal).
-
-**Who can call this:** Anyone (unauthenticated). Intended for the
-patient-facing mobile app or booking portal.
-    `.trim(),
-  })
-  @ApiCreatedResponse({
-    description: 'Patient account created. Returns a patient-scoped token pair.',
-    schema: {
-      type: 'object',
-      properties: {
-        patient: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', format: 'uuid' },
-            email: { type: 'string', format: 'email', example: 'patient@example.com' },
-            fullName: { type: 'string', example: 'Sara Al-Amin' },
-            phone: { type: 'string', example: '+966509876543', nullable: true },
-          },
-        },
-        ...S_TOKEN_PAIR,
-      },
-    },
-  })
-  @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiConflictResponse({
-    description: 'Email address is already registered as a patient.',
-    schema: S_ERROR,
-  })
-  @Public()
-  @SkipCsrf()
-  @Post('register-patient')
-  registerPatient(@Body() dto: RegisterPatientDto) {
-    return this.patientService.registerPatient(dto);
   }
 
   // ───────────────────────────── Login ───────────────────────────────────── //
@@ -573,7 +520,7 @@ password changes by someone who grabbed an unattended session).
   other devices will need to log in again.
 
 **Who can call this:** Any authenticated user (staff, owner,
-super-admin). Patients use a separate endpoint.
+super-admin).
     `.trim(),
   })
   @ApiNoContentResponse({ description: 'Password changed. All sessions revoked.' })

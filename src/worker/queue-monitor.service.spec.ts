@@ -37,7 +37,7 @@ jest.mock('bullmq', () => ({
 describe('QueueMonitorService', () => {
   let service: QueueMonitorService;
   let config: ConfigService;
-  let queue: { dlqDepth: jest.Mock; queueCounts: jest.Mock };
+  let queue: { dlqDepth: jest.Mock; queueCounts: jest.Mock; queue: jest.Mock };
   let metrics: { recordJobEvent: jest.Mock; setQueueDepth: jest.Mock };
   let logSpy: jest.SpyInstance;
   let errorSpy: jest.SpyInstance;
@@ -55,6 +55,7 @@ describe('QueueMonitorService', () => {
       queueCounts: jest.fn().mockResolvedValue({
         [QUEUE.NOTIFICATIONS]: { waiting: 3, active: 1 },
       }),
+      queue: jest.fn().mockReturnValue({ getJobs: jest.fn().mockResolvedValue([]) }),
     };
     metrics = { recordJobEvent: jest.fn(), setQueueDepth: jest.fn() };
     service = new QueueMonitorService(
@@ -184,6 +185,97 @@ describe('QueueMonitorService', () => {
       await jest.advanceTimersByTimeAsync(30_000);
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('ALERT'));
       jest.useRealTimers();
+    });
+  });
+
+  // FND-037 — no Worker ever processes a DLQ queue (see DLQ_QUEUES's own doc
+  // comment in queue.constants.ts), so BullMQ's removeOnComplete/removeOnFail
+  // never fire for a parked job; only an explicit sweep against the stamped
+  // `expiresAt` deadline (queue.constants.ts's `dlqExpiresAt`) can actually
+  // remove one.
+  describe('DLQ retention sweep (FND-037)', () => {
+    function fakeJob(id: string, data: Record<string, unknown>) {
+      return { id, data, remove: jest.fn().mockResolvedValue(undefined) };
+    }
+
+    it('removes a parked job whose expiresAt has passed', async () => {
+      const expired = fakeJob('j-expired', { expiresAt: new Date(Date.now() - 1000).toISOString() });
+      queue.queue.mockReturnValue({ getJobs: jest.fn().mockResolvedValue([expired]) });
+
+      jest.useFakeTimers();
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+      jest.useRealTimers();
+      // Let the fire-and-forget async sweep's microtasks settle.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(expired.remove).toHaveBeenCalled();
+    });
+
+    it('leaves a parked job whose expiresAt has not yet passed', async () => {
+      const fresh = fakeJob('j-fresh', { expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      queue.queue.mockReturnValue({ getJobs: jest.fn().mockResolvedValue([fresh]) });
+
+      jest.useFakeTimers();
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+      jest.useRealTimers();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(fresh.remove).not.toHaveBeenCalled();
+    });
+
+    it('leaves a job parked BEFORE the fix alone (no expiresAt — old, unenforced retention persists)', async () => {
+      const legacy = fakeJob('j-legacy', { originalData: {} }); // no expiresAt field at all
+      queue.queue.mockReturnValue({ getJobs: jest.fn().mockResolvedValue([legacy]) });
+
+      jest.useFakeTimers();
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+      jest.useRealTimers();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(legacy.remove).not.toHaveBeenCalled();
+    });
+
+    it('sweeps all four DLQ queues', async () => {
+      jest.useFakeTimers();
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+      jest.useRealTimers();
+      await Promise.resolve();
+
+      const swept = queue.queue.mock.calls.map((c) => c[0]);
+      expect(swept).toEqual(
+        expect.arrayContaining([
+          QUEUE.NOTIFICATIONS_DLQ,
+          QUEUE.WHATSAPP_DLQ,
+          QUEUE.CAMPAIGNS_DLQ,
+          QUEUE.WEBHOOKS_DLQ,
+        ]),
+      );
+    });
+
+    it('a scan failure for one DLQ does not stop the others from being swept', async () => {
+      const expired = fakeJob('j-expired', { expiresAt: new Date(Date.now() - 1000).toISOString() });
+      queue.queue.mockImplementation((name: string) =>
+        name === QUEUE.WHATSAPP_DLQ
+          ? { getJobs: jest.fn().mockRejectedValue(new Error('redis down')) }
+          : { getJobs: jest.fn().mockResolvedValue([expired]) },
+      );
+
+      jest.useFakeTimers();
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(30_000);
+      jest.useRealTimers();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('redis down'));
+      expect(expired.remove).toHaveBeenCalled();
     });
   });
 

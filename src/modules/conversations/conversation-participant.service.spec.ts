@@ -71,4 +71,37 @@ describe('ConversationParticipantService', () => {
   it('update is unsupported by the schema (explicit 422)', async () => {
     await expect(service.update(TENANT, CONV, 'p1')).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
   });
+
+  // VER-008 (REQ-CRM-002) — list() had no prior coverage at all.
+  describe('list (VER-008)', () => {
+    it('lists participants for the conversation, joined-first order, with the user relation loaded', async () => {
+      participants.find.mockResolvedValueOnce([
+        { id: 'p1', user: { id: 'u1' } },
+        { id: 'p2', user: { id: 'u2' } },
+      ]);
+
+      const result = await service.list(TENANT, CONV);
+
+      expect(result).toHaveLength(2);
+      expect(participants.find).toHaveBeenCalledWith({
+        where: { conversation: { id: CONV } },
+        relations: { user: true },
+        order: { joined_at: 'ASC' },
+      });
+    });
+
+    it('rejects when the conversation does not belong to the caller\'s tenant — never lists a foreign conversation\'s participants', async () => {
+      conversations.exists.mockResolvedValueOnce(false);
+      await expect(service.list(TENANT, 'foreign-conv')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(participants.find).not.toHaveBeenCalled();
+    });
+
+    it('the tenant-ownership check happens BEFORE the participants query (no data touched on a failed scope check)', async () => {
+      conversations.exists.mockResolvedValueOnce(true);
+      await service.list(TENANT, CONV);
+      const existsOrder = conversations.exists.mock.invocationCallOrder[0];
+      const findOrder = participants.find.mock.invocationCallOrder[0];
+      expect(existsOrder).toBeLessThan(findOrder);
+    });
+  });
 });

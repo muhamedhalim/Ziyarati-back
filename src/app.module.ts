@@ -8,8 +8,6 @@ import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
 
 import { AppRedisService } from './queue/app-redis.service';
 
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { typeOrmFactory } from './config/typeorm.config';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './health/health.module';
@@ -160,10 +158,7 @@ import { validate } from './config/env.validation';
     SeedModule,
   ],
 
-  controllers: [AppController],
-
   providers: [
-    AppService,
     // Runs first: cheap IP-bucketed rejection before any auth/DB work, and the
     // only guard that also applies to @Public() routes.
     {

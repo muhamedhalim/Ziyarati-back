@@ -99,7 +99,7 @@ export class WhatsappInboundAiService {
 
     const content = this.extractContent(message);
     if (!content) {
-      this.logger.debug(`inbound ${message.type ?? 'unknown'} from ${waId} had no actionable content`);
+      this.logger.debug(`inbound ${message.type ?? 'unknown'} had no actionable content (tenant=${tenantId})`);
       return;
     }
 

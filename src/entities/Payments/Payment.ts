@@ -46,6 +46,7 @@ export class Payment {
     type: 'decimal',
     precision: 14,
     scale: 2,
+    transformer: decimalTransformer,
   })
   amount!: number;
 

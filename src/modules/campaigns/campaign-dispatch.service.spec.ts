@@ -145,6 +145,38 @@ describe('CampaignDispatchService.dispatch', () => {
     expect(manager.update).toHaveBeenCalled(); // markDispatched within a transaction
   });
 
+  // FND-025/VER-017 (REQ-CAMP-006) — under NORMAL configuration this never
+  // happens (WhatsappCampaignDeliveryProvider unconditionally supports the
+  // hardcoded 'whatsapp' channel, so the noop fallback is unreachable in a
+  // correctly-wired deployment — confirmed by reading campaigns.module.ts).
+  // The gap is the missing SAFETY NET for when that assumption breaks (a
+  // future misregistration, a new channel added with no real provider yet):
+  // today, a noop-simulated send is recorded and completes a run
+  // IDENTICALLY to a real one, with no distinguishing signal anywhere.
+  it('[FND-025] a dispatch that resolves to the NOOP delivery provider is loudly flagged, not silently reported as a normal success', async () => {
+    const errorSpy = jest.spyOn((service as any).logger, 'error');
+    delivery.resolve.mockReturnValueOnce({ send, name: 'noop' });
+    send.mockResolvedValueOnce({ success: true, providerRef: 'noop:rec-1' });
+
+    const res = await service.dispatch(TENANT, RUN, RECIPIENT);
+
+    // The simulated send still completes the recipient (a campaign run must
+    // still be able to finish in dev/test, where noop is the expected,
+    // legitimate path) — but it is NOT silent.
+    expect(res).toEqual({ status: 'dispatched', providerRef: 'noop:rec-1' });
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('NOOP'));
+  });
+
+  it('a real WhatsApp dispatch (provider.name !== "noop") never logs the noop alert', async () => {
+    const errorSpy = jest.spyOn((service as any).logger, 'error');
+    delivery.resolve.mockReturnValueOnce({ send, name: 'whatsapp' });
+    send.mockResolvedValueOnce({ success: true, providerRef: 'wamid-real-1' });
+
+    await service.dispatch(TENANT, RUN, RECIPIENT);
+
+    expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('NOOP'));
+  });
+
   describe('customer consent (WhatsApp marketing rules)', () => {
     /** Re-point the recipient at a customer with the given attributes. */
     const withCustomer = (customer: Record<string, unknown> | undefined) =>

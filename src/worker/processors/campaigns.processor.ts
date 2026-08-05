@@ -19,6 +19,8 @@ import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WorkerAuthorizationService } from '../../queue/worker-authorization.service';
+import { QueueService } from '../../queue/queue.service';
+import { CampaignDlqJob } from '../../queue/job-data.interface';
 import { CampaignFanoutService } from '../../modules/campaigns/campaign-fanout.service';
 import { CampaignDispatchService } from '../../modules/campaigns/campaign-dispatch.service';
 
@@ -31,6 +33,7 @@ export class CampaignLaunchProcessor extends WorkerHost {
     private readonly fanout: CampaignFanoutService,
     private readonly ctx: TenantContextService,
     private readonly authz: WorkerAuthorizationService,
+    private readonly queue: QueueService,
   ) {
     super();
   }
@@ -52,8 +55,9 @@ export class CampaignLaunchProcessor extends WorkerHost {
   }
 
   @OnWorkerEvent('failed')
-  onFailed(job: Job, err: Error) {
+  async onFailed(job: Job, err: Error) {
     this.logger.error(`launch job=${job?.id} FAILED: ${err?.message}`);
+    await parkExhaustedOrPermanent(this.queue, QUEUE.CAMPAIGNS_LAUNCH, job, err, this.logger);
   }
 }
 
@@ -66,6 +70,7 @@ export class CampaignFanoutProcessor extends WorkerHost {
     private readonly fanout: CampaignFanoutService,
     private readonly ctx: TenantContextService,
     private readonly authz: WorkerAuthorizationService,
+    private readonly queue: QueueService,
   ) {
     super();
   }
@@ -85,9 +90,48 @@ export class CampaignFanoutProcessor extends WorkerHost {
   }
 
   @OnWorkerEvent('failed')
-  onFailed(job: Job, err: Error) {
+  async onFailed(job: Job, err: Error) {
     this.logger.error(`fanoutChunk job=${job?.id} FAILED: ${err?.message}`);
+    await parkExhaustedOrPermanent(this.queue, QUEUE.CAMPAIGNS_FANOUT, job, err, this.logger);
   }
+}
+
+/**
+ * FND-038 — shared exhausted/permanent → CAMPAIGNS_DLQ park, reusing the
+ * exact pattern `WhatsappProcessor.onFailed` (Wave 2, FND-022) established:
+ * exhausted transient retries OR an `UnrecoverableError` (which never
+ * retries, so `attemptsMade` never reaches `opts.attempts`) both park.
+ * `CampaignDispatchProcessor` (the third processor in this file, CAMPAIGNS_PROCESS
+ * queue) already dead-letters correctly via `markDeadLettered` (Wave 3,
+ * FND-020) — that call is per-recipient reconciliation-DB-row-specific and
+ * does not apply to a launch/fanout-chunk job, which has no such row.
+ */
+async function parkExhaustedOrPermanent(
+  queue: QueueService,
+  sourceQueue: string,
+  job: Job,
+  err: Error,
+  logger: Logger,
+): Promise<void> {
+  const data = job?.data as { tenantId?: string | null; correlationId?: string } | undefined;
+  if (!data) return;
+  const exhausted = (job?.attemptsMade ?? 0) >= (job?.opts?.attempts ?? 1);
+  const permanent = err instanceof UnrecoverableError;
+  if (!exhausted && !permanent) return;
+
+  await queue
+    .enqueueCampaignDlq({
+      tenantId: data.tenantId ?? null,
+      correlationId: data.correlationId,
+      sourceQueue,
+      sourceJobName: job.name,
+      originalJobId: String(job?.id ?? ''),
+      originalData: data as unknown as Record<string, unknown>,
+      failedReason: err?.message ?? 'unknown',
+      attemptsMade: job?.attemptsMade ?? 0,
+      diedAt: new Date().toISOString(),
+    } satisfies CampaignDlqJob)
+    .catch((e) => logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
 }
 
 /**

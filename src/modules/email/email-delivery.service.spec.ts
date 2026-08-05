@@ -91,3 +91,85 @@ describe('EmailDeliveryService (atomic claim — gap-closure pass, §0.8.11)', (
     expect(logs.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
   });
 });
+
+// VER-016 (REQ-NOTIF-002) — platform email delivery logs (`GET
+// /platform/email-logs`, super-admin only). `listLogs`/`stats` had ZERO
+// prior test coverage.
+describe('EmailDeliveryService.listLogs / stats (VER-016 — platform observability)', () => {
+  let service: EmailDeliveryService;
+  let logs: MockRepository;
+
+  beforeEach(() => {
+    logs = createMockRepository();
+    service = new EmailDeliveryService(
+      logs as never,
+      { resolve: jest.fn() } as unknown as EmailProviderFactory,
+      { get: jest.fn() } as never,
+      createMockDataSource() as never,
+    );
+  });
+
+  describe('listLogs', () => {
+    it('is intentionally PLATFORM-WIDE — no tenant filter — this is the super-admin cross-tenant view', async () => {
+      logs.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.listLogs({ page: 1, limit: 20 });
+      expect(logs.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: {}, order: { created_at: 'DESC' } }),
+      );
+    });
+
+    it('an optional status filter narrows the where clause', async () => {
+      logs.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.listLogs({ status: 'FAILED', page: 1, limit: 20 });
+      expect(logs.findAndCount).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'FAILED' } }));
+    });
+
+    it('an optional search term matches the recipient address case-insensitively (ILike)', async () => {
+      logs.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.listLogs({ search: 'alice@example.com', page: 1, limit: 20 });
+      const call = logs.findAndCount.mock.calls[0][0];
+      expect(call.where.to_address).toBeDefined();
+    });
+
+    it('paginates correctly', async () => {
+      logs.findAndCount.mockResolvedValueOnce([[{ id: 'log-1' }], 45]);
+      const result = await service.listLogs({ page: 3, limit: 10 });
+      expect(logs.findAndCount).toHaveBeenCalledWith(expect.objectContaining({ skip: 20, take: 10 }));
+      expect(result).toEqual({ data: [{ id: 'log-1' }], total: 45, page: 3, limit: 10 });
+    });
+  });
+
+  describe('stats', () => {
+    it('groups by status into sent/failed/queued/total counts', async () => {
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([
+          { status: 'SENT', count: '120' },
+          { status: 'FAILED', count: '3' },
+          { status: 'QUEUED', count: '7' },
+        ]),
+      };
+      logs.createQueryBuilder.mockReturnValueOnce(qb);
+
+      const result = await service.stats();
+
+      expect(result).toEqual({ sent: 120, failed: 3, queued: 7, total: 130 });
+    });
+
+    it('defaults every count to 0 when there is no data at all — never NaN/undefined', async () => {
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+      };
+      logs.createQueryBuilder.mockReturnValueOnce(qb);
+
+      const result = await service.stats();
+
+      expect(result).toEqual({ sent: 0, failed: 0, queued: 0, total: 0 });
+    });
+  });
+});

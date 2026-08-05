@@ -133,7 +133,7 @@ export class SupportTicketService {
     return {
       ...this.toTenantSummary(ticket),
       description: ticket.description,
-      attachmentUrl: await this.resolveAttachmentUrl(ticket),
+      attachmentUrl: await this.resolveAttachmentUrl(ticket, tenantId),
       history: events.map((e) => this.toEventView(e)),
     };
   }
@@ -186,7 +186,7 @@ export class SupportTicketService {
     return {
       ...this.toAdminSummary(ticket),
       description: ticket.description,
-      attachmentUrl: await this.resolveAttachmentUrl(ticket),
+      attachmentUrl: await this.resolveAttachmentUrl(ticket, ticket.tenant.id),
       history: events.filter((e) => !e.internal_only).map((e) => this.toEventView(e)),
       notes: events.filter((e) => e.internal_only).map((e) => this.toEventView(e)),
     };
@@ -295,9 +295,12 @@ export class SupportTicketService {
     return `SUP-${String(row.n).padStart(6, '0')}`;
   }
 
-  private async resolveAttachmentUrl(ticket: SupportTicket): Promise<string | null> {
+  private async resolveAttachmentUrl(
+    ticket: SupportTicket,
+    tenantId: string,
+  ): Promise<string | null> {
     if (!ticket.attachment_key) return null;
-    return this.storage.getSignedDownloadUrl(ticket.attachment_key);
+    return this.storage.getSignedDownloadUrl(ticket.attachment_key, tenantId);
   }
 
   private async recordEvent(input: {

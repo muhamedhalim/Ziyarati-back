@@ -227,8 +227,10 @@ export class StorageService {
   /** Presigned GET URL for a private object — never cache or persist this. */
   async getSignedDownloadUrl(
     key: string,
+    tenantId: string,
     expiresIn: number = this.signedUrlTtl,
   ): Promise<string> {
+    this.assertKeyBelongsToTenant(key, tenantId);
     return getSignedUrl(
       this.getClient(),
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
@@ -273,7 +275,8 @@ export class StorageService {
     return Buffer.from(bytes);
   }
 
-  async deleteObject(key: string): Promise<void> {
+  async deleteObject(key: string, tenantId: string): Promise<void> {
+    this.assertKeyBelongsToTenant(key, tenantId);
     await this.getClient().send(
       new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );

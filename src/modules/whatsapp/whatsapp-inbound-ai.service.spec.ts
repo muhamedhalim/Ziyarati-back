@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
@@ -140,5 +141,30 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     // AI turn; this test only asserts the guard doesn't throw or dead-end
     // trying to record consent against a non-existent customer id.
     expect(customers.recordOptOut).not.toHaveBeenCalled();
+  });
+
+  describe('logging (FND-016)', () => {
+    it('never writes the customer phone number to any log level', async () => {
+      const spies = [
+        jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined),
+        jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined),
+        jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined),
+        jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined),
+      ];
+
+      // An empty text body extracts no actionable content, which is exactly
+      // the branch that used to interpolate the raw phone into a debug log.
+      await service.handleInboundValue(TENANT, {
+        messages: [{ id: 'wamid-7', from: '966500000000', type: 'text', text: { body: '' } }],
+      } as never);
+
+      const everythingLogged = spies
+        .flatMap((spy) => spy.mock.calls)
+        .map((call) => call.map(String).join(' '))
+        .join('\n');
+      expect(everythingLogged).not.toContain('966500000000');
+
+      spies.forEach((spy) => spy.mockRestore());
+    });
   });
 });

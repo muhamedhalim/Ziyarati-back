@@ -58,9 +58,43 @@ describe('BillingService', () => {
     expect(inv).toMatchObject({ amount: '99.50', status: InvoiceStatus.OPEN });
   });
 
-  it('getInvoice throws when not found', async () => {
-    invoices.findOne.mockResolvedValueOnce(null);
-    await expect(service.getInvoice(TENANT, 'x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+  // VER-013 (REQ-BILL-013) — only the NOT_FOUND case had coverage; the happy
+  // path and the tenant-scoping guarantee itself were unproven.
+  describe('getInvoice (VER-013 — REQ-BILL-013)', () => {
+    it('returns the invoice when it belongs to the caller\'s tenant', async () => {
+      invoices.findOne.mockResolvedValueOnce({ id: 'inv1', tenant_id: TENANT, status: InvoiceStatus.OPEN, amount: '99.50' });
+      const result = await service.getInvoice(TENANT, 'inv1');
+      expect(result).toMatchObject({ id: 'inv1', amount: '99.50' });
+    });
+
+    it('throws when not found', async () => {
+      invoices.findOne.mockResolvedValueOnce(null);
+      await expect(service.getInvoice(TENANT, 'x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+
+    it('the query is tenant-scoped by construction — a foreign tenant\'s invoice id can never be returned', async () => {
+      invoices.findOne.mockResolvedValueOnce(null);
+      await service.getInvoice(TENANT, 'foreign-invoice').catch(() => undefined);
+      expect(invoices.findOne).toHaveBeenCalledWith({ where: { id: 'foreign-invoice', tenant_id: TENANT } });
+    });
+  });
+
+  describe('listInvoices (adjacent to VER-013 — same read path, previously untested)', () => {
+    it('is tenant-scoped, newest first', async () => {
+      invoices.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.listInvoices(TENANT, { page: 1, limit: 20 } as any);
+      expect(invoices.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenant_id: TENANT }, order: { issued_at: 'DESC' } }),
+      );
+    });
+
+    it('applies an optional status filter as an additional predicate, not a replacement of the tenant scope', async () => {
+      invoices.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.listInvoices(TENANT, { status: InvoiceStatus.PAID, page: 1, limit: 20 } as any);
+      expect(invoices.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenant_id: TENANT, status: InvoiceStatus.PAID } }),
+      );
+    });
   });
 
   describe('payInvoice (atomic charge claim)', () => {

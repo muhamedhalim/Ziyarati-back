@@ -159,7 +159,7 @@ export function defaultJobOptions(config: ConfigService): DefaultJobOptions {
     // The processors route exhausted failures to the DLQ in their `failed`
     // handler (which fires before eviction), so a 7-day window is ample for
     // inspection without leaking memory at millions/day.
-    removeOnFail: { age: 7 * 24 * 3600, count: 10_000 },
+    removeOnFail: { age: STANDARD_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
   };
 }
 
@@ -180,6 +180,39 @@ export function defaultJobOptions(config: ConfigService): DefaultJobOptions {
  * 7-day default.
  */
 export const PII_REMOVE_ON_FAIL_SECONDS = 6 * 3600;
+
+/**
+ * Standard (non-PII-bearing) failed-job retention — matches
+ * `defaultJobOptions`'s own `removeOnFail.age` exactly (kept as one named
+ * constant so the two can never silently drift apart).
+ */
+export const STANDARD_REMOVE_ON_FAIL_SECONDS = 7 * 24 * 3600;
+
+/**
+ * Stamps the ISO deadline a newly-parked DLQ job should be swept at
+ * (FND-037). DLQ_QUEUES jobs are added via `.add()` and never processed by
+ * any Worker (see `DLQ_QUEUES`'s own doc comment above), so BullMQ's
+ * `removeOnComplete`/`removeOnFail` job options — which fire only on the
+ * corresponding state transition — never apply to them; an explicit stamped
+ * deadline plus an external sweep (`QueueMonitorService`) is the only
+ * mechanism that can actually expire a parked job.
+ *
+ * `piiAdjacent` is passed explicitly by each `enqueue*Dlq` call site (mirrors
+ * how `PII_REMOVE_ON_FAIL_SECONDS` is already applied explicitly per source
+ * enqueue, not looked up centrally by queue name) — today only `WHATSAPP_DLQ`
+ * carries PII-adjacent content (template variables) in its Redis-resident
+ * `originalData`; `NOTIFICATIONS_DLQ`/`CAMPAIGNS_DLQ`/`WEBHOOKS_DLQ` payloads
+ * carry only internal ids (verified by reading each `*DlqJob` interface and
+ * its enqueue call sites), so they take the standard class.
+ *
+ * A job parked BEFORE this fix has no `expiresAt` at all — the sweep leaves
+ * those alone rather than retroactively shrinking their (previously
+ * unenforced) retention the moment this code deploys.
+ */
+export function dlqExpiresAt(piiAdjacent: boolean, now: Date = new Date()): string {
+  const seconds = piiAdjacent ? PII_REMOVE_ON_FAIL_SECONDS : STANDARD_REMOVE_ON_FAIL_SECONDS;
+  return new Date(now.getTime() + seconds * 1000).toISOString();
+}
 
 /**
  * Optional BullMQ key prefix (default `bull`, i.e. unprefixed — matches every
