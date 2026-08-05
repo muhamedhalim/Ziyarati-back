@@ -393,6 +393,10 @@ export class StaffAccessService {
         invitationUrl: this.authService.passwordSetupUrl(rawToken),
         tenantId,
         token: rawToken,
+        // M-08 — NULL (no preference recorded yet, the common case for a
+        // brand-new invitee) falls back to DEFAULT_LOCALE/EMAIL_DEFAULT_LOCALE
+        // exactly as before this change; nothing regresses.
+        locale: user.preferred_locale,
       });
     } catch (err) {
       // Never include the token or any credential in the log line.

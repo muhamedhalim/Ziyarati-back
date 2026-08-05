@@ -1,5 +1,6 @@
 import {
   IsEmail,
+  IsIn,
   IsOptional,
   IsString,
   Matches,
@@ -90,4 +91,14 @@ export class RegisterOwnerDto {
   @IsString()
   @MaxLength(100)
   commercialRegistrationNumber!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'The locale the owner was registering from (CAP-I18N). Persisted as the new user\'s locale preference and used for the welcome email; omitted falls back to the platform default.',
+    example: 'ar',
+    enum: ['en', 'ar'],
+  })
+  @IsOptional()
+  @IsIn(['en', 'ar'])
+  locale?: string;
 }

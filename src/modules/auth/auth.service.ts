@@ -127,6 +127,7 @@ export class AuthService {
           password: dto.password,
           fullName: dto.fullName,
           phone: dto.phone,
+          locale: dto.locale,
         },
         ownerRole,
         tenant.id,
@@ -135,11 +136,15 @@ export class AuthService {
     });
 
     // Welcome the new clinic owner (best-effort; never blocks onboarding).
+    // `dto.locale` is the ONLY locale signal that exists at this point — the
+    // user record was just created in this same call, so there is no stored
+    // preference to read back yet (M-08 — CAP-I18N).
     await this.email.sendWelcome({
       to: email,
       name: dto.fullName,
       clinicName: dto.clinicName,
       userId,
+      locale: dto.locale,
     });
 
     return this.issueAuthResult(userId, context);
@@ -226,6 +231,8 @@ export class AuthService {
       password: string;
       fullName: string;
       phone?: string;
+      /** M-08 — the locale the user was created/registering from, if known. NULL (omitted) correctly means "no explicit choice yet", not a guess. */
+      locale?: string;
     },
     role: Role,
     tenantId: string,
@@ -238,6 +245,7 @@ export class AuthService {
         password_hash: await bcrypt.hash(input.password, BCRYPT_ROUNDS),
         is_active: true,
         tenant: { id: tenantId } as Tenant,
+        preferred_locale: input.locale,
       }),
     );
     await manager.save(manager.create(UserRole, { user, role }));

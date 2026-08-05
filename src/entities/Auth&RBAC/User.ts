@@ -49,6 +49,13 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   last_login_at?: Date;
 
+  // M-08 (CAP-I18N) — NULL means "no explicit choice; fall back to the AD-09
+  // detection rule (URL segment -> cookie -> Accept-Language -> default)",
+  // never backfilled to a guess. Read by backend-generated content (emails,
+  // notifications, reports) to honor the recipient's locale (FR-H014).
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  preferred_locale?: string;
+
   @OneToMany(() => UserRole, (userRole) => userRole.user)
   userRoles!: UserRole[];
 
