@@ -19,6 +19,7 @@
  * simplest of the four to race.
  */
 import request from 'supertest';
+import { DataSource } from 'typeorm';
 
 import {
   createE2eApp,
@@ -35,6 +36,8 @@ import {
   type SubscribedOwnerFixture,
 } from './utils/subscription-e2e-fixtures';
 import { Campaign } from '../src/entities/Campaigns/Campaign';
+import { UsageService } from '../src/modules/subscription-billing/usage.service';
+import { USAGE_METRIC } from '../src/modules/subscription-billing/usage-metric';
 
 const API = '/api/v1';
 
@@ -141,5 +144,127 @@ describe('Usage quota concurrency (FND-034, container-backed) — real Postgres'
     expect(res.status).toBe(422);
 
     await cleanup(owner);
+  });
+
+  // FND-047 fix-verification block. Pre-fix, this whole file hung: the FIRST
+  // test above passed (2-way concurrency has plenty of pool headroom), but
+  // "ten concurrent creates" (and everything scheduled after it) hit Jest's
+  // 30s timeout with zero progress — see evidence/wave7-new-findings.md and
+  // evidence/fnd-047-fix.md for the live pg_stat_activity reproduction.
+  describe('FND-047 — pool-deadlock fix verification', () => {
+    // Higher than DB_POOL_MAX (10 in this environment's .env) — proves the fix
+    // isn't merely "exactly at the pool size happens to work", and that
+    // oversubscription now queues/clears normally instead of deadlocking.
+    it('a burst larger than the pool size (20-way) completes without hanging', async () => {
+      const owner = await seedAtBoundary('quota-burst-20', 0, 1000);
+
+      const results = await Promise.all(
+        Array.from({ length: 20 }, (_, i) =>
+          request(e2e.app.getHttpServer())
+            .post(`${API}/campaigns`)
+            .set(...authHeader(owner.token))
+            .send({ type: 'PROMOTION', name: `Big Burst ${i}` }),
+        ),
+      );
+
+      const succeeded = results.filter((r) => r.status === 201);
+      expect(succeeded.length).toBe(20);
+
+      await cleanup(owner);
+    }, 30_000);
+
+    // No leaked connections: every transaction opened by the burst above must
+    // have committed and released its connection — none left STUCK open. Scoped
+    // to "stuck for more than a few seconds" rather than "zero at this instant" —
+    // the full AppModule's own background workers/schedulers may legitimately
+    // hold a brand-new, still-in-flight transaction for their own unrelated
+    // work at the exact moment this queries pg_stat_activity; a genuine LEAK
+    // (this test's actual concern) shows up as one stuck indefinitely, not as
+    // one that clears within a couple of seconds.
+    it('a burst leaves no idle-in-transaction connection stuck open', async () => {
+      const owner = await seedAtBoundary('quota-leak-check', 0, 100);
+
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          request(e2e.app.getHttpServer())
+            .post(`${API}/campaigns`)
+            .set(...authHeader(owner.token))
+            .send({ type: 'PROMOTION', name: `Leak ${i}` }),
+        ),
+      );
+
+      // Give any legitimately-in-flight background transaction a moment to
+      // finish before judging anything "stuck".
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const rows = await e2e.dataSource.query(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+         WHERE datname = current_database()
+           AND state = 'idle in transaction'
+           AND now() - state_change > interval '3 seconds'`,
+      );
+      expect(rows[0].n).toBe(0);
+
+      await cleanup(owner);
+    }, 30_000);
+
+    // Rollback after downstream failure: a failure occurring AFTER admission
+    // but INSIDE the same transaction must roll the reservation back too —
+    // proven directly against the real `UsageService`/real Postgres, since
+    // the HTTP campaign-create path has no built-in way to fail deterministically
+    // after admission without touching campaign.service.ts (out of FND-047 scope).
+    it('a downstream failure after admission rolls back the reservation (no permanent charge)', async () => {
+      const owner = await seedAtBoundary('quota-rollback', 50, 100);
+      const usageService = e2e.moduleRef.get(UsageService, { strict: false });
+
+      await expect(
+        e2e.dataSource.transaction(async (manager) => {
+          const admission = await usageService.incrementIfWithinLimit(
+            owner.tenantId,
+            USAGE_METRIC.CAMPAIGNS,
+            1,
+            manager,
+          );
+          expect(admission.applied).toBe(true);
+          throw new Error('simulated downstream failure after admission');
+        }),
+      ).rejects.toThrow('simulated downstream failure after admission');
+
+      const usage = await usageService.getUsage(owner.tenantId);
+      expect(usage.campaignsUsed).toBe(50); // unchanged — rolled back with the transaction
+
+      await cleanup(owner);
+    });
+
+    // Defense-in-depth (typeorm.config.ts's connectionTimeoutMillis): a
+    // genuinely exhausted pool must fail bounded and clearly, never hang
+    // forever — proven against an isolated throwaway pool of size 1 so the
+    // assertion doesn't depend on this environment's real DB_POOL_MAX.
+    it('a genuinely exhausted pool fails with a bounded timeout, not an unbounded hang', async () => {
+      const probe = new DataSource({
+        type: 'postgres',
+        url: process.env.DATABASE_URL,
+        extra: { max: 1, connectionTimeoutMillis: 500 },
+      });
+      await probe.initialize();
+
+      // A manually-held QueryRunner, explicitly awaited, so the pool's ONE
+      // connection is DETERMINISTICALLY checked out before the second query
+      // below is attempted — `probe.transaction(cb)` without awaiting the
+      // outer promise would race the second query for that same connection.
+      const heldRunner = probe.createQueryRunner();
+      await heldRunner.connect();
+      await heldRunner.startTransaction();
+
+      try {
+        const start = Date.now();
+        await expect(probe.query('SELECT 1')).rejects.toThrow();
+        expect(Date.now() - start).toBeLessThan(5_000);
+      } finally {
+        await heldRunner.rollbackTransaction();
+        await heldRunner.release();
+        await probe.destroy();
+      }
+    }, 15_000);
   });
 });

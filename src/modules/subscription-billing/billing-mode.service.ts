@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -53,20 +53,28 @@ export class BillingModeService {
     private readonly tenantContext: TenantContextService,
   ) {}
 
-  /** The active global mode (cached). Defaults to FREE when never configured. */
-  async get(): Promise<BillingMode> {
+  /**
+   * The active global mode (cached). Defaults to FREE when never configured.
+   *
+   * FND-047: pass the caller's `manager` when this is reached from inside an
+   * open `dataSource.transaction()` (e.g. via `AccessControlService.isEnforced`
+   * → `UsageService.incrementIfWithinLimit`) — a cache MISS then reads through
+   * that same connection instead of borrowing a second one from the pool. A
+   * cache HIT never touches the database at all, manager or not.
+   */
+  async get(manager?: EntityManager): Promise<BillingMode> {
     const now = Date.now();
     if (this.cached && now - this.cached.at < BillingModeService.CACHE_TTL_MS) {
       return this.cached.mode;
     }
-    const mode = await this.read();
+    const mode = await this.read(manager);
     this.cached = { mode, at: now };
     return mode;
   }
 
   /** True when paid enforcement is globally active (Mode B). */
-  async isPaidMode(): Promise<boolean> {
-    return (await this.get()) === BillingMode.PAID;
+  async isPaidMode(manager?: EntityManager): Promise<boolean> {
+    return (await this.get(manager)) === BillingMode.PAID;
   }
 
   /** Super-admin switch. Upserts the setting and refreshes the cache. */
@@ -99,8 +107,9 @@ export class BillingModeService {
     return { mode };
   }
 
-  private async read(): Promise<BillingMode> {
-    const setting = await this.settings.findOne({
+  private async read(manager?: EntityManager): Promise<BillingMode> {
+    const repo = manager ? manager.getRepository(SystemSetting) : this.settings;
+    const setting = await repo.findOne({
       where: { key: BILLING_MODE_SETTING_KEY },
     });
     const raw = (setting?.value as { mode?: string } | undefined)?.mode;

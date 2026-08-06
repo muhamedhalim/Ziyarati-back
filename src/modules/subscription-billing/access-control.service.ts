@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { EntityManager, IsNull, Repository } from 'typeorm';
 
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionStatus } from '../../entities/enums';
@@ -98,10 +98,16 @@ export class AccessControlService {
    * Whether paid enforcement (quotas / feature gating) currently applies to this
    * tenant. False under FREE mode or an active override — both grant unmetered
    * access, so usage limits and feature flags are not enforced against them.
+   *
+   * FND-047: pass the caller's `manager` when this is reached from inside an
+   * open `dataSource.transaction()` (`UsageService.incrementIfWithinLimit`'s
+   * campaign/appointment call sites) so both nested reads below reuse that
+   * transaction's own connection instead of each borrowing a separate one from
+   * the pool — the mechanism behind the FND-047 concurrency hang.
    */
-  async isEnforced(tenantId: string): Promise<boolean> {
-    if (!(await this.billingMode.isPaidMode())) return false;
-    if (await this.overrides.hasActive(tenantId)) return false;
+  async isEnforced(tenantId: string, manager?: EntityManager): Promise<boolean> {
+    if (!(await this.billingMode.isPaidMode(manager))) return false;
+    if (await this.overrides.hasActive(tenantId, manager)) return false;
     return true;
   }
 

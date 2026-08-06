@@ -109,6 +109,15 @@ export async function typeOrmFactory(
       max: poolMax(config, poolRole),
       min: config.get<number>('DB_POOL_MIN', 1) ?? 1,
       idleTimeoutMillis: config.get<number>('DB_POOL_IDLE_TIMEOUT', 30000),
+      // FND-047 — defense-in-depth, NOT the primary fix (the primary fix is
+      // UsageService.incrementIfWithinLimit's manager-threading, which removes
+      // the nested-connection acquisition that caused pool exhaustion to
+      // deadlock instead of merely queueing). node-postgres's own default is 0
+      // (wait forever), so ANY future path that oversubscribes the pool would
+      // otherwise hang indefinitely with no clear error, exactly like FND-047
+      // did. A bounded wait turns that into a clear, fail-fast `ETIMEDOUT`-style
+      // rejection instead of a silent, permanent hang.
+      connectionTimeoutMillis: config.get<number>('DB_POOL_CONNECTION_TIMEOUT', 10000),
     },
   } as TypeOrmModuleOptions;
 }

@@ -8,7 +8,12 @@ import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
 import { USAGE_METRIC, COUNT_LIMIT } from './usage-metric';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+  createMockQueryBuilder,
+  createMockEntityManager,
+} from '../../../test/utils/mock-factories';
 
 describe('UsageService', () => {
   let service: UsageService;
@@ -126,6 +131,164 @@ describe('UsageService', () => {
       expect(b.metrics.appointments).toMatchObject({ used: 25, limit: 100, remaining: 75, percentUsed: 25, exceeded: false });
       expect(b.metrics.aiTokens.limit).toBeNull();
       expect(b.metrics.whatsappMessages.remaining).toBe(0);
+    });
+  });
+
+  // FND-047: `incrementIfWithinLimit` is called from inside a caller's OPEN
+  // `dataSource.transaction()` at 2 real call sites (campaigns, appointments),
+  // passing its own `manager`. Every nested read this method makes — the
+  // enforcement check, the subscription lookup, the override lookup, and (on
+  // the free-mode/unlimited short-circuits) the raw-increment's own
+  // subscription lookup — MUST route through that SAME manager. Otherwise each
+  // nested read borrows a SECOND pool connection while the transaction already
+  // holds a first one; under load (N concurrent transactions == pool size),
+  // the pool is fully held by first connections and the second borrow can
+  // never be satisfied — a permanent hang, reproduced live in
+  // evidence/fnd-047-fix.md (10 concurrent requests, DB_POOL_MAX=10).
+  describe('incrementIfWithinLimit — manager threading (FND-047)', () => {
+    const metric = USAGE_METRIC.CAMPAIGNS;
+
+    function primeAdmission(overrides: { affected?: number } = {}) {
+      const insertQb = createMockQueryBuilder();
+      const updateQb = createMockQueryBuilder();
+      updateQb.execute.mockResolvedValueOnce({ affected: overrides.affected ?? 1, raw: [] });
+      usageRepo.createQueryBuilder.mockImplementationOnce(() => insertQb).mockImplementationOnce(() => updateQb);
+      return { insertQb, updateQb };
+    }
+
+    /**
+     * Per-entity manager double: `manager.getRepository(Subscription)` and
+     * `manager.getRepository(SubscriptionUsage)` return DISTINCT mocks, exactly
+     * like the real EntityManager — a test that conflated the two would pass
+     * for the wrong reason (both branches happening to default to `affected: 1`).
+     */
+    function newManager() {
+      const managerSubscriptions = createMockRepository();
+      const managerUsage = createMockRepository();
+      const manager = createMockEntityManager(
+        new Map<unknown, MockRepository>([
+          [Subscription, managerSubscriptions],
+          [SubscriptionUsage, managerUsage],
+        ]),
+      );
+      return { manager, managerSubscriptions, managerUsage };
+    }
+
+    it('passes the manager through to access.isEnforced', async () => {
+      const { manager, managerSubscriptions, managerUsage } = newManager();
+      managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr', plan: { max_campaigns: 100 } });
+      managerUsage.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+      await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
+
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', manager);
+    });
+
+    it('resolves the subscription via manager.getRepository(Subscription), never the injected non-transactional repo', async () => {
+      const { manager, managerSubscriptions, managerUsage } = newManager();
+      managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr', plan: { max_campaigns: 100 } });
+      managerUsage.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
+
+      expect(managerSubscriptions.findOne).toHaveBeenCalledTimes(1);
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(result).toEqual({ applied: true, used: 0, limit: 100 });
+    });
+
+    it('performs the atomic insert+update against manager.getRepository(SubscriptionUsage), never the injected repo', async () => {
+      const { manager, managerSubscriptions, managerUsage } = newManager();
+      managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr', plan: { max_campaigns: 100 } });
+      managerUsage.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+      await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
+
+      expect(managerUsage.createQueryBuilder).toHaveBeenCalledTimes(2); // insert + update
+      expect(usageRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('passes the manager through to limitOverrides.getActive', async () => {
+      const { manager, managerSubscriptions, managerUsage } = newManager();
+      managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr', plan: { max_campaigns: 100 } });
+      managerUsage.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+      await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
+
+      expect(limitOverrides.getActive).toHaveBeenCalledWith('t1', metric, manager);
+    });
+
+    it('free-mode short-circuit: the raw increment subscription lookup also uses the manager', async () => {
+      access.isEnforced.mockResolvedValueOnce(false);
+      const { manager, managerSubscriptions, managerUsage } = newManager();
+      managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr' });
+      managerUsage.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
+
+      expect(managerSubscriptions.findOne).toHaveBeenCalledTimes(1);
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(result.applied).toBe(true);
+    });
+
+    it('unlimited-plan short-circuit: the raw increment subscription lookup also uses the manager', async () => {
+      const { manager, managerSubscriptions, managerUsage } = newManager();
+      managerSubscriptions.findOne
+        .mockResolvedValueOnce({ id: 'sub-mgr', plan: { max_campaigns: null } }) // resolveSubscription
+        .mockResolvedValueOnce({ id: 'sub-mgr' }); // rawIncrement's findCurrentSubscription
+      managerUsage.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
+
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(result).toEqual({ applied: true, used: 0, limit: null });
+    });
+
+    it('omits the manager for standalone callers (AI/WhatsApp execution — unchanged)', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', plan: { max_campaigns: 100 } });
+      primeAdmission();
+
+      await service.incrementIfWithinLimit('t1', metric, 1);
+
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined);
+      expect(limitOverrides.getActive).toHaveBeenCalledWith('t1', metric, undefined);
+      expect(subscriptions.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('admits when the atomic UPDATE affects a row (one below the limit)', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', plan: { max_campaigns: 100 } });
+      const { updateQb } = primeAdmission({ affected: 1 });
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1);
+
+      expect(result).toEqual({ applied: true, used: 0, limit: 100 });
+      expect(updateQb.where).toHaveBeenCalledWith(
+        expect.stringContaining('<= :limit'),
+        expect.objectContaining({ amount: 1, limit: 100 }),
+      );
+    });
+
+    it('refuses (applied: false) when the atomic UPDATE affects zero rows (already exhausted)', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', plan: { max_campaigns: 100 } });
+      primeAdmission({ affected: 0 });
+      usageRepo.findOne.mockResolvedValueOnce({ campaigns_used: 100 });
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1);
+
+      expect(result).toEqual({ applied: false, used: 100, limit: 100 });
+    });
+
+    it('a tenant-specific override raises the effective limit used in the atomic UPDATE', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', plan: { max_campaigns: 100 } });
+      limitOverrides.getActive.mockResolvedValueOnce({ override_limit: '150' });
+      const { updateQb } = primeAdmission({ affected: 1 });
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1);
+
+      expect(result.limit).toBe(150);
+      expect(updateQb.where).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 150 }),
+      );
     });
   });
 });

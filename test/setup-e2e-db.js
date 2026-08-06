@@ -28,6 +28,7 @@
  * TYPEORM_SYNCHRONIZE=false is REQUIRED when running against it — otherwise the
  * app drops those indexes again on boot.
  */
+require('dotenv/config');
 const { Client } = require('pg');
 const { execFileSync } = require('node:child_process');
 

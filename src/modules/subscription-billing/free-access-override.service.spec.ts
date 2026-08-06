@@ -48,6 +48,41 @@ describe('FreeAccessOverrideService', () => {
     expect(await service.hasActive('t1')).toBe(false);
   });
 
+  // FND-047: `getActive`/`hasActive` are called from `AccessControlService.isEnforced`,
+  // itself called from inside `UsageService.incrementIfWithinLimit` — possibly already
+  // inside a caller's open transaction. A supplied manager must be used for this raw
+  // query so it reuses the transaction's own connection rather than borrowing a second
+  // one from the pool (the exact mechanism behind the FND-047 hang).
+  describe('manager threading (FND-047)', () => {
+    it('getActive queries through manager.query when a manager is supplied', async () => {
+      const managerQuery = jest.fn().mockResolvedValueOnce([row()]);
+      const manager = { query: managerQuery } as any;
+
+      const active = await service.getActive('t1', manager);
+
+      expect(active).toMatchObject({ id: 'ov-1' });
+      expect(managerQuery).toHaveBeenCalledTimes(1);
+      expect(query).not.toHaveBeenCalled();
+    });
+
+    it('hasActive threads the manager through to getActive', async () => {
+      const managerQuery = jest.fn().mockResolvedValueOnce([]);
+      const manager = { query: managerQuery } as any;
+
+      expect(await service.hasActive('t1', manager)).toBe(false);
+
+      expect(managerQuery).toHaveBeenCalledTimes(1);
+      expect(query).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the injected DataSource when no manager is supplied (standalone callers unchanged)', async () => {
+      query.mockResolvedValueOnce([row()]);
+      const active = await service.getActive('t1');
+      expect(active).toMatchObject({ id: 'ov-1' });
+      expect(query).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('grant inserts a new override when none is active', async () => {
     query.mockResolvedValueOnce([]); // hasActive → getActive → none
     query.mockResolvedValueOnce([row()]); // INSERT RETURNING

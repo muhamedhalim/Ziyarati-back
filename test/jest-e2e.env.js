@@ -19,6 +19,7 @@
  * Run `node test/setup-e2e-db.js` (or `npm run pretest:e2e`) at least once
  * before this suite to create/migrate the target database.
  */
+require('dotenv/config');
 const HOST = process.env.DB_HOST || 'localhost';
 const PORT = process.env.DB_PORT || '5432';
 const USER = process.env.DB_USERNAME || 'postgres';

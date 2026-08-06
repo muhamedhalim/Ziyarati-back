@@ -164,20 +164,20 @@ export class UsageService {
       ? manager.getRepository(SubscriptionUsage)
       : this.usage;
 
-    if (!(await this.access.isEnforced(tenantId))) {
-      await this.rawIncrement(repo, tenantId, metric, amount);
+    if (!(await this.access.isEnforced(tenantId, manager))) {
+      await this.rawIncrement(repo, tenantId, metric, amount, manager);
       return { applied: true, used: 0, limit: null };
     }
 
-    const subscription = await this.resolveSubscription(tenantId, true);
+    const subscription = await this.resolveSubscription(tenantId, true, manager);
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[limitColumn];
     if (limitRaw === null || limitRaw === undefined) {
-      await this.rawIncrement(repo, tenantId, metric, amount);
+      await this.rawIncrement(repo, tenantId, metric, amount, manager);
       return { applied: true, used: 0, limit: null }; // unlimited
     }
 
-    const override = await this.limitOverrides.getActive(tenantId, metric);
+    const override = await this.limitOverrides.getActive(tenantId, metric, manager);
     const limit = override
       ? Math.max(Number(limitRaw), Number(override.override_limit))
       : Number(limitRaw);
@@ -238,8 +238,9 @@ export class UsageService {
     tenantId: string,
     metric: UsageMetric,
     amount: number,
+    manager?: EntityManager,
   ): Promise<void> {
-    const subscription = await this.findCurrentSubscription(tenantId);
+    const subscription = await this.findCurrentSubscription(tenantId, manager);
     if (!subscription) return;
     const { usageColumn } = USAGE_METRIC_MAP[metric];
     const period = currentPeriodMonth();
@@ -575,12 +576,21 @@ export class UsageService {
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
-  /** The tenant's non-cancelled subscription (optionally with the plan loaded). */
+  /**
+   * The tenant's non-cancelled subscription (optionally with the plan loaded).
+   *
+   * FND-047: pass the caller's `manager` when reached from inside an open
+   * `dataSource.transaction()` (`incrementIfWithinLimit`'s campaign/appointment
+   * call sites) — this read must reuse that transaction's own connection, not
+   * borrow a second one from the pool.
+   */
   private async resolveSubscription(
     tenantId: string,
     withPlan = false,
+    manager?: EntityManager,
   ): Promise<Subscription> {
-    const subscription = await this.subscriptions.findOne({
+    const repo = manager ? manager.getRepository(Subscription) : this.subscriptions;
+    const subscription = await repo.findOne({
       where: {
         tenant: { id: tenantId },
         status: Not(SubscriptionStatus.CANCELLED),
@@ -597,9 +607,10 @@ export class UsageService {
     return subscription;
   }
 
-  /** Non-throwing variant for best-effort metering (returns null when none). */
-  private findCurrentSubscription(tenantId: string): Promise<Subscription | null> {
-    return this.subscriptions.findOne({
+  /** Non-throwing variant for best-effort metering (returns null when none). Same FND-047 manager-threading rule as `resolveSubscription`. */
+  private findCurrentSubscription(tenantId: string, manager?: EntityManager): Promise<Subscription | null> {
+    const repo = manager ? manager.getRepository(Subscription) : this.subscriptions;
+    return repo.findOne({
       where: {
         tenant: { id: tenantId },
         status: Not(SubscriptionStatus.CANCELLED),
