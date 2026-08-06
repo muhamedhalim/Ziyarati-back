@@ -202,5 +202,33 @@ describe('AccessControlService', () => {
       overrides.hasActive.mockResolvedValueOnce(false);
       expect(await service.isEnforced('t1')).toBe(true);
     });
+
+    // FND-047: `isEnforced` is called from inside `UsageService.incrementIfWithinLimit`,
+    // which may already be running inside a caller's open `dataSource.transaction()`
+    // (campaigns, appointments). Without threading that transaction's manager through,
+    // this call must borrow a SECOND pool connection while the first is held open —
+    // under enough concurrency to saturate the pool with held transactions, that
+    // second borrow can never be satisfied (see evidence/fnd-047-fix.md). Passing the
+    // manager through makes every nested read reuse the SAME connection.
+    it('threads a supplied manager through to billingMode.isPaidMode and overrides.hasActive', async () => {
+      const manager = { marker: 'fake-manager' } as any;
+      billingMode.isPaidMode.mockResolvedValueOnce(true);
+      overrides.hasActive.mockResolvedValueOnce(false);
+
+      expect(await service.isEnforced('t1', manager)).toBe(true);
+
+      expect(billingMode.isPaidMode).toHaveBeenCalledWith(manager);
+      expect(overrides.hasActive).toHaveBeenCalledWith('t1', manager);
+    });
+
+    it('omits the manager for standalone callers (AI/WhatsApp execution paths — unchanged)', async () => {
+      billingMode.isPaidMode.mockResolvedValueOnce(true);
+      overrides.hasActive.mockResolvedValueOnce(false);
+
+      expect(await service.isEnforced('t1')).toBe(true);
+
+      expect(billingMode.isPaidMode).toHaveBeenCalledWith(undefined);
+      expect(overrides.hasActive).toHaveBeenCalledWith('t1', undefined);
+    });
   });
 });

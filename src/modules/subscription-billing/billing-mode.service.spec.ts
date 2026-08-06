@@ -48,6 +48,35 @@ describe('BillingModeService', () => {
     expect(settings.findOne).toHaveBeenCalledTimes(1);
   });
 
+  // FND-047: on a cache miss inside a caller's open transaction (isEnforced ->
+  // isPaidMode), a manager must be honored so this read reuses the caller's own
+  // connection instead of borrowing a second one from the pool.
+  describe('manager threading (FND-047)', () => {
+    it('reads through manager.getRepository(SystemSetting) when a manager is supplied', async () => {
+      const managerSettings = { findOne: jest.fn().mockResolvedValueOnce({ value: { mode: BillingMode.PAID } }) };
+      const manager = { getRepository: jest.fn().mockReturnValue(managerSettings) } as any;
+
+      expect(await service.isPaidMode(manager)).toBe(true);
+
+      expect(managerSettings.findOne).toHaveBeenCalledTimes(1);
+      expect(settings.findOne).not.toHaveBeenCalled();
+    });
+
+    it('a fresh (non-cached) call with no manager still uses the injected repo (standalone callers unchanged)', async () => {
+      settings.findOne.mockResolvedValueOnce({ value: { mode: BillingMode.PAID } });
+      expect(await service.isPaidMode()).toBe(true);
+      expect(settings.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('a cache HIT never touches the manager either (no connection needed at all)', async () => {
+      settings.findOne.mockResolvedValueOnce({ value: { mode: BillingMode.PAID } });
+      await service.get(); // primes the cache via the plain repo
+      const manager = { getRepository: jest.fn() } as any;
+      expect(await service.get(manager)).toBe(BillingMode.PAID);
+      expect(manager.getRepository).not.toHaveBeenCalled();
+    });
+  });
+
   it('set() upserts a new setting and refreshes the cache immediately', async () => {
     settings.findOne.mockResolvedValueOnce(null); // no existing setting
     const res = await service.set(BillingMode.PAID);

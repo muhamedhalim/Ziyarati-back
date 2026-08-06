@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { AppError, ErrorCode } from '../../common/errors';
@@ -53,13 +53,23 @@ export class FreeAccessOverrideService {
   ) {}
 
   /** True when the tenant currently has an ACTIVE, time-valid override. */
-  async hasActive(tenantId: string): Promise<boolean> {
-    return (await this.getActive(tenantId)) !== null;
+  async hasActive(tenantId: string, manager?: EntityManager): Promise<boolean> {
+    return (await this.getActive(tenantId, manager)) !== null;
   }
 
-  /** The tenant's current ACTIVE, time-valid override (or null). */
-  async getActive(tenantId: string): Promise<FreeAccessOverride | null> {
-    const rows = await this.dataSource.query(
+  /**
+   * The tenant's current ACTIVE, time-valid override (or null).
+   *
+   * FND-047: reached from `AccessControlService.isEnforced`, which may already
+   * be running inside a caller's open `dataSource.transaction()` (via
+   * `UsageService.incrementIfWithinLimit`). Pass that manager through so this
+   * raw query reuses the transaction's own connection instead of borrowing a
+   * second one from the pool — under enough concurrency to hold every pool
+   * connection open in a transaction, that second borrow can never resolve.
+   */
+  async getActive(tenantId: string, manager?: EntityManager): Promise<FreeAccessOverride | null> {
+    const runner = manager ?? this.dataSource;
+    const rows = await runner.query(
       `SELECT * FROM free_access_overrides
        WHERE tenant_id = $1
          AND status = 'ACTIVE'

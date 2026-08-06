@@ -166,9 +166,16 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
       const tpl = await request(e2e.app.getHttpServer())
         .post(`${API}/whatsapp/templates`)
         .set(...authHeader(tenantA.token))
-        .send({ name: `disc_test_${randomUUID().slice(0, 8)}`, language: 'en', accountId, status: 'approved' })
+        .send({ name: `disc_test_${randomUUID().slice(0, 8)}`, language: 'en', accountId })
         .expect(201);
       templateId = tpl.body.id;
+      // GAP-002 (whatsapp-template.service.ts): `status` can never be set to
+      // APPROVED through the client-facing create/update endpoints — only
+      // WhatsappTemplateSyncService (mirroring Meta's real review verdict) may
+      // write it, directly on the repository. Same bypass this file already
+      // uses below for `waba_id` (also never client-settable) to arrange a
+      // precondition the API deliberately cannot produce.
+      await ds.getRepository('whatsapp_templates').update(templateId, { status: 'approved' });
     });
 
     it('#8 sending fails once the account is disconnected', async () => {
@@ -251,13 +258,15 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
     const tpl = await request(e2e.app.getHttpServer())
       .post(`${API}/whatsapp/templates`)
       .set(...authHeader(tenantA.token))
-      .send({ name: `waba_mismatch_${randomUUID().slice(0, 8)}`, language: 'en', accountId, status: 'approved' })
+      .send({ name: `waba_mismatch_${randomUUID().slice(0, 8)}`, language: 'en', accountId })
       .expect(201);
     // Force a WABA mismatch: created via the API with the right account, then
     // its waba_id is overwritten directly — the API has no field for this
     // (waba_id only ever comes from Meta sync), so this is the only way to
-    // arrange the precondition under test.
-    await ds.getRepository('whatsapp_templates').update(tpl.body.id, { waba_id: 'a-different-waba' });
+    // arrange the precondition under test. `status` is bypassed the same way,
+    // for the same reason (GAP-002 — see the #8/#9 block above): only
+    // WhatsappTemplateSyncService may ever write APPROVED.
+    await ds.getRepository('whatsapp_templates').update(tpl.body.id, { waba_id: 'a-different-waba', status: 'approved' });
 
     const campaign = await request(e2e.app.getHttpServer())
       .post(`${API}/campaigns`)

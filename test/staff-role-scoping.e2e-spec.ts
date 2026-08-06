@@ -143,10 +143,10 @@ describe('Staff role scoping (Doctor / "Other") — HTTP e2e', () => {
 
       const customers = e2e.dataSource.getRepository(Customer);
       const custA = await customers.save(
-        customers.create({ tenant: { id: owner.tenantId } as any, full_name: 'Patient A', phone: `05${randomUUID().replace(/\D/g, '').slice(0, 8)}` }),
+        customers.create({ tenant: { id: owner.tenantId } as any, full_name: 'Patient A', phone: `05${randomUUID().replace(/\D/g, '').slice(0, 8)}`, email: `patient-a-${randomUUID().slice(0, 8)}@example.test` }),
       );
       const custB = await customers.save(
-        customers.create({ tenant: { id: owner.tenantId } as any, full_name: 'Patient B', phone: `05${randomUUID().replace(/\D/g, '').slice(0, 8)}` }),
+        customers.create({ tenant: { id: owner.tenantId } as any, full_name: 'Patient B', phone: `05${randomUUID().replace(/\D/g, '').slice(0, 8)}`, email: `patient-b-${randomUUID().slice(0, 8)}@example.test` }),
       );
 
       const appointments = e2e.dataSource.getRepository(Appointment);
@@ -185,7 +185,7 @@ describe('Staff role scoping (Doctor / "Other") — HTTP e2e', () => {
         .get(`${API}/staff`)
         .set(...authHeader(doctorAToken))
         .expect(403); // no staff.read — proves the minimal grant, not an accident
-      expect(res.body.errorCode).toBe('PERMISSION_DENIED');
+      expect(res.body.code).toBe('PERMISSION_DENIED');
     });
 
     it('GET /appointments returns only the doctor\'s own appointment', async () => {
@@ -212,7 +212,7 @@ describe('Staff role scoping (Doctor / "Other") — HTTP e2e', () => {
         .get(`${API}/appointments/${apptB}`)
         .set(...authHeader(doctorAToken))
         .expect(404);
-      expect(res.body.errorCode).toBe('NOT_FOUND');
+      expect(res.body.code).toBe('NOT_FOUND');
     });
 
     it('GET /appointments/:id/notes for another doctor\'s appointment also returns 404', async () => {
