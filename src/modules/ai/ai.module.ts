@@ -53,6 +53,9 @@ import { PgVectorBootstrapService } from './rag/pgvector-bootstrap.service';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
 import { AiToolDispatchService } from './tools/ai-tool-dispatch.service';
 import { AiToolCallsBootstrap } from './tools/ai-tool-calls.bootstrap';
+import { AiSessionModule } from '../ai-session/ai-session.module';
+import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
+import { PublicBookingModule } from '../public-booking/public-booking.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
@@ -110,6 +113,15 @@ import { AiBatchService } from './batch/ai-batch.service';
       User,
       UserRole,
     ]),
+    // Conversation ownership + session state (shared with the public booking
+    // flow; see AiSessionModule for why they were hoisted out).
+    AiSessionModule,
+    // Public AI booking: resolves the SELECTED clinic's tenant server-side from
+    // the persisted branch selection, so the booking tools never take a tenantId.
+    PublicBookingModule,
+    // The selected clinic's own least-privilege `ai-bot` actor — public
+    // bookings execute as it, so a guest never needs clinic permissions.
+    AiBotActorModule,
     // Usage-quota enforcement (UsageService) for AI token metering.
     SubscriptionBillingModule,
     // Booking toolset: reuse the existing transactional booking + availability
@@ -194,6 +206,9 @@ import { AiBatchService } from './batch/ai-batch.service';
     AiAgentService,
     AiKnowledgeBaseService,
     AiConversationService,
+    // Re-exported so existing consumers (the realtime gateway, the
+    // orchestrator) keep resolving it from AiModule as they always did.
+    AiSessionModule,
     AiExecutionService,
     AiRagService,
     AiMetricsService,

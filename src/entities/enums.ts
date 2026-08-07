@@ -51,6 +51,15 @@ export enum AppointmentSource {
   PLATFORM = 'PLATFORM',
   WHATSAPP_BOT = 'WHATSAPP_BOT',
   MANUAL = 'MANUAL',
+  /**
+   * Created by the public AI assistant for an anonymous website visitor, under
+   * the clinic tenant resolved server-side from the branch they selected.
+   *
+   * Distinct from `WHATSAPP_BOT` on purpose: both are AI-created, but they
+   * arrive on different channels and a clinic needs to tell them apart. (Every
+   * AI booking used to be stamped `WHATSAPP_BOT` regardless of channel.)
+   */
+  PUBLIC_AI = 'PUBLIC_AI',
 }
 
 /**

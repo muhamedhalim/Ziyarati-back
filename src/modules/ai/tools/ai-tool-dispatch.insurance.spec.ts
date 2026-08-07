@@ -1,5 +1,8 @@
 import { AiToolDispatchService } from './ai-tool-dispatch.service';
-import { AppointmentPaymentStatus, AppointmentStatus } from '../../../entities/enums';
+import {
+  AppointmentPaymentStatus,
+  AppointmentStatus,
+} from '../../../entities/enums';
 
 const TENANT = 'tenant-1';
 
@@ -54,16 +57,21 @@ interface BuildOverrides {
 
 function buildService(overrides: BuildOverrides = {}) {
   const appointments = {
-    create: overrides.appointmentsCreate ?? jest.fn().mockResolvedValue(buildAppointment()),
+    create:
+      overrides.appointmentsCreate ??
+      jest.fn().mockResolvedValue(buildAppointment()),
   };
   const customers = {
     findOneOrThrow:
       overrides.customerFindOneOrThrow ??
       jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
-    setInsuranceStatus: overrides.customerSetInsurance ?? jest.fn().mockResolvedValue(undefined),
+    setInsuranceStatus:
+      overrides.customerSetInsurance ?? jest.fn().mockResolvedValue(undefined),
   };
   const tenants = {
-    getSettings: overrides.tenantsGetSettings ?? jest.fn().mockResolvedValue({ payment_required: true }),
+    getSettings:
+      overrides.tenantsGetSettings ??
+      jest.fn().mockResolvedValue({ payment_required: true }),
   };
   const paymentLinks = {
     create:
@@ -92,7 +100,14 @@ function buildService(overrides: BuildOverrides = {}) {
     paymentLinks as any,
   );
 
-  return { service, appointments, customers, tenants, paymentLinks, dataSource };
+  return {
+    service,
+    appointments,
+    customers,
+    tenants,
+    paymentLinks,
+    dataSource,
+  };
 }
 
 describe('AiToolDispatchService — insurance-aware booking', () => {
@@ -110,7 +125,10 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
       'user-1',
       expect.objectContaining({ hasInsurance: false }),
     );
-    expect(paymentLinks.create).toHaveBeenCalledWith(TENANT, { appointmentId: 'appt-1', amount: 200 });
+    expect(paymentLinks.create).toHaveBeenCalledWith(TENANT, {
+      appointmentId: 'appt-1',
+      amount: 200,
+    });
     expect(result).toEqual(
       expect.objectContaining({
         success: true,
@@ -135,13 +153,17 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
       expect.objectContaining({ hasInsurance: true }),
     );
     expect(paymentLinks.create).not.toHaveBeenCalled();
-    expect(result).toEqual(expect.objectContaining({ success: true, hasInsurance: true }));
+    expect(result).toEqual(
+      expect.objectContaining({ success: true, hasInsurance: true }),
+    );
     expect(result.paymentLink).toBeUndefined();
   });
 
   it('skips the payment link when the clinic does not require online payment', async () => {
     const { service, paymentLinks } = buildService({
-      tenantsGetSettings: jest.fn().mockResolvedValue({ payment_required: false }),
+      tenantsGetSettings: jest
+        .fn()
+        .mockResolvedValue({ payment_required: false }),
     });
 
     const result: any = await service.execute(ctx as any, {
@@ -156,7 +178,9 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
 
   it('falls back to the on-file insurance value when the model omits hasInsurance', async () => {
     const { service, appointments, paymentLinks } = buildService({
-      customerFindOneOrThrow: jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: true }),
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-1', has_health_insurance: true }),
     });
 
     await service.execute(ctx as any, {
@@ -175,7 +199,9 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
 
   it('defaults to "no insurance" (existing behavior, safe default) when never asked and omitted', async () => {
     const { service, appointments } = buildService({
-      customerFindOneOrThrow: jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
     });
 
     await service.execute(ctx as any, {
@@ -193,7 +219,9 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
 
   it('persists a newly-confirmed insurance answer onto the customer record', async () => {
     const { service, customers } = buildService({
-      customerFindOneOrThrow: jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
     });
 
     await service.execute(ctx as any, {
@@ -202,12 +230,18 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
       arguments: JSON.stringify({ ...baseArgs, hasInsurance: true }),
     });
 
-    expect(customers.setInsuranceStatus).toHaveBeenCalledWith(TENANT, 'cust-1', true);
+    expect(customers.setInsuranceStatus).toHaveBeenCalledWith(
+      TENANT,
+      'cust-1',
+      true,
+    );
   });
 
   it('does not re-write the customer record when the confirmed answer matches what is on file', async () => {
     const { service, customers } = buildService({
-      customerFindOneOrThrow: jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: true }),
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-1', has_health_insurance: true }),
     });
 
     await service.execute(ctx as any, {
@@ -221,7 +255,9 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
 
   it('never blocks the booking when payment-link generation fails (e.g. clinic not payment-approved)', async () => {
     const { service, appointments } = buildService({
-      paymentLinksCreate: jest.fn().mockRejectedValue(new Error('clinic not chargeable')),
+      paymentLinksCreate: jest
+        .fn()
+        .mockRejectedValue(new Error('clinic not chargeable')),
     });
 
     const result: any = await service.execute(ctx as any, {
@@ -239,7 +275,9 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
 describe('AiToolDispatchService — get_customer_insurance_status', () => {
   it('returns the on-file value and known=true when previously answered', async () => {
     const { service } = buildService({
-      customerFindOneOrThrow: jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: false }),
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-1', has_health_insurance: false }),
     });
 
     const result: any = await service.execute(ctx as any, {
@@ -248,12 +286,20 @@ describe('AiToolDispatchService — get_customer_insurance_status', () => {
       arguments: JSON.stringify({}),
     });
 
-    expect(result).toEqual(expect.objectContaining({ success: true, hasInsurance: false, known: true }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        success: true,
+        hasInsurance: false,
+        known: true,
+      }),
+    );
   });
 
   it('returns null and known=false when never asked', async () => {
     const { service } = buildService({
-      customerFindOneOrThrow: jest.fn().mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-1', has_health_insurance: null }),
     });
 
     const result: any = await service.execute(ctx as any, {
@@ -262,6 +308,12 @@ describe('AiToolDispatchService — get_customer_insurance_status', () => {
       arguments: JSON.stringify({}),
     });
 
-    expect(result).toEqual(expect.objectContaining({ success: true, hasInsurance: null, known: false }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        success: true,
+        hasInsurance: null,
+        known: false,
+      }),
+    );
   });
 });

@@ -20,6 +20,11 @@ import { AiToolCall } from '../providers/ai-provider.interface';
 import { AiAnalyticsService } from '../ai-analytics.service';
 import { HandoverRequestService } from '../handover-request.service';
 import { AI_TOOL } from './ai-tools.constants';
+import { AI_PUBLIC_TOOL } from './ai-public-booking-tools.constants';
+import { PublicBookingContextService } from '../../public-booking/public-booking-context.service';
+import { WhatsappBotActorService } from '../../whatsapp/whatsapp-bot-actor.service';
+import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
+import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import {
   AI_ADMIN_TOOL,
   AI_ADMIN_TOOL_PERMISSION,
@@ -50,6 +55,13 @@ export interface ToolContext {
   aiConversationId: string;
   /** Optional linked human conversation (for audit). */
   conversationId?: string;
+  /**
+   * The server-verified acting principal. Public booking tools need it to prove
+   * the guest owns this conversation before reading or writing its selections —
+   * tenant scoping alone cannot do that, because every guest shares the one
+   * discovery tenant.
+   */
+  principal?: AuthenticatedUser;
 }
 
 /** The structured result handed back to the model as the `tool` message. */
@@ -90,6 +102,12 @@ export class AiToolDispatchService {
     private readonly tenants: TenantService,
     /** Reused verbatim — same create()/assertChargeable() path as the manual staff flow. */
     private readonly paymentLinks: PaymentLinkService,
+    /** Resolves the SELECTED clinic's tenant from persisted session state. */
+    private readonly bookingContext: PublicBookingContextService,
+    /** The selected clinic's own least-privilege `ai-bot` principal. */
+    private readonly botActor: WhatsappBotActorService,
+    /** Used to run a public booking under that principal (never the guest's). */
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   /** Parse + route one tool call. Never throws — returns a result for the model. */
@@ -124,6 +142,25 @@ export class AiToolDispatchService {
           return await this.cancelAppointment(ctx, args);
         case AI_TOOL.REQUEST_HUMAN_HANDOVER:
           return await this.requestHumanHandover(ctx, args);
+        // ── Public booking (anonymous visitors) ────────────────────────────
+        case AI_PUBLIC_TOOL.LIST_CITIES:
+          return await this.listCities();
+        case AI_PUBLIC_TOOL.SELECT_CLINIC:
+          return await this.selectClinic(ctx, args);
+        case AI_PUBLIC_TOOL.SELECT_BRANCH:
+          return await this.selectBranch(ctx, args);
+        case AI_PUBLIC_TOOL.LIST_BRANCH_SERVICES:
+          return await this.listBranchServices(ctx);
+        case AI_PUBLIC_TOOL.LIST_BRANCH_DOCTORS:
+          return await this.listBranchDoctors(ctx);
+        case AI_PUBLIC_TOOL.SELECT_SERVICE:
+          return await this.selectService(ctx, args);
+        case AI_PUBLIC_TOOL.SELECT_DOCTOR:
+          return await this.selectDoctor(ctx, args);
+        case AI_PUBLIC_TOOL.SELECT_SLOT:
+          return await this.selectSlot(ctx, args);
+        case AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT:
+          return await this.bookPublicAppointment(ctx, args);
         case AI_ADMIN_TOOL.GET_DASHBOARD_KPIS:
         case AI_ADMIN_TOOL.GET_SUBSCRIPTION_STATUS:
         case AI_ADMIN_TOOL.GET_USAGE_QUOTA:
@@ -375,7 +412,11 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const customerId = this.str(args.customerId) ?? ctx.customerId;
+    // F-8 (second site): same inversion, and it matters more here — this tool
+    // is NOT permission-gated, and `resolveInsurance` WRITES through
+    // `setInsuranceStatus`. With the model's id winning, a prompt injection
+    // could read and then overwrite a stranger's health-insurance flag.
+    const customerId = ctx.customerId ?? this.str(args.customerId);
     if (!customerId) {
       return {
         success: false,
@@ -388,10 +429,17 @@ export class AiToolDispatchService {
       `insurance_status:${randomUUID()}`,
       args,
       async () => {
-        const customer = await this.customers.findOneOrThrow(ctx.tenantId, customerId);
+        const customer = await this.customers.findOneOrThrow(
+          ctx.tenantId,
+          customerId,
+        );
         const hasInsurance = customer.has_health_insurance ?? null;
         return {
-          toolResult: { success: true, hasInsurance, known: hasInsurance !== null },
+          toolResult: {
+            success: true,
+            hasInsurance,
+            known: hasInsurance !== null,
+          },
           resultJson: { customerId, hasInsurance },
         };
       },
@@ -415,9 +463,14 @@ export class AiToolDispatchService {
       };
     }
     const branchId = this.str(args.branchId);
-    // The model supplies customerId when it knows one; otherwise fall back to
-    // the customer server-bound to this conversation (e.g. a WhatsApp contact).
-    const customerId = this.str(args.customerId) ?? ctx.customerId;
+    // F-8: the SERVER-bound customer wins. This used to be the other way round
+    // (`args.customerId ?? ctx.customerId`), and since `customerId` is a
+    // REQUIRED tool parameter the model supplied it on essentially every call —
+    // so the trusted binding was almost never the value used. `assertCustomer`
+    // only checks tenant membership, so a hallucinated or prompt-injected UUID
+    // booked an appointment against the wrong patient inside the same clinic.
+    // A model-supplied id is now honoured only when there is no binding at all.
+    const customerId = ctx.customerId ?? this.str(args.customerId);
     const staffId = this.str(args.staffId);
     const startAt = this.str(args.startAt);
     if (!branchId || !customerId || !staffId || !startAt) {
@@ -509,7 +562,10 @@ export class AiToolDispatchService {
   ): Promise<boolean> {
     let stored: boolean | null = null;
     try {
-      const customer = await this.customers.findOneOrThrow(tenantId, customerId);
+      const customer = await this.customers.findOneOrThrow(
+        tenantId,
+        customerId,
+      );
       stored = customer.has_health_insurance ?? null;
     } catch {
       // An invalid customerId surfaces properly from AppointmentsService's own
@@ -543,7 +599,10 @@ export class AiToolDispatchService {
   private async maybeCreatePaymentLink(
     tenantId: string,
     appt: Appointment,
-  ): Promise<{ token: string; amount: number; currency: string; expiresAt?: string } | undefined> {
+  ): Promise<
+    | { token: string; amount: number; currency: string; expiresAt?: string }
+    | undefined
+  > {
     try {
       const settings = await this.tenants.getSettings(tenantId);
       if (!settings.payment_required) return undefined;
@@ -567,6 +626,337 @@ export class AiToolDispatchService {
       );
       return undefined;
     }
+  }
+
+  // ─────────────────────── Public booking (anonymous) ─────────────────────── //
+  //
+  // Every tool below is safe for a principal with NO permissions and NO clinic
+  // tenant, because of three invariants:
+  //   1. the clinic tenant is re-derived server-side from the persisted branch
+  //      selection (`PublicBookingContextService`), never taken from an argument;
+  //   2. each `select_*` VALIDATES against live data before recording, so the
+  //      session can never hold a combination the backend would not accept; and
+  //   3. the write itself runs as the SELECTED clinic's `ai-bot` actor, so the
+  //      visitor is never granted `appointments.create`.
+
+  private async listCities(): Promise<ToolResult> {
+    const cities = await this.discovery.listCities();
+    return { success: true, cities };
+  }
+
+  /**
+   * Records the chosen clinic, and auto-selects its branch when there is only
+   * one — a single-branch clinic should not make the visitor "choose" from a
+   * list of one.
+   */
+  private async selectClinic(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const clinicId = this.str(args.clinicId);
+    if (!clinicId) return { success: false, error: 'clinicId is required.' };
+
+    // Throws if the clinic is not publicly bookable — same check the booking
+    // itself will make, so an ineligible clinic is rejected at selection time
+    // rather than silently at the end.
+    const detail = await this.discovery.clinicDetail(clinicId);
+    const branches = detail.branches;
+
+    const only = branches.length === 1 ? branches[0] : undefined;
+    await this.bookingContext.patchSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      {
+        selectedClinicId: clinicId,
+        selectedBranchId: only?.id,
+        // A new clinic invalidates every downstream choice.
+        selectedDoctorId: undefined,
+        selectedServiceIds: undefined,
+        selectedStartAt: undefined,
+      },
+    );
+
+    return {
+      success: true,
+      clinic: detail.clinic,
+      branches,
+      branchAutoSelected: !!only,
+      selectedBranch: only ?? null,
+    };
+  }
+
+  private async selectBranch(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const branchId = this.str(args.branchId);
+    if (!branchId) return { success: false, error: 'branchId is required.' };
+
+    // Resolving the branch's owner IS the ownership check: if it does not
+    // belong to the selected clinic, the ids disagree and we refuse.
+    const owner = await this.bookingContext.resolveTenantFromBranch(branchId);
+    const session = await this.bookingContext.getSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      ctx.principal,
+    );
+    if (session.selectedClinicId && session.selectedClinicId !== owner) {
+      return {
+        success: false,
+        error: 'That branch does not belong to the selected clinic.',
+      };
+    }
+
+    await this.bookingContext.patchSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      {
+        selectedClinicId: owner,
+        selectedBranchId: branchId,
+        // Doctors and services are branch-specific — a branch change invalidates them.
+        selectedDoctorId: undefined,
+        selectedServiceIds: undefined,
+        selectedStartAt: undefined,
+      },
+    );
+    return { success: true, branchId };
+  }
+
+  private async listBranchServices(ctx: ToolContext): Promise<ToolResult> {
+    const booking = await this.requirePublicContext(ctx, 'branch');
+    const services = await this.discovery.listBranchServices(
+      booking.tenantId,
+      booking.branchId,
+    );
+    return { success: true, services };
+  }
+
+  private async listBranchDoctors(ctx: ToolContext): Promise<ToolResult> {
+    const booking = await this.requirePublicContext(ctx, 'branch');
+    const doctors = await this.discovery.listBranchDoctors(
+      booking.tenantId,
+      booking.branchId,
+    );
+    return { success: true, doctors };
+  }
+
+  private async selectService(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const serviceIds = Array.isArray(args.serviceIds)
+      ? args.serviceIds.filter((s): s is string => typeof s === 'string')
+      : [];
+    if (serviceIds.length === 0)
+      return { success: false, error: 'serviceIds is required.' };
+
+    const booking = await this.requirePublicContext(ctx, 'branch');
+    const offered = await this.discovery.listBranchServices(
+      booking.tenantId,
+      booking.branchId,
+    );
+    const offeredIds = new Set(offered.map((s) => s.id));
+
+    const rejected = serviceIds.filter((id) => !offeredIds.has(id));
+    if (rejected.length > 0) {
+      return {
+        success: false,
+        error:
+          'One or more of those services are not offered at the selected branch.',
+        rejectedServiceIds: rejected,
+      };
+    }
+
+    await this.bookingContext.patchSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      {
+        selectedServiceIds: serviceIds,
+      },
+    );
+    return {
+      success: true,
+      services: offered.filter(
+        (s) => offeredIds.has(s.id) && serviceIds.includes(s.id),
+      ),
+    };
+  }
+
+  private async selectDoctor(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const staffId = this.str(args.staffId);
+    if (!staffId) return { success: false, error: 'staffId is required.' };
+
+    const booking = await this.requirePublicContext(ctx, 'branch');
+    const doctors = await this.discovery.listBranchDoctors(
+      booking.tenantId,
+      booking.branchId,
+    );
+    if (!doctors.some((d) => d.id === staffId)) {
+      return {
+        success: false,
+        error: 'That doctor does not work at the selected branch.',
+      };
+    }
+
+    await this.bookingContext.patchSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      {
+        selectedDoctorId: staffId,
+        // The doctor's calendar differs, so a previously chosen time is stale.
+        selectedStartAt: undefined,
+      },
+    );
+    return { success: true, staffId };
+  }
+
+  private async selectSlot(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const startAt = this.str(args.startAt);
+    if (!startAt || Number.isNaN(new Date(startAt).getTime())) {
+      return {
+        success: false,
+        error: 'startAt must be a valid ISO-8601 timestamp.',
+      };
+    }
+    // Requires a doctor first: a time means nothing without whose calendar it is.
+    await this.requirePublicContext(ctx, 'doctor');
+    await this.bookingContext.patchSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      {
+        selectedStartAt: startAt,
+      },
+    );
+    return { success: true, startAt };
+  }
+
+  /**
+   * Creates the appointment for an anonymous visitor.
+   *
+   * Takes NO resource ids — clinic, branch, service, doctor and time all come
+   * from the validated session, so there is nothing here for a prompt injection
+   * to redirect. Reuses `AppointmentsService.create` verbatim, which re-runs
+   * every check (branch ⊂ clinic, service offered at branch, doctor works at
+   * branch, slot free) transactionally, so a selection that has gone stale
+   * during the conversation fails at commit rather than booking wrongly.
+   */
+  private async bookPublicAppointment(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const fullName = this.str(args.fullName);
+    const phone = this.str(args.phone);
+    if (!fullName || !phone) {
+      return {
+        success: false,
+        error: 'fullName and phone are required to book.',
+      };
+    }
+
+    const booking = await this.requirePublicContext(ctx, 'book');
+    const hasInsurance =
+      typeof args.hasInsurance === 'boolean' ? args.hasInsurance : false;
+
+    // Deterministic key on the SESSION-resolved values, so a retried turn books
+    // at most once even though the model supplied no ids.
+    const key = `public_book:${ctx.aiConversationId}:${booking.staffId}:${booking.startAt}`;
+
+    return this.run(
+      ctx,
+      AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT,
+      key,
+      args,
+      async () => {
+        // Act as the SELECTED clinic's bot, in that clinic's tenant context — the
+        // guest principal is never elevated and never leaves its own tenant.
+        const bot = await this.botActor.ensureBotActor(booking.tenantId);
+
+        const appt = await this.tenantContext.run(async () => {
+          this.tenantContext.setPrincipal(bot);
+
+          const customer = await this.customers.findOrCreateForBooking(
+            booking.tenantId,
+            {
+              fullName,
+              phone,
+              email: this.str(args.email),
+            },
+          );
+
+          // Bind the customer server-side so nothing later in this conversation
+          // can retarget the booking at someone else's record.
+          await this.bookingContext.patchSelection(
+            ctx.tenantId,
+            ctx.aiConversationId,
+            {
+              bookingCustomerId: customer.id,
+            },
+          );
+
+          return this.appointments.create(booking.tenantId, bot.id, {
+            branchId: booking.branchId,
+            customerId: customer.id,
+            staffId: booking.staffId!,
+            startAt: booking.startAt!,
+            serviceIds: booking.serviceIds,
+            notes: this.str(args.notes),
+            source: AppointmentSource.PUBLIC_AI,
+            hasInsurance,
+          });
+        });
+
+        const paymentLink = hasInsurance
+          ? undefined
+          : await this.maybeCreatePaymentLink(booking.tenantId, appt);
+
+        return {
+          appointmentId: appt.id,
+          // `run()` replays THIS object verbatim on a retried turn, so it must
+          // carry `success` — otherwise the replay hands the model a result with
+          // no success flag and it cannot tell the booking worked.
+          resultJson: {
+            success: true,
+            appointmentId: appt.id,
+            tenantId: booking.tenantId,
+            branchId: booking.branchId,
+            status: appt.status,
+            paymentStatus: appt.payment_status,
+            hasInsurance,
+          },
+          toolResult: {
+            success: true,
+            appointmentId: appt.id,
+            status: appt.status,
+            paymentStatus: appt.payment_status,
+            startAt: appt.start_at,
+            endAt: appt.end_at,
+            totalAmount: appt.total_amount ?? null,
+            currency: appt.currency,
+            hasInsurance,
+            ...(paymentLink ? { paymentLink } : {}),
+          },
+        };
+      },
+    );
+  }
+
+  /** Resolves the booking context, turning a missing step into model-readable guidance. */
+  private async requirePublicContext(
+    ctx: ToolContext,
+    need: 'branch' | 'doctor' | 'book',
+  ) {
+    return this.bookingContext.requireContext(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      ctx.principal,
+      need,
+    );
   }
 
   private async rescheduleAppointment(

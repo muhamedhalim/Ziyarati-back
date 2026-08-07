@@ -6,8 +6,8 @@ import { AiAgent } from '../../entities/AI Agent/AiAgent';
 import { AiModule } from '../ai/ai.module';
 import { AiMemoryModule } from '../ai-memory/ai-memory.module';
 
+import { AiSessionModule } from '../ai-session/ai-session.module';
 import { AiOrchestratorService } from './ai-orchestrator.service';
-import { ConversationSessionService } from './conversation-session.service';
 import { AgentRouterService } from './agent-router.service';
 import { AiOrchestratorController } from './ai-orchestrator.controller';
 
@@ -20,9 +20,17 @@ import { AiOrchestratorController } from './ai-orchestrator.controller';
  * lives on the existing `ai_conversations` row (forFeature for the repo).
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([AiConversation, AiAgent]), AiModule, AiMemoryModule],
+  imports: [
+    TypeOrmModule.forFeature([AiConversation, AiAgent]),
+    AiModule,
+    AiMemoryModule,
+    // ConversationSessionService now lives here (see AiSessionModule).
+    AiSessionModule,
+  ],
   controllers: [AiOrchestratorController],
-  providers: [AiOrchestratorService, ConversationSessionService, AgentRouterService],
-  exports: [AiOrchestratorService, ConversationSessionService, AgentRouterService],
+  providers: [AiOrchestratorService, AgentRouterService],
+  // Re-export AiSessionModule so importers keep resolving
+  // ConversationSessionService from this module, unchanged.
+  exports: [AiOrchestratorService, AiSessionModule, AgentRouterService],
 })
 export class AiOrchestratorModule {}

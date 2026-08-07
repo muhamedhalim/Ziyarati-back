@@ -37,6 +37,19 @@ export class TenantSetting {
   @Column({ default: true })
   bot_enabled!: boolean;
 
+  /**
+   * Whether this clinic is discoverable and bookable by ANONYMOUS visitors
+   * through the public AI assistant.
+   *
+   * Defaults to `false`: listing a clinic publicly and letting strangers create
+   * real appointments in it is a business decision the clinic opts into, not a
+   * side effect of the feature shipping. Enforced in one place —
+   * `PublicBookingContextService.resolveTenantFromBranch` — plus the public
+   * discovery queries, so an opted-out clinic is neither listed nor bookable.
+   */
+  @Column({ default: false })
+  public_booking_enabled!: boolean;
+
   @Column({ type: 'timestamptz', nullable: true })
   updated_at?: Date;
 }

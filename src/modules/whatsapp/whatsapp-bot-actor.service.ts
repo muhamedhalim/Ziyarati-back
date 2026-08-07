@@ -116,6 +116,21 @@ export class WhatsappBotActorService {
           permissionSlugs: AI_BOT_PERMISSIONS,
         },
         tenantId,
+        // FND-009's privilege-escalation guard rejects any slug the CALLER does
+        // not hold, and this argument defaulted to `[]` — so provisioning could
+        // never succeed ("You cannot grant a permission you do not hold: ...").
+        // The bot role could only be used where it already existed, which is why
+        // this never surfaced on a database that had one.
+        //
+        // This is trusted server-side provisioning of a FIXED, code-defined,
+        // least-privilege role — not a user delegating their own rights — so the
+        // authorising set is exactly the constant being granted. Passing the
+        // same constant keeps the guard fully in force for real callers (HTTP
+        // `POST /roles` still passes the authenticated caller's permissions)
+        // while allowing the system to create its own role. Widening
+        // AI_BOT_PERMISSIONS therefore stays a deliberate, reviewable code
+        // change rather than something a request can influence.
+        AI_BOT_PERMISSIONS,
       );
       return created.id;
     } catch (err) {

@@ -24,7 +24,7 @@ import { WhatsappContactService } from './whatsapp-contact.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
-import { WhatsappBotActorService } from './whatsapp-bot-actor.service';
+import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
 
 import { WhatsappAccountController } from './whatsapp-account.controller';
@@ -127,6 +127,10 @@ import { ConversationExecutionService } from '../conversations/conversation-exec
     // Inbound automation: reuse the single cross-channel AI orchestrator (no AI
     // logic duplicated here — the bridge only maps WhatsApp ⇄ orchestrator).
     AiOrchestratorModule,
+    // The `ai-bot` principal inbound turns act as. Registered in its own module
+    // so the public web booking flow can reuse the same actor without
+    // importing WhatsappModule (which would cycle back through AiModule).
+    AiBotActorModule,
     // Bot Actor identity: reuses RolesService/AuthService (real users + RBAC,
     // no parallel auth) and CustomerService (CRM customer linkage) — no new
     // business logic, just composing the existing services.
@@ -156,7 +160,6 @@ import { ConversationExecutionService } from '../conversations/conversation-exec
     WhatsappMessagingService,
     WhatsappExecutionService,
     WhatsappInboundAiService,
-    WhatsappBotActorService,
     WhatsappAnalyticsService,
     WhatsappProviderFactory,
     NoopWhatsappProvider,

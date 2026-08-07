@@ -46,7 +46,9 @@ export class CustomerService {
       whatsapp_id: dto.whatsapp_id,
       whatsapp_name: dto.whatsapp_name,
       gender: dto.gender,
-      date_of_birth: dto.date_of_birth ? new Date(dto.date_of_birth) : undefined,
+      date_of_birth: dto.date_of_birth
+        ? new Date(dto.date_of_birth)
+        : undefined,
       source: dto.source,
       marketing_opt_in: dto.marketing_opt_in ?? false,
       is_active: dto.is_active ?? true,
@@ -57,6 +59,56 @@ export class CustomerService {
     });
     this.applyChronicDiseasesRule(customer);
     return this.customers.save(customer);
+  }
+
+  /**
+   * Find-or-create the patient for a bot-driven booking, INSIDE `tenantId`.
+   *
+   * Promoted here from `WhatsappInboundAiService.findOrCreateCustomer` so the
+   * public AI flow and the WhatsApp flow share one implementation instead of
+   * growing a second, subtly different one.
+   *
+   * Tenant isolation is structural rather than conventional: `customers` is
+   * uniquely indexed on `(tenantId, phone)` and `(tenantId, email)`, so the
+   * SAME person booking at two clinics necessarily gets two independent rows.
+   * Neither clinic can see the other's — including notes, chronic diseases and
+   * insurance status, which hang off the customer row.
+   *
+   * `email` is NOT NULL, so a synthetic tenant-unique address is minted when
+   * the patient doesn't give one — the same convention the WhatsApp bridge uses.
+   * The `23505` retry closes the race where two concurrent turns both miss the
+   * lookup and both insert.
+   */
+  async findOrCreateForBooking(
+    tenantId: string,
+    input: { fullName?: string; phone: string; email?: string },
+  ): Promise<Customer> {
+    const phone = input.phone.trim();
+
+    const existing = await this.customers.findOne({
+      where: { tenant: { id: tenantId }, phone },
+    });
+    if (existing) return existing;
+
+    try {
+      return await this.create(tenantId, {
+        full_name: input.fullName,
+        phone,
+        // Globally-unique synthetic address (the column is NOT NULL and unique
+        // per tenant); tenantId + phone guarantees no collision.
+        email:
+          input.email?.trim() ||
+          `patient+${tenantId}-${phone}@booking.internal`,
+        source: 'public_ai',
+      } as CreateCustomerDto);
+    } catch (err) {
+      // Concurrent insert won the race — re-read rather than failing the booking.
+      const raced = await this.customers.findOne({
+        where: { tenant: { id: tenantId }, phone },
+      });
+      if (raced) return raced;
+      throw err;
+    }
   }
 
   async update(
@@ -75,7 +127,9 @@ export class CustomerService {
       if (value !== undefined) (customer as any)[key] = value;
     }
     if (date_of_birth !== undefined) {
-      customer.date_of_birth = date_of_birth ? new Date(date_of_birth) : undefined;
+      customer.date_of_birth = date_of_birth
+        ? new Date(date_of_birth)
+        : undefined;
     }
     this.applyChronicDiseasesRule(customer);
 
@@ -93,7 +147,8 @@ export class CustomerService {
     if (customer.has_chronic_diseases) {
       if (!customer.chronic_diseases || !customer.chronic_diseases.trim()) {
         throw new AppError(ErrorCode.VALIDATION_ERROR, {
-          message: 'chronic_diseases is required when has_chronic_diseases is true',
+          message:
+            'chronic_diseases is required when has_chronic_diseases is true',
         });
       }
     } else {
@@ -101,7 +156,10 @@ export class CustomerService {
     }
   }
 
-  async remove(tenantId: string, id: string): Promise<{ id: string; deleted: boolean }> {
+  async remove(
+    tenantId: string,
+    id: string,
+  ): Promise<{ id: string; deleted: boolean }> {
     await this.findOneOrThrow(tenantId, id);
     await this.customers.softDelete(id);
     return { id, deleted: true };
@@ -114,7 +172,9 @@ export class CustomerService {
       relations: { profile: true, addresses: true, tags: { tag: true } },
     });
     if (!customer) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Customer not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Customer not found',
+      });
     }
     return customer;
   }
@@ -164,7 +224,11 @@ export class CustomerService {
    * only ever be set by genuine inbound-keyword detection (or another
    * verified system path), never spoofable through a normal PATCH request.
    */
-  async recordOptOut(tenantId: string, customerId: string, source: string): Promise<void> {
+  async recordOptOut(
+    tenantId: string,
+    customerId: string,
+    source: string,
+  ): Promise<void> {
     await this.customers.update(
       { id: customerId, tenant: { id: tenantId } },
       { opted_out_at: new Date(), opt_out_source: source },
@@ -195,7 +259,9 @@ export class CustomerService {
       where: { id, tenant: { id: tenantId } },
     });
     if (!customer) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Customer not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Customer not found',
+      });
     }
     return customer;
   }

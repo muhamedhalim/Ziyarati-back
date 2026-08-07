@@ -5,7 +5,13 @@ import { Repository } from 'typeorm';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { AiAgent } from '../../entities/AI Agent/AiAgent';
 import { AppError, ErrorCode } from '../../common/errors';
-import { AiChannel, AiSession, CHANNEL_HISTORY_CAP } from './ai-channel.constants';
+import {
+  AiChannel,
+  AiSession,
+  CHANNEL_HISTORY_CAP,
+  SESSION_CLIENT_PATCHABLE_KEYS,
+  SESSION_CONTEXT_SERVER_ONLY_KEYS,
+} from './ai-channel.constants';
 
 /**
  * Conversation Session Manager (Phase 5).
@@ -53,6 +59,28 @@ export class ConversationSessionService {
   }
 
   /**
+   * The ONLY entry point any client-facing path may use to merge a session
+   * patch — REST `PATCH /ai/orchestrator/:id/session`, and the orchestrator's
+   * `input.sessionPatch`.
+   *
+   * `patch()` itself stays unfiltered because trusted server code legitimately
+   * writes the protected keys (`touchChannel` → channel history, `prepare` →
+   * `guestSubject`, the `select_*` booking tools → `selected*`). Splitting the
+   * two is what lets the whitelist be strict without breaking those writers.
+   */
+  async patchFromClient(
+    tenantId: string,
+    aiConversationId: string,
+    partial: Partial<AiSession>,
+  ): Promise<AiSession> {
+    return this.patch(
+      tenantId,
+      aiConversationId,
+      this.stripServerOwned(partial),
+    );
+  }
+
+  /**
    * Omnichannel touch (Feature 3): records that this turn arrives on `channel`,
    * maintaining active/last channel + a capped channel-switch history so ONE
    * conversation continues seamlessly across WhatsApp / website / dashboard.
@@ -61,7 +89,12 @@ export class ConversationSessionService {
   async touchChannel(
     tenantId: string,
     aiConversationId: string,
-    meta: { channel: AiChannel; language?: string; device?: string; timezone?: string },
+    meta: {
+      channel: AiChannel;
+      language?: string;
+      device?: string;
+      timezone?: string;
+    },
   ): Promise<AiSession> {
     const conv = await this.load(tenantId, aiConversationId);
     const session: AiSession = { ...(conv.session as AiSession) };
@@ -101,7 +134,10 @@ export class ConversationSessionService {
     const conv = await this.load(tenantId, aiConversationId);
     conv.agent = agentId ? ({ id: agentId } as AiAgent) : undefined;
     if (role) {
-      conv.session = { ...(conv.session as AiSession), currentAgentRole: role } as Record<string, unknown>;
+      conv.session = {
+        ...(conv.session as AiSession),
+        currentAgentRole: role,
+      } as Record<string, unknown>;
     }
     await this.conversations.save(conv);
   }
@@ -113,11 +149,17 @@ export class ConversationSessionService {
     await this.conversations.save(conv);
   }
 
-  private async load(tenantId: string, aiConversationId: string): Promise<AiConversation> {
+  private async load(
+    tenantId: string,
+    aiConversationId: string,
+  ): Promise<AiConversation> {
     const conv = await this.conversations.findOne({
       where: { id: aiConversationId, tenant: { id: tenantId } },
     });
-    if (!conv) throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
+    if (!conv)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'AI conversation not found',
+      });
     return conv;
   }
 
@@ -126,5 +168,30 @@ export class ConversationSessionService {
     return Object.fromEntries(
       Object.entries(partial).filter(([, v]) => v !== undefined),
     ) as Partial<AiSession>;
+  }
+
+  /**
+   * Whitelist a client-supplied patch down to
+   * `SESSION_CLIENT_PATCHABLE_KEYS`, then strip the server-owned keys out of
+   * its nested `context`. Unknown/protected keys are dropped SILENTLY rather
+   * than rejected — a rejection would tell a prober which keys are
+   * security-bearing.
+   */
+  private stripServerOwned(partial: Partial<AiSession>): Partial<AiSession> {
+    const allowed = new Set<string>(SESSION_CLIENT_PATCHABLE_KEYS);
+    const out: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(partial ?? {})) {
+      if (!allowed.has(key)) continue;
+      out[key] = value;
+    }
+
+    if (out.context && typeof out.context === 'object') {
+      const context = { ...(out.context as Record<string, unknown>) };
+      for (const key of SESSION_CONTEXT_SERVER_ONLY_KEYS) delete context[key];
+      out.context = context;
+    }
+
+    return out as Partial<AiSession>;
   }
 }

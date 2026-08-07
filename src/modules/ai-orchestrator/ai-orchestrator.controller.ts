@@ -21,7 +21,10 @@ import {
 
 import { AiOrchestratorService } from './ai-orchestrator.service';
 import { ConversationSessionService } from './conversation-session.service';
-import { OrchestrateMessageDto, PatchSessionDto } from './dto/orchestrate-message.dto';
+import {
+  OrchestrateMessageDto,
+  PatchSessionDto,
+} from './dto/orchestrate-message.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -80,7 +83,8 @@ export class AiOrchestratorController {
 
   @ApiOperation({
     summary: 'Get active conversation session state',
-    description: 'The short-term active state (selected clinic/branch/doctor, current intent, language, booking draft, auth state, context) for the conversation.',
+    description:
+      'The short-term active state (selected clinic/branch/doctor, current intent, language, booking draft, auth state, context) for the conversation.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ description: 'Session state.' })
@@ -92,13 +96,21 @@ export class AiOrchestratorController {
 
   @ApiOperation({
     summary: 'Patch active conversation session state',
-    description: 'Shallow-merges session updates (e.g. the user selected a clinic/branch/doctor in the UI) without sending a message.',
+    description:
+      'Shallow-merges client-owned session updates (current intent, language, booking draft, device/timezone, working context) without sending a message. Server-owned keys are ignored: the guest ownership binding, the resolved `selected*` booking state, the channel history, the active agent role, and `context.customerId` — those are written only by validated server code.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ description: 'Merged session state.' })
   @Patch(':id/session')
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)
-  patchSession(@Param('id', ParseUUIDPipe) id: string, @Body() dto: PatchSessionDto) {
-    return this.sessions.patch(this.ctx.requireTenantId(), id, dto.session);
+  patchSession(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PatchSessionDto,
+  ) {
+    return this.sessions.patchFromClient(
+      this.ctx.requireTenantId(),
+      id,
+      dto.session,
+    );
   }
 }
