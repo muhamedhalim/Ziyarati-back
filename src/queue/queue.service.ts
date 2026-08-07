@@ -379,7 +379,21 @@ export class QueueService {
     // invoice details) — PII (M1). Shorter failed-job retention than the
     // 7-day default.
     return this.add(QUEUE.EMAIL, JOB.EMAIL_SEND, data, {
-      ...(data.idempotencyKey ? { jobId: `email-${data.idempotencyKey}` } : {}),
+      // BullMQ rejects a custom job id containing ':' unless it splits into
+      // EXACTLY 3 segments (reserved for its own repeatable-job id shape —
+      // see bullmq's Job#id setter). Every EmailService idempotency key
+      // (`invite:<token>`, `verify:<token>`, `welcome:<userId>`,
+      // `auto:<sha256>`, …) contains ':' and virtually never splits into 3,
+      // so passing it straight through threw "Custom Id cannot contain :"
+      // SYNCHRONOUSLY inside `add()` — caught by EmailService.send()'s
+      // best-effort try/catch and only ever logged, so the job silently
+      // never reached Redis at all (found while investigating platform-staff
+      // invitations never arriving — every typed email, not just invites,
+      // was affected). Substituting ':' keeps the id just as deterministic
+      // for queue-layer dedup, without hitting BullMQ's reserved format.
+      ...(data.idempotencyKey
+        ? { jobId: `email-${data.idempotencyKey.replace(/:/g, '_')}` }
+        : {}),
       removeOnFail: { age: PII_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
       ...opts,
     });
