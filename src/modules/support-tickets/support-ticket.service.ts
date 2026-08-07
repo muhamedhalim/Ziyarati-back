@@ -15,15 +15,27 @@ import { QuerySupportTicketsDto } from './dto/query-support-tickets.dto';
 import { UpdateTicketStatusDto } from './dto/update-ticket-status.dto';
 import { UpdateTicketPriorityDto } from './dto/update-ticket-priority.dto';
 import { AddTicketNoteDto } from './dto/add-ticket-note.dto';
-import { TERMINAL_TICKET_STATUSES } from './support-tickets.constants';
+import { AddTicketReplyDto } from './dto/add-ticket-reply.dto';
+import { ReopenTicketDto } from './dto/reopen-ticket.dto';
+import { REPLYABLE_TICKET_STATUSES, TERMINAL_TICKET_STATUSES, TicketStatus } from './support-tickets.constants';
+import { PERMISSION } from '../../rbac/rbac.constants';
 
 /** Minimal actor identity — snapshotted onto tickets/events so history survives user deletion. */
 export interface TicketActor {
   id: string;
   name?: string | null;
   email?: string | null;
-  /** 'clinic' for a tenant-side actor, or an RBAC role slug (e.g. 'super_admin') for a platform one. */
+  /** 'clinic' for a tenant-side actor, or an RBAC role slug (e.g. 'super_admin', 'platform_support') for a platform one. */
   role?: string;
+  /**
+   * Permission slugs held by the acting principal — used ONLY by the
+   * platform-side dynamic checks in this service (the close boundary can't
+   * be expressed as a single static `@RequirePermissions` on one route,
+   * since the same PATCH /:id/status route serves every target status).
+   * Omitted (undefined) for a clinic actor, which never needs it — clinic
+   * routes are already fully gated by the controller's `@RequirePermissions`.
+   */
+  permissions?: string[];
 }
 
 /**
@@ -172,6 +184,76 @@ export class SupportTicketService {
     return this.getForTenant(tenantId, id);
   }
 
+  /**
+   * Clinic-visible reply on the CALLER'S OWN ticket. Deliberately independent
+   * of status: a normal reply NEVER changes `status`, `resolved_at` or
+   * `closed_at` — it writes only a `REPLY` event, always `internal_only =
+   * false`. Cross-tenant id -> 404 (matches getForTenant/closeOwnTicket).
+   */
+  async addTenantReply(tenantId: string, actor: TicketActor, id: string, dto: AddTicketReplyDto) {
+    const ticket = await this.tickets.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!ticket) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Ticket not found' });
+    }
+    if (!REPLYABLE_TICKET_STATUSES.includes(ticket.status as TicketStatus)) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'This ticket is closed and can no longer receive replies. Please open a new ticket.',
+      });
+    }
+    await this.recordEvent({
+      ticketId: id,
+      type: 'REPLY',
+      note: dto.note,
+      internalOnly: false,
+      actor,
+    });
+    return this.getForTenant(tenantId, id);
+  }
+
+  /**
+   * "Issue not resolved" — the CALLER'S OWN ticket, explicit `resolved ->
+   * in_progress` transition. The mirror image of `closeOwnTicket`: only
+   * valid FROM `resolved` (a normal reply never triggers this — see
+   * `addTenantReply`), clears `resolved_at` (and `closed_at`, a no-op from
+   * `resolved`) exactly like `updateStatus`'s reopen branch, and — because
+   * `recordEvent` only ever appends — every prior event (including the
+   * platform's original `resolved` transition) stays in the timeline.
+   * `in_progress` (not `open`) is the target so the ticket lands back in the
+   * platform's active queue, not the untriaged one.
+   */
+  async reopenOwnTicket(tenantId: string, actor: TicketActor, id: string, dto?: ReopenTicketDto) {
+    const ticket = await this.tickets.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!ticket) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Ticket not found' });
+    }
+    if (ticket.status === 'closed') {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'A closed ticket cannot be reopened. Please open a new ticket.',
+      });
+    }
+    if (ticket.status !== 'resolved') {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Only a resolved ticket can be marked as not resolved.',
+      });
+    }
+
+    const from = ticket.status;
+    ticket.status = 'in_progress';
+    ticket.resolved_at = null;
+    ticket.closed_at = null;
+    await this.tickets.save(ticket);
+    await this.recordEvent({
+      ticketId: id,
+      type: 'STATUS_CHANGED',
+      fromValue: from,
+      toValue: 'in_progress',
+      note: dto?.note,
+      internalOnly: false,
+      actor,
+    });
+    return this.getForTenant(tenantId, id);
+  }
+
   // ─────────────────────────────── Platform side ──────────────────────────────
 
   async listForAdmin(query: QuerySupportTicketsDto) {
@@ -218,12 +300,32 @@ export class SupportTicketService {
       order: { created_at: 'ASC' },
     });
     return {
-      ...this.toAdminSummary(ticket),
+      // Detail-only: contact fields required to work the ticket. Never on
+      // the list response (toAdminSummary's default), and never anything
+      // beyond identity/contact/status — no financial or clinical data.
+      ...this.toAdminSummary(ticket, true),
       description: ticket.description,
       attachmentUrl: await this.resolveAttachmentUrl(ticket, ticket.tenant.id),
       history: events.filter((e) => !e.internal_only).map((e) => this.toEventView(e)),
       notes: events.filter((e) => e.internal_only).map((e) => this.toEventView(e)),
     };
+  }
+
+  /**
+   * Distinct clinics that have at least one ticket — minimal-disclosure
+   * clinic filter for the Support Desk console (D4). The full tenant
+   * directory (`GET /tenants`) is deliberately NOT reused here: Platform
+   * Customer Service has no reason to see clinics that never contacted
+   * support. The existing Super Admin `/platform/support-tickets` page is
+   * unaffected — it keeps using `GET /tenants` exactly as it does today.
+   */
+  async listSupportClinics(): Promise<Array<{ id: string; name: string }>> {
+    return this.dataSource.query(`
+      SELECT DISTINCT t.id, t.name
+      FROM tenants t
+      INNER JOIN support_tickets st ON st."tenantId" = t.id
+      ORDER BY t.name ASC
+    `);
   }
 
   /** Aggregate KPI counts for the super-admin dashboard — one query, no N+1. */
@@ -245,6 +347,7 @@ export class SupportTicketService {
   }
 
   async updateStatus(id: string, actor: TicketActor, dto: UpdateTicketStatusDto) {
+    this.assertPlatformStatusAllowed(actor, dto.status);
     const ticket = await this.findAnyOrThrow(id);
     if (ticket.status === dto.status) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
@@ -280,6 +383,12 @@ export class SupportTicketService {
   }
 
   async updatePriority(id: string, actor: TicketActor, dto: UpdateTicketPriorityDto) {
+    // Redundant with the controller's static @RequirePermissions guard today
+    // (both gate the same slug) — kept as the backend-enforcement mirror, for
+    // symmetry with updateStatus's necessarily-dynamic check, and so this
+    // method stays correct if it is ever reached from a route wired
+    // differently in the future.
+    this.assertTriagePermission(actor);
     const ticket = await this.findAnyOrThrow(id);
     if (ticket.priority === dto.priority) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
@@ -312,7 +421,62 @@ export class SupportTicketService {
     return this.getForAdmin(id);
   }
 
+  /**
+   * Clinic-visible reply on ANY tenant's ticket (platform principals are
+   * cross-tenant by design — no tenant filter, matching findAnyOrThrow /
+   * getForAdmin). Never changes status. Applies the same
+   * REPLYABLE_TICKET_STATUSES rule as the clinic side, for consistent
+   * behaviour on both ends of the same conversation.
+   */
+  async addPlatformReply(id: string, actor: TicketActor, dto: AddTicketReplyDto) {
+    const ticket = await this.findAnyOrThrow(id);
+    if (!REPLYABLE_TICKET_STATUSES.includes(ticket.status as TicketStatus)) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: `Ticket is already "${ticket.status}" and can no longer receive replies.`,
+      });
+    }
+    await this.recordEvent({
+      ticketId: id,
+      type: 'REPLY',
+      note: dto.note,
+      internalOnly: false,
+      actor,
+    });
+    return this.getForAdmin(id);
+  }
+
   // ─────────────────────────────── Internals ──────────────────────────────────
+
+  /**
+   * The platform close boundary: `PLATFORM_SUPPORT_TICKETS_CLOSE` is granted
+   * only to `super_admin` (via the `'*'` wildcard) — Platform Customer
+   * Service holds only `..._TRIAGE`. Cannot be expressed as a single static
+   * `@RequirePermissions` on the controller route, since PATCH /:id/status
+   * serves every target status from one handler; this is the dynamic
+   * equivalent, checked before the ticket is even loaded.
+   */
+  private assertPlatformStatusAllowed(actor: TicketActor, target: TicketStatus): void {
+    const required =
+      target === 'closed'
+        ? PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE
+        : PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE;
+    if (!actor.permissions?.includes(required)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message:
+          target === 'closed'
+            ? 'Closing a ticket requires the clinic to confirm resolution, or a platform administrator.'
+            : 'You do not have permission to change this ticket status.',
+      });
+    }
+  }
+
+  private assertTriagePermission(actor: TicketActor): void {
+    if (!actor.permissions?.includes(PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'You do not have permission to change this ticket.',
+      });
+    }
+  }
 
   private async findAnyOrThrow(id: string): Promise<SupportTicket> {
     const ticket = await this.tickets.findOne({ where: { id } });
@@ -339,7 +503,7 @@ export class SupportTicketService {
 
   private async recordEvent(input: {
     ticketId: string;
-    type: 'STATUS_CHANGED' | 'PRIORITY_CHANGED' | 'NOTE_ADDED';
+    type: 'STATUS_CHANGED' | 'PRIORITY_CHANGED' | 'NOTE_ADDED' | 'REPLY';
     fromValue?: string;
     toValue?: string;
     note?: string;
@@ -378,10 +542,30 @@ export class SupportTicketService {
     };
   }
 
-  private toAdminSummary(t: SupportTicket) {
+  /**
+   * `detailed` adds the clinic contact fields genuinely required to work a
+   * ticket (email/phone/approval/active) — detail view ONLY (`getForAdmin`).
+   * The list view (`listForAdmin`) always gets the narrower `{id, name}`,
+   * unchanged, so no new field is exposed to a bulk list response.
+   */
+  private toAdminSummary(t: SupportTicket, detailed = false) {
+    const tenant = t.tenant
+      ? detailed
+        ? {
+            id: t.tenant.id,
+            name: t.tenant.name,
+            slug: t.tenant.slug,
+            contactEmail: t.tenant.contact_email ?? null,
+            contactPhone: t.tenant.contact_phone ?? null,
+            approvalStatus: t.tenant.approval_status,
+            isActive: t.tenant.is_active,
+          }
+        : { id: t.tenant.id, name: t.tenant.name }
+      : null;
+
     return {
       ...this.toTenantSummary(t),
-      tenant: t.tenant ? { id: t.tenant.id, name: t.tenant.name } : null,
+      tenant,
       createdBy: { name: t.created_by_name ?? null, email: t.created_by_email ?? null },
       isTerminal: TERMINAL_TICKET_STATUSES.includes(t.status as (typeof TERMINAL_TICKET_STATUSES)[number]),
     };

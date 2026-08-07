@@ -28,8 +28,23 @@ export const TICKET_EVENT_TYPES = [
   'STATUS_CHANGED',
   'PRIORITY_CHANGED',
   'NOTE_ADDED',
+  /** Bidirectional, clinic-visible reply — always internal_only=false, from either side. */
+  'REPLY',
 ] as const;
 export type TicketEventType = (typeof TICKET_EVENT_TYPES)[number];
+
+/** Statuses Platform Customer Service may set via triage — never 'closed' (super_admin only). */
+export const PLATFORM_TRIAGE_STATUSES: readonly TicketStatus[] = [
+  'open',
+  'in_progress',
+  'waiting_for_tenant',
+  'resolved',
+];
+
+/** Statuses a reply (either side) may be posted on — a closed ticket is finished. */
+export const REPLYABLE_TICKET_STATUSES: readonly TicketStatus[] = TICKET_STATUSES.filter(
+  (s) => s !== 'closed',
+);
 
 /** Columns the ticket list may be ordered by (tenant + platform lists). */
 export const TICKET_SORTABLE_FIELDS = [

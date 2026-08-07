@@ -24,6 +24,8 @@ import {
 import { SupportTicketService } from './support-ticket.service';
 import { CreateSupportTicketDto } from './dto/create-support-ticket.dto';
 import { QueryMyTicketsDto } from './dto/query-my-tickets.dto';
+import { AddTicketReplyDto } from './dto/add-ticket-reply.dto';
+import { ReopenTicketDto } from './dto/reopen-ticket.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -73,7 +75,7 @@ export class SupportTicketController {
   create(@Body() dto: CreateSupportTicketDto, @CurrentUser() user: AuthenticatedUser) {
     return this.ticketsService.create(
       this.ctx.requireTenantId(),
-      { id: user.id, email: user.email },
+      { id: user.id, email: user.email, name: user.fullName },
       dto,
     );
   }
@@ -121,8 +123,64 @@ export class SupportTicketController {
   close(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.ticketsService.closeOwnTicket(
       this.ctx.requireTenantId(),
-      { id: user.id, email: user.email, role: 'clinic' },
+      { id: user.id, email: user.email, name: user.fullName, role: 'clinic' },
       id,
+    );
+  }
+
+  @ApiOperation({
+    summary: "Reply to the clinic's own ticket",
+    description:
+      '**Protected — `support_tickets.reply`. Clinic active.** Visible to platform support in the same ' +
+      'ticket timeline. Never changes ticket status — a reply on a `resolved` ticket leaves it ' +
+      '`resolved`; use `PATCH /:id/reopen` ("Issue not resolved") to explicitly reopen. Rejected on a ' +
+      '`closed` ticket. Another tenant\'s ticket returns 404.',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Ticket updated with the new reply.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `support_tickets.reply`, or clinic inactive.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Ticket not found in this tenant.', schema: S_ERROR })
+  @Post(':id/replies')
+  @RequirePermissions(PERMISSION.SUPPORT_TICKETS_REPLY)
+  reply(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AddTicketReplyDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ticketsService.addTenantReply(
+      this.ctx.requireTenantId(),
+      { id: user.id, email: user.email, name: user.fullName, role: 'clinic' },
+      id,
+      dto,
+    );
+  }
+
+  @ApiOperation({
+    summary: '"Issue not resolved" — reopen the clinic\'s own resolved ticket',
+    description:
+      '**Protected — `support_tickets.reopen`. Clinic active.** Only valid from `resolved` ' +
+      '(`resolved -> in_progress`); a `closed` ticket cannot be reopened here — open a new ticket ' +
+      'instead. Clears `resolvedAt`; the full prior event history is preserved. Another tenant\'s ' +
+      'ticket returns 404.',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Ticket reopened.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `support_tickets.reopen`, or clinic inactive.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Ticket not found in this tenant.', schema: S_ERROR })
+  @Patch(':id/reopen')
+  @RequirePermissions(PERMISSION.SUPPORT_TICKETS_REOPEN)
+  reopen(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReopenTicketDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ticketsService.reopenOwnTicket(
+      this.ctx.requireTenantId(),
+      { id: user.id, email: user.email, name: user.fullName, role: 'clinic' },
+      id,
+      dto,
     );
   }
 }

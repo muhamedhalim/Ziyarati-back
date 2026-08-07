@@ -30,8 +30,14 @@ const PG = {
  * is never sent to the client. Add entries as new constraints appear.
  */
 const CONSTRAINT_MESSAGES: Record<string, string> = {
-  uq_user_tenant_email: 'Email already exists in this tenant',
-  uq_superadmin_email: 'A super-admin with this email already exists',
+  // D7 — global active-user email uniqueness (GlobalUserEmailUniqueness
+  // migration). Replaces two dead names (`uq_user_tenant_email`,
+  // `uq_superadmin_email`) that no migration in this tree ever created — the
+  // real pre-migration constraint is the TypeORM-generated hash below, kept
+  // mapped to the same message during the migration -> deploy window (mirrors
+  // the FND-040/M-01 customers-email precedent two lines down).
+  uq_user_email_global: 'This email is already in use',
+  UQ_7346b08032078107fce81e014f6: 'This email is already in use', // pre-migration shape
   uq_role_tenant_slug: 'A role with this slug already exists',
   appointments_no_overlap:
     'This time slot was just booked for the selected staff member. Please choose another time.',

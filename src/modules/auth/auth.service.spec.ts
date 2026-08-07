@@ -58,6 +58,7 @@ const expectedPrincipal = {
   id: 'user-1',
   tenantId: 'tenant-1',
   email: 'owner@clinic.com',
+  fullName: null,
   roles: ['owner'],
   permissions: ['appointments.read', 'appointments.create'],
 };
@@ -228,8 +229,11 @@ describe('AuthService', () => {
     } as any;
 
     it('creates a receptionist by default within the actor tenant (success path)', async () => {
-      users.findOne.mockResolvedValueOnce(null); // no existing email
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-rec', slug: ROLE.RECEPTIONIST });
+      // D7 — the email-clash check now lives INSIDE createUserWithRole
+      // (manager.findOne), AFTER role resolution, not as a pre-check on the
+      // injected `users` repository.
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-rec', slug: ROLE.RECEPTIONIST }); // resolveSystemRole
+      dataSource.manager.findOne.mockResolvedValueOnce(null); // createUserWithRole: no email clash
       users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
 
       const result = await service.createTenantUser(dto, 'tenant-1');
@@ -242,8 +246,8 @@ describe('AuthService', () => {
     });
 
     it('accepts an explicit assignable role (manager)', async () => {
-      users.findOne.mockResolvedValueOnce(null);
       dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-mgr', slug: ROLE.MANAGER });
+      dataSource.manager.findOne.mockResolvedValueOnce(null); // no email clash
       users.findOne.mockResolvedValueOnce(principalRow());
 
       await expect(
@@ -263,20 +267,26 @@ describe('AuthService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
     });
 
-    it('rejects a duplicate email within the tenant', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'existing' });
+    // D7 — the clash check is GLOBAL (any live user, any tenant, platform
+    // included), not scoped to the caller's tenant; this is exercised
+    // directly (with cross-tenant/cross-scope fixtures) in the
+    // "createUserWithRole — D7 global email uniqueness" describe block below.
+    // This test just proves createTenantUser surfaces that rejection.
+    it('rejects a duplicate email (global chokepoint, surfaced through createTenantUser)', async () => {
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-rec', slug: ROLE.RECEPTIONIST }); // resolveSystemRole
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'existing' }); // createUserWithRole: clash found
 
       await expect(service.createTenantUser(dto, 'tenant-1')).rejects.toMatchObject({
         code: ErrorCode.EMAIL_ALREADY_EXISTS,
       });
     });
 
-    // FND-007: the check now runs INSIDE the transaction (first thing, before
-    // role resolution) — a rejection there still means nothing was created,
-    // but `dataSource.transaction` itself IS invoked (and its callback fails
-    // immediately, before touching the role).
+    // FND-007: the seat check runs INSIDE the transaction, FIRST — before
+    // role resolution or the email-clash check — so a rejection there still
+    // means nothing was created, but `dataSource.transaction` itself IS
+    // invoked (and its callback fails immediately, before touching the role
+    // or the email).
     it('propagates the plan user-limit failure from UsageService', async () => {
-      users.findOne.mockResolvedValueOnce(null);
       usage.assertUserSeatWithinLimit.mockRejectedValueOnce(
         new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'user limit reached' }),
       );
@@ -285,6 +295,74 @@ describe('AuthService', () => {
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
       expect(dataSource.manager.findOne).not.toHaveBeenCalled(); // role resolution never reached
+    });
+
+    // ────────────────── createUserWithRole — D7 global email uniqueness ───────
+  });
+
+  describe('createUserWithRole — D7 global email uniqueness', () => {
+    const roleRow = { id: 'role-1', slug: ROLE.RECEPTIONIST } as any;
+    const input = {
+      email: 'shared@example.com',
+      password: 'StrongPass123!',
+      fullName: 'Someone',
+    };
+
+    it('rejects when the email is already held by a user in a DIFFERENT tenant (D7 #accepted behaviour change)', async () => {
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'existing', tenant: { id: 'other-tenant' } });
+
+      await expect(
+        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.EMAIL_ALREADY_EXISTS });
+      expect(dataSource.manager.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the email is already held by a PLATFORM user (tenantId null) — D7 #2', async () => {
+      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'existing-platform', tenant: null });
+
+      await expect(
+        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.EMAIL_ALREADY_EXISTS });
+    });
+
+    it('creates a PLATFORM user (tenantId null) with tenant left undefined, when tenantId is null', async () => {
+      dataSource.manager.findOne.mockResolvedValueOnce(null); // no clash
+      dataSource.manager.create.mockImplementation((_entity: any, data: any) => data);
+      dataSource.manager.save.mockImplementation(async (entity: any) => ({ id: 'new-user', ...entity }));
+
+      await service.createUserWithRole(dataSource.manager as any, input, roleRow, null);
+
+      const userCreateCall = dataSource.manager.create.mock.calls.find(
+        ([, data]: any[]) => data?.email === input.email,
+      );
+      expect(userCreateCall?.[1].tenant).toBeUndefined();
+    });
+
+    it('D7 #3 — translates a raced-past unique violation into EMAIL_ALREADY_EXISTS, not a raw 500', async () => {
+      const { QueryFailedError } = require('typeorm');
+      dataSource.manager.findOne.mockResolvedValueOnce(null); // pre-check passes...
+      dataSource.manager.create.mockImplementation((_entity: any, data: any) => data);
+      // ...but the insert itself loses the race to a concurrent identical create.
+      const raceError = Object.assign(new QueryFailedError('q', [], new Error('dup')), {
+        code: '23505',
+        constraint: 'uq_user_email_global',
+      });
+      dataSource.manager.save.mockRejectedValueOnce(raceError);
+
+      await expect(
+        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.EMAIL_ALREADY_EXISTS });
+    });
+
+    it('re-throws a non-unique-violation save failure unchanged', async () => {
+      dataSource.manager.findOne.mockResolvedValueOnce(null);
+      dataSource.manager.create.mockImplementation((_entity: any, data: any) => data);
+      const otherError = new Error('connection reset');
+      dataSource.manager.save.mockRejectedValueOnce(otherError);
+
+      await expect(
+        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+      ).rejects.toBe(otherError);
     });
   });
 

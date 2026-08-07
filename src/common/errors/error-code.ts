@@ -169,8 +169,11 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
     message: 'User not found',
   },
   [ErrorCode.EMAIL_ALREADY_EXISTS]: {
+    // D7 — email uniqueness is enforced globally (any live user, any tenant),
+    // not per-tenant; the message must not imply a narrower scope than the
+    // actual rule.
     status: HttpStatus.CONFLICT,
-    message: 'Email already exists in this tenant',
+    message: 'This email is already in use',
   },
   [ErrorCode.TENANT_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,

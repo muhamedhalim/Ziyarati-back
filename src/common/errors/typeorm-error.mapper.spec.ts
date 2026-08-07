@@ -9,10 +9,10 @@ const pgError = (driver: Record<string, unknown>) => driver as unknown as QueryF
 
 describe('mapTypeOrmError', () => {
   it('maps a unique violation to UNIQUE_VIOLATION with a friendly constraint message', () => {
-    const err = mapTypeOrmError(pgError({ code: '23505', constraint: 'uq_user_tenant_email' }));
+    const err = mapTypeOrmError(pgError({ code: '23505', constraint: 'uq_user_email_global' }));
     expect(err).toBeInstanceOf(AppError);
     expect(err.code).toBe(ErrorCode.UNIQUE_VIOLATION);
-    expect(err.message).toBe('Email already exists in this tenant');
+    expect(err.message).toBe('This email is already in use');
   });
 
   it('maps an exclusion violation (double-booking) to a clean CONFLICT', () => {
@@ -79,7 +79,7 @@ describe('mapTypeOrmError', () => {
     });
 
     it('preserves the raw driver error as `cause` for server-side logs only', () => {
-      const raw = pgError({ code: '23505', constraint: 'uq_user_tenant_email' });
+      const raw = pgError({ code: '23505', constraint: 'uq_user_email_global' });
       const err = mapTypeOrmError(raw);
       expect(err.cause).toBe(raw);
     });

@@ -7,11 +7,35 @@ import { SupportTicket } from '../../entities/SupportTickets/SupportTicket';
 import { SupportTicketEvent } from '../../entities/SupportTickets/SupportTicketEvent';
 import { StorageService } from '../storage/storage.service';
 import { ErrorCode } from '../../common/errors';
+import { PERMISSION } from '../../rbac/rbac.constants';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
 
 const TENANT = 'tenant-1';
 const OTHER_TENANT = 'tenant-2';
 const ACTOR = { id: 'user-1', email: 'owner@clinic.test' };
+
+/** A super_admin-shaped actor: holds every platform.support_tickets.* slug (the '*' wildcard). */
+const SUPER_ADMIN_ACTOR = {
+  ...ACTOR,
+  role: 'super_admin',
+  permissions: [
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE,
+  ],
+};
+
+/** A Platform Customer Service actor: read/triage/reply — NEVER close. */
+const PLATFORM_SUPPORT_ACTOR = {
+  ...ACTOR,
+  role: 'platform_support',
+  permissions: [
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+  ],
+};
 
 describe('SupportTicketService', () => {
   let service: SupportTicketService;
@@ -250,7 +274,7 @@ describe('SupportTicketService', () => {
     it('rejects a no-op transition to the current status', async () => {
       tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'open' });
       await expect(
-        service.updateStatus('ticket-1', ACTOR, { status: 'open' } as any),
+        service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, { status: 'open' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
     });
 
@@ -262,7 +286,7 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'resolved' });
       events.find.mockResolvedValueOnce([]);
 
-      await service.updateStatus('ticket-1', ACTOR, { status: 'resolved', note: 'Fixed.' } as any);
+      await service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, { status: 'resolved', note: 'Fixed.' } as any);
 
       expect(tickets.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'resolved', resolved_at: expect.any(Date) }),
@@ -285,7 +309,7 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'closed' });
       events.find.mockResolvedValueOnce([]);
 
-      await service.updateStatus('ticket-1', ACTOR, { status: 'closed' } as any);
+      await service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, { status: 'closed' } as any);
 
       expect(tickets.save).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -308,7 +332,7 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'open', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([]);
 
-      await service.updateStatus('ticket-1', ACTOR, { status: 'open' } as any);
+      await service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, { status: 'open' } as any);
 
       expect(tickets.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'open', resolved_at: null, closed_at: null }),
@@ -329,7 +353,7 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'resolved' });
       events.find.mockResolvedValueOnce([]);
 
-      await service.updateStatus('ticket-1', ACTOR, { status: 'resolved' } as any);
+      await service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, { status: 'resolved' } as any);
 
       expect(tickets.save).toHaveBeenCalledWith(
         expect.objectContaining({ resolved_at: existingResolvedAt }),
@@ -343,13 +367,41 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'resolved' });
       events.find.mockResolvedValueOnce([]);
 
-      await service.updateStatus(
-        'ticket-1',
-        { ...ACTOR, role: 'super_admin' },
-        { status: 'resolved' } as any,
-      );
+      await service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, { status: 'resolved' } as any);
 
       expect(events.create).toHaveBeenCalledWith(expect.objectContaining({ actor_role: 'super_admin' }));
+    });
+
+    // ── Platform Customer Service — close boundary (dynamic permission check) ──
+
+    it('Platform Support (no CLOSE) can triage to resolved', async () => {
+      tickets.findOne.mockResolvedValueOnce(baseTicket());
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'resolved' });
+      events.find.mockResolvedValueOnce([]);
+
+      await expect(
+        service.updateStatus('ticket-1', PLATFORM_SUPPORT_ACTOR, { status: 'resolved' } as any),
+      ).resolves.toBeDefined();
+      expect(events.create).toHaveBeenCalledWith(expect.objectContaining({ actor_role: 'platform_support' }));
+    });
+
+    it('Platform Support (no CLOSE) is FORBIDDEN from closing — the ticket and event log stay unchanged', async () => {
+      await expect(
+        service.updateStatus('ticket-1', PLATFORM_SUPPORT_ACTOR, { status: 'closed' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      // Rejected before the ticket is even loaded — no read, no write, no event.
+      expect(tickets.findOne).not.toHaveBeenCalled();
+      expect(tickets.save).not.toHaveBeenCalled();
+      expect(events.create).not.toHaveBeenCalled();
+    });
+
+    it('an actor with no platform permissions at all (e.g. a clinic actor) is FORBIDDEN on any status change', async () => {
+      await expect(
+        service.updateStatus('ticket-1', ACTOR, { status: 'in_progress' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(tickets.findOne).not.toHaveBeenCalled();
     });
   });
 
@@ -431,7 +483,7 @@ describe('SupportTicketService', () => {
     it('rejects a no-op priority update', async () => {
       tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', priority: 'high' });
       await expect(
-        service.updatePriority('ticket-1', ACTOR, { priority: 'high' } as any),
+        service.updatePriority('ticket-1', SUPER_ADMIN_ACTOR, { priority: 'high' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
     });
 
@@ -442,11 +494,18 @@ describe('SupportTicketService', () => {
       tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', priority: 'urgent', tenant: { id: TENANT } });
       events.find.mockResolvedValueOnce([]);
 
-      await service.updatePriority('ticket-1', ACTOR, { priority: 'urgent' } as any);
+      await service.updatePriority('ticket-1', SUPER_ADMIN_ACTOR, { priority: 'urgent' } as any);
 
       expect(events.create).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'PRIORITY_CHANGED', from_value: 'low', to_value: 'urgent' }),
       );
+    });
+
+    it('rejects an actor without the TRIAGE permission (backend-enforcement mirror of the controller guard)', async () => {
+      await expect(
+        service.updatePriority('ticket-1', ACTOR, { priority: 'urgent' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(tickets.findOne).not.toHaveBeenCalled();
     });
   });
 
@@ -495,6 +554,222 @@ describe('SupportTicketService', () => {
       dataSource.query.mockResolvedValueOnce([]);
       const result = await service.kpis();
       expect(result).toEqual({ open: 0, inProgress: 0, resolved: 0, urgent: 0 });
+    });
+  });
+
+  // ── A1: bidirectional replies ───────────────────────────────────────────────
+
+  describe('addTenantReply (clinic, own ticket)', () => {
+    it('writes a REPLY event, internal_only=false, actor_role="clinic" — status untouched', async () => {
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'resolved', tenant: { id: TENANT } });
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'resolved', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.addTenantReply(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1', { note: 'Still broken' } as any);
+
+      expect(events.create).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'REPLY', note: 'Still broken', internal_only: false, actor_role: 'clinic' }),
+      );
+      // A normal reply NEVER changes status — no ticket save at all.
+      expect(tickets.save).not.toHaveBeenCalled();
+    });
+
+    it('another tenant\'s ticket id -> 404, no event written (IDOR-safe)', async () => {
+      tickets.findOne.mockResolvedValueOnce(null); // filtered out by the tenant clause
+
+      await expect(
+        service.addTenantReply(OTHER_TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1', { note: 'x' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(events.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a reply on a closed ticket', async () => {
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'closed', tenant: { id: TENANT } });
+
+      await expect(
+        service.addTenantReply(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1', { note: 'x' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(events.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts a reply on a resolved ticket (that is precisely how a clinic says "not fixed" before using the explicit reopen action)', async () => {
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'resolved', tenant: { id: TENANT } });
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'resolved', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([]);
+
+      await expect(
+        service.addTenantReply(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1', { note: 'x' } as any),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  describe('addPlatformReply (platform, any ticket)', () => {
+    it('writes a REPLY event with actor_role="platform_support", visible cross-tenant', async () => {
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'in_progress', tenant: { id: TENANT } });
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'in_progress', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.addPlatformReply('ticket-1', PLATFORM_SUPPORT_ACTOR, { note: 'Looking into it' } as any);
+
+      expect(events.create).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'REPLY', internal_only: false, actor_role: 'platform_support' }),
+      );
+    });
+  });
+
+  // ── A3: explicit "Issue not resolved" reopen ────────────────────────────────
+
+  describe('reopenOwnTicket ("Issue not resolved")', () => {
+    it('resolved -> in_progress, clears resolved_at, appends STATUS_CHANGED with the real clinic actor', async () => {
+      tickets.findOne.mockResolvedValueOnce({
+        id: 'ticket-1',
+        status: 'resolved',
+        resolved_at: new Date('2026-01-01'),
+        closed_at: null,
+        tenant: { id: TENANT },
+      });
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'in_progress', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.reopenOwnTicket(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1', { note: 'Not fixed' } as any);
+
+      expect(tickets.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'in_progress', resolved_at: null, closed_at: null }),
+      );
+      expect(events.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'STATUS_CHANGED',
+          from_value: 'resolved',
+          to_value: 'in_progress',
+          note: 'Not fixed',
+          internal_only: false,
+          actor: { id: ACTOR.id },
+          actor_role: 'clinic',
+        }),
+      );
+    });
+
+    it('a normal reply on a resolved ticket does NOT reopen it — only this explicit action does', async () => {
+      // Covered structurally: addTenantReply never touches status/resolved_at
+      // (asserted above with `expect(tickets.save).not.toHaveBeenCalled()`),
+      // and reopenOwnTicket is the only method that writes status='in_progress'
+      // from 'resolved'. Re-asserted here for the specific pairing the plan calls out.
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'resolved', tenant: { id: TENANT } });
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'resolved', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.addTenantReply(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1', { note: 'still broken' } as any);
+
+      expect(tickets.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects reopening a ticket that is not resolved', async () => {
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'in_progress', tenant: { id: TENANT } });
+
+      await expect(
+        service.reopenOwnTicket(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(tickets.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects reopening a CLOSED ticket', async () => {
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'closed', tenant: { id: TENANT } });
+
+      await expect(
+        service.reopenOwnTicket(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(tickets.save).not.toHaveBeenCalled();
+    });
+
+    it('another tenant cannot reopen the ticket -> 404, target untouched', async () => {
+      tickets.findOne.mockResolvedValueOnce(null); // filtered out by the tenant clause
+
+      await expect(
+        service.reopenOwnTicket(OTHER_TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(tickets.save).not.toHaveBeenCalled();
+      expect(events.create).not.toHaveBeenCalled();
+    });
+
+    it('preserves prior history — recordEvent only ever appends', async () => {
+      tickets.findOne.mockResolvedValueOnce({
+        id: 'ticket-1',
+        status: 'resolved',
+        resolved_at: new Date(),
+        closed_at: null,
+        tenant: { id: TENANT },
+      });
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'in_progress', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([
+        { id: 'e0', type: 'STATUS_CHANGED', internal_only: false, created_at: new Date() }, // the platform's earlier "resolved" transition
+      ]);
+
+      const result = await service.reopenOwnTicket(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1');
+
+      expect(events.save).toHaveBeenCalledTimes(1); // the append; nothing deleted
+      expect(result.history).toHaveLength(1); // the pre-existing event is still there
+    });
+  });
+
+  // ── D4: clinic filter ───────────────────────────────────────────────────────
+
+  describe('listSupportClinics', () => {
+    it('returns only clinics with at least one ticket — not the full tenant directory', async () => {
+      dataSource.query.mockResolvedValueOnce([{ id: 't1', name: 'Al Noor Clinic' }]);
+      const result = await service.listSupportClinics();
+      expect(result).toEqual([{ id: 't1', name: 'Al Noor Clinic' }]);
+      expect(dataSource.query.mock.calls[0][0]).toContain('INNER JOIN support_tickets');
+    });
+  });
+
+  // ── Detail-only clinic contact fields (§3.2 / §4.3) ─────────────────────────
+
+  describe('getForAdmin tenant projection', () => {
+    it('includes contact fields on the detail view only', async () => {
+      tickets.findOne.mockResolvedValueOnce({
+        id: 'ticket-1',
+        tenant: {
+          id: TENANT,
+          name: 'Al Noor',
+          slug: 'al-noor',
+          contact_email: 'clinic@example.com',
+          contact_phone: '+966500000000',
+          approval_status: 'APPROVED',
+          is_active: true,
+        },
+      });
+      events.find.mockResolvedValueOnce([]);
+
+      const result = await service.getForAdmin('ticket-1');
+
+      expect(result.tenant).toEqual({
+        id: TENANT,
+        name: 'Al Noor',
+        slug: 'al-noor',
+        contactEmail: 'clinic@example.com',
+        contactPhone: '+966500000000',
+        approvalStatus: 'APPROVED',
+        isActive: true,
+      });
+    });
+
+    it('the list view keeps the narrower {id, name} shape — no contact fields leaked in bulk', async () => {
+      tickets.findAndCount.mockResolvedValueOnce([
+        [{ id: 'ticket-1', tenant: { id: TENANT, name: 'Al Noor', contact_email: 'clinic@example.com' } }],
+        1,
+      ]);
+
+      const result = await service.listForAdmin({ page: 1, limit: 20, sortBy: 'created_at', sortOrder: 'DESC' } as any);
+
+      expect(result.data[0].tenant).toEqual({ id: TENANT, name: 'Al Noor' });
     });
   });
 

@@ -89,6 +89,15 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
   [PERMISSION.WHATSAPP_WEBHOOKS_MANAGE]: 'high',
   [PERMISSION.NOTIFICATION_RULES_MANAGE]: 'high',
   [PERMISSION.REPORTS_EXPORT]: 'high', // exfiltration of sensitive data
+
+  // Platform Customer Service support-ticket family — cross-tenant read is
+  // more sensitive than an ordinary tenant read (medium, not the derived
+  // low); triage/reply mutate cross-tenant state (high); close is critical
+  // because it is the one action reserved to super_admin alone.
+  [PERMISSION.PLATFORM_SUPPORT_TICKETS_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE]: 'high',
+  [PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY]: 'high',
+  [PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE]: 'critical',
 };
 
 // ---------------------------------------------------------------------------

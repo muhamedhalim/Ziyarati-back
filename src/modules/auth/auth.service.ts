@@ -30,7 +30,7 @@ import {
 } from './interfaces/jwt-payload.interface';
 import { AuthenticatedUser } from './interfaces/authenticated-user.interface';
 import { AuthResult, AuthTokens } from './interfaces/auth-tokens.interface';
-import { AppError, ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
 import { ROLE, RoleSlug } from '../../rbac/rbac.constants';
 import { UsageService } from '../subscription-billing/usage.service';
 import { SystemSettingService } from '../platform/system-setting.service';
@@ -173,12 +173,9 @@ export class AuthService {
     this.assertAssignableStaffRole(roleSlug);
 
     const email = this.normalizeEmail(dto.email);
-    const existing = await this.users.findOne({
-      where: { email, tenant: { id: actorTenantId } },
-    });
-    if (existing) {
-      throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
-    }
+    // D7 — email uniqueness is enforced globally inside createUserWithRole
+    // (the shared chokepoint every creation path routes through); no
+    // tenant-scoped pre-check is needed here anymore.
 
     // Plan limit: max_users. Self-signup of the owner (registerOwner) is
     // deliberately NOT limited — only adding staff to an existing tenant is.
@@ -215,14 +212,29 @@ export class AuthService {
    * StaffProfile in the same transaction) and have everything roll back
    * together.
    *
-   * Shared by registerOwner, createTenantUser, and StaffService's "create new
-   * staff user" flow. Callers resolve the role themselves first — via
-   * {@link resolveSystemRole} (strictly a seeded system role, for
-   * registerOwner/createTenantUser) or via `RolesService.findAssignableRoleBySlug`
-   * (tenant custom roles + system roles, for the staff flow) — because the two
-   * have different scoping rules. This method also does NOT check email
-   * uniqueness or plan limits — those checks differ per caller too and are the
-   * caller's job.
+   * Shared by registerOwner, createTenantUser, StaffService's "create new
+   * staff user" flow, and PlatformStaffService.create. Callers resolve the
+   * role themselves first — via {@link resolveSystemRole} (strictly a seeded
+   * system role, for registerOwner/createTenantUser) or via
+   * `RolesService.findAssignableRoleBySlug` (tenant custom roles + system
+   * roles, for the staff flow) — because the two have different scoping
+   * rules. `tenantId: null` provisions a PLATFORM user (e.g. Platform
+   * Customer Service) — see PlatformStaffService, the only caller that passes
+   * null. This method also does NOT check plan limits — that differs per
+   * caller and is the caller's job.
+   *
+   * D7 — EMAIL UNIQUENESS IS ENFORCED HERE, GLOBALLY (any live user, any
+   * tenant, platform included), NOT per-tenant. This reverses this method's
+   * prior contract (which explicitly left email checks to each caller) —
+   * that was correct while the rule was per-tenant; it is wrong once the
+   * rule is global, so this is now the SINGLE shared chokepoint no caller —
+   * existing or future — can bypass. The pre-insert check below cannot
+   * survive concurrency by itself (two simultaneous callers can both read "no
+   * clash"); the actual guarantee is the partial unique index
+   * `uq_user_email_global` (GlobalUserEmailUniqueness migration), and the
+   * catch below translates a raced-past insert into the same
+   * `EMAIL_ALREADY_EXISTS` the pre-check produces, so the caller never sees a
+   * raw `UNIQUE_VIOLATION` depending on timing.
    */
   async createUserWithRole(
     manager: EntityManager,
@@ -235,19 +247,32 @@ export class AuthService {
       locale?: string;
     },
     role: Role,
-    tenantId: string,
+    tenantId: string | null,
   ): Promise<User> {
-    const user = await manager.save(
-      manager.create(User, {
-        email: input.email,
-        phone: input.phone,
-        full_name: input.fullName,
-        password_hash: await bcrypt.hash(input.password, BCRYPT_ROUNDS),
-        is_active: true,
-        tenant: { id: tenantId } as Tenant,
-        preferred_locale: input.locale,
-      }),
-    );
+    const clash = await manager.findOne(User, { where: { email: input.email } });
+    if (clash) {
+      throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
+    }
+
+    let user: User;
+    try {
+      user = await manager.save(
+        manager.create(User, {
+          email: input.email,
+          phone: input.phone,
+          full_name: input.fullName,
+          password_hash: await bcrypt.hash(input.password, BCRYPT_ROUNDS),
+          is_active: true,
+          tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
+          preferred_locale: input.locale,
+        }),
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
+      }
+      throw err;
+    }
     await manager.save(manager.create(UserRole, { user, role }));
     return user;
   }
@@ -722,6 +747,7 @@ export class AuthService {
       id: user.id,
       tenantId: user.tenant?.id ?? null,
       email: user.email ?? null,
+      fullName: user.full_name ?? null,
       roles: [...roleSlugs],
       permissions: [...permissionSlugs],
     };
@@ -774,6 +800,7 @@ export class AuthService {
         id: principal.id,
         tenantId: principal.tenantId,
         email: principal.email,
+        fullName: principal.fullName,
         roles: principal.roles,
         permissions: principal.permissions,
       },

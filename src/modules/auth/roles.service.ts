@@ -34,12 +34,21 @@ import {
  *   slug).
  * - `owner`: a tenant's founding role, created exclusively via
  *   `/auth/register-owner`.
+ * - `platform_support`: platform role, provisioned exclusively via
+ *   `/platform/staff`. Without this block, `assignRoleToUser` (which admits
+ *   any `is_system` role regardless of the caller's tenant — see `findOne`)
+ *   would let a clinic Owner holding `roles.manage` grant a
+ *   `platform_support`-carrying role to their own tenant staff, a
+ *   cross-boundary escalation. Defence in depth alongside
+ *   `RESERVED_PERMISSION_SLUGS` (rbac.constants.ts), which additionally
+ *   blocks the underlying permission slugs from a synthesized custom role.
  *
  * This is the hard boundary between the Platform layer and the Tenant layer.
  */
 const API_PROTECTED_ROLE_SLUGS: readonly string[] = [
   ROLE.SUPER_ADMIN,
   ROLE.OWNER,
+  ROLE.PLATFORM_SUPPORT,
 ];
 
 /**
