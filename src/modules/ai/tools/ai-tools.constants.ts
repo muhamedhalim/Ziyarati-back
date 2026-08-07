@@ -8,6 +8,7 @@ export const AI_TOOL = {
   SEARCH_PUBLIC_AVAILABILITY: 'search_public_availability',
   // Booking (tenant-bound, transactional — authenticated conversations only).
   CHECK_AVAILABILITY: 'check_availability',
+  GET_CUSTOMER_INSURANCE_STATUS: 'get_customer_insurance_status',
   BOOK_APPOINTMENT: 'book_appointment',
   RESCHEDULE_APPOINTMENT: 'reschedule_appointment',
   CANCEL_APPOINTMENT: 'cancel_appointment',
@@ -97,9 +98,31 @@ export const AI_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+    description:
+      'Check whether this patient\'s health-insurance status is already on file, before asking. Call this once, early in a booking flow, right after the customer is identified. Returns hasInsurance: true, false, or null (never asked before). If a value comes back (true or false), briefly CONFIRM it with the patient (e.g. "I have you down as having health insurance — is that still correct?") instead of asking cold. If null, ask the question fresh (see book_appointment for the exact wording).',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        customerId: {
+          type: 'string',
+          description: 'Customer UUID. Omit to use the customer already bound to this conversation.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: AI_TOOL.BOOK_APPOINTMENT,
     description:
-      'Book a new appointment for a customer. Only call after confirming an available slot via check_availability. The booking is validated for real availability and fails if the slot is taken.',
+      'Book a new appointment for a customer. Only call after confirming an available slot via check_availability. ' +
+      'Before booking, you must know the patient\'s health-insurance status: call get_customer_insurance_status first. ' +
+      'If it returns a known value, confirm it with the patient rather than asking again. If it returns null (unknown), ask exactly — ' +
+      'Arabic: "هل لديك تأمين صحي؟" / English: "Do you have health insurance?" — with Yes/No options, then pass the confirmed answer as hasInsurance. ' +
+      'Insured patients are never charged online: no payment link is generated for them, regardless of what you say. ' +
+      'Uninsured patients may get a payment link in this tool\'s result when the clinic requires online payment for this booking — if `paymentLink` is present in the result, share its details with the patient so they can complete payment; the decision to include it is made by the backend, not by you. ' +
+      'The booking itself is validated for real availability and fails if the slot is taken.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -114,6 +137,11 @@ export const AI_TOOLS: AiToolDefinition[] = [
           description: 'Optional service UUIDs; their durations set the end time and prices the total.',
         },
         notes: { type: 'string', description: 'Optional booking notes.' },
+        hasInsurance: {
+          type: 'boolean',
+          description:
+            'The patient\'s confirmed health-insurance answer for this turn (from get_customer_insurance_status confirmation, or a fresh answer). Omit only if you truly could not obtain one — the backend then falls back to the on-file value, defaulting to "no insurance" if it was never asked.',
+        },
       },
       required: ['branchId', 'customerId', 'staffId', 'startAt'],
     },

@@ -56,6 +56,70 @@ describe('CustomerService', () => {
       const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
       expect(res.preferred_locale).toBeUndefined();
     });
+
+    it('persists chronic_diseases when has_chronic_diseases is true', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+        has_chronic_diseases: true,
+        chronic_diseases: 'Type 2 diabetes',
+      } as any);
+      expect(res).toEqual(
+        expect.objectContaining({ has_chronic_diseases: true, chronic_diseases: 'Type 2 diabetes' }),
+      );
+    });
+
+    it('rejects has_chronic_diseases=true without chronic_diseases (server-side, not just DTO)', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.create(TENANT, {
+          phone: '+966500',
+          email: 'a@b.com',
+          has_chronic_diseases: true,
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+      expect(customers.save).not.toHaveBeenCalled();
+    });
+
+    it('forces chronic_diseases to null when has_chronic_diseases is false, even if a value was sent', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+        has_chronic_diseases: false,
+        chronic_diseases: 'should be ignored',
+      } as any);
+      expect(res.chronic_diseases).toBeNull();
+    });
+
+    it('defaults has_chronic_diseases to false and chronic_diseases to null when omitted', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
+      expect(res.has_chronic_diseases).toBe(false);
+      expect(res.chronic_diseases).toBeNull();
+    });
+
+    it('persists has_health_insurance when provided', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+        has_health_insurance: true,
+      } as any);
+      expect(res.has_health_insurance).toBe(true);
+    });
+
+    it('leaves has_health_insurance undefined (tri-state "never asked") when omitted', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
+      expect(res.has_health_insurance).toBeUndefined();
+    });
   });
 
   describe('update', () => {
@@ -88,6 +152,44 @@ describe('CustomerService', () => {
       const res = await service.update(TENANT, 'c1', { preferred_locale: 'ar' } as any);
       expect(res).toEqual(expect.objectContaining({ preferred_locale: 'ar' }));
     });
+
+    it('clears chronic_diseases when editing from Yes to No, even if only the boolean is sent', async () => {
+      customers.findOne.mockResolvedValueOnce({
+        id: 'c1',
+        phone: '+966500',
+        has_chronic_diseases: true,
+        chronic_diseases: 'Type 2 diabetes',
+      });
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.update(TENANT, 'c1', { has_chronic_diseases: false } as any);
+      expect(res.has_chronic_diseases).toBe(false);
+      expect(res.chronic_diseases).toBeNull();
+    });
+
+    it('rejects switching has_chronic_diseases to true without supplying chronic_diseases', async () => {
+      customers.findOne.mockResolvedValueOnce({
+        id: 'c1',
+        phone: '+966500',
+        has_chronic_diseases: false,
+        chronic_diseases: null,
+      });
+      await expect(
+        service.update(TENANT, 'c1', { has_chronic_diseases: true } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+      expect(customers.save).not.toHaveBeenCalled();
+    });
+
+    it('keeps existing chronic_diseases text on an update that does not touch either field', async () => {
+      customers.findOne.mockResolvedValueOnce({
+        id: 'c1',
+        phone: '+966500',
+        has_chronic_diseases: true,
+        chronic_diseases: 'Asthma',
+      });
+      customers.save.mockImplementationOnce(async (c: any) => c);
+      const res = await service.update(TENANT, 'c1', { full_name: 'New' } as any);
+      expect(res.chronic_diseases).toBe('Asthma');
+    });
   });
 
   describe('remove / getDetails / findOneOrThrow', () => {
@@ -106,6 +208,16 @@ describe('CustomerService', () => {
     it('findOneOrThrow returns the customer', async () => {
       customers.findOne.mockResolvedValueOnce({ id: 'c1' });
       await expect(service.findOneOrThrow(TENANT, 'c1')).resolves.toEqual({ id: 'c1' });
+    });
+  });
+
+  describe('setInsuranceStatus', () => {
+    it('writes has_health_insurance via a tenant-scoped targeted update', async () => {
+      await service.setInsuranceStatus(TENANT, 'c1', true);
+      expect(customers.update).toHaveBeenCalledWith(
+        { id: 'c1', tenant: { id: TENANT } },
+        { has_health_insurance: true },
+      );
     });
   });
 

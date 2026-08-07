@@ -145,5 +145,20 @@ describe('sanitizeForLog', () => {
       expect(out.emailTemplateId).toBe('tmpl-1');
       expect(out.emailDefaultLocale).toBe('en');
     });
+
+    it('redacts chronic_diseases (sensitive patient data) — naming variants, nested objects', () => {
+      const out = sanitizeForLog({
+        chronic_diseases: 'Type 2 diabetes',
+        chronicDiseases: 'Type 2 diabetes',
+        has_chronic_diseases: true,
+        nested: { chronic_diseases: 'Hypertension' },
+      }) as any;
+
+      expect(out.chronic_diseases).toBe('[REDACTED]');
+      expect(out.chronicDiseases).toBe('[REDACTED]');
+      // has_chronic_diseases is a boolean flag, not the sensitive detail — not redacted.
+      expect(out.has_chronic_diseases).toBe(true);
+      expect(out.nested.chronic_diseases).toBe('[REDACTED]');
+    });
   });
 });

@@ -56,4 +56,32 @@ describe('CreateSupportTicketDto validation', () => {
     const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
     expect(errors.some((e) => e.property === 'tenantId')).toBe(true);
   });
+
+  it('accepts a payload without preferredContactTime — it is optional', async () => {
+    const errors = await errorsFor({});
+    expect(errors.some((e) => e.property === 'preferredContactTime')).toBe(false);
+  });
+
+  it('accepts a valid ISO-8601 preferredContactTime', async () => {
+    const errors = await errorsFor({ preferredContactTime: '2026-08-10T09:30:00.000Z' });
+    expect(errors.some((e) => e.property === 'preferredContactTime')).toBe(false);
+  });
+
+  it('rejects a preferredContactTime that is not a valid ISO-8601 string', async () => {
+    const errors = await errorsFor({ preferredContactTime: 'next Tuesday afternoon' });
+    expect(errors.some((e) => e.property === 'preferredContactTime')).toBe(true);
+  });
+
+  it('rejects a spoofed status/resolvedAt/closedAt under the app-wide whitelist config — lifecycle timestamps are never client-settable', async () => {
+    const dto = plainToInstance(CreateSupportTicketDto, {
+      ...VALID,
+      status: 'resolved',
+      resolvedAt: '2026-01-01T00:00:00.000Z',
+      closedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+    expect(errors.some((e) => e.property === 'status')).toBe(true);
+    expect(errors.some((e) => e.property === 'resolvedAt')).toBe(true);
+    expect(errors.some((e) => e.property === 'closedAt')).toBe(true);
+  });
 });

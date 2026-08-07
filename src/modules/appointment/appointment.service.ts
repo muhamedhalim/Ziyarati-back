@@ -345,7 +345,10 @@ export class AppointmentsService {
         start_at: startAt,
         end_at: endAt,
         status,
-        payment_status: AppointmentPaymentStatus.UNPAID,
+        // Insured patients are never charged online — see AppointmentPaymentStatus.INSURANCE.
+        payment_status: dto.hasInsurance
+          ? AppointmentPaymentStatus.INSURANCE
+          : AppointmentPaymentStatus.UNPAID,
         total_amount: totalAmount,
         currency: dto.currency ?? 'SAR',
         booked_timezone: branch?.timezone,

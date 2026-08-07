@@ -42,6 +42,11 @@ import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.in
 export class PlatformSupportTicketController {
   constructor(private readonly ticketsService: SupportTicketService) {}
 
+  /** Every caller here already passed `@Roles(ROLE.SUPER_ADMIN)` — snapshot that as the actor's role. */
+  private actorFrom(user: AuthenticatedUser) {
+    return { id: user.id, email: user.email, role: ROLE.SUPER_ADMIN };
+  }
+
   @ApiOperation({ summary: 'Aggregate KPI counts (super-admin)' })
   @ApiOkResponse({ description: 'Open / in-progress / resolved / urgent counts.' })
   @Get('kpis')
@@ -83,7 +88,7 @@ export class PlatformSupportTicketController {
     @Body() dto: UpdateTicketStatusDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ticketsService.updateStatus(id, { id: user.id, email: user.email }, dto);
+    return this.ticketsService.updateStatus(id, this.actorFrom(user), dto);
   }
 
   @ApiOperation({ summary: 'Change ticket priority' })
@@ -95,7 +100,7 @@ export class PlatformSupportTicketController {
     @Body() dto: UpdateTicketPriorityDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ticketsService.updatePriority(id, { id: user.id, email: user.email }, dto);
+    return this.ticketsService.updatePriority(id, this.actorFrom(user), dto);
   }
 
   @ApiOperation({
@@ -110,6 +115,6 @@ export class PlatformSupportTicketController {
     @Body() dto: AddTicketNoteDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.ticketsService.addNote(id, { id: user.id, email: user.email }, dto);
+    return this.ticketsService.addNote(id, this.actorFrom(user), dto);
   }
 }

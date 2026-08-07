@@ -22,6 +22,8 @@ export interface TicketActor {
   id: string;
   name?: string | null;
   email?: string | null;
+  /** 'clinic' for a tenant-side actor, or an RBAC role slug (e.g. 'super_admin') for a platform one. */
+  role?: string;
 }
 
 /**
@@ -85,6 +87,7 @@ export class SupportTicketService {
       status: 'open',
       description: dto.description,
       ...attachment,
+      preferred_contact_time: dto.preferredContactTime ? new Date(dto.preferredContactTime) : undefined,
       createdBy: { id: actor.id } as User,
       created_by_name: actor.name ?? undefined,
       created_by_email: actor.email ?? undefined,
@@ -136,6 +139,37 @@ export class SupportTicketService {
       attachmentUrl: await this.resolveAttachmentUrl(ticket, tenantId),
       history: events.map((e) => this.toEventView(e)),
     };
+  }
+
+  /**
+   * Clinic confirms the issue is resolved and closes its own ticket. Only
+   * valid from `resolved` (support must resolve first — a clinic can never
+   * resolve or skip straight to closed) and only for the caller's own
+   * tenant; `closed_at` is always backend-generated, never client-supplied.
+   */
+  async closeOwnTicket(tenantId: string, actor: TicketActor, id: string) {
+    const ticket = await this.tickets.findOne({ where: { id, tenant: { id: tenantId } } });
+    if (!ticket) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Ticket not found' });
+    }
+    if (ticket.status !== 'resolved') {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Ticket must be resolved before it can be closed.',
+      });
+    }
+    const from = ticket.status;
+    ticket.status = 'closed';
+    ticket.closed_at = ticket.closed_at ?? new Date();
+    await this.tickets.save(ticket);
+    await this.recordEvent({
+      ticketId: id,
+      type: 'STATUS_CHANGED',
+      fromValue: from,
+      toValue: 'closed',
+      internalOnly: false,
+      actor,
+    });
+    return this.getForTenant(tenantId, id);
   }
 
   // ─────────────────────────────── Platform side ──────────────────────────────
@@ -321,6 +355,7 @@ export class SupportTicketService {
       internal_only: input.internalOnly,
       actor: { id: input.actor.id } as User,
       actor_name: input.actor.name ?? undefined,
+      actor_role: input.actor.role ?? undefined,
     });
     await this.events.save(event);
   }
@@ -337,6 +372,7 @@ export class SupportTicketService {
       updatedAt: t.updated_at,
       resolvedAt: t.resolved_at ?? null,
       closedAt: t.closed_at ?? null,
+      preferredContactTime: t.preferred_contact_time ?? null,
       hasAttachment: !!t.attachment_key,
       attachmentFilename: t.attachment_filename ?? null,
     };
@@ -359,6 +395,7 @@ export class SupportTicketService {
       toValue: e.to_value ?? null,
       note: e.note ?? null,
       actorName: e.actor_name ?? null,
+      actorRole: e.actor_role ?? null,
       createdAt: e.created_at,
     };
   }

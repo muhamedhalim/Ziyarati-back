@@ -60,10 +60,14 @@ export const PERMISSION = {
   CRM_FILES_READ: 'crm.files.read',
   CRM_FILES_MANAGE: 'crm.files.manage',
 
-  // Support Tickets (tenant-side create/read; platform triage is role-gated,
-  // not permission-gated — see PlatformSupportTicketController)
+  // Support Tickets (tenant-side create/read/close; platform triage is
+  // role-gated, not permission-gated — see PlatformSupportTicketController)
   SUPPORT_TICKETS_READ: 'support_tickets.read',
   SUPPORT_TICKETS_CREATE: 'support_tickets.create',
+  // Tenant-scoped like READ/CREATE (any caller with it may close any of
+  // their own tenant's resolved tickets) — NOT a per-user ABAC ownership
+  // scope, so deliberately not registered in OWNERSHIP_SCOPED_PERMISSIONS.
+  SUPPORT_TICKETS_CLOSE: 'support_tickets.close',
 
   // Profile (self-service)
   PROFILE_UPDATE_OWN: 'profile.update_own', // ABAC — see below
@@ -420,6 +424,7 @@ export const PERMISSIONS: PermissionDef[] = [
 
   { slug: PERMISSION.SUPPORT_TICKETS_READ, name: 'Read support tickets', module: 'support_tickets' },
   { slug: PERMISSION.SUPPORT_TICKETS_CREATE, name: 'Create support tickets', module: 'support_tickets' },
+  { slug: PERMISSION.SUPPORT_TICKETS_CLOSE, name: 'Close own resolved support tickets', module: 'support_tickets' },
 
   { slug: PERMISSION.PROFILE_UPDATE_OWN, name: 'Update own profile', module: 'profile' },
 
@@ -634,6 +639,7 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CRM_FILES_MANAGE,
     PERMISSION.SUPPORT_TICKETS_READ,
     PERMISSION.SUPPORT_TICKETS_CREATE,
+    PERMISSION.SUPPORT_TICKETS_CLOSE,
     PERMISSION.SERVICES_CREATE,
     PERMISSION.SERVICES_READ,
     PERMISSION.SERVICES_UPDATE,
@@ -761,6 +767,7 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CRM_FILES_MANAGE,
     PERMISSION.SUPPORT_TICKETS_READ,
     PERMISSION.SUPPORT_TICKETS_CREATE,
+    PERMISSION.SUPPORT_TICKETS_CLOSE,
     PERMISSION.SERVICES_CREATE,
     PERMISSION.SERVICES_READ,
     PERMISSION.SERVICES_UPDATE,
@@ -861,6 +868,7 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CRM_FILES_MANAGE,
     PERMISSION.SUPPORT_TICKETS_READ,
     PERMISSION.SUPPORT_TICKETS_CREATE,
+    PERMISSION.SUPPORT_TICKETS_CLOSE,
     PERMISSION.SERVICES_READ,
     PERMISSION.STAFF_READ,
     PERMISSION.SCHEDULING_SLOTS_READ,

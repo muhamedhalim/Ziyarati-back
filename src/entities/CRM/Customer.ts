@@ -88,6 +88,30 @@ export class Customer {
   @Column({ type: 'varchar', length: 10, nullable: true })
   preferred_locale?: string | null;
 
+  /**
+   * Chronic-disease intake, captured directly in the New/Edit Customer form
+   * (distinct from the free-text clinical fields on `CustomerProfile`).
+   * `chronic_diseases` is required when this is true and forced to `null`
+   * when false — enforced authoritatively in `CustomerService`, not just
+   * the DTO — so the two columns can never disagree.
+   */
+  @Column({ default: false })
+  has_chronic_diseases!: boolean;
+
+  @Column({ type: 'text', nullable: true })
+  chronic_diseases?: string | null;
+
+  /**
+   * Tri-state: `NULL` = never asked, `true`/`false` = a confirmed answer.
+   * Captured directly (New/Edit Customer form, or the AI booking flow) —
+   * mirrors `has_chronic_diseases` in placement, not the separate clinical
+   * `CustomerProfile` record. Drives the AI booking flow's payment-link
+   * decision (see `AiToolDispatchService.bookAppointment`) and lets a
+   * returning patient's on-file answer be confirmed instead of re-asked.
+   */
+  @Column({ type: 'boolean', nullable: true })
+  has_health_insurance?: boolean | null;
+
   @OneToOne(() => CustomerProfile, (profile) => profile.customer)
   profile?: CustomerProfile;
 

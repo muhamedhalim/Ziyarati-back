@@ -4,9 +4,11 @@ import {
   IsEmail,
   IsIn,
   IsISO8601,
+  IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
 
 /**
@@ -81,4 +83,33 @@ export class CreateCustomerDto {
   @IsOptional()
   @IsIn(['en', 'ar'])
   preferred_locale?: string;
+
+  @ApiPropertyOptional({
+    description: 'Whether the patient has chronic diseases.',
+    example: false,
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  has_chronic_diseases?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Chronic disease details. Required when has_chronic_diseases is true; ignored/cleared otherwise (enforced server-side, not just here).',
+    example: 'Type 2 diabetes, hypertension',
+  })
+  @ValidateIf((o) => o.has_chronic_diseases === true)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  chronic_diseases?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether the patient has health insurance. Tri-state: omitted/unset means never asked. Drives the AI booking flow\'s payment-link decision.',
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  has_health_insurance?: boolean;
 }

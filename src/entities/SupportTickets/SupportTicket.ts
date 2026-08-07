@@ -87,10 +87,20 @@ export class SupportTicket {
   @Column({ type: 'timestamptz', nullable: true })
   closed_at?: Date | null;
 
+  /** Optional — when the clinic would like support to call them back. */
+  @Column({ type: 'timestamptz', nullable: true })
+  preferred_contact_time?: Date | null;
+
+  // Explicit `timestamptz` (matching resolved_at/closed_at/preferred_contact_time)
+  // — without it TypeORM/pg defaults to a naive `timestamp`, which the pg
+  // driver decodes as if it were already in the Node process's local
+  // timezone. That silently corrupts any duration computed against a
+  // `timestamptz` sibling column whenever the process isn't running in UTC
+  // (see SupportTicketTimelineAndContactTime migration for the backfill).
   @Index()
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updated_at!: Date;
 }

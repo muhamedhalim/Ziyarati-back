@@ -139,6 +139,11 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     PaymentReconciliationService,
     // Exposed so the worker can write the reaper heartbeat.
     FinancialMetricsService,
+    // Exposed so the AI booking flow can auto-generate a payment link for
+    // uninsured bookings when the tenant requires online payment (see
+    // AiToolDispatchService.bookAppointment) — reuses the same
+    // create()/assertChargeable() path the staff dashboard uses manually.
+    PaymentLinkService,
   ],
 })
 export class PaymentsModule {}

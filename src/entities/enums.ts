@@ -65,6 +65,13 @@ export enum AppointmentPaymentStatus {
   PAID = 'PAID',
   REFUNDED = 'REFUNDED',
   PARTIALLY_REFUNDED = 'PARTIALLY_REFUNDED',
+  /**
+   * Payment is handled outside this system entirely — through the patient's
+   * health insurance or directly at the clinic — never collected online. Set
+   * only when the patient confirmed they have insurance; no online payment is
+   * ever expected, so this never transitions to PAID via `applyPaymentOutcome`.
+   */
+  INSURANCE = 'INSURANCE',
 }
 
 export enum PaymentStatus {

@@ -152,6 +152,26 @@ describe('AppointmentsService', () => {
       expect(result).toBe(reloaded);
     });
 
+    it('sets payment_status to INSURANCE (not UNPAID) when hasInsurance is true', async () => {
+      primeValidRefs();
+
+      await service.create(TENANT, USER, { ...dto, hasInsurance: true });
+
+      const created = repo(Appointment).create.mock.calls[0][0];
+      // Scheduling lifecycle is untouched by insurance — same as any booking.
+      expect(created.status).toBe(AppointmentStatus.PENDING_PAYMENT);
+      expect(created.payment_status).toBe(AppointmentPaymentStatus.INSURANCE);
+    });
+
+    it('keeps the existing UNPAID default when hasInsurance is false/omitted', async () => {
+      primeValidRefs();
+
+      await service.create(TENANT, USER, { ...dto, hasInsurance: false });
+
+      const created = repo(Appointment).create.mock.calls[0][0];
+      expect(created.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
+    });
+
     // FND-034: the quota check now runs INSIDE the transaction (after
     // availability, so only a genuine quota exhaustion reaches it) — a
     // rejection there rolls the transaction back, so nothing is created.

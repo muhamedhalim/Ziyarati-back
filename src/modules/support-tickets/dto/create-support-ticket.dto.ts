@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsISO8601, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 import { TICKET_CATEGORIES, TICKET_PRIORITIES } from '../support-tickets.constants';
 import type { TicketCategory, TicketPriority } from '../support-tickets.constants';
@@ -34,4 +34,13 @@ export class CreateSupportTicketDto {
   @IsString()
   @MaxLength(500)
   attachmentKey?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'When the clinic would like support to call them back, ISO-8601. Optional — support may also reach out immediately.',
+    example: '2026-08-10T09:30:00.000Z',
+  })
+  @IsOptional()
+  @IsISO8601()
+  preferredContactTime?: string;
 }

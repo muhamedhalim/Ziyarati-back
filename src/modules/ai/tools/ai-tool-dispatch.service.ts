@@ -4,6 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError } from '../../../common/errors';
+import { Appointment } from '../../../entities/Calendar&Appointments/Appointment';
 import { AppointmentSource } from '../../../entities/enums';
 import { AppointmentsService } from '../../appointment/appointment.service';
 import { PublicDiscoveryService } from '../../public-discovery/public-discovery.service';
@@ -13,6 +14,8 @@ import { SubscriptionService } from '../../subscription-billing/subscription.ser
 import { UsageService } from '../../subscription-billing/usage.service';
 import { CustomerService } from '../../crm/customer.service';
 import { StaffService } from '../../staff/staff.service';
+import { TenantService } from '../../tenant/tenant.service';
+import { PaymentLinkService } from '../../payments/payment-link.service';
 import { AiToolCall } from '../providers/ai-provider.interface';
 import { AiAnalyticsService } from '../ai-analytics.service';
 import { HandoverRequestService } from '../handover-request.service';
@@ -83,6 +86,10 @@ export class AiToolDispatchService {
     private readonly aiAnalytics: AiAnalyticsService,
     private readonly dataSource: DataSource,
     private readonly handovers: HandoverRequestService,
+    /** `payment_required` business rule for the auto-payment-link decision. */
+    private readonly tenants: TenantService,
+    /** Reused verbatim — same create()/assertChargeable() path as the manual staff flow. */
+    private readonly paymentLinks: PaymentLinkService,
   ) {}
 
   /** Parse + route one tool call. Never throws — returns a result for the model. */
@@ -107,6 +114,8 @@ export class AiToolDispatchService {
           return await this.searchPublicAvailability(ctx, args);
         case AI_TOOL.CHECK_AVAILABILITY:
           return await this.checkAvailability(ctx, args);
+        case AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS:
+          return await this.getCustomerInsuranceStatus(ctx, args);
         case AI_TOOL.BOOK_APPOINTMENT:
           return await this.bookAppointment(ctx, args);
         case AI_TOOL.RESCHEDULE_APPOINTMENT:
@@ -355,6 +364,40 @@ export class AiToolDispatchService {
     );
   }
 
+  /**
+   * Read-only lookup of the patient's on-file insurance answer, so the model
+   * can confirm a returning patient's answer instead of asking cold every
+   * time. Not permission-gated (same posture as `checkAvailability`): the
+   * customer is either the one already bound to this conversation, or an
+   * explicit id that gets the same tenant-scoped existence check booking does.
+   */
+  private async getCustomerInsuranceStatus(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const customerId = this.str(args.customerId) ?? ctx.customerId;
+    if (!customerId) {
+      return {
+        success: false,
+        error: 'No customer is bound to this conversation yet.',
+      };
+    }
+    return this.run(
+      ctx,
+      AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+      `insurance_status:${randomUUID()}`,
+      args,
+      async () => {
+        const customer = await this.customers.findOneOrThrow(ctx.tenantId, customerId);
+        const hasInsurance = customer.has_health_insurance ?? null;
+        return {
+          toolResult: { success: true, hasInsurance, known: hasInsurance !== null },
+          resultJson: { customerId, hasInsurance },
+        };
+      },
+    );
+  }
+
   private async bookAppointment(
     ctx: ToolContext,
     args: Record<string, unknown>,
@@ -386,12 +429,26 @@ export class AiToolDispatchService {
     const serviceIds = Array.isArray(args.serviceIds)
       ? args.serviceIds.filter((s): s is string => typeof s === 'string')
       : undefined;
+    // Undefined means "the model didn't say" — resolved against the on-file
+    // value (defaulting to false) INSIDE the idempotent executor below, so a
+    // retried turn never re-derives a different answer than the one it acted on.
+    const hasInsuranceArg =
+      typeof args.hasInsurance === 'boolean' ? args.hasInsurance : undefined;
 
     // Deterministic key: the same (conversation, staff, start) booking intent can
     // execute at most once, even across retried turns.
     const key = `book:${ctx.aiConversationId}:${staffId}:${startAt}`;
 
     return this.run(ctx, AI_TOOL.BOOK_APPOINTMENT, key, args, async () => {
+      // Deterministic, backend-owned decision (FR: "the AI collects the
+      // answer, the backend decides") — never trusts tool-call prose, only
+      // this resolved boolean.
+      const hasInsurance = await this.resolveInsurance(
+        ctx.tenantId,
+        customerId,
+        hasInsuranceArg,
+      );
+
       const appt = await this.appointments.create(
         ctx.tenantId,
         ctx.actorUserId!,
@@ -403,25 +460,113 @@ export class AiToolDispatchService {
           serviceIds,
           notes: this.str(args.notes),
           source: AppointmentSource.WHATSAPP_BOT,
+          hasInsurance,
         },
       );
+
+      // Insured bookings never get a payment link, full stop — checked here
+      // (not just left to maybeCreatePaymentLink) so the intent reads clearly.
+      const paymentLink = hasInsurance
+        ? undefined
+        : await this.maybeCreatePaymentLink(ctx.tenantId, appt);
+
       return {
         appointmentId: appt.id,
         resultJson: {
           appointmentId: appt.id,
           status: appt.status,
+          paymentStatus: appt.payment_status,
           startAt: appt.start_at,
           endAt: appt.end_at,
+          hasInsurance,
+          paymentLinkToken: paymentLink?.token,
         },
         toolResult: {
           success: true,
           appointmentId: appt.id,
           status: appt.status,
+          paymentStatus: appt.payment_status,
           startAt: appt.start_at,
           endAt: appt.end_at,
+          hasInsurance,
+          ...(paymentLink ? { paymentLink } : {}),
         },
       };
     });
+  }
+
+  /**
+   * Resolves the effective insurance answer for this booking: an explicit
+   * turn answer wins (and is persisted onto the customer for next time);
+   * otherwise falls back to the on-file value; otherwise `false` (the safe
+   * default — payment collection is never silently skipped just because the
+   * model forgot to ask). This is the ONLY place that decision is made.
+   */
+  private async resolveInsurance(
+    tenantId: string,
+    customerId: string,
+    arg: boolean | undefined,
+  ): Promise<boolean> {
+    let stored: boolean | null = null;
+    try {
+      const customer = await this.customers.findOneOrThrow(tenantId, customerId);
+      stored = customer.has_health_insurance ?? null;
+    } catch {
+      // An invalid customerId surfaces properly from AppointmentsService's own
+      // assertCustomer check right after this — nothing to do here but fall
+      // through with "unknown".
+    }
+
+    if (arg === undefined) return stored === true;
+
+    if (arg !== stored) {
+      await this.customers
+        .setInsuranceStatus(tenantId, customerId, arg)
+        .catch((err) =>
+          this.logger.warn(
+            `could not persist insurance status for customer ${customerId}: ${this.msg(err)}`,
+          ),
+        );
+    }
+    return arg;
+  }
+
+  /**
+   * Auto-generates a shareable payment link for an uninsured booking, but
+   * ONLY when the tenant's own business rule (`payment_required`) calls for
+   * online payment — the backend decision the FR requires. Reuses
+   * `PaymentLinkService.create()` verbatim (same marketplace-chargeability
+   * gate, same server-priced amount the manual staff flow gets). Never
+   * throws: a payments-side failure (clinic not yet payment-approved, no
+   * payable total, etc.) must not block a booking that already succeeded.
+   */
+  private async maybeCreatePaymentLink(
+    tenantId: string,
+    appt: Appointment,
+  ): Promise<{ token: string; amount: number; currency: string; expiresAt?: string } | undefined> {
+    try {
+      const settings = await this.tenants.getSettings(tenantId);
+      if (!settings.payment_required) return undefined;
+
+      const amount = Number(appt.total_amount ?? 0);
+      if (!(amount > 0)) return undefined;
+
+      const link = await this.paymentLinks.create(tenantId, {
+        appointmentId: appt.id,
+        amount,
+      });
+      return {
+        token: link.link_token,
+        amount: Number(link.amount),
+        currency: appt.currency,
+        expiresAt: link.expires_at?.toISOString(),
+      };
+    } catch (err) {
+      this.logger.warn(
+        `payment link auto-generation skipped for appointment ${appt.id}: ${this.msg(err)}`,
+      );
+      return undefined;
+    }
   }
 
   private async rescheduleAppointment(
