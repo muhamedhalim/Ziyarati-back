@@ -23,6 +23,7 @@ import { AppointmentCancellation } from '../../entities/Calendar&Appointments/Ap
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+import { StaffSchedule } from '../../entities/Staff/StaffSchedule';
 import { Service, PricingType } from '../../entities/Services/Service';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
@@ -101,9 +102,27 @@ const ALLOWED_TRANSITIONS: Record<AppointmentStatus, AppointmentStatus[]> = {
   [AppointmentStatus.NO_SHOW]: [],
 };
 
+/**
+ * A service together with the price that applies AT the appointment's branch —
+ * from `service_prices` when the clinic has configured one there, else the
+ * service's own `base_price`. Carried through window/total computation and
+ * snapshotted onto `appointment_services`, so the charged amount is always
+ * server-derived.
+ */
+interface PricedService {
+  service: Service;
+  price: number;
+}
+
 /** A single chronological entry in the unified appointment timeline. */
 export interface TimelineEntry {
-  type: 'created' | 'status_log' | 'history' | 'note' | 'reschedule' | 'cancellation';
+  type:
+    | 'created'
+    | 'status_log'
+    | 'history'
+    | 'note'
+    | 'reschedule'
+    | 'cancellation';
   at: Date;
   data: Record<string, unknown>;
 }
@@ -277,11 +296,26 @@ export class AppointmentsService {
     await this.subscriptions.assertBillableActionAllowed(tenantId);
 
     const created = await this.dataSource.transaction(async (manager) => {
-      // All references validated within the SAME tenant scope.
+      // All references validated within the same tenant scope AND against the
+      // selected BRANCH — a service or doctor belonging to the clinic is not
+      // enough, it has to be offered/working at the branch being booked.
+      // Public AI bookings are additionally strict (see assertStaffAtBranch).
+      const strictBranchScope = dto.source === AppointmentSource.PUBLIC_AI;
       await this.assertBranch(manager, tenantId, dto.branchId);
       await this.assertCustomer(manager, tenantId, dto.customerId);
-      await this.assertStaff(manager, tenantId, dto.staffId);
-      const services = await this.loadServices(manager, tenantId, dto.serviceIds);
+      await this.assertStaffAtBranch(
+        manager,
+        tenantId,
+        dto.branchId,
+        dto.staffId,
+        strictBranchScope,
+      );
+      const services = await this.loadServices(
+        manager,
+        tenantId,
+        dto.branchId,
+        dto.serviceIds,
+      );
 
       const startAt = new Date(dto.startAt);
       const { endAt, totalAmount } = this.computeWindowAndTotal(
@@ -328,7 +362,6 @@ export class AppointmentsService {
       }
 
       const repo = manager.getRepository(Appointment);
-      const status = AppointmentStatus.PENDING_PAYMENT;
 
       // Snapshot the branch timezone so the booked local wall-time stays stable
       // even if the branch timezone is later changed.
@@ -336,6 +369,29 @@ export class AppointmentsService {
         where: { id: dto.branchId, tenant: { id: tenantId } },
         select: { id: true, timezone: true },
       });
+
+      // Insured patients are never charged online — see AppointmentPaymentStatus.INSURANCE.
+      const paymentStatus = dto.hasInsurance
+        ? AppointmentPaymentStatus.INSURANCE
+        : AppointmentPaymentStatus.UNPAID;
+
+      // M-9: `status` used to be PENDING_PAYMENT unconditionally, while the only
+      // automatic route to CONFIRMED is a VERIFIED payment event
+      // (`applyPaymentOutcome`). So a booking with nothing to pay — insured,
+      // zero total, or a clinic that doesn't collect online — waited forever for
+      // a payment that could never arrive, and a staff member had to advance it
+      // by hand. Now the two axes agree: if no online payment is due, the
+      // booking is confirmed at creation. Insurance still never implies PAID;
+      // `payment_status` stays INSURANCE.
+      const paymentDue = await this.isOnlinePaymentDue(
+        manager,
+        tenantId,
+        dto.hasInsurance === true,
+        totalAmount,
+      );
+      const status = paymentDue
+        ? AppointmentStatus.PENDING_PAYMENT
+        : AppointmentStatus.CONFIRMED;
 
       const appointment = repo.create({
         tenant: { id: tenantId } as Tenant,
@@ -345,10 +401,7 @@ export class AppointmentsService {
         start_at: startAt,
         end_at: endAt,
         status,
-        // Insured patients are never charged online — see AppointmentPaymentStatus.INSURANCE.
-        payment_status: dto.hasInsurance
-          ? AppointmentPaymentStatus.INSURANCE
-          : AppointmentPaymentStatus.UNPAID,
+        payment_status: paymentStatus,
         total_amount: totalAmount,
         currency: dto.currency ?? 'SAR',
         booked_timezone: branch?.timezone,
@@ -414,10 +467,34 @@ export class AppointmentsService {
       }
 
       if (dto.staffId && dto.staffId !== appointment.staff?.id) {
-        await this.assertStaff(manager, tenantId, dto.staffId);
+        // Validate against the branch the appointment will END UP at — a branch
+        // reassignment in the same call has already been applied above, so
+        // moving both at once is checked as the pair it actually is.
+        await this.assertStaffAtBranch(
+          manager,
+          tenantId,
+          appointment.branch!.id,
+          dto.staffId,
+          appointment.source === AppointmentSource.PUBLIC_AI,
+        );
         appointment.staff = { id: dto.staffId } as StaffProfile;
         changes.push('staff reassigned');
         availabilityAffected = true;
+      } else if (
+        dto.branchId &&
+        dto.branchId !== undefined &&
+        availabilityAffected
+      ) {
+        // Branch moved but staff did not: the EXISTING doctor must work at the
+        // new branch, otherwise the move silently creates the exact
+        // cross-branch booking this check exists to prevent.
+        await this.assertStaffAtBranch(
+          manager,
+          tenantId,
+          appointment.branch!.id,
+          appointment.staff!.id,
+          appointment.source === AppointmentSource.PUBLIC_AI,
+        );
       }
 
       // Reassigning the branch or staff changes the availability context, so the
@@ -462,7 +539,12 @@ export class AppointmentsService {
     if (madeChanges) {
       this.emitter.emit(
         AppointmentUpdatedEvent.eventName,
-        new AppointmentUpdatedEvent(tenantId, appointment.id, appointment.customer!.id, emittedChanges.join('; ')),
+        new AppointmentUpdatedEvent(
+          tenantId,
+          appointment.id,
+          appointment.customer!.id,
+          emittedChanges.join('; '),
+        ),
       );
     }
     return appointment;
@@ -479,7 +561,14 @@ export class AppointmentsService {
       const appointment = await this.loadForWrite(manager, tenantId, id);
       this.assertNotTerminal(appointment, 'modified');
 
-      const services = await this.loadServices(manager, tenantId, dto.serviceIds);
+      // Priced at the appointment's OWN branch, so replacing the service set
+      // never silently re-prices it off the clinic-wide `base_price`.
+      const services = await this.loadServices(
+        manager,
+        tenantId,
+        appointment.branch!.id,
+        dto.serviceIds,
+      );
 
       // Replace set: clear existing rows for THIS appointment, then re-add.
       await manager.getRepository(AppointmentServiceEntity).delete({
@@ -533,7 +622,13 @@ export class AppointmentsService {
       appointment.status = dto.status;
       await manager.getRepository(Appointment).save(appointment);
 
-      await this.writeStatusLog(manager, tenantId, appointment, dto.status, userId);
+      await this.writeStatusLog(
+        manager,
+        tenantId,
+        appointment,
+        dto.status,
+        userId,
+      );
       await this.writeHistory(
         manager,
         tenantId,
@@ -572,7 +667,8 @@ export class AppointmentsService {
       // Reflect a recorded refund on the payment axis.
       if (dto.refundAmount && dto.refundAmount > 0) {
         appointment.payment_status =
-          appointment.total_amount && dto.refundAmount < appointment.total_amount
+          appointment.total_amount &&
+          dto.refundAmount < appointment.total_amount
             ? AppointmentPaymentStatus.PARTIALLY_REFUNDED
             : AppointmentPaymentStatus.REFUNDED;
       }
@@ -823,7 +919,11 @@ export class AppointmentsService {
     triggeredBy = 'system:payment',
   ): Promise<void> {
     const confirmed = await this.dataSource.transaction(async (manager) => {
-      const appointment = await this.loadForWrite(manager, tenantId, appointmentId);
+      const appointment = await this.loadForWrite(
+        manager,
+        tenantId,
+        appointmentId,
+      );
 
       const targetPayment =
         outcome === 'paid'
@@ -944,27 +1044,96 @@ export class AppointmentsService {
     }
   }
 
-  private async assertStaff(
+  /**
+   * F-4 / F-3 — validates the doctor against the TENANT *and* the BRANCH.
+   *
+   * This check used to be tenant-only. `StaffProfile` has no branch relation, so
+   * the only structural link is `staff_schedules.branchId` — and it was
+   * consulted solely inside `AvailabilityService`, which fails OPEN when a staff
+   * member has no positive windows (`ENFORCE_AVAILABILITY_WHEN_UNDEFINED =
+   * false`). "No schedule at this branch" therefore meant "no constraint", and a
+   * doctor who works only at branch A could be booked at branch B at any hour.
+   *
+   * Explicit configuration wins, exactly as for branch-scoped services: a doctor
+   * with schedules SOMEWHERE must have one HERE; a doctor with none anywhere is
+   * unconfigured legacy data and is allowed through, so clinics that book
+   * manually without maintaining schedules are not broken by this. `strict`
+   * (used by the public AI flow) removes that allowance.
+   *
+   * Runs against the transaction's `manager`, so it sees the same snapshot the
+   * rest of the booking does.
+   */
+  private async assertStaffAtBranch(
     manager: EntityManager,
     tenantId: string,
+    branchId: string,
     staffId: string,
+    strict: boolean,
   ): Promise<void> {
-    const exists = await manager.getRepository(StaffProfile).exists({
+    const staff = await manager.getRepository(StaffProfile).findOne({
       where: { id: staffId, tenant: { id: tenantId } },
     });
-    if (!exists) {
+    if (!staff) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'Staff member not found for this clinic',
       });
     }
+
+    const atBranch = await manager.getRepository(StaffSchedule).exists({
+      where: {
+        tenant: { id: tenantId },
+        staff: { id: staffId },
+        branch: { id: branchId },
+        is_active: true,
+      },
+    });
+    if (atBranch) return;
+
+    if (!strict) {
+      const anywhere = await manager.getRepository(StaffSchedule).exists({
+        where: {
+          tenant: { id: tenantId },
+          staff: { id: staffId },
+          is_active: true,
+        },
+      });
+      if (!anywhere) return;
+    }
+
+    throw new AppError(ErrorCode.CONFLICT, {
+      message: 'This staff member does not work at the selected branch',
+      publicContext: { branchId, staffId },
+    });
   }
 
-  /** Loads + validates services within the tenant; all must exist & be active. */
+  /**
+   * Loads + validates services within the tenant AND the branch, resolving the
+   * price that actually applies at that branch.
+   *
+   * F-5 — `Service` has no branch relation, so this used to be tenant-only and
+   * always priced from `Service.base_price`. But `service_prices (serviceId,
+   * branchId, price, is_active)` has existed since the baseline schema with
+   * `UNIQUE(serviceId, branchId)`; nothing read it, so a clinic could neither
+   * restrict a service to certain branches nor price it per branch — a
+   * configured branch price was silently ignored at booking time.
+   *
+   * The rule (D1), explicit configuration wins:
+   *  - service HAS active `service_prices` rows → it is offered only at those
+   *    branches, at that branch's price;
+   *  - service has NONE → unconfigured legacy data, offered everywhere at
+   *    `base_price`.
+   *
+   * So clinics that never configure branch pricing are unaffected, and clinics
+   * that do get real per-branch restriction. The resolved price is what gets
+   * snapshotted onto the appointment and summed into the total — the amount is
+   * therefore always server-derived, never influenced by the caller.
+   */
   private async loadServices(
     manager: EntityManager,
     tenantId: string,
+    branchId: string,
     serviceIds: string[] | undefined,
-  ): Promise<Service[]> {
+  ): Promise<PricedService[]> {
     if (!serviceIds || serviceIds.length === 0) return [];
 
     const services = await manager.getRepository(Service).find({
@@ -984,32 +1153,81 @@ export class AppointmentsService {
     // `computeWindowAndTotal`/`persistServices`'s `base_price ?? 0` would
     // silently record the booking at a zero price. Shared by both `create`
     // and `setServices` (both call this method).
-    const variable = services.filter((s) => s.pricing_type === PricingType.VARIABLE);
+    const variable = services.filter(
+      (s) => s.pricing_type === PricingType.VARIABLE,
+    );
     if (variable.length > 0) {
       throw new AppError(ErrorCode.VARIABLE_PRICING_UNSUPPORTED, {
         publicContext: { serviceIds: variable.map((s) => s.id) },
       });
     }
 
-    return services;
+    return this.resolveBranchPrices(manager, tenantId, branchId, services);
   }
 
-  /** Snapshots each service's price + duration onto the appointment. */
+  /**
+   * Applies the branch-service rule above and returns each service with the
+   * price that governs at `branchId`. Throws when a service is configured for
+   * other branches but not this one.
+   */
+  private async resolveBranchPrices(
+    manager: EntityManager,
+    tenantId: string,
+    branchId: string,
+    services: Service[],
+  ): Promise<PricedService[]> {
+    const ids = services.map((s) => s.id);
+
+    // Two narrow reads instead of a per-service loop: the rows for THIS branch,
+    // and which services are branch-configured at all.
+    const rows: { serviceId: string; price: string; branchId: string }[] =
+      await manager.query(
+        `SELECT "serviceId", "branchId", price
+         FROM service_prices
+        WHERE "tenantId" = $1 AND "serviceId" = ANY($2) AND is_active = true`,
+        [tenantId, ids],
+      );
+
+    const priceHere = new Map<string, number>();
+    const configuredAnywhere = new Set<string>();
+    for (const row of rows) {
+      configuredAnywhere.add(row.serviceId);
+      if (row.branchId === branchId)
+        priceHere.set(row.serviceId, Number(row.price));
+    }
+
+    const notOffered = services.filter(
+      (s) => configuredAnywhere.has(s.id) && !priceHere.has(s.id),
+    );
+    if (notOffered.length > 0) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'One or more services are not offered at the selected branch',
+        publicContext: { branchId, serviceIds: notOffered.map((s) => s.id) },
+      });
+    }
+
+    return services.map((service) => ({
+      service,
+      price: priceHere.get(service.id) ?? Number(service.base_price ?? 0),
+    }));
+  }
+
+  /** Snapshots each service's BRANCH price + duration onto the appointment. */
   private async persistServices(
     manager: EntityManager,
     tenantId: string,
     appointment: Appointment,
-    services: Service[],
+    services: PricedService[],
   ): Promise<void> {
     if (!services.length) return;
 
     const repo = manager.getRepository(AppointmentServiceEntity);
-    const rows = services.map((service) =>
+    const rows = services.map(({ service, price }) =>
       repo.create({
         appointment: { id: appointment.id } as Appointment,
         service: { id: service.id } as Service,
         tenant: { id: tenantId } as Tenant,
-        price: Number(service.base_price ?? 0),
+        price,
         duration_minutes: service.duration_minutes,
       }),
     );
@@ -1019,15 +1237,17 @@ export class AppointmentsService {
   /** Computes end time (from services unless explicit) and the total amount. */
   private computeWindowAndTotal(
     startAt: Date,
-    services: Service[],
+    services: PricedService[],
     explicitEndAt?: string,
   ): { endAt: Date; totalAmount: number | undefined } {
     const totalMinutes = services.reduce(
-      (sum, s) => sum + (s.duration_minutes ?? 0),
+      (sum, { service }) => sum + (service.duration_minutes ?? 0),
       0,
     );
+    // Branch-resolved prices, so the total is what the clinic actually charges
+    // at THIS branch — and is derived server-side in every case.
     const totalAmount = services.length
-      ? services.reduce((sum, s) => sum + Number(s.base_price ?? 0), 0)
+      ? services.reduce((sum, { price }) => sum + price, 0)
       : undefined;
 
     let endAt: Date;
@@ -1042,6 +1262,37 @@ export class AppointmentsService {
     }
 
     return { endAt, totalAmount };
+  }
+
+  /**
+   * Is an ONLINE payment actually expected for this booking?
+   *
+   * Three independent ways the answer is no, all of which previously still
+   * produced a `PENDING_PAYMENT` booking that nothing could ever advance:
+   *   1. the patient has health insurance — never charged online, by policy;
+   *   2. there is nothing payable (no services, or a zero total); or
+   *   3. the clinic does not collect online payment at all
+   *      (`tenant_settings.payment_required = false`).
+   *
+   * Read through the transaction's manager so the decision is taken on the same
+   * snapshot as the rest of the booking. A missing settings row is treated as
+   * "payment required", preserving the column's own default rather than
+   * silently confirming bookings for a clinic whose settings never got created.
+   */
+  private async isOnlinePaymentDue(
+    manager: EntityManager,
+    tenantId: string,
+    hasInsurance: boolean,
+    totalAmount: number | undefined,
+  ): Promise<boolean> {
+    if (hasInsurance) return false;
+    if (!totalAmount || totalAmount <= 0) return false;
+
+    const rows: { payment_required: boolean }[] = await manager.query(
+      `SELECT payment_required FROM tenant_settings WHERE tenant_id = $1 LIMIT 1`,
+      [tenantId],
+    );
+    return rows[0]?.payment_required ?? true;
   }
 
   private assertChronological(startAt: Date, endAt: Date): void {
@@ -1133,7 +1384,12 @@ export class AppointmentsService {
       case AppointmentStatus.CONFIRMED:
         this.emitter.emit(
           AppointmentConfirmedEvent.eventName,
-          new AppointmentConfirmedEvent(tenantId, id, customerId, appointment.start_at),
+          new AppointmentConfirmedEvent(
+            tenantId,
+            id,
+            customerId,
+            appointment.start_at,
+          ),
         );
         break;
       case AppointmentStatus.COMPLETED:

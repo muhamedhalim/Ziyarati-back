@@ -26,7 +26,10 @@ export class AiToolCallsBootstrap implements OnApplicationBootstrap {
     const runner = this.dataSource.createQueryRunner();
     await runner.connect();
     try {
-      await this.run(runner, 'ai_tool_calls table', `
+      await this.run(
+        runner,
+        'ai_tool_calls table',
+        `
         CREATE TABLE IF NOT EXISTS ai_tool_calls (
           id                 uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
           tenant_id          uuid NOT NULL,
@@ -42,21 +45,34 @@ export class AiToolCallsBootstrap implements OnApplicationBootstrap {
           created_at         timestamptz NOT NULL DEFAULT now(),
           completed_at       timestamptz
         )
-      `);
-      await this.run(runner, 'ai_tool_calls idempotency unique', `
+      `,
+      );
+      await this.run(
+        runner,
+        'ai_tool_calls idempotency unique',
+        `
         CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_tool_call_idem
         ON ai_tool_calls (tenant_id, idempotency_key)
-      `);
-      await this.run(runner, 'ai_tool_calls conversation index', `
+      `,
+      );
+      await this.run(
+        runner,
+        'ai_tool_calls conversation index',
+        `
         CREATE INDEX IF NOT EXISTS idx_ai_tool_calls_conv
         ON ai_tool_calls (tenant_id, ai_conversation_id, created_at)
-      `);
+      `,
+      );
     } finally {
       await runner.release();
     }
   }
 
-  private async run(runner: { query(sql: string): Promise<unknown> }, label: string, sql: string): Promise<void> {
+  private async run(
+    runner: { query(sql: string): Promise<unknown> },
+    label: string,
+    sql: string,
+  ): Promise<void> {
     try {
       await runner.query(sql);
     } catch (err) {

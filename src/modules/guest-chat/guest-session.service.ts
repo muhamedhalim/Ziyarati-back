@@ -16,6 +16,13 @@ import { AppError, ErrorCode } from '../../common/errors';
 /** Slug of the singleton system tenant that hosts anonymous/guest conversations. */
 const DISCOVERY_TENANT_SLUG = '__guest_discovery__';
 
+/**
+ * Contact address for that singleton. `tenants.contact_email` is NOT NULL and
+ * UNIQUE, so the row cannot be created without one — a fixed, never-routable
+ * `.internal` address is safe here precisely because the tenant is a singleton.
+ */
+const DISCOVERY_TENANT_EMAIL = 'guest-discovery@system.internal';
+
 export interface GuestToken {
   token: string;
   guestId: string;
@@ -72,6 +79,14 @@ export class GuestSessionService {
         this.tenants.create({
           name: 'Guest Discovery',
           slug: DISCOVERY_TENANT_SLUG,
+          // `tenants.contact_email` is NOT NULL + UNIQUE. Omitting it made this
+          // insert fail outright on any database that did not already carry the
+          // singleton row — i.e. every fresh deployment — which took down the
+          // whole anonymous flow, since `createSession()` starts here. Fixed
+          // address, same `.internal` convention as the other synthetic
+          // identities (`ai-bot@bot.internal`, the WhatsApp contact addresses):
+          // never routable, and unique by construction for a singleton row.
+          contact_email: DISCOVERY_TENANT_EMAIL,
           is_active: true,
           approval_status: TenantApprovalStatus.APPROVED,
         }),

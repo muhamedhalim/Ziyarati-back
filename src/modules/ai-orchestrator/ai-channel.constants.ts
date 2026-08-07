@@ -33,10 +33,27 @@ export type AuthState = (typeof AUTH_STATE)[keyof typeof AUTH_STATE];
  * This is SESSION state (reset per conversation), NOT long-term memory.
  */
 export interface AiSession {
+  // ── Public booking selections (SERVER-WRITE-ONLY) ────────────────────────
+  // Written only by the validated `select_*` tools via
+  // `PublicBookingContextService.patchSelection`, never by a client patch (see
+  // SESSION_CLIENT_PATCHABLE_KEYS). This matters beyond tidiness: the clinic
+  // tenant for a public booking is DERIVED from `selectedBranchId`, so a
+  // client-writable value would be an indirect `tenantId` injection — the one
+  // thing the whole design refuses to accept from outside.
+
   /** Currently selected clinic (tenant) once discovery resolves one. */
   selectedClinicId?: string;
   selectedBranchId?: string;
   selectedDoctorId?: string;
+  /** Services chosen for the booking; priced per-branch at write time. */
+  selectedServiceIds?: string[];
+  /** Chosen slot start, ISO-8601 with offset. Re-validated before it is used. */
+  selectedStartAt?: string;
+  /**
+   * The customer resolved/created inside the SELECTED clinic's tenant. Bound
+   * server-side so the dispatcher can prefer it over any model-supplied id.
+   */
+  bookingCustomerId?: string;
   /** Detected/declared intent for the current turn (e.g. `book_appointment`). */
   currentIntent?: string;
   /** Preferred language for this session (mirrors the column for tool access). */
@@ -81,6 +98,52 @@ export interface AiSession {
 
 /** How many channel-switch entries to retain in session history. */
 export const CHANNEL_HISTORY_CAP = 25;
+
+/**
+ * The ONLY top-level `AiSession` keys a client may set through a
+ * `sessionPatch` / `PatchSessionDto` body.
+ *
+ * Everything absent from this list is SERVER-WRITE-ONLY, because it is either
+ * security-bearing or authoritative booking state:
+ *
+ *  - `guestSubject` — the FND-001 ownership binding. A client that could write
+ *    it could adopt another guest's conversation, which is exactly what
+ *    `AiConversationAccessService` uses it to prevent.
+ *  - `selected*` — the resolved booking selections. The clinic tenant for a
+ *    public booking is derived from `selectedBranchId`, so a writable value
+ *    would be an indirect `tenantId` injection. Only validated server code
+ *    (the `select_*` tools) may set these.
+ *  - `activeChannel` / `lastChannel` / `channelHistory` — owned by
+ *    `ConversationSessionService.touchChannel`.
+ *  - `currentAgentRole` — owned by the agent router via `setAgent`.
+ *
+ * Enforced by `ConversationSessionService.patchFromClient`, which is the only
+ * method any client-facing path may call.
+ */
+export const SESSION_CLIENT_PATCHABLE_KEYS = [
+  'currentIntent',
+  'language',
+  'currentTool',
+  'currentBooking',
+  'authState',
+  'context',
+  'device',
+  'timezone',
+] as const satisfies readonly (keyof AiSession)[];
+
+/**
+ * Keys stripped from a CLIENT-supplied `session.context` blob.
+ *
+ * `context.customerId` is the server-bound booking subject: `ToolContext`
+ * reads it (see `AiExecutionService.sessionCustomerId`) and the dispatcher
+ * prefers it over any model-supplied id, so a client-writable value would let
+ * an attacker bind a stranger's customer record to their own conversation.
+ * `recalledMemories` is written by the orchestrator's memory loader.
+ */
+export const SESSION_CONTEXT_SERVER_ONLY_KEYS = [
+  'customerId',
+  'recalledMemories',
+] as const;
 
 /**
  * Specialized AI agent roles (Feature 7). Stored on `ai_agents.role` (nullable);

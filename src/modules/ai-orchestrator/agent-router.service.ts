@@ -7,12 +7,30 @@ import { AGENT_ROLE, AgentRole, AiSession } from './ai-channel.constants';
 
 /** Intent keyword → agent role. First match wins; order = priority. */
 const ROLE_KEYWORDS: { role: AgentRole; patterns: RegExp }[] = [
-  { role: AGENT_ROLE.BOOKING, patterns: /\b(book|appointment|reschedul|cancel|availab|slot|schedul)/i },
-  { role: AGENT_ROLE.BILLING, patterns: /\b(invoice|payment|refund|price|cost|bill|charge|pay)/i },
-  { role: AGENT_ROLE.MEDICAL_FAQ, patterns: /\b(symptom|pain|treatment|medic|doctor|diagnos|procedure)/i },
-  { role: AGENT_ROLE.REVIEW, patterns: /\b(review|rating|feedback|complain|satisf)/i },
-  { role: AGENT_ROLE.SUPPORT, patterns: /\b(help|support|issue|problem|error|not working)/i },
-  { role: AGENT_ROLE.CRM, patterns: /\b(profile|my (info|details)|update my|contact)/i },
+  {
+    role: AGENT_ROLE.BOOKING,
+    patterns: /\b(book|appointment|reschedul|cancel|availab|slot|schedul)/i,
+  },
+  {
+    role: AGENT_ROLE.BILLING,
+    patterns: /\b(invoice|payment|refund|price|cost|bill|charge|pay)/i,
+  },
+  {
+    role: AGENT_ROLE.MEDICAL_FAQ,
+    patterns: /\b(symptom|pain|treatment|medic|doctor|diagnos|procedure)/i,
+  },
+  {
+    role: AGENT_ROLE.REVIEW,
+    patterns: /\b(review|rating|feedback|complain|satisf)/i,
+  },
+  {
+    role: AGENT_ROLE.SUPPORT,
+    patterns: /\b(help|support|issue|problem|error|not working)/i,
+  },
+  {
+    role: AGENT_ROLE.CRM,
+    patterns: /\b(profile|my (info|details)|update my|contact)/i,
+  },
 ];
 
 export interface RoutedAgent {
@@ -40,8 +58,15 @@ export class AgentRouterService {
     private readonly agents: Repository<AiAgent>,
   ) {}
 
-  async route(tenantId: string, text: string, session?: AiSession): Promise<RoutedAgent> {
-    const role = this.detectRole(text) ?? (session?.currentAgentRole as AgentRole | undefined) ?? null;
+  async route(
+    tenantId: string,
+    text: string,
+    session?: AiSession,
+  ): Promise<RoutedAgent> {
+    const role =
+      this.detectRole(text) ??
+      (session?.currentAgentRole as AgentRole | undefined) ??
+      null;
 
     // 1) Prefer an active agent explicitly assigned to the detected role.
     if (role) {
@@ -49,7 +74,8 @@ export class AgentRouterService {
         where: { tenant: { id: tenantId }, role, is_active: true },
         order: { created_at: 'ASC' },
       });
-      if (byRole) return { agentId: byRole.id, role, reason: `matched role ${role}` };
+      if (byRole)
+        return { agentId: byRole.id, role, reason: `matched role ${role}` };
     }
 
     // 2) Fall back to the tenant's default (role-less) active agent — preserves
@@ -69,14 +95,20 @@ export class AgentRouterService {
   }
 
   /** Available specialized roles for this tenant (for the routing UI). */
-  async availableRoles(tenantId: string): Promise<{ role: string; agentId: string; name: string | null }[]> {
+  async availableRoles(
+    tenantId: string,
+  ): Promise<{ role: string; agentId: string; name: string | null }[]> {
     const rows = await this.agents.find({
       where: { tenant: { id: tenantId }, is_active: true },
       order: { created_at: 'ASC' },
     });
     return rows
       .filter((a) => !!a.role)
-      .map((a) => ({ role: a.role as string, agentId: a.id, name: a.name ?? null }));
+      .map((a) => ({
+        role: a.role as string,
+        agentId: a.id,
+        name: a.name ?? null,
+      }));
   }
 
   private detectRole(text: string): AgentRole | null {

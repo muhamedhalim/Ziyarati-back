@@ -21,7 +21,11 @@ import { SubscriptionService } from '../subscription-billing/subscription.servic
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { AiToolDispatchService, ToolContext } from './tools/ai-tool-dispatch.service';
-import { AI_TOOLS } from './tools/ai-tools.constants';
+import { AI_TOOLS, AI_TOOL_PERMISSION } from './tools/ai-tools.constants';
+import {
+  AI_PUBLIC_BOOKING_TOOLS,
+  PUBLIC_DISCOVERY_TOOL_NAMES,
+} from './tools/ai-public-booking-tools.constants';
 import {
   AI_ADMIN_TOOLS,
   AI_ADMIN_TOOL_PERMISSION,
@@ -248,6 +252,10 @@ export class AiExecutionService {
         customerId: this.sessionCustomerId(aiConv.session),
         aiConversationId,
         conversationId: aiConv.conversation?.id,
+        // Public booking tools need the principal itself: for a guest, tenant
+        // scoping proves nothing (every guest shares the discovery tenant), so
+        // ownership is checked against `session.guestSubject`.
+        principal: this.ctx.getUser() ?? undefined,
       };
 
       let promptTokens = 0;
@@ -676,6 +684,10 @@ export class AiExecutionService {
         customerId: this.sessionCustomerId(aiConv.session),
         aiConversationId,
         conversationId: aiConv.conversation?.id,
+        // Public booking tools need the principal itself: for a guest, tenant
+        // scoping proves nothing (every guest shares the discovery tenant), so
+        // ownership is checked against `session.guestSubject`.
+        principal: this.ctx.getUser() ?? undefined,
       };
 
       let full = '';
@@ -1002,12 +1014,35 @@ export class AiExecutionService {
    * this is defense-in-depth and keeps the authorized set within its budget.
    */
   private availableTools(): AiToolDefinition[] {
-    const permissions = new Set(this.ctx.getUser()?.permissions ?? []);
+    const user = this.ctx.getUser();
+    const permissions = new Set(user?.permissions ?? []);
+
+    // F-7: an ANONYMOUS visitor gets the public booking toolset — and only that.
+    // Previously `AI_TOOLS` was spread in unconditionally, so a guest was
+    // offered `book_appointment` / `reschedule_appointment` /
+    // `cancel_appointment`, every one of which returns "Forbidden" at dispatch.
+    // That wasted prompt-schema budget and, worse, invited the model to promise
+    // a booking it could not perform.
+    if (user?.guest) {
+      return [
+        ...AI_TOOLS.filter((t) => PUBLIC_DISCOVERY_TOOL_NAMES.includes(t.name)),
+        ...AI_PUBLIC_BOOKING_TOOLS,
+      ];
+    }
+
+    // Authenticated principals: the staff booking tools, each advertised only
+    // when the actor could actually execute it. The dispatcher remains the
+    // enforcement point; this is defense-in-depth and keeps the authorized set
+    // within its prompt budget.
+    const booking = AI_TOOLS.filter((tool) => {
+      const required = AI_TOOL_PERMISSION[tool.name];
+      return required ? permissions.has(required) : true;
+    });
     const admin = AI_ADMIN_TOOLS.filter((tool) => {
       const required = AI_ADMIN_TOOL_PERMISSION[tool.name as AiAdminToolName];
       return required ? permissions.has(required) : false;
     });
-    return [...AI_TOOLS, ...admin];
+    return [...booking, ...admin];
   }
 
   /**

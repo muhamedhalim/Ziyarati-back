@@ -34,6 +34,7 @@ import { AiRealtimeModule } from './modules/ai-realtime/ai-realtime.module';
 import { PlatformAiMonitoringModule } from './modules/platform-ai-monitoring/platform-ai-monitoring.module';
 import { PublicDiscoveryModule } from './modules/public-discovery/public-discovery.module';
 import { GuestChatModule } from './modules/guest-chat/guest-chat.module';
+import { PublicBookingModule } from './modules/public-booking/public-booking.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { CrmModule } from './modules/crm/crm.module';
@@ -136,6 +137,7 @@ import { validate } from './config/env.validation';
     PlatformAiMonitoringModule,
     PublicDiscoveryModule,
     GuestChatModule,
+    PublicBookingModule,
     WorkflowModule,
     PaymentsModule,
     CrmModule,

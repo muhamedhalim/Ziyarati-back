@@ -10,6 +10,7 @@ import { Holiday } from '../../entities/Calendar&Appointments/Holiday';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+import { StaffSchedule } from '../../entities/Staff/StaffSchedule';
 
 import { StaffModule } from '../staff/staff.module';
 
@@ -53,6 +54,9 @@ import { AvailabilityController } from './availability.controller';
       Appointment,
       Branch,
       StaffProfile,
+      // Read-only: the branch⇄doctor link (`assertStaffAtBranch`). This module
+      // never writes schedules — the Staff domain owns them.
+      StaffSchedule,
     ]),
     // Reuse the Staff domain's recurring-schedule availability + time-off logic
     // instead of re-implementing it in the engine.

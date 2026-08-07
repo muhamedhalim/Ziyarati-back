@@ -60,7 +60,8 @@ export class OrchestrateMessageDto {
   useMemory?: boolean;
 
   @ApiPropertyOptional({
-    description: 'Client session updates (e.g. selectedClinicId, selectedBranchId, currentIntent).',
+    description:
+      'Client-owned session updates (`currentIntent`, `language`, `currentTool`, `currentBooking`, `authState`, `device`, `timezone`, `context`). Server-owned keys are silently ignored — the guest ownership binding (`guestSubject`), the resolved booking state (`selectedClinicId` / `selectedBranchId` / `selectedDoctorId` / …), the channel history, the active agent role, and `context.customerId`. Those are written only by validated server code, because the public booking tenant is derived from them.',
     type: 'object',
     additionalProperties: true,
   })
@@ -70,7 +71,12 @@ export class OrchestrateMessageDto {
 
 /** Patch active session state without sending a message. */
 export class PatchSessionDto {
-  @ApiProperty({ type: 'object', additionalProperties: true, description: 'Partial session state to merge.' })
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: true,
+    description:
+      'Partial session state to merge. Only client-owned keys are applied — see `sessionPatch` on the message endpoint for the exact split and why the rest are server-only.',
+  })
   @IsObject()
   session!: Partial<AiSession>;
 }

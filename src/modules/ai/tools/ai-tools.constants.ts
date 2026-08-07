@@ -1,4 +1,5 @@
 import { AiToolDefinition } from '../providers/ai-provider.interface';
+import { PERMISSION, PermissionSlug } from '../../../rbac/rbac.constants';
 
 /** Canonical tool names — shared by the schemas and the dispatcher switch. */
 export const AI_TOOL = {
@@ -20,6 +21,22 @@ export const AI_TOOL = {
 export type AiToolName = (typeof AI_TOOL)[keyof typeof AI_TOOL];
 
 /**
+ * Permission each transactional tool requires, mirroring the exact check
+ * `AiToolDispatchService` already enforces at execution time.
+ *
+ * Used by `AiExecutionService.availableTools` to stop advertising a tool the
+ * acting principal could never run (F-7). Tools absent from this map are
+ * read-only discovery or channel-agnostic escalation and need no permission.
+ * The dispatcher stays the enforcement point — this is defense in depth, so
+ * the two must not drift.
+ */
+export const AI_TOOL_PERMISSION: Partial<Record<string, PermissionSlug>> = {
+  [AI_TOOL.BOOK_APPOINTMENT]: PERMISSION.APPOINTMENTS_CREATE,
+  [AI_TOOL.RESCHEDULE_APPOINTMENT]: PERMISSION.APPOINTMENTS_RESCHEDULE,
+  [AI_TOOL.CANCEL_APPOINTMENT]: PERMISSION.APPOINTMENTS_CANCEL,
+};
+
+/**
  * The booking toolset exposed to the model.
  *
  * These are INTENT declarations only — the model proposes a call with arguments;
@@ -39,9 +56,13 @@ export const AI_TOOLS: AiToolDefinition[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'Free-text need or clinic/service name. Omit to list clinics.',
+          description:
+            'Free-text need or clinic/service name. Omit to list clinics.',
         },
-        limit: { type: 'integer', description: 'Max clinics to return (default 12, max 24).' },
+        limit: {
+          type: 'integer',
+          description: 'Max clinics to return (default 12, max 24).',
+        },
       },
       required: [],
     },
@@ -49,12 +70,15 @@ export const AI_TOOLS: AiToolDefinition[] = [
   {
     name: AI_TOOL.GET_CLINIC_DETAILS,
     description:
-      'Get a chosen clinic\'s branches, doctors and services (with prices). Call this after the user selects a clinic from search_clinics, so you can offer branches, doctors and services to pick from.',
+      "Get a chosen clinic's branches, doctors and services (with prices). Call this after the user selects a clinic from search_clinics, so you can offer branches, doctors and services to pick from.",
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        clinicId: { type: 'string', description: 'Clinic (tenant) UUID from search_clinics.' },
+        clinicId: {
+          type: 'string',
+          description: 'Clinic (tenant) UUID from search_clinics.',
+        },
       },
       required: ['clinicId'],
     },
@@ -67,12 +91,19 @@ export const AI_TOOLS: AiToolDefinition[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        branchId: { type: 'string', description: 'Branch UUID from get_clinic_details.' },
-        staffId: { type: 'string', description: 'Doctor UUID from get_clinic_details.' },
+        branchId: {
+          type: 'string',
+          description: 'Branch UUID from get_clinic_details.',
+        },
+        staffId: {
+          type: 'string',
+          description: 'Doctor UUID from get_clinic_details.',
+        },
         date: { type: 'string', description: 'Target day in YYYY-MM-DD.' },
         slotMinutes: {
           type: 'integer',
-          description: 'Optional: chunk free time into fixed slots of N minutes.',
+          description:
+            'Optional: chunk free time into fixed slots of N minutes.',
         },
       },
       required: ['branchId', 'staffId', 'date'],
@@ -91,7 +122,8 @@ export const AI_TOOLS: AiToolDefinition[] = [
         date: { type: 'string', description: 'Target day in YYYY-MM-DD.' },
         slotMinutes: {
           type: 'integer',
-          description: 'Optional: chunk free time into fixed slots of N minutes.',
+          description:
+            'Optional: chunk free time into fixed slots of N minutes.',
         },
       },
       required: ['branchId', 'staffId', 'date'],
@@ -107,7 +139,8 @@ export const AI_TOOLS: AiToolDefinition[] = [
       properties: {
         customerId: {
           type: 'string',
-          description: 'Customer UUID. Omit to use the customer already bound to this conversation.',
+          description:
+            'Customer UUID. Omit to use the customer already bound to this conversation.',
         },
       },
       required: [],
@@ -117,24 +150,31 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: AI_TOOL.BOOK_APPOINTMENT,
     description:
       'Book a new appointment for a customer. Only call after confirming an available slot via check_availability. ' +
-      'Before booking, you must know the patient\'s health-insurance status: call get_customer_insurance_status first. ' +
+      "Before booking, you must know the patient's health-insurance status: call get_customer_insurance_status first. " +
       'If it returns a known value, confirm it with the patient rather than asking again. If it returns null (unknown), ask exactly — ' +
       'Arabic: "هل لديك تأمين صحي؟" / English: "Do you have health insurance?" — with Yes/No options, then pass the confirmed answer as hasInsurance. ' +
       'Insured patients are never charged online: no payment link is generated for them, regardless of what you say. ' +
-      'Uninsured patients may get a payment link in this tool\'s result when the clinic requires online payment for this booking — if `paymentLink` is present in the result, share its details with the patient so they can complete payment; the decision to include it is made by the backend, not by you. ' +
+      "Uninsured patients may get a payment link in this tool's result when the clinic requires online payment for this booking — if `paymentLink` is present in the result, share its details with the patient so they can complete payment; the decision to include it is made by the backend, not by you. " +
       'The booking itself is validated for real availability and fails if the slot is taken.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         branchId: { type: 'string', description: 'Branch UUID.' },
-        customerId: { type: 'string', description: 'Customer UUID (the person being booked).' },
+        customerId: {
+          type: 'string',
+          description: 'Customer UUID (the person being booked).',
+        },
         staffId: { type: 'string', description: 'Staff member UUID.' },
-        startAt: { type: 'string', description: 'Start time, ISO-8601 with timezone offset.' },
+        startAt: {
+          type: 'string',
+          description: 'Start time, ISO-8601 with timezone offset.',
+        },
         serviceIds: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional service UUIDs; their durations set the end time and prices the total.',
+          description:
+            'Optional service UUIDs; their durations set the end time and prices the total.',
         },
         notes: { type: 'string', description: 'Optional booking notes.' },
         hasInsurance: {
@@ -148,14 +188,21 @@ export const AI_TOOLS: AiToolDefinition[] = [
   },
   {
     name: AI_TOOL.RESCHEDULE_APPOINTMENT,
-    description: 'Move an existing appointment to a new start time. The new window is availability-checked.',
+    description:
+      'Move an existing appointment to a new start time. The new window is availability-checked.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         appointmentId: { type: 'string', description: 'Appointment UUID.' },
-        newStartAt: { type: 'string', description: 'New start time, ISO-8601 with offset.' },
-        reason: { type: 'string', description: 'Optional reason (stored in the audit trail).' },
+        newStartAt: {
+          type: 'string',
+          description: 'New start time, ISO-8601 with offset.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional reason (stored in the audit trail).',
+        },
       },
       required: ['appointmentId', 'newStartAt'],
     },
@@ -168,7 +215,11 @@ export const AI_TOOLS: AiToolDefinition[] = [
       additionalProperties: false,
       properties: {
         appointmentId: { type: 'string', description: 'Appointment UUID.' },
-        reason: { type: 'string', description: 'Optional cancellation reason (stored in the audit trail).' },
+        reason: {
+          type: 'string',
+          description:
+            'Optional cancellation reason (stored in the audit trail).',
+        },
       },
       required: ['appointmentId'],
     },
@@ -181,7 +232,11 @@ export const AI_TOOLS: AiToolDefinition[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        reason: { type: 'string', description: 'Brief reason for the escalation, for the agent\'s context.' },
+        reason: {
+          type: 'string',
+          description:
+            "Brief reason for the escalation, for the agent's context.",
+        },
       },
       required: [],
     },

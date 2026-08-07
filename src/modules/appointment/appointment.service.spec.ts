@@ -14,6 +14,7 @@ import { AppointmentCancellation } from '../../entities/Calendar&Appointments/Ap
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+import { StaffSchedule } from '../../entities/Staff/StaffSchedule';
 import { Service, PricingType } from '../../entities/Services/Service';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
@@ -120,7 +121,15 @@ describe('AppointmentsService', () => {
     const primeValidRefs = () => {
       repo(Branch).exists.mockResolvedValue(true);
       repo(Customer).exists.mockResolvedValue(true);
-      repo(StaffProfile).exists.mockResolvedValue(true);
+      // Branch-scoped staff validation loads the profile (it also needs
+      // `is_available_for_booking`), where it used to only `exists` on tenant.
+      repo(StaffProfile).findOne.mockResolvedValue({
+        id: 's1',
+        is_available_for_booking: true,
+      });
+      // No staff_schedules rows anywhere → unconfigured legacy clinic, which
+      // "explicit configuration wins" deliberately lets through.
+      repo(StaffSchedule).exists.mockResolvedValue(false);
       repo(Service).find.mockResolvedValue([
         { id: 'svc1', duration_minutes: 30, base_price: 100, is_active: true },
       ]);
@@ -152,14 +161,19 @@ describe('AppointmentsService', () => {
       expect(result).toBe(reloaded);
     });
 
-    it('sets payment_status to INSURANCE (not UNPAID) when hasInsurance is true', async () => {
+    it('[M-9] confirms an insured booking instead of stranding it in PENDING_PAYMENT', async () => {
       primeValidRefs();
 
       await service.create(TENANT, USER, { ...dto, hasInsurance: true });
 
       const created = repo(Appointment).create.mock.calls[0][0];
-      // Scheduling lifecycle is untouched by insurance — same as any booking.
-      expect(created.status).toBe(AppointmentStatus.PENDING_PAYMENT);
+      // The two axes now agree. An insured booking is never charged online, and
+      // the ONLY automatic route to CONFIRMED is a verified payment event — so
+      // leaving it PENDING_PAYMENT (the previous behaviour, asserted here) meant
+      // waiting forever for a payment that could never arrive, until a staff
+      // member advanced it by hand.
+      expect(created.status).toBe(AppointmentStatus.CONFIRMED);
+      // Insurance still never implies PAID.
       expect(created.payment_status).toBe(AppointmentPaymentStatus.INSURANCE);
     });
 
@@ -170,6 +184,80 @@ describe('AppointmentsService', () => {
 
       const created = repo(Appointment).create.mock.calls[0][0];
       expect(created.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
+      expect(created.status).toBe(AppointmentStatus.PENDING_PAYMENT);
+    });
+
+    it('[M-9] confirms when the clinic does not collect online payment at all', async () => {
+      primeValidRefs();
+      manager.query.mockImplementation(async (sql: string) =>
+        sql.includes('tenant_settings') ? [{ payment_required: false }] : [],
+      );
+
+      await service.create(TENANT, USER, dto);
+
+      const created = repo(Appointment).create.mock.calls[0][0];
+      expect(created.status).toBe(AppointmentStatus.CONFIRMED);
+      expect(created.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
+    });
+
+    it('[M-9] confirms a zero-total booking (nothing to collect)', async () => {
+      primeValidRefs();
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc1', duration_minutes: 30, base_price: 0, is_active: true },
+      ]);
+
+      await service.create(TENANT, USER, dto);
+
+      expect(repo(Appointment).create.mock.calls[0][0].status).toBe(
+        AppointmentStatus.CONFIRMED,
+      );
+    });
+
+    it('[F-5] prices the booking from service_prices at THIS branch, not base_price', async () => {
+      primeValidRefs();
+      manager.query.mockImplementation(async (sql: string) =>
+        sql.includes('service_prices')
+          ? [{ serviceId: 'svc1', branchId: 'b1', price: '250' }]
+          : [],
+      );
+
+      await service.create(TENANT, USER, dto);
+
+      // 250 (branch price), NOT 100 (clinic-wide base_price).
+      expect(repo(Appointment).create.mock.calls[0][0].total_amount).toBe(250);
+      expect(repo(AppointmentServiceEntity).create.mock.calls[0][0].price).toBe(250);
+    });
+
+    it('[F-5] rejects a service configured for OTHER branches but not this one', async () => {
+      primeValidRefs();
+      manager.query.mockImplementation(async (sql: string) =>
+        sql.includes('service_prices')
+          ? [{ serviceId: 'svc1', branchId: 'some-other-branch', price: '250' }]
+          : [],
+      );
+
+      await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+    });
+
+    it('[F-4] rejects a doctor who has schedules elsewhere but none at this branch', async () => {
+      primeValidRefs();
+      // Not at branch b1, but scheduled somewhere → explicit config says no.
+      repo(StaffSchedule).exists
+        .mockResolvedValueOnce(false) // at b1?
+        .mockResolvedValueOnce(true); // anywhere?
+
+      await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+    });
+
+    it('[F-4] allows a doctor scheduled AT the branch', async () => {
+      primeValidRefs();
+      repo(StaffSchedule).exists.mockResolvedValueOnce(true);
+
+      await expect(service.create(TENANT, USER, dto)).resolves.toBe(reloaded);
     });
 
     // FND-034: the quota check now runs INSIDE the transaction (after
@@ -230,9 +318,7 @@ describe('AppointmentsService', () => {
     // VARIABLE service's base_price is null by design, "determined at time
     // of service").
     it('refuses to book a VARIABLE-priced service (no booking-time pricing mechanism exists)', async () => {
-      repo(Branch).exists.mockResolvedValue(true);
-      repo(Customer).exists.mockResolvedValue(true);
-      repo(StaffProfile).exists.mockResolvedValue(true);
+      primeValidRefs();
       repo(Service).find.mockResolvedValue([
         { id: 'svc1', duration_minutes: 30, base_price: null, pricing_type: PricingType.VARIABLE, is_active: true },
       ]);
@@ -559,7 +645,13 @@ describe('AppointmentsService', () => {
 
     it('re-validates availability when staff is reassigned', async () => {
       loadConfirmed();
-      repo(StaffProfile).exists.mockResolvedValue(true);
+      repo(StaffProfile).findOne.mockResolvedValue({
+        id: 's2',
+        is_available_for_booking: true,
+      });
+      // Unconfigured legacy clinic — no schedules anywhere, so the branch rule
+      // has no opinion and the reassignment proceeds as it always did.
+      repo(StaffSchedule).exists.mockResolvedValue(false);
 
       await service.update(TENANT, USER, 'appt-1', { staffId: 's2' } as any);
 

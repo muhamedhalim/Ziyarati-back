@@ -16,6 +16,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { HandoverRequestService } from '../ai/handover-request.service';
+import { AiConversationAccessService } from '../ai/ai-conversation-access.service';
 import { HandoverChatService } from './handover-chat.service';
 import { AgentPresenceService, PresenceStatus } from './agent-presence.service';
 import { WsAuthService } from './ws-auth.service';
@@ -67,7 +68,32 @@ export class AiRealtimeGateway
     private readonly handovers: HandoverRequestService,
     private readonly handoverChat: HandoverChatService,
     private readonly presence: AgentPresenceService,
+    private readonly access: AiConversationAccessService,
   ) {}
+
+  /**
+   * F-2: every handler below takes an `aiConversationId` straight off the wire.
+   * `room.conversation(id)` embeds no tenant, so without this check any
+   * authenticated socket — including a zero-permission guest — could join or
+   * emit into ANY conversation's room, cross-tenant, and receive the
+   * `ai:agent:message` a human agent sends (see HandoverRealtimeListener).
+   *
+   * Returns the socket's own principal alongside the verdict so callers don't
+   * re-read `client.data`. Never throws: a socket handler must not reject
+   * across the wire with a stack.
+   */
+  private async mayAccess(
+    client: Socket,
+    aiConversationId: string | undefined,
+  ): Promise<boolean> {
+    const tenantId = client.data.tenantId as string | undefined;
+    if (!tenantId || !aiConversationId) return false;
+    return this.access.canAccess(
+      tenantId,
+      aiConversationId,
+      client.data.user as AuthenticatedUser | undefined,
+    );
+  }
 
   async handleConnection(client: Socket): Promise<void> {
     try {
@@ -112,15 +138,21 @@ export class AiRealtimeGateway
   }
 
   @SubscribeMessage(AI_EVENT.JOIN)
-  onJoin(
+  async onJoin(
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string },
   ) {
-    if (body?.aiConversationId)
-      client.join(room.conversation(body.aiConversationId));
-    return { joined: body?.aiConversationId ?? null };
+    if (!(await this.mayAccess(client, body?.aiConversationId))) {
+      return { joined: null };
+    }
+    client.join(room.conversation(body.aiConversationId));
+    return { joined: body.aiConversationId };
   }
 
+  /**
+   * Leaving needs no ownership check — a socket can only remove ITSELF from a
+   * room, and `join` is now guarded, so there is nothing to protect here.
+   */
   @SubscribeMessage(AI_EVENT.LEAVE)
   onLeave(
     @ConnectedSocket() client: Socket,
@@ -132,31 +164,37 @@ export class AiRealtimeGateway
   }
 
   @SubscribeMessage(AI_EVENT.TYPING)
-  onTyping(
+  async onTyping(
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string; typing: boolean },
   ) {
-    if (body?.aiConversationId) {
-      client
-        .to(room.conversation(body.aiConversationId))
-        .emit(AI_EVENT.TYPING, {
-          userId: client.data.userId,
-          typing: !!body.typing,
-        });
-    }
+    // N-2: this used to emit into an arbitrary room WITHOUT joining it — a
+    // cross-tenant event-injection primitive that needed no membership at all.
+    // Ownership first, then membership (a socket that never joined has no
+    // business relaying presence into the room).
+    if (!(await this.mayAccess(client, body?.aiConversationId))) return;
+    const target = room.conversation(body.aiConversationId);
+    if (!client.rooms.has(target)) return;
+
+    client.to(target).emit(AI_EVENT.TYPING, {
+      userId: client.data.userId,
+      typing: !!body.typing,
+    });
   }
 
   @SubscribeMessage(AI_EVENT.SEEN)
-  onSeen(
+  async onSeen(
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string; messageId: string },
   ) {
-    if (body?.aiConversationId) {
-      client.to(room.conversation(body.aiConversationId)).emit(AI_EVENT.SEEN, {
-        userId: client.data.userId,
-        messageId: body.messageId,
-      });
-    }
+    if (!(await this.mayAccess(client, body?.aiConversationId))) return;
+    const target = room.conversation(body.aiConversationId);
+    if (!client.rooms.has(target)) return;
+
+    client.to(target).emit(AI_EVENT.SEEN, {
+      userId: client.data.userId,
+      messageId: body.messageId,
+    });
   }
 
   /** Sets the caller's own presence status (Online/Busy/Away). */
@@ -201,6 +239,13 @@ export class AiRealtimeGateway
       client.emit(AI_EVENT.ERROR, { message: 'Missing aiConversationId' });
       return { ok: false };
     }
+    // No permission is required (a customer escalating their OWN chat), but
+    // "own" has to mean something: without this, any socket could pause the AI
+    // on a stranger's conversation and pull a human into it.
+    if (!(await this.mayAccess(client, body.aiConversationId))) {
+      client.emit(AI_EVENT.ERROR, { message: 'AI conversation not found' });
+      return { ok: false };
+    }
     try {
       const handover = await this.handovers.create(tenantId, {
         aiConversationId: body.aiConversationId,
@@ -236,6 +281,10 @@ export class AiRealtimeGateway
     }
     if (!user?.permissions?.includes(PERMISSION.AI_HANDOVER_MANAGE)) {
       client.emit(AI_EVENT.ERROR, { message: 'Forbidden' });
+      return { ok: false };
+    }
+    if (!(await this.mayAccess(client, body.aiConversationId))) {
+      client.emit(AI_EVENT.ERROR, { message: 'AI conversation not found' });
       return { ok: false };
     }
     try {
