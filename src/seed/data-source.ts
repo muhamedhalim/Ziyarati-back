@@ -21,7 +21,12 @@ export const SeedDataSource = new DataSource({
   username: process.env.DB_USERNAME ?? 'postgres',
   password: process.env.DB_PASSWORD ?? 'postgres',
   database: process.env.DB_NAME ?? 'ziyarati',
-  entities: [join(__dirname, '..', 'entities', '**', '*.{ts,js}')],
+  // `!(*.spec)` exclusion matches `typeorm.config.ts`'s runtime entities glob
+  // (same collision: `require()`-ing a `*.spec.ts` file outside Jest hits a
+  // bare `describe is not defined`, since ts-node loads it as a plain module
+  // rather than a Jest test file). Without this, `npm run seed` crashes on
+  // any checkout that has an `entities/**/*.spec.ts` file.
+  entities: [join(__dirname, '..', 'entities', '**', '!(*.spec).{ts,js}')],
   synchronize: false,
   logging: process.env.DB_LOGGING === 'true',
 });
