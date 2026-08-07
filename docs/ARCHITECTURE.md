@@ -532,7 +532,19 @@ runs/sweeps never hang); PERMANENT (`UnrecoverableError`) → fail, no retry, no
 jobs (`tenantId: null`) fan out per active tenant. Defaults: 5 attempts, exponential 3s,
 `removeOnComplete {1h,1000}`, `removeOnFail {7d,10k}`.
 
-
+**API and worker are two separate processes — both must run, always.** `main.ts`
+(`npm run start:prod` / `start:dev`) only ever ENQUEUES (`QueueService`). Every
+`@Processor` — including `EmailProcessor`, the only thing that actually calls the
+Resend/WhatsApp/etc. providers — lives in `WorkerModule` and is booted exclusively by
+`worker.ts` (`npm run start:worker` / `start:worker:dev`), intended as its own long-lived
+deployment (a separate Railway service, or any process manager that keeps `node
+dist/src/worker.js` running and auto-restarts it). If only the API is running, every
+enqueue still reports success (BullMQ accepted the job) and the job sits in Redis
+`wait` forever — no error, no timeout, nothing surfaces to the caller. This exact gap
+(worker never started locally) was the root cause of platform-staff invitation emails
+silently never arriving even after the send path itself was fully correct. Local dev:
+run both with one command via `npm run dev` (this backend's `package.json`, wraps
+`concurrently` over `start:dev` + `start:worker:dev`) rather than starting the API alone.
 
 ## 7. Technical Debt
 

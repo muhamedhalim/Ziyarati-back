@@ -9,6 +9,7 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
 import { AuthService } from '../auth/auth.service';
 import { EmailService } from '../email/email.service';
+import { EmailDeliveryService } from '../email/email-delivery.service';
 import {
   PLATFORM_ADMIN_AUDIT_ACTION,
   PlatformAdminAuditService,
@@ -46,6 +47,7 @@ describe('PlatformStaffService', () => {
     revokeAllForUser: jest.Mock;
   };
   let email: { sendInvitation: jest.Mock };
+  let emailDelivery: { getLatestStatusByRecipient: jest.Mock };
   let audit: { record: jest.Mock };
 
   beforeEach(async () => {
@@ -63,6 +65,9 @@ describe('PlatformStaffService', () => {
       revokeAllForUser: jest.fn().mockResolvedValue(undefined),
     };
     email = { sendInvitation: jest.fn().mockResolvedValue(undefined) };
+    emailDelivery = {
+      getLatestStatusByRecipient: jest.fn().mockResolvedValue(new Map()),
+    };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -78,6 +83,7 @@ describe('PlatformStaffService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: AuthService, useValue: authService },
         { provide: EmailService, useValue: email },
+        { provide: EmailDeliveryService, useValue: emailDelivery },
         { provide: PlatformAdminAuditService, useValue: audit },
       ],
     }).compile();
@@ -361,6 +367,101 @@ describe('PlatformStaffService', () => {
       );
       expect(result.total).toBe(1);
       expect(result.data).toHaveLength(1);
+    });
+  });
+
+  // ──────────────────────── invitation delivery status ───────────────────── //
+  describe('invitation delivery status', () => {
+    const baseUser = {
+      id: TARGET_ID,
+      email: 'agent@ziyaratech.com',
+      is_active: true,
+      last_login_at: null,
+      created_at: new Date(),
+    };
+
+    function mockListOf(user: any) {
+      const qb = createMockQueryBuilder();
+      qb.getManyAndCount = jest.fn().mockResolvedValueOnce([[user], 1]);
+      users.createQueryBuilder = jest.fn(() => qb);
+    }
+
+    it('queries the batched delivery status for exactly the listed addresses and the invite template', async () => {
+      mockListOf(baseUser);
+      userRoles.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, role: { slug: ROLE.PLATFORM_SUPPORT } },
+      ]);
+      passwordResets.find.mockResolvedValueOnce([]);
+
+      await service.list({ page: 1, limit: 20 } as any);
+
+      expect(emailDelivery.getLatestStatusByRecipient).toHaveBeenCalledWith(
+        ['agent@ziyaratech.com'],
+        'staff_invitation',
+      );
+    });
+
+    it('surfaces invitation_failed when the latest recorded delivery attempt for the address is FAILED — even with a live, unexpired invite token', async () => {
+      mockListOf(baseUser);
+      userRoles.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, role: { slug: ROLE.PLATFORM_SUPPORT } },
+      ]);
+      passwordResets.find.mockResolvedValueOnce([
+        {
+          user: { id: TARGET_ID },
+          used_at: null,
+          expires_at: new Date(Date.now() + 60_000), // still live
+        },
+      ]);
+      emailDelivery.getLatestStatusByRecipient.mockResolvedValueOnce(
+        new Map([['agent@ziyaratech.com', 'FAILED']]),
+      );
+
+      const result = await service.list({ page: 1, limit: 20 } as any);
+
+      expect(result.data[0].invitationStatus).toBe('invitation_failed');
+    });
+
+    it('stays invitation_pending when no delivery attempt has been recorded yet (e.g. nothing has consumed the queue)', async () => {
+      mockListOf(baseUser);
+      userRoles.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, role: { slug: ROLE.PLATFORM_SUPPORT } },
+      ]);
+      passwordResets.find.mockResolvedValueOnce([
+        {
+          user: { id: TARGET_ID },
+          used_at: null,
+          expires_at: new Date(Date.now() + 60_000),
+        },
+      ]);
+      emailDelivery.getLatestStatusByRecipient.mockResolvedValueOnce(
+        new Map(),
+      );
+
+      const result = await service.list({ page: 1, limit: 20 } as any);
+
+      expect(result.data[0].invitationStatus).toBe('invitation_pending');
+    });
+
+    it('a SENT delivery does not mark the invitation as failed', async () => {
+      mockListOf(baseUser);
+      userRoles.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, role: { slug: ROLE.PLATFORM_SUPPORT } },
+      ]);
+      passwordResets.find.mockResolvedValueOnce([
+        {
+          user: { id: TARGET_ID },
+          used_at: null,
+          expires_at: new Date(Date.now() + 60_000),
+        },
+      ]);
+      emailDelivery.getLatestStatusByRecipient.mockResolvedValueOnce(
+        new Map([['agent@ziyaratech.com', 'SENT']]),
+      );
+
+      const result = await service.list({ page: 1, limit: 20 } as any);
+
+      expect(result.data[0].invitationStatus).toBe('invitation_pending');
     });
   });
 });

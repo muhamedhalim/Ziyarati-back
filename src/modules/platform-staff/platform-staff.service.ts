@@ -12,6 +12,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { ROLE, ROLES, RoleSlug } from '../../rbac/rbac.constants';
 import { AuthService } from '../auth/auth.service';
 import { EmailService } from '../email/email.service';
+import { EmailDeliveryService } from '../email/email-delivery.service';
 import {
   PLATFORM_ADMIN_AUDIT_ACTION,
   PlatformAdminAuditService,
@@ -31,8 +32,12 @@ export type PlatformStaffInvitationStatus =
   | 'no_access'
   | 'invitation_pending'
   | 'invitation_expired'
+  | 'invitation_failed'
   | 'active'
   | 'disabled';
+
+/** Template used for both the initial invite and every resend. */
+const INVITATION_EMAIL_TEMPLATE = 'staff_invitation';
 
 export interface PlatformStaffSummary {
   id: string;
@@ -71,6 +76,7 @@ export class PlatformStaffService {
     private readonly dataSource: DataSource,
     private readonly authService: AuthService,
     private readonly email: EmailService,
+    private readonly emailDelivery: EmailDeliveryService,
     private readonly audit: PlatformAdminAuditService,
   ) {}
 
@@ -437,8 +443,11 @@ export class PlatformStaffService {
   private async decorate(users: User[]): Promise<PlatformStaffSummary[]> {
     if (users.length === 0) return [];
     const ids = users.map((u) => u.id);
+    const emails = users
+      .map((u) => u.email)
+      .filter((e): e is string => Boolean(e));
 
-    const [links, resets] = await Promise.all([
+    const [links, resets, latestInviteStatus] = await Promise.all([
       this.userRoles.find({
         where: { user: { id: In(ids) } },
         relations: { user: true, role: true },
@@ -447,6 +456,10 @@ export class PlatformStaffService {
         where: { user: { id: In(ids) } },
         relations: { user: true },
       }),
+      this.emailDelivery.getLatestStatusByRecipient(
+        emails,
+        INVITATION_EMAIL_TEMPLATE,
+      ),
     ]);
 
     const rolesByUser = new Map<string, string[]>();
@@ -483,6 +496,9 @@ export class PlatformStaffService {
           hasLoggedIn: Boolean(u.last_login_at),
           hasLiveInvite: hasLiveInvite.has(u.id),
           everInvited: everInvited.has(u.id),
+          lastInviteFailed: u.email
+            ? latestInviteStatus.get(u.email) === 'FAILED'
+            : false,
         }),
         createdAt: u.created_at,
       };
@@ -495,11 +511,17 @@ export class PlatformStaffService {
     hasLoggedIn: boolean;
     hasLiveInvite: boolean;
     everInvited: boolean;
+    /** Latest recorded delivery attempt for this address ended in `email_logs.status = 'FAILED'`. */
+    lastInviteFailed: boolean;
   }): PlatformStaffInvitationStatus {
     if (!input.roles.some((r) => isPlatformAssignableRole(r)))
       return 'no_access';
     if (!input.isActive) return 'disabled';
     if (input.hasLoggedIn) return 'active';
+    // A confirmed provider-side failure is always shown as failed, even if a
+    // still-live token exists — the admin needs to know a resend is actually
+    // required, not that everything is fine and pending.
+    if (input.lastInviteFailed) return 'invitation_failed';
     if (input.hasLiveInvite) return 'invitation_pending';
     return input.everInvited ? 'invitation_expired' : 'invitation_pending';
   }

@@ -129,6 +129,28 @@ describe('QueueService (producer facade)', () => {
     expect(first[2].jobId).not.toContain(':');
   });
 
+  // Regression: every EmailService idempotency key (`invite:<token>`,
+  // `verify:<token>`, `auto:<hash>`, …) contains ':'. BullMQ throws
+  // synchronously on a custom job id containing ':' unless it splits into
+  // exactly 3 segments — passing the raw key through as jobId crashed
+  // `add()` on every real email send, and EmailService.send()'s best-effort
+  // try/catch swallowed it silently (the job never reached Redis at all).
+  it('sanitizes a colon-bearing idempotencyKey into a BullMQ-safe jobId, without mutating the payload field', async () => {
+    await service.enqueueEmail({
+      tenantId: 't1',
+      to: 'agent@ziyaratech.com',
+      template: 'staff_invitation',
+      idempotencyKey: 'invite:abc123def456',
+    } as any);
+
+    const [, data, opts] = record[QUEUE.EMAIL].add.mock.calls[0];
+    expect(opts.jobId).not.toContain(':');
+    expect(opts.jobId).toBe('email-invite_abc123def456');
+    // EmailDeliveryService.claim() still needs the ORIGINAL, colon-bearing
+    // key for its own DB-level idempotency check.
+    expect(data.idempotencyKey).toBe('invite:abc123def456');
+  });
+
   it.each([
     [
       'email',

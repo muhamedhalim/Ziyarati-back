@@ -156,6 +156,30 @@ export class EmailDeliveryService {
 
   // ── Read side (observability) ────────────────────────────────────────────
 
+  /**
+   * Latest delivery outcome per recipient for one template — batched (one
+   * query for N addresses, not N queries). Lets a caller distinguish "never
+   * attempted yet" (recipient absent from the returned map — e.g. nothing
+   * has consumed the queue) from a genuine terminal `FAILED` outcome, so a
+   * best-effort send can still surface as failed in a UI instead of looking
+   * identical to "still pending" forever.
+   */
+  async getLatestStatusByRecipient(
+    toAddresses: string[],
+    template: string,
+  ): Promise<Map<string, string>> {
+    if (toAddresses.length === 0) return new Map();
+    const rows: Array<{ to_address: string; status: string }> =
+      await this.dataSource.query(
+        `SELECT DISTINCT ON (to_address) to_address, status
+         FROM email_logs
+         WHERE template = $1 AND to_address = ANY($2::text[])
+         ORDER BY to_address, created_at DESC`,
+        [template, toAddresses],
+      );
+    return new Map(rows.map((r) => [r.to_address, r.status]));
+  }
+
   async listLogs(q: { status?: string; search?: string; page: number; limit: number }) {
     const where: Record<string, unknown> = {};
     if (q.status) where.status = q.status;
