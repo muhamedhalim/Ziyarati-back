@@ -63,6 +63,8 @@ import { AnalyticsModule } from '../analytics/analytics.module';
 import { StaffModule } from '../staff/staff.module';
 import { CrmModule } from '../crm/crm.module';
 import { StorageModule } from '../storage/storage.module';
+import { TenantModule } from '../tenant/tenant.module';
+import { PaymentsModule } from '../payments/payments.module';
 import { AiPriceCatalogService } from './cost/ai-price-catalog.service';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { AiPromptBudgetService } from './prompt/ai-prompt-budget.service';
@@ -129,6 +131,11 @@ import { AiBatchService } from './batch/ai-batch.service';
     StaffModule,
     CrmModule,
     StorageModule,
+    // Provides TenantService (payment_required business rule) and
+    // PaymentLinkService (auto-generated payment link for uninsured
+    // bookings) for the AI booking flow's deterministic payment decision.
+    TenantModule,
+    PaymentsModule,
   ],
   controllers: [
     AiAgentController,

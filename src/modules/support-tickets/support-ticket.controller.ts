@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -103,5 +104,25 @@ export class SupportTicketController {
   @RequirePermissions(PERMISSION.SUPPORT_TICKETS_READ)
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.ticketsService.getForTenant(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: "Confirm resolution and close the clinic's own ticket",
+    description:
+      '**Protected — `support_tickets.close`. Clinic active.** Only valid from `resolved` — a clinic can never resolve a ticket or close one that isn\'t resolved yet, and can never close another tenant\'s ticket. `closedAt` is always backend-generated.',
+  })
+  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Ticket closed.' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({ description: 'Caller lacks `support_tickets.close`, or clinic inactive.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Ticket not found in this tenant.', schema: S_ERROR })
+  @Patch(':id/close')
+  @RequirePermissions(PERMISSION.SUPPORT_TICKETS_CLOSE)
+  close(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.ticketsService.closeOwnTicket(
+      this.ctx.requireTenantId(),
+      { id: user.id, email: user.email, role: 'clinic' },
+      id,
+    );
   }
 }

@@ -1,6 +1,7 @@
 import {
   ArrayUnique,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsISO8601,
   IsOptional,
@@ -107,4 +108,14 @@ export class CreateAppointmentDto {
   @IsString()
   @MaxLength(2000)
   notes?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether the patient has health insurance. When true, no online payment is collected: `payment_status` is set to `INSURANCE` instead of `UNPAID`, and the AI booking flow does not generate a payment link. Defaults to false (existing behavior) when omitted.',
+    example: false,
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  hasInsurance?: boolean;
 }

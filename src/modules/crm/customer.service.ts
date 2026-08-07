@@ -51,7 +51,11 @@ export class CustomerService {
       marketing_opt_in: dto.marketing_opt_in ?? false,
       is_active: dto.is_active ?? true,
       preferred_locale: dto.preferred_locale,
+      has_chronic_diseases: dto.has_chronic_diseases ?? false,
+      chronic_diseases: dto.chronic_diseases,
+      has_health_insurance: dto.has_health_insurance,
     });
+    this.applyChronicDiseasesRule(customer);
     return this.customers.save(customer);
   }
 
@@ -73,8 +77,28 @@ export class CustomerService {
     if (date_of_birth !== undefined) {
       customer.date_of_birth = date_of_birth ? new Date(date_of_birth) : undefined;
     }
+    this.applyChronicDiseasesRule(customer);
 
     return this.customers.save(customer);
+  }
+
+  /**
+   * Authoritative (not just DTO-level) enforcement of the chronic-disease
+   * cross-field rule — the frontend and `@ValidateIf` on the DTO both check
+   * this too, but this is the source of truth: `chronic_diseases` must be
+   * non-empty when `has_chronic_diseases` is true, and is force-cleared
+   * (including on a Yes→No edit that omits the field entirely) otherwise.
+   */
+  private applyChronicDiseasesRule(customer: Customer): void {
+    if (customer.has_chronic_diseases) {
+      if (!customer.chronic_diseases || !customer.chronic_diseases.trim()) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, {
+          message: 'chronic_diseases is required when has_chronic_diseases is true',
+        });
+      }
+    } else {
+      customer.chronic_diseases = null;
+    }
   }
 
   async remove(tenantId: string, id: string): Promise<{ id: string; deleted: boolean }> {
@@ -144,6 +168,24 @@ export class CustomerService {
     await this.customers.update(
       { id: customerId, tenant: { id: tenantId } },
       { opted_out_at: new Date(), opt_out_source: source },
+    );
+  }
+
+  /**
+   * System-initiated write of the patient's confirmed health-insurance
+   * answer — used by the AI booking flow (`AiToolDispatchService`) to persist
+   * an answer collected mid-conversation, outside the general `update()` DTO
+   * path, so a returning patient's next booking can confirm it instead of
+   * asking again.
+   */
+  async setInsuranceStatus(
+    tenantId: string,
+    customerId: string,
+    hasInsurance: boolean,
+  ): Promise<void> {
+    await this.customers.update(
+      { id: customerId, tenant: { id: tenantId } },
+      { has_health_insurance: hasInsurance },
     );
   }
 

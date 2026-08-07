@@ -38,7 +38,14 @@ const SENSITIVE_KEY_PATTERNS = [
  * stripped) key as the substring set, so `full_name`/`fullName`/`FULL-NAME`
  * all match one entry.
  */
-const SENSITIVE_KEY_EXACT = ['email', 'phone', 'fullname', 'dateofbirth'];
+const SENSITIVE_KEY_EXACT = [
+  'email',
+  'phone',
+  'fullname',
+  'dateofbirth',
+  // Sensitive patient data (chronic-disease intake) — never written to logs.
+  'chronicdiseases',
+];
 
 const REDACTED = '[REDACTED]';
 const MAX_DEPTH = 6;

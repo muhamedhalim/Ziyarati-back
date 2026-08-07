@@ -49,7 +49,20 @@ export class SupportTicketEvent {
   @Column({ length: 160, nullable: true })
   actor_name?: string;
 
+  /**
+   * Snapshot of the actor's side at write time: 'clinic' for a tenant-side
+   * action, or an RBAC role slug (e.g. 'super_admin') for a platform-side
+   * one — lets the Super Admin UI distinguish who performed each lifecycle
+   * step without re-deriving it from the actor's current (possibly changed)
+   * roles.
+   */
+  @Column({ length: 32, nullable: true })
+  actor_role?: string;
+
+  // Explicit `timestamptz` — see SupportTicket.created_at's comment: a naive
+  // `timestamp` here would be decoded against the Node process's local
+  // timezone, corrupting any comparison against a tz-aware sibling column.
   @Index()
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 }

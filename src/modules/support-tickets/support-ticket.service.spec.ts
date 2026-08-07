@@ -76,6 +76,43 @@ describe('SupportTicketService', () => {
       expect(result).toEqual(expect.objectContaining({ status: 'open' }));
     });
 
+    it('stores an optional preferredContactTime as a Date', async () => {
+      dataSource.query.mockResolvedValueOnce([{ n: 1004 }]);
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+
+      const dto = {
+        subject: 'Cannot load calendar',
+        category: 'technical',
+        priority: 'medium',
+        description: 'Calendar view is blank since this morning.',
+        preferredContactTime: '2026-08-10T09:30:00.000Z',
+      } as any;
+
+      await service.create(TENANT, ACTOR, dto);
+
+      expect(tickets.create).toHaveBeenCalledWith(
+        expect.objectContaining({ preferred_contact_time: new Date('2026-08-10T09:30:00.000Z') }),
+      );
+    });
+
+    it('leaves preferredContactTime unset when the clinic does not provide one', async () => {
+      dataSource.query.mockResolvedValueOnce([{ n: 1005 }]);
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+
+      const dto = {
+        subject: 'Cannot load calendar',
+        category: 'technical',
+        priority: 'medium',
+        description: 'Calendar view is blank since this morning.',
+      } as any;
+
+      await service.create(TENANT, ACTOR, dto);
+
+      expect(tickets.create).toHaveBeenCalledWith(
+        expect.objectContaining({ preferred_contact_time: undefined }),
+      );
+    });
+
     it('ignores a spoofed tenantId on the dto — tenant always comes from the ctx.requireTenantId() argument', async () => {
       dataSource.query.mockResolvedValueOnce([{ n: 1001 }]);
       tickets.save.mockImplementationOnce(async (t: any) => t);
@@ -276,6 +313,115 @@ describe('SupportTicketService', () => {
       expect(tickets.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'open', resolved_at: null, closed_at: null }),
       );
+    });
+
+    it('repeated RESOLVED requests do not overwrite an already-set resolved_at', async () => {
+      const existingResolvedAt = new Date('2026-01-01T00:00:00.000Z');
+      // in_progress -> resolved a second time in a fresh cycle, but resolved_at
+      // was somehow already populated (defensive: service must not clobber it).
+      tickets.findOne.mockResolvedValueOnce({
+        ...baseTicket(),
+        status: 'in_progress',
+        resolved_at: existingResolvedAt,
+      });
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'resolved' });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.updateStatus('ticket-1', ACTOR, { status: 'resolved' } as any);
+
+      expect(tickets.save).toHaveBeenCalledWith(
+        expect.objectContaining({ resolved_at: existingResolvedAt }),
+      );
+    });
+
+    it('records the actor role snapshot (super_admin) on the STATUS_CHANGED event', async () => {
+      tickets.findOne.mockResolvedValueOnce(baseTicket());
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce({ ...baseTicket(), status: 'resolved' });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.updateStatus(
+        'ticket-1',
+        { ...ACTOR, role: 'super_admin' },
+        { status: 'resolved' } as any,
+      );
+
+      expect(events.create).toHaveBeenCalledWith(expect.objectContaining({ actor_role: 'super_admin' }));
+    });
+  });
+
+  // ── Tenant self-service close ─────────────────────────────────────────────
+
+  describe('closeOwnTicket (clinic self-service)', () => {
+    it('closes a resolved ticket, sets closed_at, and records the actor role as "clinic"', async () => {
+      tickets.findOne.mockResolvedValueOnce({
+        id: 'ticket-1',
+        status: 'resolved',
+        closed_at: null,
+        tenant: { id: TENANT },
+      });
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => e);
+      // getForTenant() re-fetch at the end
+      tickets.findOne.mockResolvedValueOnce({ id: 'ticket-1', status: 'closed', tenant: { id: TENANT } });
+      events.find.mockResolvedValueOnce([]);
+
+      await service.closeOwnTicket(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1');
+
+      expect(tickets.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'closed', closed_at: expect.any(Date) }),
+      );
+      expect(events.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'STATUS_CHANGED',
+          from_value: 'resolved',
+          to_value: 'closed',
+          actor_role: 'clinic',
+          internal_only: false,
+        }),
+      );
+    });
+
+    it('rejects closing a ticket that is not yet resolved (e.g. still open/in_progress)', async () => {
+      tickets.findOne.mockResolvedValueOnce({
+        id: 'ticket-1',
+        status: 'in_progress',
+        tenant: { id: TENANT },
+      });
+
+      await expect(
+        service.closeOwnTicket(TENANT, ACTOR, 'ticket-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(tickets.save).not.toHaveBeenCalled();
+    });
+
+    it('repeated close requests do not overwrite closed_at (ticket is already closed, so the resolved-check now rejects it)', async () => {
+      tickets.findOne.mockResolvedValueOnce({
+        id: 'ticket-1',
+        status: 'closed',
+        closed_at: new Date('2026-01-01T00:00:00.000Z'),
+        tenant: { id: TENANT },
+      });
+
+      await expect(
+        service.closeOwnTicket(TENANT, ACTOR, 'ticket-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(tickets.save).not.toHaveBeenCalled();
+    });
+
+    it('never returns/modifies another tenant\'s ticket (tenant-scoped lookup, 404 not found)', async () => {
+      tickets.findOne.mockResolvedValueOnce(null); // filtered out by the tenant clause
+
+      await expect(
+        service.closeOwnTicket(OTHER_TENANT, ACTOR, 'ticket-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(tickets.findOne).toHaveBeenCalledWith({
+        where: { id: 'ticket-1', tenant: { id: OTHER_TENANT } },
+      });
+      expect(tickets.save).not.toHaveBeenCalled();
     });
   });
 

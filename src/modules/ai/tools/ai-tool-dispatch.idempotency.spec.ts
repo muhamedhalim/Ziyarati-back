@@ -10,6 +10,7 @@ describe('AiToolDispatchService side-effect idempotency', () => {
     const service = new AiToolDispatchService(
       {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
       {} as any, {} as any, {} as any, dataSource as any, {} as any,
+      {} as any, {} as any,
     );
     const executor = jest.fn();
     const result = await (service as any).run(
