@@ -376,12 +376,10 @@ export class StaffService {
     }
 
     const email = dto.email.trim().toLowerCase();
-    const existing = await this.users.findOne({
-      where: { email, tenant: { id: tenantId } },
-    });
-    if (existing) {
-      throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
-    }
+    // D7 — email uniqueness is enforced globally inside
+    // AuthService.createUserWithRole (the shared chokepoint every user
+    // creation path routes through, including this one below); no
+    // tenant-scoped pre-check is needed here anymore.
 
     if (dto.avatarStorageKey) {
       this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);

@@ -298,6 +298,27 @@ short-circuits). `OWNERSHIP_SCOPED_PERMISSIONS` (`appointments.read_own`,
 `profile.update_own`) are **ABAC** — require service-layer ownership checks. Seeder
 **reconciles** to exactly the contract (idempotent).
 
+**Platform Customer Service** (`ROLE.PLATFORM_SUPPORT = 'platform_support'`) — a second
+platform-scope role beyond `super_admin`, for a least-privilege support employee: an
+ordinary `users` row with `tenantId = NULL`, no new entity or auth path. Holds exactly
+`platform.support_tickets.{read,triage,reply}` — never `.close` (that stays `super_admin`
+only, via the `*` wildcard) and never `dashboard.access` (so it can never enter the clinic
+`/app/**` shell). Two more slugs, `support_tickets.{reply,reopen}`, went to the existing
+tenant roles (`owner`/`manager`/`receptionist`) for clinic-side ticket replies and the
+"Issue not resolved" resolved→in_progress reopen action. All four platform-scope slugs are
+in `RESERVED_PERMISSION_SLUGS` (never delegable into a tenant custom role); the role itself
+is in `NON_STAFF_ROLE_SLUGS` (never a clinic staff role) and `API_PROTECTED_ROLE_SLUGS`
+(never assignable via the generic `POST /roles/:id/users/:userId`, which otherwise lets a
+clinic Owner assign any global system role — see `roles.service.ts`'s
+`API_PROTECTED_ROLE_SLUGS` comment). Provisioned exclusively through `PlatformStaffModule`
+(`src/modules/platform-staff/`, `@Controller('platform/staff')`, `@Roles(SUPER_ADMIN)`):
+invitation-only (reuses the set-password-token flow, never returns a password),
+deactivation revokes refresh tokens immediately, and every target lookup excludes
+`super_admin` so this surface can manage platform staff but never the platform operator.
+RBAC rows are seeded by an idempotent data migration
+(`1730034000000-PlatformSupportRoleAndPermissions`), not `SEED_ON_STARTUP` — the seeder only
+reconciles thereafter. D7 (below) is unrelated but shipped in the same body of work.
+
 ```mermaid
 graph LR
   REQ[Request] --> JWT[JwtAuthGuard] --> CSRF[CsrfGuard] --> SUB[SubscriptionAccessGuard]
@@ -436,6 +457,7 @@ dashboard uniqueness), idempotent upserts, primary-branch attribution. Repeatabl
 - **Staff** — profiles, services, schedules, working hours, time-off, commissions, ratings, branch assignment.
 - **Scheduling** — `AvailabilityService.assertBookable` (the single booking gate used by Appointment **and** AI tools), slots, blocked slots, holidays.
 - **Platform** — API keys, API/webhook logs, file metadata, system settings; `platform.logCleanup` sweep.
+- **Platform Staff** (`src/modules/platform-staff/`) — Super Admin CRUD over Platform Customer Service employees (see §3.2). Reuses `users`/`roles`/`user_roles`/`password_resets`; no new table.
 
 ---
 
@@ -455,6 +477,7 @@ Full DDL: [`docs/schema/schema.sql`](./schema/schema.sql).
 | AI usage/cost no lost updates | UNIQUE keys + `ON CONFLICT` | AiToolCalls / baseline |
 | Ledger immutability | `trg_transactions_immutable` trigger | PaymentsLedger |
 | RAG | `vector(1536)` + pgvector | AiPgVector |
+| One live user per email, any tenant (D7) | partial UNIQUE `uq_user_email_global` on `(email) WHERE deleted_at IS NULL`, + `ck_user_email_lowercase` CHECK | GlobalUserEmailUniqueness |
 
 ---
 

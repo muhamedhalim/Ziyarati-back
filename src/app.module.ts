@@ -42,6 +42,7 @@ import { SupportTicketsModule } from './modules/support-tickets/support-tickets.
 import { BillingUpgradeModule } from './modules/billing-upgrades/billing-upgrade.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { PlatformStaffModule } from './modules/platform-staff/platform-staff.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
 import { IntegrationModule } from './modules/integration/integration.module';
 import { IntegrationPlatformModule } from './modules/integration-platform/integration-platform.module';
@@ -145,6 +146,7 @@ import { validate } from './config/env.validation';
     BillingUpgradeModule,
     AnalyticsModule,
     PlatformModule,
+    PlatformStaffModule,
     IntegrationModule,
     IntegrationPlatformModule,
     SchedulingModule,

@@ -420,13 +420,21 @@ describe('StaffService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
     });
 
-    it('rejects a duplicate email within the tenant', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'existing' });
+    // D7 — email uniqueness is enforced globally inside
+    // AuthService.createUserWithRole (the shared chokepoint), not by a
+    // tenant-scoped pre-check in StaffService anymore. AuthService is a full
+    // test double here, so this proves createWithNewUser PROPAGATES that
+    // rejection correctly rather than swallowing or re-wrapping it.
+    it('propagates EMAIL_ALREADY_EXISTS from the AuthService.createUserWithRole chokepoint', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      authService.createUserWithRole.mockRejectedValueOnce(
+        new AppError(ErrorCode.EMAIL_ALREADY_EXISTS),
+      );
 
       await expect(service.createWithNewUser(TENANT, dto)).rejects.toMatchObject({
         code: ErrorCode.EMAIL_ALREADY_EXISTS,
       });
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     });
 
     // FND-007: the seat-cap check now runs atomically INSIDE the transaction

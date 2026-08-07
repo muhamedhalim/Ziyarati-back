@@ -7,6 +7,8 @@ export interface AuthenticatedUser {
   id: string;
   tenantId: string | null;
   email?: string | null;
+  /** Populated from `users.full_name`. Used for ticket-event actor attribution etc. */
+  fullName?: string | null;
   roles: string[]; // role slugs
   permissions: string[]; // permission slugs
   /**

@@ -29,6 +29,14 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   // transitions, reusing this seam per T016/T085 rather than a parallel one.
   SUBSCRIPTION_ENTERED_GRACE: 'subscription.entered_grace',
   SUBSCRIPTION_GRACE_EXPIRED: 'subscription.grace_expired',
+  // Platform Customer Service staff provisioning (PlatformStaffService).
+  STAFF_CREATE: 'platform_admin.staff.create',
+  STAFF_UPDATE: 'platform_admin.staff.update',
+  STAFF_ACTIVATE: 'platform_admin.staff.activate',
+  STAFF_DEACTIVATE: 'platform_admin.staff.deactivate',
+  STAFF_ROLES_SET: 'platform_admin.staff.roles_set',
+  STAFF_INVITATION_RESENT: 'platform_admin.staff.invitation_resent',
+  STAFF_MUTATION_REJECTED: 'platform_admin.staff.mutation_rejected',
 } as const;
 
 export type PlatformAdminAuditAction =

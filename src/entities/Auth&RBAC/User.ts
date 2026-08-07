@@ -7,15 +7,22 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   DeleteDateColumn,
-  Unique,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
 import { UserRole } from '../Auth&RBAC/UserRole';
 import { RefreshToken } from '../Auth&RBAC/RefreshToken';
 
+/**
+ * D7 — email uniqueness is GLOBAL across every live user (any tenant,
+ * platform included), enforced by the partial unique index
+ * `uq_user_email_global` (GlobalUserEmailUniqueness migration) on
+ * `(email) WHERE deleted_at IS NULL AND email IS NOT NULL`, NOT by a
+ * `@Unique` decorator here — TypeORM can't express a partial/filtered unique
+ * constraint declaratively, and a `synchronize` run must not try to recreate
+ * the old tenant-scoped `(tenant, email)` constraint this migration drops.
+ */
 @Entity('users')
-@Unique(['tenant', 'email'])
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

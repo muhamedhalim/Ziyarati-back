@@ -122,7 +122,7 @@ describe('AllExceptionsFilter', () => {
           const devFilter = new AllExceptionsFilter();
           const err = Object.assign(new QueryFailedError('q', [], new Error('dup')), {
             code: '23505',
-            constraint: 'uq_user_tenant_email',
+            constraint: 'uq_user_email_global',
           });
           devFilter.catch(err, host);
           expect(bodySent().error).toBe('QueryFailedError');
@@ -155,7 +155,7 @@ describe('AllExceptionsFilter', () => {
           const prodFilter = new AllExceptionsFilter();
           const err = Object.assign(new QueryFailedError('q', [], new Error('dup')), {
             code: '23505',
-            constraint: 'uq_user_tenant_email',
+            constraint: 'uq_user_email_global',
           });
           prodFilter.catch(err, host);
           const b = bodySent();
@@ -215,15 +215,15 @@ describe('AllExceptionsFilter', () => {
         withEnv('production', () => {
           const prodFilter = new AllExceptionsFilter();
           const err = Object.assign(
-            new QueryFailedError('q', [], new Error('duplicate key value violates unique constraint "uq_user_tenant_email"')),
-            { code: '23505', constraint: 'uq_user_tenant_email' },
+            new QueryFailedError('q', [], new Error('duplicate key value violates unique constraint "uq_user_email_global"')),
+            { code: '23505', constraint: 'uq_user_email_global' },
           );
           prodFilter.catch(err, host);
         });
         const logged = warnSpy.mock.calls[0]?.[0] as string;
         expect(logged).toContain('duplicate key value violates unique constraint');
         // The client, meanwhile, only ever saw the friendly mapped message.
-        expect(bodySent().message).toBe('Email already exists in this tenant');
+        expect(bodySent().message).toBe('This email is already in use');
         warnSpy.mockRestore();
       });
 

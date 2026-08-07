@@ -67,7 +67,8 @@ export async function seedAdminUser(manager: EntityManager): Promise<void> {
     );
   }
 
-  // Super-admins have tenant IS NULL (matches uq_superadmin_email).
+  // Super-admins have tenant IS NULL. Email uniqueness is enforced globally
+  // (D7 — uq_user_email_global), not by a platform-scoped constraint.
   let user = await userRepo.findOne({
     where: { email, tenant: IsNull() },
   });

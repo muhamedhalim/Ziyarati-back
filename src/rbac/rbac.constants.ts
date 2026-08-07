@@ -60,14 +60,32 @@ export const PERMISSION = {
   CRM_FILES_READ: 'crm.files.read',
   CRM_FILES_MANAGE: 'crm.files.manage',
 
-  // Support Tickets (tenant-side create/read/close; platform triage is
-  // role-gated, not permission-gated — see PlatformSupportTicketController)
+  // Support Tickets (tenant-side create/read/close/reply/reopen; platform
+  // triage is permission-gated via the PLATFORM_SUPPORT_TICKETS_* family below)
   SUPPORT_TICKETS_READ: 'support_tickets.read',
   SUPPORT_TICKETS_CREATE: 'support_tickets.create',
   // Tenant-scoped like READ/CREATE (any caller with it may close any of
   // their own tenant's resolved tickets) — NOT a per-user ABAC ownership
   // scope, so deliberately not registered in OWNERSHIP_SCOPED_PERMISSIONS.
   SUPPORT_TICKETS_CLOSE: 'support_tickets.close',
+  // Clinic-visible reply on the caller's OWN tenant's ticket. Deliberately
+  // NOT in RESERVED_PERMISSION_SLUGS — delegable into a tenant "Other" custom
+  // role like the rest of this family.
+  SUPPORT_TICKETS_REPLY: 'support_tickets.reply',
+  // "Issue not resolved" — resolved -> in_progress on the caller's own
+  // tenant's ticket. Separate from CLOSE: the two are opposite verdicts on a
+  // resolved ticket. Also not reserved.
+  SUPPORT_TICKETS_REOPEN: 'support_tickets.reopen',
+
+  // Platform Support Tickets (cross-tenant triage by platform staff). All
+  // four are in RESERVED_PERMISSION_SLUGS — never delegable to a tenant
+  // custom role. CLOSE is granted to no explicit role — it is held only by
+  // super_admin via the ALL_PERMISSIONS('*') wildcard, so the close boundary
+  // is a permission check, not a role check.
+  PLATFORM_SUPPORT_TICKETS_READ: 'platform.support_tickets.read',
+  PLATFORM_SUPPORT_TICKETS_TRIAGE: 'platform.support_tickets.triage',
+  PLATFORM_SUPPORT_TICKETS_REPLY: 'platform.support_tickets.reply',
+  PLATFORM_SUPPORT_TICKETS_CLOSE: 'platform.support_tickets.close',
 
   // Profile (self-service)
   PROFILE_UPDATE_OWN: 'profile.update_own', // ABAC — see below
@@ -329,6 +347,15 @@ export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
   PERMISSION.ROLES_MANAGE,
   PERMISSION.USERS_MANAGE,
   PERMISSION.TENANTS_MANAGE,
+  // Platform support-ticket slugs (defence in depth alongside
+  // API_PROTECTED_ROLE_SLUGS blocking `platform_support` itself) — a clinic
+  // Owner must never be able to delegate cross-tenant platform authority into
+  // a tenant custom role. The tenant-scoped SUPPORT_TICKETS_REPLY/REOPEN are
+  // deliberately NOT here — those are meant to be delegable.
+  PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
+  PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
+  PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+  PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -344,6 +371,14 @@ export const ROLE = {
   CUSTOMER: 'customer',
   /** Per-tenant system actor driving AI-initiated bookings (e.g. WhatsApp). */
   AI_BOT: 'ai-bot',
+  /**
+   * Platform-level system role (tenant = NULL, is_system = true). Holds only
+   * the PLATFORM_SUPPORT_TICKETS_* read/triage/reply slugs — never CLOSE,
+   * never DASHBOARD_ACCESS. Assigned to a `users` row with tenantId = NULL,
+   * never to a tenant user (see NON_STAFF_ROLE_SLUGS and
+   * API_PROTECTED_ROLE_SLUGS in roles.service.ts).
+   */
+  PLATFORM_SUPPORT: 'platform_support',
 } as const;
 
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
@@ -375,6 +410,9 @@ export const NON_STAFF_ROLE_SLUGS: readonly RoleSlug[] = [
   ROLE.OWNER,
   ROLE.CUSTOMER,
   ROLE.AI_BOT,
+  // Platform-level role — never a clinic staff role. Belongs only to a
+  // tenantId = NULL user, provisioned exclusively via /platform/staff.
+  ROLE.PLATFORM_SUPPORT,
 ];
 
 // ---------------------------------------------------------------------------
@@ -425,6 +463,13 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.SUPPORT_TICKETS_READ, name: 'Read support tickets', module: 'support_tickets' },
   { slug: PERMISSION.SUPPORT_TICKETS_CREATE, name: 'Create support tickets', module: 'support_tickets' },
   { slug: PERMISSION.SUPPORT_TICKETS_CLOSE, name: 'Close own resolved support tickets', module: 'support_tickets' },
+  { slug: PERMISSION.SUPPORT_TICKETS_REPLY, name: 'Reply to own support tickets', module: 'support_tickets' },
+  { slug: PERMISSION.SUPPORT_TICKETS_REOPEN, name: 'Reopen own resolved support tickets ("Issue not resolved")', module: 'support_tickets' },
+
+  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_READ, name: 'Read platform support tickets (cross-tenant)', module: 'support_tickets' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE, name: 'Triage platform support tickets (status/priority, cannot close)', module: 'support_tickets' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY, name: 'Reply to / add internal notes on platform support tickets', module: 'support_tickets' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE, name: 'Close platform support tickets', module: 'support_tickets' },
 
   { slug: PERMISSION.PROFILE_UPDATE_OWN, name: 'Update own profile', module: 'profile' },
 
@@ -579,6 +624,11 @@ export const ROLES: RoleDef[] = [
     name: 'Customer',
     description: 'End user who books appointments and manages their profile.',
   },
+  {
+    slug: ROLE.PLATFORM_SUPPORT,
+    name: 'Platform Customer Service',
+    description: 'ZiyaraTech support employee. Triages clinic support tickets across tenants. Cannot close tickets or access Super Admin functionality.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -640,6 +690,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.SUPPORT_TICKETS_READ,
     PERMISSION.SUPPORT_TICKETS_CREATE,
     PERMISSION.SUPPORT_TICKETS_CLOSE,
+    PERMISSION.SUPPORT_TICKETS_REPLY,
+    PERMISSION.SUPPORT_TICKETS_REOPEN,
     PERMISSION.SERVICES_CREATE,
     PERMISSION.SERVICES_READ,
     PERMISSION.SERVICES_UPDATE,
@@ -768,6 +820,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.SUPPORT_TICKETS_READ,
     PERMISSION.SUPPORT_TICKETS_CREATE,
     PERMISSION.SUPPORT_TICKETS_CLOSE,
+    PERMISSION.SUPPORT_TICKETS_REPLY,
+    PERMISSION.SUPPORT_TICKETS_REOPEN,
     PERMISSION.SERVICES_CREATE,
     PERMISSION.SERVICES_READ,
     PERMISSION.SERVICES_UPDATE,
@@ -869,6 +923,8 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.SUPPORT_TICKETS_READ,
     PERMISSION.SUPPORT_TICKETS_CREATE,
     PERMISSION.SUPPORT_TICKETS_CLOSE,
+    PERMISSION.SUPPORT_TICKETS_REPLY,
+    PERMISSION.SUPPORT_TICKETS_REOPEN,
     PERMISSION.SERVICES_READ,
     PERMISSION.STAFF_READ,
     PERMISSION.SCHEDULING_SLOTS_READ,
@@ -942,4 +998,16 @@ export const ROLE_PERMISSIONS: Record<
   // seeder only reconciles GLOBAL (tenant-less) roles, so it harmlessly skips
   // this entry (it exists only to satisfy the exhaustive `RoleSlug` mapping).
   [ROLE.AI_BOT]: AI_BOT_PERMISSIONS,
+
+  // Platform Customer Service: cross-tenant support-ticket triage only.
+  // Deliberately excludes PLATFORM_SUPPORT_TICKETS_CLOSE (only super_admin
+  // holds it, via the '*' wildcard) and DASHBOARD_ACCESS (this role must
+  // never reach the clinic workspace shell). Also excludes the tenant-scoped
+  // SUPPORT_TICKETS_REPLY/REOPEN — those are separate permissions on separate
+  // (clinic-side) controllers.
+  [ROLE.PLATFORM_SUPPORT]: [
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
+    PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+  ],
 };
