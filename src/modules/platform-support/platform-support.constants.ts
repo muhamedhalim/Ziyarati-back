@@ -15,6 +15,18 @@
 /** Default page size for every paginated diagnostic history. */
 export const SUPPORT_DIAGNOSTIC_PAGE_SIZE = 20;
 
+/**
+ * Clinic directory page size. Separate from the diagnostic-history size
+ * because the directory is a BROWSE surface (an agent scanning for the clinic
+ * that just called) rather than a forensic one, so a slightly larger page is
+ * genuinely more useful. The ceiling still exists for the same reason as
+ * everywhere else here: diagnostics never bulk-export a tenant list.
+ */
+export const SUPPORT_CLINIC_DIRECTORY_PAGE_SIZE = 25;
+
+/** Hard ceiling on the clinic-directory page size. */
+export const SUPPORT_CLINIC_DIRECTORY_MAX_PAGE_SIZE = 100;
+
 /** Hard ceiling on any diagnostic page size — diagnostics never bulk-export. */
 export const SUPPORT_DIAGNOSTIC_MAX_PAGE_SIZE = 100;
 
