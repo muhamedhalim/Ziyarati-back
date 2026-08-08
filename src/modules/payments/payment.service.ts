@@ -373,10 +373,23 @@ export class PaymentService {
     };
   }
 
-  async confirm(tenantId: string, id: string, dto: ConfirmPaymentDto) {
+  async confirm(tenantId: string, id: string, dto: ConfirmPaymentDto): Promise<Payment> {
     // ── Phase 1: short tx — lock, idempotent checks, resolve the gateway id.
     // (The gateway is NOT called here, so the row lock is held only briefly.)
-    const prep = await this.dataSource.transaction(async (manager) => {
+    //
+    // The callback's return type is annotated EXPLICITLY (not inferred) because
+    // without it, TS's inference across the two `return` shapes below gives
+    // each branch the other's exclusive keys as `?: undefined` — so
+    // `'settled' in prep` narrowing can no longer fully exclude the
+    // non-`settled` branch, and `prep.settled` types as `Payment | undefined`
+    // even though it is always a real `Payment` at runtime. That leak
+    // propagated all the way out to this method's own inferred return type.
+    // `gateway` stays `string | undefined` to match `Payment.gateway`'s own
+    // optional column type — `PaymentGatewayFactory.resolve()` already accepts
+    // an optional gateway name, so this is not narrowed further here.
+    const prep = await this.dataSource.transaction<
+      { settled: Payment } | { gatewayPaymentId: string; gateway: string | undefined; amount: number }
+    >(async (manager) => {
       const repo = manager.getRepository(Payment);
       const payment = await repo.findOne({
         where: { id, tenant: { id: tenantId } },

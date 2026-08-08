@@ -107,6 +107,7 @@ describe('NotificationLog.source_ref — real Postgres partial-unique-index atom
       undefined as never, // queue
       undefined as never, // usage
       undefined as never, // ctx
+      undefined as never, // subscriptions — not exercised by claimBySourceRef/finalizeBySourceRef
     );
   });
 
@@ -180,6 +181,8 @@ describe('ScheduledNotification.source_ref — real Postgres partial-unique-inde
       ds!.getRepository(Appointment),
       undefined as never, // dispatch — not exercised by schedule()
       queue as never,
+      undefined as never, // audit — not exercised by schedule()
+      undefined as never, // tenantContext — not exercised by schedule()
     );
   });
 

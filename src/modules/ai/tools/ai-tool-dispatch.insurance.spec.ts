@@ -98,6 +98,9 @@ function buildService(overrides: BuildOverrides = {}) {
     {} as any,
     tenants as any,
     paymentLinks as any,
+    {} as any,
+    {} as any,
+    {} as any,
   );
 
   return {

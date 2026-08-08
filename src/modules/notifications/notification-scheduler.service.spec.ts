@@ -33,6 +33,8 @@ describe('NotificationSchedulerService.schedule — sourceRef dedupe (gap-closur
       appointments as unknown as never,
       {} as unknown as NotificationDispatchService,
       queue as unknown as QueueService,
+      {} as never,
+      {} as never,
     );
   });
 
