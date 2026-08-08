@@ -64,8 +64,9 @@ describe('CampaignRunService — pause / resume / add-recipients journey (FND-01
 
     runs.findOne.mockResolvedValueOnce(drainingRun);
     const resumeTarget = await service.latest('t1', 'camp-1');
-    expect(resumeTarget.id).toBe('run-1-draining');
-    expect(resumeTarget.execution).toBe(CampaignExecution.DRAINING);
+    expect(resumeTarget).not.toBeNull();
+    expect(resumeTarget!.id).toBe('run-1-draining');
+    expect(resumeTarget!.execution).toBe(CampaignExecution.DRAINING);
   });
 
   // ── Regression guards — behavior that is already correct and must not
