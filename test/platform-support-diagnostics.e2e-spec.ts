@@ -109,6 +109,7 @@ describe('Support Operations Console — diagnostics authorization (HTTP e2e)', 
 
     const base = `${API}/platform/support/clinics/${owner.tenantId}`;
     readRoutes = [
+      ['clinic directory', `${API}/platform/support/clinics`],
       ['profile', base],
       ['subscription', `${base}/subscription`],
       ['features', `${base}/features`],
@@ -164,7 +165,7 @@ describe('Support Operations Console — diagnostics authorization (HTTP e2e)', 
   // ── What Platform Support CAN read ──────────────────────────────────────
 
   describe('Platform Support reads every approved diagnostic', () => {
-    it('reaches all 13 diagnostic read routes with 200', async () => {
+    it('reaches all 14 diagnostic read routes with 200', async () => {
       for (const [label, path] of readRoutes) {
         const res = await request(e2e.app.getHttpServer())
           .get(path)
@@ -243,6 +244,164 @@ describe('Support Operations Console — diagnostics authorization (HTTP e2e)', 
           .set(...authHeader(superAdmin.token));
         expect([label, res.status]).toEqual([label, 200]);
       }
+    });
+  });
+
+  // ── The clinic directory: diagnostics WITHOUT a ticket ──────────────────
+
+  /**
+   * The directory is the console's proactive entry point — the only route
+   * that answers "which clinic is this?" before a ticket exists. It is also
+   * the one most at risk of quietly becoming the Super Admin tenant directory,
+   * so its response shape is asserted exactly rather than sampled.
+   */
+  describe('Clinic directory', () => {
+    const directory = `${API}/platform/support/clinics`;
+    /** The tenant's OWN slug and contact details — not the owner user's. */
+    let clinic: { slug: string; contact_email: string };
+
+    beforeAll(async () => {
+      [clinic] = await e2e.dataSource.query(
+        `SELECT slug, contact_email FROM tenants WHERE id = $1`,
+        [owner.tenantId],
+      );
+    });
+
+    it('finds a clinic with no ticket in existence', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ search: clinic.slug })
+        .set(...authHeader(support.token))
+        .expect(200);
+
+      expect(res.body.data.map((c: { id: string }) => c.id)).toContain(owner.tenantId);
+    });
+
+    it('returns EXACTLY the allow-listed row keys', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ search: clinic.slug })
+        .set(...authHeader(support.token))
+        .expect(200);
+
+      expect(Object.keys(res.body).sort()).toEqual(['data', 'limit', 'page', 'total']);
+      expect(Object.keys(res.body.data[0]).sort()).toEqual(
+        [
+          'approvalStatus',
+          'branchesActive',
+          'branchesTotal',
+          'contactEmail',
+          'contactPhone',
+          'createdAt',
+          'id',
+          'isActive',
+          'lastTicketActivityAt',
+          'name',
+          'openTicketCount',
+          'planName',
+          'slug',
+          'subscriptionStatus',
+          'totalTicketCount',
+        ].sort(),
+      );
+    });
+
+    it('is NOT the Super Admin tenant directory — no verification or legal identity', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(directory)
+        .set(...authHeader(support.token))
+        .expect(200);
+
+      const body = JSON.stringify(res.body);
+      for (const key of [
+        'commercial_registration_number',
+        'commercialRegistrationNumber',
+        'legal_name',
+        'legalName',
+        'verification',
+        'rejection_reason',
+        'rejectionReason',
+        'logo_url',
+        'price',
+        'monthly_price',
+      ]) {
+        expect([key, body.includes(key)]).toEqual([key, false]);
+      }
+    });
+
+    /**
+     * The reason search covers contact details at all: a clinic that PHONES
+     * support identifies itself by the address or number it contacted from,
+     * not by its tenant slug.
+     */
+    it('finds the clinic by its contact email, not only by name or slug', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ search: clinic.contact_email })
+        .set(...authHeader(support.token))
+        .expect(200);
+
+      expect(res.body.data.map((c: { id: string }) => c.id)).toContain(owner.tenantId);
+    });
+
+    it('returns an empty page — not an error — for a term nothing matches', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ search: 'zzz-no-such-clinic-zzz' })
+        .set(...authHeader(support.token))
+        .expect(200);
+
+      expect(res.body.data).toEqual([]);
+      expect(res.body.total).toBe(0);
+    });
+
+    it('paginates, and honours the page-size ceiling', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ page: 1, limit: 1 })
+        .set(...authHeader(support.token))
+        .expect(200);
+
+      expect(res.body.limit).toBe(1);
+      expect(res.body.data.length).toBeLessThanOrEqual(1);
+
+      await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ limit: 5000 })
+        .set(...authHeader(support.token))
+        .expect(400);
+    });
+
+    it('rejects an unknown approval state rather than ignoring the filter', async () => {
+      await request(e2e.app.getHttpServer())
+        .get(directory)
+        .query({ approvalStatus: 'NOT_A_STATE' })
+        .set(...authHeader(support.token))
+        .expect(400);
+    });
+
+    it('exposes no mutation on the directory — approve, suspend and delete do not exist', async () => {
+      const server = e2e.app.getHttpServer();
+      for (const [method, path] of [
+        ['post', directory],
+        ['patch', `${directory}/${owner.tenantId}`],
+        ['put', `${directory}/${owner.tenantId}`],
+        ['delete', `${directory}/${owner.tenantId}`],
+        ['patch', `${directory}/${owner.tenantId}/approve`],
+        ['patch', `${directory}/${owner.tenantId}/suspend`],
+      ] as const) {
+        const res = await request(server)[method](path)
+          .set(...authHeader(support.token))
+          .send({});
+        expect([method, path, res.status >= 400]).toEqual([method, path, true]);
+      }
+    });
+
+    it('refuses a clinic Owner outright', async () => {
+      await request(e2e.app.getHttpServer())
+        .get(directory)
+        .set(...authHeader(owner.token))
+        .expect(403);
     });
   });
 

@@ -366,6 +366,21 @@ body at all, which is what makes "Support can never construct a payload, choose 
 or alter a destination" structural rather than a validation rule. There is no bulk route, no
 retry-all, and no queue administration anywhere in the module.
 
+**Reachability.** The diagnostics initially had only one entry point — a deep link from a
+ticket — which meant a clinic that PHONED support, emailed a shared inbox, or needed
+investigating before anyone filed a ticket could not be diagnosed at all, and the console
+advertised two destinations for fifteen permissions. `GET /platform/support/clinics` closes
+that: a paginated directory searchable by clinic name, slug, contact email and contact phone
+(a caller identifies themselves by the number they called from, not by their tenant slug).
+It is deliberately **not** `GET /tenants` — the Super Admin tenant directory carries
+verification documents, commercial registration, legal identity and the approve/reject/
+suspend controls, none of which Support may see or use. Aggregates (branch counts, open
+tickets, last support activity, current plan NAME) come from lateral joins onto a CTE that
+has already been filtered, ordered and LIMITed, so the number of aggregate evaluations equals
+the page size rather than the tenant count. Frontend-side this backs `/support-desk/clinics`,
+alongside `/support-desk/system` for the one Support permission that is not clinic-scoped
+(`platform.support.jobs.read`); both appear in the console sidebar gated on their own slug.
+
 ```mermaid
 graph LR
   REQ[Request] --> JWT[JwtAuthGuard] --> CSRF[CsrfGuard] --> SUB[SubscriptionAccessGuard]

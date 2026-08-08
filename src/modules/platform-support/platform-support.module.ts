@@ -18,6 +18,7 @@ import { PlatformSupportJobsController } from './platform-support-jobs.controlle
 import { PlatformSupportActionsController } from './platform-support-actions.controller';
 import { SupportActionsService } from './support-actions.service';
 import { ClinicSupportProfileService } from './clinic-support-profile.service';
+import { SupportClinicDirectoryService } from './support-clinic-directory.service';
 import { SupportClinicResolver } from './support-clinic.resolver';
 import { SupportEntitlementService } from './support-entitlement.service';
 import { SupportIntegrationService } from './support-integration.service';
@@ -85,6 +86,7 @@ import { SupportJobsService } from './support-jobs.service';
   ],
   providers: [
     SupportClinicResolver,
+    SupportClinicDirectoryService,
     ClinicSupportProfileService,
     SupportEntitlementService,
     SupportIntegrationService,

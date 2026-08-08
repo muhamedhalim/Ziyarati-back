@@ -6,6 +6,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 
 import { ClinicSupportProfileService } from './clinic-support-profile.service';
+import { SupportClinicDirectoryService } from './support-clinic-directory.service';
 import { SupportEntitlementService } from './support-entitlement.service';
 import { SupportIntegrationService } from './support-integration.service';
 import { SupportDeliveryService } from './support-delivery.service';
@@ -16,6 +17,7 @@ import {
   QuerySupportDeliveryDto,
   QuerySupportDiagnosticsDto,
 } from './dto/query-support-diagnostics.dto';
+import { QuerySupportClinicsDto } from './dto/query-support-clinics.dto';
 
 /**
  * ============================================================================
@@ -50,6 +52,7 @@ import {
 @UseGuards(PermissionsGuard)
 export class PlatformSupportClinicController {
   constructor(
+    private readonly directory: SupportClinicDirectoryService,
     private readonly profiles: ClinicSupportProfileService,
     private readonly entitlements: SupportEntitlementService,
     private readonly integrations: SupportIntegrationService,
@@ -58,6 +61,24 @@ export class PlatformSupportClinicController {
     private readonly bookings: SupportBookingService,
     private readonly aiDiagnostics: SupportAiService,
   ) {}
+
+  @ApiOperation({
+    summary: 'Clinic directory (Support)',
+    description:
+      'Paginated, searchable clinic directory — the PROACTIVE entry point, so a support agent can ' +
+      'find the clinic that phoned them without a ticket existing first. Search matches name, slug, ' +
+      'clinic contact email and clinic contact phone. Each row carries operational state only: ' +
+      'active/approval state, plan IDENTITY, branch counts, open-ticket count and last support ' +
+      'activity. This is NOT the Super Admin tenant directory: verification documents, commercial ' +
+      'registration, legal identity, plan pricing and the approve/reject/suspend controls are ' +
+      'absent, and no field of `tenants` outside the projection is selected.',
+  })
+  @ApiOkResponse({ description: 'Paginated, allow-listed clinic directory.' })
+  @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_CLINICS_READ_BASIC)
+  @Get()
+  clinics(@Query() query: QuerySupportClinicsDto) {
+    return this.directory.list(query);
+  }
 
   @ApiOperation({
     summary: 'Clinic support profile',
