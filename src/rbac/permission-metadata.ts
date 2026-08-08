@@ -98,6 +98,33 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
   [PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE]: 'high',
   [PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY]: 'high',
   [PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE]: 'critical',
+
+  // Support Operations Console diagnostics. Every read here is CROSS-TENANT,
+  // so none may fall back to the derived `low` that `deriveBaseRisk` would
+  // otherwise give any slug containing ".read" — same reasoning already
+  // applied to PLATFORM_SUPPORT_TICKETS_READ above. The four touching
+  // customer-adjacent or money-adjacent domains are `high` even though they
+  // are reads, because a projection bug there discloses more than an
+  // operational status would.
+  [PERMISSION.PLATFORM_SUPPORT_CLINICS_READ_BASIC]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_SUBSCRIPTIONS_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_FEATURES_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_CLINIC_SETTINGS_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_JOBS_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_AUDIT_READ]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS]: 'medium',
+  [PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_READ]: 'high', // recipient identifiers
+  [PERMISSION.PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS]: 'high', // patient-adjacent
+  [PERMISSION.PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS]: 'high', // money-adjacent
+  [PERMISSION.PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS]: 'high', // conversation-adjacent
+
+  // Safe actions — writes that trigger a real outbound message or a real
+  // provider probe. Idempotent and destination-locked, but still `high`: they
+  // cause an externally visible side effect on a clinic's behalf.
+  [PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY]: 'high',
+  [PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND]: 'high',
+  [PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK]: 'medium',
 };
 
 // ---------------------------------------------------------------------------

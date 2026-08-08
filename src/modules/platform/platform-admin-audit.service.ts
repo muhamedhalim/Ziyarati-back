@@ -37,6 +37,16 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   STAFF_ROLES_SET: 'platform_admin.staff.roles_set',
   STAFF_INVITATION_RESENT: 'platform_admin.staff.invitation_resent',
   STAFF_MUTATION_REJECTED: 'platform_admin.staff.mutation_rejected',
+  // Support Operations Console safe actions. Recorded through this same
+  // writer rather than a parallel one so every platform-side action a human
+  // takes on a clinic's behalf lands in one trail — and so `tenantId` (the
+  // TARGET clinic, not the actor's tenant, which is always null for platform
+  // staff) is populated by the mechanism that already handles that case.
+  SUPPORT_EMAIL_RESENT: 'platform_support.email_resent',
+  SUPPORT_EMAIL_RESEND_REJECTED: 'platform_support.email_resend_rejected',
+  SUPPORT_NOTIFICATION_RETRIED: 'platform_support.notification_retried',
+  SUPPORT_NOTIFICATION_RETRY_REJECTED: 'platform_support.notification_retry_rejected',
+  SUPPORT_INTEGRATION_RECHECKED: 'platform_support.integration_rechecked',
 } as const;
 
 export type PlatformAdminAuditAction =

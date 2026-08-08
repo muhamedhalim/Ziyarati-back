@@ -87,6 +87,49 @@ export const PERMISSION = {
   PLATFORM_SUPPORT_TICKETS_REPLY: 'platform.support_tickets.reply',
   PLATFORM_SUPPORT_TICKETS_CLOSE: 'platform.support_tickets.close',
 
+  // ── Support Operations Console — cross-tenant DIAGNOSTICS ────────────────
+  // A separate family from PLATFORM_SUPPORT_TICKETS_* above: those govern the
+  // ticket WORKFLOW, these govern READING the clinic state needed to diagnose
+  // a ticket. Deliberately one segment deeper than the rest of the catalogue
+  // (`platform.support.<area>.<action>`) so the two families never blur — the
+  // guard matches the whole slug, so segment depth is cosmetic.
+  //
+  // Every slug here is READ-ONLY except the three SAFE ACTIONS at the end, and
+  // every one is in RESERVED_PERMISSION_SLUGS: a clinic Owner must never be
+  // able to delegate cross-tenant diagnostic reach into a tenant custom role.
+  // None of them grants financial, RBAC, tenant-administration, medical,
+  // secret-bearing or AI-cost access — those stay super-admin-only, and the
+  // Support endpoints return dedicated allow-listed DTOs rather than widening
+  // any existing Super Admin response.
+  PLATFORM_SUPPORT_CLINICS_READ_BASIC: 'platform.support.clinics.read_basic',
+  PLATFORM_SUPPORT_SUBSCRIPTIONS_READ: 'platform.support.subscriptions.read',
+  PLATFORM_SUPPORT_FEATURES_READ: 'platform.support.features.read',
+  PLATFORM_SUPPORT_CLINIC_SETTINGS_READ: 'platform.support.clinic_settings.read',
+  PLATFORM_SUPPORT_INTEGRATIONS_READ: 'platform.support.integrations.read',
+  PLATFORM_SUPPORT_NOTIFICATIONS_READ: 'platform.support.notifications.read',
+  PLATFORM_SUPPORT_JOBS_READ: 'platform.support.jobs.read',
+  PLATFORM_SUPPORT_AUDIT_READ: 'platform.support.audit.read',
+  PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS:
+    'platform.support.appointments.read_diagnostics',
+  PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS: 'platform.support.payments.read_diagnostics',
+  PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS: 'platform.support.ai.read_diagnostics',
+  PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS: 'platform.support.whatsapp.read_diagnostics',
+
+  // Safe recovery actions. Each is granted ONLY because an existing service
+  // already proves the underlying operation idempotent and destination-safe:
+  //   EMAIL_RESEND         -> PlatformStaffService/StaffAccessService
+  //                           .resendInvitation (destination + template
+  //                           backend-resolved, fresh token, already audited)
+  //   NOTIFICATIONS_RETRY  -> NotificationSchedulerService.retry (validates
+  //                           RETRYABLE_STATUSES, clears send_attempted,
+  //                           audited, single row — never retry-all)
+  //   INTEGRATIONS_RECHECK -> MonitoringService.whatsappReadiness + redisPing
+  //                           + StorageService.isConfigured (pure reads)
+  // No financial, subscription, feature-flag, RBAC or medical write exists.
+  PLATFORM_SUPPORT_NOTIFICATIONS_RETRY: 'platform.support.notifications.retry',
+  PLATFORM_SUPPORT_EMAIL_RESEND: 'platform.support.email.resend',
+  PLATFORM_SUPPORT_INTEGRATIONS_RECHECK: 'platform.support.integrations.recheck',
+
   // Profile (self-service)
   PROFILE_UPDATE_OWN: 'profile.update_own', // ABAC — see below
 
@@ -343,6 +386,34 @@ export const UNTRIAGED_COVERAGE_GAP_SLUGS: ReadonlySet<PermissionSlug> = new Set
  * this ever be handed to a narrowly-scoped custom role." `TENANTS_MANAGE` is
  * included even though no tenant role holds it today (defense in depth).
  */
+/**
+ * The Support Operations Console diagnostic family — the exact set granted to
+ * `platform_support` on top of its three ticket-workflow slugs, and the exact
+ * set added to {@link RESERVED_PERMISSION_SLUGS}. Declared once so the grant
+ * list and the reservation list can never drift apart (a drift would either
+ * leave Support unable to do its job, or leave a cross-tenant slug delegable
+ * into a tenant custom role).
+ *
+ * Order: the 12 read-only slugs first, then the 3 safe actions.
+ */
+export const PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS = [
+  PERMISSION.PLATFORM_SUPPORT_CLINICS_READ_BASIC,
+  PERMISSION.PLATFORM_SUPPORT_SUBSCRIPTIONS_READ,
+  PERMISSION.PLATFORM_SUPPORT_FEATURES_READ,
+  PERMISSION.PLATFORM_SUPPORT_CLINIC_SETTINGS_READ,
+  PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_READ,
+  PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_READ,
+  PERMISSION.PLATFORM_SUPPORT_JOBS_READ,
+  PERMISSION.PLATFORM_SUPPORT_AUDIT_READ,
+  PERMISSION.PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS,
+  PERMISSION.PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS,
+  PERMISSION.PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS,
+  PERMISSION.PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS,
+  PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY,
+  PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND,
+  PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK,
+] as const satisfies readonly PermissionSlug[];
+
 export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
   PERMISSION.ROLES_MANAGE,
   PERMISSION.USERS_MANAGE,
@@ -356,6 +427,11 @@ export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
   PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
   PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
   PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE,
+  // Support Operations Console diagnostics — cross-tenant reach into clinic
+  // operational state, plus the three safe recovery actions. Reserved for the
+  // same reason as the ticket family: none of it may ever be delegated into a
+  // tenant custom role by a clinic Owner who happens to hold `roles.manage`.
+  ...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -470,6 +546,23 @@ export const PERMISSIONS: PermissionDef[] = [
   { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE, name: 'Triage platform support tickets (status/priority, cannot close)', module: 'support_tickets' },
   { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY, name: 'Reply to / add internal notes on platform support tickets', module: 'support_tickets' },
   { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE, name: 'Close platform support tickets', module: 'support_tickets' },
+
+  { slug: PERMISSION.PLATFORM_SUPPORT_CLINICS_READ_BASIC, name: 'Read a clinic support profile (basic operational identity)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_SUBSCRIPTIONS_READ, name: 'Read clinic subscription diagnostics (no pricing/cost)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_FEATURES_READ, name: 'Read clinic feature/module availability diagnostics', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_CLINIC_SETTINGS_READ, name: 'Read safe clinic operational configuration', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_READ, name: 'Read clinic integration status (no credentials)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_READ, name: 'Read clinic email/notification delivery history', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_JOBS_READ, name: 'Read queue/worker health (no Redis administration)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_AUDIT_READ, name: 'Read sanitized clinic operational activity timeline', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS, name: 'Read appointment diagnostics (no medical data)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS, name: 'Read payment diagnostics (no card data, fees or secrets)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS, name: 'Read AI diagnostics (no costs, prompts or provider keys)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS, name: 'Read WhatsApp diagnostics (no Meta tokens or secrets)', module: 'support_diagnostics' },
+
+  { slug: PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY, name: 'Retry one failed notification (safe, audited)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND, name: 'Resend one eligible transactional email (safe, audited)', module: 'support_diagnostics' },
+  { slug: PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK, name: 'Trigger a read-only integration health recheck (audited)', module: 'support_diagnostics' },
 
   { slug: PERMISSION.PROFILE_UPDATE_OWN, name: 'Update own profile', module: 'profile' },
 
@@ -999,15 +1092,25 @@ export const ROLE_PERMISSIONS: Record<
   // this entry (it exists only to satisfy the exhaustive `RoleSlug` mapping).
   [ROLE.AI_BOT]: AI_BOT_PERMISSIONS,
 
-  // Platform Customer Service: cross-tenant support-ticket triage only.
+  // Platform Customer Service: cross-tenant support-ticket triage, plus the
+  // read-only Support Operations Console diagnostics needed to work out WHY a
+  // clinic's problem happened, plus three proven-safe recovery actions.
+  //
   // Deliberately excludes PLATFORM_SUPPORT_TICKETS_CLOSE (only super_admin
   // holds it, via the '*' wildcard) and DASHBOARD_ACCESS (this role must
   // never reach the clinic workspace shell). Also excludes the tenant-scoped
   // SUPPORT_TICKETS_REPLY/REOPEN — those are separate permissions on separate
   // (clinic-side) controllers.
+  //
+  // What this role STILL cannot do, by construction — there is no slug here
+  // for any of it: change subscriptions/plans/pricing/usage, toggle feature
+  // flags, approve or suspend a clinic, refund or modify a payment, modify an
+  // appointment or a patient, read medical data, read AI costs, read secrets,
+  // manage RBAC, manage platform staff, or change platform configuration.
   [ROLE.PLATFORM_SUPPORT]: [
     PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
     PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
     PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+    ...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
   ],
 };

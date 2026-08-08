@@ -43,6 +43,7 @@ import { BillingUpgradeModule } from './modules/billing-upgrades/billing-upgrade
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { PlatformStaffModule } from './modules/platform-staff/platform-staff.module';
+import { PlatformSupportModule } from './modules/platform-support/platform-support.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
 import { IntegrationModule } from './modules/integration/integration.module';
 import { IntegrationPlatformModule } from './modules/integration-platform/integration-platform.module';
@@ -147,6 +148,7 @@ import { validate } from './config/env.validation';
     AnalyticsModule,
     PlatformModule,
     PlatformStaffModule,
+    PlatformSupportModule,
     IntegrationModule,
     IntegrationPlatformModule,
     SchedulingModule,
