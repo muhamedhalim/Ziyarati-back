@@ -20,8 +20,12 @@ import * as path from 'node:path';
 
 import {
   ALL_PERMISSION_SLUGS,
+  NON_STAFF_ROLE_SLUGS,
   OWNERSHIP_SCOPED_PERMISSIONS,
   PERMISSION,
+  PERMISSIONS,
+  PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
+  RESERVED_PERMISSION_SLUGS,
   ROLE,
   ROLE_GATED_PERMISSION_SLUGS,
   ROLE_PERMISSIONS,
@@ -195,5 +199,138 @@ describe('RBAC branch permissions (FND-017 / M-07)', () => {
         ]),
       );
     }
+  });
+});
+
+/**
+ * Support Operations Console — the `platform.support.*` diagnostic family.
+ *
+ * These assertions are the RBAC half of the console's security boundary: they
+ * prove Platform Customer Service gains exactly the diagnostic reach it needs
+ * and nothing adjacent to it, that no tenant role can ever receive any of it,
+ * and that the grant list and the reservation list cannot drift apart. The
+ * runtime half (routes actually refusing the request) lives in the
+ * platform-support e2e suite.
+ */
+describe('Support Operations Console diagnostic permissions', () => {
+  const support = ROLE_PERMISSIONS[ROLE.PLATFORM_SUPPORT] as string[];
+
+  it('exposes 12 read-only slugs + 3 safe actions, all in the catalogue', () => {
+    expect(PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS).toHaveLength(15);
+    expect(ALL_PERMISSION_SLUGS).toEqual(
+      expect.arrayContaining([...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS]),
+    );
+  });
+
+  it('every diagnostic slug carries catalogue metadata under the support_diagnostics module', () => {
+    for (const slug of PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS) {
+      const def = PERMISSIONS.find((p) => p.slug === slug);
+      expect(def).toBeDefined();
+      expect(def?.module).toBe('support_diagnostics');
+      expect(def?.name?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it('platform_support holds its 3 ticket slugs PLUS every diagnostic slug — and nothing else', () => {
+    expect(support).toEqual([
+      PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
+      PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
+      PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+      ...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
+    ]);
+  });
+
+  it('platform_support still cannot close tickets, enter the clinic shell, or hold any tenant-scoped reply/reopen slug', () => {
+    expect(support).not.toContain(PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE);
+    expect(support).not.toContain(PERMISSION.DASHBOARD_ACCESS);
+    expect(support).not.toContain(PERMISSION.SUPPORT_TICKETS_REPLY);
+    expect(support).not.toContain(PERMISSION.SUPPORT_TICKETS_REOPEN);
+  });
+
+  it('grants Support NO financial, RBAC, tenant-administration, medical, AI-cost or platform-config authority', () => {
+    // The explicit "must NOT be able to" list from the Support Operations
+    // Console brief, asserted slug by slug rather than by category, so a
+    // future widening of this role fails here loudly.
+    for (const forbidden of [
+      PERMISSION.SUBSCRIPTION_MANAGE,
+      PERMISSION.BILLING_MANAGE,
+      PERMISSION.BILLING_UPGRADE_MANAGE,
+      PERMISSION.FEATUREFLAG_MANAGE,
+      PERMISSION.PAYMENTS_MANAGE,
+      PERMISSION.PAYMENTS_READ,
+      PERMISSION.REFUNDS_MANAGE,
+      PERMISSION.INVOICES_MANAGE,
+      PERMISSION.SETTLEMENTS_MANAGE,
+      PERMISSION.TENANTS_MANAGE,
+      PERMISSION.ROLES_MANAGE,
+      PERMISSION.USERS_MANAGE,
+      PERMISSION.PLATFORM_SETTINGS_MANAGE,
+      PERMISSION.PLATFORM_SETTINGS_READ,
+      PERMISSION.PLATFORM_API_KEYS_MANAGE,
+      PERMISSION.APPOINTMENTS_READ,
+      PERMISSION.APPOINTMENTS_UPDATE,
+      PERMISSION.APPOINTMENTS_MANAGE_ALL,
+      PERMISSION.CUSTOMERS_READ,
+      PERMISSION.CRM_CUSTOMERS_READ,
+      PERMISSION.CRM_FILES_READ,
+      PERMISSION.CRM_NOTES_READ,
+      PERMISSION.AI_ANALYTICS_READ,
+      PERMISSION.AI_MANAGE,
+      PERMISSION.STAFF_READ,
+      PERMISSION.STAFF_MANAGE,
+    ]) {
+      expect(support).not.toContain(forbidden);
+    }
+  });
+
+  it('every diagnostic slug is RESERVED — a clinic Owner can never delegate one into a tenant custom role', () => {
+    for (const slug of PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS) {
+      expect(RESERVED_PERMISSION_SLUGS.has(slug)).toBe(true);
+    }
+  });
+
+  it('the grant list and the reservation list cannot drift — both derive from the same array', () => {
+    const reservedDiagnostics = [...RESERVED_PERMISSION_SLUGS].filter((s) =>
+      s.startsWith('platform.support.'),
+    );
+    expect(reservedDiagnostics.sort()).toEqual([...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS].sort());
+  });
+
+  it('no tenant role — nor the AI bot, nor the end customer — receives any diagnostic slug', () => {
+    for (const role of [
+      ROLE.OWNER,
+      ROLE.MANAGER,
+      ROLE.RECEPTIONIST,
+      ROLE.DOCTOR,
+      ROLE.CUSTOMER,
+      ROLE.AI_BOT,
+    ]) {
+      const grants = ROLE_PERMISSIONS[role] as string[];
+      for (const slug of PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS) {
+        expect(grants).not.toContain(slug);
+      }
+    }
+  });
+
+  it('platform_support remains a non-staff role, so it can never be attached to a clinic user', () => {
+    expect(NON_STAFF_ROLE_SLUGS).toContain(ROLE.PLATFORM_SUPPORT);
+  });
+
+  it('exposes exactly three write actions — and no bulk/retry-all/queue-administration slug exists', () => {
+    const writes = PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS.filter(
+      (s) => !s.includes('.read'),
+    );
+    expect(writes).toEqual([
+      PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY,
+      PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND,
+      PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK,
+    ]);
+    for (const slug of ALL_PERMISSION_SLUGS) {
+      expect(slug).not.toMatch(/platform\.support\..*(all|purge|pause|resume|clean|delete)/);
+    }
+  });
+
+  it('does not collapse into one broad slug — no platform.support.manage exists', () => {
+    expect(ALL_PERMISSION_SLUGS).not.toContain('platform.support.manage');
   });
 });

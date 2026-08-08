@@ -319,6 +319,53 @@ RBAC rows are seeded by an idempotent data migration
 (`1730034000000-PlatformSupportRoleAndPermissions`), not `SEED_ON_STARTUP` — the seeder only
 reconciles thereafter. D7 (below) is unrelated but shipped in the same body of work.
 
+**Support Operations Console** (`src/modules/platform-support/`) — the diagnostic half of
+the same role. Triaging a ticket is useless without being able to see WHY the clinic's
+problem happened, and the only principal who could see that was `super_admin` — so every
+"why didn't the email arrive?" escalated to an account holding platform finance, AI costs,
+RBAC and tenant administration. This module gives Platform Customer Service a second,
+strictly READ-ONLY permission family, `platform.support.<area>.<action>` (12 read slugs +
+3 safe actions), all in `RESERVED_PERMISSION_SLUGS`, all seeded by
+`1730036000000-PlatformSupportDiagnosticPermissions`.
+
+Three properties define the design:
+
+1. **It owns no domain state and adds no second source of truth.** Every diagnostic
+   COMPOSES the service that already owns the answer and projects an allow-list —
+   `FeatureResolverService.resolveTenant` for entitlement (so Support sees exactly what the
+   guards enforce, including its `blockedReason` enum), `QueueService` for queue health,
+   `NotificationSchedulerService.retry` for the notification retry,
+   `StaffAccessService.resendInvitation` for the email resend. Where the source is a raw
+   table (`email_logs`, `audit_logs`, `payments`, `ai_tool_calls`) the query NAMES its
+   columns, so a future column cannot become visible to Support merely by existing.
+2. **No existing Super Admin route was widened.** Every Super Admin diagnostic returns more
+   than Support needs (plan catalogues, platform cost, verification documents, raw provider
+   payloads), so admitting `platform_support` to one would grant all of it. Dedicated,
+   sanitized endpoints instead — mapped, never entity-serialized-then-deleted. Credentials
+   adjacent to what IS read (`whatsapp_accounts.access_token`,
+   `tenant_ai_deployments.api_key_ciphertext`) are never selected; where their PRESENCE is
+   diagnostic it is derived in SQL as a boolean and the value never leaves the database.
+3. **Tenant isolation is unchanged.** Support is cross-tenant by design, so the target
+   clinic is always an explicit `:tenantId` path parameter validated by
+   `SupportClinicResolver` (404, never 403 — an id from another clinic must not be
+   confirmed to exist). `TenantContextService.requireTenantId()` is untouched, no
+   tenant-scoped service became tenant-optional, and a Support principal supplying another
+   `tenantId` to a TENANT route still gets refused exactly as before.
+
+Privacy: patient identity is masked (`M*** A***`, `m***@gmail.com`, `+9665*****567` — see
+`support-privacy.util.ts`), audit payloads are reduced to changed FIELD NAMES rather than
+values, and no clinical table is queried at all. Provider failure strings pass through
+`sanitizeFailureReason`, which strips URLs, credentials, addresses and long digit runs
+while deliberately PRESERVING the diagnosis itself ("token expired" survives; `token=<value>`
+does not) — a sanitizer that eats the reason a support agent opened the page is worse than
+none.
+
+Writes: exactly three, each targeting one record, each audited through
+`PlatformAdminAuditService` (including refusals). None of the three routes accepts a request
+body at all, which is what makes "Support can never construct a payload, choose a template
+or alter a destination" structural rather than a validation rule. There is no bulk route, no
+retry-all, and no queue administration anywhere in the module.
+
 ```mermaid
 graph LR
   REQ[Request] --> JWT[JwtAuthGuard] --> CSRF[CsrfGuard] --> SUB[SubscriptionAccessGuard]
@@ -458,6 +505,7 @@ dashboard uniqueness), idempotent upserts, primary-branch attribution. Repeatabl
 - **Scheduling** — `AvailabilityService.assertBookable` (the single booking gate used by Appointment **and** AI tools), slots, blocked slots, holidays.
 - **Platform** — API keys, API/webhook logs, file metadata, system settings; `platform.logCleanup` sweep.
 - **Platform Staff** (`src/modules/platform-staff/`) — Super Admin CRUD over Platform Customer Service employees (see §3.2). Reuses `users`/`roles`/`user_roles`/`password_resets`; no new table.
+- **Platform Support** (`src/modules/platform-support/`) — the Support Operations Console (see §3.2): read-only cross-tenant clinic diagnostics plus three audited safe actions, for `platform_support`. Owns **no** table and **no** entity; composes `FeatureResolverService`, `QueueService`, `NotificationSchedulerService`, `StaffAccessService` and `PlatformAdminAuditService` behind allow-listed Support DTOs.
 
 ---
 
