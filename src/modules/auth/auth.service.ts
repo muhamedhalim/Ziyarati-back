@@ -718,6 +718,30 @@ export class AuthService {
    * flattens everything into the principal that guards consume.
    */
   async buildAuthenticatedUser(userId: string): Promise<AuthenticatedUser> {
+    const { principal } = await this.loadPrincipal(userId);
+    return principal;
+  }
+
+  /**
+   * Same resolution as `buildAuthenticatedUser`, additionally returning the
+   * `Tenant` row this same lookup already loaded (PERF-BE-003). HTTP-only:
+   * `JwtStrategy` uses this to hand the already-loaded tenant to
+   * `ActiveTenantGuard`, which otherwise re-queries the identical tenant by
+   * id a second time (confirmed via live query-log capture, T146/T147). The
+   * tenant is returned as a second value, never merged into the
+   * `AuthenticatedUser` principal itself, so it can never leak through
+   * `GET /auth/me` or anywhere else that returns the principal as-is.
+   */
+  async buildAuthenticatedUserWithTenant(
+    userId: string,
+  ): Promise<{ principal: AuthenticatedUser; tenant: Tenant | null }> {
+    const { user, principal } = await this.loadPrincipal(userId);
+    return { principal, tenant: user.tenant ?? null };
+  }
+
+  private async loadPrincipal(
+    userId: string,
+  ): Promise<{ user: User; principal: AuthenticatedUser }> {
     const user = await this.users.findOne({
       where: { id: userId },
       relations: {
@@ -744,12 +768,15 @@ export class AuthService {
     }
 
     return {
-      id: user.id,
-      tenantId: user.tenant?.id ?? null,
-      email: user.email ?? null,
-      fullName: user.full_name ?? null,
-      roles: [...roleSlugs],
-      permissions: [...permissionSlugs],
+      user,
+      principal: {
+        id: user.id,
+        tenantId: user.tenant?.id ?? null,
+        email: user.email ?? null,
+        fullName: user.full_name ?? null,
+        roles: [...roleSlugs],
+        permissions: [...permissionSlugs],
+      },
     };
   }
 

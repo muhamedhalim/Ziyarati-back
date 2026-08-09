@@ -9,7 +9,8 @@ import { AppError, ErrorCode } from '../../../common/errors';
 
 import { MetaGraphClient, MetaTemplate } from './meta-graph.client';
 import { WhatsappAccountResolver } from '../routing/whatsapp-account.resolver';
-import { WHATSAPP_TEMPLATE_STATUS, WhatsappTemplateStatus } from '../whatsapp.constants';
+import { WhatsappTemplateStatus } from '../whatsapp.constants';
+import { mapMetaTemplateStatus } from '../template-status.util';
 
 export interface TemplateSyncResult {
   wabaId: string;
@@ -161,30 +162,17 @@ export class WhatsappTemplateSyncService {
   }
 
   /**
-   * Meta's statuses → our local vocabulary. Anything unrecognised maps to
-   * PENDING_REVIEW rather than APPROVED: an unknown status must never be
-   * treated as sendable (Meta adds statuses like PAUSED/LIMIT_EXCEEDED, and
-   * defaulting those to approved would push messages Meta will reject).
+   * Meta's statuses → our local vocabulary. The mapping itself lives in
+   * `template-status.util.ts` because the create-on-Meta path learns a status
+   * from exactly the same source and must agree with this one; only the
+   * logging of an unrecognised value is this service's own concern.
    */
   private mapStatus(metaStatus: string): WhatsappTemplateStatus {
-    switch (metaStatus?.toUpperCase()) {
-      case 'APPROVED':
-        return WHATSAPP_TEMPLATE_STATUS.APPROVED;
-      case 'REJECTED':
-        return WHATSAPP_TEMPLATE_STATUS.REJECTED;
-      case 'PAUSED':
-      case 'DISABLED':
-        return WHATSAPP_TEMPLATE_STATUS.DISABLED;
-      case 'PENDING':
-      case 'IN_APPEAL':
-      case 'PENDING_DELETION':
-        return WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW;
-      default:
-        this.logger.warn(
-          `Unknown Meta template status "${metaStatus}" — treating as pending (not sendable)`,
-        );
-        return WHATSAPP_TEMPLATE_STATUS.PENDING_REVIEW;
-    }
+    return mapMetaTemplateStatus(metaStatus, (unknown) =>
+      this.logger.warn(
+        `Unknown Meta template status "${unknown}" — treating as pending (not sendable)`,
+      ),
+    );
   }
 
   /**

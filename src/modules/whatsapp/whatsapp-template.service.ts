@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 
@@ -7,9 +7,13 @@ import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
-import { CreateWhatsappTemplateDto } from './dto/create-whatsapp-template.dto';
+import { CreateWhatsappTemplateDto, WhatsappTemplateComponentDto } from './dto/create-whatsapp-template.dto';
 import { UpdateWhatsappTemplateDto } from './dto/update-whatsapp-template.dto';
 import { WhatsappTemplateFilterDto } from './dto/whatsapp-template-filter.dto';
+import { MetaGraphClient, MetaTemplateComponentInput } from './meta/meta-graph.client';
+import { WhatsappAccountResolver } from './routing/whatsapp-account.resolver';
+import { mapMetaTemplateStatus } from './template-status.util';
+import { extractRequiredVariables } from './template-variables.util';
 import {
   WHATSAPP_TEMPLATE_STATUS,
   WHATSAPP_TEMPLATE_STATUSES,
@@ -18,20 +22,41 @@ import {
 /**
  * WhatsApp message templates. Unique per (tenant, name, language).
  *
+ * Templates are META'S data. `create` therefore SUBMITS to Meta first and only
+ * persists once Meta has accepted — the local row is a mirror of something that
+ * really exists on the WABA, exactly like the rows
+ * `WhatsappTemplateSyncService` writes. The two paths deliberately produce the
+ * same stored shape (`{ components: [...] }`, Meta-derived status, Meta's id in
+ * `provider_template_id`), so nothing downstream needs to know which one
+ * created a row.
+ *
  * Tenant isolation: every query filters `tenant: { id: tenantId }`; a referenced
- * account is re-validated against the tenant.
+ * account is re-validated against the tenant; the WABA written to a row is
+ * always the one on the tenant's own resolved account, never client input.
  */
 @Injectable()
 export class WhatsappTemplateService {
+  private readonly logger = new Logger('WhatsappTemplateService');
+
   constructor(
     @InjectRepository(WhatsappTemplate)
     private readonly templates: Repository<WhatsappTemplate>,
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
+    private readonly graph: MetaGraphClient,
+    private readonly resolver: WhatsappAccountResolver,
   ) {}
 
+  /**
+   * Creates the template ON META, then mirrors it locally.
+   *
+   * Order matters and is the whole point: Meta is called BEFORE anything is
+   * written. A failure therefore leaves no row at all, rather than a local
+   * "draft" that looks like a template but exists nowhere Meta can see — that
+   * orphan state is what made the previous local-only create misleading (the
+   * row could never become sendable, because only Meta may write `approved`).
+   */
   async create(tenantId: string, dto: CreateWhatsappTemplateDto): Promise<WhatsappTemplate> {
-    this.assertNotSettingApproved(dto.status);
     if (dto.accountId) await this.assertAccount(tenantId, dto.accountId);
 
     const duplicate = await this.templates.findOne({
@@ -43,16 +68,56 @@ export class WhatsappTemplateService {
       });
     }
 
-    const template = this.templates.create({
-      tenant: { id: tenantId } as Tenant,
-      whatsapp_account: dto.accountId ? ({ id: dto.accountId } as WhatsappAccount) : undefined,
+    const components = this.toMetaComponents(dto.components);
+
+    // Resolve the tenant's own connected account. This is the ONLY source of a
+    // WABA id and an access token — both are read from the tenant's row and
+    // never accepted from the request, so a caller cannot aim a template at
+    // someone else's WABA.
+    const account = dto.accountId
+      ? await this.resolver.byId(tenantId, dto.accountId)
+      : await this.resolver.forTenant(tenantId);
+
+    if (!account.wabaId || !account.accessToken) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          'This WhatsApp account has no connected WhatsApp Business Account. Connect WhatsApp before creating a template.',
+      });
+    }
+
+    const created = await this.graph.createTemplate(account.wabaId, account.accessToken, {
       name: dto.name,
       language: dto.language,
       category: dto.category,
-      components: dto.components,
-      status: dto.status ?? WHATSAPP_TEMPLATE_STATUS.DRAFT,
+      components,
     });
-    return this.templates.save(template);
+
+    const template = this.templates.create({
+      tenant: { id: tenantId } as Tenant,
+      whatsapp_account: { id: account.id } as WhatsappAccount,
+      name: dto.name,
+      language: dto.language,
+      // Meta may RE-CATEGORISE on submission (a "utility" template that reads
+      // as marketing comes back MARKETING). Its answer wins over the request.
+      category: created.category ?? dto.category,
+      components: { components },
+      provider_template_id: created.id,
+      waba_id: account.wabaId,
+      // Meta's own verdict — normally PENDING. Never the client's, never a
+      // local default: `getSendableTemplate` trusts `approved` unconditionally.
+      status: mapMetaTemplateStatus(created.status, (unknown) =>
+        this.logger.warn(
+          `Unknown Meta template status "${unknown}" on create — treating as pending (not sendable)`,
+        ),
+      ),
+      last_synced_at: new Date(),
+    });
+
+    const saved = await this.templates.save(template);
+    this.logger.log(
+      `Tenant ${tenantId} created template "${dto.name}" (${dto.language}) on waba=${account.wabaId} — meta id ${created.id}, status ${saved.status}`,
+    );
+    return saved;
   }
 
   async findAll(tenantId: string, filter: WhatsappTemplateFilterDto) {
@@ -104,7 +169,13 @@ export class WhatsappTemplateService {
     if (dto.name !== undefined) template.name = dto.name;
     if (dto.language !== undefined) template.language = dto.language;
     if (dto.category !== undefined) template.category = dto.category;
-    if (dto.components !== undefined) template.components = dto.components;
+    // Local-only edit (Meta is not re-submitted here), but the stored shape
+    // must stay the `{ components: [...] }` envelope every reader expects —
+    // the send path's variable check and the UI's component viewer both
+    // depend on it.
+    if (dto.components !== undefined) {
+      template.components = { components: this.toMetaComponents(dto.components) };
+    }
     if (dto.status !== undefined) template.status = dto.status;
     return this.templates.save(template);
   }
@@ -154,6 +225,114 @@ export class WhatsappTemplateService {
           'Templates can only be approved through WhatsApp/Meta\'s review process, not set directly.',
       });
     }
+  }
+
+  /**
+   * Translates the validated DTO into the exact payload Meta accepts, and
+   * enforces the cross-field rules class-validator cannot express per-property.
+   *
+   * The placeholder/example check is the one that matters in practice: Meta
+   * rejects a template whose BODY declares `{{1}}` without a matching sample,
+   * and its error text is generic enough that the user would be left guessing.
+   * `extractRequiredVariables` is reused rather than re-parsed so authoring and
+   * the send-time completeness check agree on what a placeholder is.
+   */
+  private toMetaComponents(
+    components: WhatsappTemplateComponentDto[],
+  ): MetaTemplateComponentInput[] {
+    const bodies = components.filter((c) => c.type === 'BODY');
+    if (bodies.length !== 1) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'A template must have exactly one BODY component.',
+      });
+    }
+
+    const seen = new Set<string>();
+    for (const c of components) {
+      if (seen.has(c.type)) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: `Duplicate ${c.type} component — each component type may appear only once.`,
+        });
+      }
+      seen.add(c.type);
+    }
+
+    return components.map((c) => this.toMetaComponent(c));
+  }
+
+  private toMetaComponent(c: WhatsappTemplateComponentDto): MetaTemplateComponentInput {
+    if (c.type === 'BUTTONS') {
+      if (!c.buttons || c.buttons.length === 0) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: 'A BUTTONS component must declare at least one button.',
+        });
+      }
+      return {
+        type: 'BUTTONS',
+        buttons: c.buttons.map((b) => {
+          if (b.type === 'URL' && !b.url?.trim()) {
+            throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+              message: `Button "${b.text}" is a URL button but has no url.`,
+            });
+          }
+          if (b.type === 'PHONE_NUMBER' && !b.phoneNumber?.trim()) {
+            throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+              message: `Button "${b.text}" is a phone button but has no phone number.`,
+            });
+          }
+          return {
+            type: b.type as 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER',
+            text: b.text,
+            ...(b.type === 'URL' ? { url: b.url } : {}),
+            ...(b.type === 'PHONE_NUMBER' ? { phone_number: b.phoneNumber } : {}),
+          };
+        }),
+      };
+    }
+
+    const text = c.text?.trim();
+    if (!text) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `The ${c.type} component requires text.`,
+      });
+    }
+
+    // Reuse the send path's definition of "a placeholder" by handing it the
+    // same `{ components: [...] }` envelope the column stores.
+    const placeholders = extractRequiredVariables({ components: [{ type: 'BODY', text }] });
+    const examples = (c.example ?? []).map((e) => e.trim()).filter((e) => e.length > 0);
+
+    if (placeholders.length > 0 && examples.length !== placeholders.length) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          `The ${c.type} component declares ${placeholders.length} placeholder(s) ` +
+          `(${placeholders.map((p) => `{{${p}}}`).join(', ')}) but supplied ${examples.length} example value(s). ` +
+          'Meta rejects a template whose placeholders have no sample values.',
+        publicContext: { component: c.type, placeholders, suppliedExamples: examples.length },
+      });
+    }
+
+    if (c.type === 'FOOTER' && placeholders.length > 0) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'A FOOTER component cannot contain placeholders.',
+      });
+    }
+
+    return {
+      type: c.type as 'HEADER' | 'BODY' | 'FOOTER',
+      ...(c.type === 'HEADER' ? { format: 'TEXT' as const } : {}),
+      text,
+      // Meta's example shapes differ by component: BODY nests one array per
+      // example set, HEADER is a flat list.
+      ...(placeholders.length > 0
+        ? {
+            example:
+              c.type === 'BODY'
+                ? { body_text: [examples] }
+                : { header_text: examples },
+          }
+        : {}),
+    };
   }
 
   private async assertAccount(tenantId: string, accountId: string): Promise<void> {

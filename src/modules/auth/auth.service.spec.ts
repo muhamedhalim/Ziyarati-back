@@ -1008,6 +1008,40 @@ describe('AuthService', () => {
     });
   });
 
+  // ─────────────────── buildAuthenticatedUserWithTenant (PERF-BE-003) ───────────────
+  describe('buildAuthenticatedUserWithTenant', () => {
+    it('returns the same principal as buildAuthenticatedUser, plus the loaded Tenant row', async () => {
+      const row = principalRow();
+      users.findOne.mockResolvedValueOnce(row);
+      const { principal, tenant } = await service.buildAuthenticatedUserWithTenant('user-1');
+      expect(principal).toEqual(expectedPrincipal);
+      expect(tenant).toBe(row.tenant);
+      // The tenant is never merged into the principal — guards against a future
+      // regression that would leak it through GET /auth/me.
+      expect((principal as any).tenant).toBeUndefined();
+    });
+
+    it('returns tenant: null for a super-admin / no-tenant user', async () => {
+      users.findOne.mockResolvedValueOnce({
+        id: 'sa-1',
+        email: 'root@platform',
+        is_active: true,
+        tenant: null,
+        userRoles: [{ role: { slug: 'super_admin', rolePermissions: [] } }],
+      });
+      const { principal, tenant } = await service.buildAuthenticatedUserWithTenant('sa-1');
+      expect(principal.tenantId).toBeNull();
+      expect(tenant).toBeNull();
+    });
+
+    it('throws USER_INACTIVE when the user is deactivated, same as buildAuthenticatedUser', async () => {
+      users.findOne.mockResolvedValueOnce({ ...principalRow(), is_active: false });
+      await expect(service.buildAuthenticatedUserWithTenant('user-1')).rejects.toMatchObject({
+        code: ErrorCode.USER_INACTIVE,
+      });
+    });
+  });
+
   // ───────────────────────────── token TTL parsing ──────────────────────────
   // Exercises the private ttlToMs branches (unit default + no-match) via login,
   // which signs tokens through issueTokens using the configured TTL strings.

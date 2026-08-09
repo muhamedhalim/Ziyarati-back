@@ -1,0 +1,14 @@
+PERF-BE-003 Stage B — T147 before measurement — GET /api/v1/branches query log (LOCAL/T1, TYPEORM_LOGGING=true, single request, log-diffed)
+
+7 queries total for one authenticated GET /api/v1/branches request:
+1. SELECT DISTINCT ... FROM users ... LEFT JOIN tenants ... LEFT JOIN user_roles ... LEFT JOIN roles ... LEFT JOIN role_permissions ... LEFT JOIN permissions ... WHERE User.id = $1   [AuthService.buildAuthenticatedUser — TypeORM's DISTINCT-id-subquery half of the relation-tree find, fired because userRoles is a one-to-many join]
+2. SELECT ... FROM users ... (same joins) ... WHERE User.id = $1 AND User.id IN ($2)          [AuthService.buildAuthenticatedUser — the paired full-data query for the ids query 1 found]
+3. SELECT ... FROM tenants WHERE Tenant.id = $1                                                [ActiveTenantGuard -> TenantLookupService.findById — DUPLICATE: same tenant id ($1 = 4dd02ba4-685c-4141-b805-0f562d1c2f92) already returned as the "User__User_tenant" columns in query 2]
+4. SELECT ... FROM branches ... LEFT JOIN tenants ... WHERE Branch.tenant.id = $1               [BranchController's own business logic — the actual list query]
+5. START TRANSACTION                                                                             [ApiLoggingInterceptor's api_logs write]
+6. INSERT INTO api_logs (...) VALUES (...) RETURNING id, created_at                              [ApiLoggingInterceptor's api_logs write]
+7. COMMIT                                                                                         [ApiLoggingInterceptor's api_logs write]
+
+Confirms T146's trace with a live, byte-for-byte log capture: query 3 is a full duplicate of tenant data already loaded (via LEFT JOIN) by query 2, just discarded before being kept on AuthenticatedUser (only .id survives). The Stage B fix removes exactly query 3, cutting per-request query count on every ActiveTenantGuard-gated endpoint (95 controller files) from 7 to 6 for this endpoint's shape.
+
+Full raw log lines: api-before-logging.log (lines 1339-1345), reproduced via log-diffing per T051's own established method (live TYPEORM_LOGGING=true diffing, not a Jest query-counter harness run).

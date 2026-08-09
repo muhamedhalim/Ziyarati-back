@@ -53,6 +53,42 @@ export interface MetaMediaMetadata {
   fileSize?: number;
 }
 
+/**
+ * One component of a template as Meta accepts it on create. Deliberately the
+ * PROVIDER's shape (upper-case `type`, snake_case `example` keys) rather than a
+ * translated one: this crosses the wire verbatim, and a second vocabulary here
+ * would only be a place for the translation to go wrong.
+ */
+export interface MetaTemplateComponentInput {
+  type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS';
+  format?: 'TEXT';
+  text?: string;
+  example?: {
+    header_text?: string[];
+    body_text?: string[][];
+  };
+  buttons?: Array<{
+    type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER';
+    text: string;
+    url?: string;
+    phone_number?: string;
+  }>;
+}
+
+export interface MetaTemplateCreateInput {
+  name: string;
+  language: string;
+  category: string;
+  components: MetaTemplateComponentInput[];
+}
+
+/** What Meta returns from a successful template creation. */
+export interface MetaTemplateCreateResult {
+  id: string;
+  status?: string;
+  category?: string;
+}
+
 interface GraphErrorBody {
   error?: { message?: string; type?: string; code?: number; error_subcode?: number };
 }
@@ -271,6 +307,37 @@ export class MetaGraphClient {
   }
 
   /**
+   * Create a message template ON the WABA — the write half of the template
+   * lifecycle (`listTemplates` above is the read half).
+   *
+   * Meta owns review: this only SUBMITS the template. The response carries
+   * Meta's own id and its initial status (normally `PENDING`), which is the
+   * only status the caller may persist — a locally-invented one would let a
+   * template appear sendable before Meta has approved anything.
+   *
+   * The tenant's token is passed in like every other method here, so this can
+   * only ever write to a WABA the caller already resolved for that tenant.
+   */
+  async createTemplate(
+    wabaId: string,
+    token: string,
+    input: MetaTemplateCreateInput,
+  ): Promise<MetaTemplateCreateResult> {
+    const json = await this.postJson<{ id?: string; status?: string; category?: string }>(
+      `${encodeURIComponent(wabaId)}/message_templates`,
+      token,
+      input,
+    );
+
+    if (!json.id) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Meta accepted the template but returned no template id.',
+      });
+    }
+    return { id: json.id, status: json.status, category: json.category };
+  }
+
+  /**
    * Resolve an inbound media id to a short-lived download URL. Meta expires
    * these in minutes, which is why media download is a queued job that
    * re-resolves rather than storing the URL.
@@ -345,11 +412,25 @@ export class MetaGraphClient {
     return this.request<T>('POST', path, token);
   }
 
-  private async request<T>(method: 'GET' | 'POST', path: string, token?: string): Promise<T> {
+  /** POST with a JSON body. `post()` above sends none — Meta's edges differ. */
+  private async postJson<T>(path: string, token: string, body: unknown): Promise<T> {
+    return this.request<T>('POST', path, token, body);
+  }
+
+  private async request<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    token?: string,
+    body?: unknown,
+  ): Promise<T> {
     const url = this.config.graphUrl(path);
     const res = await this.fetchWithTimeout(url, {
       method,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 
     const json = (await res.json().catch(() => ({}))) as T & GraphErrorBody;
