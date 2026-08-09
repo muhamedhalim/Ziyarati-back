@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-08-09T11:58:32.185Z",
+  "totalQueues": 27,
+  "queuesWithState": [
+    {
+      "queue": "notifications",
+      "waiting": 0,
+      "active": 0,
+      "completed": 36,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 51.3
+    },
+    {
+      "queue": "ai",
+      "waiting": 0,
+      "active": 0,
+      "completed": 9,
+      "failed": 0,
+      "delayed": 2,
+      "paused": 0,
+      "sampledAvgDurationMs": 94.66666666666667
+    },
+    {
+      "queue": "analytics",
+      "waiting": 0,
+      "active": 0,
+      "completed": 103,
+      "failed": 0,
+      "delayed": 4,
+      "paused": 0,
+      "sampledAvgDurationMs": 75.7
+    },
+    {
+      "queue": "settlements",
+      "waiting": 0,
+      "active": 0,
+      "completed": 51,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 165.5
+    },
+    {
+      "queue": "subscriptions",
+      "waiting": 0,
+      "active": 0,
+      "completed": 1,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 209
+    },
+    {
+      "queue": "refunds",
+      "waiting": 0,
+      "active": 0,
+      "completed": 8,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 89
+    },
+    {
+      "queue": "payments",
+      "waiting": 0,
+      "active": 0,
+      "completed": 4,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 138.25
+    },
+    {
+      "queue": "platform",
+      "waiting": 0,
+      "active": 0,
+      "completed": 1,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 200
+    },
+    {
+      "queue": "usage-report",
+      "waiting": 0,
+      "active": 0,
+      "completed": 1,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 176
+    },
+    {
+      "queue": "integration.maintenance",
+      "waiting": 0,
+      "active": 0,
+      "completed": 19,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 65
+    },
+    {
+      "queue": "campaigns.maintenance",
+      "waiting": 0,
+      "active": 0,
+      "completed": 8,
+      "failed": 0,
+      "delayed": 1,
+      "paused": 0,
+      "sampledAvgDurationMs": 101.25
+    }
+  ]
+}

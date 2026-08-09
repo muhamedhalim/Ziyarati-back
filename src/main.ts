@@ -6,11 +6,24 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
 import cookieParser from 'cookie-parser';
+import compression from 'compression';
 import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { IntegrationModule } from './modules/integration/integration.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  // ---------------- Response compression (PERF-BE-001) ----------------
+  // Response-side only — wraps res.write/res.end, runs after guards/handlers
+  // have already decided the body, so it cannot affect auth, tenant scoping,
+  // rate limiting or CSRF (all request-side / Nest-guard concerns). Registered
+  // first purely by convention (compress every downstream response); order
+  // relative to the other middleware below does not matter since none of them
+  // read or transform the outgoing body. Default 1024-byte threshold and the
+  // default `compressible`-mimetype filter both apply — the whole app returns
+  // JSON or `text/plain` (T146: no streaming/SSE/binary-download response
+  // exists anywhere in this codebase), so nothing needs an explicit filter.
+  app.use(compression());
 
   // ---------------- Request correlation id ----------------
   // Registered first so every downstream layer (guards, routes, filter) sees it.
