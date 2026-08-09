@@ -1,0 +1,33 @@
+config:
+  target: "http://127.0.0.1:3001"
+  phases:
+    - name: "baseline"
+      duration: 15
+      arrivalRate: 1
+    - name: "normal"
+      duration: 15
+      arrivalRate: 3
+    - name: "peak"
+      duration: 15
+      arrivalRate: 8
+  defaults:
+    headers:
+      Cookie: "{{ $processEnvironment.SESSION_COOKIE }}"
+  plugins:
+    metrics-by-endpoint: {}
+
+scenarios:
+  - name: "J-02 composite: dashboard + appointments + crm/customers + staff (authenticated browsing)"
+    flow:
+      - get:
+          url: "/api/v1/analytics/dashboard"
+          name: "dashboard"
+      - get:
+          url: "/api/v1/appointments?limit=20"
+          name: "appointments-list"
+      - get:
+          url: "/api/v1/crm/customers?limit=20"
+          name: "crm-customers"
+      - get:
+          url: "/api/v1/staff"
+          name: "staff-list"

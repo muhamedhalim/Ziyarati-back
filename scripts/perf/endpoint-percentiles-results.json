@@ -1,0 +1,272 @@
+{
+  "generatedAt": "2026-08-09T11:30:46.119Z",
+  "auditQueryExecutionMs": 12.304700000000594,
+  "totalRowsInLedger": 1199,
+  "timeSpan": {
+    "min": "2026-08-08T14:18:51.835Z",
+    "max": "2026-08-09T08:29:39.462Z"
+  },
+  "rows": [
+    {
+      "endpoint": "/api/v1/public/discovery/cities",
+      "method": "GET",
+      "n": 651,
+      "p50_ms": 5,
+      "p95_ms": 11,
+      "p99_ms": 33.5,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/auth/me",
+      "method": "GET",
+      "n": 100,
+      "p50_ms": 0,
+      "p95_ms": 1,
+      "p99_ms": 1,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/tenants/me",
+      "method": "GET",
+      "n": 50,
+      "p50_ms": 6.5,
+      "p95_ms": 10,
+      "p99_ms": 16.039999999999992,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/auth/login",
+      "method": "POST",
+      "n": 36,
+      "p50_ms": 411.5,
+      "p95_ms": 469.5,
+      "p99_ms": 494.29999999999995,
+      "errorCount": 2
+    },
+    {
+      "endpoint": "/api/v1/crm/customers",
+      "method": "GET",
+      "n": 34,
+      "p50_ms": 16.5,
+      "p95_ms": 32.39999999999999,
+      "p99_ms": 43.04000000000002,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/appointments",
+      "method": "GET",
+      "n": 30,
+      "p50_ms": 34,
+      "p95_ms": 59.69999999999996,
+      "p99_ms": 68.84,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/staff",
+      "method": "GET",
+      "n": 29,
+      "p50_ms": 37,
+      "p95_ms": 70.59999999999998,
+      "p99_ms": 96.59999999999997,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/crm/customers/search",
+      "method": "GET",
+      "n": 23,
+      "p50_ms": 22,
+      "p95_ms": 41.49999999999999,
+      "p99_ms": 43.56,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/branches",
+      "method": "GET",
+      "n": 23,
+      "p50_ms": 5,
+      "p95_ms": 24.899999999999984,
+      "p99_ms": 33.80000000000001,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/system/health/readiness",
+      "method": "GET",
+      "n": 22,
+      "p50_ms": 2,
+      "p95_ms": 4.949999999999999,
+      "p99_ms": 5.789999999999999,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/analytics/reports/daily",
+      "method": "GET",
+      "n": 22,
+      "p50_ms": 11.5,
+      "p95_ms": 48.39999999999999,
+      "p99_ms": 64.79999999999998,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/analytics/dashboard",
+      "method": "GET",
+      "n": 16,
+      "p50_ms": 4,
+      "p95_ms": 8.75,
+      "p99_ms": 15.349999999999996,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/services",
+      "method": "GET",
+      "n": 16,
+      "p50_ms": 7,
+      "p95_ms": 14,
+      "p99_ms": 18.799999999999997,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/admin/notifications",
+      "method": "GET",
+      "n": 14,
+      "p50_ms": 7,
+      "p95_ms": 12.049999999999999,
+      "p99_ms": 13.609999999999998,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/admin/notifications/unread-count",
+      "method": "GET",
+      "n": 14,
+      "p50_ms": 8,
+      "p95_ms": 15.7,
+      "p99_ms": 16.74,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/ai/handovers",
+      "method": "GET",
+      "n": 14,
+      "p50_ms": 9.5,
+      "p95_ms": 16.049999999999997,
+      "p99_ms": 17.61,
+      "errorCount": 14
+    },
+    {
+      "endpoint": "/api/v1/tenants",
+      "method": "GET",
+      "n": 14,
+      "p50_ms": 3,
+      "p95_ms": 6.35,
+      "p99_ms": 6.869999999999999,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/permissions",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 7.5,
+      "p95_ms": 10.649999999999999,
+      "p99_ms": 10.93,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/platform/files",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 7,
+      "p95_ms": 8.95,
+      "p99_ms": 9.79,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/payments",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 21,
+      "p95_ms": 24.299999999999997,
+      "p99_ms": 24.86,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/roles",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 20,
+      "p95_ms": 28,
+      "p99_ms": 28,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/invoices",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 19,
+      "p95_ms": 21.299999999999997,
+      "p99_ms": 21.86,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/ai/conversations",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 7,
+      "p95_ms": 8,
+      "p99_ms": 8,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/ai/agents",
+      "method": "GET",
+      "n": 8,
+      "p50_ms": 6.5,
+      "p95_ms": 8.299999999999999,
+      "p99_ms": 8.86,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/platform/support/clinics",
+      "method": "GET",
+      "n": 7,
+      "p50_ms": 6,
+      "p95_ms": 10.099999999999998,
+      "p99_ms": 10.819999999999999,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/platform/support-tickets",
+      "method": "GET",
+      "n": 7,
+      "p50_ms": 4,
+      "p95_ms": 6.699999999999999,
+      "p99_ms": 6.9399999999999995,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/platform/support-tickets/kpis",
+      "method": "GET",
+      "n": 7,
+      "p50_ms": 3,
+      "p95_ms": 7.099999999999998,
+      "p99_ms": 7.8199999999999985,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/platform/api-keys",
+      "method": "GET",
+      "n": 7,
+      "p50_ms": 4,
+      "p95_ms": 5,
+      "p99_ms": 5,
+      "errorCount": 0
+    },
+    {
+      "endpoint": "/api/v1/crm/tags",
+      "method": "GET",
+      "n": 7,
+      "p50_ms": 4,
+      "p95_ms": 7.099999999999998,
+      "p99_ms": 7.8199999999999985,
+      "errorCount": 0
+    }
+  ]
+}

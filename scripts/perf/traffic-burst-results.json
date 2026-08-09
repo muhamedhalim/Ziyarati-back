@@ -1,0 +1,709 @@
+{
+  "generatedAt": "2026-08-09T11:29:42.755Z",
+  "repeatsPerRoute": 8,
+  "paceMs": 350,
+  "results": {
+    "fast reads": [
+      {
+        "path": "/api/v1/branches",
+        "ms": 50.8803,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 53.2519,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 58.6306,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 70.5955,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 53.7923,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 73.8407,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 45.3508,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/branches",
+        "ms": 67.6826,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 109.7655,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 75.9241,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 72.5784,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 52.7212,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 49.1556,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 62.6387,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 48.6743,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services",
+        "ms": 60.5572,
+        "status": 200
+      }
+    ],
+    "standard CRUD": [
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 113.071,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 78.678,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 62.7105,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 106.2845,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 99.2175,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 106.7372,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 104.0791,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/appointments?limit=20",
+        "ms": 66.678,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 56.1806,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 70.1013,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 71.6116,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 58.3492,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 74.7127,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 71.4043,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 61.8183,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers?limit=20",
+        "ms": 88.5954,
+        "status": 200
+      }
+    ],
+    "authorization-heavy": [
+      {
+        "path": "/api/v1/permissions",
+        "ms": 77.926,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 71.6587,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 61.4882,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 50.6444,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 73.5718,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 57.3405,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 60.4874,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/permissions",
+        "ms": 64.4205,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 75.7151,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 80.3996,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 60.8627,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 64.3093,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 69.6366,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 96.1646,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 62.1519,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/roles",
+        "ms": 54.1364,
+        "status": 200
+      }
+    ],
+    "search": [
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 53.8915,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 80.4104,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 61.8846,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 74.6803,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 79.4387,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 54.355,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 66.5695,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/crm/customers/search?q=a",
+        "ms": 73.6125,
+        "status": 200
+      }
+    ],
+    "dashboard aggregation": [
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 64.2933,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 36.3782,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 46.9139,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 50.7331,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 58.2692,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 57.9491,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 64.6801,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 42.3045,
+        "status": 200
+      }
+    ],
+    "analytics": [
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 41.4927,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 40.6343,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 48.0624,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 53.3926,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 41.7061,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 47.0456,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 33.3564,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/dashboard",
+        "ms": 57.8501,
+        "status": 200
+      }
+    ],
+    "reports": [
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 53.8009,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 53.8256,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 60.8149,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 59.905,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 48.9971,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 62.9737,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 60.4565,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/analytics/reports/daily?limit=14&page=1",
+        "ms": 62.4028,
+        "status": 200
+      }
+    ],
+    "AI operations": [
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 45.1114,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 52.0437,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 64.3687,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 64.0837,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 56.6786,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 54.5745,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 52.6157,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/conversations?limit=20",
+        "ms": 49.1538,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 73.5223,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 68.9007,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 52.807,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 38.7376,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 69.1379,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 61.8456,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 78.5841,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/ai/agents",
+        "ms": 72.5546,
+        "status": 200
+      }
+    ],
+    "payment operations": [
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 83.0308,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 78.9907,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 81.5794,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 76.7221,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 72.523,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 63.6264,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 82.9372,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/invoices?limit=20",
+        "ms": 63.3652,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 90.6858,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 73.1642,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 63.978,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 76.2373,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 59.9811,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 87.8874,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 79.86,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payments?limit=20",
+        "ms": 66.0543,
+        "status": 200
+      }
+    ],
+    "file/media operations": [
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 72.4623,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 70.5222,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 60.454,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 54.9263,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 49.3242,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 61.8888,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 65.7213,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/platform/files?limit=20",
+        "ms": 51.0571,
+        "status": 200
+      }
+    ],
+    "public unauthenticated": [
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 26.1248,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 33.3422,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 28.8028,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 30.6198,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 24.7483,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 16.3517,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 29.5666,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/public/discovery/cities",
+        "ms": 28.5193,
+        "status": 200
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 13.604,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 10.6459,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 13.8948,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 14.0069,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 11.3205,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 12.6734,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 12.4932,
+        "status": 401
+      },
+      {
+        "path": "/api/v1/services/categories",
+        "ms": 11.517,
+        "status": 401
+      }
+    ]
+  }
+}

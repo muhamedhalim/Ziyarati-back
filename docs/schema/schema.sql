@@ -351,7 +351,7 @@ CREATE TABLE IF NOT EXISTS ai_kb_embeddings (
         kb_id      uuid PRIMARY KEY REFERENCES ai_knowledge_bases(id) ON DELETE CASCADE,
         tenant_id  uuid NOT NULL,
         agent_id   uuid NOT NULL,
-        embedding  vector(1536) NOT NULL,
+        embedding  vector(${dim}) NOT NULL,
         created_at timestamptz NOT NULL DEFAULT now()
       );
 CREATE INDEX IF NOT EXISTS idx_ai_kb_emb_tenant_agent
@@ -686,3 +686,1855 @@ CREATE INDEX IF NOT EXISTS "IX_appt_services_appointment" ON "appointment_servic
 CREATE INDEX IF NOT EXISTS "IX_appt_status_logs_appointment" ON "appointment_status_logs" ("appointmentId");
 CREATE INDEX IF NOT EXISTS "IX_appt_cancellations_appointment" ON "appointment_cancellations" ("appointmentId");
 CREATE INDEX IF NOT EXISTS "IX_appt_reschedules_appointment" ON "appointment_reschedules" ("appointmentId");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730001400000-VerificationDocumentStorage.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "tenant_verification_documents" ALTER COLUMN "file_url" DROP NOT NULL;
+ALTER TABLE "tenant_verification_documents" ADD COLUMN IF NOT EXISTS "storage_key" character varying;
+ALTER TABLE "tenant_verification_documents" ADD COLUMN IF NOT EXISTS "original_filename" character varying;
+ALTER TABLE "tenant_verification_documents" ADD COLUMN IF NOT EXISTS "mime_type" character varying;
+ALTER TABLE "tenant_verification_documents" ADD COLUMN IF NOT EXISTS "size_bytes" integer;
+ALTER TABLE "tenant_verification_documents" ADD COLUMN IF NOT EXISTS "uploaded_by" character varying;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730001500000-VerificationAuditAndAdminNotifications.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "tenant_verification_documents" ADD COLUMN IF NOT EXISTS "content_hash" character varying;
+CREATE TABLE IF NOT EXISTS "verification_audit_logs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenant_id" uuid NOT NULL,
+        "document_id" uuid,
+        "action" character varying NOT NULL,
+        "doc_type" character varying,
+        "actor_id" uuid,
+        "actor_role" character varying,
+        "ip_address" character varying,
+        "user_agent" text,
+        "metadata" jsonb,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_verification_audit_logs" PRIMARY KEY ("id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_verif_audit_tenant" ON "verification_audit_logs" ("tenant_id");
+CREATE INDEX IF NOT EXISTS "IDX_verif_audit_tenant_created" ON "verification_audit_logs" ("tenant_id", "created_at");
+CREATE TABLE IF NOT EXISTS "admin_notifications" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "type" character varying NOT NULL,
+        "title" character varying NOT NULL,
+        "body" text,
+        "tenant_id" uuid,
+        "data" jsonb,
+        "is_read" boolean NOT NULL DEFAULT false,
+        "read_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_admin_notifications" PRIMARY KEY ("id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_admin_notif_read_created" ON "admin_notifications" ("is_read", "created_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730001600000-PaymentLedgerFinancials.ts  (5 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "payments"
+        ADD COLUMN IF NOT EXISTS "gateway_fee" numeric(14,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "platform_fee" numeric(14,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "net_amount" numeric(14,2),
+        ADD COLUMN IF NOT EXISTS "payment_method" character varying,
+        ADD COLUMN IF NOT EXISTS "merchant_id" character varying,
+        ADD COLUMN IF NOT EXISTS "sub_merchant_id" character varying,
+        ADD COLUMN IF NOT EXISTS "refunded_amount" numeric(14,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "refund_status" character varying,
+        ADD COLUMN IF NOT EXISTS "refunded_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS "failure_reason" text,
+        ADD COLUMN IF NOT EXISTS "metadata" jsonb;
+UPDATE "payments" SET "net_amount" = "amount" WHERE "net_amount" IS NULL AND "status" = 'PAID';
+CREATE INDEX IF NOT EXISTS "IDX_payments_paid_at" ON "payments" ("paid_at");
+CREATE INDEX IF NOT EXISTS "IDX_payments_appointment" ON "payments" ("appointmentId");
+CREATE INDEX IF NOT EXISTS "IDX_payments_settlement_status" ON "payments" ("settlement_status");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730001700000-FeatureDefinitions.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "feature_definitions" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "feature_key" character varying NOT NULL,
+        "name" character varying NOT NULL,
+        "description" text,
+        "category" character varying NOT NULL DEFAULT 'General',
+        "default_enabled" boolean NOT NULL DEFAULT false,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_feature_definitions" PRIMARY KEY ("id")
+      );
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_feature_definitions_key" ON "feature_definitions" ("feature_key");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730001800000-FeaturePlansDependencies.ts  (5 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "feature_definitions"
+        ADD COLUMN IF NOT EXISTS "visibility" character varying NOT NULL DEFAULT 'public',
+        ADD COLUMN IF NOT EXISTS "is_beta" boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "is_deprecated" boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "usage_metric" character varying;
+CREATE TABLE IF NOT EXISTS "feature_plans" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "feature_key" character varying NOT NULL,
+        "plan_id" uuid NOT NULL,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_feature_plans" PRIMARY KEY ("id"),
+        CONSTRAINT "UQ_feature_plans_key_plan" UNIQUE ("feature_key", "plan_id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_feature_plans_key" ON "feature_plans" ("feature_key");
+CREATE TABLE IF NOT EXISTS "feature_dependencies" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "feature_key" character varying NOT NULL,
+        "requires_key" character varying NOT NULL,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_feature_dependencies" PRIMARY KEY ("id"),
+        CONSTRAINT "UQ_feature_deps_key_req" UNIQUE ("feature_key", "requires_key")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_feature_deps_key" ON "feature_dependencies" ("feature_key");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730001900000-EmailLogs.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "email_logs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenant_id" uuid,
+        "to_address" character varying NOT NULL,
+        "template" character varying NOT NULL,
+        "subject" character varying,
+        "locale" character varying NOT NULL DEFAULT 'en',
+        "status" character varying NOT NULL DEFAULT 'QUEUED',
+        "provider" character varying,
+        "provider_message_id" character varying,
+        "error" text,
+        "idempotency_key" character varying,
+        "attempts" integer NOT NULL DEFAULT 0,
+        "metadata" jsonb,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "sent_at" TIMESTAMP WITH TIME ZONE,
+        CONSTRAINT "PK_email_logs" PRIMARY KEY ("id")
+      );
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_email_logs_idempotency" ON "email_logs" ("idempotency_key");
+CREATE INDEX IF NOT EXISTS "IDX_email_logs_status_created" ON "email_logs" ("status", "created_at");
+CREATE INDEX IF NOT EXISTS "IDX_email_logs_tenant_created" ON "email_logs" ("tenant_id", "created_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002000000-SubscriptionPlanResourceLimits.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscription_plans"
+        ADD COLUMN IF NOT EXISTS "max_ai_requests" integer,
+        ADD COLUMN IF NOT EXISTS "max_customers" integer,
+        ADD COLUMN IF NOT EXISTS "max_crm_contacts" integer,
+        ADD COLUMN IF NOT EXISTS "max_conversations" integer,
+        ADD COLUMN IF NOT EXISTS "max_storage_bytes" bigint,
+        ADD COLUMN IF NOT EXISTS "max_uploaded_files" integer,
+        ADD COLUMN IF NOT EXISTS "max_api_calls" bigint,
+        ADD COLUMN IF NOT EXISTS "max_emails" integer,
+        ADD COLUMN IF NOT EXISTS "max_invoices" integer,
+        ADD COLUMN IF NOT EXISTS "max_payments" integer,
+        ADD COLUMN IF NOT EXISTS "max_transactions" integer,
+        ADD COLUMN IF NOT EXISTS "max_knowledge_base_files" integer,
+        ADD COLUMN IF NOT EXISTS "max_training_files" integer;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002100000-UsageReportSchedules.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "usage_report_schedules" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "name" character varying NOT NULL,
+        "frequency" character varying(16) NOT NULL,
+        "cron" character varying,
+        "delivery" character varying(16) NOT NULL,
+        "target" character varying NOT NULL,
+        "format" character varying(8) NOT NULL DEFAULT 'JSON',
+        "sections" jsonb,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "created_by" uuid,
+        "last_run_at" TIMESTAMP WITH TIME ZONE,
+        "last_status" text,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_usage_report_schedules" PRIMARY KEY ("id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_usage_report_schedules_active" ON "usage_report_schedules" ("is_active");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002200000-AiConversationChannelSession.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_conversations"
+        ADD COLUMN IF NOT EXISTS "channel" character varying(20) NOT NULL DEFAULT 'API',
+        ADD COLUMN IF NOT EXISTS "language" character varying(12),
+        ADD COLUMN IF NOT EXISTS "session" jsonb;
+CREATE INDEX IF NOT EXISTS "IDX_ai_conversations_channel" ON "ai_conversations" ("channel");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002300000-AiAgentRole.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_agents" ADD COLUMN IF NOT EXISTS "role" character varying(32);
+CREATE INDEX IF NOT EXISTS "IDX_ai_agents_role" ON "ai_agents" ("role");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002400000-AiMemories.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "ai_memories" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid,
+        "customer_id" uuid,
+        "ai_conversation_id" uuid,
+        "type" character varying(32) NOT NULL,
+        "content" text NOT NULL,
+        "importance" integer NOT NULL DEFAULT 1,
+        "metadata" jsonb,
+        "expires_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_ai_memories" PRIMARY KEY ("id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_ai_memories_tenant_customer" ON "ai_memories" ("tenantId", "customer_id");
+CREATE INDEX IF NOT EXISTS "IDX_ai_memories_expires" ON "ai_memories" ("expires_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002500000-WhatsappContactAiConversation.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "whatsapp_contacts" ADD COLUMN IF NOT EXISTS "ai_conversation_id" uuid;
+CREATE INDEX IF NOT EXISTS "IDX_whatsapp_contacts_ai_conversation" ON "whatsapp_contacts" ("ai_conversation_id");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002600000-Workflows.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "workflows" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid,
+        "name" character varying(160) NOT NULL,
+        "description" text,
+        "trigger_event" character varying(80) NOT NULL,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "conditions" jsonb,
+        "actions" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_workflows" PRIMARY KEY ("id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_workflows_trigger" ON "workflows" ("trigger_event");
+CREATE INDEX IF NOT EXISTS "IDX_workflows_tenant" ON "workflows" ("tenantId");
+CREATE TABLE IF NOT EXISTS "workflow_runs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid,
+        "workflowId" uuid,
+        "trigger_event" character varying(80) NOT NULL,
+        "status" character varying(16) NOT NULL DEFAULT 'PENDING',
+        "context" jsonb,
+        "results" jsonb,
+        "error" text,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "completed_at" TIMESTAMP WITH TIME ZONE,
+        CONSTRAINT "PK_workflow_runs" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_workflow_runs_workflow" FOREIGN KEY ("workflowId")
+          REFERENCES "workflows"("id") ON DELETE CASCADE
+      );
+CREATE INDEX IF NOT EXISTS "IDX_workflow_runs_workflow" ON "workflow_runs" ("workflowId");
+CREATE INDEX IF NOT EXISTS "IDX_workflow_runs_tenant" ON "workflow_runs" ("tenantId");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002700000-AiExecutionMetrics.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "ai_execution_metrics" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid,
+        "ai_conversation_id" uuid,
+        "channel" character varying(20) NOT NULL,
+        "model" character varying(60) NOT NULL,
+        "streamed" boolean NOT NULL DEFAULT false,
+        "fallback" boolean NOT NULL DEFAULT false,
+        "success" boolean NOT NULL DEFAULT true,
+        "error_message" text,
+        "prompt_tokens" integer NOT NULL DEFAULT 0,
+        "completion_tokens" integer NOT NULL DEFAULT 0,
+        "total_tokens" integer NOT NULL DEFAULT 0,
+        "cost_usd" numeric(12,6) NOT NULL DEFAULT 0,
+        "rag_retrieval_ms" integer,
+        "embedding_ms" integer,
+        "tool_calls_count" integer NOT NULL DEFAULT 0,
+        "tool_success_count" integer NOT NULL DEFAULT 0,
+        "tool_failure_count" integer NOT NULL DEFAULT 0,
+        "tool_exec_ms" integer NOT NULL DEFAULT 0,
+        "first_token_ms" integer,
+        "streaming_duration_ms" integer,
+        "total_latency_ms" integer NOT NULL,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_ai_execution_metrics" PRIMARY KEY ("id")
+      );
+CREATE INDEX IF NOT EXISTS "IDX_aiexec_tenant" ON "ai_execution_metrics" ("tenantId");
+CREATE INDEX IF NOT EXISTS "IDX_aiexec_created" ON "ai_execution_metrics" ("created_at");
+CREATE INDEX IF NOT EXISTS "IDX_aiexec_model" ON "ai_execution_metrics" ("model");
+CREATE INDEX IF NOT EXISTS "IDX_aiexec_channel" ON "ai_execution_metrics" ("channel");
+CREATE INDEX IF NOT EXISTS "IDX_aiexec_conv" ON "ai_execution_metrics" ("ai_conversation_id");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002800000-LiveAgentHandover.ts  (13 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_messages" ADD COLUMN IF NOT EXISTS "agent_user_id" uuid;
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "owner_type" varchar(10) NOT NULL DEFAULT 'AI';
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "assigned_at" timestamptz;
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "released_at" timestamptz;
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "handover_reason" text;
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "handover_notes" text;
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "transfer_count" integer NOT NULL DEFAULT 0;
+ALTER TABLE "conversations" ADD COLUMN IF NOT EXISTS "agent_last_read_at" timestamptz;
+CREATE INDEX IF NOT EXISTS "IDX_conversations_owner_type" ON "conversations" ("owner_type");
+ALTER TABLE "customer_notes" ADD COLUMN IF NOT EXISTS "conversation_id" uuid;
+CREATE INDEX IF NOT EXISTS "IDX_customer_notes_conversation" ON "customer_notes" ("conversation_id");
+ALTER TABLE "handover_requests" ADD COLUMN IF NOT EXISTS "transferred_from_id" uuid;
+ALTER TABLE "handover_requests" ADD COLUMN IF NOT EXISTS "notes" text;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730002900000-PermissionAuditMetadata.ts  (11 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "description" text;
+ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "scope" character varying(16) NOT NULL DEFAULT 'tenant';
+ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "risk_level" character varying(16) NOT NULL DEFAULT 'medium';
+ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "is_deprecated" boolean NOT NULL DEFAULT false;
+ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMP NOT NULL DEFAULT now();
+UPDATE "permissions" SET "scope" = 'platform' WHERE ("slug" LIKE 'platform.%' OR "slug" = 'tenants.manage') AND "scope" = 'tenant';
+UPDATE "permissions" SET "risk_level" = 'low' WHERE ("slug" LIKE '%.read' OR "slug" LIKE '%.read\\_own' OR "slug" LIKE '%\\_own' OR "slug" LIKE '%.read.%' OR "slug" = 'analytics.read') AND "risk_level" = 'medium';
+CREATE INDEX IF NOT EXISTS "IDX_permissions_module" ON "permissions" ("module");
+CREATE INDEX IF NOT EXISTS "IDX_permissions_scope" ON "permissions" ("scope");
+CREATE INDEX IF NOT EXISTS "IDX_permissions_risk_level" ON "permissions" ("risk_level");
+CREATE INDEX IF NOT EXISTS "IDX_permissions_is_deprecated" ON "permissions" ("is_deprecated");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003000000-SupportTickets.ts  (10 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE SEQUENCE IF NOT EXISTS "support_ticket_number_seq" START WITH 1000;
+CREATE TABLE IF NOT EXISTS "support_tickets" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "ticket_number" character varying(20) NOT NULL,
+        "subject" character varying(200) NOT NULL,
+        "category" character varying(24) NOT NULL,
+        "priority" character varying(16) NOT NULL,
+        "status" character varying(24) NOT NULL DEFAULT 'open',
+        "description" text NOT NULL,
+        "attachment_key" character varying,
+        "attachment_filename" character varying(255),
+        "attachment_mime_type" character varying(100),
+        "attachment_size" integer,
+        "createdById" uuid,
+        "created_by_name" character varying(160),
+        "created_by_email" character varying(255),
+        "resolved_at" TIMESTAMP WITH TIME ZONE,
+        "closed_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_support_tickets" PRIMARY KEY ("id"),
+        CONSTRAINT "UQ_support_tickets_ticket_number" UNIQUE ("ticket_number"),
+        CONSTRAINT "FK_support_tickets_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_support_tickets_created_by" FOREIGN KEY ("createdById")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_support_tickets_tenant" ON "support_tickets" ("tenantId");
+CREATE INDEX IF NOT EXISTS "IDX_support_tickets_status" ON "support_tickets" ("status");
+CREATE INDEX IF NOT EXISTS "IDX_support_tickets_priority" ON "support_tickets" ("priority");
+CREATE INDEX IF NOT EXISTS "IDX_support_tickets_category" ON "support_tickets" ("category");
+CREATE INDEX IF NOT EXISTS "IDX_support_tickets_created_at" ON "support_tickets" ("created_at");
+CREATE TABLE IF NOT EXISTS "support_ticket_events" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "ticketId" uuid NOT NULL,
+        "type" character varying(24) NOT NULL,
+        "from_value" character varying(32),
+        "to_value" character varying(32),
+        "note" text,
+        "internal_only" boolean NOT NULL DEFAULT false,
+        "actorId" uuid,
+        "actor_name" character varying(160),
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_support_ticket_events" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_support_ticket_events_ticket" FOREIGN KEY ("ticketId")
+          REFERENCES "support_tickets"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_support_ticket_events_actor" FOREIGN KEY ("actorId")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_support_ticket_events_ticket" ON "support_ticket_events" ("ticketId");
+CREATE INDEX IF NOT EXISTS "IDX_support_ticket_events_created_at" ON "support_ticket_events" ("created_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003100000-SupportTicketNumberSeqFix.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE SEQUENCE IF NOT EXISTS "support_ticket_number_seq" START WITH 1000;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003200000-StaffAvatarStorage.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "staff_profiles" ADD COLUMN IF NOT EXISTS "avatar_storage_key" character varying;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003300000-WhatsappCredentialSecurity.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+SELECT phone_number_id, COUNT(*)::int AS count
+      FROM whatsapp_accounts
+      WHERE deleted_at IS NULL AND phone_number_id IS NOT NULL
+      GROUP BY phone_number_id
+      HAVING COUNT(*) > 1;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_whatsapp_account_phone_number_id_live"
+      ON "whatsapp_accounts" ("phone_number_id")
+      WHERE "deleted_at" IS NULL AND "phone_number_id" IS NOT NULL;
+SELECT "id", "access_token"
+      FROM "whatsapp_accounts"
+      WHERE "access_token" IS NOT NULL
+        AND "access_token" <> ''
+        AND "access_token" NOT LIKE 'enc:v1:%';
+UPDATE "whatsapp_accounts" SET "access_token" = $1 WHERE "id" = $2;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003400000-MetaTechProvider.ts  (13 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "whatsapp_accounts"
+        ADD COLUMN IF NOT EXISTS "provider" character varying(30) NOT NULL DEFAULT 'META_CLOUD',
+        ADD COLUMN IF NOT EXISTS "meta_business_id" character varying(100),
+        ADD COLUMN IF NOT EXISTS "display_phone_number" character varying(30),
+        ADD COLUMN IF NOT EXISTS "verified_name" character varying(255),
+        ADD COLUMN IF NOT EXISTS "connection_status" character varying(20) NOT NULL DEFAULT 'PENDING',
+        ADD COLUMN IF NOT EXISTS "connected_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS "last_synced_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS "is_default" boolean NOT NULL DEFAULT false;
+ALTER TABLE "whatsapp_accounts"
+        DROP CONSTRAINT IF EXISTS "UQ_whatsapp_account_branch_mode";
+ALTER TABLE "whatsapp_accounts"
+        ALTER COLUMN "branch_id" DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_whatsapp_account_one_default_per_tenant"
+      ON "whatsapp_accounts" ("tenantId")
+      WHERE "is_default" = true AND "deleted_at" IS NULL;
+CREATE INDEX IF NOT EXISTS "IDX_whatsapp_account_tenant_active"
+      ON "whatsapp_accounts" ("tenantId", "is_active");
+ALTER TABLE "whatsapp_templates"
+        ADD COLUMN IF NOT EXISTS "provider_template_id" character varying(100),
+        ADD COLUMN IF NOT EXISTS "waba_id" character varying(100),
+        ADD COLUMN IF NOT EXISTS "rejected_reason" text,
+        ADD COLUMN IF NOT EXISTS "last_synced_at" TIMESTAMP WITH TIME ZONE;
+CREATE INDEX IF NOT EXISTS "IDX_whatsapp_template_waba"
+      ON "whatsapp_templates" ("waba_id");
+ALTER TABLE "campaigns"
+        ADD COLUMN IF NOT EXISTS "whatsapp_account_id" uuid;
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'FK_5fb4b22bf204607ce65af40635c'
+        ) THEN
+          ALTER TABLE "campaigns"
+            ADD CONSTRAINT "FK_5fb4b22bf204607ce65af40635c"
+            FOREIGN KEY ("whatsapp_account_id") REFERENCES "whatsapp_accounts"("id")
+            ON DELETE SET NULL;
+        END IF;
+      END $$;
+ALTER TABLE "message_attachments"
+        ADD COLUMN IF NOT EXISTS "provider_media_id" character varying(100);
+CREATE INDEX IF NOT EXISTS "IDX_message_attachment_provider_media"
+      ON "message_attachments" ("messageId", "provider_media_id");
+UPDATE "whatsapp_accounts"
+      SET "connection_status" = 'CONNECTED',
+          "connected_at" = COALESCE("connected_at", "created_at")
+      WHERE "access_token" IS NOT NULL
+        AND "access_token" <> ''
+        AND "phone_number_id" IS NOT NULL
+        AND "deleted_at" IS NULL
+        AND "connection_status" = 'PENDING';
+UPDATE "whatsapp_accounts" AS wa
+      SET "is_default" = true
+      FROM (
+        SELECT DISTINCT ON ("tenantId") "id"
+        FROM "whatsapp_accounts"
+        WHERE "deleted_at" IS NULL AND "is_active" = true
+        ORDER BY "tenantId", "created_at" ASC
+      ) AS first_per_tenant
+      WHERE wa."id" = first_per_tenant."id"
+        AND NOT EXISTS (
+          SELECT 1 FROM "whatsapp_accounts" existing
+          WHERE existing."tenantId" = wa."tenantId"
+            AND existing."is_default" = true
+            AND existing."deleted_at" IS NULL
+        );
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003500000-WhatsappReliabilityHardening.ts  (5 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DELETE FROM "whatsapp_webhooks" w
+      USING "whatsapp_webhooks" dup
+      WHERE w."idempotency_key" IS NOT NULL
+        AND w."idempotency_key" = dup."idempotency_key"
+        AND w."id" > dup."id";
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_whatsapp_webhook_idempotency_key"
+      ON "whatsapp_webhooks" ("idempotency_key")
+      WHERE "idempotency_key" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS "IDX_whatsapp_webhook_tenant_created"
+      ON "whatsapp_webhooks" ("tenantId", "created_at");
+DELETE FROM "whatsapp_contacts" c
+      USING "whatsapp_contacts" dup
+      WHERE c."wa_id" IS NOT NULL
+        AND c."tenantId" = dup."tenantId"
+        AND c."wa_id" = dup."wa_id"
+        AND c."id" > dup."id";
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_whatsapp_contact_tenant_wa_id"
+      ON "whatsapp_contacts" ("tenantId", "wa_id")
+      WHERE "wa_id" IS NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003600000-CustomerFileStorage.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "customer_files" ADD COLUMN IF NOT EXISTS "storage_key" character varying;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003700000-MarketplacePayments.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS merchant_accounts (
+        id                     uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        "tenantId"             uuid UNIQUE REFERENCES tenants(id),
+        status                 varchar NOT NULL DEFAULT 'NOT_STARTED',
+        provider               varchar NOT NULL DEFAULT 'moyasar',
+        provider_recipient_id  varchar,
+        bank_name              varchar,
+        beneficiary_name       varchar,
+        iban_masked            varchar,
+        review_notes           text,
+        status_history         jsonb,
+        submitted_at           timestamptz,
+        approved_at            timestamptz,
+        created_at             timestamptz NOT NULL DEFAULT now(),
+        updated_at             timestamptz NOT NULL DEFAULT now()
+      );
+SELECT "appointmentId", COUNT(*)::int AS count
+      FROM payments
+      WHERE status = 'PENDING' AND "appointmentId" IS NOT NULL AND deleted_at IS NULL
+      GROUP BY "appointmentId"
+      HAVING COUNT(*) > 1;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_appointment_pending
+      ON payments ("appointmentId")
+      WHERE status = 'PENDING' AND "appointmentId" IS NOT NULL;
+ALTER TABLE subscription_invoices ADD COLUMN IF NOT EXISTS provider_reference varchar;
+ALTER TABLE subscription_invoices ADD COLUMN IF NOT EXISTS failure_reason text;
+ALTER TABLE subscription_invoices ADD COLUMN IF NOT EXISTS charge_started_at timestamptz;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003800000-AiFinopsHardening.ts  (35 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE ai_cost_logs ADD COLUMN IF NOT EXISTS cached_input_tokens integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_cost_logs ADD COLUMN IF NOT EXISTS embedding_tokens integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_cost_logs ADD COLUMN IF NOT EXISTS cost_microusd bigint NOT NULL DEFAULT 0;
+ALTER TABLE ai_cost_logs ADD COLUMN IF NOT EXISTS unpriced_requests integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_knowledge_bases ADD COLUMN IF NOT EXISTS content_hash varchar(64);
+ALTER TABLE ai_knowledge_bases ADD COLUMN IF NOT EXISTS embedding_version varchar(80) NOT NULL DEFAULT 'legacy-v1';
+UPDATE ai_knowledge_bases SET content_hash=md5(id::text || ':legacy-v1') || md5('legacy:' || id::text) WHERE content_hash IS NULL;
+ALTER TABLE ai_knowledge_bases ALTER COLUMN content_hash SET NOT NULL;
+DROP INDEX IF EXISTS uq_ai_kb_content_hash;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_kb_source_content_hash ON ai_knowledge_bases ("tenantId", "agentId", COALESCE(source_id, '00000000-0000-0000-0000-000000000000'::uuid), content_hash);
+ALTER TABLE ai_training_files ADD COLUMN IF NOT EXISTS error_code varchar(60);
+ALTER TABLE ai_training_files ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_training_files ADD COLUMN IF NOT EXISTS chunk_count integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_training_files ADD COLUMN IF NOT EXISTS content_hash varchar(64);
+ALTER TABLE ai_training_files ADD COLUMN IF NOT EXISTS processing_started_at timestamptz;
+ALTER TABLE ai_training_files ADD COLUMN IF NOT EXISTS indexed_at timestamptz;
+UPDATE ai_training_files SET status='PENDING', error_code=NULL WHERE status IN ('UPLOADED','INDEXED');
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS feature varchar(80) NOT NULL DEFAULT 'chat';
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS route varchar(160) NOT NULL DEFAULT 'ai.chat';
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS idempotency_key varchar(120);
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS cached_input_tokens integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS embedding_tokens integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_execution_metrics ALTER COLUMN cost_usd DROP NOT NULL;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS cost_microusd bigint;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS pricing_status varchar(20) NOT NULL DEFAULT 'UNPRICED';
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS tool_loop_count integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS provider_attempts integer NOT NULL DEFAULT 1;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS provider_retry_count integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS cached_request_count integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_execution_metrics ADD COLUMN IF NOT EXISTS truncated_prompt_tokens integer NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_ai_metrics_attribution ON ai_execution_metrics ("tenantId", feature, channel, created_at);
+CREATE TABLE IF NOT EXISTS ai_cost_entries (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), tenant_id uuid NOT NULL REFERENCES tenants(id),
+      ai_conversation_id uuid, idempotency_key varchar(180) NOT NULL, request_kind varchar(20) NOT NULL,
+      provider varchar(40) NOT NULL, model varchar(100) NOT NULL, feature varchar(80) NOT NULL,
+      route varchar(160) NOT NULL, channel varchar(30) NOT NULL, input_tokens integer NOT NULL DEFAULT 0,
+      cached_input_tokens integer NOT NULL DEFAULT 0, output_tokens integer NOT NULL DEFAULT 0,
+      embedding_tokens integer NOT NULL DEFAULT 0, tool_loop_index integer NOT NULL DEFAULT 0,
+      provider_attempts integer NOT NULL DEFAULT 1, cache_hit boolean NOT NULL DEFAULT false,
+      cached_request_count integer NOT NULL DEFAULT 0, success boolean NOT NULL,
+      error_code varchar(80), pricing_status varchar(20) NOT NULL, price_catalog_version varchar(80),
+      price_source text, price_effective_at date, input_price_microusd_per_million bigint,
+      cached_input_price_microusd_per_million bigint, output_price_microusd_per_million bigint,
+      embedding_price_microusd_per_million bigint, cost_microusd bigint, created_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT uq_ai_cost_entry_idempotency UNIQUE (tenant_id,idempotency_key));
+CREATE INDEX IF NOT EXISTS idx_ai_cost_attribution ON ai_cost_entries (tenant_id,feature,channel,created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_cost_conversation ON ai_cost_entries (tenant_id,ai_conversation_id,created_at) WHERE ai_conversation_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS ai_request_executions (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), tenant_id uuid NOT NULL REFERENCES tenants(id),
+      idempotency_key varchar(180) NOT NULL, feature varchar(80) NOT NULL, channel varchar(30) NOT NULL,
+      state varchar(30) NOT NULL, error_code varchar(80), response_json jsonb, created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(), CONSTRAINT uq_ai_request_execution UNIQUE (tenant_id,idempotency_key));
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730003900000-AiBatchExecution.ts  (15 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ai_batch_jobs (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id uuid NOT NULL REFERENCES tenants(id),
+      feature varchar(80) NOT NULL,
+      execution_mode varchar(20) NOT NULL DEFAULT 'BATCH',
+      provider varchar(40) NOT NULL DEFAULT 'openai',
+      endpoint varchar(60) NOT NULL,
+      model varchar(100) NOT NULL,
+      status varchar(30) NOT NULL DEFAULT 'PREPARING',
+      idempotency_key varchar(200) NOT NULL,
+      /** Opaque correlation id echoed into the remote batch metadata; lets the
+          reconciler find a batch created during a crash window (no external id saved). */
+      correlation_id varchar(80),
+      external_batch_id varchar(120),
+      input_file_id varchar(120),
+      output_file_id varchar(120),
+      error_file_id varchar(120),
+      /** Poll scheduling: next_poll_at gates the sweep; poll_attempts drives backoff. */
+      next_poll_at timestamptz,
+      poll_attempts integer NOT NULL DEFAULT 0,
+      last_error varchar(200),
+      total_requests integer NOT NULL DEFAULT 0,
+      completed_requests integer NOT NULL DEFAULT 0,
+      failed_requests integer NOT NULL DEFAULT 0,
+      input_tokens bigint NOT NULL DEFAULT 0,
+      output_tokens bigint NOT NULL DEFAULT 0,
+      embedding_tokens bigint NOT NULL DEFAULT 0,
+      cost_microusd bigint,
+      pricing_status varchar(20) NOT NULL DEFAULT 'UNPRICED',
+      error_code varchar(80),
+      region varchar(40),
+      deployment_id uuid,
+      agent_id uuid,
+      source_type varchar(40),
+      source_id varchar(120),
+      metadata jsonb,
+      submitted_at timestamptz,
+      completed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT uq_ai_batch_job_idempotency UNIQUE (tenant_id, idempotency_key));
+CREATE INDEX IF NOT EXISTS idx_ai_batch_jobs_tenant ON ai_batch_jobs (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_ai_batch_jobs_active ON ai_batch_jobs (next_poll_at, status)
+      WHERE status NOT IN ('COMPLETED','FAILED','EXPIRED','CANCELLED');
+CREATE INDEX IF NOT EXISTS idx_ai_batch_jobs_source ON ai_batch_jobs (tenant_id, source_type, source_id)
+      WHERE source_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ai_batch_jobs_correlation ON ai_batch_jobs (correlation_id)
+      WHERE correlation_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS ai_batch_items (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      batch_job_id uuid NOT NULL REFERENCES ai_batch_jobs(id) ON DELETE CASCADE,
+      tenant_id uuid NOT NULL REFERENCES tenants(id),
+      /** Opaque UUID — carries NO tenant/file/patient data; bound internally below. */
+      custom_id varchar(64) NOT NULL,
+      status varchar(20) NOT NULL DEFAULT 'PENDING',
+      source_type varchar(40),
+      source_id varchar(120),
+      /** Position of the chunk within its source (for the internal binding constraint). */
+      chunk_index integer,
+      target_ref varchar(120),
+      input_tokens integer NOT NULL DEFAULT 0,
+      error_code varchar(120),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT uq_ai_batch_item_custom_id UNIQUE (batch_job_id, custom_id));
+CREATE INDEX IF NOT EXISTS idx_ai_batch_items_job ON ai_batch_items (batch_job_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_batch_item_source_chunk
+      ON ai_batch_items (batch_job_id, source_type, source_id, chunk_index);
+CREATE TABLE IF NOT EXISTS tenant_ai_deployments (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id uuid NOT NULL REFERENCES tenants(id),
+      enabled boolean NOT NULL DEFAULT false,
+      provider varchar(40) NOT NULL DEFAULT 'openai',
+      region varchar(40),
+      base_url text,
+      openai_project varchar(120),
+      api_key_ciphertext text,
+      allowed_regions text[],
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT uq_tenant_ai_deployment_tenant UNIQUE (tenant_id));
+ALTER TABLE ai_cost_entries ADD COLUMN IF NOT EXISTS execution_mode varchar(20) NOT NULL DEFAULT 'STANDARD';
+ALTER TABLE ai_cost_entries ADD COLUMN IF NOT EXISTS region varchar(40);
+ALTER TABLE ai_cost_entries ADD COLUMN IF NOT EXISTS batch_job_id uuid;
+CREATE INDEX IF NOT EXISTS idx_ai_cost_mode ON ai_cost_entries (tenant_id, execution_mode, created_at);
+ALTER TABLE ai_cost_logs ADD COLUMN IF NOT EXISTS batch_embedding_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE ai_cost_logs ADD COLUMN IF NOT EXISTS batch_cost_microusd bigint NOT NULL DEFAULT 0;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730004000000-IntegrationApiHardening.ts  (5 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "api_keys"
+        ADD COLUMN IF NOT EXISTS "key_prefix" character varying(16);
+CREATE INDEX IF NOT EXISTS "IX_api_keys_tenantId" ON "api_keys" ("tenantId");
+ALTER TABLE "api_logs"
+        ADD COLUMN IF NOT EXISTS "api_key_id" uuid;
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'FK_api_logs_api_key_id'
+        ) THEN
+          ALTER TABLE "api_logs"
+            ADD CONSTRAINT "FK_api_logs_api_key_id"
+            FOREIGN KEY ("api_key_id") REFERENCES "api_keys"("id")
+            ON DELETE NO ACTION ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_api_logs_api_key_id" ON "api_logs" ("api_key_id");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730005000000-OutboundWebhooks.ts  (7 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "webhook_endpoints" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "name" character varying(100),
+        "url" character varying(2048) NOT NULL,
+        "secret_ciphertext" text NOT NULL,
+        "secret_prefix" character varying(16),
+        "events" jsonb NOT NULL DEFAULT '[]',
+        "is_active" boolean NOT NULL DEFAULT true,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_webhook_endpoints_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'FK_webhook_endpoints_tenantId'
+        ) THEN
+          ALTER TABLE "webhook_endpoints"
+            ADD CONSTRAINT "FK_webhook_endpoints_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_webhook_endpoints_tenantId" ON "webhook_endpoints" ("tenantId");
+CREATE TABLE IF NOT EXISTS "webhook_deliveries" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "webhookEndpointId" uuid NOT NULL,
+        "event_type" character varying(100) NOT NULL,
+        "payload" jsonb NOT NULL,
+        "status" character varying(20) NOT NULL DEFAULT 'PENDING',
+        "http_status" integer,
+        "attempt_count" integer NOT NULL DEFAULT 0,
+        "response_preview" text,
+        "last_error" text,
+        "last_attempted_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_webhook_deliveries_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'FK_webhook_deliveries_tenantId'
+        ) THEN
+          ALTER TABLE "webhook_deliveries"
+            ADD CONSTRAINT "FK_webhook_deliveries_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'FK_webhook_deliveries_webhookEndpointId'
+        ) THEN
+          ALTER TABLE "webhook_deliveries"
+            ADD CONSTRAINT "FK_webhook_deliveries_webhookEndpointId"
+            FOREIGN KEY ("webhookEndpointId") REFERENCES "webhook_endpoints"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_webhook_deliveries_tenantId_created" ON "webhook_deliveries" ("tenantId", "created_at");
+CREATE INDEX IF NOT EXISTS "IX_webhook_deliveries_endpointId_created" ON "webhook_deliveries" ("webhookEndpointId", "created_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730006000000-WebhookDeliveryRetention.ts  (9 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "webhook_endpoints"
+        ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMP WITH TIME ZONE;
+ALTER TABLE "webhook_deliveries"
+        ADD COLUMN IF NOT EXISTS "webhook_endpoint_url_snapshot" character varying(2048);
+UPDATE "webhook_deliveries" d
+      SET "webhook_endpoint_url_snapshot" = e."url"
+      FROM "webhook_endpoints" e
+      WHERE e."id" = d."webhookEndpointId"
+        AND d."webhook_endpoint_url_snapshot" IS NULL;
+UPDATE "webhook_deliveries"
+      SET "webhook_endpoint_url_snapshot" = ''
+      WHERE "webhook_endpoint_url_snapshot" IS NULL;
+ALTER TABLE "webhook_deliveries"
+        ALTER COLUMN "webhook_endpoint_url_snapshot" SET NOT NULL;
+ALTER TABLE "webhook_deliveries"
+        ADD COLUMN IF NOT EXISTS "replayed_from_id" uuid;
+DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'FK_webhook_deliveries_webhookEndpointId'
+        ) THEN
+          ALTER TABLE "webhook_deliveries"
+            DROP CONSTRAINT "FK_webhook_deliveries_webhookEndpointId";
+        END IF;
+      END $$;
+ALTER TABLE "webhook_deliveries"
+        ALTER COLUMN "webhookEndpointId" DROP NOT NULL;
+ALTER TABLE "webhook_deliveries"
+        ADD CONSTRAINT "FK_webhook_deliveries_webhookEndpointId"
+        FOREIGN KEY ("webhookEndpointId") REFERENCES "webhook_endpoints"("id")
+        ON DELETE SET NULL ON UPDATE NO ACTION;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730007000000-IntegrationConnections.ts  (12 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "integration_connections" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "name" character varying(120) NOT NULL,
+        "provider" character varying(60) NOT NULL,
+        "status" character varying(20) NOT NULL DEFAULT 'active',
+        "auth_type" character varying(20) NOT NULL DEFAULT 'none',
+        "credentials_ciphertext" text,
+        "config" jsonb,
+        "sync_direction" character varying(20) NOT NULL DEFAULT 'bidirectional',
+        "default_conflict_policy" character varying(20) NOT NULL DEFAULT 'reject_and_report',
+        "last_success_at" TIMESTAMP WITH TIME ZONE,
+        "last_error" text,
+        "last_error_at" TIMESTAMP WITH TIME ZONE,
+        "deleted_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_connections_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_connections_tenantId') THEN
+          ALTER TABLE "integration_connections"
+            ADD CONSTRAINT "FK_integration_connections_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_integration_connections_tenantId" ON "integration_connections" ("tenantId");
+CREATE TABLE IF NOT EXISTS "integration_id_map" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid NOT NULL,
+        "resource_type" character varying(20) NOT NULL,
+        "external_id" character varying(255) NOT NULL,
+        "internal_resource_id" uuid NOT NULL,
+        "source" character varying(20) NOT NULL DEFAULT 'external',
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_id_map_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_id_map_tenantId') THEN
+          ALTER TABLE "integration_id_map"
+            ADD CONSTRAINT "FK_integration_id_map_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_id_map_connectionId') THEN
+          ALTER TABLE "integration_id_map"
+            ADD CONSTRAINT "FK_integration_id_map_connectionId"
+            FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_integration_id_map_external"
+        ON "integration_id_map" ("tenantId", "connectionId", "resource_type", "external_id");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_integration_id_map_internal"
+        ON "integration_id_map" ("tenantId", "connectionId", "resource_type", "internal_resource_id");
+CREATE INDEX IF NOT EXISTS "IX_integration_id_map_lookup"
+        ON "integration_id_map" ("tenantId", "connectionId", "resource_type");
+CREATE TABLE IF NOT EXISTS "integration_idempotency_keys" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid,
+        "idempotency_key" character varying(255) NOT NULL,
+        "endpoint" character varying(120) NOT NULL,
+        "request_hash" character varying(64) NOT NULL,
+        "status" character varying(20) NOT NULL DEFAULT 'in_progress',
+        "response_status" integer,
+        "response_body" jsonb,
+        "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_idempotency_keys_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_idem_tenantId') THEN
+          ALTER TABLE "integration_idempotency_keys"
+            ADD CONSTRAINT "FK_integration_idem_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_idem_connectionId') THEN
+          ALTER TABLE "integration_idempotency_keys"
+            ADD CONSTRAINT "FK_integration_idem_connectionId"
+            FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id")
+            ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_integration_idempotency_key"
+        ON "integration_idempotency_keys" ("tenantId", "idempotency_key");
+CREATE INDEX IF NOT EXISTS "IX_integration_idempotency_expires"
+        ON "integration_idempotency_keys" ("expires_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730008000000-IntegrationTwoWayLifecycle.ts  (17 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "integration_connections"
+        ADD COLUMN IF NOT EXISTS "consecutive_failures" integer NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "last_latency_ms" integer;
+CREATE TABLE IF NOT EXISTS "integration_import_jobs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid,
+        "resource_type" character varying(20) NOT NULL,
+        "status" character varying(24) NOT NULL DEFAULT 'pending',
+        "mode" character varying(16) NOT NULL DEFAULT 'partial',
+        "dry_run" boolean NOT NULL DEFAULT false,
+        "total" integer NOT NULL DEFAULT 0,
+        "processed" integer NOT NULL DEFAULT 0,
+        "created_count" integer NOT NULL DEFAULT 0,
+        "updated_count" integer NOT NULL DEFAULT 0,
+        "linked_count" integer NOT NULL DEFAULT 0,
+        "skipped_count" integer NOT NULL DEFAULT 0,
+        "conflicted_count" integer NOT NULL DEFAULT 0,
+        "failed_count" integer NOT NULL DEFAULT 0,
+        "duplicates_in_batch" integer NOT NULL DEFAULT 0,
+        "cancel_requested" boolean NOT NULL DEFAULT false,
+        "payload" jsonb,
+        "error_summary" text,
+        "requested_byId" uuid,
+        "correlation_id" character varying(100),
+        "started_at" TIMESTAMP WITH TIME ZONE,
+        "finished_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_import_jobs_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_import_jobs_tenantId') THEN
+          ALTER TABLE "integration_import_jobs" ADD CONSTRAINT "FK_integration_import_jobs_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_import_jobs_connectionId') THEN
+          ALTER TABLE "integration_import_jobs" ADD CONSTRAINT "FK_integration_import_jobs_connectionId"
+            FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_import_jobs_requestedById') THEN
+          ALTER TABLE "integration_import_jobs" ADD CONSTRAINT "FK_integration_import_jobs_requestedById"
+            FOREIGN KEY ("requested_byId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_integration_import_jobs_tenant" ON "integration_import_jobs" ("tenantId");
+CREATE INDEX IF NOT EXISTS "IX_integration_import_jobs_connection" ON "integration_import_jobs" ("connectionId");
+CREATE INDEX IF NOT EXISTS "IX_integration_import_jobs_status" ON "integration_import_jobs" ("status");
+CREATE TABLE IF NOT EXISTS "integration_import_items" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "jobId" uuid NOT NULL,
+        "external_id" character varying(255) NOT NULL,
+        "outcome" character varying(20) NOT NULL,
+        "status" character varying(16) NOT NULL DEFAULT 'pending',
+        "internal_resource_id" uuid,
+        "changed_fields" jsonb,
+        "error" text,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_import_items_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_import_items_jobId') THEN
+          ALTER TABLE "integration_import_items" ADD CONSTRAINT "FK_integration_import_items_jobId"
+            FOREIGN KEY ("jobId") REFERENCES "integration_import_jobs"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_integration_import_items_job" ON "integration_import_items" ("jobId");
+CREATE TABLE IF NOT EXISTS "integration_sync_jobs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid,
+        "resource_type" character varying(20) NOT NULL,
+        "direction" character varying(20) NOT NULL,
+        "mode" character varying(16) NOT NULL DEFAULT 'incremental',
+        "status" character varying(24) NOT NULL DEFAULT 'pending',
+        "cursor" character varying(255),
+        "last_successful_cursor" character varying(255),
+        "processed" integer NOT NULL DEFAULT 0,
+        "created_count" integer NOT NULL DEFAULT 0,
+        "updated_count" integer NOT NULL DEFAULT 0,
+        "skipped_count" integer NOT NULL DEFAULT 0,
+        "conflicted_count" integer NOT NULL DEFAULT 0,
+        "failed_count" integer NOT NULL DEFAULT 0,
+        "retry_count" integer NOT NULL DEFAULT 0,
+        "cancel_requested" boolean NOT NULL DEFAULT false,
+        "error_summary" text,
+        "triggered_byId" uuid,
+        "scheduled" boolean NOT NULL DEFAULT false,
+        "correlation_id" character varying(100),
+        "started_at" TIMESTAMP WITH TIME ZONE,
+        "finished_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_sync_jobs_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_sync_jobs_tenantId') THEN
+          ALTER TABLE "integration_sync_jobs" ADD CONSTRAINT "FK_integration_sync_jobs_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_sync_jobs_connectionId') THEN
+          ALTER TABLE "integration_sync_jobs" ADD CONSTRAINT "FK_integration_sync_jobs_connectionId"
+            FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_sync_jobs_triggeredById') THEN
+          ALTER TABLE "integration_sync_jobs" ADD CONSTRAINT "FK_integration_sync_jobs_triggeredById"
+            FOREIGN KEY ("triggered_byId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_integration_sync_jobs_lookup" ON "integration_sync_jobs" ("tenantId", "connectionId", "resource_type", "direction");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_integration_sync_active"
+        ON "integration_sync_jobs" ("tenantId", "connectionId", "resource_type", "direction")
+        WHERE "status" IN ('pending', 'running');
+CREATE TABLE IF NOT EXISTS "integration_conflicts" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid,
+        "resource_type" character varying(20) NOT NULL,
+        "external_id" character varying(255) NOT NULL,
+        "internal_resource_id" uuid,
+        "conflicting_fields" jsonb NOT NULL,
+        "external_hash" character varying(64),
+        "platform_hash" character varying(64),
+        "policy" character varying(24) NOT NULL,
+        "status" character varying(16) NOT NULL DEFAULT 'pending',
+        "resolution" character varying(24),
+        "resolved_byId" uuid,
+        "resolved_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_conflicts_id" PRIMARY KEY ("id")
+      );
+DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_conflicts_tenantId') THEN
+          ALTER TABLE "integration_conflicts" ADD CONSTRAINT "FK_integration_conflicts_tenantId"
+            FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_conflicts_connectionId') THEN
+          ALTER TABLE "integration_conflicts" ADD CONSTRAINT "FK_integration_conflicts_connectionId"
+            FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_integration_conflicts_resolvedById') THEN
+          ALTER TABLE "integration_conflicts" ADD CONSTRAINT "FK_integration_conflicts_resolvedById"
+            FOREIGN KEY ("resolved_byId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+        END IF;
+      END $$;
+CREATE INDEX IF NOT EXISTS "IX_integration_conflicts_lookup" ON "integration_conflicts" ("tenantId", "connectionId", "resource_type", "status");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_integration_conflicts_pending"
+        ON "integration_conflicts" ("tenantId", "connectionId", "resource_type", "external_id")
+        WHERE "status" = 'pending';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730009000000-IntegrationConflictReason.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "integration_conflicts"
+        ADD COLUMN "reason" character varying(48) NOT NULL DEFAULT 'field_divergence';
+CREATE INDEX "IX_integration_conflicts_reason"
+        ON "integration_conflicts" ("tenantId", "reason", "status");
+DO $$
+      DECLARE col_nullable text;
+      BEGIN
+        SELECT is_nullable INTO col_nullable
+          FROM information_schema.columns
+         WHERE table_name = 'integration_conflicts' AND column_name = 'reason';
+
+        IF col_nullable IS NULL THEN
+          RAISE EXCEPTION 'post-condition failed: integration_conflicts.reason was not created';
+        END IF;
+        IF col_nullable <> 'NO' THEN
+          RAISE EXCEPTION 'post-condition failed: integration_conflicts.reason must be NOT NULL';
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes WHERE indexname = 'IX_integration_conflicts_reason'
+        ) THEN
+          RAISE EXCEPTION 'post-condition failed: IX_integration_conflicts_reason missing';
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730010000000-IntegrationInboundOAuthLifecycle.ts  (38 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "integration_webhook_endpoints" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid NOT NULL,
+        "status" character varying(20) NOT NULL DEFAULT 'active',
+        "secret_ciphertext" text NOT NULL,
+        "secret_prefix" character varying(16) NOT NULL,
+        "secret_rotated_at" TIMESTAMP WITH TIME ZONE,
+        "signature_scheme" character varying(40) NOT NULL DEFAULT 'hmac_sha256_timestamped',
+        "allowed_events" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "tolerance_seconds" integer NOT NULL DEFAULT 300,
+        "accepted_count" integer NOT NULL DEFAULT 0,
+        "rejected_count" integer NOT NULL DEFAULT 0,
+        "last_accepted_at" TIMESTAMP WITH TIME ZONE,
+        "last_rejected_at" TIMESTAMP WITH TIME ZONE,
+        "last_rejection_reason" character varying(40),
+        "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_webhook_endpoints_id" PRIMARY KEY ("id")
+      );
+ALTER TABLE "integration_webhook_endpoints"
+        ADD CONSTRAINT "FK_integration_webhook_endpoints_tenantId"
+        FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE;
+ALTER TABLE "integration_webhook_endpoints"
+        ADD CONSTRAINT "FK_integration_webhook_endpoints_connectionId"
+        FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE CASCADE;
+CREATE INDEX "IX_integration_webhook_endpoints_tenant"
+        ON "integration_webhook_endpoints" ("tenantId");
+CREATE UNIQUE INDEX "UQ_integration_webhook_endpoints_connection"
+        ON "integration_webhook_endpoints" ("connectionId");
+CREATE TABLE "integration_inbound_events" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "endpointId" uuid,
+        "connectionId" uuid,
+        "provider_event_id" character varying(255) NOT NULL,
+        "event_type" character varying(60) NOT NULL,
+        "resource_type" character varying(20),
+        "external_id" character varying(255),
+        "status" character varying(20) NOT NULL DEFAULT 'accepted',
+        "rejection_reason" character varying(40),
+        "payload" jsonb,
+        "signature_timestamp" bigint,
+        "upsert_outcome" character varying(20),
+        "internal_resource_id" uuid,
+        "attempts" integer NOT NULL DEFAULT 0,
+        "error_summary" text,
+        "processed_at" TIMESTAMP WITH TIME ZONE,
+        "received_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_inbound_events_id" PRIMARY KEY ("id")
+      );
+ALTER TABLE "integration_inbound_events"
+        ADD CONSTRAINT "FK_integration_inbound_events_tenantId"
+        FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE;
+ALTER TABLE "integration_inbound_events"
+        ADD CONSTRAINT "FK_integration_inbound_events_endpointId"
+        FOREIGN KEY ("endpointId") REFERENCES "integration_webhook_endpoints"("id") ON DELETE SET NULL;
+ALTER TABLE "integration_inbound_events"
+        ADD CONSTRAINT "FK_integration_inbound_events_connectionId"
+        FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE SET NULL;
+CREATE INDEX "IX_integration_inbound_events_lookup"
+        ON "integration_inbound_events" ("tenantId", "endpointId", "status");
+CREATE INDEX "IX_integration_inbound_events_received"
+        ON "integration_inbound_events" ("tenantId", "received_at");
+CREATE UNIQUE INDEX "UQ_integration_inbound_events_replay"
+        ON "integration_inbound_events" ("tenantId", "endpointId", "provider_event_id");
+CREATE TABLE "integration_staff_provisioning" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid,
+        "external_id" character varying(255) NOT NULL,
+        "status" character varying(16) NOT NULL DEFAULT 'pending',
+        "proposed_full_name" character varying(200),
+        "proposed_email" character varying(255),
+        "proposed_profile" jsonb,
+        "candidate_staff_ids" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "approved_role_slug" character varying(60),
+        "staffProfileId" uuid,
+        "createdUserId" uuid,
+        "reviewedById" uuid,
+        "reviewed_at" TIMESTAMP WITH TIME ZONE,
+        "invitation_sent" boolean NOT NULL DEFAULT false,
+        "invitation_sent_at" TIMESTAMP WITH TIME ZONE,
+        "note" text,
+        "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_staff_provisioning_id" PRIMARY KEY ("id")
+      );
+ALTER TABLE "integration_staff_provisioning"
+        ADD CONSTRAINT "FK_integration_staff_provisioning_tenantId"
+        FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE;
+ALTER TABLE "integration_staff_provisioning"
+        ADD CONSTRAINT "FK_integration_staff_provisioning_connectionId"
+        FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE SET NULL;
+ALTER TABLE "integration_staff_provisioning"
+        ADD CONSTRAINT "FK_integration_staff_provisioning_staffProfileId"
+        FOREIGN KEY ("staffProfileId") REFERENCES "staff_profiles"("id") ON DELETE SET NULL;
+ALTER TABLE "integration_staff_provisioning"
+        ADD CONSTRAINT "FK_integration_staff_provisioning_createdUserId"
+        FOREIGN KEY ("createdUserId") REFERENCES "users"("id") ON DELETE SET NULL;
+ALTER TABLE "integration_staff_provisioning"
+        ADD CONSTRAINT "FK_integration_staff_provisioning_reviewedById"
+        FOREIGN KEY ("reviewedById") REFERENCES "users"("id") ON DELETE SET NULL;
+CREATE INDEX "IX_integration_staff_provisioning_lookup"
+        ON "integration_staff_provisioning" ("tenantId", "connectionId", "status");
+CREATE UNIQUE INDEX "UQ_integration_staff_provisioning_open"
+        ON "integration_staff_provisioning" ("tenantId", "connectionId", "external_id")
+        WHERE "status" IN ('pending','ambiguous');
+CREATE TABLE "integration_oauth_states" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "connectionId" uuid NOT NULL,
+        "state" character varying(128) NOT NULL,
+        "code_verifier" character varying(128) NOT NULL,
+        "provider" character varying(60) NOT NULL,
+        "redirect_uri" text NOT NULL,
+        "consumed_at" TIMESTAMP WITH TIME ZONE,
+        "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
+        "initiatedById" uuid,
+        "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_integration_oauth_states_id" PRIMARY KEY ("id")
+      );
+ALTER TABLE "integration_oauth_states"
+        ADD CONSTRAINT "FK_integration_oauth_states_tenantId"
+        FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE;
+ALTER TABLE "integration_oauth_states"
+        ADD CONSTRAINT "FK_integration_oauth_states_connectionId"
+        FOREIGN KEY ("connectionId") REFERENCES "integration_connections"("id") ON DELETE CASCADE;
+ALTER TABLE "integration_oauth_states"
+        ADD CONSTRAINT "FK_integration_oauth_states_initiatedById"
+        FOREIGN KEY ("initiatedById") REFERENCES "users"("id") ON DELETE SET NULL;
+CREATE INDEX "IX_integration_oauth_states_tenant"
+        ON "integration_oauth_states" ("tenantId");
+CREATE UNIQUE INDEX "UQ_integration_oauth_states_state"
+        ON "integration_oauth_states" ("state");
+ALTER TABLE "integration_connections"
+        ADD COLUMN "oauth_access_token_ciphertext" text,
+        ADD COLUMN "oauth_refresh_token_ciphertext" text,
+        ADD COLUMN "oauth_expires_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN "oauth_scope" text,
+        ADD COLUMN "oauth_connected_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN "oauth_refreshed_at" TIMESTAMP WITH TIME ZONE;
+ALTER TABLE "integration_id_map"
+        ADD COLUMN "unlinked_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN "unlink_reason" character varying(32),
+        ADD COLUMN "replaced_connection_id" uuid;
+DROP INDEX IF EXISTS "UQ_integration_id_map_external";
+DROP INDEX IF EXISTS "UQ_integration_id_map_internal";
+CREATE UNIQUE INDEX "UQ_integration_id_map_external"
+        ON "integration_id_map" ("tenantId", "connectionId", "resource_type", "external_id")
+        WHERE "unlinked_at" IS NULL;
+CREATE UNIQUE INDEX "UQ_integration_id_map_internal"
+        ON "integration_id_map" ("tenantId", "connectionId", "resource_type", "internal_resource_id")
+        WHERE "unlinked_at" IS NULL;
+ALTER TABLE "integration_conflicts"
+        ADD COLUMN "stale_attempts" integer NOT NULL DEFAULT 0,
+        ADD COLUMN "last_stale_at" TIMESTAMP WITH TIME ZONE;
+DO $$
+      DECLARE dupes integer;
+      BEGIN
+        SELECT COUNT(*) INTO dupes FROM (
+          SELECT 1 FROM "integration_conflicts"
+          WHERE "status" IN ('pending','resolving','stale')
+          GROUP BY "tenantId", "connectionId", "resource_type", "external_id"
+          HAVING COUNT(*) > 1
+        ) d;
+        IF dupes > 0 THEN
+          RAISE EXCEPTION 'Cannot widen UQ_integration_conflicts_pending: % duplicate open conflict group(s) exist', dupes;
+        END IF;
+      END $$;
+DROP INDEX IF EXISTS "UQ_integration_conflicts_pending";
+CREATE UNIQUE INDEX "UQ_integration_conflicts_open"
+        ON "integration_conflicts" ("tenantId", "connectionId", "resource_type", "external_id")
+        WHERE "status" IN ('pending','resolving','stale');
+ALTER TABLE "integration_sync_jobs"
+        ADD COLUMN "attempted_cursor" character varying(255),
+        ADD COLUMN "next_cursor" character varying(255),
+        ADD COLUMN "cursor_kind" character varying(16) NOT NULL DEFAULT 'opaque',
+        ADD COLUMN "pages_fetched" integer NOT NULL DEFAULT 0,
+        ADD COLUMN "stop_reason" character varying(24);
+DO $$
+      DECLARE missing text;
+      BEGIN
+        -- Tables
+        FOREACH missing IN ARRAY ARRAY[
+          'integration_webhook_endpoints',
+          'integration_inbound_events',
+          'integration_staff_provisioning',
+          'integration_oauth_states'
+        ] LOOP
+          IF to_regclass(missing) IS NULL THEN
+            RAISE EXCEPTION 'Migration post-condition failed: table % is missing', missing;
+          END IF;
+        END LOOP;
+
+        -- Indexes that carry a correctness guarantee, not just performance.
+        FOREACH missing IN ARRAY ARRAY[
+          'UQ_integration_inbound_events_replay',
+          'UQ_integration_webhook_endpoints_connection',
+          'UQ_integration_staff_provisioning_open',
+          'UQ_integration_oauth_states_state',
+          'UQ_integration_id_map_external',
+          'UQ_integration_id_map_internal',
+          'UQ_integration_conflicts_open'
+        ] LOOP
+          IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = missing) THEN
+            RAISE EXCEPTION 'Migration post-condition failed: index % is missing', missing;
+          END IF;
+        END LOOP;
+
+        -- Columns whose presence the runtime depends on.
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'integration_connections' AND column_name = 'oauth_refresh_token_ciphertext'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: oauth token columns are missing';
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'integration_id_map' AND column_name = 'unlinked_at'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: integration_id_map.unlinked_at is missing';
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'integration_sync_jobs' AND column_name = 'last_successful_cursor'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: sync cursor columns are missing';
+        END IF;
+
+        -- The partial indexes must actually be partial, or the unlink lifecycle
+        -- would be blocked by historical rows.
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes
+          WHERE indexname = 'UQ_integration_id_map_external' AND indexdef LIKE '%unlinked_at IS NULL%'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: UQ_integration_id_map_external is not partial';
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730011000000-IntegrationFixJoinColumnDrift.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = '${table}' AND column_name = '${wrong}'
+          ) AND NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = '${table}' AND column_name = '${right}'
+          ) THEN
+            ALTER TABLE "${table}" RENAME COLUMN "${wrong}" TO "${right}";
+          END IF;
+        END $$;
+DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = '${table}' AND column_name = '${right}'
+          ) THEN
+            RAISE EXCEPTION 'Migration post-condition failed: %.% is missing', '${table}', '${right}';
+          END IF;
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = '${table}' AND column_name = '${wrong}'
+          ) THEN
+            RAISE EXCEPTION 'Migration post-condition failed: %.% still exists alongside %', '${table}', '${wrong}', '${right}';
+          END IF;
+        END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730012000000-BillingUpgradeRequests.ts  (11 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "billing_upgrade_requests" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "requestedById" uuid,
+        "requested_by_name" character varying(160),
+        "requested_by_email" character varying(255),
+        "type" character varying(24) NOT NULL,
+        "feature_key" character varying,
+        "usage_metric" character varying(32),
+        "current_usage" bigint,
+        "current_limit" bigint,
+        "requested_quantity" bigint,
+        "approved_quantity" bigint,
+        "status" character varying(32) NOT NULL DEFAULT 'pending_review',
+        "currency" character varying(3) NOT NULL DEFAULT 'SAR',
+        "billing_period" character varying(16),
+        "ai_estimated_provider_cost_minor" bigint,
+        "ai_estimated_infra_cost_minor" bigint,
+        "ai_recommended_price_minor" bigint,
+        "ai_confidence_score" numeric(5,4),
+        "ai_assumptions" jsonb,
+        "ai_pricing_breakdown" jsonb,
+        "ai_estimate_error" text,
+        "ai_estimate_generated_at" TIMESTAMP WITH TIME ZONE,
+        "final_price_minor" bigint,
+        "quote_expires_at" TIMESTAMP WITH TIME ZONE,
+        "reviewerId" uuid,
+        "reviewer_name" character varying(160),
+        "reviewer_notes" text,
+        "owner_approved_at" TIMESTAMP WITH TIME ZONE,
+        "paymentId" uuid,
+        "payment_reference" character varying,
+        "completed_at" TIMESTAMP WITH TIME ZONE,
+        "rejected_at" TIMESTAMP WITH TIME ZONE,
+        "rejection_reason" text,
+        "cancelled_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_billing_upgrade_requests" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_billing_upgrade_requests_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants"("id"),
+        CONSTRAINT "FK_billing_upgrade_requests_requested_by" FOREIGN KEY ("requestedById")
+          REFERENCES "users"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_billing_upgrade_requests_reviewer" FOREIGN KEY ("reviewerId")
+          REFERENCES "users"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_billing_upgrade_requests_payment" FOREIGN KEY ("paymentId")
+          REFERENCES "payments"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_billing_upgrade_requests_tenant" ON "billing_upgrade_requests" ("tenantId");
+CREATE INDEX IF NOT EXISTS "IDX_billing_upgrade_requests_status" ON "billing_upgrade_requests" ("status");
+CREATE INDEX IF NOT EXISTS "IDX_billing_upgrade_requests_created_at" ON "billing_upgrade_requests" ("created_at");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_billing_upgrade_requests_active_target"
+      ON "billing_upgrade_requests" ("tenantId", COALESCE("feature_key", "usage_metric"))
+      WHERE "status" IN ('pending_review', 'awaiting_owner_approval', 'payment_processing', 'payment_failed');
+CREATE TABLE IF NOT EXISTS "billing_upgrade_request_events" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "requestId" uuid NOT NULL,
+        "type" character varying(32) NOT NULL,
+        "from_value" character varying(32),
+        "to_value" character varying(32),
+        "note" text,
+        "metadata" jsonb,
+        "internal_only" boolean NOT NULL DEFAULT false,
+        "actorId" uuid,
+        "actor_name" character varying(160),
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_billing_upgrade_request_events" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_billing_upgrade_request_events_request" FOREIGN KEY ("requestId")
+          REFERENCES "billing_upgrade_requests"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_billing_upgrade_request_events_actor" FOREIGN KEY ("actorId")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_billing_upgrade_request_events_request" ON "billing_upgrade_request_events" ("requestId");
+CREATE INDEX IF NOT EXISTS "IDX_billing_upgrade_request_events_created_at" ON "billing_upgrade_request_events" ("created_at");
+CREATE TABLE IF NOT EXISTS "tenant_usage_limit_overrides" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "metric" character varying(32) NOT NULL,
+        "override_limit" bigint NOT NULL,
+        "sourceRequestId" uuid,
+        "grantedById" uuid,
+        "expires_at" TIMESTAMP WITH TIME ZONE,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_tenant_usage_limit_overrides" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_tenant_usage_limit_overrides_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_tenant_usage_limit_overrides_source_request" FOREIGN KEY ("sourceRequestId")
+          REFERENCES "billing_upgrade_requests"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_tenant_usage_limit_overrides_granted_by" FOREIGN KEY ("grantedById")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_tenant_usage_limit_overrides_tenant" ON "tenant_usage_limit_overrides" ("tenantId");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_tenant_usage_limit_overrides_active"
+      ON "tenant_usage_limit_overrides" ("tenantId", "metric")
+      WHERE "is_active" = true;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730013000000-IntegrationOutboundSync.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'staff_profiles' AND column_name = 'updated_at'
+        ) THEN
+          ALTER TABLE "staff_profiles" ADD COLUMN "updated_at" TIMESTAMP NOT NULL DEFAULT now();
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730014000000-OutboxHardening.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TYPE "public"."outbox_jobs_status_enum" ADD VALUE IF NOT EXISTS 'PUBLISHING';
+ALTER TABLE "outbox_jobs" ADD COLUMN IF NOT EXISTS "opts" jsonb;
+ALTER TABLE "outbox_jobs" ADD COLUMN IF NOT EXISTS "claimed_at" timestamptz;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730015000000-NotificationLogClaim.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'notification_logs' AND column_name = 'claimed_at'
+        ) THEN
+          ALTER TABLE "notification_logs" ADD COLUMN "claimed_at" TIMESTAMPTZ NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730016000000-WorkflowActionSourceRef.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'notification_logs' AND column_name = 'source_ref'
+        ) THEN
+          ALTER TABLE "notification_logs" ADD COLUMN "source_ref" VARCHAR(255) NULL;
+        END IF;
+      END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_notification_logs_source_ref"
+      ON "notification_logs" ("source_ref")
+      WHERE "source_ref" IS NOT NULL;
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'scheduled_notifications' AND column_name = 'source_ref'
+        ) THEN
+          ALTER TABLE "scheduled_notifications" ADD COLUMN "source_ref" VARCHAR(255) NULL;
+        END IF;
+      END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_scheduled_notifications_source_ref"
+      ON "scheduled_notifications" ("source_ref")
+      WHERE "source_ref" IS NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730017000000-UsageReportRecipientStatus.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'usage_report_schedules' AND column_name = 'last_run_recipient_status'
+        ) THEN
+          ALTER TABLE "usage_report_schedules" ADD COLUMN "last_run_recipient_status" JSONB NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730018000000-CustomerConsentState.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'customers' AND column_name = 'opted_out_at'
+        ) THEN
+          ALTER TABLE "customers" ADD COLUMN "opted_out_at" timestamptz NULL;
+        END IF;
+      END $$;
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'customers' AND column_name = 'opt_out_source'
+        ) THEN
+          ALTER TABLE "customers" ADD COLUMN "opt_out_source" varchar(50) NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730019000000-CustomerTenantScopedEmail.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UQ_customers_tenant_email" ON "customers" ("tenantId", "email");
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"UQ_customers_tenant_email"'::regclass;
+ALTER TABLE "customers" DROP CONSTRAINT IF EXISTS "UQ_8536b8b85c06969f84f0c098b03";
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730020000000-SubscriptionInvoiceOpenUniqueness.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UQ_sub_invoice_open_per_subscription" ON "subscription_invoices" ("subscription_id") WHERE "status" = 'OPEN';
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"UQ_sub_invoice_open_per_subscription"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730021000000-SubscriptionGraceExpiredEnum.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TYPE "subscriptions_status_enum" ADD VALUE IF NOT EXISTS 'GRACE_EXPIRED';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730022000000-SubscriptionGraceColumns.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "grace_started_at" timestamptz;
+ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "grace_expired_at" timestamptz;
+SELECT count(*)::text AS count FROM "subscriptions" WHERE "ends_at" <= now() AND "status" NOT IN ('CANCELLED','SUSPENDED');
+UPDATE "subscriptions"
+       SET "status" = 'PAST_DUE', "grace_started_at" = now()
+       WHERE "ends_at" <= now() AND "status" NOT IN ('CANCELLED','SUSPENDED');
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730023000000-CampaignRecipientDlqRecordedAt.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "campaign_recipients" ADD COLUMN IF NOT EXISTS "dlq_recorded_at" timestamptz;
+UPDATE "campaign_recipients"
+       SET "dlq_recorded_at" = "created_at"
+       WHERE "failure_class" = 'TRANSIENT' AND "dlq_recorded_at" IS NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730024000000-UserPreferredLocale.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'users' AND column_name = 'preferred_locale'
+        ) THEN
+          ALTER TABLE "users" ADD COLUMN "preferred_locale" varchar(10) NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730025000000-CustomerPreferredLocale.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'customers' AND column_name = 'preferred_locale'
+        ) THEN
+          ALTER TABLE "customers" ADD COLUMN "preferred_locale" varchar(10) NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730026000000-NotificationTemplateArabicVariant.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'notification_templates' AND column_name = 'provider_template_id_ar'
+        ) THEN
+          ALTER TABLE "notification_templates" ADD COLUMN "provider_template_id_ar" uuid NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730027000000-SupportTicketTimelineAndContactTime.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "support_tickets"
+      ADD COLUMN IF NOT EXISTS "preferred_contact_time" TIMESTAMP WITH TIME ZONE;
+ALTER TABLE "support_ticket_events"
+      ADD COLUMN IF NOT EXISTS "actor_role" character varying(32);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730027100000-SupportTicketTimestampTzFix.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "support_tickets"
+      ALTER COLUMN "created_at" TYPE TIMESTAMP WITH TIME ZONE USING "created_at" AT TIME ZONE 'UTC',
+      ALTER COLUMN "updated_at" TYPE TIMESTAMP WITH TIME ZONE USING "updated_at" AT TIME ZONE 'UTC';
+ALTER TABLE "support_ticket_events"
+      ALTER COLUMN "created_at" TYPE TIMESTAMP WITH TIME ZONE USING "created_at" AT TIME ZONE 'UTC';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730028000000-CustomerChronicDiseases.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'customers' AND column_name = 'has_chronic_diseases'
+        ) THEN
+          ALTER TABLE "customers" ADD COLUMN "has_chronic_diseases" boolean NOT NULL DEFAULT false;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'customers' AND column_name = 'chronic_diseases'
+        ) THEN
+          ALTER TABLE "customers" ADD COLUMN "chronic_diseases" text NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730029000000-AppointmentInsurancePaymentStatus.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TYPE "appointments_payment_status_enum" ADD VALUE IF NOT EXISTS 'INSURANCE';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730030000000-CustomerHealthInsurance.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'customers' AND column_name = 'has_health_insurance'
+        ) THEN
+          ALTER TABLE "customers" ADD COLUMN "has_health_insurance" boolean NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730031000000-AppointmentSourcePublicAi.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TYPE "appointments_source_enum" ADD VALUE IF NOT EXISTS 'PUBLIC_AI';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730032000000-TenantSettingPublicBooking.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'tenant_settings' AND column_name = 'public_booking_enabled'
+        ) THEN
+          ALTER TABLE "tenant_settings"
+            ADD COLUMN "public_booking_enabled" boolean NOT NULL DEFAULT false;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730033000000-PublicBookingIndexes.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS "idx_service_prices_branch_active"
+         ON "service_prices" ("branchId", "is_active");
+CREATE INDEX IF NOT EXISTS "idx_staff_schedules_branch_active"
+         ON "staff_schedules" ("branchId", "is_active");
+CREATE INDEX IF NOT EXISTS "idx_branches_city_active"
+         ON "branches" ("city_id") WHERE "deleted_at" IS NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730034000000-PlatformSupportRoleAndPermissions.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+INSERT INTO "roles" ("name", "slug", "description", "is_system")
+      SELECT
+        'Platform Customer Service',
+        'platform_support',
+        'ZiyaraTech support employee. Triages clinic support tickets across tenants. Cannot close tickets or access Super Admin functionality.',
+        true
+      WHERE NOT EXISTS (
+        SELECT 1 FROM "roles" WHERE "slug" = 'platform_support' AND "tenantId" IS NULL
+      );
+INSERT INTO "permissions" ("name", "slug", "module", "scope", "risk_level") VALUES
+        ('Read platform support tickets (cross-tenant)', 'platform.support_tickets.read', 'support_tickets', 'platform', 'medium'),
+        ('Triage platform support tickets (status/priority, cannot close)', 'platform.support_tickets.triage', 'support_tickets', 'platform', 'high'),
+        ('Reply to / add internal notes on platform support tickets', 'platform.support_tickets.reply', 'support_tickets', 'platform', 'high'),
+        ('Close platform support tickets', 'platform.support_tickets.close', 'support_tickets', 'platform', 'critical'),
+        ('Reply to own support tickets', 'support_tickets.reply', 'support_tickets', 'tenant', 'medium'),
+        ('Reopen own resolved support tickets ("Issue not resolved")', 'support_tickets.reopen', 'support_tickets', 'tenant', 'medium')
+      ON CONFLICT ("slug") DO NOTHING;
+INSERT INTO "role_permissions" ("roleId", "permissionId")
+      SELECT r.id, p.id FROM "roles" r, "permissions" p
+      WHERE r."tenantId" IS NULL AND (
+        (r.slug = 'platform_support' AND p.slug IN (
+           'platform.support_tickets.read', 'platform.support_tickets.triage', 'platform.support_tickets.reply'))
+        OR (r.slug IN ('owner', 'manager', 'receptionist')
+            AND p.slug IN ('support_tickets.reply', 'support_tickets.reopen'))
+        OR (r.slug = 'super_admin'
+            AND p.slug IN ('platform.support_tickets.read', 'platform.support_tickets.triage',
+                           'platform.support_tickets.reply', 'platform.support_tickets.close',
+                           'support_tickets.reply', 'support_tickets.reopen'))
+      )
+      ON CONFLICT DO NOTHING;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730035000000-GlobalUserEmailUniqueness.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "users" SET "email" = lower("email") WHERE "email" IS NOT NULL AND "email" <> lower("email");
+SELECT "email", count(*)::text AS rows
+      FROM "users"
+      WHERE "deleted_at" IS NULL AND "email" IS NOT NULL
+      GROUP BY "email"
+      HAVING count(*) > 1
+      ORDER BY count(*) DESC
+      LIMIT 50;
+ALTER TABLE "users" ADD CONSTRAINT "ck_user_email_lowercase" CHECK ("email" IS NULL OR "email" = lower("email"));
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "uq_user_email_global"
+      ON "users" ("email")
+      WHERE "deleted_at" IS NULL AND "email" IS NOT NULL;
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"uq_user_email_global"'::regclass;
+ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "UQ_7346b08032078107fce81e014f6";
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730036000000-PlatformSupportDiagnosticPermissions.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+INSERT INTO "permissions" ("name", "slug", "module", "scope", "risk_level") VALUES
+        ('Read a clinic support profile (basic operational identity)', 'platform.support.clinics.read_basic', 'support_diagnostics', 'platform', 'medium'),
+        ('Read clinic subscription diagnostics (no pricing/cost)', 'platform.support.subscriptions.read', 'support_diagnostics', 'platform', 'medium'),
+        ('Read clinic feature/module availability diagnostics', 'platform.support.features.read', 'support_diagnostics', 'platform', 'medium'),
+        ('Read safe clinic operational configuration', 'platform.support.clinic_settings.read', 'support_diagnostics', 'platform', 'medium'),
+        ('Read clinic integration status (no credentials)', 'platform.support.integrations.read', 'support_diagnostics', 'platform', 'medium'),
+        ('Read clinic email/notification delivery history', 'platform.support.notifications.read', 'support_diagnostics', 'platform', 'high'),
+        ('Read queue/worker health (no Redis administration)', 'platform.support.jobs.read', 'support_diagnostics', 'platform', 'medium'),
+        ('Read sanitized clinic operational activity timeline', 'platform.support.audit.read', 'support_diagnostics', 'platform', 'medium'),
+        ('Read appointment diagnostics (no medical data)', 'platform.support.appointments.read_diagnostics', 'support_diagnostics', 'platform', 'high'),
+        ('Read payment diagnostics (no card data, fees or secrets)', 'platform.support.payments.read_diagnostics', 'support_diagnostics', 'platform', 'high'),
+        ('Read AI diagnostics (no costs, prompts or provider keys)', 'platform.support.ai.read_diagnostics', 'support_diagnostics', 'platform', 'high'),
+        ('Read WhatsApp diagnostics (no Meta tokens or secrets)', 'platform.support.whatsapp.read_diagnostics', 'support_diagnostics', 'platform', 'medium'),
+        ('Retry one failed notification (safe, audited)', 'platform.support.notifications.retry', 'support_diagnostics', 'platform', 'high'),
+        ('Resend one eligible transactional email (safe, audited)', 'platform.support.email.resend', 'support_diagnostics', 'platform', 'high'),
+        ('Trigger a read-only integration health recheck (audited)', 'platform.support.integrations.recheck', 'support_diagnostics', 'platform', 'medium')
+      ON CONFLICT ("slug") DO NOTHING;
+INSERT INTO "role_permissions" ("roleId", "permissionId")
+      SELECT r.id, p.id FROM "roles" r, "permissions" p
+      WHERE r."tenantId" IS NULL
+        AND r.slug IN ('platform_support', 'super_admin')
+        AND p.slug IN (${PlatformSupportDiagnosticPermissions1730036000000.slugList()})
+      ON CONFLICT DO NOTHING;
