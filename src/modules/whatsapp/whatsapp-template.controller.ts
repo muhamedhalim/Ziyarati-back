@@ -65,6 +65,9 @@ const S_TEMPLATE = {
     category: { type: 'string', nullable: true, example: 'UTILITY' },
     status: { type: 'string', enum: ['draft', 'pending_review', 'approved', 'rejected', 'disabled'], example: 'approved' },
     components: { type: 'object', nullable: true, additionalProperties: true },
+    provider_template_id: { type: 'string', nullable: true, description: "Meta's own template id.", example: '1234567890123456' },
+    waba_id: { type: 'string', nullable: true, example: '102290129340398' },
+    last_synced_at: { type: 'string', format: 'date-time', nullable: true },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -107,22 +110,37 @@ export class WhatsappTemplateController {
   ) {}
 
   @ApiOperation({
-    summary: 'Create a template',
+    summary: 'Create a template on Meta',
     description: `
 **Protected — requires \`whatsapp.templates.manage\`. Clinic must be active.**
 
-Creates a template (starts \`draft\`). Unique per (tenant, name, language) — a
-duplicate returns 409. An optional account is validated against the tenant.
+Submits a **real** message template to Meta
+(\`POST /{waba-id}/message_templates\`) on the clinic's own connected WhatsApp
+Business Account, then stores the mirror row.
+
+**Order of operations:** Meta is called BEFORE anything is persisted. If Meta
+rejects the template nothing is written, so there is never a local row for a
+template that does not exist on the WABA.
+
+**Status comes from Meta** (normally \`pending_review\`) and can never be
+supplied by the caller — see \`PATCH :id/status\` (GAP-002). The WABA is taken
+from the tenant's resolved account, never from the request body.
+
+Unique per (tenant, name, language) — a duplicate returns 409.
 
 **Who can call this:** Owner, Manager (\`whatsapp.templates.manage\`).
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Template created.', schema: S_TEMPLATE })
-  @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
+  @ApiCreatedResponse({ description: 'Template created on Meta and mirrored locally.', schema: S_TEMPLATE })
+  @ApiBadRequestResponse({ description: 'Validation failed (name format, language code, category, components).', schema: S_ERROR })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
   @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.manage`, or clinic inactive.', schema: S_ERROR })
   @ApiConflictResponse({ description: 'Template name+language already exists.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Referenced account not found in this tenant.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'No connected WhatsApp account, referenced account not in this tenant, invalid component structure (missing BODY, placeholders without examples), or Meta rejected the template.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
   create(@Body() dto: CreateWhatsappTemplateDto) {

@@ -69,4 +69,47 @@ describe('ActiveTenantGuard', () => {
       expect(context.getTenant()).toBe(tenant);
     });
   });
+
+  // ─────────────── PERF-BE-003: reuse of JwtStrategy's preloaded tenant ───────────────
+
+  it('reuses request.preloadedTenant when JwtStrategy already loaded it, skipping the DB lookup entirely', async () => {
+    reflector.getAllAndOverride.mockReturnValue(false);
+    const tenant = { id: 't1', approval_status: TenantApprovalStatus.APPROVED, is_active: true };
+    const req: any = { user: { tenantId: 't1' }, preloadedTenant: tenant };
+    await context.run(async () => {
+      const ok = await guard.canActivate(createMockExecutionContext(req));
+      expect(ok).toBe(true);
+      expect(lookup.findById).not.toHaveBeenCalled();
+      expect(req.tenant).toBe(tenant);
+      expect(context.getTenant()).toBe(tenant);
+    });
+  });
+
+  it('throws FORBIDDEN from a preloaded (non-DB-queried) tenant that is not approved/active', async () => {
+    reflector.getAllAndOverride.mockReturnValue(false);
+    const tenant = { id: 't1', approval_status: TenantApprovalStatus.SUSPENDED, is_active: false };
+    const req: any = { user: { tenantId: 't1' }, preloadedTenant: tenant };
+    await expect(run(req)).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    expect(lookup.findById).not.toHaveBeenCalled();
+  });
+
+  it('throws TENANT_NOT_FOUND when preloadedTenant is explicitly null (JwtStrategy ran but found no tenant)', async () => {
+    reflector.getAllAndOverride.mockReturnValue(false);
+    const req: any = { user: { tenantId: 't1' }, preloadedTenant: null };
+    await expect(run(req)).rejects.toMatchObject({ code: ErrorCode.TENANT_NOT_FOUND });
+    expect(lookup.findById).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the DB lookup when preloadedTenant is absent (e.g. API-key auth never ran JwtStrategy)', async () => {
+    reflector.getAllAndOverride.mockReturnValue(false);
+    const tenant = { id: 't1', approval_status: TenantApprovalStatus.APPROVED, is_active: true };
+    lookup.findById.mockResolvedValueOnce(tenant);
+    const req: any = { user: { tenantId: 't1' } }; // no preloadedTenant key at all
+    await context.run(async () => {
+      const ok = await guard.canActivate(createMockExecutionContext(req));
+      expect(ok).toBe(true);
+      expect(lookup.findById).toHaveBeenCalledWith('t1');
+      expect(req.tenant).toBe(tenant);
+    });
+  });
 });

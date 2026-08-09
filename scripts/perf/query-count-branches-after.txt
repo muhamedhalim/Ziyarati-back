@@ -1,0 +1,13 @@
+PERF-BE-003 Stage B — T154 after measurement — GET /api/v1/branches query log (LOCAL/T1, TYPEORM_LOGGING=true, single request, log-diffed, fixed build)
+
+6 queries total for one authenticated GET /api/v1/branches request (was 7):
+1. SELECT DISTINCT ...FROM users... (AuthService.buildAuthenticatedUser, unchanged)
+2. SELECT ...FROM users...WHERE id IN (...) (AuthService.buildAuthenticatedUser, unchanged)
+3. SELECT ...FROM branches... (BranchController's business logic, unchanged)
+4. START TRANSACTION  (ApiLoggingInterceptor)
+5. INSERT INTO api_logs (...)  (ApiLoggingInterceptor)
+6. COMMIT  (ApiLoggingInterceptor)
+
+The `SELECT ... FROM tenants WHERE id = $1` query (ActiveTenantGuard's duplicate fetch, query 3 in the before-measurement) is GONE — confirmed by direct log capture, not inference. ActiveTenantGuard now reuses request.preloadedTenant (set by JwtStrategy from the same query 1+2 pair) instead of re-querying. Same 401/403 checks still enforced (verified separately, T152).
+
+7 -> 6 queries = 14.3% fewer queries on every ActiveTenantGuard-gated endpoint (95 controller files platform-wide).

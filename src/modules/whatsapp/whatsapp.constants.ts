@@ -110,6 +110,42 @@ export const WHATSAPP_CONNECTION_STATUSES: WhatsappConnectionStatus[] = Object.v
   WHATSAPP_CONNECTION_STATUS,
 );
 
+/**
+ * Meta template categories. Meta rejects anything outside this set, and the
+ * category also decides pricing and the review bar, so it is validated rather
+ * than accepted as free text (the column stays varchar for forward
+ * compatibility if Meta adds one).
+ */
+export const WHATSAPP_TEMPLATE_CATEGORIES = ['UTILITY', 'MARKETING', 'AUTHENTICATION'] as const;
+export type WhatsappTemplateCategory = (typeof WHATSAPP_TEMPLATE_CATEGORIES)[number];
+
+/** Component types Meta accepts on a template. Media headers are not implemented. */
+export const WHATSAPP_TEMPLATE_COMPONENT_TYPES = ['HEADER', 'BODY', 'FOOTER', 'BUTTONS'] as const;
+export type WhatsappTemplateComponentType =
+  (typeof WHATSAPP_TEMPLATE_COMPONENT_TYPES)[number];
+
+/** Button types Meta accepts on a BUTTONS component. */
+export const WHATSAPP_TEMPLATE_BUTTON_TYPES = ['QUICK_REPLY', 'URL', 'PHONE_NUMBER'] as const;
+export type WhatsappTemplateButtonType = (typeof WHATSAPP_TEMPLATE_BUTTON_TYPES)[number];
+
+/**
+ * Meta template name rule: lower-case letters, digits and underscores only.
+ * Enforced here because Meta's rejection for a bad name is opaque, and the user
+ * is still looking at the form when we can say so plainly.
+ */
+export const WHATSAPP_TEMPLATE_NAME_PATTERN = /^[a-z0-9_]+$/;
+
+/**
+ * Meta language code shape: `en`, `ar`, `en_US`, `pt_BR`, `zh_CN`.
+ *
+ * A FORMAT check, not a whitelist of Meta's ~80 codes: the list changes without
+ * notice, and rejecting a code Meta actually supports would be a worse failure
+ * than letting Meta reject an invalid one with its own message. Whatever is
+ * stored here is what `MetaWhatsappProvider.send` later puts in
+ * `template.language.code`, so create and send always agree.
+ */
+export const WHATSAPP_TEMPLATE_LANGUAGE_PATTERN = /^[a-z]{2,3}(_[A-Z]{2})?$/;
+
 /** Channel marker written to `notification_logs.channel` for WhatsApp sends. */
 export const WHATSAPP_CHANNEL = 'WHATSAPP';
 

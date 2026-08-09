@@ -1,6 +1,5 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import type { Request } from 'express';
 
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { TenantApprovalStatus } from '../../entities/enums';
@@ -9,6 +8,7 @@ import { TenantContextService } from './tenant-context.service';
 import { TenantLookupService } from './tenant-lookup.service';
 import { ALLOW_INACTIVE_TENANT_KEY } from './allow-inactive-tenant.decorator';
 import { AppError, ErrorCode } from '../../common/errors';
+import type { PreloadedTenantRequest } from './preloaded-tenant.types';
 
 /**
  * Layer 3 of the runtime stack: "is this tenant allowed to use the system?"
@@ -42,7 +42,7 @@ export class ActiveTenantGuard implements CanActivate {
       return true;
     }
 
-    const request = executionContext.switchToHttp().getRequest<Request>();
+    const request = executionContext.switchToHttp().getRequest<PreloadedTenantRequest>();
     const user = request.user as AuthenticatedUser | undefined;
 
     // No principal → authentication is enforced by JwtAuthGuard, not here.
@@ -55,7 +55,12 @@ export class ActiveTenantGuard implements CanActivate {
       return true;
     }
 
-    const tenant = await this.tenantLookup.findById(user.tenantId);
+    // PERF-BE-003: JwtStrategy already loaded this exact tenant row while
+    // resolving the principal — reuse it instead of re-querying by id.
+    // `undefined` means no hint was available (e.g. API-key auth, which
+    // never runs JwtStrategy) — fall back to the original query unchanged.
+    const preloaded = request.preloadedTenant;
+    const tenant = preloaded !== undefined ? preloaded : await this.tenantLookup.findById(user.tenantId);
     if (!tenant) {
       throw new AppError(ErrorCode.TENANT_NOT_FOUND);
     }

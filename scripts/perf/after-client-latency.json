@@ -1,0 +1,41 @@
+{
+  "/api/v1/system/health/liveness": {
+    "path": "/api/v1/system/health/liveness",
+    "n": 30,
+    "statuses": [
+      200
+    ],
+    "p50": "3.62",
+    "p95": "6.20",
+    "p99": "6.28",
+    "min": "1.77",
+    "max": "6.43",
+    "avg": "3.67"
+  },
+  "/api/v1/auth/me": {
+    "path": "/api/v1/auth/me",
+    "n": 30,
+    "statuses": [
+      200
+    ],
+    "p50": "16.86",
+    "p95": "27.44",
+    "p99": "27.85",
+    "min": "11.69",
+    "max": "34.49",
+    "avg": "18.68"
+  },
+  "/api/v1/branches": {
+    "path": "/api/v1/branches",
+    "n": 30,
+    "statuses": [
+      200
+    ],
+    "p50": "18.45",
+    "p95": "32.98",
+    "p99": "34.94",
+    "min": "12.92",
+    "max": "42.68",
+    "avg": "21.16"
+  }
+}
