@@ -3,6 +3,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  JoinColumn,
   CreateDateColumn,
   Index,
 } from 'typeorm';
@@ -34,6 +35,7 @@ export class HandoverRequest {
 
   /** Set when this request was created by transferring from another agent. */
   @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'transferred_from_id' })
   transferred_from?: User;
 
   @Column({ type: 'text', nullable: true })

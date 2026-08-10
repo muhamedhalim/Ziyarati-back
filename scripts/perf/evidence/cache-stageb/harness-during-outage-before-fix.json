@@ -1,0 +1,53 @@
+{
+  "label": "during-outage-before-fix",
+  "timestamp": "2026-08-10T09:26:54.813Z",
+  "scenarios": {
+    "publicReadiness": {
+      "statuses": {
+        "500": 20
+      },
+      "n": 20,
+      "okCount": 20,
+      "erroredCount": 0,
+      "p50": 15.4589,
+      "p95": 24.4445,
+      "p99": 62.9074,
+      "min": 6.1779,
+      "max": 62.9074,
+      "sampleErrors": []
+    },
+    "unauthenticated401": {
+      "status": 500,
+      "ms": 7.8345,
+      "error": null
+    },
+    "loginSuccess": {
+      "status": 500,
+      "ms": 28.6938,
+      "error": null
+    },
+    "authenticatedBranches": {
+      "skipped": "login did not succeed this run"
+    },
+    "loginIntentionalFailure": {
+      "status": 500,
+      "ms": 13.088,
+      "error": null
+    },
+    "concurrency15": {
+      "totalMs": 77.6048,
+      "statuses": {
+        "500": 15
+      },
+      "n": 15,
+      "okCount": 15,
+      "erroredCount": 0,
+      "p50": 71.0421,
+      "p95": 72.2927,
+      "p99": 72.2927,
+      "min": 66.1685,
+      "max": 72.2927,
+      "sampleErrors": []
+    }
+  }
+}

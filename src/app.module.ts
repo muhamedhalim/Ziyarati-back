@@ -7,12 +7,14 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 
 import { AppRedisService } from './queue/app-redis.service';
+import { FailsafeThrottlerStorage } from './queue/failsafe-throttler-storage';
 
 import { typeOrmFactory } from './config/typeorm.config';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { MetricsHttpModule } from './metrics/metrics-http.module';
+import { MetricsService } from './metrics/metrics.service';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
@@ -94,9 +96,15 @@ import { validate } from './config/env.validation';
     // opening a new socket — `ThrottlerStorageRedisService` does not manage a
     // Redis instance passed to it directly, so `AppRedisService` keeps sole
     // ownership of that connection's lifecycle (connect/close on shutdown).
+    //
+    // `PERF-CACHE-001` fix: wrapped in `FailsafeThrottlerStorage` so a Redis
+    // outage degrades this global, first-in-chain, `@Public()`-reaching guard
+    // to local in-memory limiting instead of throwing a raw unhandled `ioredis`
+    // error on every request (see that file's docstring for the full
+    // fail-open-vs-fail-closed rationale).
     ThrottlerModule.forRootAsync({
-      inject: [AppRedisService],
-      useFactory: (appRedis: AppRedisService) => ({
+      inject: [AppRedisService, MetricsService],
+      useFactory: (appRedis: AppRedisService, metrics: MetricsService) => ({
         throttlers: [
           {
             name: 'default',
@@ -104,7 +112,10 @@ import { validate } from './config/env.validation';
             limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 300,
           },
         ],
-        storage: new ThrottlerStorageRedisService(appRedis.application),
+        storage: new FailsafeThrottlerStorage(
+          new ThrottlerStorageRedisService(appRedis.application),
+          metrics,
+        ),
       }),
     }),
 

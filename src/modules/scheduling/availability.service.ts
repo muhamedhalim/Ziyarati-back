@@ -188,16 +188,10 @@ export class AvailabilityService {
       };
     }
 
-    const positive = await this.computePositiveWindows(
-      tenantId,
-      q.branchId,
-      q.staffId!,
-      dateStr,
-      dayStart,
-      dayEnd,
-      zone,
-    );
-    const busy = await this.busyIntervals(tenantId, q.branchId, q.staffId!, dayStart, dayEnd);
+    const [positive, busy] = await Promise.all([
+      this.computePositiveWindows(tenantId, q.branchId, q.staffId!, dateStr, dayStart, dayEnd, zone),
+      this.busyIntervals(tenantId, q.branchId, q.staffId!, dayStart, dayEnd),
+    ]);
     let free = mergeIntervals(positive.flatMap((p) => subtractIntervals(p, busy)));
     if (q.slotMinutes) free = chunkIntervals(free, q.slotMinutes);
 
@@ -281,9 +275,11 @@ export class AvailabilityService {
     end: Date,
     opts: AssertBookableOptions = {},
   ): Promise<BookabilityResult> {
-    const branch = await this.refs.getBranch(tenantId, branchId);
+    const [branch, staff] = await Promise.all([
+      this.refs.getBranch(tenantId, branchId),
+      this.refs.getStaff(tenantId, staffId),
+    ]);
     const zone = safeZone(branch.timezone);
-    const staff = await this.refs.getStaff(tenantId, staffId);
     const staffInactive = !staff.is_available_for_booking;
 
     // The LOCAL calendar day of the booking instant (in the branch's timezone)

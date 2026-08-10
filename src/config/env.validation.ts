@@ -27,6 +27,25 @@ export const validate = (config: Record<string, unknown>) => {
     API_DB_POOL_MAX: Joi.number(),
     WORKER_DB_POOL_MAX: Joi.number(),
 
+    // ── API process-level scaling (PERF-INFRA-003) ─────────────────────────
+    // How many OS processes the API entrypoint forks via Node's built-in
+    // `cluster` module (src/cluster-bootstrap.ts). Default 1 = byte-identical
+    // to pre-PERF-INFRA-003 behaviour (no fork; the process IS the app), so
+    // no existing deployment is affected unless this is set explicitly. Safe
+    // to raise for the API specifically: BullMQ `@Processor`s and the
+    // repeatable-job registrar (ScheduleRegistrarService) live only in
+    // WorkerModule/worker.ts, never here, so forking the API cannot duplicate
+    // job consumption or cron/schedule registration. Each forked worker opens
+    // its OWN DB pool sized by API_DB_POOL_MAX/DB_POOL_MAX above — raising
+    // this multiplies the API's total DB connection footprint by the same
+    // factor; size API_DB_POOL_MAX (and check Postgres's own
+    // max_connections) accordingly — cluster-bootstrap.ts logs the resulting
+    // estimate at boot. Capped at 8 as a sanity bound against a typo
+    // exhausting the DB, not a measured ceiling. See
+    // docs/PERFORMANCE_INFRASTRUCTURE.md's PERF-INFRA-003 section for the
+    // measured evidence this is based on.
+    API_CLUSTER_WORKERS: Joi.number().integer().min(1).max(8).default(1),
+
     // Redis / BullMQ. REQUIRED — the @Global QueueModule constructs
     // `ProducerQueues` (which throws without a REDIS_URL) unconditionally in
     // BOTH process roots (API and worker), so there has never actually been a

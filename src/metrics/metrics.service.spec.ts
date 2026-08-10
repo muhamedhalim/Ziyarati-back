@@ -67,6 +67,25 @@ describe('MetricsService (M14)', () => {
     expect(body).toContain('event="store_unavailable"');
   });
 
+  it('renders throttler_storage_events_total after recordThrottlerStorageEvent, labeled by event', async () => {
+    service.recordThrottlerStorageEvent('redis_unavailable');
+    const body = await service.render();
+    expect(body).toContain('throttler_storage_events_total');
+    expect(body).toContain('event="redis_unavailable"');
+  });
+
+  it('renders http_request_duration_seconds after recordHttpRequest, labeled by method and status_code — PERF-BE-002', async () => {
+    // The whole point of this metric: a guard-rejected request (429/401/403/
+    // 503) must be observable here even though it never reaches
+    // ApiLoggingInterceptor or produces an api_logs row (T025's confirmed gap).
+    service.recordHttpRequest('GET', 429, 0.003);
+    service.recordHttpRequest('POST', 200, 0.05);
+    const body = await service.render();
+    expect(body).toContain('http_request_duration_seconds');
+    expect(body).toContain('method="GET",status_code="429"');
+    expect(body).toContain('method="POST",status_code="200"');
+  });
+
   it('two instances use independent registries — no cross-instance metric leakage', async () => {
     const other = new MetricsService();
     service.recordJobEvent('q1', 'completed');

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
 /**
  * Minimum-viable observability (gap-closure — see
@@ -66,6 +66,44 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * `PERF-CACHE-001` — makes the global `ThrottlerGuard`'s degraded-mode
+   * fallback (Redis unreachable → local in-memory limiting, see
+   * `FailsafeThrottlerStorage`) externally observable rather than a silent,
+   * indefinite loss of cross-replica rate-limit consistency — same rationale
+   * as `loginProtectionEvents`' `store_unavailable` label above.
+   */
+  private readonly throttlerStorageEvents = new Counter({
+    name: 'throttler_storage_events_total',
+    help: 'Global throttler storage outcomes by event, e.g. degraded fallback to in-memory limiting when Redis is unavailable.',
+    labelNames: ['event'] as const,
+    registers: [this.registry],
+  });
+
+  /**
+   * `PERF-BE-002` — closes the observability gap T025 confirmed empirically:
+   * `ApiLoggingInterceptor` sits AFTER the 6 global guards, so a request
+   * rejected by `ThrottlerGuard`/`JwtAuthGuard`/`CsrfGuard`/`MaintenanceGuard`/
+   * `SubscriptionAccessGuard`/`FeatureGuard` (429/401/403/503/403) never
+   * produced an `api_logs` row or touched `MetricsService` before this —
+   * every other latency/error figure in this codebase was under-representative
+   * of what a rejected request actually experienced. Recorded by a bootstrap
+   * `app.use()` middleware registered before the guard chain (`main.ts`), so
+   * this histogram sees 100% of requests, not just guard-surviving ones.
+   * Labels deliberately exclude the route path — an unmatched/rejected
+   * request has no reliable route template to normalize against (unlike
+   * `ApiLoggingInterceptor`, which only ever runs post-match), and an
+   * unbounded raw-path label would be a real cardinality risk on a
+   * publicly-reachable metric.
+   */
+  private readonly httpRequestDuration = new Histogram({
+    name: 'http_request_duration_seconds',
+    help: 'HTTP request duration in seconds by method and status code, captured before the guard chain so guard-rejected requests (429/401/403/503) are included.',
+    labelNames: ['method', 'status_code'] as const,
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -99,6 +137,14 @@ export class MetricsService {
     event: 'engaged' | 'blocked' | 'cleared' | 'store_unavailable',
   ): void {
     this.loginProtectionEvents.inc({ event });
+  }
+
+  recordThrottlerStorageEvent(event: 'redis_unavailable'): void {
+    this.throttlerStorageEvents.inc({ event });
+  }
+
+  recordHttpRequest(method: string, statusCode: number, durationSeconds: number): void {
+    this.httpRequestDuration.observe({ method, status_code: String(statusCode) }, durationSeconds);
   }
 
   get contentType(): string {

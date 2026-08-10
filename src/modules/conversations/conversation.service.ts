@@ -40,10 +40,14 @@ export class ConversationService {
   ) {}
 
   async create(tenantId: string, dto: CreateConversationDto): Promise<Conversation> {
-    if (dto.branchId) await this.assertBranch(tenantId, dto.branchId);
-    if (dto.customerId) await this.assertCustomer(tenantId, dto.customerId);
-    if (dto.whatsappAccountId) await this.assertAccount(tenantId, dto.whatsappAccountId);
-    if (dto.assignedToUserId) await this.assertUser(tenantId, dto.assignedToUserId);
+    // Each assert validates a different, independent foreign entity — none
+    // consumes another's result — so they run concurrently (PERF-BE-005).
+    await Promise.all([
+      dto.branchId ? this.assertBranch(tenantId, dto.branchId) : undefined,
+      dto.customerId ? this.assertCustomer(tenantId, dto.customerId) : undefined,
+      dto.whatsappAccountId ? this.assertAccount(tenantId, dto.whatsappAccountId) : undefined,
+      dto.assignedToUserId ? this.assertUser(tenantId, dto.assignedToUserId) : undefined,
+    ]);
 
     const status =
       dto.status ??
