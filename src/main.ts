@@ -5,13 +5,31 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
+import { MetricsService } from './metrics/metrics.service';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { IntegrationModule } from './modules/integration/integration.module';
+import { runClustered } from './cluster-bootstrap';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  // ---------------- HTTP request duration (PERF-BE-002) ----------------
+  // Registered before every other middleware/guard so it observes 100% of
+  // requests, including the ones the 6 global guards reject (429/401/403/503)
+  // — T025's empirically-confirmed gap: ApiLoggingInterceptor sits AFTER the
+  // guard chain and never sees these. Pure timing + a status-code counter,
+  // no body/header access, no auth/tenant/rate-limit decision touched.
+  const metrics = app.get(MetricsService);
+  app.use((req, res, next) => {
+    const startedAt = process.hrtime.bigint();
+    res.on('finish', () => {
+      const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+      metrics.recordHttpRequest(req.method, res.statusCode, durationSeconds);
+    });
+    next();
+  });
 
   // ---------------- Response compression (PERF-BE-001) ----------------
   // Response-side only — wraps res.write/res.end, runs after guards/handlers
@@ -230,4 +248,7 @@ to another clinic), \`VALIDATION_ERROR\` (bad query params), \`RATE_LIMITED\`.
   await app.listen(port, '0.0.0.0');
 }
 
-bootstrap();
+// PERF-INFRA-003 — process-level scaling. Default (API_CLUSTER_WORKERS unset
+// or 1) runs bootstrap() directly in this process, unchanged from before this
+// finding. See cluster-bootstrap.ts's own docstring for the full safety case.
+runClustered(bootstrap);

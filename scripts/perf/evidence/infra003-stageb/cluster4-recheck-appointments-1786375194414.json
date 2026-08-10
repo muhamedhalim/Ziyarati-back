@@ -1,0 +1,135 @@
+{
+  "label": "cluster4-recheck",
+  "endpoint": "appointments",
+  "url": "/api/v1/appointments?limit=50",
+  "timestamp": "2026-08-10T15:19:54.411Z",
+  "port": 3001,
+  "levels": [
+    {
+      "concurrency": 10,
+      "n": 10,
+      "wallMs": 272,
+      "throughputPerSec": 36.76,
+      "p50Ms": 141.9884,
+      "p95Ms": 261.4202,
+      "p99Ms": 261.4202,
+      "minMs": 118.2498,
+      "maxMs": 261.4202,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 2,
+      "poolMeanActive": 1,
+      "poolPeakIdleInTx": 2,
+      "poolSampleCount": 4,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0,
+        "eventLoopLagP99Seconds": 0.026329087,
+        "eventLoopLagMaxSeconds": 0.564133887,
+        "cpuUserSeconds": 2.844,
+        "cpuSystemSeconds": 0.234,
+        "activeHandles": 12,
+        "residentMemoryBytes": 167985152
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0094093,
+        "eventLoopLagP99Seconds": 0.030851071,
+        "eventLoopLagMaxSeconds": 0.030851071,
+        "cpuUserSeconds": 3.437,
+        "cpuSystemSeconds": 0.265,
+        "activeHandles": 21,
+        "residentMemoryBytes": 183390208
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 0.624,
+        "eventLoopLagMeanSecondsAfter": 0.0094093,
+        "eventLoopLagP99SecondsAfter": 0.030851071,
+        "eventLoopLagMaxSecondsAfter": 0.030851071,
+        "residentMemoryBytesAfter": 183390208
+      }
+    },
+    {
+      "concurrency": 25,
+      "n": 25,
+      "wallMs": 455,
+      "throughputPerSec": 54.95,
+      "p50Ms": 369.2321,
+      "p95Ms": 443.579,
+      "p99Ms": 447.3983,
+      "minMs": 186.9743,
+      "maxMs": 447.3983,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 2,
+      "poolMeanActive": 1.14,
+      "poolPeakIdleInTx": 4,
+      "poolSampleCount": 7,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.0057159,
+        "eventLoopLagP99Seconds": 0.023543807,
+        "eventLoopLagMaxSeconds": 0.025264127,
+        "cpuUserSeconds": 3.453,
+        "cpuSystemSeconds": 0.265,
+        "activeHandles": 21,
+        "residentMemoryBytes": 183549952
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0053563,
+        "eventLoopLagP99Seconds": 0.044859391,
+        "eventLoopLagMaxSeconds": 0.044859391,
+        "cpuUserSeconds": 4.109,
+        "cpuSystemSeconds": 0.328,
+        "activeHandles": 32,
+        "residentMemoryBytes": 210358272
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 0.719,
+        "eventLoopLagMeanSecondsAfter": 0.0053563,
+        "eventLoopLagP99SecondsAfter": 0.044859391,
+        "eventLoopLagMaxSecondsAfter": 0.044859391,
+        "residentMemoryBytesAfter": 210358272
+      }
+    },
+    {
+      "concurrency": 50,
+      "n": 50,
+      "wallMs": 837,
+      "throughputPerSec": 59.74,
+      "p50Ms": 540.5556,
+      "p95Ms": 808.0745,
+      "p99Ms": 808.3498,
+      "minMs": 377.9156,
+      "maxMs": 808.3498,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 3,
+      "poolMeanActive": 1.15,
+      "poolPeakIdleInTx": 9,
+      "poolSampleCount": 13,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.00403,
+        "eventLoopLagP99Seconds": 0.023920639,
+        "eventLoopLagMaxSeconds": 0.024821759,
+        "cpuUserSeconds": 4.109,
+        "cpuSystemSeconds": 0.328,
+        "activeHandles": 32,
+        "residentMemoryBytes": 210546688
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0053094,
+        "eventLoopLagP99Seconds": 0.086704127,
+        "eventLoopLagMaxSeconds": 0.086704127,
+        "cpuUserSeconds": 5.172,
+        "cpuSystemSeconds": 0.437,
+        "activeHandles": 50,
+        "residentMemoryBytes": 309731328
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 1.172,
+        "eventLoopLagMeanSecondsAfter": 0.0053094,
+        "eventLoopLagP99SecondsAfter": 0.086704127,
+        "eventLoopLagMaxSecondsAfter": 0.086704127,
+        "residentMemoryBytesAfter": 309731328
+      }
+    }
+  ]
+}

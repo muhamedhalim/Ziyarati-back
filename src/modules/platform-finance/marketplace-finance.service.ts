@@ -255,29 +255,35 @@ export class MarketplaceFinanceService {
   // ───────────────────────────── Detail ────────────────────────────────── //
 
   async getTransaction(id: string) {
-    const payment = await this.payments.findOne({
-      where: { id },
-      relations: { tenant: true, branch: true, customer: true, appointment: true },
-    });
+    // `payment`, `events`, `refunds` and `settlement` each key off the `id`
+    // parameter independently — none consumes another's result — so they run
+    // concurrently (PERF-BE-005). `serviceRows` genuinely depends on
+    // `payment.appointment.id` and stays sequential after.
+    const [payment, events, refunds, settlement] = await Promise.all([
+      this.payments.findOne({
+        where: { id },
+        relations: { tenant: true, branch: true, customer: true, appointment: true },
+      }),
+      this.transactions.find({
+        where: { payment: { id } },
+        order: { created_at: 'ASC' },
+      }),
+      this.refunds.find({
+        where: { payment: { id } },
+        order: { created_at: 'ASC' },
+      }),
+      this.dataSource.query(
+        `SELECT st.id, st.status, st.paid_at, st.period_start, st.period_end,
+              st.gross_amount, st.fee_amount, st.net_amount, st.currency
+         FROM settlement_items si JOIN settlements st ON st.id = si.settlement_id
+        WHERE si.payment_id = $1 LIMIT 1`,
+        [id],
+      ),
+    ]);
     if (!payment) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Transaction not found' });
     }
 
-    const events = await this.transactions.find({
-      where: { payment: { id } },
-      order: { created_at: 'ASC' },
-    });
-    const refunds = await this.refunds.find({
-      where: { payment: { id } },
-      order: { created_at: 'ASC' },
-    });
-    const settlement = await this.dataSource.query(
-      `SELECT st.id, st.status, st.paid_at, st.period_start, st.period_end,
-              st.gross_amount, st.fee_amount, st.net_amount, st.currency
-         FROM settlement_items si JOIN settlements st ON st.id = si.settlement_id
-        WHERE si.payment_id = $1 LIMIT 1`,
-      [id],
-    );
     const serviceRows = await this.dataSource.query(
       `SELECT s.name, aps.price, aps.duration_minutes
          FROM appointment_services aps JOIN services s ON s.id = aps."serviceId"
@@ -387,8 +393,12 @@ export class MarketplaceFinanceService {
   // ─────────────────────────────── KPIs ────────────────────────────────── //
 
   async kpis() {
-    // Payment-derived metrics — single pass over the PAID set (no per-card query).
-    const [r] = await this.dataSource.query(`
+    // Four independent domains (payments, subscriptions, subscription-plan MRR,
+    // tenants) — none depends on another's result, so they run concurrently
+    // instead of as four sequential round-trips (PERF-BE-005).
+    const [[r], [subs], [mrrRow], [clinics]] = await Promise.all([
+      // Payment-derived metrics — single pass over the PAID set (no per-card query).
+      this.dataSource.query(`
       WITH paid AS (SELECT * FROM payments WHERE status = 'PAID')
       SELECT
         COALESCE((SELECT SUM(amount) FROM paid WHERE paid_at >= date_trunc('day', now())), 0) AS today_revenue,
@@ -406,25 +416,23 @@ export class MarketplaceFinanceService {
         COALESCE((SELECT AVG(amount) FROM paid), 0) AS avg_booking_value,
         COALESCE((SELECT COUNT(DISTINCT "tenantId") FROM paid), 0) AS clinic_count,
         COALESCE((SELECT SUM(COALESCE(net_amount, amount)) FROM paid), 0) AS net_total
-    `);
-
-    // Subscription + clinic metrics (distinct domains — not payment calculations).
-    const [subs] = await this.dataSource.query(`
+    `),
+      // Subscription metrics (distinct domain — not a payment calculation).
+      this.dataSource.query(`
       SELECT
         COUNT(*) FILTER (WHERE status = 'ACTIVE' AND ends_at > now())::int AS active_subs,
         COUNT(*) FILTER (WHERE ends_at < now() OR status IN ('CANCELLED','SUSPENDED'))::int AS expired_subs
       FROM subscriptions WHERE deleted_at IS NULL
-    `);
-    const [mrrRow] = await this.dataSource.query(`
+    `),
+      this.dataSource.query(`
       SELECT COALESCE(SUM(
         CASE sp.billing_cycle WHEN 'MONTHLY' THEN sp.price WHEN 'YEARLY' THEN sp.price / 12 ELSE 0 END
       ), 0) AS mrr
       FROM subscriptions s JOIN subscription_plans sp ON sp.id = s."planId"
       WHERE s.status = 'ACTIVE' AND s.ends_at > now() AND s.deleted_at IS NULL
-    `);
-    const [clinics] = await this.dataSource.query(
-      `SELECT COUNT(*)::int AS total FROM tenants WHERE deleted_at IS NULL`,
-    );
+    `),
+      this.dataSource.query(`SELECT COUNT(*)::int AS total FROM tenants WHERE deleted_at IS NULL`),
+    ]);
 
     const clinicCount = n(r.clinic_count);
     return {

@@ -70,6 +70,69 @@ function emailFor(index: number): string {
 }
 
 /**
+ * Grants the tenant a permanent free-access override so RTL assertions never
+ * depend on the platform's global `billing.mode` (PAID/FREE) or on a
+ * subscription being separately provisioned. Idempotent — safe to call
+ * whether the tenant is brand-new or pre-existing.
+ *
+ * PERF audit test-baseline debt (2026-08-10): this fixture originally
+ * created no subscription/override at all, which was silently masked while
+ * the shared dev database's `billing.mode` happened to be FREE. Once that
+ * setting was switched to PAID (an unrelated, legitimate admin action —
+ * `AccessControlService`'s three-path priority chain, unchanged here),
+ * `SubscriptionAccessGuard` started rejecting every RTL request for this
+ * tenant with 403 "No active subscription, free-access override, or free
+ * platform mode" — a test-fixture gap, not a guard defect (confirmed via
+ * `system_settings`/`subscriptions`/`free_access_overrides` inspection: 0
+ * rows for this tenant in the last two). A free-access override (the same
+ * mechanism a real super-admin grants a comped tenant, `free_access_overrides`
+ * — bootstrapped by `PlatformBillingBootstrap`, accessed only via raw SQL,
+ * no TypeORM entity) makes this fixture correct under either global mode,
+ * present or future. No file under `src/modules/**` (the actual
+ * authorization logic) is touched.
+ */
+async function ensureFreeAccessOverride(
+  manager: EntityManager,
+  tenantId: string,
+): Promise<void> {
+  // Matches PlatformBillingBootstrap's own DDL exactly — defensive only:
+  // the seed program never boots the Nest app that normally creates this
+  // table, so a from-scratch database (e.g. a fresh CI run seeded before
+  // the API has ever started) must not fail here.
+  await manager.query(`
+    CREATE TABLE IF NOT EXISTS free_access_overrides (
+      id          uuid PRIMARY KEY,
+      tenant_id   uuid NOT NULL,
+      granted_by  uuid,
+      reason      text,
+      starts_at   timestamptz NOT NULL DEFAULT now(),
+      ends_at     timestamptz,
+      status      varchar(20) NOT NULL DEFAULT 'ACTIVE',
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      updated_at  timestamptz
+    )
+  `);
+  const existingOverride = await manager.query(
+    `SELECT 1 FROM free_access_overrides WHERE tenant_id = $1 AND status = 'ACTIVE' LIMIT 1`,
+    [tenantId],
+  );
+  if (existingOverride.length > 0) {
+    logger.info('RTL fixture tenant already has an active free-access override — skipping');
+    return;
+  }
+  await manager.query(
+    `INSERT INTO free_access_overrides
+       (id, tenant_id, granted_by, reason, starts_at, ends_at, status)
+     VALUES (gen_random_uuid(), $1, NULL, $2, now(), NULL, 'ACTIVE')`,
+    [
+      tenantId,
+      'RTL E2E test fixture — permanent free access, independent of global billing.mode (see rtl-fixture.seed.ts)',
+    ],
+  );
+  logger.success('granted RTL fixture tenant a permanent free-access override');
+}
+
+/**
  * Test-only RTL verification fixture (FR-043, data-model.md § 6). The
  * standalone `npm run seed` creates a platform super-admin only — an Arabic
  * table with zero rows proves nothing about column alignment, row-action
@@ -103,6 +166,7 @@ export async function seedRtlFixture(manager: EntityManager): Promise<void> {
     logger.info(
       `RTL fixture tenant already exists ("${TENANT_SLUG}") — skipping`,
     );
+    await ensureFreeAccessOverride(manager, existing.id);
     return;
   }
 
@@ -302,6 +366,8 @@ export async function seedRtlFixture(manager: EntityManager): Promise<void> {
     ),
   );
   logger.success(`created ${campaigns.length} campaigns`);
+
+  await ensureFreeAccessOverride(manager, tenant.id);
 
   logger.step('RTL fixture seed completed');
 }

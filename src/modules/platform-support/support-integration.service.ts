@@ -112,19 +112,26 @@ export class SupportIntegrationService {
     );
 
     if (accounts.length === 0) {
+      // webhook health and traffic stats are independent reads (PERF-BE-005).
+      const [webhook, traffic] = await Promise.all([
+        this.whatsappWebhookHealth(tenantId),
+        this.whatsappTraffic(tenantId),
+      ]);
       return {
         health: 'not_configured' as IntegrationHealth,
         accounts: [],
-        webhook: await this.whatsappWebhookHealth(tenantId),
-        traffic: await this.whatsappTraffic(tenantId),
+        webhook,
+        traffic,
       };
     }
 
     const anyLive = accounts.some(
       (a) => a.is_active && a.connection_status === 'CONNECTED',
     );
-    const traffic = await this.whatsappTraffic(tenantId);
-    const webhook = await this.whatsappWebhookHealth(tenantId);
+    const [traffic, webhook] = await Promise.all([
+      this.whatsappTraffic(tenantId),
+      this.whatsappWebhookHealth(tenantId),
+    ]);
 
     let health: IntegrationHealth = anyLive ? 'configured' : 'disconnected';
     if (anyLive && traffic.failedLast7Days > 0) health = 'degraded';

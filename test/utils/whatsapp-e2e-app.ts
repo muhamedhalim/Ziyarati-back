@@ -50,6 +50,7 @@ export interface MetaGraphMock {
   listPhoneNumbers: jest.Mock;
   subscribeAppToWaba: jest.Mock;
   listTemplates: jest.Mock;
+  createTemplate: jest.Mock;
   getMediaMetadata: jest.Mock;
   downloadMedia: jest.Mock;
 }
@@ -80,6 +81,16 @@ export function createMetaGraphMock(overrides: Partial<MetaGraphMock> = {}): Met
     ]),
     subscribeAppToWaba: jest.fn().mockResolvedValue(undefined),
     listTemplates: jest.fn().mockResolvedValue([]),
+    // `WhatsappTemplateService.create()`'s only external call — Meta's own
+    // verdict is always PENDING at submission time (mapMetaTemplateStatus
+    // maps it to PENDING_REVIEW); a unique-ish id per call keeps
+    // `provider_template_id` distinct the same way the other mocks above
+    // avoid colliding on tenant-scoped uniqueness constraints.
+    createTemplate: jest.fn().mockImplementation(async () => ({
+      id: `mock-meta-template-${randomUUID()}`,
+      status: 'PENDING',
+      category: undefined,
+    })),
     getMediaMetadata: jest.fn().mockResolvedValue({ url: 'https://mock.meta/media/1', mimeType: 'image/jpeg' }),
     downloadMedia: jest.fn().mockResolvedValue({ buffer: Buffer.from('fake-image-bytes') }),
     ...overrides,

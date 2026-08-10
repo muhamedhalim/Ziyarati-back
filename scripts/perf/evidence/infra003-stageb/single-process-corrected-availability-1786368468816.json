@@ -1,0 +1,135 @@
+{
+  "label": "single-process-corrected",
+  "endpoint": "availability",
+  "url": "/api/v1/scheduling/availability/windows?branchId=5c061148-4bb1-4d26-82f1-c2768e59208f&staffId=3a0ff66c-cf18-4ce2-8056-c8c57f4c71e0&date=2026-08-10",
+  "timestamp": "2026-08-10T13:27:48.815Z",
+  "port": 3001,
+  "levels": [
+    {
+      "concurrency": 10,
+      "n": 10,
+      "wallMs": 273,
+      "throughputPerSec": 36.63,
+      "p50Ms": 212.773,
+      "p95Ms": 268.3346,
+      "p99Ms": 268.3346,
+      "minMs": 204.4808,
+      "maxMs": 268.3346,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 3,
+      "poolMeanActive": 0.75,
+      "poolPeakIdleInTx": 0,
+      "poolSampleCount": 4,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0,
+        "eventLoopLagP99Seconds": 0.024739839,
+        "eventLoopLagMaxSeconds": 0.338165759,
+        "cpuUserSeconds": 4.859,
+        "cpuSystemSeconds": 0.735,
+        "activeHandles": 17,
+        "residentMemoryBytes": 171773952
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0087275,
+        "eventLoopLagP99Seconds": 0.039190527,
+        "eventLoopLagMaxSeconds": 0.039190527,
+        "cpuUserSeconds": 5.594,
+        "cpuSystemSeconds": 0.7969999999999999,
+        "activeHandles": 26,
+        "residentMemoryBytes": 191299584
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 0.797,
+        "eventLoopLagMeanSecondsAfter": 0.0087275,
+        "eventLoopLagP99SecondsAfter": 0.039190527,
+        "eventLoopLagMaxSecondsAfter": 0.039190527,
+        "residentMemoryBytesAfter": 191299584
+      }
+    },
+    {
+      "concurrency": 25,
+      "n": 25,
+      "wallMs": 511,
+      "throughputPerSec": 48.92,
+      "p50Ms": 493.8014,
+      "p95Ms": 497.8394,
+      "p99Ms": 500.3445,
+      "minMs": 479.0038,
+      "maxMs": 500.3445,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 1,
+      "poolMeanActive": 0.13,
+      "poolPeakIdleInTx": 1,
+      "poolSampleCount": 8,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.0053246,
+        "eventLoopLagP99Seconds": 0.019169279,
+        "eventLoopLagMaxSeconds": 0.020611071,
+        "cpuUserSeconds": 5.609,
+        "cpuSystemSeconds": 0.7969999999999999,
+        "activeHandles": 26,
+        "residentMemoryBytes": 191610880
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0044388,
+        "eventLoopLagP99Seconds": 0.059834367,
+        "eventLoopLagMaxSeconds": 0.059834367,
+        "cpuUserSeconds": 6.25,
+        "cpuSystemSeconds": 0.8909999999999999,
+        "activeHandles": 41,
+        "residentMemoryBytes": 238456832
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 0.735,
+        "eventLoopLagMeanSecondsAfter": 0.0044388,
+        "eventLoopLagP99SecondsAfter": 0.059834367,
+        "eventLoopLagMaxSecondsAfter": 0.059834367,
+        "residentMemoryBytesAfter": 238456832
+      }
+    },
+    {
+      "concurrency": 50,
+      "n": 50,
+      "wallMs": 808,
+      "throughputPerSec": 61.88,
+      "p50Ms": 787.987,
+      "p95Ms": 795.543,
+      "p99Ms": 796.015,
+      "minMs": 775.226,
+      "maxMs": 796.015,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 4,
+      "poolMeanActive": 1.08,
+      "poolPeakIdleInTx": 0,
+      "poolSampleCount": 13,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.0045111,
+        "eventLoopLagP99Seconds": 0.020807679,
+        "eventLoopLagMaxSeconds": 0.022102015,
+        "cpuUserSeconds": 6.25,
+        "cpuSystemSeconds": 0.8909999999999999,
+        "activeHandles": 41,
+        "residentMemoryBytes": 238587904
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0044106,
+        "eventLoopLagP99Seconds": 0.040566783,
+        "eventLoopLagMaxSeconds": 0.049905663,
+        "cpuUserSeconds": 7.266,
+        "cpuSystemSeconds": 1.016,
+        "activeHandles": 66,
+        "residentMemoryBytes": 326332416
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 1.141,
+        "eventLoopLagMeanSecondsAfter": 0.0044106,
+        "eventLoopLagP99SecondsAfter": 0.040566783,
+        "eventLoopLagMaxSecondsAfter": 0.049905663,
+        "residentMemoryBytesAfter": 326332416
+      }
+    }
+  ]
+}

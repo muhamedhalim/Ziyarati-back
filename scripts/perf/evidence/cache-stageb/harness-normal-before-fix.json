@@ -1,0 +1,69 @@
+{
+  "label": "normal-before-fix",
+  "timestamp": "2026-08-10T09:25:44.864Z",
+  "scenarios": {
+    "publicReadiness": {
+      "statuses": {
+        "200": 20
+      },
+      "n": 20,
+      "okCount": 20,
+      "erroredCount": 0,
+      "p50": 15.0517,
+      "p95": 40.9287,
+      "p99": 96.3361,
+      "min": 9.6304,
+      "max": 96.3361,
+      "sampleErrors": []
+    },
+    "unauthenticated401": {
+      "status": 401,
+      "ms": 25.7805,
+      "error": null
+    },
+    "loginSuccess": {
+      "status": 200,
+      "ms": 922.9119,
+      "error": null
+    },
+    "authenticatedBranches": {
+      "statuses": {
+        "200": 20
+      },
+      "n": 20,
+      "okCount": 20,
+      "erroredCount": 0,
+      "p50": 35.313,
+      "p95": 57.461,
+      "p99": 62.7884,
+      "min": 20.7836,
+      "max": 62.7884,
+      "sampleErrors": []
+    },
+    "loginIntentionalFailure": {
+      "status": 401,
+      "ms": 311.8433,
+      "error": null
+    },
+    "csrfMissingToken": {
+      "status": 403,
+      "ms": 42.0815,
+      "error": null
+    },
+    "concurrency15": {
+      "totalMs": 97.8236,
+      "statuses": {
+        "200": 15
+      },
+      "n": 15,
+      "okCount": 15,
+      "erroredCount": 0,
+      "p50": 82.6213,
+      "p95": 94.9083,
+      "p99": 94.9083,
+      "min": 42.7408,
+      "max": 94.9083,
+      "sampleErrors": []
+    }
+  }
+}

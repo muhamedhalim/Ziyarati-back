@@ -1,0 +1,135 @@
+{
+  "label": "reconfirm-single",
+  "endpoint": "availability",
+  "url": "/api/v1/scheduling/availability/windows?branchId=5c061148-4bb1-4d26-82f1-c2768e59208f&staffId=3a0ff66c-cf18-4ce2-8056-c8c57f4c71e0&date=2026-08-10",
+  "timestamp": "2026-08-10T15:16:26.559Z",
+  "port": 3001,
+  "levels": [
+    {
+      "concurrency": 10,
+      "n": 10,
+      "wallMs": 293,
+      "throughputPerSec": 34.13,
+      "p50Ms": 284.7866,
+      "p95Ms": 291.2242,
+      "p99Ms": 291.2242,
+      "minMs": 282.0337,
+      "maxMs": 291.2242,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 1,
+      "poolMeanActive": 0.4,
+      "poolPeakIdleInTx": 0,
+      "poolSampleCount": 5,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.0031853,
+        "eventLoopLagP99Seconds": 0.025968639,
+        "eventLoopLagMaxSeconds": 0.208273407,
+        "cpuUserSeconds": 7.233999999999999,
+        "cpuSystemSeconds": 0.844,
+        "activeHandles": 20,
+        "residentMemoryBytes": 164495360
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0049381,
+        "eventLoopLagP99Seconds": 0.062193663,
+        "eventLoopLagMaxSeconds": 0.062193663,
+        "cpuUserSeconds": 7.686999999999999,
+        "cpuSystemSeconds": 0.875,
+        "activeHandles": 26,
+        "residentMemoryBytes": 198516736
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 0.484,
+        "eventLoopLagMeanSecondsAfter": 0.0049381,
+        "eventLoopLagP99SecondsAfter": 0.062193663,
+        "eventLoopLagMaxSecondsAfter": 0.062193663,
+        "residentMemoryBytesAfter": 198516736
+      }
+    },
+    {
+      "concurrency": 25,
+      "n": 25,
+      "wallMs": 642,
+      "throughputPerSec": 38.94,
+      "p50Ms": 621.179,
+      "p95Ms": 631.3621,
+      "p99Ms": 637.7336,
+      "minMs": 597.0497,
+      "maxMs": 637.7336,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 3,
+      "poolMeanActive": 0.7,
+      "poolPeakIdleInTx": 0,
+      "poolSampleCount": 10,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.0052592,
+        "eventLoopLagP99Seconds": 0.022691839,
+        "eventLoopLagMaxSeconds": 0.022708223,
+        "cpuUserSeconds": 7.702999999999999,
+        "cpuSystemSeconds": 0.875,
+        "activeHandles": 26,
+        "residentMemoryBytes": 198516736
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0054366,
+        "eventLoopLagP99Seconds": 0.089587711,
+        "eventLoopLagMaxSeconds": 0.089587711,
+        "cpuUserSeconds": 8.469,
+        "cpuSystemSeconds": 1.0150000000000001,
+        "activeHandles": 41,
+        "residentMemoryBytes": 244740096
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 0.906,
+        "eventLoopLagMeanSecondsAfter": 0.0054366,
+        "eventLoopLagP99SecondsAfter": 0.089587711,
+        "eventLoopLagMaxSecondsAfter": 0.089587711,
+        "residentMemoryBytesAfter": 244740096
+      }
+    },
+    {
+      "concurrency": 50,
+      "n": 50,
+      "wallMs": 1145,
+      "throughputPerSec": 43.67,
+      "p50Ms": 1116.7606,
+      "p95Ms": 1129.2282,
+      "p99Ms": 1130.8401,
+      "minMs": 1096.6451,
+      "maxMs": 1130.8401,
+      "errorCount": 0,
+      "errors": [],
+      "poolPeakActive": 4,
+      "poolMeanActive": 0.78,
+      "poolPeakIdleInTx": 0,
+      "poolSampleCount": 18,
+      "metricsBefore": {
+        "eventLoopLagMeanSeconds": 0.0032222,
+        "eventLoopLagP99Seconds": 0.023216127,
+        "eventLoopLagMaxSeconds": 0.024838143,
+        "cpuUserSeconds": 8.625,
+        "cpuSystemSeconds": 1.0150000000000001,
+        "activeHandles": 41,
+        "residentMemoryBytes": 240803840
+      },
+      "metricsAfter": {
+        "eventLoopLagMeanSeconds": 0.0049069,
+        "eventLoopLagP99Seconds": 0.056393727,
+        "eventLoopLagMaxSeconds": 0.058851327,
+        "cpuUserSeconds": 9.797,
+        "cpuSystemSeconds": 1.2340000000000002,
+        "activeHandles": 66,
+        "residentMemoryBytes": 302731264
+      },
+      "metricsDelta": {
+        "cpuSecondsUsed": 1.391,
+        "eventLoopLagMeanSecondsAfter": 0.0049069,
+        "eventLoopLagP99SecondsAfter": 0.056393727,
+        "eventLoopLagMaxSecondsAfter": 0.058851327,
+        "residentMemoryBytesAfter": 302731264
+      }
+    }
+  ]
+}

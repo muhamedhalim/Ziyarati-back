@@ -312,15 +312,18 @@ export class CampaignExecutionService {
       });
     }
 
-    // Explicit account when bound; otherwise the tenant default (throws 404 when
-    // the clinic has not connected a number yet).
-    const account = await this.whatsappRouter.resolveForSend(
-      tenantId,
-      campaign.whatsapp_account ? { accountId: campaign.whatsapp_account.id } : {},
-    );
-
-    // Throws 422 unless the template is APPROVED (and tenant-owned).
-    const template = await this.templates.getSendableTemplate(tenantId, campaign.template.id);
+    // Account resolution and template validation are independent lookups —
+    // neither consumes the other's result — so they run concurrently
+    // (PERF-BE-005). Explicit account when bound; otherwise the tenant default
+    // (throws 404 when the clinic has not connected a number yet). Template
+    // throws 422 unless it is APPROVED (and tenant-owned).
+    const [account, template] = await Promise.all([
+      this.whatsappRouter.resolveForSend(
+        tenantId,
+        campaign.whatsapp_account ? { accountId: campaign.whatsapp_account.id } : {},
+      ),
+      this.templates.getSendableTemplate(tenantId, campaign.template.id),
+    ]);
 
     this.assertSameWaba(account, template);
   }

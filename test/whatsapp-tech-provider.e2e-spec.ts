@@ -49,6 +49,16 @@ import {
 
 const API = '/api/v1';
 
+// `CreateWhatsappTemplateDto` requires `category` and a non-empty
+// `components` array (Meta itself requires both on every real template) —
+// no placeholders, so no `example` is needed either. Shared by every
+// `POST /whatsapp/templates` call below to keep the minimal valid payload
+// in one place.
+const MINIMAL_TEMPLATE_BODY = {
+  category: 'UTILITY',
+  components: [{ type: 'BODY', text: 'This is a test template message.' }],
+};
+
 describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
   let e2e: E2eApp;
   let ds: DataSource;
@@ -166,7 +176,12 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
       const tpl = await request(e2e.app.getHttpServer())
         .post(`${API}/whatsapp/templates`)
         .set(...authHeader(tenantA.token))
-        .send({ name: `disc_test_${randomUUID().slice(0, 8)}`, language: 'en', accountId })
+        .send({
+          name: `disc_test_${randomUUID().slice(0, 8)}`,
+          language: 'en',
+          accountId,
+          ...MINIMAL_TEMPLATE_BODY,
+        })
         .expect(201);
       templateId = tpl.body.id;
       // GAP-002 (whatsapp-template.service.ts): `status` can never be set to
@@ -258,7 +273,12 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
     const tpl = await request(e2e.app.getHttpServer())
       .post(`${API}/whatsapp/templates`)
       .set(...authHeader(tenantA.token))
-      .send({ name: `waba_mismatch_${randomUUID().slice(0, 8)}`, language: 'en', accountId })
+      .send({
+        name: `waba_mismatch_${randomUUID().slice(0, 8)}`,
+        language: 'en',
+        accountId,
+        ...MINIMAL_TEMPLATE_BODY,
+      })
       .expect(201);
     // Force a WABA mismatch: created via the API with the right account, then
     // its waba_id is overwritten directly — the API has no field for this
