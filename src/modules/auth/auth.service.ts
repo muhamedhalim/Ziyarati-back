@@ -51,7 +51,8 @@ export class AuthService {
     @InjectRepository(PasswordReset)
     private readonly passwordResets: Repository<PasswordReset>,
     @InjectRepository(Tenant) private readonly tenants: Repository<Tenant>,
-    @InjectRepository(AuditLog) private readonly auditLogs: Repository<AuditLog>,
+    @InjectRepository(AuditLog)
+    private readonly auditLogs: Repository<AuditLog>,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
@@ -249,7 +250,9 @@ export class AuthService {
     role: Role,
     tenantId: string | null,
   ): Promise<User> {
-    const clash = await manager.findOne(User, { where: { email: input.email } });
+    const clash = await manager.findOne(User, {
+      where: { email: input.email },
+    });
     if (clash) {
       throw new AppError(ErrorCode.EMAIL_ALREADY_EXISTS);
     }
@@ -365,7 +368,9 @@ export class AuthService {
         }),
       );
     } catch (err) {
-      this.logger.warn(`Login-protection audit write failed: ${(err as Error).message}`);
+      this.logger.warn(
+        `Login-protection audit write failed: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -455,13 +460,16 @@ export class AuthService {
     refreshToken: string,
     context?: TokenContext,
   ): Promise<AuthResult> {
+    // Resolved BEFORE the try/catch below: that block exists to turn a
+    // malformed/forged/expired TOKEN into a uniform INVALID_REFRESH_TOKEN
+    // error, and must never also swallow a missing-configuration error
+    // (ZT-007, FR-020) into the same generic shape — the two are different
+    // failures an operator needs to tell apart.
+    const refreshSecret = this.config.getOrThrow<string>('JWT_REFRESH_SECRET');
     let payload: RefreshTokenPayload;
     try {
       payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
-        secret: this.config.get<string>(
-          'JWT_REFRESH_SECRET',
-          'dev-refresh-secret',
-        ),
+        secret: refreshSecret,
       });
     } catch {
       throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
@@ -503,13 +511,14 @@ export class AuthService {
 
   /** Revokes a single refresh token (single-device logout). */
   async logout(refreshToken: string): Promise<void> {
+    // Same reasoning as refresh() above: resolved before the try/catch so a
+    // missing secret fails loudly instead of being swallowed into the
+    // "logging out with a bad token is a no-op" branch.
+    const refreshSecret = this.config.getOrThrow<string>('JWT_REFRESH_SECRET');
     let payload: RefreshTokenPayload;
     try {
       payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
-        secret: this.config.get<string>(
-          'JWT_REFRESH_SECRET',
-          'dev-refresh-secret',
-        ),
+        secret: refreshSecret,
       });
     } catch {
       return; // logging out with a bad token is a no-op
@@ -554,9 +563,7 @@ export class AuthService {
    * configured — it logs the token, it never returns it, and production
    * refuses to boot if the flag is left on (see env.validation.ts).
    */
-  async forgotPassword(
-    dto: ForgotPasswordDto,
-  ): Promise<{ message: string }> {
+  async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
     const tenantId = await this.resolveTenantId(dto.tenantSlug).catch(
       () => null,
     );
@@ -849,7 +856,7 @@ export class AuthService {
       type: 'access',
     };
     const accessToken = await this.jwt.signAsync(accessPayload, {
-      secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+      secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
       expiresIn: accessTtl as JwtSignOptions['expiresIn'],
     });
 
@@ -862,10 +869,7 @@ export class AuthService {
       type: 'refresh',
     };
     const refreshToken = await this.jwt.signAsync(refreshPayload, {
-      secret: this.config.get<string>(
-        'JWT_REFRESH_SECRET',
-        'dev-refresh-secret',
-      ),
+      secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
       expiresIn: refreshTtl as JwtSignOptions['expiresIn'],
     });
 

@@ -82,7 +82,7 @@ export class PatientService {
     const accessToken = await this.jwt.signAsync(
       { sub: patientId, type: 'patient' },
       {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
         expiresIn: accessTtl as JwtSignOptions['expiresIn'],
       },
     );
@@ -90,10 +90,7 @@ export class PatientService {
     const refreshToken = await this.jwt.signAsync(
       { sub: patientId, type: 'patient_refresh' },
       {
-        secret: this.config.get<string>(
-          'JWT_REFRESH_SECRET',
-          'dev-refresh-secret',
-        ),
+        secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         expiresIn: refreshTtl as JwtSignOptions['expiresIn'],
       },
     );

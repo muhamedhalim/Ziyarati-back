@@ -1,7 +1,7 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { requestContext } from './common/middleware/request-context.middleware';
 import { TenantContextService } from './core/tenant-context/tenant-context.service';
@@ -9,8 +9,8 @@ import { MetricsService } from './metrics/metrics.service';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
-import { IntegrationModule } from './modules/integration/integration.module';
 import { runClustered } from './cluster-bootstrap';
+import { mountApiDocs } from './config/api-docs';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -57,7 +57,9 @@ async function bootstrap() {
     tenantContext.run(() => {
       // `requestContext` (registered above) set req.requestId; propagate it so
       // enqueued jobs and logs carry the correlation id.
-      tenantContext.setCorrelationId((req as { requestId?: string }).requestId ?? null);
+      tenantContext.setCorrelationId(
+        (req as { requestId?: string }).requestId ?? null,
+      );
       next();
     }),
   );
@@ -102,89 +104,12 @@ async function bootstrap() {
     }),
   );
 
-  // ---------------- Swagger Config ----------------
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Clinic SaaS API')
-    .setDescription('Auth + RBAC + Multi Tenant System')
-    .setVersion('1.0')
-    .addBearerAuth(
-      {
-        type: 'http',
-        scheme: 'bearer',
-        bearerFormat: 'JWT',
-      },
-      'JWT-auth',
-    )
-    .build();
-
-  const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
-
-  // Require the bearer scheme on EVERY operation, so clicking "Authorize" once
-  // attaches `Authorization: Bearer <token>` to all requests (public routes
-  // simply ignore it). Without this, only operations decorated with
-  // @ApiBearerAuth('JWT-auth') send the token — the rest hit "No auth token".
-  swaggerDocument.security = [{ 'JWT-auth': [] }];
-
-  SwaggerModule.setup('docs', app, swaggerDocument, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-  });
-
-  // ---------------- Integration API docs (separate, external-facing) ----------------
-  // A distinct document scoped to ONLY the external integration controllers —
-  // internal admin/dashboard routes must never appear here. Authenticated with
-  // an API key (never the JWT bearer scheme above), so it gets its own
-  // security scheme rather than reusing 'JWT-auth'.
-  const integrationSwaggerConfig = new DocumentBuilder()
-    .setTitle('Ziyarati Integration API')
-    .setDescription(
-      `
-Read-only API for connecting an existing clinic system to Ziyarati.
-
-**Authentication** — every request needs an API key, created from the clinic's
-Developer Options page. Send it as either:
-- \`X-API-Key: zk_...\`, or
-- \`Authorization: ApiKey zk_...\`
-
-**Scopes** — a key only works for the scopes it was granted at creation
-(e.g. \`integration.services.read\`). A request to an endpoint the key wasn't
-granted the scope for returns 403.
-
-**Pagination** — list endpoints accept \`page\` (1-based) and \`limit\` (max 100)
-and return \`{ data, total, page, limit }\`.
-
-**Rate limits** — each key is limited per minute (429 \`RATE_LIMITED\` when
-exceeded, with a \`context.retryAfterMs\` hint). The limit is configured per
-deployment.
-
-**Errors** — every error response has the shape
-\`{ statusCode, code, error, message, path, timestamp, requestId, context? }\`.
-Clients should branch on \`code\`. Common codes: \`UNAUTHORIZED\`
-(missing/invalid/expired/revoked key, or the owning clinic is suspended),
-\`FORBIDDEN\` (missing scope), \`NOT_FOUND\` (unknown id, or the resource belongs
-to another clinic), \`VALIDATION_ERROR\` (bad query params), \`RATE_LIMITED\`.
-      `.trim(),
-    )
-    .setVersion('1.0')
-    .addApiKey(
-      { type: 'apiKey', name: 'X-API-Key', in: 'header' },
-      'ApiKey-auth',
-    )
-    .build();
-
-  const integrationSwaggerDocument = SwaggerModule.createDocument(
-    app,
-    integrationSwaggerConfig,
-    { include: [IntegrationModule] },
-  );
-  integrationSwaggerDocument.security = [{ 'ApiKey-auth': [] }];
-
-  SwaggerModule.setup('docs/integrations', app, integrationSwaggerDocument, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-  });
+  // ---------------- API documentation (ZT-001: gated, not unconditional) ----------------
+  // Both documents are controlled by their OWN independent flag, each
+  // defaulting to disabled in production (env.validation.ts). See
+  // config/api-docs.ts for why gating skips the mount entirely rather than
+  // guarding a mounted route.
+  mountApiDocs(app, app.get(ConfigService));
 
   // ---------------- Health Route ----------------
   app.use('/api/v1/health', (_req, res) => {

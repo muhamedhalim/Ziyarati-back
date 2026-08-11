@@ -2,6 +2,29 @@ import { createHash } from 'node:crypto';
 import { AppError, ErrorCode } from '../../common/errors';
 
 /**
+ * `fieldNestingDepth` (multer@2.2.0+, ZT-004b — see research.md D3) is
+ * enforced at runtime but not yet reflected in `@nestjs/platform-express`'s
+ * bundled `MulterOptions['limits']` type as of 11.1.29 — only the `.d.ts`
+ * lags, and that interface is not part of the package's exported public API
+ * (only reachable via a non-exported deep path), so it cannot be imported
+ * and extended directly. This local type mirrors busboy's own documented
+ * limits shape (https://github.com/mscdex/busboy#exports) plus the missing
+ * field, and is the single place that gap is bridged — reused by every
+ * multipart upload route's `FileInterceptor` `limits` object rather than
+ * repeating a type assertion at each of the three call sites.
+ */
+export interface MulterLimitsWithNestingDepth {
+  fieldNameSize?: number;
+  fieldSize?: number;
+  fields?: number;
+  fileSize?: number;
+  files?: number;
+  parts?: number;
+  headerPairs?: number;
+  fieldNestingDepth: number;
+}
+
+/**
  * Allow-list and limits for tenant document uploads.
  *
  * Verification documents are legal artefacts (CR, national ID, MoH license, …)
@@ -146,8 +169,13 @@ export function policyAllowsMime(policy: UploadPolicy, mime: string): boolean {
 }
 
 /** Preferred storage extension for a MIME under a policy. */
-export function policyExtensionForMime(policy: UploadPolicy, mime: string): string | null {
-  return policy.allowedTypes.find((t) => t.mime === mime)?.extensions[0] ?? null;
+export function policyExtensionForMime(
+  policy: UploadPolicy,
+  mime: string,
+): string | null {
+  return (
+    policy.allowedTypes.find((t) => t.mime === mime)?.extensions[0] ?? null
+  );
 }
 
 /**
@@ -209,7 +237,11 @@ export function extensionMatchesMime(filename: string, mime: string): boolean {
   return !!type && type.extensions.includes(ext);
 }
 
-export function extensionMatchesMimeForPolicy(filename: string, mime: string, policy: UploadPolicy): boolean {
+export function extensionMatchesMimeForPolicy(
+  filename: string,
+  mime: string,
+  policy: UploadPolicy,
+): boolean {
   const dot = filename.lastIndexOf('.');
   if (dot === -1) return false;
   const ext = normalizeExtension(filename.slice(dot + 1));
@@ -243,10 +275,7 @@ function matchesSignature(buf: Buffer, mime: string): boolean {
     case 'application/pdf':
       // "%PDF"
       return (
-        buf[0] === 0x25 &&
-        buf[1] === 0x50 &&
-        buf[2] === 0x44 &&
-        buf[3] === 0x46
+        buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46
       );
     case 'image/png':
       // \x89 P N G \r \n \x1a \n

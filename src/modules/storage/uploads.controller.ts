@@ -27,6 +27,7 @@ import { ObjectKeyDto } from './dto/object-key.dto';
 import {
   DEFAULT_SIGNED_URL_TTL_SECONDS,
   MAX_UPLOAD_BYTES,
+  MulterLimitsWithNestingDepth,
 } from './storage.constants';
 
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -44,6 +45,13 @@ export interface UploadedFileLike {
   size: number;
   buffer: Buffer;
 }
+
+/** ZT-004b: bounds field-name nesting depth and non-file field count. */
+const UPLOAD_LIMITS: MulterLimitsWithNestingDepth = {
+  fileSize: MAX_UPLOAD_BYTES,
+  fieldNestingDepth: 5,
+  fields: 10,
+};
 
 /**
  * Generic private-file gateway backed by Cloudflare R2.
@@ -102,9 +110,7 @@ export class UploadsController {
   })
   @Post()
   @Roles(ROLE.OWNER, ROLE.MANAGER)
-  @UseInterceptors(
-    FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }),
-  )
+  @UseInterceptors(FileInterceptor('file', { limits: UPLOAD_LIMITS }))
   async upload(
     @UploadedFile() file: UploadedFileLike | undefined,
     @Body() dto: UploadObjectDto,
@@ -175,7 +181,10 @@ export class UploadsController {
     // derived from the key itself — assertKeyBelongsToTenant still blocks
     // path traversal, it just no longer restricts *which* tenant's prefix.
     const effectiveTenantId = tenantId || query.key.split('/')[0];
-    const url = await this.storage.getSignedDownloadUrl(query.key, effectiveTenantId);
+    const url = await this.storage.getSignedDownloadUrl(
+      query.key,
+      effectiveTenantId,
+    );
 
     await this.audit.record({
       tenantId: effectiveTenantId,

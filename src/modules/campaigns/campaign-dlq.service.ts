@@ -9,7 +9,10 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { QueueService } from '../../queue/queue.service';
 import { QUEUE } from '../../queue/queue.constants';
-import { CampaignDlqJob, CampaignProcessRecipientJob } from '../../queue/job-data.interface';
+import {
+  CampaignDlqJob,
+  CampaignProcessRecipientJob,
+} from '../../queue/job-data.interface';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -51,9 +54,30 @@ export class CampaignDlqService {
     private readonly auditLogs: Repository<AuditLog>,
   ) {}
 
-  /** Current DLQ depth (waiting + delayed). A count only — no tenant-owned data. */
-  depth(): Promise<number> {
-    return this.queue.dlqDepth();
+  /**
+   * Current DLQ depth — the count of the CALLER'S OWN parked jobs (waiting +
+   * delayed), not the platform-wide figure `queue.dlqDepth()` used to return
+   * behind this tenant-level permission (ZT-009). Reuses `list()`'s own
+   * bounded, owner-filtered scan rather than a second scanning strategy;
+   * since depth has no caller-supplied page size to derive a smaller bound
+   * from, it scans straight to `OVERFETCH_HARD_CAP` — the same ceiling
+   * `list()` converges on for any sufficiently large `limit`.
+   */
+  async depth(): Promise<number> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const dlq = this.queue.queue(QUEUE.CAMPAIGNS_DLQ);
+    const jobs = await dlq.getJobs(
+      ['waiting', 'delayed'],
+      0,
+      OVERFETCH_HARD_CAP - 1,
+      false,
+    );
+
+    let count = 0;
+    for (const job of jobs) {
+      if (this.ownsJob(job.data as CampaignDlqJob, tenantId)) count++;
+    }
+    return count;
   }
 
   /**
@@ -69,7 +93,12 @@ export class CampaignDlqService {
     const scanTo = Math.min(pageSize * OVERFETCH_FACTOR, OVERFETCH_HARD_CAP);
 
     const dlq = this.queue.queue(QUEUE.CAMPAIGNS_DLQ);
-    const jobs = await dlq.getJobs(['waiting', 'delayed'], 0, Math.max(0, scanTo - 1), false);
+    const jobs = await dlq.getJobs(
+      ['waiting', 'delayed'],
+      0,
+      Math.max(0, scanTo - 1),
+      false,
+    );
 
     const owned: ReturnType<typeof this.toSummary>[] = [];
     for (const job of jobs) {
@@ -103,7 +132,12 @@ export class CampaignDlqService {
     }
 
     if (data.sourceQueue !== QUEUE.CAMPAIGNS_PROCESS) {
-      await this.audit('campaigns.dlq.replay', jobId, 'unsupported_source', data.correlationId);
+      await this.audit(
+        'campaigns.dlq.replay',
+        jobId,
+        'unsupported_source',
+        data.correlationId,
+      );
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Replay not supported for source queue "${data.sourceQueue}"`,
       });
@@ -114,7 +148,12 @@ export class CampaignDlqService {
     const lockKey = `dlq:replay:${QUEUE.CAMPAIGNS_DLQ}:${jobId}`;
     const token = await this.locks.acquire(lockKey, REPLAY_LOCK_TTL_MS);
     if (!token) {
-      await this.audit('campaigns.dlq.replay', jobId, 'already_in_flight', data.correlationId);
+      await this.audit(
+        'campaigns.dlq.replay',
+        jobId,
+        'already_in_flight',
+        data.correlationId,
+      );
       throw this.notFound();
     }
 
@@ -123,7 +162,12 @@ export class CampaignDlqService {
     } catch (err) {
       // Leave the parked entry in place so the job is never lost, and release the
       // claim so it is retryable immediately rather than waiting out the TTL.
-      await this.audit('campaigns.dlq.replay', jobId, 'failed', data.correlationId);
+      await this.audit(
+        'campaigns.dlq.replay',
+        jobId,
+        'failed',
+        data.correlationId,
+      );
       throw err;
     } finally {
       await this.locks.release(lockKey, token).catch(() => undefined);
@@ -141,21 +185,31 @@ export class CampaignDlqService {
       const res = await mgr.update(
         CampaignRecipient,
         { id: orig.recipientId, processing: RecipientProcessing.FAILED },
-        { processing: RecipientProcessing.PENDING, failure_class: null, failure_reason: null },
+        {
+          processing: RecipientProcessing.PENDING,
+          failure_class: null,
+          failure_reason: null,
+        },
       );
       if ((res.affected ?? 0) > 0) {
         // Give the slot back to the run's queue.
         await mgr
           .createQueryBuilder()
           .update(CampaignRun)
-          .set({ failed: () => 'GREATEST(failed - 1, 0)', queued: () => 'queued + 1' })
+          .set({
+            failed: () => 'GREATEST(failed - 1, 0)',
+            queued: () => 'queued + 1',
+          })
           .where('id = :runId', { runId: orig.runId })
           .execute();
         // Reopen a finished run so the replayed send can proceed.
         await mgr
           .createQueryBuilder()
           .update(CampaignRun)
-          .set({ execution: CampaignExecution.PROCESSING, finished_at: () => 'NULL' })
+          .set({
+            execution: CampaignExecution.PROCESSING,
+            finished_at: () => 'NULL',
+          })
           .where('id = :runId', { runId: orig.runId })
           .andWhere('execution = :done', { done: CampaignExecution.COMPLETED })
           .execute();
@@ -174,7 +228,12 @@ export class CampaignDlqService {
     // swallowed: with the claim held, a retained entry is safe to replay again,
     // whereas silently dropping it on an unconfirmed publish would lose the job.
     await job.remove();
-    await this.audit('campaigns.dlq.replay', jobId, 'replayed', data.correlationId);
+    await this.audit(
+      'campaigns.dlq.replay',
+      jobId,
+      'replayed',
+      data.correlationId,
+    );
     this.logger.log(`Replayed DLQ job ${jobId} → ${data.sourceQueue}`);
     return { replayed: true, jobId };
   }
@@ -192,7 +251,12 @@ export class CampaignDlqService {
     }
 
     await job.remove();
-    await this.audit('campaigns.dlq.discard', jobId, 'discarded', data.correlationId);
+    await this.audit(
+      'campaigns.dlq.discard',
+      jobId,
+      'discarded',
+      data.correlationId,
+    );
     return { discarded: true, jobId };
   }
 
@@ -251,7 +315,8 @@ export class CampaignDlqService {
           new_values: {
             jobId,
             result,
-            correlationId: correlationId ?? this.tenantContext.getCorrelationId() ?? null,
+            correlationId:
+              correlationId ?? this.tenantContext.getCorrelationId() ?? null,
           },
         }),
       );

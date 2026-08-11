@@ -56,9 +56,10 @@ describe('WhatsappDlqService', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  it('reports depth scoped to the whatsapp DLQ, not the campaigns one', async () => {
-    await expect(service.depth()).resolves.toBe(3);
-    expect(queue.dlqDepth).toHaveBeenCalledWith(QUEUE.WHATSAPP_DLQ);
+  it('reports depth from the whatsapp DLQ queue, not the campaigns one', async () => {
+    dlqQueue.getJobs.mockResolvedValueOnce([]);
+    await service.depth();
+    expect(queue.queue).toHaveBeenCalledWith(QUEUE.WHATSAPP_DLQ);
   });
 
   it('lists parked jobs newest-first with forensic fields', async () => {
@@ -79,7 +80,11 @@ describe('WhatsappDlqService', () => {
 
     const res = await service.list();
     expect(res).toEqual([
-      expect.objectContaining({ jobId: 'j1', sourceQueue: QUEUE.WHATSAPP_WEBHOOK, failedReason: 'boom' }),
+      expect.objectContaining({
+        jobId: 'j1',
+        sourceQueue: QUEUE.WHATSAPP_WEBHOOK,
+        failedReason: 'boom',
+      }),
     ]);
   });
 
@@ -104,7 +109,11 @@ describe('WhatsappDlqService', () => {
       expect(queue.publish).toHaveBeenCalledWith(
         QUEUE.WHATSAPP_WEBHOOK,
         'whatsapp.webhookProcess',
-        expect.objectContaining({ webhookEventId: 'evt-1', tenantId: 't1', correlationId: 'cid-1' }),
+        expect.objectContaining({
+          webhookEventId: 'evt-1',
+          tenantId: 't1',
+          correlationId: 'cid-1',
+        }),
         expect.stringContaining('whatsapp.webhookProcess-replay-orig-1-'),
       );
       expect(remove).toHaveBeenCalled();
@@ -114,7 +123,11 @@ describe('WhatsappDlqService', () => {
     it('rejects a source queue it does not know how to replay', async () => {
       dlqQueue.getJob.mockResolvedValueOnce({
         id: 'j1',
-        data: { sourceQueue: 'campaigns.processRecipient', tenantId: CALLER_TENANT, originalData: {} },
+        data: {
+          sourceQueue: 'campaigns.processRecipient',
+          tenantId: CALLER_TENANT,
+          originalData: {},
+        },
       });
 
       await expect(service.replay('j1')).rejects.toMatchObject({
@@ -125,14 +138,20 @@ describe('WhatsappDlqService', () => {
 
     it('404s on an unknown job id', async () => {
       dlqQueue.getJob.mockResolvedValueOnce(null);
-      await expect(service.replay('gone')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.replay('gone')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
     });
   });
 
   describe('discard', () => {
     it('removes the job without replaying', async () => {
       const remove = jest.fn().mockResolvedValue(undefined);
-      dlqQueue.getJob.mockResolvedValueOnce({ id: 'j1', data: { tenantId: CALLER_TENANT }, remove });
+      dlqQueue.getJob.mockResolvedValueOnce({
+        id: 'j1',
+        data: { tenantId: CALLER_TENANT },
+        remove,
+      });
 
       const res = await service.discard('j1');
       expect(remove).toHaveBeenCalled();
@@ -142,7 +161,9 @@ describe('WhatsappDlqService', () => {
 
     it('404s on an unknown job id', async () => {
       dlqQueue.getJob.mockResolvedValueOnce(null);
-      await expect(service.discard('gone')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.discard('gone')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
     });
   });
 
@@ -191,7 +212,9 @@ describe('WhatsappDlqService', () => {
 
     it('keeps the page size predictable when other tenants own the newest jobs', async () => {
       const jobs = [
-        ...Array.from({ length: 20 }, (_, i) => parked(`theirs-${i}`, OTHER_TENANT)),
+        ...Array.from({ length: 20 }, (_, i) =>
+          parked(`theirs-${i}`, OTHER_TENANT),
+        ),
         parked('mine-1', CALLER_TENANT),
         parked('mine-2', CALLER_TENANT),
       ];
@@ -243,7 +266,52 @@ describe('WhatsappDlqService', () => {
       tenantContext.requireTenantId.mockReturnValue(OTHER_TENANT);
       dlqQueue.getJob.mockResolvedValueOnce(parked('mine-1', CALLER_TENANT));
 
-      await expect(service.replay('mine-1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.replay('mine-1')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+    });
+
+    // ── ZT-009: depth must be the caller's own count, never the platform figure ──
+    describe('depth', () => {
+      it('two tenants with different DLQ contents receive different, own-tenant-only depths', async () => {
+        const parkedJobs = [
+          parked('mine-1', CALLER_TENANT),
+          parked('mine-2', CALLER_TENANT),
+          parked('mine-3', CALLER_TENANT),
+          parked('theirs-1', OTHER_TENANT),
+        ];
+
+        dlqQueue.getJobs.mockResolvedValueOnce(parkedJobs);
+        tenantContext.requireTenantId.mockReturnValue(CALLER_TENANT);
+        await expect(service.depth()).resolves.toBe(3);
+
+        dlqQueue.getJobs.mockResolvedValueOnce(parkedJobs);
+        tenantContext.requireTenantId.mockReturnValue(OTHER_TENANT);
+        await expect(service.depth()).resolves.toBe(1);
+      });
+
+      it('a tenant with zero parked jobs sees 0 — never the platform-wide figure', async () => {
+        dlqQueue.getJobs.mockResolvedValueOnce([
+          parked('theirs-1', OTHER_TENANT),
+          parked('theirs-2', OTHER_TENANT),
+        ]);
+        tenantContext.requireTenantId.mockReturnValue(CALLER_TENANT);
+
+        await expect(service.depth()).resolves.toBe(0);
+      });
+
+      it('treats a job with no recorded tenant as not owned, consistent with list()', async () => {
+        dlqQueue.getJobs.mockResolvedValueOnce([parked('orphan', undefined)]);
+        await expect(service.depth()).resolves.toBe(0);
+      });
+
+      it('bounds the scan rather than walking the queue unbounded', async () => {
+        dlqQueue.getJobs.mockResolvedValueOnce([]);
+        await service.depth();
+        const [, start, end] = dlqQueue.getJobs.mock.calls[0];
+        expect(start).toBe(0);
+        expect(end).toBeLessThanOrEqual(999);
+      });
     });
   });
 
@@ -281,7 +349,9 @@ describe('WhatsappDlqService', () => {
       locks.acquire.mockResolvedValueOnce(null);
       dlqQueue.getJob.mockResolvedValueOnce(replayable());
 
-      await expect(service.replay('j1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.replay('j1')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
       expect(queue.publish).not.toHaveBeenCalled();
     });
 
@@ -312,7 +382,10 @@ describe('WhatsappDlqService', () => {
           sourceJobName: 'whatsapp.webhookProcess',
           tenantId: CALLER_TENANT,
           correlationId: 'cid-1',
-          originalData: { toWaId: '+441234567890', variables: { name: 'Alice' } },
+          originalData: {
+            toWaId: '+441234567890',
+            variables: { name: 'Alice' },
+          },
         },
         remove: jest.fn().mockResolvedValue(undefined),
       });
@@ -324,7 +397,10 @@ describe('WhatsappDlqService', () => {
       expect(row).toMatchObject({
         action: 'whatsapp.dlq.replay',
         entity_type: 'whatsapp_dlq_job',
-        new_values: expect.objectContaining({ jobId: 'j1', result: 'replayed' }),
+        new_values: expect.objectContaining({
+          jobId: 'j1',
+          result: 'replayed',
+        }),
       });
       const serialised = JSON.stringify(row);
       expect(serialised).not.toContain('441234567890');
@@ -341,7 +417,10 @@ describe('WhatsappDlqService', () => {
       await service.replay('theirs').catch(() => undefined);
 
       const row = auditLogs.save.mock.calls.at(-1)![0];
-      expect(row.new_values).toMatchObject({ jobId: 'theirs', result: 'rejected' });
+      expect(row.new_values).toMatchObject({
+        jobId: 'theirs',
+        result: 'rejected',
+      });
     });
   });
 });

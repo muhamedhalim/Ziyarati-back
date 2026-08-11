@@ -10,8 +10,6 @@
  * Excluded from the production build by tsconfig.build.json (`test/` is ignored).
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 // ─────────────────────────────────────────────────────────────────────────────
 // TypeORM
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,12 +216,27 @@ export const createMockDataSource = (
 // Nest config / jwt
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** ConfigService double: `get(key, default)` returns the override or the default. */
-export const createMockConfigService = (overrides: Record<string, unknown> = {}) => ({
+/**
+ * ConfigService double: `get(key, default)` returns the override or the
+ * default. `getOrThrow(key)` mirrors the REAL `@nestjs/config` `ConfigService`
+ * (throws when the key is absent) rather than silently returning `undefined`
+ * — ZT-007 relies on this to prove a secret-consuming path fails loudly when
+ * its variable is unset, exactly as it would in a real misconfigured boot.
+ */
+export const createMockConfigService = (
+  overrides: Record<string, unknown> = {},
+) => ({
   get: jest.fn((key: string, defaultValue?: unknown) =>
-    Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : defaultValue,
+    Object.prototype.hasOwnProperty.call(overrides, key)
+      ? overrides[key]
+      : defaultValue,
   ),
-  getOrThrow: jest.fn((key: string) => overrides[key]),
+  getOrThrow: jest.fn((key: string) => {
+    if (!Object.prototype.hasOwnProperty.call(overrides, key)) {
+      throw new Error(`Configuration key "${key}" does not exist`);
+    }
+    return overrides[key];
+  }),
 });
 
 export const createMockJwtService = () => ({
@@ -241,10 +254,21 @@ export const createMockQueue = () => ({
   add: jest.fn(async () => ({ id: 'job-1' })),
   addBulk: jest.fn(async () => [{ id: 'job-1' }]),
   getJob: jest.fn(async () => null),
-  getJobCounts: jest.fn(async () => ({ waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0 })),
+  getJobCounts: jest.fn(async () => ({
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    completed: 0,
+    failed: 0,
+  })),
   remove: jest.fn(async () => undefined),
   close: jest.fn(async () => undefined),
-  client: Promise.resolve({ ping: jest.fn(), eval: jest.fn(), get: jest.fn(), set: jest.fn() }),
+  client: Promise.resolve({
+    ping: jest.fn(),
+    eval: jest.fn(),
+    get: jest.fn(),
+    set: jest.fn(),
+  }),
 });
 
 export const createMockCache = () => ({

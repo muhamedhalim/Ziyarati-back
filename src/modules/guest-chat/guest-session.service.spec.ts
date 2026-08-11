@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { GuestSessionService } from './guest-session.service';
 import { ErrorCode } from '../../common/errors';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
+import { createMockConfigService } from '../../../test/utils/mock-factories';
 
 /**
  * Security regression suite for FND-001 (P0) — unauthenticated cross-tenant
@@ -26,7 +27,12 @@ const GUEST_B = 'guest-b-subject';
 const CONV_A = '11111111-1111-4111-8111-111111111111';
 
 /** Signs a guest token with the same shape `createSession()` mints. */
-function guestToken(jwt: JwtService, sub: string, tenantId: string, expired = false): Promise<string> {
+function guestToken(
+  jwt: JwtService,
+  sub: string,
+  tenantId: string,
+  expired = false,
+): Promise<string> {
   return jwt.signAsync(
     { sub, tenantId, guest: true },
     { secret: 'test-access-secret', expiresIn: expired ? '-1s' : '1d' },
@@ -39,7 +45,7 @@ describe('GuestSessionService.convert — FND-001', () => {
   let tenants: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock };
   let memory: { summarizeConversation: jest.Mock };
   let overrides: { hasActive: jest.Mock; grant: jest.Mock };
-  let config: { get: jest.Mock };
+  let config: ReturnType<typeof createMockConfigService>;
   let conversationRepo: {
     findOne: jest.Mock;
     createQueryBuilder: jest.Mock;
@@ -47,7 +53,11 @@ describe('GuestSessionService.convert — FND-001', () => {
   let updateResult: { affected: number };
 
   /** Builds a conversation row as the repository would return it. */
-  const conversationRow = (opts: { guestSubject?: string; tenantId?: string; status?: string }) => ({
+  const conversationRow = (opts: {
+    guestSubject?: string;
+    tenantId?: string;
+    status?: string;
+  }) => ({
     id: CONV_A,
     tenant: { id: opts.tenantId ?? DISCOVERY_TENANT },
     status: opts.status ?? AI_CONVERSATION_STATUS.ACTIVE,
@@ -57,17 +67,29 @@ describe('GuestSessionService.convert — FND-001', () => {
   beforeEach(() => {
     jwt = new JwtService({});
     tenants = {
-      findOne: jest.fn().mockResolvedValue({ id: DISCOVERY_TENANT, slug: '__guest_discovery__' }),
+      findOne: jest.fn().mockResolvedValue({
+        id: DISCOVERY_TENANT,
+        slug: '__guest_discovery__',
+      }),
       save: jest.fn(),
       create: jest.fn(),
     };
-    memory = { summarizeConversation: jest.fn().mockResolvedValue({ id: 'memory-1' }) };
-    overrides = { hasActive: jest.fn().mockResolvedValue(true), grant: jest.fn() };
-    config = { get: jest.fn().mockImplementation((k: string, d?: string) => (k === 'JWT_ACCESS_SECRET' ? 'test-access-secret' : d)) };
+    memory = {
+      summarizeConversation: jest.fn().mockResolvedValue({ id: 'memory-1' }),
+    };
+    overrides = {
+      hasActive: jest.fn().mockResolvedValue(true),
+      grant: jest.fn(),
+    };
+    config = createMockConfigService({
+      JWT_ACCESS_SECRET: 'test-access-secret',
+    });
 
     updateResult = { affected: 1 };
     conversationRepo = {
-      findOne: jest.fn().mockResolvedValue(conversationRow({ guestSubject: GUEST_A })),
+      findOne: jest
+        .fn()
+        .mockResolvedValue(conversationRow({ guestSubject: GUEST_A })),
       createQueryBuilder: jest.fn().mockReturnValue({
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -100,7 +122,8 @@ describe('GuestSessionService.convert — FND-001', () => {
       await service.convert(CONV_A, TENANT_A, token, undefined);
 
       expect(memory.summarizeConversation).toHaveBeenCalledTimes(1);
-      const [targetTenant, conversationId, , sourceTenant] = memory.summarizeConversation.mock.calls[0];
+      const [targetTenant, conversationId, , sourceTenant] =
+        memory.summarizeConversation.mock.calls[0];
       expect(targetTenant).toBe(TENANT_A);
       expect(conversationId).toBe(CONV_A);
       // The source read must be scoped to the discovery tenant, not the target.
@@ -121,22 +144,30 @@ describe('GuestSessionService.convert — FND-001', () => {
 
   describe('guest-session verification (FR-002, FR-003)', () => {
     it('rejects a missing guest token', async () => {
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, undefined, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, undefined, undefined),
+      );
       expect(memory.summarizeConversation).not.toHaveBeenCalled();
     });
 
     it('rejects an empty guest token', async () => {
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, '', undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, '', undefined),
+      );
     });
 
     it('rejects an expired guest token', async () => {
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT, true);
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
       expect(memory.summarizeConversation).not.toHaveBeenCalled();
     });
 
     it('rejects a malformed guest token', async () => {
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, 'not.a.jwt', undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, 'not.a.jwt', undefined),
+      );
     });
 
     it('rejects a token signed with the wrong secret', async () => {
@@ -144,7 +175,9 @@ describe('GuestSessionService.convert — FND-001', () => {
         { sub: GUEST_A, tenantId: DISCOVERY_TENANT, guest: true },
         { secret: 'attacker-secret', expiresIn: '1d' },
       );
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
     });
 
     it('rejects a non-guest token (guest flag absent)', async () => {
@@ -152,22 +185,63 @@ describe('GuestSessionService.convert — FND-001', () => {
         { sub: GUEST_A, tenantId: DISCOVERY_TENANT },
         { secret: 'test-access-secret', expiresIn: '1d' },
       );
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
     });
 
     it('rejects a guest token whose tenant is not the discovery tenant', async () => {
       const token = await guestToken(jwt, GUEST_A, TENANT_B);
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
       expect(memory.summarizeConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  // ZT-007: getOrThrow must fail loudly on a missing secret, distinguishably
+  // from a merely-invalid token (both used to collapse into the same
+  // uniform not-found response before the secret was resolved outside the
+  // verification try/catch).
+  describe('fails loudly when JWT_ACCESS_SECRET is unset (ZT-007)', () => {
+    it('createSession (signing) raises rather than minting a token under no secret', async () => {
+      const svc = new GuestSessionService(
+        tenants as never,
+        jwt,
+        createMockConfigService({}) as never,
+        overrides as never,
+        memory as never,
+        conversationRepo as never,
+      );
+      await expect(svc.createSession()).rejects.toThrow(/JWT_ACCESS_SECRET/);
+    });
+
+    it('convert (verification) raises rather than returning the uniform not-found', async () => {
+      const svc = new GuestSessionService(
+        tenants as never,
+        jwt,
+        createMockConfigService({}) as never,
+        overrides as never,
+        memory as never,
+        conversationRepo as never,
+      );
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+      await expect(
+        svc.convert(CONV_A, TENANT_A, token, undefined),
+      ).rejects.toThrow(/JWT_ACCESS_SECRET/);
     });
   });
 
   describe('source-conversation ownership — the IDOR case (FR-005, Scenario 2)', () => {
     it('rejects guest A converting guest B conversation inside the same discovery tenant', async () => {
-      conversationRepo.findOne.mockResolvedValue(conversationRow({ guestSubject: GUEST_B }));
+      conversationRepo.findOne.mockResolvedValue(
+        conversationRow({ guestSubject: GUEST_B }),
+      );
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
 
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
       expect(memory.summarizeConversation).not.toHaveBeenCalled();
     });
 
@@ -175,7 +249,9 @@ describe('GuestSessionService.convert — FND-001', () => {
       conversationRepo.findOne.mockResolvedValue(conversationRow({}));
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
 
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
       expect(memory.summarizeConversation).not.toHaveBeenCalled();
     });
 
@@ -183,7 +259,9 @@ describe('GuestSessionService.convert — FND-001', () => {
       conversationRepo.findOne.mockResolvedValue(null);
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
 
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
     });
 
     it('scopes the conversation lookup to the discovery tenant', async () => {
@@ -191,7 +269,10 @@ describe('GuestSessionService.convert — FND-001', () => {
       await service.convert(CONV_A, TENANT_A, token, undefined);
 
       const where = conversationRepo.findOne.mock.calls[0][0].where;
-      expect(where).toMatchObject({ id: CONV_A, tenant: { id: DISCOVERY_TENANT } });
+      expect(where).toMatchObject({
+        id: CONV_A,
+        tenant: { id: DISCOVERY_TENANT },
+      });
     });
   });
 
@@ -200,7 +281,9 @@ describe('GuestSessionService.convert — FND-001', () => {
       updateResult = { affected: 0 };
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
 
-      await expectUniformRejection(service.convert(CONV_A, TENANT_A, token, undefined));
+      await expectUniformRejection(
+        service.convert(CONV_A, TENANT_A, token, undefined),
+      );
       expect(memory.summarizeConversation).not.toHaveBeenCalled();
     });
 
@@ -211,7 +294,9 @@ describe('GuestSessionService.convert — FND-001', () => {
       // A conditional UPDATE is what makes concurrent conversion safe; `.save()`
       // would lose the update under concurrency.
       expect(conversationRepo.createQueryBuilder).toHaveBeenCalled();
-      expect((conversationRepo as unknown as { save?: unknown }).save).toBeUndefined();
+      expect(
+        (conversationRepo as unknown as { save?: unknown }).save,
+      ).toBeUndefined();
     });
 
     it('writes at most one memory record when two conversions race', async () => {
@@ -223,7 +308,9 @@ describe('GuestSessionService.convert — FND-001', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         // Only the first claim affects a row — exactly what the DB guarantees.
-        execute: jest.fn().mockImplementation(async () => ({ affected: claims++ === 0 ? 1 : 0 })),
+        execute: jest.fn().mockImplementation(async () => ({
+          affected: claims++ === 0 ? 1 : 0,
+        })),
       });
 
       const results = await Promise.allSettled([
@@ -240,7 +327,12 @@ describe('GuestSessionService.convert — FND-001', () => {
   describe('uniform rejection responses (SR-011)', () => {
     it('returns an indistinguishable error for every ownership failure mode', async () => {
       const validToken = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
-      const expiredToken = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT, true);
+      const expiredToken = await guestToken(
+        jwt,
+        GUEST_A,
+        DISCOVERY_TENANT,
+        true,
+      );
       const foreignTenantToken = await guestToken(jwt, GUEST_A, TENANT_B);
 
       const attempts: Array<() => Promise<unknown>> = [
@@ -252,7 +344,9 @@ describe('GuestSessionService.convert — FND-001', () => {
         () => service.convert(CONV_A, TENANT_A, foreignTenantToken, undefined),
         // another guest's conversation
         () => {
-          conversationRepo.findOne.mockResolvedValue(conversationRow({ guestSubject: GUEST_B }));
+          conversationRepo.findOne.mockResolvedValue(
+            conversationRow({ guestSubject: GUEST_B }),
+          );
           return service.convert(CONV_A, TENANT_A, validToken, undefined);
         },
         // legacy unbound conversation

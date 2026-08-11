@@ -33,7 +33,13 @@ describe('PatientService', () => {
         PatientService,
         { provide: getRepositoryToken(Patient), useValue: patients },
         { provide: JwtService, useValue: jwt },
-        { provide: ConfigService, useValue: createMockConfigService() },
+        {
+          provide: ConfigService,
+          useValue: createMockConfigService({
+            JWT_ACCESS_SECRET: 'test-access-secret',
+            JWT_REFRESH_SECRET: 'test-refresh-secret',
+          }),
+        },
       ],
     }).compile();
     service = moduleRef.get(PatientService);

@@ -1,5 +1,6 @@
 import { DataSource } from 'typeorm';
 import { join } from 'node:path';
+import { databaseSslOptions } from './database-ssl';
 
 // Invoke the migration CLI with env preloaded, e.g.
 //   node -r dotenv/config ./node_modules/typeorm/cli.js migration:run -d dist/config/data-source.js
@@ -22,5 +23,11 @@ export default new DataSource({
   // (CREATE INDEX CONCURRENTLY cannot run inside a transaction block).
   migrationsTransactionMode: 'each',
   synchronize: false,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  // ZT-012: same shared policy as the migration and runtime DataSources
+  // (config/database-ssl.ts) — this standalone CLI script reads
+  // `process.env` directly (outside the Nest/ConfigModule graph), so it is
+  // the one call site that genuinely depends on this helper's own
+  // defensive "exactly one CA source" check rather than merely duplicating
+  // the Joi schema's.
+  ssl: databaseSslOptions(process.env),
 });

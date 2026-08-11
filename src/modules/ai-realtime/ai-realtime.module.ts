@@ -45,12 +45,18 @@ import { HandoverChatController } from './handover-chat.controller';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+        secret: config.getOrThrow<string>('JWT_ACCESS_SECRET'),
       }),
     }),
   ],
   controllers: [HandoverChatController],
-  providers: [AiRealtimeGateway, WsAuthService, AgentPresenceService, HandoverChatService, HandoverRealtimeListener],
+  providers: [
+    AiRealtimeGateway,
+    WsAuthService,
+    AgentPresenceService,
+    HandoverChatService,
+    HandoverRealtimeListener,
+  ],
   exports: [AgentPresenceService],
 })
 export class AiRealtimeModule {}

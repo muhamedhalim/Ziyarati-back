@@ -49,9 +49,30 @@ export class WhatsappDlqService {
     private readonly auditLogs: Repository<AuditLog>,
   ) {}
 
-  /** Current DLQ depth (waiting + delayed). A count only — no tenant-owned data. */
-  depth(): Promise<number> {
-    return this.queue.dlqDepth(QUEUE.WHATSAPP_DLQ);
+  /**
+   * Current DLQ depth — the count of the CALLER'S OWN parked jobs (waiting +
+   * delayed), not the platform-wide figure `queue.dlqDepth()` used to return
+   * behind this tenant-level permission (ZT-009). Reuses `list()`'s own
+   * bounded, owner-filtered scan rather than a second scanning strategy;
+   * since depth has no caller-supplied page size to derive a smaller bound
+   * from, it scans straight to `OVERFETCH_HARD_CAP` — the same ceiling
+   * `list()` converges on for any sufficiently large `limit`.
+   */
+  async depth(): Promise<number> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const dlq = this.queue.queue(QUEUE.WHATSAPP_DLQ);
+    const jobs = await dlq.getJobs(
+      ['waiting', 'delayed'],
+      0,
+      OVERFETCH_HARD_CAP - 1,
+      false,
+    );
+
+    let count = 0;
+    for (const job of jobs) {
+      if (this.ownsJob(job.data as WhatsappDlqJob, tenantId)) count++;
+    }
+    return count;
   }
 
   /**
@@ -68,7 +89,12 @@ export class WhatsappDlqService {
     const scanTo = Math.min(pageSize * OVERFETCH_FACTOR, OVERFETCH_HARD_CAP);
 
     const dlq = this.queue.queue(QUEUE.WHATSAPP_DLQ);
-    const jobs = await dlq.getJobs(['waiting', 'delayed'], 0, Math.max(0, scanTo - 1), false);
+    const jobs = await dlq.getJobs(
+      ['waiting', 'delayed'],
+      0,
+      Math.max(0, scanTo - 1),
+      false,
+    );
 
     const owned: ReturnType<typeof this.toSummary>[] = [];
     for (const job of jobs) {
@@ -95,8 +121,16 @@ export class WhatsappDlqService {
     }
 
     const sourceQueue = data.sourceQueue as QueueName;
-    if (sourceQueue !== QUEUE.WHATSAPP_WEBHOOK && sourceQueue !== QUEUE.WHATSAPP_MEDIA) {
-      await this.audit('whatsapp.dlq.replay', jobId, 'unsupported_source', data.correlationId);
+    if (
+      sourceQueue !== QUEUE.WHATSAPP_WEBHOOK &&
+      sourceQueue !== QUEUE.WHATSAPP_MEDIA
+    ) {
+      await this.audit(
+        'whatsapp.dlq.replay',
+        jobId,
+        'unsupported_source',
+        data.correlationId,
+      );
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Replay not supported for source queue "${data.sourceQueue}"`,
       });
@@ -108,7 +142,12 @@ export class WhatsappDlqService {
     const lockKey = `dlq:replay:${QUEUE.WHATSAPP_DLQ}:${jobId}`;
     const token = await this.locks.acquire(lockKey, REPLAY_LOCK_TTL_MS);
     if (!token) {
-      await this.audit('whatsapp.dlq.replay', jobId, 'already_in_flight', data.correlationId);
+      await this.audit(
+        'whatsapp.dlq.replay',
+        jobId,
+        'already_in_flight',
+        data.correlationId,
+      );
       throw this.notFound();
     }
 
@@ -133,14 +172,24 @@ export class WhatsappDlqService {
       // replayed again later — an at-most-once claim plus a retained entry is
       // strictly safer than dropping the entry on an unconfirmed publish.
       await job.remove();
-      await this.audit('whatsapp.dlq.replay', jobId, 'replayed', data.correlationId);
+      await this.audit(
+        'whatsapp.dlq.replay',
+        jobId,
+        'replayed',
+        data.correlationId,
+      );
       this.logger.log(`Replayed DLQ job ${jobId} → ${sourceQueue}`);
       return { replayed: true, jobId };
     } catch (err) {
       // Publish (or removal) failed after the claim succeeded. Leave the parked
       // entry in place so the job is never lost, and release the claim so it is
       // retryable immediately rather than waiting out the TTL (FR-012b).
-      await this.audit('whatsapp.dlq.replay', jobId, 'failed', data.correlationId);
+      await this.audit(
+        'whatsapp.dlq.replay',
+        jobId,
+        'failed',
+        data.correlationId,
+      );
       throw err;
     } finally {
       await this.locks.release(lockKey, token).catch(() => undefined);
@@ -160,7 +209,12 @@ export class WhatsappDlqService {
     }
 
     await job.remove();
-    await this.audit('whatsapp.dlq.discard', jobId, 'discarded', data.correlationId);
+    await this.audit(
+      'whatsapp.dlq.discard',
+      jobId,
+      'discarded',
+      data.correlationId,
+    );
     return { discarded: true, jobId };
   }
 
@@ -221,7 +275,8 @@ export class WhatsappDlqService {
           new_values: {
             jobId,
             result,
-            correlationId: correlationId ?? this.tenantContext.getCorrelationId() ?? null,
+            correlationId:
+              correlationId ?? this.tenantContext.getCorrelationId() ?? null,
           },
         }),
       );
