@@ -103,8 +103,8 @@ import { validate } from './config/env.validation';
     // error on every request (see that file's docstring for the full
     // fail-open-vs-fail-closed rationale).
     ThrottlerModule.forRootAsync({
-      inject: [AppRedisService, MetricsService],
-      useFactory: (appRedis: AppRedisService, metrics: MetricsService) => ({
+      inject: [AppRedisService, MetricsService, ConfigService],
+      useFactory: (appRedis: AppRedisService, metrics: MetricsService, config: ConfigService) => ({
         throttlers: [
           {
             name: 'default',
@@ -115,6 +115,7 @@ import { validate } from './config/env.validation';
         storage: new FailsafeThrottlerStorage(
           new ThrottlerStorageRedisService(appRedis.application),
           metrics,
+          config.get<number>('AUTH_ABUSE_FALLBACK_WIDTH', 4096),
         ),
       }),
     }),

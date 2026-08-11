@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
 import { applicationConnectionOptions, rateLimiterConnectionOptions } from './redis.config';
+import { DegradedModeLogLimiter } from './degraded-mode-log-limiter';
 
 /**
  * Owns the two "small" Redis roles that used to silently ride the BullMQ
@@ -41,7 +42,16 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
 
   private build(options: ReturnType<typeof applicationConnectionOptions>, label: string): Redis {
     const client = new Redis({ ...options, lazyConnect: true });
-    client.on('error', (err) => this.logger.warn(`Redis ${label} client error (non-fatal, call sites fail open/closed per their own policy): ${err.message}`));
+    // 009-auth-abuse-resistance (ZT-002, FR-035/SC-012): a sustained outage
+    // makes ioredis emit repeated 'error' events (one per failed
+    // reconnect/command) — previously one `logger.warn` per event, at least
+    // one more log source alongside FailsafeThrottlerStorage's own
+    // per-request warning. Rate-limited the same way: one line entering
+    // degraded mode, at most one summary per interval, one line on 'ready'
+    // (ioredis's own recovery signal).
+    const degradedLog = new DegradedModeLogLimiter(this.logger, `Redis ${label} client`);
+    client.on('error', (err) => degradedLog.recordFailure(err.message));
+    client.on('ready', () => degradedLog.recordSuccess());
     client.connect().catch((err) => this.logger.warn(`Redis ${label} client initial connect failed: ${err.message}`));
     return client;
   }

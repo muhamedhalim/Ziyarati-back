@@ -37,6 +37,12 @@ import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import { EmailService } from '../email/email.service';
 import { LoginProtectionService } from './login-protection.service';
+import { FixedWindowLimiterService } from '../../queue/fixed-window-limiter.service';
+import { MetricsService } from '../../metrics/metrics.service';
+import {
+  AUTH_ABUSE_LIMITER_SCOPE,
+  AUTH_ABUSE_ENDPOINT_WIDE_SUBJECT,
+} from './auth-abuse.constants';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -60,6 +66,8 @@ export class AuthService {
     private readonly platformSettings: SystemSettingService,
     private readonly email: EmailService,
     private readonly loginProtection: LoginProtectionService,
+    private readonly limiter: FixedWindowLimiterService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /** Base URL for links embedded in emails (APP_URL, else first FRONTEND_ORIGIN). */
@@ -88,6 +96,43 @@ export class AuthService {
     dto: RegisterOwnerDto,
     context?: TokenContext,
   ): Promise<AuthResult> {
+    // 009-auth-abuse-resistance (ZT-006) — both layers run as the FIRST
+    // statements, before the ALLOW_REGISTRATION read, the slug-uniqueness
+    // query, the tenant+user transaction, sendWelcome and issueAuthResult
+    // (FR-068): every one of those is expensive, irreversible, or both.
+    //
+    // Identity layer (FR-011d, FR-066) — supplemental only: email is
+    // attacker-rotatable, so this alone would look like protection while
+    // providing none against a rotating attacker. Endpoint layer (FR-067,
+    // FR-069) is the layer that actually bounds that attacker — separate
+    // key, separate configured limit, independently observable (FR-069).
+    const registerWindowSeconds = this.config.get<number>(
+      'AUTH_REGISTER_OWNER_WINDOW_SECONDS',
+      3600,
+    );
+    const identityDecision = await this.limiter.consume(
+      AUTH_ABUSE_LIMITER_SCOPE.REGISTER_IDENTITY,
+      this.abuseSubjectDigest(this.normalizeEmail(dto.email)),
+      this.config.get<number>('AUTH_REGISTER_OWNER_MAX_PER_IDENTITY', 3),
+      registerWindowSeconds,
+    );
+    if (!identityDecision.allowed) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many requests. Please try again later.',
+      });
+    }
+    const endpointDecision = await this.limiter.consume(
+      AUTH_ABUSE_LIMITER_SCOPE.REGISTER_ENDPOINT,
+      AUTH_ABUSE_ENDPOINT_WIDE_SUBJECT,
+      this.config.get<number>('AUTH_REGISTER_OWNER_ENDPOINT_CEILING', 1000),
+      registerWindowSeconds,
+    );
+    if (!endpointDecision.allowed) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many requests. Please try again later.',
+      });
+    }
+
     const allowRegistration = await this.platformSettings.getTyped<boolean>(
       SettingKey.ALLOW_REGISTRATION,
     );
@@ -564,21 +609,89 @@ export class AuthService {
    * refuses to boot if the flag is left on (see env.validation.ts).
    */
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
-    const tenantId = await this.resolveTenantId(dto.tenantSlug).catch(
-      () => null,
+    // 009-auth-abuse-resistance (ZT-006) — enforced as the FIRST statement,
+    // before tenant resolution, the account lookup, token generation, the
+    // row write and dispatch (FR-061a). Subject is the normalized email plus
+    // the RAW submitted tenant qualifier (not a DB-resolved id) when one is
+    // supplied: the qualifier is already a stable per-tenant identifier on
+    // its own, so incorporating it into the key needs no database round-trip
+    // — keeping the limiter check itself free of any DB read, matching
+    // "before resolveTenantId" literally as well as in spirit.
+    const forgotSubject = this.abuseSubjectDigest(
+      dto.tenantSlug
+        ? `${this.normalizeEmail(dto.email)}:${dto.tenantSlug.trim().toLowerCase()}`
+        : this.normalizeEmail(dto.email),
     );
+    // No NODE_ENV==='test' relaxation on this bound (unlike
+    // PUBLIC_WEBHOOK_THROTTLE / the app-wide default) — precedent is
+    // LoginProtectionService, whose threshold is likewise never
+    // environment-relaxed: this endpoint's OWN dedicated e2e suite exists
+    // specifically to exercise real threshold/degraded behaviour, exactly
+    // like login-protection.e2e-spec.ts does, via an env-setup file that
+    // overrides AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW/_WINDOW_SECONDS to fast
+    // test values (see test/utils/auth-abuse-forgot-password-env.setup.ts).
+    // FR-021's "existing suites continue to pass" is satisfied empirically:
+    // no other e2e spec calls this endpoint at all (grep confirmed), so
+    // there is nothing for a relaxation to protect here.
+    const forgotDecision = await this.limiter.consume(
+      AUTH_ABUSE_LIMITER_SCOPE.FORGOT,
+      forgotSubject,
+      this.config.get<number>('AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW', 5),
+      this.config.get<number>('AUTH_FORGOT_PASSWORD_WINDOW_SECONDS', 900),
+    );
+    if (!forgotDecision.allowed) {
+      if (forgotDecision.degraded) {
+        // Degraded mode: silently suppress rather than refuse (FR-062,
+        // FR-062a) — nothing in status, body, headers or wording may
+        // distinguish this from an ordinary below-threshold success.
+        this.metrics.recordAuthAbuseLimiterEvent(AUTH_ABUSE_LIMITER_SCOPE.FORGOT, 'suppressed');
+        return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
+      }
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many requests. Please try again later.',
+      });
+    }
+
+    // ZT-010 — resolve the qualifier ONLY when one was supplied. The old
+    // `.catch(() => null)` swallowed BOTH "no slug given" and "slug given
+    // but unresolvable" into the same `null`, which — once the unscoped
+    // lookup below stops being restricted to `tenant IS NULL` — would
+    // silently WIDEN an unresolvable qualifier into an all-scope search.
+    // A supplied-but-unresolvable qualifier must return the uniform
+    // response with no reset instead (FR-003).
+    let tenantId: string | null = null;
+    if (dto.tenantSlug) {
+      try {
+        tenantId = await this.resolveTenantId(dto.tenantSlug);
+      } catch {
+        return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
+      }
+    }
     const email = this.normalizeEmail(dto.email);
 
-    const user = await this.users.findOne({
-      where: {
-        email,
-        tenant: tenantId ? { id: tenantId } : IsNull(),
-      },
+    // ZT-010 — with NO qualifier, resolve by normalized email across every
+    // scope (platform + all tenants), mirroring `validateCredentials`
+    // (:391-444) instead of the old `tenant IS NULL` restriction, which
+    // could only ever match platform super-admins. `find` rather than
+    // `findOne` so a multiplicity violation is DETECTED rather than
+    // silently resolved by picking the first row — `uq_user_email_global`
+    // (GlobalUserEmailUniqueness migration) guarantees at most one live
+    // match, so this is a defensive branch, not an expected path (FR-005).
+    const candidates = await this.users.find({
+      where: tenantId ? { email, tenant: { id: tenantId } } : { email },
     });
 
-    if (!user) {
+    if (candidates.length === 0) {
       return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
     }
+    if (candidates.length > 1) {
+      // The global uniqueness invariant has been lost. Never select
+      // arbitrarily and never send a reset to any of the matched rows —
+      // record a safe, identity-free observability signal instead.
+      this.metrics.recordAuthRecoveryEvent('multiplicity_violation');
+      return { message: AuthService.FORGOT_PASSWORD_MESSAGE };
+    }
+    const user = candidates[0];
 
     const rawToken = randomBytes(32).toString('hex');
     const ttlMinutes = this.config.get<number>('PASSWORD_RESET_TTL_MIN', 30);
@@ -664,13 +777,79 @@ export class AuthService {
 
   /** Consumes a reset token, sets the new password and kills all sessions. */
   async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    // 009-auth-abuse-resistance (ZT-006) — coarse failure-only ceiling,
+    // READ (never incremented here) before the token lookup (FR-064). A
+    // random-token flood cannot be bounded by a per-token key — a fresh
+    // token produces a fresh key every attempt — so this is deliberately a
+    // single endpoint-wide counter (AUTH_ABUSE_ENDPOINT_WIDE_SUBJECT),
+    // completely separate from the account-target layer below (FR-069).
+    const resetWindowSeconds = this.config.get<number>(
+      'AUTH_RESET_PASSWORD_WINDOW_SECONDS',
+      900,
+    );
+    const invalidCeilingLimit = this.config.get<number>(
+      'AUTH_RESET_PASSWORD_INVALID_CEILING',
+      100,
+    );
+    const invalidCeilingPeek = await this.limiter.peek(
+      AUTH_ABUSE_LIMITER_SCOPE.RESET_INVALID,
+      AUTH_ABUSE_ENDPOINT_WIDE_SUBJECT,
+      invalidCeilingLimit,
+      resetWindowSeconds,
+    );
+    if (!invalidCeilingPeek.allowed) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many requests. Please try again later.',
+      });
+    }
+
     const reset = await this.passwordResets.findOne({
       where: { token_hash: this.hashToken(dto.token), used_at: IsNull() },
       relations: { user: true },
     });
 
     if (!reset || reset.expires_at.getTime() < Date.now() || !reset.user) {
+      // FR-064 — increment the failure-only ceiling. Never logs `dto.token`
+      // (FR-065a) — nothing below ever touches the raw value; `hashToken`
+      // above already only ever produced a SHA-256 digest for the DB query.
+      //
+      // The earlier peek() is a fast, mostly-accurate PRE-filter (skips the
+      // DB lookup entirely once clearly over budget) but is not itself a
+      // reservation: concurrent requests can all read the same
+      // pre-increment count and all pass it together (proved by
+      // auth-abuse-reset-password.e2e-spec.ts's T093 racing 6 concurrent
+      // invalid attempts at the last remaining slot before this check
+      // existed). The atomic INCR inside consume() is what actually
+      // serializes concurrent attempts, so its OWN result — not a blanket
+      // 400 — is what decides the response here (FR-017).
+      const invalidConsume = await this.limiter.consume(
+        AUTH_ABUSE_LIMITER_SCOPE.RESET_INVALID,
+        AUTH_ABUSE_ENDPOINT_WIDE_SUBJECT,
+        invalidCeilingLimit,
+        resetWindowSeconds,
+      );
+      if (!invalidConsume.allowed) {
+        throw new AppError(ErrorCode.RATE_LIMITED, {
+          message: 'Too many requests. Please try again later.',
+        });
+      }
       throw new AppError(ErrorCode.INVALID_RESET_TOKEN);
+    }
+
+    // FR-063/FR-011c — account-target bound keyed on the user id the lookup
+    // above already resolved. No additional database lookup is introduced.
+    // A successful reset never reaches the RESET_INVALID branch above, so it
+    // structurally cannot consume the failure-only ceiling (FR-064).
+    const accountDecision = await this.limiter.consume(
+      AUTH_ABUSE_LIMITER_SCOPE.RESET_ACCOUNT,
+      this.abuseSubjectDigest(reset.user.id),
+      this.config.get<number>('AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT', 10),
+      resetWindowSeconds,
+    );
+    if (!accountDecision.allowed) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many requests. Please try again later.',
+      });
     }
 
     await this.dataSource.transaction(async (manager) => {
@@ -905,6 +1084,16 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
+  }
+
+  /**
+   * Shared digest for every abuse-limiter subject in this service
+   * (009-auth-abuse-resistance) — a cryptographic hash of an already
+   * server-normalized value. Raw email/token values never reach
+   * `FixedWindowLimiterService` or the Redis key it builds (FR-013b).
+   */
+  private abuseSubjectDigest(subject: string): string {
+    return createHash('sha256').update(subject).digest('hex');
   }
 
   /** Converts a jwt-style duration ("15m", "7d", "3600s", "900") to milliseconds. */
