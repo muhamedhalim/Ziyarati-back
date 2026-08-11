@@ -110,6 +110,38 @@ export class WhatsappWebhookController {
   @Throttle(PUBLIC_WEBHOOK_THROTTLE)
   @Get('verify')
   verify(@Query() query: Record<string, string>, @Res() res: Response) {
+    this.respondToChallenge(query, res);
+  }
+
+  /**
+   * The SAME handshake, on the ingestion path.
+   *
+   * Meta's webhook configuration takes ONE Callback URL and uses it for both
+   * halves of the protocol: a `GET` carrying `hub.mode`/`hub.verify_token`/
+   * `hub.challenge` when the URL is saved, and every subsequent event `POST`.
+   * With the handshake living only on `/verify`, neither path could actually be
+   * registered — `GET /events` fell through to the authenticated `@Get(':id')`
+   * below and answered 401, so Meta refused to save the URL, while `/verify`
+   * has no POST handler and would 404 every real event.
+   *
+   * Declared BEFORE `@Get(':id')` so Nest's in-order matching resolves
+   * `events` here rather than treating it as a (non-UUID) id.
+   *
+   * Security is unchanged: this delegates to the same `resolveChallenge` —
+   * same constant-time `META_WEBHOOK_VERIFY_TOKEN` comparison, same
+   * fail-closed 403. It only adds a route, never a bypass. `/verify` is kept
+   * so anything already pointed at it keeps working.
+   */
+  @ApiExcludeEndpoint()
+  @Public()
+  @Throttle(PUBLIC_WEBHOOK_THROTTLE)
+  @Get('events')
+  verifyOnEventsPath(@Query() query: Record<string, string>, @Res() res: Response) {
+    this.respondToChallenge(query, res);
+  }
+
+  /** Echo `hub.challenge` when the token matches, else 403. */
+  private respondToChallenge(query: Record<string, string>, res: Response): void {
     const challenge = this.webhooks.resolveChallenge(
       query['hub.mode'],
       query['hub.verify_token'],

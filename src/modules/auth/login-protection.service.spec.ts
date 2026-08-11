@@ -27,6 +27,7 @@ describe('LoginProtectionService', () => {
   let config: { get: jest.Mock };
   let metrics: {
     recordLoginProtectionEvent: jest.Mock;
+    recordAuthAbuseLimiterEvent: jest.Mock;
     registry: unknown;
   };
 
@@ -54,6 +55,11 @@ describe('LoginProtectionService', () => {
     };
     metrics = {
       recordLoginProtectionEvent: jest.fn(),
+      // 009-auth-abuse-resistance (ZT-002): LoginProtectionService's degraded
+      // path also reports through the shared auth_abuse_limiter_events_total
+      // series (T045). Stubbed here so the mock matches MetricsService's
+      // actual shape — this does not change any assertion in this file.
+      recordAuthAbuseLimiterEvent: jest.fn(),
       registry: {},
     };
 

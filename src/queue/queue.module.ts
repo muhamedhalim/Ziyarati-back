@@ -9,6 +9,7 @@ import { QueueService } from './queue.service';
 import { ProducerQueues } from './producer-queues';
 import { TenantRateLimiterService } from './tenant-rate-limiter.service';
 import { AppRedisService } from './app-redis.service';
+import { FixedWindowLimiterService } from './fixed-window-limiter.service';
 import { WorkerAuthorizationService } from './worker-authorization.service';
 import { DistributedLockService } from './distributed-lock.service';
 import { AuthModule } from '../modules/auth/auth.module';
@@ -73,7 +74,7 @@ import { User } from '../entities/Auth&RBAC/User';
       }),
     }),
   ],
-  providers: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService],
-  exports: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService, BullModule],
+  providers: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService, FixedWindowLimiterService],
+  exports: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService, BullModule, FixedWindowLimiterService],
 })
 export class QueueModule {}

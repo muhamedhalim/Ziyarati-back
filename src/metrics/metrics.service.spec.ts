@@ -86,6 +86,65 @@ describe('MetricsService (M14)', () => {
     expect(body).toContain('method="POST",status_code="200"');
   });
 
+  // ── 009-auth-abuse-resistance (ZT-002, ZT-006, ZT-010) ──────────────────
+
+  it('renders auth_abuse_limiter_events_total after recordAuthAbuseLimiterEvent, labeled by limiter and event', async () => {
+    service.recordAuthAbuseLimiterEvent('forgot', 'refused');
+    service.recordAuthAbuseLimiterEvent('login', 'degraded_refused');
+    const body = await service.render();
+    expect(body).toContain('auth_abuse_limiter_events_total');
+    expect(body).toContain('limiter="forgot"');
+    expect(body).toContain('event="refused"');
+    expect(body).toContain('limiter="login"');
+    expect(body).toContain('event="degraded_refused"');
+  });
+
+  it('renders auth_recovery_events_total after recordAuthRecoveryEvent, labeled by event', async () => {
+    service.recordAuthRecoveryEvent('multiplicity_violation');
+    const body = await service.render();
+    expect(body).toContain('auth_recovery_events_total');
+    expect(body).toContain('event="multiplicity_violation"');
+  });
+
+  it('recordThrottlerStorageEvent accepts the extended degraded_entered/recovered events alongside redis_unavailable', async () => {
+    service.recordThrottlerStorageEvent('degraded_entered');
+    service.recordThrottlerStorageEvent('recovered');
+    const body = await service.render();
+    expect(body).toContain('event="degraded_entered"');
+    expect(body).toContain('event="recovered"');
+  });
+
+  it('auth_abuse_limiter_events_total label set is a bounded, closed enum — no attacker-controlled string can reach a label (research.md §R9)', async () => {
+    // Exercise every documented (limiter × event) combination and confirm
+    // the resulting series count matches exactly — no more, no fewer, and
+    // nothing beyond the closed enums appears.
+    const limiters: Array<Parameters<MetricsService['recordAuthAbuseLimiterEvent']>[0]> = [
+      'login',
+      'forgot',
+      'reset_account',
+      'reset_invalid',
+      'register_identity',
+      'register_endpoint',
+    ];
+    const events: Array<Parameters<MetricsService['recordAuthAbuseLimiterEvent']>[1]> = [
+      'allowed',
+      'refused',
+      'suppressed',
+      'degraded_allowed',
+      'degraded_refused',
+    ];
+    for (const limiter of limiters) {
+      for (const event of events) {
+        service.recordAuthAbuseLimiterEvent(limiter, event);
+      }
+    }
+    const body = await service.render();
+    const seriesLines = body
+      .split('\n')
+      .filter((l) => l.startsWith('auth_abuse_limiter_events_total{'));
+    expect(seriesLines).toHaveLength(limiters.length * events.length);
+  });
+
   it('two instances use independent registries — no cross-instance metric leakage', async () => {
     const other = new MetricsService();
     service.recordJobEvent('q1', 'completed');

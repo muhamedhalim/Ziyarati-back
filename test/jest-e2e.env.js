@@ -29,3 +29,26 @@ const DB_NAME = process.env.E2E_DB_NAME || 'ziyarati_e2e';
 process.env.DB_NAME = DB_NAME;
 process.env.DATABASE_URL = `postgres://${USER}:${encodeURIComponent(PASSWORD)}@${HOST}:${PORT}/${DB_NAME}`;
 process.env.TYPEORM_SYNCHRONIZE = 'false';
+
+/**
+ * Same rationale as the DB override above, for Redis (009-auth-abuse-
+ * resistance, FR-058): `.env`'s `REDIS_URL` targets whatever Redis the
+ * developer runs locally for day-to-day work — on this machine, a
+ * long-lived, always-up `ziyaratech-redis` container. Several e2e specs
+ * (auth-abuse-redis-degradation, login-protection, auth-abuse-forgot-
+ * password) deliberately `docker stop`/`start` a Redis container mid-run to
+ * prove degraded-mode and recovery behaviour — see
+ * test/utils/docker-redis-control.ts. That helper targets a dedicated
+ * disposable container (`zt-e2e-redis`, default port 63790 per
+ * specs/009-auth-abuse-resistance/quickstart.md §0), never the shared dev
+ * one. Without this override, `REDIS_URL` from `.env` would still point the
+ * app under test at the shared dev Redis while the test stops a DIFFERENT,
+ * unrelated container — silently turning every "Redis unavailable" scenario
+ * into a no-op against a Redis that never actually went down (observed
+ * directly: T065/T067 in auth-abuse-forgot-password.e2e-spec.ts passed with
+ * healthy-mode budgets instead of degraded ones until this fix landed).
+ * `ZT_E2E_REDIS_URL` mirrors docker-redis-control.ts's own
+ * `ZT_E2E_REDIS_CONTAINER` override pattern for whoever maps the container
+ * to a non-default port.
+ */
+process.env.REDIS_URL = process.env.ZT_E2E_REDIS_URL || 'redis://127.0.0.1:63790';

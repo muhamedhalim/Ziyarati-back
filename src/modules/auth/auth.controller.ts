@@ -21,6 +21,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
@@ -161,6 +162,12 @@ until the tenant is approved and active).
 - \`commercialRegistrationNumber\` is mandatory for compliance.
 - Both email and slug must be globally unique.
 
+**Rate limiting:** bounded per submitted identity, and separately by a
+coarse endpoint-wide ceiling (protects against an attacker rotating
+email, slug and registration number). Once a bound is exceeded, further
+requests within the window are refused with \`429\` — no tenant, user or
+other side effect is created for a refused request.
+
 **Who can call this:** Anyone (unauthenticated). Intended for the
 public clinic sign-up page.
     `.trim(),
@@ -183,6 +190,11 @@ public clinic sign-up page.
   })
   @ApiConflictResponse({
     description: 'Email address or clinic slug is already registered.',
+    schema: S_ERROR,
+  })
+  @ApiTooManyRequestsResponse({
+    description:
+      'Too many requests. This can be either a per-identity bound or a coarse endpoint-wide registration ceiling — the response never indicates which, nor any internal limiter or store-health detail.',
     schema: S_ERROR,
   })
   @Public()
@@ -440,8 +452,13 @@ module).
 **Security:** The response is intentionally identical whether or not
 the email exists, preventing user enumeration attacks.
 
-For staff/owner accounts, provide \`tenantSlug\` to scope the lookup
-(the same email address can exist in multiple clinics).
+For staff/owner accounts, \`tenantSlug\` is optional and only narrows
+the lookup to one clinic — omit it and the account is still found by
+email alone, platform-wide.
+
+**Rate limiting:** this endpoint is bounded per submitted address. Once
+the budget is exceeded, further requests within the window are refused
+with \`429\`.
     `.trim(),
   })
   @ApiOkResponse({
@@ -457,6 +474,10 @@ For staff/owner accounts, provide \`tenantSlug\` to scope the lookup
     },
   })
   @ApiBadRequestResponse({ description: 'Invalid email format.', schema: S_ERROR })
+  @ApiTooManyRequestsResponse({
+    description: 'Too many requests for this address. Try again later.',
+    schema: S_ERROR,
+  })
   @Public()
   @SkipCsrf()
   @Post('forgot-password')
@@ -473,6 +494,11 @@ For staff/owner accounts, provide \`tenantSlug\` to scope the lookup
 Validates the reset token (signature + expiry), then updates the user's
 password. The token is consumed on use — calling this endpoint twice
 with the same token will fail on the second call.
+
+**Rate limiting:** repeated resets against one account are bounded, and
+a separate coarse limit bounds invalid-token attempts overall (a fresh
+random token per attempt cannot be individually keyed). Once a bound is
+exceeded, further requests within the window are refused with \`429\`.
 
 **Side effects:**
 - All existing refresh tokens for the user are revoked, forcing
@@ -494,6 +520,11 @@ with the same token will fail on the second call.
   @ApiBadRequestResponse({
     description:
       'Token is invalid, expired, or already used; or the new password does not meet requirements (min 8 chars, max 72).',
+    schema: S_ERROR,
+  })
+  @ApiTooManyRequestsResponse({
+    description:
+      'Too many requests. This can be either a per-account bound (repeated resets against one account) or a coarse endpoint-wide bound on invalid-token attempts — the response never indicates which.',
     schema: S_ERROR,
   })
   @Public()

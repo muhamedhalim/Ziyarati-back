@@ -211,6 +211,45 @@ export const validate = (config: Record<string, unknown>) => {
     AUTH_LOGIN_MAX_FAILED_ATTEMPTS: Joi.number().integer().min(1).default(5),
     AUTH_LOGIN_LOCKOUT_TTL_SECONDS: Joi.number().integer().min(1).default(900),
 
+    // ── Authentication abuse resistance (009-auth-abuse-resistance) ───────
+    // Endpoint-specific bounds for the three public recovery/registration
+    // routes (ZT-006) plus the shared bounded degraded-mode fallback (ZT-002).
+    // Named constants for scope/namespace live in
+    // src/modules/auth/auth-abuse.constants.ts — no magic value in a service.
+    AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW: Joi.number().integer().min(1).default(5),
+    AUTH_FORGOT_PASSWORD_WINDOW_SECONDS: Joi.number()
+      .integer()
+      .min(60)
+      .max(86400)
+      .default(900),
+    AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT: Joi.number().integer().min(1).default(10),
+    AUTH_RESET_PASSWORD_INVALID_CEILING: Joi.number().integer().min(1).default(100),
+    AUTH_RESET_PASSWORD_WINDOW_SECONDS: Joi.number()
+      .integer()
+      .min(60)
+      .max(86400)
+      .default(900),
+    AUTH_REGISTER_OWNER_MAX_PER_IDENTITY: Joi.number().integer().min(1).default(3),
+    // No `.default()` here on purpose — production-required, enforced by the
+    // fail-fast below (mirrors the FRONTEND_ORIGIN pattern from 008). Sizing
+    // this depends on real signup volume, which no registration-rate
+    // telemetry in either repository can supply, so guessing a production
+    // default here is exactly the condition that fail-fast removes.
+    AUTH_REGISTER_OWNER_ENDPOINT_CEILING: Joi.number().integer().min(1),
+    AUTH_REGISTER_OWNER_WINDOW_SECONDS: Joi.number()
+      .integer()
+      .min(60)
+      .max(86400)
+      .default(3600),
+    // Multiplier applied to every healthy-mode limit while the shared store
+    // is degraded — one value rather than a parallel `*_DEGRADED` variable
+    // per limiter, since the policy ("stricter than or equal") is uniform.
+    AUTH_ABUSE_DEGRADED_FACTOR: Joi.number().greater(0).max(1).default(0.5),
+    // Fixes the bounded local fallback's memory ceiling: width of the hashed
+    // counter table (BoundedLocalCounter). Memory is independent of key
+    // cardinality; this only sizes the (small) false-positive rate.
+    AUTH_ABUSE_FALLBACK_WIDTH: Joi.number().integer().min(256).max(65536).default(4096),
+
     // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
     // PAYMENT_PROVIDER is the single, central gateway selection. In dev/test
     // the keys may stay unset (the factory falls back to the Noop provider so
@@ -672,6 +711,26 @@ export const validate = (config: Record<string, unknown>) => {
         );
       }
     }
+  }
+
+  // ── Register-owner endpoint ceiling (production-required, ZT-006) ─────────
+  // Mirrors the FRONTEND_ORIGIN fail-fast above (ZT-005 precedent): no value
+  // here is safe to guess, because no registration-rate telemetry exists in
+  // either repository. Non-production gets a permissive default so dev/test
+  // are never blocked; production refuses to boot until an operator sets it
+  // explicitly from real expected signup volume — a loud, one-time decision
+  // rather than a silently wrong ceiling in either direction.
+  if (value.AUTH_REGISTER_OWNER_ENDPOINT_CEILING === undefined) {
+    if (value.NODE_ENV === 'production') {
+      throw new Error(
+        `❌ Env validation error: AUTH_REGISTER_OWNER_ENDPOINT_CEILING is not ` +
+          `set. Production cannot boot without an explicit endpoint-wide ` +
+          `registration ceiling — this bounds bulk tenant creation by an ` +
+          `attacker rotating email/slug/registration-number. Set it from real ` +
+          `expected legitimate signup volume; do not guess.`,
+      );
+    }
+    value.AUTH_REGISTER_OWNER_ENDPOINT_CEILING = 1000;
   }
 
   // ── Reset-token exposure fail-fast (production only) ──────────────────────

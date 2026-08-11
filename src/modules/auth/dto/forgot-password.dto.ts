@@ -14,7 +14,7 @@ export class ForgotPasswordDto {
 
   @ApiPropertyOptional({
     description:
-      'Clinic slug to scope the account lookup. Required for staff and owner accounts. Omit for super-admin recovery.',
+      'Optional clinic slug that narrows the account lookup to one clinic. Not required for staff or owner accounts — omitting it resolves the account by email alone, across every clinic and the platform.',
     example: 'al-noor-clinic',
     maxLength: 100,
   })

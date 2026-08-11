@@ -22,11 +22,19 @@ const PROD_FRONTEND_ORIGIN = 'https://app.example.com';
 // is a representative PATH string only — content is never inspected by the
 // schema (presence/shape only), so no real certificate is needed here.
 const PROD_DB_SSL_CA = '/etc/ssl/certs/db-ca.pem';
+// A representative AUTH_REGISTER_OWNER_ENDPOINT_CEILING (009 requires one in
+// production) — same "boot cleanly past this check" role as the three
+// constants above, for every production-mode test that is not itself about
+// this variable. The dedicated describe block below constructs its own
+// prodBase-derived object with this field explicitly omitted to exercise the
+// missing-value fail-fast itself.
+const PROD_REGISTER_OWNER_CEILING = 1000;
 const prodBase = {
   ...base,
   NODE_ENV: 'production',
   FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
   DB_SSL_CA: PROD_DB_SSL_CA,
+  AUTH_REGISTER_OWNER_ENDPOINT_CEILING: PROD_REGISTER_OWNER_CEILING,
 };
 
 describe('env.validation', () => {
@@ -340,6 +348,7 @@ describe('env.validation', () => {
       FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
       PAYMENT_PROVIDER: 'noop',
       CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      AUTH_REGISTER_OWNER_ENDPOINT_CEILING: PROD_REGISTER_OWNER_CEILING,
     };
 
     it('both are optional outside production', () => {
@@ -711,6 +720,213 @@ describe('env.validation', () => {
       });
       expect(value.AUTH_LOGIN_MAX_FAILED_ATTEMPTS).toBe(10);
       expect(value.AUTH_LOGIN_LOCKOUT_TTL_SECONDS).toBe(300);
+    });
+  });
+
+  // 009-auth-abuse-resistance (ZT-002, ZT-006): ten configuration values for
+  // the recovery/registration bounds and the shared bounded degraded-mode
+  // fallback, plus AUTH_REGISTER_OWNER_ENDPOINT_CEILING's production-required
+  // fail-fast — eleven variables total, each exercised for a valid value,
+  // below-minimum, above-maximum (where applicable), non-integer, and
+  // development/test vs. production behaviour.
+  describe('authentication abuse-resistance configuration (009)', () => {
+    it('applies the documented defaults for all ten optional variables', () => {
+      const value = validate({ ...base });
+      expect(value.AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW).toBe(5);
+      expect(value.AUTH_FORGOT_PASSWORD_WINDOW_SECONDS).toBe(900);
+      expect(value.AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT).toBe(10);
+      expect(value.AUTH_RESET_PASSWORD_INVALID_CEILING).toBe(100);
+      expect(value.AUTH_RESET_PASSWORD_WINDOW_SECONDS).toBe(900);
+      expect(value.AUTH_REGISTER_OWNER_MAX_PER_IDENTITY).toBe(3);
+      expect(value.AUTH_REGISTER_OWNER_WINDOW_SECONDS).toBe(3600);
+      expect(value.AUTH_ABUSE_DEGRADED_FACTOR).toBe(0.5);
+      expect(value.AUTH_ABUSE_FALLBACK_WIDTH).toBe(4096);
+    });
+
+    it.each([
+      ['AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW', 0],
+      ['AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT', 0],
+      ['AUTH_RESET_PASSWORD_INVALID_CEILING', 0],
+      ['AUTH_REGISTER_OWNER_MAX_PER_IDENTITY', 0],
+    ])('rejects a zero/below-minimum %s', (key, invalid) => {
+      expect(() => validate({ ...base, [key]: invalid })).toThrow(/Env validation error/);
+    });
+
+    it.each([
+      ['AUTH_FORGOT_PASSWORD_WINDOW_SECONDS', 59], // below the 60s floor
+      ['AUTH_RESET_PASSWORD_WINDOW_SECONDS', 59],
+      ['AUTH_REGISTER_OWNER_WINDOW_SECONDS', 59],
+    ])('rejects a below-minimum %s (boundary: 60)', (key, invalid) => {
+      expect(() => validate({ ...base, [key]: invalid })).toThrow(/Env validation error/);
+    });
+
+    it.each([
+      ['AUTH_FORGOT_PASSWORD_WINDOW_SECONDS', 86401], // above the 86400s ceiling
+      ['AUTH_RESET_PASSWORD_WINDOW_SECONDS', 86401],
+      ['AUTH_REGISTER_OWNER_WINDOW_SECONDS', 86401],
+    ])('rejects an above-maximum %s (boundary: 86400)', (key, invalid) => {
+      expect(() => validate({ ...base, [key]: invalid })).toThrow(/Env validation error/);
+    });
+
+    it.each([
+      ['AUTH_FORGOT_PASSWORD_WINDOW_SECONDS', 60],
+      ['AUTH_FORGOT_PASSWORD_WINDOW_SECONDS', 86400],
+      ['AUTH_RESET_PASSWORD_WINDOW_SECONDS', 60],
+      ['AUTH_RESET_PASSWORD_WINDOW_SECONDS', 86400],
+      ['AUTH_REGISTER_OWNER_WINDOW_SECONDS', 60],
+      ['AUTH_REGISTER_OWNER_WINDOW_SECONDS', 86400],
+    ])('accepts the boundary values for %s = %d', (key, boundary) => {
+      const value = validate({ ...base, [key]: boundary });
+      expect(value[key]).toBe(boundary);
+    });
+
+    it.each([
+      'AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW',
+      'AUTH_FORGOT_PASSWORD_WINDOW_SECONDS',
+      'AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT',
+      'AUTH_RESET_PASSWORD_INVALID_CEILING',
+      'AUTH_RESET_PASSWORD_WINDOW_SECONDS',
+      'AUTH_REGISTER_OWNER_MAX_PER_IDENTITY',
+      'AUTH_REGISTER_OWNER_WINDOW_SECONDS',
+      'AUTH_ABUSE_FALLBACK_WIDTH',
+    ])('rejects a non-integer value for %s', (key) => {
+      expect(() => validate({ ...base, [key]: 1.5 })).toThrow(/Env validation error/);
+    });
+
+    it('accepts a configured override for every one of the ten optional variables', () => {
+      const value = validate({
+        ...base,
+        AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW: 8,
+        AUTH_FORGOT_PASSWORD_WINDOW_SECONDS: 600,
+        AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT: 20,
+        AUTH_RESET_PASSWORD_INVALID_CEILING: 250,
+        AUTH_RESET_PASSWORD_WINDOW_SECONDS: 1200,
+        AUTH_REGISTER_OWNER_MAX_PER_IDENTITY: 7,
+        AUTH_REGISTER_OWNER_WINDOW_SECONDS: 7200,
+        AUTH_ABUSE_DEGRADED_FACTOR: 0.75,
+        AUTH_ABUSE_FALLBACK_WIDTH: 8192,
+        AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 500,
+      });
+      expect(value.AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW).toBe(8);
+      expect(value.AUTH_FORGOT_PASSWORD_WINDOW_SECONDS).toBe(600);
+      expect(value.AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT).toBe(20);
+      expect(value.AUTH_RESET_PASSWORD_INVALID_CEILING).toBe(250);
+      expect(value.AUTH_RESET_PASSWORD_WINDOW_SECONDS).toBe(1200);
+      expect(value.AUTH_REGISTER_OWNER_MAX_PER_IDENTITY).toBe(7);
+      expect(value.AUTH_REGISTER_OWNER_WINDOW_SECONDS).toBe(7200);
+      expect(value.AUTH_ABUSE_DEGRADED_FACTOR).toBe(0.75);
+      expect(value.AUTH_ABUSE_FALLBACK_WIDTH).toBe(8192);
+      expect(value.AUTH_REGISTER_OWNER_ENDPOINT_CEILING).toBe(500);
+    });
+
+    describe('AUTH_ABUSE_DEGRADED_FACTOR', () => {
+      it('rejects zero (must be greater than 0)', () => {
+        expect(() => validate({ ...base, AUTH_ABUSE_DEGRADED_FACTOR: 0 })).toThrow(
+          /Env validation error/,
+        );
+      });
+
+      it('rejects a value above 1 (degraded mode must never be more permissive than healthy mode)', () => {
+        expect(() => validate({ ...base, AUTH_ABUSE_DEGRADED_FACTOR: 1.5 })).toThrow(
+          /Env validation error/,
+        );
+      });
+
+      it('accepts exactly 1 (degraded == healthy is the permitted upper boundary)', () => {
+        const value = validate({ ...base, AUTH_ABUSE_DEGRADED_FACTOR: 1 });
+        expect(value.AUTH_ABUSE_DEGRADED_FACTOR).toBe(1);
+      });
+    });
+
+    describe('AUTH_ABUSE_FALLBACK_WIDTH', () => {
+      it('rejects below the 256 floor', () => {
+        expect(() => validate({ ...base, AUTH_ABUSE_FALLBACK_WIDTH: 255 })).toThrow(
+          /Env validation error/,
+        );
+      });
+
+      it('rejects above the 65536 ceiling', () => {
+        expect(() => validate({ ...base, AUTH_ABUSE_FALLBACK_WIDTH: 65537 })).toThrow(
+          /Env validation error/,
+        );
+      });
+
+      it('accepts both boundary values', () => {
+        expect(validate({ ...base, AUTH_ABUSE_FALLBACK_WIDTH: 256 }).AUTH_ABUSE_FALLBACK_WIDTH).toBe(256);
+        expect(validate({ ...base, AUTH_ABUSE_FALLBACK_WIDTH: 65536 }).AUTH_ABUSE_FALLBACK_WIDTH).toBe(65536);
+      });
+    });
+
+    // AUTH_REGISTER_OWNER_ENDPOINT_CEILING is the one production-required
+    // value — no static default exists because no registration-rate
+    // telemetry exists in either repository (plan.md C7). Mirrors the
+    // FRONTEND_ORIGIN fail-fast pattern exactly.
+    describe('AUTH_REGISTER_OWNER_ENDPOINT_CEILING (production-required)', () => {
+      // prodBase carries a representative value (see its own definition
+      // above) so every OTHER production-mode test in this file boots
+      // cleanly past this check. These two tests are specifically about the
+      // missing-value case, so they build a prodBase-derived object with the
+      // field explicitly stripped back out.
+      const prodBaseNoCeiling = (() => {
+        const { AUTH_REGISTER_OWNER_ENDPOINT_CEILING: _omit, ...rest } = prodBase;
+        return rest;
+      })();
+
+      it('defaults to 1000 outside production when unset', () => {
+        const value = validate({ ...base });
+        expect(value.AUTH_REGISTER_OWNER_ENDPOINT_CEILING).toBe(1000);
+      });
+
+      it('boots in development/test with no value set at all — never blocked', () => {
+        expect(() => validate({ ...base, NODE_ENV: 'development' })).not.toThrow();
+        expect(() => validate({ ...base, NODE_ENV: 'test' })).not.toThrow();
+      });
+
+      it('FAILS the boot in production when unset', () => {
+        expect(() =>
+          validate({
+            ...prodBaseNoCeiling,
+            PAYMENT_PROVIDER: 'noop',
+            CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          }),
+        ).toThrow(/AUTH_REGISTER_OWNER_ENDPOINT_CEILING/);
+      });
+
+      it('does NOT silently guess a production default — the error names the variable and gives no numeric fallback', () => {
+        try {
+          validate({
+            ...prodBaseNoCeiling,
+            PAYMENT_PROVIDER: 'noop',
+            CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          });
+          fail('expected validation to throw');
+        } catch (err) {
+          expect((err as Error).message).toContain('AUTH_REGISTER_OWNER_ENDPOINT_CEILING');
+          expect((err as Error).message).toMatch(/do not guess/i);
+        }
+      });
+
+      it('boots in production once an explicit value is set', () => {
+        const value = validate({
+          ...prodBase,
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 250,
+        });
+        expect(value.AUTH_REGISTER_OWNER_ENDPOINT_CEILING).toBe(250);
+      });
+
+      it('rejects a zero/below-minimum value even outside production', () => {
+        expect(() =>
+          validate({ ...base, AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 0 }),
+        ).toThrow(/Env validation error/);
+      });
+
+      it('rejects a non-integer value', () => {
+        expect(() =>
+          validate({ ...base, AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 1.5 }),
+        ).toThrow(/Env validation error/);
+      });
     });
   });
 });

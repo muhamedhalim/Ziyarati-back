@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ThrottlerStorage } from '@nestjs/throttler';
 
 import { FailsafeThrottlerStorage } from './failsafe-throttler-storage';
@@ -91,5 +92,66 @@ describe('FailsafeThrottlerStorage', () => {
     });
     expect(increment).toHaveBeenCalledTimes(2);
     expect(recordSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // ── 009-auth-abuse-resistance additions (ZT-002) ─────────────────────────
+
+  it('stays bounded under 100,000 distinct trackers while Redis is unavailable (SC-010) — no unbounded Map, no O(n²) timer-array blowup', async () => {
+    const primary: ThrottlerStorage = {
+      increment: jest.fn().mockRejectedValue(new Error('connection refused')),
+    };
+    const storage = new FailsafeThrottlerStorage(primary, metrics, 4096);
+
+    // The OLD `ThrottlerStorageService` fallback this replaces allocates a
+    // Map entry PLUS a setTimeout per hit, with an O(n) `filter` over a
+    // shared timer array on every expiry — O(n²) across a burst. That
+    // combination would make 100,000 distinct keys measurably slow (seconds
+    // to tens of seconds) in addition to growing memory linearly with key
+    // count. Completing quickly, on top of BoundedLocalCounter's own
+    // deterministic allocatedBytes proof (bounded-local-counter.spec.ts),
+    // is itself evidence neither defect survived the replacement.
+    const startedAt = Date.now();
+    for (let i = 0; i < 100_000; i++) {
+      await storage.increment(`distinct-key-${i}`, 60_000, 300, 60_000, 'default');
+    }
+    const elapsedMs = Date.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 30_000);
+
+  it('creates zero timers across a sustained outage, including many increments and distinct keys', async () => {
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    const primary: ThrottlerStorage = {
+      increment: jest.fn().mockRejectedValue(new Error('connection refused')),
+    };
+    const storage = new FailsafeThrottlerStorage(primary, metrics, 256);
+
+    for (let i = 0; i < 500; i++) {
+      await storage.increment(`k-${i}`, 60_000, 300, 60_000, 'default');
+    }
+
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setTimeoutSpy.mockRestore();
+    setIntervalSpy.mockRestore();
+  });
+
+  it('bounds log volume over a sustained simulated outage — one line on entry, not one per request', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const primary: ThrottlerStorage = {
+      increment: jest.fn().mockRejectedValue(new Error('connection refused')),
+    };
+    const storage = new FailsafeThrottlerStorage(primary, metrics, 256);
+
+    for (let i = 0; i < 200; i++) {
+      await storage.increment(`k-${i}`, 60_000, 300, 60_000, 'default');
+    }
+
+    // 200 failing requests inside one summary interval must produce far
+    // fewer than 200 log lines — the metric counter (recordSpy-equivalent)
+    // still fires per request; only the LOG is rate-limited.
+    expect(warnSpy.mock.calls.length).toBeLessThan(5);
+    expect(recordSpy).toHaveBeenCalledTimes(200);
+    warnSpy.mockRestore();
   });
 });

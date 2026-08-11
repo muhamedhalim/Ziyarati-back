@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
+import type { AuthAbuseLimiterScope } from '../modules/auth/auth-abuse.constants';
+
 /**
  * Minimum-viable observability (gap-closure — see
  * docs/CACHING_QUEUES_AUDIT.md M14): before this, the ONLY quantitative
@@ -104,6 +106,35 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * 009-auth-abuse-resistance (ZT-002, ZT-006) — every limiter this feature
+   * introduces or extends (login's degraded fallback, forgot-password,
+   * reset-password's two layers, register-owner's two layers) reports
+   * through this ONE counter rather than one series per limiter. `limiter`
+   * and `event` are both bounded, closed enums (research.md §R9) — no
+   * identity, hash, IP or token can ever reach a label value, so cardinality
+   * is fixed at 6 × 5 = 30 series regardless of traffic or attacker input.
+   */
+  private readonly authAbuseLimiterEvents = new Counter({
+    name: 'auth_abuse_limiter_events_total',
+    help: 'Authentication abuse-limiter decisions by limiter scope and outcome.',
+    labelNames: ['limiter', 'event'] as const,
+    registers: [this.registry],
+  });
+
+  /**
+   * ZT-010 — fires only if the `uq_user_email_global` invariant is ever
+   * lost (an unscoped recovery lookup returns more than one live row). No
+   * identity information in the label set — this is a structural-integrity
+   * signal, not an audit trail of who triggered it.
+   */
+  private readonly authRecoveryEvents = new Counter({
+    name: 'auth_recovery_events_total',
+    help: 'Password-recovery lookup outcomes requiring operator attention, by event.',
+    labelNames: ['event'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -139,8 +170,22 @@ export class MetricsService {
     this.loginProtectionEvents.inc({ event });
   }
 
-  recordThrottlerStorageEvent(event: 'redis_unavailable'): void {
+  recordThrottlerStorageEvent(
+    event: 'redis_unavailable' | 'degraded_entered' | 'recovered',
+  ): void {
     this.throttlerStorageEvents.inc({ event });
+  }
+
+  recordAuthAbuseLimiterEvent(
+    limiter: AuthAbuseLimiterScope,
+    event: 'allowed' | 'refused' | 'suppressed' | 'degraded_allowed' | 'degraded_refused',
+  ): void {
+    this.authAbuseLimiterEvents.inc({ limiter, event });
+  }
+
+  /** ZT-010 — the recovery lookup found more than one live row for one normalized email; `uq_user_email_global` has been lost. */
+  recordAuthRecoveryEvent(event: 'multiplicity_violation'): void {
+    this.authRecoveryEvents.inc({ event });
   }
 
   recordHttpRequest(method: string, statusCode: number, durationSeconds: number): void {

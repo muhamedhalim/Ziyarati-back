@@ -9,6 +9,8 @@ import * as bcrypt from 'bcryptjs';
 
 import { AuthService } from './auth.service';
 import { LoginProtectionService } from './login-protection.service';
+import { FixedWindowLimiterService } from '../../queue/fixed-window-limiter.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { User } from '../../entities/Auth&RBAC/User';
 import { RefreshToken } from '../../entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from '../../entities/Auth&RBAC/PasswordReset';
@@ -84,6 +86,17 @@ describe('AuthService', () => {
     recordFailure: jest.Mock;
     clear: jest.Mock;
   };
+  // 009-auth-abuse-resistance — required so AuthService's widened
+  // constructor resolves in every test in this file, same reasoning as
+  // loginProtection above. Defaults to an always-allowed, healthy-mode
+  // decision so every pre-existing test's downstream behaviour (lookups,
+  // writes, dispatch) is unaffected; individual limiter-specific tests
+  // override `consume`/`peek` per case.
+  let limiter: { consume: jest.Mock; peek: jest.Mock };
+  let metrics: {
+    recordAuthAbuseLimiterEvent: jest.Mock;
+    recordAuthRecoveryEvent: jest.Mock;
+  };
   const bcryptHash = bcrypt.hash as unknown as jest.Mock;
   const bcryptCompare = bcrypt.compare as unknown as jest.Mock;
 
@@ -127,6 +140,14 @@ describe('AuthService', () => {
       recordFailure: jest.fn().mockResolvedValue(false),
       clear: jest.fn().mockResolvedValue(false),
     };
+    limiter = {
+      consume: jest.fn().mockResolvedValue({ allowed: true, degraded: false, count: 1 }),
+      peek: jest.fn().mockResolvedValue({ allowed: true, degraded: false, count: 0 }),
+    };
+    metrics = {
+      recordAuthAbuseLimiterEvent: jest.fn(),
+      recordAuthRecoveryEvent: jest.fn(),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -146,6 +167,8 @@ describe('AuthService', () => {
         { provide: SystemSettingService, useValue: platformSettings },
         { provide: EmailService, useValue: email },
         { provide: LoginProtectionService, useValue: loginProtection },
+        { provide: FixedWindowLimiterService, useValue: limiter },
+        { provide: MetricsService, useValue: metrics },
       ],
     }).compile();
 
@@ -885,7 +908,7 @@ describe('AuthService', () => {
   // vulnerability itself, encoded as a passing test (Feature 003, TR-003).
   describe('forgotPassword', () => {
     it('never includes a reset credential in the response when the email exists', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
       const result = await service.forgotPassword({ email: 'a@b.com' } as any);
       expect(result).not.toHaveProperty('resetToken');
       expect((result as Record<string, unknown>).token).toBeUndefined();
@@ -899,7 +922,7 @@ describe('AuthService', () => {
         (config.get as jest.Mock).mockImplementation(
           (key: string, def?: unknown) => (key === 'NODE_ENV' ? envValue : def),
         );
-        users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+        users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
         const result = await service.forgotPassword({
           email: 'a@b.com',
         } as any);
@@ -909,12 +932,12 @@ describe('AuthService', () => {
     );
 
     it('returns a response identical to the known-email case for an unknown email — anti-enumeration', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
       const knownResult = await service.forgotPassword({
         email: 'a@b.com',
       } as any);
 
-      users.findOne.mockResolvedValueOnce(null);
+      users.find.mockResolvedValueOnce([]);
       const unknownResult = await service.forgotPassword({
         email: 'ghost@b.com',
       } as any);
@@ -925,14 +948,14 @@ describe('AuthService', () => {
 
     it('tolerates a tenant-slug resolution failure and still does not leak', async () => {
       tenants.findOne.mockRejectedValueOnce(new Error('boom'));
-      users.findOne.mockResolvedValueOnce(null);
+      users.find.mockResolvedValueOnce([]);
       await expect(
         service.forgotPassword({ email: 'a@b.com', tenantSlug: 'x' } as any),
       ).resolves.toEqual({ message: expect.any(String) });
     });
 
     it('still dispatches the reset email and persists the token hash', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
       await service.forgotPassword({ email: 'a@b.com' } as any);
       expect(passwordResets.save).toHaveBeenCalledTimes(1);
       expect(email.sendPasswordReset).toHaveBeenCalledTimes(1);
@@ -941,10 +964,10 @@ describe('AuthService', () => {
     // FR-H014/T156 gap-closure: the user row is already loaded here, so its
     // recorded locale (M-08) must reach the email — a free, no-risk win.
     it("[T156] forwards the user's preferred_locale to the reset email", async () => {
-      users.findOne.mockResolvedValueOnce({
+      users.find.mockResolvedValueOnce([{
         id: 'user-1',
         preferred_locale: 'ar',
-      });
+      }]);
       await service.forgotPassword({ email: 'a@b.com' } as any);
       expect(email.sendPasswordReset).toHaveBeenCalledWith(
         expect.objectContaining({ locale: 'ar' }),
@@ -952,7 +975,7 @@ describe('AuthService', () => {
     });
 
     it('[T156] leaves locale undefined (not a guess) when the user never set one', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
       await service.forgotPassword({ email: 'a@b.com' } as any);
       expect(email.sendPasswordReset).toHaveBeenCalledWith(
         expect.objectContaining({ locale: undefined }),
@@ -971,7 +994,7 @@ describe('AuthService', () => {
           return def;
         },
       );
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
 
       await service.forgotPassword({ email: 'a@b.com' } as any);
 
@@ -990,7 +1013,7 @@ describe('AuthService', () => {
           return def;
         },
       );
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
 
       await service.forgotPassword({ email: 'a@b.com' } as any);
 
@@ -1009,7 +1032,7 @@ describe('AuthService', () => {
           return def;
         },
       );
-      users.findOne.mockResolvedValueOnce({ id: 'user-1' });
+      users.find.mockResolvedValueOnce([{ id: 'user-1' }]);
 
       const result = await service.forgotPassword({ email: 'a@b.com' } as any);
 
@@ -1261,6 +1284,8 @@ describe('AuthService', () => {
           recordFailure: jest.fn().mockResolvedValue(false),
           clear: jest.fn().mockResolvedValue(false),
         } as any,
+        limiter as any,
+        metrics as any,
       );
 
     const primeLogin = () => {
@@ -1327,6 +1352,8 @@ describe('AuthService', () => {
         platformSettings as any,
         email as any,
         loginProtection as any,
+        limiter as any,
+        metrics as any,
       );
     };
 

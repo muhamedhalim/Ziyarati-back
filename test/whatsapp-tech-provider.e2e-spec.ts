@@ -41,6 +41,7 @@ import { Campaign } from '../src/entities/Campaigns/Campaign';
 import { CampaignRun } from '../src/entities/Campaigns/CampaignRun';
 import { CampaignRecipient } from '../src/entities/Campaigns/CampaignRecipient';
 import { WhatsappAccount } from '../src/entities/WhatsApp/WhatsappAccount';
+import { ScheduledNotification } from '../src/entities/Notifications/ScheduledNotification';
 import {
   CampaignExecution,
   RecipientDelivery,
@@ -323,6 +324,27 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
       .expect(403);
   });
 
+  // Meta's webhook config takes ONE Callback URL and drives BOTH halves of the
+  // protocol through it: the GET handshake when the URL is saved, then every
+  // event POST. These two pin that the ingestion path answers both, because
+  // that is the URL an operator actually registers — when the handshake lived
+  // only on `/verify`, `GET /events` fell through to the authenticated
+  // `@Get(':id')` and answered 401, so Meta refused to save the URL at all.
+  it('#14c the GET handshake also succeeds on the ingestion path (single Meta callback URL)', async () => {
+    const res = await request(e2e.app.getHttpServer())
+      .get(`${API}/whatsapp/webhooks/events`)
+      .query({ 'hub.mode': 'subscribe', 'hub.verify_token': 'test-verify-token', 'hub.challenge': 'echo-456' })
+      .expect(200);
+    expect(res.text).toBe('echo-456');
+  });
+
+  it('#14d the handshake on the ingestion path still fails closed on a wrong token', async () => {
+    await request(e2e.app.getHttpServer())
+      .get(`${API}/whatsapp/webhooks/events`)
+      .query({ 'hub.mode': 'subscribe', 'hub.verify_token': 'wrong-token', 'hub.challenge': 'echo-456' })
+      .expect(403);
+  });
+
   it('#14b an inbound event with an invalid signature is rejected (401)', async () => {
     const payload = JSON.stringify({ entry: [] });
     await request(e2e.app.getHttpServer())
@@ -576,5 +598,62 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
     await runs.delete({ id: run.id });
     await campaigns.delete({ id: campaign.id });
     await customers.delete({ id: customer.id });
+  });
+
+  // ── ZT-011 (009) — T042: no delivery-status functionality was lost ──────
+  // The live handshake's sibling ingestion path (POST /whatsapp/webhooks/events)
+  // must still forward Meta statuses to NotificationDeliveryService — the
+  // FIRST of the three delivery axes whatsapp-webhook.service.ts:199 fans
+  // out to (scheduled_notifications, via provider_ref), independent of the
+  // campaign-recipient axis #18 above already covers.
+  it('T042 a delivered webhook status updates NotificationDeliveryService (scheduled_notifications.delivery_status)', async () => {
+    const wabaId = `waba-notif-status-${tenantA.tenantId}`;
+    const connected = await request(e2e.app.getHttpServer())
+      .post(`${API}/whatsapp/onboarding/complete`)
+      .set(...authHeader(tenantA.token))
+      .send({ code: 'auth-code-notif-status', wabaId })
+      .expect(200);
+
+    const scheduled = ds.getRepository(ScheduledNotification);
+    const wamid = `wamid.notif.${randomUUID()}`;
+    const row = await scheduled.save(
+      scheduled.create({
+        tenant: { id: tenantA.tenantId } as never,
+        scheduled_at: new Date(),
+        status: 'SENT',
+        delivery_status: 'NONE',
+        provider_ref: wamid,
+      }),
+    );
+
+    const payload = JSON.stringify({
+      entry: [
+        {
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: connected.body.phoneNumberId },
+                statuses: [{ id: wamid, status: 'delivered' }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const ingest = await request(e2e.app.getHttpServer())
+      .post(`${API}/whatsapp/webhooks/events`)
+      .set('Content-Type', 'application/json')
+      .set('X-Hub-Signature-256', signWebhookBody(payload, TEST_META_ENV.META_APP_SECRET))
+      .send(payload)
+      .expect(200);
+
+    const webhooks = e2e.app.get(WhatsappWebhookService);
+    await webhooks.processEvent(ingest.body.id);
+
+    const updated = await scheduled.findOne({ where: { id: row.id } });
+    expect(updated?.delivery_status).toBe('DELIVERED');
+
+    await scheduled.delete({ id: row.id });
   });
 });
