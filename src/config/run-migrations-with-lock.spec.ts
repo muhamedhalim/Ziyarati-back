@@ -75,10 +75,21 @@ describe('runMigrationsWithAdvisoryLock', () => {
     expect(dataSourceInstance.destroy).toHaveBeenCalled();
   });
 
-  it('passes ssl options only in production', async () => {
-    await runMigrationsWithAdvisoryLock('postgres://localhost/db', true);
+  // ZT-012: the isProduction → ssl-options DECISION now lives entirely in
+  // the single shared `databaseSslOptions()` helper (database-ssl.spec.ts) —
+  // this function's own responsibility is just to pass whatever `ssl` value
+  // its caller computed straight through to the DataSource it constructs,
+  // unchanged, so the migration DataSource can never diverge from the
+  // runtime one.
+  it('passes the caller-supplied ssl value straight through, unchanged', async () => {
+    await runMigrationsWithAdvisoryLock('postgres://localhost/db', {
+      rejectUnauthorized: true,
+      ca: 'test-ca-content',
+    });
     expect(DataSource).toHaveBeenCalledWith(
-      expect.objectContaining({ ssl: { rejectUnauthorized: false } }),
+      expect.objectContaining({
+        ssl: { rejectUnauthorized: true, ca: 'test-ca-content' },
+      }),
     );
 
     await runMigrationsWithAdvisoryLock('postgres://localhost/db', false);

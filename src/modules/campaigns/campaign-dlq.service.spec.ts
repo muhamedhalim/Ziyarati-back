@@ -18,7 +18,11 @@ const OTHER_TENANT = 't2';
 
 describe('CampaignDlqService', () => {
   let service: CampaignDlqService;
-  let queue: { dlqDepth: jest.Mock; queue: jest.Mock; enqueueCampaignRecipient: jest.Mock };
+  let queue: {
+    dlqDepth: jest.Mock;
+    queue: jest.Mock;
+    enqueueCampaignRecipient: jest.Mock;
+  };
   let dlqQueue: { getJobs: jest.Mock; getJob: jest.Mock };
   let dataSource: { transaction: jest.Mock };
   let tenantContext: {
@@ -62,20 +66,22 @@ describe('CampaignDlqService', () => {
       enqueueCampaignRecipient: jest.fn().mockResolvedValue(undefined),
     };
     dataSource = {
-      transaction: jest.fn().mockImplementation(async (cb: (mgr: unknown) => Promise<void>) => {
-        transactionRuns += 1;
-        const mgr = {
-          update: jest.fn().mockResolvedValue({ affected: 1 }),
-          createQueryBuilder: jest.fn().mockReturnValue({
-            update: jest.fn().mockReturnThis(),
-            set: jest.fn().mockReturnThis(),
-            where: jest.fn().mockReturnThis(),
-            andWhere: jest.fn().mockReturnThis(),
-            execute: jest.fn().mockResolvedValue({ affected: 1 }),
-          }),
-        };
-        await cb(mgr);
-      }),
+      transaction: jest
+        .fn()
+        .mockImplementation(async (cb: (mgr: unknown) => Promise<void>) => {
+          transactionRuns += 1;
+          const mgr = {
+            update: jest.fn().mockResolvedValue({ affected: 1 }),
+            createQueryBuilder: jest.fn().mockReturnValue({
+              update: jest.fn().mockReturnThis(),
+              set: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              andWhere: jest.fn().mockReturnThis(),
+              execute: jest.fn().mockResolvedValue({ affected: 1 }),
+            }),
+          };
+          await cb(mgr);
+        }),
     };
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue(CALLER_TENANT),
@@ -131,7 +137,9 @@ describe('CampaignDlqService', () => {
 
     it('keeps the page size predictable when other tenants own the newest jobs', async () => {
       dlqQueue.getJobs.mockResolvedValueOnce([
-        ...Array.from({ length: 20 }, (_, i) => parked(`theirs-${i}`, OTHER_TENANT)),
+        ...Array.from({ length: 20 }, (_, i) =>
+          parked(`theirs-${i}`, OTHER_TENANT),
+        ),
         parked('mine-1', CALLER_TENANT),
         parked('mine-2', CALLER_TENANT),
       ]);
@@ -181,7 +189,52 @@ describe('CampaignDlqService', () => {
       tenantContext.requireTenantId.mockReturnValue(OTHER_TENANT);
       dlqQueue.getJob.mockResolvedValueOnce(parked('mine-1', CALLER_TENANT));
 
-      await expect(service.replay('mine-1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.replay('mine-1')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+    });
+
+    // ── ZT-009: depth must be the caller's own count, never the platform figure ──
+    describe('depth', () => {
+      it('two tenants with different DLQ contents receive different, own-tenant-only depths', async () => {
+        const parkedJobs = [
+          parked('mine-1', CALLER_TENANT),
+          parked('mine-2', CALLER_TENANT),
+          parked('mine-3', CALLER_TENANT),
+          parked('theirs-1', OTHER_TENANT),
+        ];
+
+        dlqQueue.getJobs.mockResolvedValueOnce(parkedJobs);
+        tenantContext.requireTenantId.mockReturnValue(CALLER_TENANT);
+        await expect(service.depth()).resolves.toBe(3);
+
+        dlqQueue.getJobs.mockResolvedValueOnce(parkedJobs);
+        tenantContext.requireTenantId.mockReturnValue(OTHER_TENANT);
+        await expect(service.depth()).resolves.toBe(1);
+      });
+
+      it('a tenant with zero parked jobs sees 0 — never the platform-wide figure', async () => {
+        dlqQueue.getJobs.mockResolvedValueOnce([
+          parked('theirs-1', OTHER_TENANT),
+          parked('theirs-2', OTHER_TENANT),
+        ]);
+        tenantContext.requireTenantId.mockReturnValue(CALLER_TENANT);
+
+        await expect(service.depth()).resolves.toBe(0);
+      });
+
+      it('treats a job with no recorded tenant as not owned, consistent with list()', async () => {
+        dlqQueue.getJobs.mockResolvedValueOnce([parked('orphan', undefined)]);
+        await expect(service.depth()).resolves.toBe(0);
+      });
+
+      it('bounds the scan rather than walking the queue unbounded', async () => {
+        dlqQueue.getJobs.mockResolvedValueOnce([]);
+        await service.depth();
+        const [, start, end] = dlqQueue.getJobs.mock.calls[0];
+        expect(start).toBe(0);
+        expect(end).toBeLessThanOrEqual(999);
+      });
     });
   });
 
@@ -194,7 +247,11 @@ describe('CampaignDlqService', () => {
 
       expect(transactionRuns).toBe(1);
       expect(queue.enqueueCampaignRecipient).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: 'run-1', recipientId: 'rcpt-1', correlationId: 'cid-1' }),
+        expect.objectContaining({
+          runId: 'run-1',
+          recipientId: 'rcpt-1',
+          correlationId: 'cid-1',
+        }),
       );
       expect(job.remove).toHaveBeenCalled();
       expect(res).toEqual({ replayed: true, jobId: 'mine-1' });
@@ -236,14 +293,18 @@ describe('CampaignDlqService', () => {
       locks.acquire.mockResolvedValueOnce(null);
       dlqQueue.getJob.mockResolvedValueOnce(parked('mine-1', CALLER_TENANT));
 
-      await expect(service.replay('mine-1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.replay('mine-1')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
       expect(transactionRuns).toBe(0);
       expect(queue.enqueueCampaignRecipient).not.toHaveBeenCalled();
     });
 
     it('retains the parked entry and releases the claim when enqueue fails', async () => {
       const job = parked('mine-1', CALLER_TENANT);
-      queue.enqueueCampaignRecipient.mockRejectedValueOnce(new Error('redis down'));
+      queue.enqueueCampaignRecipient.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
       dlqQueue.getJob.mockResolvedValueOnce(job);
 
       await expect(service.replay('mine-1')).rejects.toThrow('redis down');
@@ -267,7 +328,10 @@ describe('CampaignDlqService', () => {
       expect(row).toMatchObject({
         action: 'campaigns.dlq.replay',
         entity_type: 'campaign_dlq_job',
-        new_values: expect.objectContaining({ jobId: 'mine-1', result: 'replayed' }),
+        new_values: expect.objectContaining({
+          jobId: 'mine-1',
+          result: 'replayed',
+        }),
       });
       expect(JSON.stringify(row)).not.toContain('441234567890');
     });
@@ -277,7 +341,10 @@ describe('CampaignDlqService', () => {
       await service.replay('theirs-1').catch(() => undefined);
 
       const row = auditLogs.save.mock.calls.at(-1)![0];
-      expect(row.new_values).toMatchObject({ jobId: 'theirs-1', result: 'rejected' });
+      expect(row.new_values).toMatchObject({
+        jobId: 'theirs-1',
+        result: 'rejected',
+      });
     });
   });
 });

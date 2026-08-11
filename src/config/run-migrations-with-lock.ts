@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { join } from 'node:path';
+import type { TlsOptions } from 'node:tls';
 
 /**
  * Fixed Postgres advisory-lock id serializing migration runs across every
@@ -36,7 +37,7 @@ const MIGRATION_LOCK_ID = 8_237_501_001;
  */
 export async function runMigrationsWithAdvisoryLock(
   databaseUrl: string,
-  isProduction: boolean,
+  ssl: boolean | TlsOptions,
 ): Promise<void> {
   const logger = new Logger('MigrationRunner');
   const migrationDataSource = new DataSource({
@@ -44,7 +45,11 @@ export async function runMigrationsWithAdvisoryLock(
     url: databaseUrl,
     migrations: [join(__dirname, '..', 'migrations', '!(*.spec).{ts,js}')],
     migrationsTransactionMode: 'each',
-    ssl: isProduction ? { rejectUnauthorized: false } : false,
+    // ZT-012: caller-supplied policy from the single shared
+    // `databaseSslOptions()` helper (config/database-ssl.ts) — this is the
+    // connection that opens FIRST on any boot, before the runtime
+    // DataSource exists, so it must never diverge from it.
+    ssl,
     logging: ['error'],
   });
 

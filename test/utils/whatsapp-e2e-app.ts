@@ -56,9 +56,13 @@ export interface MetaGraphMock {
 }
 
 /** A fresh MetaGraphClient mock with sane defaults for a one-account, one-number WABA. */
-export function createMetaGraphMock(overrides: Partial<MetaGraphMock> = {}): MetaGraphMock {
+export function createMetaGraphMock(
+  overrides: Partial<MetaGraphMock> = {},
+): MetaGraphMock {
   return {
-    exchangeCode: jest.fn().mockResolvedValue({ accessToken: 'mock-long-lived-token' }),
+    exchangeCode: jest
+      .fn()
+      .mockResolvedValue({ accessToken: 'mock-long-lived-token' }),
     // Reads process.env directly (not a shared constant) — by the time this
     // runs (inside createE2eApp(), called from a test's beforeAll), the
     // env-setup side-effect module has already run, and this way the mock
@@ -70,14 +74,21 @@ export function createMetaGraphMock(overrides: Partial<MetaGraphMock> = {}): Met
       scopes: ['whatsapp_business_management', 'whatsapp_business_messaging'],
     })),
     listSharedWabas: jest.fn().mockResolvedValue([]),
-    getWaba: jest.fn().mockImplementation(async (wabaId: string) => ({ id: wabaId, name: 'Mock Clinic WABA' })),
+    getWaba: jest.fn().mockImplementation(async (wabaId: string) => ({
+      id: wabaId,
+      name: 'Mock Clinic WABA',
+    })),
     // Derives the phone id from the WABA id (both supplied per-call by the
     // test as arbitrary unique strings) so onboarding two different tenants
     // in the same suite never collides on the DB's partial unique index on
     // `phone_number_id` — a fixed literal here would make the second
     // tenant's connect attempt fail with a real 409.
     listPhoneNumbers: jest.fn().mockImplementation(async (wabaId: string) => [
-      { id: `phone-${wabaId}`, displayPhoneNumber: '+1 555 0100', verifiedName: 'Mock Clinic' },
+      {
+        id: `phone-${wabaId}`,
+        displayPhoneNumber: '+1 555 0100',
+        verifiedName: 'Mock Clinic',
+      },
     ]),
     subscribeAppToWaba: jest.fn().mockResolvedValue(undefined),
     listTemplates: jest.fn().mockResolvedValue([]),
@@ -91,8 +102,13 @@ export function createMetaGraphMock(overrides: Partial<MetaGraphMock> = {}): Met
       status: 'PENDING',
       category: undefined,
     })),
-    getMediaMetadata: jest.fn().mockResolvedValue({ url: 'https://mock.meta/media/1', mimeType: 'image/jpeg' }),
-    downloadMedia: jest.fn().mockResolvedValue({ buffer: Buffer.from('fake-image-bytes') }),
+    getMediaMetadata: jest.fn().mockResolvedValue({
+      url: 'https://mock.meta/media/1',
+      mimeType: 'image/jpeg',
+    }),
+    downloadMedia: jest
+      .fn()
+      .mockResolvedValue({ buffer: Buffer.from('fake-image-bytes') }),
     ...overrides,
   };
 }
@@ -108,8 +124,14 @@ export function createWhatsappProviderMock(): WhatsappProviderMock {
   return {
     name: 'mock-meta-whatsapp-cloud',
     supports: jest.fn().mockReturnValue(true),
-    send: jest.fn().mockResolvedValue({ success: true, providerMessageId: `mock-wamid-${randomUUID()}` }),
-    sendSession: jest.fn().mockResolvedValue({ success: true, providerMessageId: `mock-wamid-${randomUUID()}` }),
+    send: jest.fn().mockResolvedValue({
+      success: true,
+      providerMessageId: `mock-wamid-${randomUUID()}`,
+    }),
+    sendSession: jest.fn().mockResolvedValue({
+      success: true,
+      providerMessageId: `mock-wamid-${randomUUID()}`,
+    }),
   };
 }
 
@@ -189,7 +211,10 @@ export interface OwnerFixture {
  * whatsapp / campaign / conversation permission these tests need) and mints a
  * real access JWT the same shape `AuthService.issueTokens` produces.
  */
-export async function createOwnerFixture(e2e: E2eApp, label: string): Promise<OwnerFixture> {
+export async function createOwnerFixture(
+  e2e: E2eApp,
+  label: string,
+): Promise<OwnerFixture> {
   const suffix = `${label}-${randomUUID().slice(0, 8)}`;
   const tenants = e2e.dataSource.getRepository(Tenant);
   const users = e2e.dataSource.getRepository(User);
@@ -227,7 +252,12 @@ export async function createOwnerFixture(e2e: E2eApp, label: string): Promise<Ow
       is_active: true,
     }),
   );
-  await userRoles.save(userRoles.create({ user: { id: user.id } as User, role: { id: role.id } as Role }));
+  await userRoles.save(
+    userRoles.create({
+      user: { id: user.id } as User,
+      role: { id: role.id } as Role,
+    }),
+  );
 
   const token = await e2e.jwt.signAsync(
     { sub: user.id, tenantId: tenant.id, type: 'access' },
@@ -249,7 +279,10 @@ export function authHeader(token: string): [string, string] {
  * FK-safe order (children before parents). Never touches another tenant's
  * data — every query is scoped by tenantId (directly or via a join).
  */
-export async function cleanupTenant(e2e: E2eApp, tenantId: string): Promise<void> {
+export async function cleanupTenant(
+  e2e: E2eApp,
+  tenantId: string,
+): Promise<void> {
   const q = (sql: string) => e2e.dataSource.query(sql, [tenantId]);
   // Every HTTP request the tests made against this tenant left a request-log
   // row with an FK to it — delete those first or the final tenant DELETE 409s.
@@ -272,8 +305,15 @@ export async function cleanupTenant(e2e: E2eApp, tenantId: string): Promise<void
   await q(`DELETE FROM whatsapp_templates WHERE "tenantId" = $1`);
   await q(`DELETE FROM whatsapp_contacts WHERE "tenantId" = $1`);
   await q(`DELETE FROM whatsapp_accounts WHERE "tenantId" = $1`);
+  // Uploaded-file metadata (ZT-004b coverage is the first e2e path to create
+  // rows here) — children of `customers` / `tenants` respectively, so both
+  // must go before the deletes below.
+  await q(`DELETE FROM customer_files WHERE "tenantId" = $1`);
+  await q(`DELETE FROM ai_training_files WHERE "tenantId" = $1`);
   await q(`DELETE FROM customers WHERE "tenantId" = $1`);
-  await q(`DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`);
+  await q(
+    `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
+  );
   await q(`DELETE FROM users WHERE "tenantId" = $1`);
   // Request logging is async (fire-and-forget), so a row for the very last
   // HTTP call in a test can still land after the FIRST api_logs delete above

@@ -116,10 +116,7 @@ export class GuestSessionService {
     const token = await this.jwt.signAsync(
       { sub: guestId, tenantId, guest: true },
       {
-        secret: this.config.get<string>(
-          'JWT_ACCESS_SECRET',
-          'dev-access-secret',
-        ),
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
         expiresIn: ttl as unknown as JwtSignOptions['expiresIn'],
       },
     );
@@ -154,16 +151,19 @@ export class GuestSessionService {
     // (2) A guest token must be presented.
     if (!guestToken) throw this.notFound();
 
-    // (3) Verify signature + expiry, and require the guest marker.
+    // (3) Verify signature + expiry, and require the guest marker. Secret
+    // resolved BEFORE the try/catch (ZT-007) so a missing configuration
+    // value fails loudly instead of being swallowed into the same
+    // not-found response a forged/expired token produces.
+    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
     let claims: { sub?: string; tenantId?: string; guest?: boolean };
     try {
-      claims = await this.jwt.verifyAsync(guestToken, {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
-      });
+      claims = await this.jwt.verifyAsync(guestToken, { secret: accessSecret });
     } catch {
       throw this.notFound();
     }
-    if (!claims?.guest || !claims.sub || !claims.tenantId) throw this.notFound();
+    if (!claims?.guest || !claims.sub || !claims.tenantId)
+      throw this.notFound();
 
     // (4) The token must belong to the discovery tenant.
     const discoveryTenantId = await this.ensureDiscoveryTenant();
@@ -177,7 +177,9 @@ export class GuestSessionService {
 
     // (6) Ownership: the conversation must be bound to THIS guest session.
     // Absent binding (pre-existing conversations) is treated as not owned.
-    const boundSubject = (conversation.session as { guestSubject?: string } | null)?.guestSubject;
+    const boundSubject = (
+      conversation.session as { guestSubject?: string } | null
+    )?.guestSubject;
     if (!boundSubject || boundSubject !== claims.sub) throw this.notFound();
 
     // (7) Claim the conversion atomically. A conditional UPDATE — never
@@ -208,6 +210,8 @@ export class GuestSessionService {
    * message throughout, so the endpoint is not an existence oracle (SR-011).
    */
   private notFound(): AppError {
-    return new AppError(ErrorCode.NOT_FOUND, { message: 'Guest conversation not found' });
+    return new AppError(ErrorCode.NOT_FOUND, {
+      message: 'Guest conversation not found',
+    });
   }
 }

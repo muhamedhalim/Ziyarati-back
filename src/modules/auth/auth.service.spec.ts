@@ -72,11 +72,18 @@ describe('AuthService', () => {
   let auditLogs: MockRepository;
   let dataSource: MockDataSource;
   let jwt: ReturnType<typeof createMockJwtService>;
-  let usage: { assertCountWithinLimit: jest.Mock; assertUserSeatWithinLimit: jest.Mock };
+  let usage: {
+    assertCountWithinLimit: jest.Mock;
+    assertUserSeatWithinLimit: jest.Mock;
+  };
   let platformSettings: { getTyped: jest.Mock };
   let email: { sendWelcome: jest.Mock; sendPasswordReset: jest.Mock };
   let config: ReturnType<typeof createMockConfigService>;
-  let loginProtection: { isLocked: jest.Mock; recordFailure: jest.Mock; clear: jest.Mock };
+  let loginProtection: {
+    isLocked: jest.Mock;
+    recordFailure: jest.Mock;
+    clear: jest.Mock;
+  };
   const bcryptHash = bcrypt.hash as unknown as jest.Mock;
   const bcryptCompare = bcrypt.compare as unknown as jest.Mock;
 
@@ -101,7 +108,15 @@ describe('AuthService', () => {
     bcryptHash.mockResolvedValue('hashed-password');
     bcryptCompare.mockResolvedValue(true);
 
-    config = createMockConfigService();
+    // JWT_ACCESS_SECRET/JWT_REFRESH_SECRET: required() in the real schema
+    // (env.validation.ts), and every signing/verification path now uses
+    // getOrThrow (ZT-007, no literal fallback) — every test in this file
+    // needs both present by default, exactly as a correctly configured
+    // deployment always has them.
+    config = createMockConfigService({
+      JWT_ACCESS_SECRET: 'test-access-secret',
+      JWT_REFRESH_SECRET: 'test-refresh-secret',
+    });
     // FND-008 — required so AuthService's widened constructor resolves in
     // every test in this file, not just the new login-protection cases
     // (research §R2h: a missing provider fails DI for the whole file).
@@ -118,7 +133,10 @@ describe('AuthService', () => {
         AuthService,
         { provide: getRepositoryToken(User), useValue: users },
         { provide: getRepositoryToken(RefreshToken), useValue: refreshTokens },
-        { provide: getRepositoryToken(PasswordReset), useValue: passwordResets },
+        {
+          provide: getRepositoryToken(PasswordReset),
+          useValue: passwordResets,
+        },
         { provide: getRepositoryToken(Tenant), useValue: tenants },
         { provide: getRepositoryToken(AuditLog), useValue: auditLogs },
         { provide: JwtService, useValue: jwt },
@@ -154,12 +172,17 @@ describe('AuthService', () => {
 
     it('creates tenant + owner atomically and returns tokens + principal (success path)', async () => {
       tenants.findOne.mockResolvedValueOnce(null); // slug free
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-owner', slug: 'owner' }); // owner role seeded
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'role-owner',
+        slug: 'owner',
+      }); // owner role seeded
       users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
 
       const result = await service.registerOwner(dto);
 
-      expect(tenants.findOne).toHaveBeenCalledWith({ where: { slug: 'al-noor' } });
+      expect(tenants.findOne).toHaveBeenCalledWith({
+        where: { slug: 'al-noor' },
+      });
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
       expect(bcryptHash).toHaveBeenCalledWith('StrongPass123!', 12);
       expect(result.user).toEqual(expectedPrincipal);
@@ -189,9 +212,12 @@ describe('AuthService', () => {
     // M-08 / CAP-I18N — the locale the owner registered from is the ONLY
     // signal available at creation time (no stored preference exists yet);
     // it must be persisted on the new user AND used for the welcome email.
-    it('persists dto.locale as the new user\'s preferred_locale and passes it to the welcome email', async () => {
+    it("persists dto.locale as the new user's preferred_locale and passes it to the welcome email", async () => {
       tenants.findOne.mockResolvedValueOnce(null);
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-owner', slug: 'owner' });
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'role-owner',
+        slug: 'owner',
+      });
       users.findOne.mockResolvedValueOnce(principalRow());
 
       await service.registerOwner({ ...dto, locale: 'ar' });
@@ -207,7 +233,10 @@ describe('AuthService', () => {
 
     it('omits preferred_locale (leaves it NULL) when the request supplies no locale', async () => {
       tenants.findOne.mockResolvedValueOnce(null);
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-owner', slug: 'owner' });
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'role-owner',
+        slug: 'owner',
+      });
       users.findOne.mockResolvedValueOnce(principalRow());
 
       await service.registerOwner(dto);
@@ -232,7 +261,10 @@ describe('AuthService', () => {
       // D7 — the email-clash check now lives INSIDE createUserWithRole
       // (manager.findOne), AFTER role resolution, not as a pre-check on the
       // injected `users` repository.
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-rec', slug: ROLE.RECEPTIONIST }); // resolveSystemRole
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'role-rec',
+        slug: ROLE.RECEPTIONIST,
+      }); // resolveSystemRole
       dataSource.manager.findOne.mockResolvedValueOnce(null); // createUserWithRole: no email clash
       users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
 
@@ -241,17 +273,26 @@ describe('AuthService', () => {
       // FND-007: the seat-cap check now runs atomically INSIDE the same
       // transaction as the insert (tenant-row lock — see
       // UsageService.assertUserSeatWithinLimit), not from a pre-fetched count.
-      expect(usage.assertUserSeatWithinLimit).toHaveBeenCalledWith('tenant-1', dataSource.manager);
+      expect(usage.assertUserSeatWithinLimit).toHaveBeenCalledWith(
+        'tenant-1',
+        dataSource.manager,
+      );
       expect(result).toEqual(expectedPrincipal);
     });
 
     it('accepts an explicit assignable role (manager)', async () => {
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-mgr', slug: ROLE.MANAGER });
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'role-mgr',
+        slug: ROLE.MANAGER,
+      });
       dataSource.manager.findOne.mockResolvedValueOnce(null); // no email clash
       users.findOne.mockResolvedValueOnce(principalRow());
 
       await expect(
-        service.createTenantUser({ ...dto, roleSlug: ROLE.MANAGER }, 'tenant-1'),
+        service.createTenantUser(
+          { ...dto, roleSlug: ROLE.MANAGER },
+          'tenant-1',
+        ),
       ).resolves.toEqual(expectedPrincipal);
     });
 
@@ -273,10 +314,15 @@ describe('AuthService', () => {
     // "createUserWithRole — D7 global email uniqueness" describe block below.
     // This test just proves createTenantUser surfaces that rejection.
     it('rejects a duplicate email (global chokepoint, surfaced through createTenantUser)', async () => {
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'role-rec', slug: ROLE.RECEPTIONIST }); // resolveSystemRole
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'role-rec',
+        slug: ROLE.RECEPTIONIST,
+      }); // resolveSystemRole
       dataSource.manager.findOne.mockResolvedValueOnce({ id: 'existing' }); // createUserWithRole: clash found
 
-      await expect(service.createTenantUser(dto, 'tenant-1')).rejects.toMatchObject({
+      await expect(
+        service.createTenantUser(dto, 'tenant-1'),
+      ).rejects.toMatchObject({
         code: ErrorCode.EMAIL_ALREADY_EXISTS,
       });
     });
@@ -288,10 +334,14 @@ describe('AuthService', () => {
     // or the email).
     it('propagates the plan user-limit failure from UsageService', async () => {
       usage.assertUserSeatWithinLimit.mockRejectedValueOnce(
-        new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'user limit reached' }),
+        new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: 'user limit reached',
+        }),
       );
 
-      await expect(service.createTenantUser(dto, 'tenant-1')).rejects.toMatchObject({
+      await expect(
+        service.createTenantUser(dto, 'tenant-1'),
+      ).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
       expect(dataSource.manager.findOne).not.toHaveBeenCalled(); // role resolution never reached
@@ -309,28 +359,54 @@ describe('AuthService', () => {
     };
 
     it('rejects when the email is already held by a user in a DIFFERENT tenant (D7 #accepted behaviour change)', async () => {
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'existing', tenant: { id: 'other-tenant' } });
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'existing',
+        tenant: { id: 'other-tenant' },
+      });
 
       await expect(
-        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+        service.createUserWithRole(
+          dataSource.manager as any,
+          input,
+          roleRow,
+          'tenant-1',
+        ),
       ).rejects.toMatchObject({ code: ErrorCode.EMAIL_ALREADY_EXISTS });
       expect(dataSource.manager.save).not.toHaveBeenCalled();
     });
 
     it('rejects when the email is already held by a PLATFORM user (tenantId null) — D7 #2', async () => {
-      dataSource.manager.findOne.mockResolvedValueOnce({ id: 'existing-platform', tenant: null });
+      dataSource.manager.findOne.mockResolvedValueOnce({
+        id: 'existing-platform',
+        tenant: null,
+      });
 
       await expect(
-        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+        service.createUserWithRole(
+          dataSource.manager as any,
+          input,
+          roleRow,
+          'tenant-1',
+        ),
       ).rejects.toMatchObject({ code: ErrorCode.EMAIL_ALREADY_EXISTS });
     });
 
     it('creates a PLATFORM user (tenantId null) with tenant left undefined, when tenantId is null', async () => {
       dataSource.manager.findOne.mockResolvedValueOnce(null); // no clash
-      dataSource.manager.create.mockImplementation((_entity: any, data: any) => data);
-      dataSource.manager.save.mockImplementation(async (entity: any) => ({ id: 'new-user', ...entity }));
+      dataSource.manager.create.mockImplementation(
+        (_entity: any, data: any) => data,
+      );
+      dataSource.manager.save.mockImplementation(async (entity: any) => ({
+        id: 'new-user',
+        ...entity,
+      }));
 
-      await service.createUserWithRole(dataSource.manager as any, input, roleRow, null);
+      await service.createUserWithRole(
+        dataSource.manager as any,
+        input,
+        roleRow,
+        null,
+      );
 
       const userCreateCall = dataSource.manager.create.mock.calls.find(
         ([, data]: any[]) => data?.email === input.email,
@@ -341,27 +417,44 @@ describe('AuthService', () => {
     it('D7 #3 — translates a raced-past unique violation into EMAIL_ALREADY_EXISTS, not a raw 500', async () => {
       const { QueryFailedError } = require('typeorm');
       dataSource.manager.findOne.mockResolvedValueOnce(null); // pre-check passes...
-      dataSource.manager.create.mockImplementation((_entity: any, data: any) => data);
+      dataSource.manager.create.mockImplementation(
+        (_entity: any, data: any) => data,
+      );
       // ...but the insert itself loses the race to a concurrent identical create.
-      const raceError = Object.assign(new QueryFailedError('q', [], new Error('dup')), {
-        code: '23505',
-        constraint: 'uq_user_email_global',
-      });
+      const raceError = Object.assign(
+        new QueryFailedError('q', [], new Error('dup')),
+        {
+          code: '23505',
+          constraint: 'uq_user_email_global',
+        },
+      );
       dataSource.manager.save.mockRejectedValueOnce(raceError);
 
       await expect(
-        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+        service.createUserWithRole(
+          dataSource.manager as any,
+          input,
+          roleRow,
+          'tenant-1',
+        ),
       ).rejects.toMatchObject({ code: ErrorCode.EMAIL_ALREADY_EXISTS });
     });
 
     it('re-throws a non-unique-violation save failure unchanged', async () => {
       dataSource.manager.findOne.mockResolvedValueOnce(null);
-      dataSource.manager.create.mockImplementation((_entity: any, data: any) => data);
+      dataSource.manager.create.mockImplementation(
+        (_entity: any, data: any) => data,
+      );
       const otherError = new Error('connection reset');
       dataSource.manager.save.mockRejectedValueOnce(otherError);
 
       await expect(
-        service.createUserWithRole(dataSource.manager as any, input, roleRow, 'tenant-1'),
+        service.createUserWithRole(
+          dataSource.manager as any,
+          input,
+          roleRow,
+          'tenant-1',
+        ),
       ).rejects.toBe(otherError);
     });
   });
@@ -380,7 +473,10 @@ describe('AuthService', () => {
       users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
       bcryptCompare.mockResolvedValueOnce(true);
 
-      const result = await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
+      const result = await service.login({
+        email: 'owner@clinic.com',
+        password: 'pw',
+      } as any);
 
       expect(users.save).toHaveBeenCalledWith(
         expect.objectContaining({ last_login_at: expect.any(Date) }),
@@ -398,12 +494,16 @@ describe('AuthService', () => {
       users.findOne.mockResolvedValueOnce(principalRow());
       bcryptCompare.mockResolvedValueOnce(true);
 
-      await service.login({ email: 'OWNER@Clinic.com ', password: 'pw' } as any);
+      await service.login({
+        email: 'OWNER@Clinic.com ',
+        password: 'pw',
+      } as any);
 
       // The identity passed to the protection layer must be normalised
       // (trim + lower-case) the SAME way validateCredentials normalises it.
       expect(loginProtection.isLocked).toHaveBeenCalledWith('owner@clinic.com');
-      const isLockedOrder = loginProtection.isLocked.mock.invocationCallOrder[0];
+      const isLockedOrder =
+        loginProtection.isLocked.mock.invocationCallOrder[0];
       const findOrder = users.find.mock.invocationCallOrder[0];
       expect(isLockedOrder).toBeLessThan(findOrder);
     });
@@ -438,7 +538,9 @@ describe('AuthService', () => {
       await expect(
         service.login({ email: 'nope@clinic.com', password: 'pw' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
-      expect(loginProtection.recordFailure).toHaveBeenCalledWith('nope@clinic.com');
+      expect(loginProtection.recordFailure).toHaveBeenCalledWith(
+        'nope@clinic.com',
+      );
     });
 
     it('records a failure on a wrong password too', async () => {
@@ -448,7 +550,9 @@ describe('AuthService', () => {
       await expect(
         service.login({ email: 'owner@clinic.com', password: 'wrong' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
-      expect(loginProtection.recordFailure).toHaveBeenCalledWith('owner@clinic.com');
+      expect(loginProtection.recordFailure).toHaveBeenCalledWith(
+        'owner@clinic.com',
+      );
     });
 
     it('clears protection state on a successful login', async () => {
@@ -516,12 +620,20 @@ describe('AuthService', () => {
     it('varying tenantSlug does NOT change the protection identity — cannot bypass by switching slugs', async () => {
       loginProtection.isLocked.mockResolvedValueOnce(true);
       await service
-        .login({ email: 'owner@clinic.com', password: 'pw', tenantSlug: 'clinic-a' } as any)
+        .login({
+          email: 'owner@clinic.com',
+          password: 'pw',
+          tenantSlug: 'clinic-a',
+        } as any)
         .catch(() => undefined);
 
       loginProtection.isLocked.mockResolvedValueOnce(true);
       await service
-        .login({ email: 'owner@clinic.com', password: 'pw', tenantSlug: 'clinic-b' } as any)
+        .login({
+          email: 'owner@clinic.com',
+          password: 'pw',
+          tenantSlug: 'clinic-b',
+        } as any)
         .catch(() => undefined);
 
       expect(loginProtection.isLocked).toHaveBeenCalledTimes(2);
@@ -544,7 +656,9 @@ describe('AuthService', () => {
       users.find.mockResolvedValueOnce([activeUser]);
       bcryptCompare.mockResolvedValueOnce(true);
 
-      await expect(service.validateCredentials('a@b.com', 'pw')).resolves.toBe(activeUser);
+      await expect(service.validateCredentials('a@b.com', 'pw')).resolves.toBe(
+        activeUser,
+      );
     });
 
     it('resolves a tenant owner by email WITHOUT a tenantSlug (unified login form)', async () => {
@@ -555,7 +669,9 @@ describe('AuthService', () => {
       users.find.mockResolvedValueOnce([owner]);
       bcryptCompare.mockResolvedValueOnce(true);
 
-      await expect(service.validateCredentials('OWNER@Clinic.com ', 'pw')).resolves.toBe(owner);
+      await expect(
+        service.validateCredentials('OWNER@Clinic.com ', 'pw'),
+      ).resolves.toBe(owner);
       // Email is normalised (lower-cased + trimmed) before the lookup.
       expect(users.find).toHaveBeenCalledWith(
         expect.objectContaining({ where: { email: 'owner@clinic.com' } }),
@@ -569,7 +685,9 @@ describe('AuthService', () => {
 
       await service.validateCredentials('a@b.com', 'pw', 'clinic-slug');
 
-      expect(tenants.findOne).toHaveBeenCalledWith({ where: { slug: 'clinic-slug' } });
+      expect(tenants.findOne).toHaveBeenCalledWith({
+        where: { slug: 'clinic-slug' },
+      });
       expect(users.find).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { email: 'a@b.com', tenant: { id: 'tenant-9' } },
@@ -580,28 +698,38 @@ describe('AuthService', () => {
     it('throws INVALID_CREDENTIALS for an unknown tenant slug (no enumeration leak)', async () => {
       tenants.findOne.mockResolvedValueOnce(null);
 
-      await expect(service.validateCredentials('a@b.com', 'pw', 'nope')).rejects.toMatchObject({
+      await expect(
+        service.validateCredentials('a@b.com', 'pw', 'nope'),
+      ).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
 
     it('throws INVALID_CREDENTIALS when the user does not exist', async () => {
       users.find.mockResolvedValueOnce([]);
-      await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
+      await expect(
+        service.validateCredentials('a@b.com', 'pw'),
+      ).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
 
     it('throws INVALID_CREDENTIALS when the user has no password hash', async () => {
-      users.find.mockResolvedValueOnce([{ ...activeUser, password_hash: null }]);
-      await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
+      users.find.mockResolvedValueOnce([
+        { ...activeUser, password_hash: null },
+      ]);
+      await expect(
+        service.validateCredentials('a@b.com', 'pw'),
+      ).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
 
     it('throws INVALID_CREDENTIALS for an inactive user', async () => {
       users.find.mockResolvedValueOnce([{ ...activeUser, is_active: false }]);
-      await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
+      await expect(
+        service.validateCredentials('a@b.com', 'pw'),
+      ).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
@@ -609,7 +737,9 @@ describe('AuthService', () => {
     it('throws INVALID_CREDENTIALS on a wrong password', async () => {
       users.find.mockResolvedValueOnce([activeUser]);
       bcryptCompare.mockResolvedValueOnce(false);
-      await expect(service.validateCredentials('a@b.com', 'pw')).rejects.toMatchObject({
+      await expect(
+        service.validateCredentials('a@b.com', 'pw'),
+      ).rejects.toMatchObject({
         code: ErrorCode.INVALID_CREDENTIALS,
       });
     });
@@ -617,10 +747,18 @@ describe('AuthService', () => {
 
   // ────────────────────────────────── refresh ───────────────────────────────
   describe('refresh', () => {
-    const validPayload = { sub: 'user-1', tenantId: 'tenant-1', jti: 'jti-1', type: 'refresh' };
+    const validPayload = {
+      sub: 'user-1',
+      tenantId: 'tenant-1',
+      jti: 'jti-1',
+      type: 'refresh',
+    };
 
     /** The persisted row must hash-match the presented token. */
-    const storedFor = (rawToken: string, overrides: Record<string, unknown> = {}) => {
+    const storedFor = (
+      rawToken: string,
+      overrides: Record<string, unknown> = {},
+    ) => {
       const { createHash } = require('crypto');
       const token_hash = createHash('sha256').update(rawToken).digest('hex');
       return {
@@ -654,7 +792,10 @@ describe('AuthService', () => {
     });
 
     it('rejects a non-refresh token type', async () => {
-      jwt.verifyAsync.mockResolvedValueOnce({ ...validPayload, type: 'access' });
+      jwt.verifyAsync.mockResolvedValueOnce({
+        ...validPayload,
+        type: 'access',
+      });
       await expect(service.refresh('rt')).rejects.toMatchObject({
         code: ErrorCode.INVALID_REFRESH_TOKEN,
       });
@@ -755,11 +896,13 @@ describe('AuthService', () => {
     it.each(['production', 'development', 'test', undefined])(
       'never includes a reset credential regardless of NODE_ENV (%s)',
       async (envValue) => {
-        (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) =>
-          key === 'NODE_ENV' ? envValue : def,
+        (config.get as jest.Mock).mockImplementation(
+          (key: string, def?: unknown) => (key === 'NODE_ENV' ? envValue : def),
         );
         users.findOne.mockResolvedValueOnce({ id: 'user-1' });
-        const result = await service.forgotPassword({ email: 'a@b.com' } as any);
+        const result = await service.forgotPassword({
+          email: 'a@b.com',
+        } as any);
         expect(result).not.toHaveProperty('resetToken');
         expect(JSON.stringify(result)).not.toMatch(/[0-9a-f]{64}/); // no raw 32-byte hex token anywhere in the body
       },
@@ -767,10 +910,14 @@ describe('AuthService', () => {
 
     it('returns a response identical to the known-email case for an unknown email — anti-enumeration', async () => {
       users.findOne.mockResolvedValueOnce({ id: 'user-1' });
-      const knownResult = await service.forgotPassword({ email: 'a@b.com' } as any);
+      const knownResult = await service.forgotPassword({
+        email: 'a@b.com',
+      } as any);
 
       users.findOne.mockResolvedValueOnce(null);
-      const unknownResult = await service.forgotPassword({ email: 'ghost@b.com' } as any);
+      const unknownResult = await service.forgotPassword({
+        email: 'ghost@b.com',
+      } as any);
 
       expect(unknownResult).toEqual(knownResult);
       expect(passwordResets.save).toHaveBeenCalledTimes(1); // only for the known-email case
@@ -793,8 +940,11 @@ describe('AuthService', () => {
 
     // FR-H014/T156 gap-closure: the user row is already loaded here, so its
     // recorded locale (M-08) must reach the email — a free, no-risk win.
-    it('[T156] forwards the user\'s preferred_locale to the reset email', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1', preferred_locale: 'ar' });
+    it("[T156] forwards the user's preferred_locale to the reset email", async () => {
+      users.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        preferred_locale: 'ar',
+      });
       await service.forgotPassword({ email: 'a@b.com' } as any);
       expect(email.sendPasswordReset).toHaveBeenCalledWith(
         expect.objectContaining({ locale: 'ar' }),
@@ -811,12 +961,16 @@ describe('AuthService', () => {
 
     // ─────────────── FND-006: no credential may enter any log ───────────────
     it('with AUTH_EXPOSE_RESET_TOKEN off (the default), no log line contains the token', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) => {
-        if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'false';
-        if (key === 'NODE_ENV') return 'development';
-        return def;
-      });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      (config.get as jest.Mock).mockImplementation(
+        (key: string, def?: unknown) => {
+          if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'false';
+          if (key === 'NODE_ENV') return 'development';
+          return def;
+        },
+      );
       users.findOne.mockResolvedValueOnce({ id: 'user-1' });
 
       await service.forgotPassword({ email: 'a@b.com' } as any);
@@ -826,12 +980,16 @@ describe('AuthService', () => {
     });
 
     it('with AUTH_EXPOSE_RESET_TOKEN on in production, no log line contains the token — production never reaches this branch', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) => {
-        if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'true';
-        if (key === 'NODE_ENV') return 'production';
-        return def;
-      });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      (config.get as jest.Mock).mockImplementation(
+        (key: string, def?: unknown) => {
+          if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'true';
+          if (key === 'NODE_ENV') return 'production';
+          return def;
+        },
+      );
       users.findOne.mockResolvedValueOnce({ id: 'user-1' });
 
       await service.forgotPassword({ email: 'a@b.com' } as any);
@@ -841,12 +999,16 @@ describe('AuthService', () => {
     });
 
     it('with the flag explicitly on AND a non-production environment, the token is logged via the gated dev channel ONLY (never returned)', async () => {
-      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      (config.get as jest.Mock).mockImplementation((key: string, def?: unknown) => {
-        if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'true';
-        if (key === 'NODE_ENV') return 'development';
-        return def;
-      });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      (config.get as jest.Mock).mockImplementation(
+        (key: string, def?: unknown) => {
+          if (key === 'AUTH_EXPOSE_RESET_TOKEN') return 'true';
+          if (key === 'NODE_ENV') return 'development';
+          return def;
+        },
+      );
       users.findOne.mockResolvedValueOnce({ id: 'user-1' });
 
       const result = await service.forgotPassword({ email: 'a@b.com' } as any);
@@ -869,7 +1031,10 @@ describe('AuthService', () => {
     it('sets the new password and revokes all sessions', async () => {
       passwordResets.findOne.mockResolvedValueOnce(reset());
 
-      await service.resetPassword({ token: 'tok', newPassword: 'NewPass123!' } as any);
+      await service.resetPassword({
+        token: 'tok',
+        newPassword: 'NewPass123!',
+      } as any);
 
       expect(bcryptHash).toHaveBeenCalledWith('NewPass123!', 12);
       expect(dataSource.manager.update).toHaveBeenCalledTimes(2); // user + reset row
@@ -904,7 +1069,10 @@ describe('AuthService', () => {
   // ──────────────────────────────── changePassword ──────────────────────────
   describe('changePassword', () => {
     it('re-verifies, updates the hash and revokes all sessions', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1', password_hash: 'old' });
+      users.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        password_hash: 'old',
+      });
       bcryptCompare.mockResolvedValueOnce(true);
 
       await service.changePassword('user-1', {
@@ -921,15 +1089,24 @@ describe('AuthService', () => {
     it('rejects when the user is missing', async () => {
       users.findOne.mockResolvedValueOnce(null);
       await expect(
-        service.changePassword('user-1', { currentPassword: 'x', newPassword: 'y' } as any),
+        service.changePassword('user-1', {
+          currentPassword: 'x',
+          newPassword: 'y',
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
     });
 
     it('rejects when the current password is wrong', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'user-1', password_hash: 'old' });
+      users.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        password_hash: 'old',
+      });
       bcryptCompare.mockResolvedValueOnce(false);
       await expect(
-        service.changePassword('user-1', { currentPassword: 'bad', newPassword: 'y' } as any),
+        service.changePassword('user-1', {
+          currentPassword: 'bad',
+          newPassword: 'y',
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.INVALID_CREDENTIALS });
       expect(users.save).not.toHaveBeenCalled();
     });
@@ -939,7 +1116,9 @@ describe('AuthService', () => {
   describe('buildAuthenticatedUser', () => {
     it('flattens roles + permissions and de-duplicates', async () => {
       users.findOne.mockResolvedValueOnce(principalRow());
-      await expect(service.buildAuthenticatedUser('user-1')).resolves.toEqual(expectedPrincipal);
+      await expect(service.buildAuthenticatedUser('user-1')).resolves.toEqual(
+        expectedPrincipal,
+      );
     });
 
     it('maps a null tenant (super-admin) correctly', async () => {
@@ -957,14 +1136,21 @@ describe('AuthService', () => {
 
     it('throws USER_INACTIVE when the user is missing', async () => {
       users.findOne.mockResolvedValueOnce(null);
-      await expect(service.buildAuthenticatedUser('nope')).rejects.toMatchObject({
+      await expect(
+        service.buildAuthenticatedUser('nope'),
+      ).rejects.toMatchObject({
         code: ErrorCode.USER_INACTIVE,
       });
     });
 
     it('throws USER_INACTIVE when the user is deactivated', async () => {
-      users.findOne.mockResolvedValueOnce({ ...principalRow(), is_active: false });
-      await expect(service.buildAuthenticatedUser('user-1')).rejects.toMatchObject({
+      users.findOne.mockResolvedValueOnce({
+        ...principalRow(),
+        is_active: false,
+      });
+      await expect(
+        service.buildAuthenticatedUser('user-1'),
+      ).rejects.toMatchObject({
         code: ErrorCode.USER_INACTIVE,
       });
     });
@@ -1013,7 +1199,8 @@ describe('AuthService', () => {
     it('returns the same principal as buildAuthenticatedUser, plus the loaded Tenant row', async () => {
       const row = principalRow();
       users.findOne.mockResolvedValueOnce(row);
-      const { principal, tenant } = await service.buildAuthenticatedUserWithTenant('user-1');
+      const { principal, tenant } =
+        await service.buildAuthenticatedUserWithTenant('user-1');
       expect(principal).toEqual(expectedPrincipal);
       expect(tenant).toBe(row.tenant);
       // The tenant is never merged into the principal — guards against a future
@@ -1029,14 +1216,20 @@ describe('AuthService', () => {
         tenant: null,
         userRoles: [{ role: { slug: 'super_admin', rolePermissions: [] } }],
       });
-      const { principal, tenant } = await service.buildAuthenticatedUserWithTenant('sa-1');
+      const { principal, tenant } =
+        await service.buildAuthenticatedUserWithTenant('sa-1');
       expect(principal.tenantId).toBeNull();
       expect(tenant).toBeNull();
     });
 
     it('throws USER_INACTIVE when the user is deactivated, same as buildAuthenticatedUser', async () => {
-      users.findOne.mockResolvedValueOnce({ ...principalRow(), is_active: false });
-      await expect(service.buildAuthenticatedUserWithTenant('user-1')).rejects.toMatchObject({
+      users.findOne.mockResolvedValueOnce({
+        ...principalRow(),
+        is_active: false,
+      });
+      await expect(
+        service.buildAuthenticatedUserWithTenant('user-1'),
+      ).rejects.toMatchObject({
         code: ErrorCode.USER_INACTIVE,
       });
     });
@@ -1054,7 +1247,11 @@ describe('AuthService', () => {
         tenants as any,
         auditLogs as any,
         jwt as any,
-        createMockConfigService(overrides) as any,
+        createMockConfigService({
+          JWT_ACCESS_SECRET: 'test-access-secret',
+          JWT_REFRESH_SECRET: 'test-refresh-secret',
+          ...overrides,
+        }) as any,
         dataSource as any,
         usage as any,
         platformSettings as any,
@@ -1081,16 +1278,100 @@ describe('AuthService', () => {
 
     it('parses a unit-less TTL ("900") as seconds', async () => {
       primeLogin();
-      const svc = buildWithConfig({ JWT_ACCESS_TTL: '900', JWT_REFRESH_TTL: '7d' });
-      const result = await svc.login({ email: 'a@b.com', password: 'pw' } as any);
+      const svc = buildWithConfig({
+        JWT_ACCESS_TTL: '900',
+        JWT_REFRESH_TTL: '7d',
+      });
+      const result = await svc.login({
+        email: 'a@b.com',
+        password: 'pw',
+      } as any);
       expect(result.expiresIn).toBe(900); // 900s → 900_000ms → /1000
     });
 
     it('treats an unparseable TTL as 0 (defensive no-match branch)', async () => {
       primeLogin();
-      const svc = buildWithConfig({ JWT_ACCESS_TTL: 'not-a-duration', JWT_REFRESH_TTL: '7d' });
-      const result = await svc.login({ email: 'a@b.com', password: 'pw' } as any);
+      const svc = buildWithConfig({
+        JWT_ACCESS_TTL: 'not-a-duration',
+        JWT_REFRESH_TTL: '7d',
+      });
+      const result = await svc.login({
+        email: 'a@b.com',
+        password: 'pw',
+      } as any);
       expect(result.expiresIn).toBe(0);
+    });
+  });
+
+  // ZT-007: every JWT secret-consuming path in this file uses getOrThrow —
+  // no path may fall back to a public literal when its variable is absent.
+  describe('fails loudly when a JWT secret is unset (ZT-007)', () => {
+    const buildWithoutSecret = (
+      omit: 'JWT_ACCESS_SECRET' | 'JWT_REFRESH_SECRET',
+    ) => {
+      const overrides: Record<string, unknown> = {
+        JWT_ACCESS_SECRET: 'test-access-secret',
+        JWT_REFRESH_SECRET: 'test-refresh-secret',
+      };
+      delete overrides[omit];
+      return new AuthService(
+        users as any,
+        refreshTokens as any,
+        passwordResets as any,
+        tenants as any,
+        auditLogs as any,
+        jwt as any,
+        createMockConfigService(overrides) as any,
+        dataSource as any,
+        usage as any,
+        platformSettings as any,
+        email as any,
+        loginProtection as any,
+      );
+    };
+
+    const primeLoginForSecretTest = () => {
+      users.find.mockResolvedValueOnce([
+        {
+          id: 'user-1',
+          email: 'a@b.com',
+          password_hash: 'hashed-password',
+          is_active: true,
+          tenant: { id: 'tenant-1' },
+        },
+      ]);
+      users.findOne.mockResolvedValueOnce(principalRow());
+      bcryptCompare.mockResolvedValueOnce(true);
+    };
+
+    it('signing raises when JWT_ACCESS_SECRET is unset (login → issueTokens)', async () => {
+      primeLoginForSecretTest();
+      const svc = buildWithoutSecret('JWT_ACCESS_SECRET');
+      await expect(
+        svc.login({ email: 'a@b.com', password: 'pw' } as any),
+      ).rejects.toThrow(/JWT_ACCESS_SECRET/);
+    });
+
+    it('signing raises when JWT_REFRESH_SECRET is unset (login → issueTokens)', async () => {
+      primeLoginForSecretTest();
+      const svc = buildWithoutSecret('JWT_REFRESH_SECRET');
+      await expect(
+        svc.login({ email: 'a@b.com', password: 'pw' } as any),
+      ).rejects.toThrow(/JWT_REFRESH_SECRET/);
+    });
+
+    it('refresh-token verification raises when JWT_REFRESH_SECRET is unset', async () => {
+      const svc = buildWithoutSecret('JWT_REFRESH_SECRET');
+      await expect(svc.refresh('some.refresh.token')).rejects.toThrow(
+        /JWT_REFRESH_SECRET/,
+      );
+    });
+
+    it('logout verification raises when JWT_REFRESH_SECRET is unset (fails loudly, not a silent no-op)', async () => {
+      const svc = buildWithoutSecret('JWT_REFRESH_SECRET');
+      await expect(svc.logout('some.refresh.token')).rejects.toThrow(
+        /JWT_REFRESH_SECRET/,
+      );
     });
   });
 });

@@ -4,6 +4,7 @@ import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { join } from 'node:path';
 
 import { runMigrationsWithAdvisoryLock } from './run-migrations-with-lock';
+import { databaseSslOptions } from './database-ssl';
 
 /**
  * Shared TypeORM configuration factory.
@@ -33,6 +34,16 @@ export async function typeOrmFactory(
     throw new Error('❌ DATABASE_URL is missing in .env');
   }
 
+  // ZT-012: computed ONCE here and reused for both the migration DataSource
+  // below and this factory's own runtime DataSource, so the two — which
+  // together with data-source.ts are the three sites this finding covers —
+  // can never diverge on certificate policy.
+  const ssl = databaseSslOptions({
+    NODE_ENV: config.get<string>('NODE_ENV'),
+    DB_SSL_CA: config.get<string>('DB_SSL_CA'),
+    DB_SSL_CA_CERT: config.get<string>('DB_SSL_CA_CERT'),
+  });
+
   const enableSync = config.get<string>('TYPEORM_SYNCHRONIZE') === 'true';
   const logging = config.get<string>('TYPEORM_LOGGING') === 'true';
   const synchronize = !isProduction && enableSync;
@@ -54,7 +65,7 @@ export async function typeOrmFactory(
   // Postgres advisory lock here serializes every booting process without
   // changing WHEN migrations complete relative to the rest of app startup.
   if (!synchronize) {
-    await runMigrationsWithAdvisoryLock(databaseUrl, isProduction);
+    await runMigrationsWithAdvisoryLock(databaseUrl, ssl);
   }
 
   return {
@@ -93,7 +104,7 @@ export async function typeOrmFactory(
     // structurally rather than by convention.
     migrationsTransactionMode: 'each',
     logging: logging ? ['query', 'error', 'warn'] : ['error'],
-    ssl: isProduction ? { rejectUnauthorized: false } : false,
+    ssl,
     extra: {
       // Default raised 10 → 15 (Phase 0 correction, measured — see
       // docs/CACHING_QUEUES_AUDIT.md §0.3). NOT raised to match the worker's
@@ -117,7 +128,10 @@ export async function typeOrmFactory(
       // otherwise hang indefinitely with no clear error, exactly like FND-047
       // did. A bounded wait turns that into a clear, fail-fast `ETIMEDOUT`-style
       // rejection instead of a silent, permanent hang.
-      connectionTimeoutMillis: config.get<number>('DB_POOL_CONNECTION_TIMEOUT', 10000),
+      connectionTimeoutMillis: config.get<number>(
+        'DB_POOL_CONNECTION_TIMEOUT',
+        10000,
+      ),
     },
   } as TypeOrmModuleOptions;
 }

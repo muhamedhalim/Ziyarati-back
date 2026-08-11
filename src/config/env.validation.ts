@@ -124,7 +124,85 @@ export const validate = (config: Record<string, unknown>) => {
     // developer with no mail transport configured. Off by default. The
     // production fail-fast below (mirroring the payments fail-fast pattern)
     // makes enabling it in production a boot-time error, not a runtime risk.
-    AUTH_EXPOSE_RESET_TOKEN: Joi.string().valid('true', 'false').default('false'),
+    AUTH_EXPOSE_RESET_TOKEN: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
+
+    // ── API documentation gating (ZT-001) ──────────────────────────────────
+    // Two FULLY INDEPENDENT switches — neither may default from, or be
+    // derived from, the other (contracts/api-documentation.md). No static
+    // `.default()` here: the resolved default is NODE_ENV-conditional
+    // (production ⇒ false, otherwise ⇒ true), applied below after schema
+    // validation, matching this file's existing idiom for environment-
+    // dependent behaviour (the fail-fast blocks further down) rather than
+    // introducing a `.when()`-based second validation style.
+    ENABLE_API_DOCS: Joi.string().valid('true', 'false'),
+    ENABLE_INTEGRATION_DOCS: Joi.string().valid('true', 'false'),
+
+    // ── Security-relevant configuration validation (ZT-005) ────────────────
+    // These five predate the schema-hardening pass that added the production
+    // fail-fasts above and were never retrofitted — `allowUnknown: true`
+    // (below) let each through unchecked, so a typo produced a silently
+    // wrong security posture instead of a failed start. No value is ever
+    // echoed by any error this section produces — names only.
+    //
+    // Cross-origin allow-list (main.ts:78-83) — comma-separated URI list.
+    // Required in production below (post-validation, matching this file's
+    // existing fail-fast idiom): main.ts currently falls back to
+    // `http://localhost:3000` when unset, which is the silently-wrong
+    // condition this finding exists to remove. No default here in the
+    // schema itself — dev/test keep the file's own fallback unchanged.
+    FRONTEND_ORIGIN: Joi.string().custom((value: string, helpers) => {
+      const origins = value
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean);
+      if (origins.length === 0) return helpers.error('any.invalid');
+      for (const origin of origins) {
+        try {
+          new URL(origin);
+        } catch {
+          return helpers.error('any.invalid');
+        }
+      }
+      return value;
+    }, 'comma-separated URI list'),
+
+    // Cookie same-site attribute (cookie.service.ts:39-44). No schema
+    // default — the service's own `'lax'` fallback is unchanged for every
+    // environment that leaves this unset.
+    COOKIE_SAMESITE: Joi.string().valid('lax', 'strict', 'none'),
+
+    // Cookie scope (cookie.service.ts:46-48) — optional hostname; unset
+    // means host-only cookies, the existing default.
+    COOKIE_DOMAIN: Joi.string().hostname(),
+
+    // Password-reset token lifetime, minutes (auth.service.ts:577). A
+    // simple static default (unlike the two above) — matches the file's
+    // existing plain `.default()` idiom, and is byte-identical to the
+    // consuming code's own `, 30` fallback.
+    PASSWORD_RESET_TTL_MIN: Joi.number().integer().min(5).max(1440).default(30),
+
+    // Startup-seeding switch (seed/bootstrap-seeder.service.ts:30-32).
+    // Validated as boolean-valued, but deliberately NOT defaulted here:
+    // the seeder is idempotent and this is a hygiene gap already
+    // investigated and rejected as a security finding (frozen baseline §6
+    // #18), so this feature only adds the missing validation — it does not
+    // change the service's own existing `'true'` default, which the
+    // approved plan frames as merely "worth considering" (data-model.md),
+    // not a required behaviour change.
+    SEED_ON_STARTUP: Joi.string().valid('true', 'false'),
+
+    // ── Database TLS trust anchor (ZT-012) ──────────────────────────────────
+    // Validated for PRESENCE AND SHAPE ONLY — content is never inspected,
+    // logged or echoed anywhere (Constitution XXIX). Alternatives, not a
+    // pair: some platforms mount a CA file, others inject it as an env
+    // value. Exactly one is required in production (post-validation check
+    // below, alongside the "exactly one" — not both — constraint); optional
+    // outside production, where the database connection stays unencrypted
+    // SSL-wise (`ssl: false`, unchanged).
+    DB_SSL_CA: Joi.string().min(1),
+    DB_SSL_CA_CERT: Joi.string().min(1),
 
     // ── Account-aware login brute-force protection (FND-008 remediation) ───
     // Consecutive-failure threshold and protection-window TTL for
@@ -419,6 +497,80 @@ export const validate = (config: Record<string, unknown>) => {
     throw new Error(`❌ Env validation error: ${error.message}`);
   }
 
+  // ── API documentation gating defaults (ZT-001) ────────────────────────────
+  // Resolved independently — each only defaults when genuinely unset, never
+  // from the other's value. Production defaults both to disabled (the fix:
+  // the internal document alone was serving 499 paths, unauthenticated, on
+  // every boot); non-production defaults both to enabled, preserving the
+  // existing developer/partner-onboarding workflow exactly.
+  if (value.ENABLE_API_DOCS === undefined) {
+    value.ENABLE_API_DOCS = value.NODE_ENV === 'production' ? 'false' : 'true';
+  }
+  if (value.ENABLE_INTEGRATION_DOCS === undefined) {
+    value.ENABLE_INTEGRATION_DOCS =
+      value.NODE_ENV === 'production' ? 'false' : 'true';
+  }
+
+  // ── Configuration fail-fasts (production only, ZT-005) ────────────────────
+  // Mirrors the payments fail-fast pattern below. Downgrading any of these to
+  // a warning is explicitly rejected — it recreates precisely the
+  // silently-wrong condition this finding exists to remove. Deployment note:
+  // this is a boot-behaviour change — an environment currently riding the
+  // `main.ts:79` `http://localhost:3000` default will refuse to start the
+  // moment this ships (plan.md § Deployment Hazards; gated on reading the
+  // deployed value first).
+  if (
+    value.NODE_ENV === 'production' &&
+    !String(value.FRONTEND_ORIGIN ?? '').trim()
+  ) {
+    throw new Error(
+      `❌ Env validation error: FRONTEND_ORIGIN is not set. Production cannot ` +
+        `boot without an explicit cross-origin allow-list — silently falling ` +
+        `back to a development origin is the condition this check removes. ` +
+        `Set FRONTEND_ORIGIN to a comma-separated list of allowed origins.`,
+    );
+  }
+
+  // `SameSite=None` without `Secure` is a combination modern browsers reject
+  // outright, so accepting it silently produces an authentication outage
+  // that presents as an unexplained application bug. `secure` (cookie
+  // .service.ts) is `true` exactly when `NODE_ENV === 'production'` and
+  // `false` otherwise — so the only way `none` can be paired with a
+  // non-secure cookie is outside production, which is where this check
+  // applies, converting that outage into a startup error instead.
+  if (value.COOKIE_SAMESITE === 'none' && value.NODE_ENV !== 'production') {
+    throw new Error(
+      `❌ Env validation error: COOKIE_SAMESITE is "none" but NODE_ENV is not ` +
+        `"production", so cookies would be issued without the Secure attribute. ` +
+        `Browsers reject SameSite=None without Secure outright. Use "lax" or ` +
+        `"strict" outside production, or run with NODE_ENV=production.`,
+    );
+  }
+
+  // ── Database TLS trust anchor fail-fast (production only, ZT-012) ─────────
+  // Exactly one of the two forms — never both (ambiguous: which one is
+  // actually in effect?), never neither (the silent-`rejectUnauthorized:
+  // false` condition this finding removes). Certificate CONTENT is never
+  // inspected here — presence only.
+  if (value.NODE_ENV === 'production') {
+    const hasCaPath = !!String(value.DB_SSL_CA ?? '').trim();
+    const hasCaCert = !!String(value.DB_SSL_CA_CERT ?? '').trim();
+    if (!hasCaPath && !hasCaCert) {
+      throw new Error(
+        `❌ Env validation error: production requires exactly one of DB_SSL_CA ` +
+          `or DB_SSL_CA_CERT to be set. Database TLS must validate the server ` +
+          `certificate — refusing to silently accept any certificate.`,
+      );
+    }
+    if (hasCaPath && hasCaCert) {
+      throw new Error(
+        `❌ Env validation error: both DB_SSL_CA and DB_SSL_CA_CERT are set. ` +
+          `They are alternatives, not a pair — set exactly one so which trust ` +
+          `anchor is actually in effect is unambiguous.`,
+      );
+    }
+  }
+
   // ── Payments fail-fast (production only) ─────────────────────────────────
   // A real gateway with missing essential credentials must never boot in
   // production: the factory would fall back to the Noop provider, which
@@ -491,11 +643,18 @@ export const validate = (config: Record<string, unknown>) => {
     const metaAppSecret = String(
       value.META_APP_SECRET || value.WHATSAPP_APP_SECRET || '',
     ).trim();
-    const metaConfigId = String(value.META_EMBEDDED_SIGNUP_CONFIG_ID ?? '').trim();
+    const metaConfigId = String(
+      value.META_EMBEDDED_SIGNUP_CONFIG_ID ?? '',
+    ).trim();
     const metaVerifyToken = String(
       value.META_WEBHOOK_VERIFY_TOKEN || value.WHATSAPP_VERIFY_TOKEN || '',
     ).trim();
-    const anyMetaKeySet = !!(metaAppId || metaAppSecret || metaConfigId || metaVerifyToken);
+    const anyMetaKeySet = !!(
+      metaAppId ||
+      metaAppSecret ||
+      metaConfigId ||
+      metaVerifyToken
+    );
 
     if (value.NODE_ENV === 'production' && anyMetaKeySet) {
       const missing: string[] = [];
@@ -521,7 +680,10 @@ export const validate = (config: Record<string, unknown>) => {
   // production process with the local-development token-logging channel
   // enabled must never start. The message names ONLY the variable, never a
   // value — there is no value to name here, since this is a boolean switch.
-  if (value.NODE_ENV === 'production' && value.AUTH_EXPOSE_RESET_TOKEN === 'true') {
+  if (
+    value.NODE_ENV === 'production' &&
+    value.AUTH_EXPOSE_RESET_TOKEN === 'true'
+  ) {
     throw new Error(
       `❌ Env validation error: AUTH_EXPOSE_RESET_TOKEN is "true" but NODE_ENV is ` +
         `"production". This local-development-only reset-token exposure channel ` +

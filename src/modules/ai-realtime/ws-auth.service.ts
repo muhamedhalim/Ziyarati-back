@@ -29,11 +29,13 @@ export class WsAuthService {
   async authenticate(client: Socket): Promise<AuthenticatedUser> {
     const token = this.extractToken(client);
     if (!token) throw new UnauthorizedException('Missing access token');
+    // Resolved BEFORE the try/catch (ZT-007) so a missing configuration
+    // value fails loudly instead of surfacing as an indistinguishable
+    // "Invalid access token".
+    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
     let payload: { sub?: string; tenantId?: string | null; guest?: boolean };
     try {
-      payload = await this.jwt.verifyAsync(token, {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
-      });
+      payload = await this.jwt.verifyAsync(token, { secret: accessSecret });
     } catch {
       throw new UnauthorizedException('Invalid access token');
     }
@@ -44,7 +46,14 @@ export class WsAuthService {
     // Guests are not real `users` rows (see GuestSessionService) — no roles or
     // permissions, scoped to the data-less discovery tenant.
     if (payload.guest) {
-      return { id: payload.sub, tenantId: payload.tenantId, email: null, roles: [], permissions: [], guest: true };
+      return {
+        id: payload.sub,
+        tenantId: payload.tenantId,
+        email: null,
+        roles: [],
+        permissions: [],
+        guest: true,
+      };
     }
 
     // Real principal: reuse the EXACT same lookup JwtStrategy uses for REST, so
@@ -67,7 +76,10 @@ export class WsAuthService {
     // visitors use a `guest_token` cookie (path `/` so it reaches the handshake).
     // Both are the browser's own cookies, sent when the client uses withCredentials.
     const cookie = client.handshake.headers?.cookie;
-    return this.readCookie(cookie, 'access_token') ?? this.readCookie(cookie, 'guest_token');
+    return (
+      this.readCookie(cookie, 'access_token') ??
+      this.readCookie(cookie, 'guest_token')
+    );
   }
 
   private readCookie(header: string | undefined, name: string): string | null {

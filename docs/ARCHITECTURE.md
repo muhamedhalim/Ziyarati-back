@@ -29,9 +29,12 @@ main.ts
 │      ↓
 │   توحيد شكل الأخطاء الصادرة من التطبيق
 │
-└── SwaggerModule
+└── SwaggerModule (ZT-001 — conditional, not unconditional)
        ↓
-    إنشاء وتقديم توثيق الـ API على /docs
+    إنشاء وتقديم توثيق الـ API على /docs — فقط عند تفعيل ENABLE_API_DOCS
+    (default: disabled in production, enabled otherwise). /docs/integrations
+    is a separate document gated independently by ENABLE_INTEGRATION_DOCS.
+    See src/config/api-docs.ts and src/config/env.validation.ts.
 
 
                       NestJS
@@ -553,10 +556,19 @@ append-only financial ledger.
 
 **Findings (actionable):**
 
-1. **`JWT_REFRESH_SECRET` is not in `env.validation`** and falls back to
-   `'dev-refresh-secret'` if unset, while `JWT_ACCESS_SECRET` is required. An env that sets
-   only the access secret signs refresh tokens with a public default. *(Reported, not yet
-   fixed — fix: require it, drop the default.)*
+1. ~~`JWT_REFRESH_SECRET` is not in `env.validation` and falls back to `'dev-refresh-secret'`
+   if unset~~ — **stale, corrected (ZT-007, 008-security-hardening-p1).** `JWT_REFRESH_SECRET`
+   has been `Joi.string().required()` in `env.validation.ts` since before this correction (the
+   schema half of this claim was already stale). What remained genuinely true until this
+   feature: **11 sites across 5 files** — including 5 **token-signing** call sites and 2
+   `JwtModule.registerAsync` factories, not just the 3 originally reported — resolved
+   `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET` via `config.get(name, '<literal>')`, a hardcoded
+   fallback live in code regardless of what the schema required. All 11 now use
+   `config.getOrThrow(name)` (the pattern `jwt.strategy.ts` already used), so a missing secret
+   fails the boot (or, for the two request-time verification paths inside a try/catch, fails
+   loudly and distinguishably from an ordinary invalid token — the secret is resolved before
+   the try/catch, not inside it) rather than silently signing or accepting tokens under a
+   public literal.
 2. `JWT_EXPIRES_IN` is validated but **unused**; code reads `JWT_ACCESS_TTL` (default 15m).
 3. Moyasar verifier has a dev "accept-all" bypass (WhatsApp does not) — asymmetric.
 4. **No login/brute-force throttling** — only the campaign/notification send paths are
@@ -613,7 +625,7 @@ run both with one command via `npm run dev` (this backend's `package.json`, wrap
 
 | Area | Debt | Impact |
 |---|---|---|
-| Config | `JWT_REFRESH_SECRET` unvalidated; `JWT_EXPIRES_IN` dead; `dev-*` secret fallbacks | Security + confusion |
+| Config | `JWT_EXPIRES_IN` dead (unused; code reads `JWT_ACCESS_TTL`) | Confusion |
 | Auth | No login/brute-force throttling | Account-security gap |
 | Queue | `QueueService` borrows the `notifications` queue's Redis client for KV/rate-limiter/ping | Noisy-neighbor coupling |
 | Tenant | `PENDING_APPROVAL` has no inbound transition | Possible dead state |
@@ -627,8 +639,9 @@ run both with one command via `npm run dev` (this backend's `package.json`, wrap
 
 ## 8. Refactoring Recommendations (harden what exists; no redesign)
 
-1. Env contract: require `JWT_REFRESH_SECRET` (no default); remove dead `JWT_EXPIRES_IN`;
-   fail boot if any `*_SECRET` equals a `dev-*` default in production.
+1. ~~Env contract: require `JWT_REFRESH_SECRET` (no default); fail boot if any `*_SECRET`
+   equals a `dev-*` default in production~~ — **done (ZT-007)**: all 11 literal-fallback sites
+   now use `getOrThrow`. Remove dead `JWT_EXPIRES_IN` remains open (unrelated to this feature).
 2. Dedicated rate-limiter/KV Redis client instead of piggybacking the `notifications` queue.
 3. Login throttling using the existing token-bucket primitive.
 4. Promote ABAC ownership to a reusable `@OwnershipScoped` guard/interceptor.
