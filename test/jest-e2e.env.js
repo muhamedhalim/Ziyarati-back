@@ -52,3 +52,78 @@ process.env.TYPEORM_SYNCHRONIZE = 'false';
  * to a non-default port.
  */
 process.env.REDIS_URL = process.env.ZT_E2E_REDIS_URL || 'redis://127.0.0.1:63790';
+
+/**
+ * ZT-FINAL-001 — per-test-file Redis key namespace.
+ *
+ * ROOT CAUSE this closes: every auth-abuse limiter key is built as
+ * `${cacheKeyPrefix()}auth:abuse:{scope}:{window}:{subject}`
+ * (`fixed-window-limiter.service.ts:179`) or
+ * `${cacheKeyPrefix()}auth:login:fail:{hash}`
+ * (`login-protection.service.ts:197`). With one shared Redis and one shared
+ * prefix, that state OUTLIVES the test file that created it.
+ *
+ * The `FORGOT` limiter deliberately has NO `NODE_ENV=test` relaxation
+ * (auth.service.ts — its own comment explains why, and that decision is
+ * load-bearing: relaxing it would delete the coverage the suite exists to
+ * provide). So its budget is genuinely consumed across sibling suites —
+ * including `auth-abuse-redis-degradation`, which stops and starts Redis
+ * mid-run. `auth-abuse-forgot-password`'s T061 compares a burst against a
+ * REGISTERED address with a burst against an UNREGISTERED one and asserts
+ * they are identical at every position; that comparison is only meaningful
+ * when both identities start from the same budget. Whether they do depended
+ * on which files ran first — the test passed alone (18/18) and in the full
+ * 33-suite ordering (315/315) but failed when a 5-suite subset ran together.
+ *
+ * `setupFiles` runs ONCE PER TEST FILE, before that file's imports, so a
+ * value generated here is stable within a file and distinct across files —
+ * exactly the isolation boundary needed.
+ *
+ * `QUEUE_ENV_PREFIX` is an EXISTING PRODUCTION MECHANISM (queue.constants.ts
+ * `bullPrefix()`/`cacheKeyPrefix()`), designed for exactly this — namespacing
+ * one environment's queue and cache keys away from another's sharing a Redis.
+ * Using it here means:
+ *   - zero production code change,
+ *   - zero change to any limiter's thresholds, windows or semantics,
+ *   - no `NODE_ENV=test` bypass anywhere,
+ *   - no key deletion: nothing is flushed, so a shared or developer Redis
+ *     can never be damaged by running the suite.
+ * Each file simply writes to its own namespace and ignores every other one.
+ *
+ * Set `ZT_E2E_QUEUE_PREFIX` to pin a fixed prefix (e.g. to inspect keys after
+ * a run); doing so deliberately re-shares state across files.
+ */
+process.env.QUEUE_ENV_PREFIX =
+  process.env.ZT_E2E_QUEUE_PREFIX ||
+  `e2e${Date.now().toString(36)}${require('node:crypto').randomBytes(4).toString('hex')}`;
+
+/**
+ * ZT-FINAL-002 — the e2e suite must never reach a live email provider.
+ *
+ * ROOT CAUSE this closes: `resolveEmailConfig` defaults `EMAIL_PROVIDER` to
+ * `'resend'` (email.config.ts:34), and `EmailProviderFactory.resolve()`
+ * returns the real ResendProvider whenever that provider is selected AND
+ * `isConfigured()` (i.e. a `RESEND_API_KEY` is present). A developer or CI
+ * runner whose `.env` carries a live key therefore made REAL outbound calls
+ * during e2e — observed directly as repeated
+ * `[EmailService] Failed to dispatch email "password_reset" … HTTP 429
+ * {"name":"daily_quota_exceeded"}` for synthetic `@example.test` recipients.
+ * If that key is shared with production, an e2e run can exhaust the real
+ * password-reset delivery quota and silently degrade account recovery.
+ *
+ * Two independent guarantees, so neither alone is load-bearing:
+ *   1. `EMAIL_PROVIDER=noop` — selects NoopEmailProvider explicitly. This is
+ *      the same override `e2e/csp/playwright.config.ts` already applies for
+ *      the same stated reason ("so a developer's local .env cannot smuggle a
+ *      live credential in"); this file is simply where the jest e2e path was
+ *      missing it.
+ *   2. `RESEND_API_KEY=''` — even if the provider default or selection logic
+ *      changes, `ResendProvider.isConfigured()` is false, so the factory
+ *      cannot resolve a live provider at all.
+ *
+ * Production and development behaviour are untouched: this file is loaded
+ * ONLY by `test/jest-e2e.json` / `jest-e2e-integration-platform.json`.
+ * `test/security/e2e-env-invariants.spec.ts` asserts both of these.
+ */
+process.env.EMAIL_PROVIDER = 'noop';
+process.env.RESEND_API_KEY = '';

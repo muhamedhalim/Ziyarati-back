@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 
 import { REQUIRE_ACTIVE_SUBSCRIPTION_KEY } from '../decorators/require-active-subscription.decorator';
+import { REQUIRE_FEATURE_KEY } from '../decorators/require-feature.decorator';
 import { AccessControlService } from '../access-control.service';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { AppError, ErrorCode } from '../../../common/errors';
@@ -19,7 +20,12 @@ const BILLABLE_METHODS = new Set(['POST', 'PUT', 'PATCH']);
  * Enforces platform access on routes annotated with `@RequireActiveSubscription()`.
  *
  * Delegates the decision to AccessControlService (global mode → free override →
- * paid subscription), so enforcement is centralized and consistent everywhere.
+ * paid subscription → feature override), so enforcement is centralized and
+ * consistent everywhere. Reads the SAME route's `@RequireFeature()` key (when
+ * present) and passes it through, so a tenant-specific feature-flag override
+ * set via `/platform/feature-flags` can grant access to that route even with
+ * no usable subscription — see `AccessControlService.resolveAccess`'s step 4.
+ * A route without `@RequireFeature()` behaves exactly as before (no bypass).
  *
  * Registered as a GLOBAL guard (APP_GUARD in AppModule, after JwtAuthGuard so
  * `request.user` is populated): it runs on every request but only acts where the
@@ -52,7 +58,15 @@ export class SubscriptionAccessGuard implements CanActivate {
     // Unauthenticated is handled by JwtAuthGuard; super-admin/no-tenant bypasses.
     if (!user?.tenantId) return true;
 
-    await this.access.assertUsable(user.tenantId); // throws 403 when denied (broad gate — reads included)
+    // Same route, same reflector call FeatureGuard makes — if this controller
+    // also carries @RequireFeature(key), a tenant override for exactly that
+    // key can substitute for a missing subscription (step 4 below).
+    const featureKey = this.reflector.getAllAndOverride<string | undefined>(
+      REQUIRE_FEATURE_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    await this.access.assertUsable(user.tenantId, featureKey); // throws 403 when denied (broad gate — reads included)
 
     // FND-031/T082: narrower write-specific gate — read access (and DELETE,
     // which never increases usage) is preserved even once grace-expired;

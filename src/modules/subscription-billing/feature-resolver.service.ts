@@ -136,6 +136,9 @@ export class FeatureResolverService {
     }
 
     // Base state per feature (enabled + plan inclusion) — used by the dep walk.
+    // Each feature's OWN override (if any) also lifts plan gating for itself,
+    // same as the `base`/`features` loops below — a dependency with its own
+    // tenant override is judged on that override, not the target feature's.
     const base = new Map<string, { enabled: boolean; planIncluded: boolean }>();
     for (const d of defs) {
       const override = overrideMap.has(d.feature_key)
@@ -146,6 +149,7 @@ export class FeatureResolverService {
         planMap.get(d.feature_key) ?? [],
         currentPlanId,
         enforced,
+        override === true,
       );
       base.set(d.feature_key, { enabled, planIncluded });
     }
@@ -154,18 +158,34 @@ export class FeatureResolverService {
       const override = overrideMap.has(d.feature_key)
         ? (overrideMap.get(d.feature_key) as boolean)
         : null;
+      // A super-admin tenant override (PUT /platform/feature-flags/tenants/
+      // :tenantId/features) is a deliberate per-feature exception: it must
+      // grant THIS feature even with no usable subscription, without
+      // widening access to any other, non-overridden feature — so it's
+      // consulted per-feature here, never by relaxing `access.allowed`
+      // itself (that stays tenant-wide and unrelated features still gate on
+      // it normally).
+      const hasActiveOverride = override === true;
       const enabled = override ?? d.default_enabled;
       const allowedPlanIds = planMap.get(d.feature_key) ?? [];
-      const planIncluded = this.planIncluded(allowedPlanIds, currentPlanId, enforced);
+      const planIncluded = this.planIncluded(
+        allowedPlanIds,
+        currentPlanId,
+        enforced,
+        hasActiveOverride,
+      );
       const directDeps = depMap.get(d.feature_key) ?? [];
       const depResult = this.resolveDeps(d.feature_key, depMap, base);
 
       const usage = this.usageLine(d.usage_metric, breakdown?.metrics);
+      // Usage quotas are a separate concern from access gating (FND-031) —
+      // a feature override grants the feature, not unmetered usage, so
+      // quota enforcement is deliberately NOT bypassed here.
       const quotaExceeded = enforced && !!usage?.exceeded;
 
       let available = true;
       let blockedReason: BlockedReason = null;
-      if (!access.allowed) {
+      if (!access.allowed && !hasActiveOverride) {
         available = false;
         blockedReason = 'subscription_inactive';
       } else if (!enabled) {
@@ -243,9 +263,13 @@ export class FeatureResolverService {
     allowedPlanIds: string[],
     currentPlanId: string | null,
     enforced: boolean,
+    hasActiveOverride = false,
   ): boolean {
     if (allowedPlanIds.length === 0) return true; // available on all plans
-    if (!enforced) return true; // free mode / override ignores plan gating
+    // Free mode / tenant-wide free-access override / this feature's OWN
+    // tenant override all ignore plan gating — a plan restriction can't
+    // apply to a tenant with no current plan to check it against.
+    if (!enforced || hasActiveOverride) return true;
     if (!currentPlanId) return false; // enforced but plan unknown → restricted
     return allowedPlanIds.includes(currentPlanId);
   }

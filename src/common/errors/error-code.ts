@@ -59,6 +59,8 @@ export enum ErrorCode {
   // ── Subscription grace lifecycle (FND-031) ────────────────────────────
   /** The subscription's grace window has elapsed with no settlement — new billable/usage-increasing actions are refused; read access is unaffected. */
   SUBSCRIPTION_GRACE_EXPIRED = 'SUBSCRIPTION_GRACE_EXPIRED',
+  /** Tenant has no usable access path at all (no paid subscription, no free-access override, platform not in free mode) — the broad gate, blocking the whole workspace rather than just billable actions. */
+  NO_ACTIVE_SUBSCRIPTION = 'NO_ACTIVE_SUBSCRIPTION',
 
   // ── Services (FND-012) ─────────────────────────────────────────────────
   /** A VARIABLE-priced service was selected for booking — no booking-time pricing mechanism exists yet (AD-11: blocked, not built); a zero price is never snapshotted. */
@@ -221,6 +223,11 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.SUBSCRIPTION_GRACE_EXPIRED]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     message: 'Your subscription grace period has ended. Renew or contact support to continue this action — your existing data remains fully accessible.',
+  },
+  [ErrorCode.NO_ACTIVE_SUBSCRIPTION]: {
+    status: HttpStatus.FORBIDDEN,
+    message:
+      'Your clinic account has been approved, but you do not have an active subscription yet. Choose a paid plan to start using the platform.',
   },
 
   [ErrorCode.VARIABLE_PRICING_UNSUPPORTED]: {

@@ -183,6 +183,33 @@ describe('Forgot-password abuse bound — HTTP e2e (009, ZT-006)', () => {
     const unregistered = unknownEmail('enum-unknown');
 
     const runBurst = async (targetEmail: string) => {
+      // ZT-FINAL-001 — align per BURST, not once per test.
+      //
+      // The two bursts below target DIFFERENT addresses, so they consume two
+      // INDEPENDENT limiter keys, each with its own BUDGET-per-window counter.
+      // The assertion is about the POSITION of the first 429, which only holds
+      // if each burst observes exactly one window: a burst that straddles a
+      // 60-second boundary has its own counter reset mid-flight, so more than
+      // BUDGET succeed and its first 429 lands later (or never) than the
+      // other's — the two `findIndex` values then differ and this test fails,
+      // reporting an "enumeration difference" that is really a clock artifact.
+      //
+      // The file-level `beforeEach` alignment is not sufficient here: it runs
+      // ONCE, before `createRecoverableUser` and before BOTH bursts, and its
+      // default 10-second margin was sized for the single-burst tests above.
+      // This test issues 2 × (BUDGET + 3) = 16 sequential HTTP requests plus a
+      // user creation inside one test body, which under heavy machine load
+      // exceeds that margin — the observed intermittent failure (a 5-suite
+      // subset failed while the same file alone, and the full 33-suite run,
+      // both passed). Re-aligning at the start of each burst, with a margin
+      // that comfortably covers one burst, makes the assertion structurally
+      // independent of how slowly the process happens to be running.
+      //
+      // This changes only WHEN the requests are issued. The security property
+      // under test — that a registered and an unregistered address are
+      // indistinguishable at every position — is asserted exactly as before.
+      await alignToFreshWindow(WINDOW_SECONDS, 30);
+
       const results: { status: number; body: unknown; headers: Record<string, unknown> }[] = [];
       for (let i = 0; i < BUDGET + 3; i++) {
         const res = await request(e2e.app.getHttpServer())
@@ -220,7 +247,11 @@ describe('Forgot-password abuse bound — HTTP e2e (009, ZT-006)', () => {
         Object.keys(unknownResults[i].headers).sort(),
       );
     }
-  });
+    // Two per-burst alignments can each wait up to the 30s margin, plus 16
+    // sequential requests — comfortably past jest-e2e.json's 30s default.
+    // Mirrors the file-level beforeEach's own 70s allowance for the same
+    // reason (real calendar-window waiting, not slow assertions).
+  }, 150_000);
 
   // ── T062/SC-007 — normalisation ──────────────────────────────────────────
   // Case variants only — a leading/trailing-whitespace email fails

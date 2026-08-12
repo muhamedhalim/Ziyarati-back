@@ -7,7 +7,10 @@
  *  - the free-access-override ledger (`free_access_overrides`)
  *
  * The access-resolution priority is fixed and documented here so every consumer
- * agrees on it:  GLOBAL MODE  →  FREE OVERRIDE  →  PAID SUBSCRIPTION.
+ * agrees on it:  GLOBAL MODE  →  FREE OVERRIDE  →  PAID SUBSCRIPTION  →
+ * FEATURE OVERRIDE (scoped to the one route/feature a super-admin explicitly
+ * enabled via `/platform/feature-flags`; see AccessSource.FEATURE_OVERRIDE
+ * and AccessControlService.resolveAccess).
  */
 
 /** Global platform billing mode. Stored as `system_settings.value` under MODE_KEY. */
@@ -39,5 +42,13 @@ export enum AccessSource {
   PLATFORM_FREE_MODE = 'platform_free_mode',
   FREE_OVERRIDE = 'free_override',
   SUBSCRIPTION = 'subscription',
+  /**
+   * A tenant-specific `feature_flags` override (set via
+   * `/platform/feature-flags`) grants access to the ONE route/feature it was
+   * set for, despite no usable subscription — scoped, not a blanket bypass.
+   * Only reachable when the caller passes a `featureKey` to
+   * `resolveAccess`/`assertUsable`; unrelated features/routes stay gated.
+   */
+  FEATURE_OVERRIDE = 'feature_override',
   NONE = 'none',
 }
