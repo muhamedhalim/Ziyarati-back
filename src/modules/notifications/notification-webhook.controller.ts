@@ -16,6 +16,7 @@ import type { Request } from 'express';
 import { Public } from '../auth/decorators/public.decorator';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { DELIVERY_STATUS, DeliveryStatus } from './notification.constants';
+import { constantTimeEqual } from '../../common/utils/constant-time.util';
 
 /**
  * Meta WhatsApp Cloud webhook for DELIVERY status updates.
@@ -46,7 +47,7 @@ export class NotificationWebhookController {
     @Query('hub.challenge') challenge?: string,
   ): string {
     const expected = this.config.get<string>('WHATSAPP_VERIFY_TOKEN');
-    if (mode === 'subscribe' && token && expected && token === expected) {
+    if (mode === 'subscribe' && token && expected && constantTimeEqual(token, expected)) {
       return challenge ?? '';
     }
     throw new ForbiddenException('verification failed');

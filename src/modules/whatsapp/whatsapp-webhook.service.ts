@@ -32,8 +32,28 @@ import type {
 import { CreateWhatsappWebhookDto } from './dto/create-whatsapp-webhook.dto';
 import { UpdateWhatsappWebhookDto } from './dto/update-whatsapp-webhook.dto';
 import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
+import { verifyTimestamp } from '../integration-platform/inbound/inbound-signature';
+import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-platform.constants';
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * ZT-H02 — Meta webhook replay-freshness tolerance.
+ *
+ * Sourced from Meta's own documentation, not intuition (spec edge case: "a
+ * webhook freshness window sized by intuition"): "If a webhook request to
+ * your endpoint receives an HTTP status code other than 200, or if the
+ * webhook cannot be delivered for another reason, Meta retries delivery
+ * with decreasing frequency until the request succeeds, for up to 7 days."
+ * (Meta for Developers, WhatsApp Cloud API — Set up webhooks guide,
+ * https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks/,
+ * verified 2026-08-12). The tolerance MUST be at least this wide or a
+ * legitimate late retry would be rejected as stale — a narrower,
+ * intuition-sized window (minutes) would silently break real Meta
+ * redelivery during an incident, exactly the failure mode the freshness
+ * window must not create.
+ */
+const META_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS = 7 * 24 * 60 * 60; // 604800 — 7 days
 
 /**
  * WhatsApp inbound webhook events.
@@ -111,6 +131,21 @@ export class WhatsappWebhookService {
     if (!this.verifier.verify(signatureHeader, rawBody)) {
       throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid webhook signature' });
     }
+
+    // ZT-H02 — freshness check, AFTER signature verification (so an invalid
+    // signature is refused first — signature is the outer gate) and BEFORE
+    // the dedup lookup. Reuses `verifyTimestamp` from the integration
+    // platform's inbound-signature module rather than a second
+    // implementation (Constitution V). Passing HMAC_SHA256_TIMESTAMPED
+    // (not HMAC_SHA256_BODY) selects the branch that actually performs the
+    // comparison — HMAC_SHA256_BODY always short-circuits to 'ok', which is
+    // correct for THAT scheme's own callers (whose timestamp genuinely is
+    // not bound into their MAC) but not for Meta: Meta's HMAC covers the
+    // entire raw body, and the message/status timestamp is a field INSIDE
+    // that signed body, so it is cryptographically bound to the signature
+    // even though it is not literally concatenated as `{ts}.{body}` the way
+    // the integration platform's own TIMESTAMPED scheme constructs its MAC.
+    this.enforceEventFreshness(body);
 
     // Accept both the Meta-native body and the legacy `{ payload }` wrapper.
     const payload: Record<string, unknown> =
@@ -446,6 +481,65 @@ export class WhatsappWebhookService {
     const entries: MetaWebhookEntry[] | undefined =
       body?.entry ?? (body?.payload as { entry?: MetaWebhookEntry[] })?.entry;
     return entries?.[0]?.changes?.[0]?.value;
+  }
+
+  /**
+   * ZT-H02 — the authenticated timestamp the freshness check compares
+   * against the clock. Read from the first message's or status's own
+   * `timestamp` field (Unix seconds) inside the signed body — confirmed
+   * present on both shapes by Meta's own webhook payload reference
+   * (message and status objects each document a `timestamp` field). Not
+   * read from any request header: only a value that is actually inside the
+   * HMAC-covered raw body counts as authenticated.
+   */
+  private extractEventTimestamp(body: WhatsappWebhookBody): string | undefined {
+    const value = this.firstChangeValue(body);
+    const statusTimestamp = value?.statuses?.[0]?.timestamp;
+    if (statusTimestamp) return statusTimestamp;
+    const messageTimestamp = value?.messages?.[0]?.timestamp;
+    if (messageTimestamp) return messageTimestamp;
+    return undefined;
+  }
+
+  /**
+   * ZT-H02 — refuses a signature-valid payload whose authenticated
+   * timestamp falls outside `META_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS`.
+   * Every `TimestampVerdict` is handled explicitly; none falls through
+   * unhandled (FR-050).
+   */
+  private enforceEventFreshness(body: WhatsappWebhookBody): void {
+    const presented = this.extractEventTimestamp(body);
+    const verdict = verifyTimestamp(
+      WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED,
+      presented,
+      META_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS,
+    );
+    switch (verdict) {
+      case 'ok':
+        return;
+      case 'stale':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event timestamp is outside the accepted freshness window',
+        });
+      case 'future':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event timestamp is in the future',
+        });
+      case 'malformed':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event timestamp is malformed',
+        });
+      case 'missing':
+        // A payload shape carrying no discoverable timestamp must not
+        // silently bypass the freshness window (spec FR-051) — every
+        // event type this integration actually processes (`messages`,
+        // `message_status`) reliably carries one (Meta's own webhook
+        // reference), so requiring it here is a fail-closed choice on a
+        // genuinely anomalous shape, not a gap for a real event type.
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event carries no verifiable timestamp',
+        });
+    }
   }
 
   /**

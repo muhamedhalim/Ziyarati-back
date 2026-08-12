@@ -379,7 +379,15 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
                 field: 'messages',
                 value: {
                   metadata: { phone_number_id: connectedPhoneNumberId },
-                  messages: [{ id: wamid, from: '15550009999', type: 'text', text: { body: 'hello' } }],
+                  messages: [
+                    {
+                      id: wamid,
+                      from: '15550009999',
+                      type: 'text',
+                      text: { body: 'hello' },
+                      timestamp: String(Math.floor(Date.now() / 1000)),
+                    },
+                  ],
                 },
               },
             ],
@@ -411,7 +419,15 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
                 field: 'messages',
                 value: {
                   metadata: { phone_number_id: connectedPhoneNumberId },
-                  messages: [{ id: wamid, from: '15550009999', type: 'text', text: { body: 'dup' } }],
+                  messages: [
+                    {
+                      id: wamid,
+                      from: '15550009999',
+                      type: 'text',
+                      text: { body: 'dup' },
+                      timestamp: String(Math.floor(Date.now() / 1000)),
+                    },
+                  ],
                 },
               },
             ],
@@ -570,7 +586,9 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
               field: 'messages',
               value: {
                 metadata: { phone_number_id: connected.body.phoneNumberId },
-                statuses: [{ id: wamid, status: 'delivered' }],
+                statuses: [
+                  { id: wamid, status: 'delivered', timestamp: String(Math.floor(Date.now() / 1000)) },
+                ],
               },
             },
           ],
@@ -634,7 +652,9 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
               field: 'messages',
               value: {
                 metadata: { phone_number_id: connected.body.phoneNumberId },
-                statuses: [{ id: wamid, status: 'delivered' }],
+                statuses: [
+                  { id: wamid, status: 'delivered', timestamp: String(Math.floor(Date.now() / 1000)) },
+                ],
               },
             },
           ],

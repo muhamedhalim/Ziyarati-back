@@ -32,6 +32,7 @@ import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.fil
 import { requestContext } from '../../src/common/middleware/request-context.middleware';
 import { TenantContextService } from '../../src/core/tenant-context/tenant-context.service';
 import { ValidationPipe } from '@nestjs/common';
+import { registerSecurityHeaders } from '../../src/config/security-headers';
 
 import { MetaGraphClient } from '../../src/modules/whatsapp/meta/meta-graph.client';
 import { MetaWhatsappProvider } from '../../src/modules/whatsapp/providers/meta-whatsapp.provider';
@@ -164,6 +165,11 @@ export async function createE2eApp(): Promise<E2eApp> {
     .compile();
 
   const app = moduleRef.createNestApplication({ rawBody: true });
+
+  // ZT-003/FR-007 — the SAME registration main.ts's bootstrap() calls, so a
+  // header assertion in this e2e suite exercises production's exact
+  // middleware, never a differently-configured test double.
+  registerSecurityHeaders(app);
 
   const tenantContext = app.get(TenantContextService);
   app.use(requestContext);

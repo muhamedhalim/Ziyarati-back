@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 
 import { CsrfGuard } from './csrf.guard';
 import { CookieService } from '../cookie.service';
+import * as constantTimeUtil from '../../../common/utils/constant-time.util';
 import {
   createMockExecutionContext,
   createMockReflector,
@@ -53,13 +54,37 @@ describe('CsrfGuard (double-submit cookie)', () => {
     expect(() => guard.canActivate(req)).toThrow(ForbiddenException);
   });
 
-  it('rejects a cookie-authed mutation with a mismatched CSRF token', () => {
+  it('rejects a cookie-authed mutation with a mismatched, different-length CSRF token', () => {
     const req = ctx({
       method: 'POST',
       cookies: { [CookieService.ACCESS_COOKIE]: 'access', [CookieService.CSRF_COOKIE]: 'tok-123' },
       headers: { 'x-csrf-token': 'attacker' },
     });
     expect(() => guard.canActivate(req)).toThrow(ForbiddenException);
+  });
+
+  it('rejects a cookie-authed mutation with a mismatched, SAME-length CSRF token (ZT-H01)', () => {
+    const req = ctx({
+      method: 'POST',
+      cookies: { [CookieService.ACCESS_COOKIE]: 'access', [CookieService.CSRF_COOKIE]: 'tok-123' },
+      headers: { 'x-csrf-token': 'tok-456' }, // same length as 'tok-123', different content
+    });
+    expect(() => guard.canActivate(req)).toThrow(ForbiddenException);
+  });
+
+  it('uses the shared constant-time primitive for the comparison, with no direct equality on the token remaining (ZT-H01/FR-039 structural check)', () => {
+    const spy = jest.spyOn(constantTimeUtil, 'constantTimeEqual');
+    const req = ctx({
+      method: 'POST',
+      cookies: { [CookieService.ACCESS_COOKIE]: 'access', [CookieService.CSRF_COOKIE]: 'tok-123' },
+      headers: { 'x-csrf-token': 'tok-123' },
+    });
+    expect(guard.canActivate(req)).toBe(true);
+    expect(spy).toHaveBeenCalledWith('tok-123', 'tok-123');
+    spy.mockRestore();
+
+    const guardSource: string = CsrfGuard.toString();
+    expect(guardSource).not.toMatch(/cookieToken\s*===\s*headerValue/);
   });
 
   it('accepts the first value when the CSRF header arrives as an array', () => {
