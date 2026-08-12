@@ -8,6 +8,7 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { CookieService } from '../cookie.service';
 import { IS_SKIP_CSRF_KEY } from '../decorators/skip-csrf.decorator';
+import { constantTimeEqual } from '../../../common/utils/constant-time.util';
 
 /**
  * Double-submit-cookie CSRF guard for cookie-based auth.
@@ -72,7 +73,7 @@ export class CsrfGuard implements CanActivate {
     const headerToken = req.headers['x-csrf-token'];
     const headerValue = Array.isArray(headerToken) ? headerToken[0] : headerToken;
 
-    if (cookieToken && headerValue && cookieToken === headerValue) {
+    if (cookieToken && headerValue && constantTimeEqual(cookieToken, headerValue)) {
       return true;
     }
 

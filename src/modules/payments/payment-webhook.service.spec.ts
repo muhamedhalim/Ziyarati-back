@@ -33,6 +33,9 @@ describe('PaymentWebhookService.handleMoyasar', () => {
   let financials: { applyOnPaid: jest.Mock; extractFromRaw: jest.Mock };
   let emitter: { emit: jest.Mock };
 
+  /** ZT-H02 — a fresh ISO-8601 timestamp, well inside the freshness window. */
+  const freshCreatedAt = () => new Date().toISOString();
+
   const ownerPayment = () => ({ id: 'pay-1', status: PaymentStatus.PENDING, tenant: { id: 't1' } });
   const lockedPayment = () => ({
     id: 'pay-1',
@@ -85,13 +88,23 @@ describe('PaymentWebhookService.handleMoyasar', () => {
   });
 
   it('accepts-but-ignores a webhook with no gateway payment id', async () => {
-    const res = await service.handleMoyasar({ id: 'e1', type: 'x', data: {} } as any);
+    const res = await service.handleMoyasar({
+      id: 'e1',
+      type: 'x',
+      created_at: freshCreatedAt(),
+      data: {},
+    } as any);
     expect(res).toEqual({ accepted: true, matched: false });
   });
 
   it('accepts-but-ignores a webhook for an unknown gateway payment', async () => {
     payments.findOne.mockResolvedValueOnce(null);
-    const res = await service.handleMoyasar({ id: 'e1', type: 'x', data: { id: 'gw-unknown' } } as any);
+    const res = await service.handleMoyasar({
+      id: 'e1',
+      type: 'x',
+      created_at: freshCreatedAt(),
+      data: { id: 'gw-unknown' },
+    } as any);
     expect(res).toEqual({ accepted: true, matched: false });
   });
 
@@ -103,6 +116,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const res = await service.handleMoyasar({
       id: 'e1',
       type: 'payment_paid',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
     } as any);
 
@@ -118,6 +132,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const res = await service.handleMoyasar({
       id: 'e1',
       type: 'payment_paid',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
     } as any);
 
@@ -134,6 +149,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const res = await service.handleMoyasar({
       id: 'e1',
       type: 'payment_paid',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', status: 'paid', amount: 9999, currency: 'SAR' }, // wrong amount
     } as any);
 
@@ -150,6 +166,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const res = await service.handleMoyasar({
       id: 'e1',
       type: 'payment_failed',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', status: 'failed' },
     } as any);
 
@@ -171,6 +188,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     const res = await service.handleMoyasar({
       id: 'e1',
       type: 'payment_refunded',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', refunded: 10000 },
     } as any);
 
@@ -193,6 +211,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     await service.handleMoyasar({
       id: 'e1',
       type: 'payment_refunded',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', refunded: 10000 },
     } as any);
 
@@ -207,6 +226,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
 
     const res = await service.handleMoyasar({
       type: 'payment_paid',
+      created_at: freshCreatedAt(),
       data: { id: 'gw1', status: 'paid', amount: 10000, currency: 'SAR' },
     } as any);
 

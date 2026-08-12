@@ -11,6 +11,7 @@ import compression from 'compression';
 import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { runClustered } from './cluster-bootstrap';
 import { mountApiDocs } from './config/api-docs';
+import { registerSecurityHeaders } from './config/security-headers';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -110,6 +111,18 @@ async function bootstrap() {
   // config/api-docs.ts for why gating skips the mount entirely rather than
   // guarding a mounted route.
   mountApiDocs(app, app.get(ConfigService));
+
+  // ---------------- Security headers + framework disclosure (ZT-003, ZT-H07) ----------------
+  // Registered before the raw `/` and `/api/v1/health` handlers below so
+  // both are covered, along with every 404 and exception-filter response —
+  // Express threads the same `res` through the rest of the chain, so headers
+  // set here persist onto whatever later handler sends the response. Also
+  // disables `X-Powered-By` (an app-level Express setting checked at
+  // response-send time, not order-dependent the way the header middleware
+  // is) — both live in the one function so `test/utils/whatsapp-e2e-app.ts`'s
+  // `createE2eApp` exercises the exact same disclosure posture production
+  // does, not a partial replica (FR-006, FR-007).
+  registerSecurityHeaders(app);
 
   // ---------------- Health Route ----------------
   app.use('/api/v1/health', (_req, res) => {

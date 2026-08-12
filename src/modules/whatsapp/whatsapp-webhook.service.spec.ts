@@ -25,8 +25,11 @@ import {
 const TENANT = 't1';
 const RAW = Buffer.from('{}');
 
+/** ZT-H02 — a fresh Unix-seconds timestamp, well inside the freshness window. */
+const freshTimestamp = () => String(Math.floor(Date.now() / 1000));
+
 /** A Meta-native inbound text message payload. */
-const inboundBody = (wamid = 'wamid.1') => ({
+const inboundBody = (wamid = 'wamid.1', timestamp = freshTimestamp()) => ({
   entry: [
     {
       changes: [
@@ -34,7 +37,9 @@ const inboundBody = (wamid = 'wamid.1') => ({
           field: 'messages',
           value: {
             metadata: { phone_number_id: 'pid-1' },
-            messages: [{ id: wamid, from: '966500000000', type: 'text', text: { body: 'hi' } }],
+            messages: [
+              { id: wamid, from: '966500000000', type: 'text', text: { body: 'hi' }, timestamp },
+            ],
           },
         },
       ],
@@ -42,13 +47,16 @@ const inboundBody = (wamid = 'wamid.1') => ({
   ],
 });
 
-const statusBody = (wamid = 'wamid.9', status = 'delivered') => ({
+const statusBody = (wamid = 'wamid.9', status = 'delivered', timestamp = freshTimestamp()) => ({
   entry: [
     {
       changes: [
         {
           field: 'messages',
-          value: { metadata: { phone_number_id: 'pid-1' }, statuses: [{ id: wamid, status }] },
+          value: {
+            metadata: { phone_number_id: 'pid-1' },
+            statuses: [{ id: wamid, status, timestamp }],
+          },
         },
       ],
     },

@@ -20,8 +20,36 @@ import {
   PaymentRefundedEvent,
   PaymentSucceededEvent,
 } from '../../events/payment.events';
+import { verifyTimestamp } from '../integration-platform/inbound/inbound-signature';
+import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-platform.constants';
 
 type TargetStatus = 'paid' | 'failed' | 'refunded' | 'pending';
+
+/**
+ * ZT-H02 — Moyasar webhook replay-freshness tolerance.
+ *
+ * Sourced from Moyasar's own documentation, not intuition: "If the webhook
+ * recipient does not return a 2xx HTTP code we will retry to send the
+ * webhook 5 more times and then drop the message," with a published
+ * backoff schedule (immediate, +1m, +10m, +30m, +1h, +2h) whose total
+ * window is documented as approximately 3 hours 43 minutes
+ * (docs.moyasar.com, Webhook Reference, verified 2026-08-12). 4 hours is a
+ * safe round buffer above that documented maximum, so a legitimate final
+ * retry is never rejected as stale.
+ */
+const MOYASAR_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS = 4 * 60 * 60; // 14400 — 4 hours
+
+/**
+ * Best-effort ISO-8601 → Unix-seconds string, for `verifyTimestamp` (which
+ * expects Unix seconds). An unparseable non-empty value is passed through
+ * unchanged so `verifyTimestamp`'s own `Number.isFinite` check reports
+ * `'malformed'` rather than this helper silently swallowing a bad value.
+ */
+function toUnixSecondsString(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? String(Math.floor(ms / 1000)) : raw;
+}
 
 export interface WebhookResult {
   accepted: boolean;
@@ -71,6 +99,22 @@ export class PaymentWebhookService {
         message: 'Invalid webhook signature',
       });
     }
+
+    // ZT-H02 — defence-in-depth freshness check against `created_at`.
+    // IMPORTANT: unlike Meta's HMAC (which covers the whole raw body, so a
+    // tampered timestamp fails signature verification), Moyasar
+    // authenticates with a STATIC SHARED TOKEN that does not bind to the
+    // body at all — `verifier.verify(token)` above only proves the caller
+    // knows the shared secret, not that `created_at` (or anything else in
+    // the payload) is untampered. This check is therefore
+    // **defence-in-depth against verbatim replay of a captured request
+    // only, and is NOT cryptographically equivalent to Meta's HMAC-bound
+    // freshness check** — an attacker who can forge a request at all can
+    // also forge `created_at`. The partial unique index on
+    // `gateway_transaction_id` (H4, below) remains the PRIMARY replay
+    // control for this path; this check narrows the window a captured,
+    // unmodified request stays replayable, nothing more.
+    this.enforceEventFreshness(event);
 
     const eventId = event?.id;
 
@@ -386,6 +430,44 @@ export class PaymentWebhookService {
       return false;
     }
     return true;
+  }
+
+  /**
+   * ZT-H02 — refuses a payload whose `created_at` falls outside
+   * `MOYASAR_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS`. Every `TimestampVerdict`
+   * is handled explicitly; none falls through unhandled (FR-050). Reuses
+   * `verifyTimestamp` from the integration platform's inbound-signature
+   * module (Constitution V) — `HMAC_SHA256_TIMESTAMPED` selects the branch
+   * that performs the comparison; see the code comment at the call site for
+   * why this check is defence-in-depth only, not a cryptographic guarantee.
+   */
+  private enforceEventFreshness(event: MoyasarWebhookEvent): void {
+    const presented = toUnixSecondsString(event?.created_at);
+    const verdict = verifyTimestamp(
+      WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED,
+      presented,
+      MOYASAR_WEBHOOK_FRESHNESS_TOLERANCE_SECONDS,
+    );
+    switch (verdict) {
+      case 'ok':
+        return;
+      case 'stale':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event timestamp is outside the accepted freshness window',
+        });
+      case 'future':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event timestamp is in the future',
+        });
+      case 'malformed':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event timestamp is malformed',
+        });
+      case 'missing':
+        throw new AppError(ErrorCode.UNAUTHORIZED, {
+          message: 'Webhook event carries no verifiable timestamp',
+        });
+    }
   }
 
   /** Normalize a Moyasar event/status into our target transition. */

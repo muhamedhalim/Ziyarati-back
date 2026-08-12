@@ -1,3 +1,23 @@
+# ── ZT-H03 — local development infrastructure, NOT production security
+# configuration ─────────────────────────────────────────────────────────────
+# This file defines LOCAL / DEVELOPMENT infrastructure only.
+#
+#   1. The datastore credentials and settings below (postgres/postgres, and
+#      Redis with no `requirepass`) must NOT be treated as production
+#      security configuration — they exist so `docker compose up` gives a
+#      working local stack with zero setup, nothing more.
+#   2. Production PostgreSQL and Redis MUST use authenticated,
+#      deployment-managed, encrypted-transport configuration — never these
+#      values, never a hardcoded or default credential.
+#   3. Production datastore authentication is verified using the procedure
+#      in docs/SECURITY_DATASTORE_PRODUCTION.md.
+#   4. No real production secret or credential is recorded in this
+#      repository — this comment block included.
+#
+# Documentation only: no runtime value below this line is changed by this
+# comment block (verified — see specs/010-security-headers-and-regression-
+# suite/evidence/zt-h03-compose-config.md for the before/after rendered-
+# config hash proof).
 services:
   postgres:
     image: postgres:18

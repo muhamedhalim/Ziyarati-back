@@ -1,0 +1,97 @@
+[
+  {
+    "method": "GET",
+    "path": "/system/health/liveness",
+    "reason": "Unauthenticated liveness probe by design; no sensitive data returned (SECURITY-REVIEW.md Appendix A)."
+  },
+  {
+    "method": "GET",
+    "path": "/system/health/readiness",
+    "reason": "Unauthenticated readiness probe by design; no sensitive data returned (SECURITY-REVIEW.md Appendix A)."
+  },
+  {
+    "method": "GET",
+    "path": "/metrics",
+    "reason": "Prometheus scrape endpoint; authenticated by MetricsAuthGuard's static bearer token (constant-time, fail-closed in production) rather than JwtAuthGuard — genuinely open to JWT but not to the metric."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/register-owner",
+    "reason": "Registration endpoint — no session exists yet to authenticate with. Bounded by AUTH_REGISTER_OWNER_ENDPOINT_CEILING and per-route throttling (009, ZT-006)."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/login",
+    "reason": "Credential exchange endpoint — no session exists yet. Protected by account lockout / degraded-mode bound (009, ZT-002)."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/refresh",
+    "reason": "Reads the refresh cookie itself as its credential, not a JWT bearer; CSRF is enforced (this route is not @SkipCsrf)."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/logout",
+    "reason": "Reads the refresh cookie itself as its credential, not a JWT bearer."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/forgot-password",
+    "reason": "Password-recovery initiation — no session exists yet. Uniform response prevents account enumeration (009, ZT-006/ZT-010)."
+  },
+  {
+    "method": "POST",
+    "path": "/auth/reset-password",
+    "reason": "Completes recovery using a 32-byte single-use token as its credential, not a JWT bearer (009, ZT-006)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/guest/session",
+    "reason": "Mints a new HttpOnly guest_token for an anonymous visitor starting a guest AI conversation — by definition pre-authentication."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/cities",
+    "reason": "Public clinic-discovery directory — intentionally open marketing/discovery surface, no tenant-private data."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/clinics",
+    "reason": "Public clinic-discovery directory — intentionally open marketing/discovery surface, no tenant-private data."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/clinics/:id",
+    "reason": "Public clinic-discovery detail page — intentionally open marketing/discovery surface, no tenant-private data."
+  },
+  {
+    "method": "POST",
+    "path": "/integrations/inbound/:connectionId",
+    "reason": "External clinic-system webhook ingestion — authenticated per-connection by its own inbound signature scheme (HMAC, timestamp-bound), not JWT."
+  },
+  {
+    "method": "POST",
+    "path": "/integrations/inbound/:connectionId/ping",
+    "reason": "Same per-connection inbound-auth scheme as the sibling ingestion route, used for connectivity checks."
+  },
+  {
+    "method": "GET",
+    "path": "/whatsapp/webhooks/verify",
+    "reason": "Meta's webhook-URL verification handshake — authenticated by the constant-time META_WEBHOOK_VERIFY_TOKEN comparison (resolveChallenge), not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/whatsapp/webhooks/events",
+    "reason": "Same verification handshake as /verify, added on the ingestion path so Meta's callback-URL check succeeds on the one Callback URL it actually saves (whatsapp-webhook.controller.ts:116-134). Delegates to the identical resolveChallenge."
+  },
+  {
+    "method": "POST",
+    "path": "/whatsapp/webhooks/events",
+    "reason": "Meta inbound event ingestion — authenticated by HMAC-SHA256 signature over the raw body (webhook-signature.verifier.ts), not JWT."
+  },
+  {
+    "method": "POST",
+    "path": "/payments/webhooks/moyasar",
+    "reason": "Moyasar payment-provider webhook — authenticated by a constant-time shared-secret comparison, fail-closed in production, not JWT."
+  }
+]
