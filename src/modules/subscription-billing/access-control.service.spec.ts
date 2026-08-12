@@ -5,6 +5,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { AccessControlService } from './access-control.service';
 import { BillingModeService } from './billing-mode.service';
 import { FreeAccessOverrideService } from './free-access-override.service';
+import { FeatureFlagService } from './feature-flag.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionStatus } from '../../entities/enums';
 import { AccessSource } from './platform-billing.constants';
@@ -16,6 +17,7 @@ describe('AccessControlService', () => {
   let subscriptions: MockRepository;
   let billingMode: { isPaidMode: jest.Mock };
   let overrides: { getActive: jest.Mock; hasActive: jest.Mock };
+  let featureFlags: { isEnabled: jest.Mock };
 
   const future = new Date(Date.now() + 86_400_000);
   const past = new Date(Date.now() - 86_400_000);
@@ -26,6 +28,7 @@ describe('AccessControlService', () => {
     subscriptions = createMockRepository();
     billingMode = { isPaidMode: jest.fn() };
     overrides = { getActive: jest.fn(), hasActive: jest.fn() };
+    featureFlags = { isEnabled: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -33,6 +36,7 @@ describe('AccessControlService', () => {
         { provide: getRepositoryToken(Subscription), useValue: subscriptions },
         { provide: BillingModeService, useValue: billingMode },
         { provide: FreeAccessOverrideService, useValue: overrides },
+        { provide: FeatureFlagService, useValue: featureFlags },
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(7) } },
       ],
     }).compile();
@@ -75,6 +79,84 @@ describe('AccessControlService', () => {
       const d = await service.resolveAccess('t1');
       expect(d.allowed).toBe(false);
       expect(d.source).toBe(AccessSource.NONE);
+      // No featureKey was passed, so step 4 never even consults the flag store.
+      expect(featureFlags.isEnabled).not.toHaveBeenCalled();
+    });
+
+    // Feature Flags (Platform) — Super Admin toggles a tenant-specific
+    // `feature_flags` override via /platform/feature-flags even when the
+    // clinic has no active subscription. Step 4 must grant access to that
+    // ONE route/feature without touching the tenant-wide `allowed`/`source`
+    // semantics used everywhere else (e.g. the FeatureFlagService lookup is
+    // only ever consulted after steps 1-3 have already failed).
+    describe('4) tenant feature-flag override (scoped, evaluated only after subscription fails)', () => {
+      it('an enabled tenant override for the route\'s own feature grants access despite no subscription', async () => {
+        billingMode.isPaidMode.mockResolvedValueOnce(true);
+        overrides.getActive.mockResolvedValueOnce(null);
+        subscriptions.findOne.mockResolvedValueOnce(null);
+        featureFlags.isEnabled.mockResolvedValueOnce(true);
+
+        const d = await service.resolveAccess('t1', 'ai');
+        expect(d.allowed).toBe(true);
+        expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
+        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'ai');
+      });
+
+      it('a disabled (explicit false) override does NOT grant access — same as no override', async () => {
+        billingMode.isPaidMode.mockResolvedValueOnce(true);
+        overrides.getActive.mockResolvedValueOnce(null);
+        subscriptions.findOne.mockResolvedValueOnce(null);
+        featureFlags.isEnabled.mockResolvedValueOnce(false);
+
+        const d = await service.resolveAccess('t1', 'ai');
+        expect(d.allowed).toBe(false);
+        expect(d.source).toBe(AccessSource.NONE);
+      });
+
+      it('no override at all (featureKey unset for the tenant) still denies', async () => {
+        billingMode.isPaidMode.mockResolvedValueOnce(true);
+        overrides.getActive.mockResolvedValueOnce(null);
+        subscriptions.findOne.mockResolvedValueOnce(null);
+        featureFlags.isEnabled.mockResolvedValueOnce(false); // no row → default false
+
+        const d = await service.resolveAccess('t1', 'campaigns');
+        expect(d.allowed).toBe(false);
+      });
+
+      it('an override enabled for a DIFFERENT feature than the one being checked does not leak across', async () => {
+        billingMode.isPaidMode.mockResolvedValueOnce(true);
+        overrides.getActive.mockResolvedValueOnce(null);
+        subscriptions.findOne.mockResolvedValueOnce(null);
+        // Tenant has 'ai' overridden, but this call is gating 'campaigns'.
+        featureFlags.isEnabled.mockImplementation(
+          async (_tenantId: string, key: string) => key === 'ai',
+        );
+
+        const d = await service.resolveAccess('t1', 'campaigns');
+        expect(d.allowed).toBe(false);
+        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'campaigns');
+      });
+
+      it('an active PAID subscription is granted via step 3 and never even reaches the feature-flag check', async () => {
+        billingMode.isPaidMode.mockResolvedValueOnce(true);
+        overrides.getActive.mockResolvedValueOnce(null);
+        subscriptions.findOne.mockResolvedValueOnce({
+          id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future,
+        });
+
+        const d = await service.resolveAccess('t1', 'ai');
+        expect(d.allowed).toBe(true);
+        expect(d.source).toBe(AccessSource.SUBSCRIPTION);
+        expect(featureFlags.isEnabled).not.toHaveBeenCalled();
+      });
+
+      it('global FREE mode is granted via step 1 and never reaches the feature-flag check', async () => {
+        billingMode.isPaidMode.mockResolvedValueOnce(false);
+        const d = await service.resolveAccess('t1', 'ai');
+        expect(d.allowed).toBe(true);
+        expect(d.source).toBe(AccessSource.PLATFORM_FREE_MODE);
+        expect(featureFlags.isEnabled).not.toHaveBeenCalled();
+      });
     });
 
     // FND-031: this used to deny outright — that WAS the "silent lapse" bug
@@ -177,11 +259,33 @@ describe('AccessControlService', () => {
       await expect(service.assertUsable('t1')).resolves.toBeUndefined();
     });
 
-    it('throws FORBIDDEN when access is denied', async () => {
+    it('throws NO_ACTIVE_SUBSCRIPTION when access is denied', async () => {
       billingMode.isPaidMode.mockResolvedValueOnce(true);
       overrides.getActive.mockResolvedValueOnce(null);
       subscriptions.findOne.mockResolvedValueOnce(null);
-      await expect(service.assertUsable('t1')).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      await expect(service.assertUsable('t1')).rejects.toMatchObject({
+        code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
+      });
+    });
+
+    // Mirrors the SubscriptionAccessGuard call shape: it reads the route's
+    // own @RequireFeature() key and passes it straight through here.
+    it('passes silently when the route\'s own feature has an enabled tenant override, despite no subscription', async () => {
+      billingMode.isPaidMode.mockResolvedValueOnce(true);
+      overrides.getActive.mockResolvedValueOnce(null);
+      subscriptions.findOne.mockResolvedValueOnce(null);
+      featureFlags.isEnabled.mockResolvedValueOnce(true);
+      await expect(service.assertUsable('t1', 'ai')).resolves.toBeUndefined();
+    });
+
+    it('still throws NO_ACTIVE_SUBSCRIPTION when the override is disabled/absent for that feature', async () => {
+      billingMode.isPaidMode.mockResolvedValueOnce(true);
+      overrides.getActive.mockResolvedValueOnce(null);
+      subscriptions.findOne.mockResolvedValueOnce(null);
+      featureFlags.isEnabled.mockResolvedValueOnce(false);
+      await expect(service.assertUsable('t1', 'ai')).rejects.toMatchObject({
+        code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
+      });
     });
   });
 

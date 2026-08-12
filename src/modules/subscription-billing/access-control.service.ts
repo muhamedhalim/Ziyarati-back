@@ -9,6 +9,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { BillingModeService } from './billing-mode.service';
 import { FreeAccessOverrideService } from './free-access-override.service';
+import { FeatureFlagService } from './feature-flag.service';
 import { AccessSource } from './platform-billing.constants';
 
 export interface AccessDecision {
@@ -26,15 +27,23 @@ export interface AccessDecision {
  * The single source of truth for "can this tenant use the platform right now?".
  *
  * Resolution priority (fixed, documented in platform-billing.constants):
- *   1. GLOBAL MODE  — if the platform is in FREE mode, everyone is allowed.
- *   2. FREE OVERRIDE — an active super-admin override allows the tenant,
+ *   1. GLOBAL MODE     — if the platform is in FREE mode, everyone is allowed.
+ *   2. FREE OVERRIDE    — an active super-admin override allows the tenant,
  *                      OUTRANKING (overriding) the paid-subscription check.
  *   3. PAID SUBSCRIPTION — otherwise a usable (ACTIVE/TRIAL, not expired)
  *                      subscription is required.
+ *   4. FEATURE OVERRIDE — only when the caller names the specific `featureKey`
+ *                      its route is gated on: a tenant-specific
+ *                      `feature_flags` override (super-admin, per
+ *                      `/platform/feature-flags`) grants access to THAT
+ *                      route only, even with no usable subscription. It never
+ *                      widens to other features/routes — those still fall
+ *                      through to the denial below.
  *
- * This service has NO dependency on SubscriptionService/UsageService (it reads
- * the Subscription repo directly), so it can be injected by them and by guards
- * without creating a cycle. It is the only place the priority rules live.
+ * This service depends only on FeatureFlagService beyond its own repo (a leaf
+ * service with no further deps), so it stays injectable by
+ * SubscriptionService/FeatureResolverService/guards without creating a cycle.
+ * It is the only place the priority rules live.
  */
 @Injectable()
 export class AccessControlService {
@@ -43,11 +52,19 @@ export class AccessControlService {
     private readonly subscriptions: Repository<Subscription>,
     private readonly billingMode: BillingModeService,
     private readonly overrides: FreeAccessOverrideService,
+    private readonly featureFlags: FeatureFlagService,
     private readonly config: ConfigService,
   ) {}
 
-  /** Resolve the access decision for a tenant, applying the full priority chain. */
-  async resolveAccess(tenantId: string): Promise<AccessDecision> {
+  /**
+   * Resolve the access decision for a tenant, applying the full priority
+   * chain. Pass `featureKey` when the caller is gating a specific
+   * feature-scoped route (e.g. `SubscriptionAccessGuard` reading the same
+   * route's `@RequireFeature()`) so step 4 can apply; omit it for the
+   * platform-wide check, where a feature override must never substitute for
+   * a real subscription.
+   */
+  async resolveAccess(tenantId: string, featureKey?: string): Promise<AccessDecision> {
     // 1. Global free mode short-circuits everything.
     if (!(await this.billingMode.isPaidMode())) {
       return { allowed: true, source: AccessSource.PLATFORM_FREE_MODE };
@@ -74,6 +91,15 @@ export class AccessControlService {
       };
     }
 
+    // 4. No usable subscription — a tenant-specific override for THIS route's
+    // own required feature still grants access to it (and only it). Reuses
+    // FeatureFlagService's existing `feature_flags` store — the exact same
+    // per-tenant row FeatureResolverService/FeatureGuard read — rather than
+    // a second override concept.
+    if (featureKey && (await this.featureFlags.isEnabled(tenantId, featureKey))) {
+      return { allowed: true, source: AccessSource.FEATURE_OVERRIDE };
+    }
+
     return {
       allowed: false,
       source: AccessSource.NONE,
@@ -83,13 +109,23 @@ export class AccessControlService {
     };
   }
 
-  /** Throws 403 unless the tenant currently has access (any of the three paths). */
-  async assertUsable(tenantId: string): Promise<void> {
-    const decision = await this.resolveAccess(tenantId);
+  /**
+   * Throws 403 unless the tenant currently has access (any of the paths
+   * above). Uses the dedicated NO_ACTIVE_SUBSCRIPTION code so clients can
+   * show a friendly "choose a plan" message instead of the technical
+   * `decision.reason` — that stays server-side only (internalContext), never
+   * in the client-facing message.
+   *
+   * `featureKey` — see {@link resolveAccess}; pass the route's own
+   * `@RequireFeature()` key (SubscriptionAccessGuard does) so a tenant
+   * override for exactly that feature can grant access.
+   */
+  async assertUsable(tenantId: string, featureKey?: string): Promise<void> {
+    const decision = await this.resolveAccess(tenantId, featureKey);
     if (!decision.allowed) {
-      throw new AppError(ErrorCode.FORBIDDEN, {
-        message: decision.reason ?? 'Access denied',
+      throw new AppError(ErrorCode.NO_ACTIVE_SUBSCRIPTION, {
         publicContext: { source: decision.source },
+        internalContext: { reason: decision.reason },
       });
     }
   }

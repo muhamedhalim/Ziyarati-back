@@ -201,8 +201,12 @@ import { validate } from './config/env.validation';
     },
     // Billing enforcement layer (runs after auth; reads request.user). Both are
     // no-ops unless a route carries @RequireActiveSubscription() / @RequireFeature():
-    //  - SubscriptionAccessGuard: global mode → free override → paid subscription.
+    //  - SubscriptionAccessGuard: global mode → free override → paid subscription →
+    //    feature override (a tenant-specific /platform/feature-flags override for
+    //    THIS route's own @RequireFeature() key substitutes for a subscription).
     //  - FeatureGuard: per-tenant feature entitlement (enforced only in paid mode).
+    //    Must run AFTER SubscriptionAccessGuard so the broad gate's feature-override
+    //    bypass above and this guard's own resolver-based check agree.
     {
       provide: APP_GUARD,
       useClass: SubscriptionAccessGuard,

@@ -33,7 +33,7 @@ const S_ERROR = {
 const S_OVERVIEW = {
   type: 'object',
   properties: {
-    tenantId: { type: 'string', format: 'uuid' },
+    clinicName: { type: 'string', example: 'Sunrise Dental Clinic' },
     totalMessages: { type: 'number', example: 5400 },
     deliveredCount: { type: 'number', example: 5100 },
     readCount: { type: 'number', example: 4200 },
@@ -71,8 +71,12 @@ export class WhatsappAnalyticsController {
   @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
   @Get('overview')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
-  overview(@Query() filter: WhatsappAnalyticsFilterDto) {
-    return this.analytics.overview(this.ctx.requireTenantId(), filter);
+  async overview(@Query() filter: WhatsappAnalyticsFilterDto) {
+    const { tenantId: _tenantId, ...rest } = await this.analytics.overview(
+      this.ctx.requireTenantId(),
+      filter,
+    );
+    return { clinicName: this.ctx.getTenant()?.name ?? null, ...rest };
   }
 
   @ApiOperation({
@@ -84,7 +88,6 @@ export class WhatsappAnalyticsController {
     schema: {
       type: 'object',
       properties: {
-        tenantId: { type: 'string', format: 'uuid' },
         templates: {
           type: 'array',
           items: {
@@ -105,8 +108,12 @@ export class WhatsappAnalyticsController {
   @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
   @Get('templates')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
-  templates(@Query() filter: WhatsappAnalyticsFilterDto) {
-    return this.analytics.templatePerformance(this.ctx.requireTenantId(), filter);
+  async templates(@Query() filter: WhatsappAnalyticsFilterDto) {
+    const { tenantId: _tenantId, ...rest } = await this.analytics.templatePerformance(
+      this.ctx.requireTenantId(),
+      filter,
+    );
+    return rest;
   }
 
   @ApiOperation({
@@ -118,7 +125,6 @@ export class WhatsappAnalyticsController {
     schema: {
       type: 'object',
       properties: {
-        tenantId: { type: 'string', format: 'uuid' },
         topRecipients: {
           type: 'array',
           items: {
@@ -137,8 +143,12 @@ export class WhatsappAnalyticsController {
   @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
   @Get('engagement')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
-  engagement(@Query() filter: WhatsappAnalyticsFilterDto) {
-    return this.analytics.engagement(this.ctx.requireTenantId(), filter);
+  async engagement(@Query() filter: WhatsappAnalyticsFilterDto) {
+    const { tenantId: _tenantId, ...rest } = await this.analytics.engagement(
+      this.ctx.requireTenantId(),
+      filter,
+    );
+    return rest;
   }
 
   @ApiOperation({
@@ -150,7 +160,6 @@ export class WhatsappAnalyticsController {
     schema: {
       type: 'object',
       properties: {
-        tenantId: { type: 'string', format: 'uuid' },
         totalAccounts: { type: 'number' },
         activeAccounts: { type: 'number' },
         inactiveAccounts: { type: 'number' },
@@ -162,7 +171,10 @@ export class WhatsappAnalyticsController {
   @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
   @Get('accounts')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
-  accounts() {
-    return this.analytics.accountUsage(this.ctx.requireTenantId());
+  async accounts() {
+    const { tenantId: _tenantId, ...rest } = await this.analytics.accountUsage(
+      this.ctx.requireTenantId(),
+    );
+    return rest;
   }
 }
