@@ -181,7 +181,7 @@ describe('UsageService', () => {
 
       await service.incrementIfWithinLimit('t1', metric, 1, manager as any);
 
-      expect(access.isEnforced).toHaveBeenCalledWith('t1', manager);
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', manager, ['campaigns']);
     });
 
     it('resolves the subscription via manager.getRepository(Subscription), never the injected non-transactional repo', async () => {
@@ -249,7 +249,7 @@ describe('UsageService', () => {
 
       await service.incrementIfWithinLimit('t1', metric, 1);
 
-      expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined);
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined, ['campaigns']);
       expect(limitOverrides.getActive).toHaveBeenCalledWith('t1', metric, undefined);
       expect(subscriptions.findOne).toHaveBeenCalledTimes(1);
     });
@@ -289,6 +289,67 @@ describe('UsageService', () => {
         expect.anything(),
         expect.objectContaining({ limit: 150 }),
       );
+    });
+  });
+
+  /**
+   * Admin free access — a tenant granted platform access by a super admin has
+   * NO subscription by design, so metering must not demand one.
+   *
+   * Regression origin: `POST /whatsapp/templates/:id/send` failed with
+   * "No active subscription found for this tenant" thrown from
+   * `resolveSubscription()`, because enforcement was decided without regard to
+   * how access had been granted.
+   */
+  describe('incrementIfWithinLimit — free-access tenants (no subscription)', () => {
+    it('does NOT throw "No active subscription found" when enforcement is off and no subscription exists', async () => {
+      access.isEnforced.mockResolvedValueOnce(false);
+      subscriptions.findOne.mockResolvedValue(null); // free-access tenant: no subscription
+
+      const result = await service.incrementIfWithinLimit(
+        't1',
+        USAGE_METRIC.WHATSAPP_MESSAGES,
+        1,
+      );
+
+      expect(result).toEqual({ applied: true, used: 0, limit: null });
+    });
+
+    it('still fails closed when enforcement IS on and the tenant has no subscription', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce(null);
+
+      // No override, no subscription → the usage layer remains the gate for
+      // worker/bot paths that never pass through SubscriptionAccessGuard.
+      await expect(
+        service.incrementIfWithinLimit('t1', USAGE_METRIC.WHATSAPP_MESSAGES, 1),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+
+    it('asks about the feature the metric belongs to — scoped, never a blanket bypass', async () => {
+      access.isEnforced.mockResolvedValueOnce(false);
+      subscriptions.findOne.mockResolvedValue(null);
+
+      await service.incrementIfWithinLimit('t1', USAGE_METRIC.WHATSAPP_MESSAGES, 1);
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined, ['whatsapp']);
+
+      access.isEnforced.mockResolvedValueOnce(false);
+      await service.incrementIfWithinLimit('t1', USAGE_METRIC.APPOINTMENTS, 1);
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined, ['appointments']);
+    });
+
+    it('routes every metered metric through its own feature keys', async () => {
+      for (const [metric, keys] of [
+        [USAGE_METRIC.AI_TOKENS, ['ai', 'ai.assistant']],
+        [USAGE_METRIC.WHATSAPP_MESSAGES, ['whatsapp']],
+        [USAGE_METRIC.APPOINTMENTS, ['appointments']],
+        [USAGE_METRIC.CAMPAIGNS, ['campaigns']],
+      ] as const) {
+        access.isEnforced.mockResolvedValueOnce(false);
+        subscriptions.findOne.mockResolvedValue(null);
+        await service.incrementIfWithinLimit('t1', metric, 1);
+        expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined, keys);
+      }
     });
   });
 });

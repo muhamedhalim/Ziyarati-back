@@ -99,7 +99,7 @@ describe('AccessControlService', () => {
         const d = await service.resolveAccess('t1', 'ai');
         expect(d.allowed).toBe(true);
         expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
-        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'ai');
+        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'ai', undefined);
       });
 
       it('a disabled (explicit false) override does NOT grant access — same as no override', async () => {
@@ -134,7 +134,7 @@ describe('AccessControlService', () => {
 
         const d = await service.resolveAccess('t1', 'campaigns');
         expect(d.allowed).toBe(false);
-        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'campaigns');
+        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'campaigns', undefined);
       });
 
       it('an active PAID subscription is granted via step 3 and never even reaches the feature-flag check', async () => {
@@ -333,6 +333,91 @@ describe('AccessControlService', () => {
 
       expect(billingMode.isPaidMode).toHaveBeenCalledWith(undefined);
       expect(overrides.hasActive).toHaveBeenCalledWith('t1', undefined);
+    });
+  });
+
+  /**
+   * The admin-free-access fix: enforcement is DERIVED from the same decision
+   * the route guard used, so a tenant admitted by a super-admin grant is not
+   * then required to hold a subscription by the usage layer.
+   *
+   * Regression origin: `POST /whatsapp/templates/:id/send` 500'd with
+   * "No active subscription found for this tenant" — the guard admitted the
+   * tenant via FEATURE_OVERRIDE while `isEnforced` (billing-mode + free-override
+   * only) still reported `true`.
+   */
+  describe('isEnforced — feature-scoped access (admin free access)', () => {
+    const paidNoFreeOverride = () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      overrides.hasActive.mockResolvedValue(false);
+      overrides.getActive.mockResolvedValue(null);
+    };
+
+    it('is NOT enforced when a per-feature override is what grants access (no subscription)', async () => {
+      paidNoFreeOverride();
+      subscriptions.findOne.mockResolvedValueOnce(null); // no subscription at all
+      featureFlags.isEnabled.mockResolvedValueOnce(true); // super-admin enabled 'whatsapp'
+
+      expect(await service.isEnforced('t1', undefined, ['whatsapp'])).toBe(false);
+    });
+
+    it('STAYS enforced for a paid tenant even when the feature flag is also on (paid behavior preserved)', async () => {
+      paidNoFreeOverride();
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+      });
+      featureFlags.isEnabled.mockResolvedValue(true);
+
+      // Access came from the SUBSCRIPTION, so its plan quotas still apply —
+      // otherwise enabling a feature flag would silently unmeter every payer.
+      expect(await service.isEnforced('t1', undefined, ['whatsapp'])).toBe(true);
+    });
+
+    it('does not let an override for one feature unmeter a different one', async () => {
+      paidNoFreeOverride();
+      subscriptions.findOne.mockResolvedValueOnce(null);
+      featureFlags.isEnabled.mockResolvedValue(false); // 'appointments' NOT granted
+
+      expect(await service.isEnforced('t1', undefined, ['appointments'])).toBe(true);
+      expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'appointments', undefined);
+    });
+
+    it('fails closed: no subscription and no override at all stays enforced (denied downstream)', async () => {
+      paidNoFreeOverride();
+      subscriptions.findOne.mockResolvedValueOnce(null);
+      featureFlags.isEnabled.mockResolvedValue(false);
+
+      expect(await service.isEnforced('t1', undefined, ['whatsapp'])).toBe(true);
+    });
+
+    it('accepts any of several candidate keys for one metric (e.g. ai / ai.assistant)', async () => {
+      paidNoFreeOverride();
+      subscriptions.findOne.mockResolvedValueOnce(null);
+      // 'ai' absent, but the catalog key 'ai.assistant' is enabled.
+      featureFlags.isEnabled
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+
+      expect(await service.isEnforced('t1', undefined, ['ai', 'ai.assistant'])).toBe(false);
+    });
+
+    it('threads the manager through the feature-scoped path too (FND-047)', async () => {
+      paidNoFreeOverride();
+      const managerRepo = createMockRepository();
+      managerRepo.findOne.mockResolvedValueOnce(null);
+      const manager = { getRepository: jest.fn().mockReturnValue(managerRepo) } as any;
+      featureFlags.isEnabled.mockResolvedValueOnce(true);
+
+      expect(await service.isEnforced('t1', manager, ['whatsapp'])).toBe(false);
+
+      expect(billingMode.isPaidMode).toHaveBeenCalledWith(manager);
+      // The subscription read went through the transaction's repository, not
+      // the injected non-transactional one (FND-047).
+      expect(managerRepo.findOne).toHaveBeenCalled();
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'whatsapp', manager);
     });
   });
 });

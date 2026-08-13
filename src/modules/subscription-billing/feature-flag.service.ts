@@ -57,9 +57,24 @@ export class FeatureFlagService {
     return repo.save(flag);
   }
 
-  /** Returns whether a feature is enabled for the tenant (default: false). */
-  async isEnabled(tenantId: string, featureKey: string): Promise<boolean> {
-    const flag = await this.flags.findOne({
+  /**
+   * Returns whether a feature is enabled for the tenant (default: false — an
+   * absent row is NOT a grant, which is what keeps `AccessControlService`'s
+   * feature-override path from silently unmetering tenants nobody configured).
+   *
+   * FND-047: accepts the caller's transaction `manager` for the same reason
+   * `BillingModeService.get` does — reached from
+   * `AccessControlService.isEnforced` inside `UsageService`'s open
+   * transaction, this read must reuse that connection rather than borrow a
+   * second one from the pool.
+   */
+  async isEnabled(
+    tenantId: string,
+    featureKey: string,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    const repo = manager ? manager.getRepository(FeatureFlag) : this.flags;
+    const flag = await repo.findOne({
       where: { tenant: { id: tenantId }, feature_key: featureKey },
     });
     return flag?.is_enabled ?? false;

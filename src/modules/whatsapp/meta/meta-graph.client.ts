@@ -90,7 +90,16 @@ export interface MetaTemplateCreateResult {
 }
 
 interface GraphErrorBody {
-  error?: { message?: string; type?: string; code?: number; error_subcode?: number };
+  error?: {
+    message?: string;
+    type?: string;
+    code?: number;
+    error_subcode?: number;
+    error_user_title?: string;
+    error_user_msg?: string;
+    /** The field that actually explains a 400 — `message` alone is often just "Invalid parameter". */
+    error_data?: { details?: string };
+  };
 }
 
 /**
@@ -436,17 +445,22 @@ export class MetaGraphClient {
     const json = (await res.json().catch(() => ({}))) as T & GraphErrorBody;
     if (!res.ok) {
       const err = (json as GraphErrorBody).error;
+      // `error.message` is frequently just "Invalid parameter" — error_data.details
+      // (or error_user_msg) carries the actual reason and is what a caller needs to
+      // fix the request instead of guessing.
+      const detail = err?.error_data?.details ?? err?.error_user_msg;
       // Log the Graph diagnostics (never the token) and surface a clean message.
       this.logger.warn(
         `Graph ${method} ${this.redact(path)} failed: HTTP ${res.status} ` +
-          `code=${err?.code ?? '-'} subcode=${err?.error_subcode ?? '-'}`,
+          `code=${err?.code ?? '-'} subcode=${err?.error_subcode ?? '-'}` +
+          (detail ? ` detail=${detail}` : ''),
       );
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: err?.message
-          ? `Meta rejected the request: ${err.message}`
+          ? `Meta rejected the request: ${err.message}${detail ? ` — ${detail}` : ''}`
           : `Meta API error (HTTP ${res.status}).`,
         // Meta's own error code/subcode — provider-response detail, logs only.
-        internalContext: { metaCode: err?.code, metaSubcode: err?.error_subcode },
+        internalContext: { metaCode: err?.code, metaSubcode: err?.error_subcode, metaDetail: detail },
       });
     }
     return json;

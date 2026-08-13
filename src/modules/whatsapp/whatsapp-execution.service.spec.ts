@@ -1,10 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { WhatsappExecutionService } from './whatsapp-execution.service';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { Customer } from '../../entities/CRM/Customer';
+import { Subscription } from '../../entities/SaaS-Core/Subscription';
+import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
+import { AccessControlService } from '../subscription-billing/access-control.service';
+import { BillingModeService } from '../subscription-billing/billing-mode.service';
+import { FreeAccessOverrideService } from '../subscription-billing/free-access-override.service';
+import { FeatureFlagService } from '../subscription-billing/feature-flag.service';
+import { TenantUsageLimitOverrideService } from '../subscription-billing/tenant-usage-limit-override.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
@@ -14,7 +22,11 @@ import { SubscriptionService } from '../subscription-billing/subscription.servic
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { WHATSAPP_DELIVERY_STATUS } from './whatsapp.constants';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+  createMockQueryBuilder,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 const ACCOUNT = { id: 'acc-1', mode: 'REAL', phoneNumberId: 'pid-1', source: 'TENANT' as const };
@@ -422,5 +434,156 @@ describe('WhatsappExecutionService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
       expect(queue.enqueueWhatsappSend).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * Admin free access, end-to-end through the REAL usage/access chain.
+ *
+ * The suite above mocks UsageService wholesale, so it cannot see the defect
+ * this covers: `POST /whatsapp/templates/:id/send` returned
+ * "No active subscription found for this tenant" for a clinic the super admin
+ * had explicitly granted access to. `SubscriptionAccessGuard` admitted the
+ * request (feature override), then `UsageService.incrementIfWithinLimit` →
+ * `resolveSubscription()` demanded a subscription that, by design, does not
+ * exist. Here the real UsageService + real AccessControlService are wired up so
+ * the send path is exercised exactly as production runs it; only repositories
+ * and the leaf platform services are stubbed.
+ */
+describe('WhatsappExecutionService — admin free access (real UsageService + AccessControlService)', () => {
+  let service: WhatsappExecutionService;
+  let messaging: { send: jest.Mock };
+  let subscriptionRepo: MockRepository;
+  let usageRepo: MockRepository;
+  let billingMode: { isPaidMode: jest.Mock };
+  let freeOverrides: { hasActive: jest.Mock; getActive: jest.Mock };
+  let featureFlags: { isEnabled: jest.Mock };
+
+  async function build() {
+    const logs = createMockRepository();
+    const contacts = createMockRepository();
+    const customers = createMockRepository();
+    logs.create.mockImplementation((v: object) => ({ ...v }));
+    logs.save.mockImplementation(async (v: object) => ({ id: 'log-1', ...v }));
+
+    subscriptionRepo = createMockRepository();
+    usageRepo = createMockRepository();
+    usageRepo.createQueryBuilder.mockImplementation(() => createMockQueryBuilder());
+
+    // Paid platform, and NO tenant-wide free-access override — this tenant's
+    // access comes solely from the per-feature super-admin grant.
+    billingMode = { isPaidMode: jest.fn().mockResolvedValue(true) };
+    freeOverrides = {
+      hasActive: jest.fn().mockResolvedValue(false),
+      getActive: jest.fn().mockResolvedValue(null),
+    };
+    featureFlags = { isEnabled: jest.fn().mockResolvedValue(false) };
+
+    messaging = {
+      send: jest.fn().mockResolvedValue({ success: true, providerMessageId: 'wamid.free' }),
+    };
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        WhatsappExecutionService,
+        UsageService,
+        AccessControlService,
+        { provide: getRepositoryToken(NotificationLog), useValue: logs },
+        { provide: getRepositoryToken(WhatsappContact), useValue: contacts },
+        { provide: getRepositoryToken(Customer), useValue: customers },
+        { provide: getRepositoryToken(Subscription), useValue: subscriptionRepo },
+        { provide: getRepositoryToken(SubscriptionUsage), useValue: usageRepo },
+        { provide: BillingModeService, useValue: billingMode },
+        { provide: FreeAccessOverrideService, useValue: freeOverrides },
+        { provide: FeatureFlagService, useValue: featureFlags },
+        {
+          provide: TenantUsageLimitOverrideService,
+          useValue: {
+            getActive: jest.fn().mockResolvedValue(null),
+            getActiveMap: jest.fn().mockResolvedValue(new Map()),
+          },
+        },
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(14) } },
+        { provide: WhatsappMessageRouter, useValue: { resolveForSend: jest.fn().mockResolvedValue(ACCOUNT) } },
+        { provide: WhatsappTemplateService, useValue: { getSendableTemplate: jest.fn().mockResolvedValue(TEMPLATE) } },
+        { provide: WhatsappMessagingService, useValue: messaging },
+        { provide: QueueService, useValue: { enqueueWhatsappSend: jest.fn() } },
+        { provide: TenantContextService, useValue: new TenantContextService() },
+        { provide: SubscriptionService, useValue: { assertBillableActionAllowed: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get(WhatsappExecutionService);
+  }
+
+  beforeEach(build);
+  afterEach(() => jest.clearAllMocks());
+
+  it('[1] sends successfully with NO subscription when the whatsapp feature is granted', async () => {
+    subscriptionRepo.findOne.mockResolvedValue(null); // free-access tenant: no subscription
+    featureFlags.isEnabled.mockResolvedValue(true); // super admin enabled 'whatsapp'
+
+    const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
+      toWaId: '966500000000',
+    } as any);
+
+    expect(res).toMatchObject({
+      status: WHATSAPP_DELIVERY_STATUS.SENT,
+      providerMessageId: 'wamid.free',
+    });
+    expect(messaging.send).toHaveBeenCalled();
+  });
+
+  it('[5] never surfaces "No active subscription found" on that path', async () => {
+    subscriptionRepo.findOne.mockResolvedValue(null);
+    featureFlags.isEnabled.mockResolvedValue(true);
+
+    await expect(
+      service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+    ).resolves.toBeDefined();
+  });
+
+  it('[2] is DENIED with no subscription and no grant of any kind', async () => {
+    subscriptionRepo.findOne.mockResolvedValue(null);
+    featureFlags.isEnabled.mockResolvedValue(false); // nothing granted
+
+    await expect(
+      service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    expect(messaging.send).not.toHaveBeenCalled();
+  });
+
+  it('[4] a grant for an unrelated feature does not unlock WhatsApp', async () => {
+    subscriptionRepo.findOne.mockResolvedValue(null);
+    // Only 'campaigns' is granted; the WhatsApp send asks about 'whatsapp'.
+    featureFlags.isEnabled.mockImplementation(async (_t: string, key: string) => key === 'campaigns');
+
+    await expect(
+      service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    expect(messaging.send).not.toHaveBeenCalled();
+  });
+
+  it('[3] a paid tenant keeps plan quota enforcement even with the feature flag on', async () => {
+    subscriptionRepo.findOne.mockResolvedValue({
+      id: 'sub-1',
+      status: 'ACTIVE',
+      ends_at: new Date(Date.now() + 86_400_000),
+      plan: { max_whatsapp_messages: 100 },
+    });
+    featureFlags.isEnabled.mockResolvedValue(true);
+    // The atomic admission UPDATE (2nd query builder — the 1st is the
+    // idempotent upsert) matches no row → monthly cap already exhausted.
+    const insertQb = createMockQueryBuilder();
+    const updateQb = createMockQueryBuilder();
+    updateQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
+    usageRepo.createQueryBuilder
+      .mockImplementationOnce(() => insertQb)
+      .mockImplementationOnce(() => updateQb);
+    usageRepo.findOne.mockResolvedValue({ whatsapp_messages_used: 100 });
+
+    await expect(
+      service.sendTemplateMessage(TENANT, 'tpl-1', { toWaId: '966500000000' } as any),
+    ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    expect(messaging.send).not.toHaveBeenCalled();
   });
 });

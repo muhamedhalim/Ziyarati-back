@@ -53,6 +53,34 @@ export const USAGE_METRIC_MAP: Record<UsageMetric, MetricMapping> = {
 };
 
 /**
+ * The platform feature(s) each metered metric belongs to.
+ *
+ * Used by `UsageService` to ask `AccessControlService` the SAME question the
+ * route guard asked ("does this tenant hold access to this feature?"), so a
+ * super-admin per-tenant feature override that admitted the request cannot
+ * then be contradicted by quota enforcement demanding a subscription the
+ * tenant was never required to have. Scoped ON PURPOSE: an override for
+ * `whatsapp` unmeters WhatsApp messages only — every other metric still
+ * resolves independently, so unrelated features stay gated.
+ *
+ * Several keys per metric because a feature's runtime gate and its catalog
+ * entry do not always agree: the AI controllers gate on `@RequireFeature('ai')`
+ * while `feature-catalog.bootstrap.ts` publishes `ai.assistant` (the key a
+ * super-admin actually toggles in the platform UI). Accepting either means the
+ * grant works whichever key was set, instead of silently depending on that
+ * mismatch. Listing a key here NEVER grants anything on its own — it only
+ * decides which flag `AccessControlService` consults.
+ */
+type MetricFeatureKeys = Record<UsageMetric, readonly string[]>;
+
+export const USAGE_METRIC_FEATURE_KEYS: MetricFeatureKeys = {
+  [USAGE_METRIC.AI_TOKENS]: ['ai', 'ai.assistant'],
+  [USAGE_METRIC.WHATSAPP_MESSAGES]: ['whatsapp'],
+  [USAGE_METRIC.APPOINTMENTS]: ['appointments'],
+  [USAGE_METRIC.CAMPAIGNS]: ['campaigns'],
+};
+
+/**
  * Plan limits that cap an ABSOLUTE count of a resource (not per-month usage).
  *
  * Unlike USAGE_METRIC there is no accumulator column on `subscription_usage` —
