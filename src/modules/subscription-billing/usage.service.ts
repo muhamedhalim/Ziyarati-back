@@ -14,6 +14,7 @@ import {
   CountLimitColumn,
   RESOURCE_LIMIT_MAP,
   ResourceMetric,
+  USAGE_METRIC_FEATURE_KEYS,
   USAGE_METRIC_MAP,
   UnifiedUsageLine,
   UsageMetric,
@@ -51,8 +52,16 @@ export class UsageService {
     amount = 1,
   ): Promise<void> {
     if (amount <= 0) return;
-    // Free mode / active override → unmetered (no quota tracking).
-    if (!(await this.access.isEnforced(tenantId))) return;
+    // Free mode / free-access override / per-feature override → unmetered.
+    if (
+      !(await this.access.isEnforced(
+        tenantId,
+        undefined,
+        USAGE_METRIC_FEATURE_KEYS[metric],
+      ))
+    ) {
+      return;
+    }
     const { usageColumn } = USAGE_METRIC_MAP[metric];
     // Best-effort: metering must NEVER break the operation it accompanies, so a
     // missing subscription (e.g. a worker/bot flow for an unsubscribed tenant)
@@ -164,7 +173,13 @@ export class UsageService {
       ? manager.getRepository(SubscriptionUsage)
       : this.usage;
 
-    if (!(await this.access.isEnforced(tenantId, manager))) {
+    if (
+      !(await this.access.isEnforced(
+        tenantId,
+        manager,
+        USAGE_METRIC_FEATURE_KEYS[metric],
+      ))
+    ) {
       await this.rawIncrement(repo, tenantId, metric, amount, manager);
       return { applied: true, used: 0, limit: null };
     }
@@ -290,9 +305,17 @@ export class UsageService {
     metric: UsageMetric,
     amount = 1,
   ): Promise<void> {
-    // Free platform mode or an active free-access override grant unmetered
-    // access — plan quotas are not enforced against them.
-    if (!(await this.access.isEnforced(tenantId))) return;
+    // Free platform mode, a free-access override, or a per-feature override
+    // grant unmetered access — plan quotas are not enforced against them.
+    if (
+      !(await this.access.isEnforced(
+        tenantId,
+        undefined,
+        USAGE_METRIC_FEATURE_KEYS[metric],
+      ))
+    ) {
+      return;
+    }
 
     const subscription = await this.resolveSubscription(tenantId, true);
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];

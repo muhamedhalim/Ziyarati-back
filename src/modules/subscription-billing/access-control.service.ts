@@ -64,14 +64,18 @@ export class AccessControlService {
    * platform-wide check, where a feature override must never substitute for
    * a real subscription.
    */
-  async resolveAccess(tenantId: string, featureKey?: string): Promise<AccessDecision> {
+  async resolveAccess(
+    tenantId: string,
+    featureKey?: string | readonly string[],
+    manager?: EntityManager,
+  ): Promise<AccessDecision> {
     // 1. Global free mode short-circuits everything.
-    if (!(await this.billingMode.isPaidMode())) {
+    if (!(await this.billingMode.isPaidMode(manager))) {
       return { allowed: true, source: AccessSource.PLATFORM_FREE_MODE };
     }
 
     // 2. An active free-access override outranks the paid check.
-    const override = await this.overrides.getActive(tenantId);
+    const override = await this.overrides.getActive(tenantId, manager);
     if (override) {
       return {
         allowed: true,
@@ -81,7 +85,7 @@ export class AccessControlService {
     }
 
     // 3. Paid mode, no override → require a usable subscription.
-    const subscription = await this.findCurrent(tenantId);
+    const subscription = await this.findCurrent(tenantId, manager);
     if (subscription && this.isUsable(subscription)) {
       return {
         allowed: true,
@@ -96,7 +100,7 @@ export class AccessControlService {
     // FeatureFlagService's existing `feature_flags` store — the exact same
     // per-tenant row FeatureResolverService/FeatureGuard read — rather than
     // a second override concept.
-    if (featureKey && (await this.featureFlags.isEnabled(tenantId, featureKey))) {
+    if (await this.anyFeatureEnabled(tenantId, featureKey, manager)) {
       return { allowed: true, source: AccessSource.FEATURE_OVERRIDE };
     }
 
@@ -131,20 +135,53 @@ export class AccessControlService {
   }
 
   /**
-   * Whether paid enforcement (quotas / feature gating) currently applies to this
-   * tenant. False under FREE mode or an active override — both grant unmetered
-   * access, so usage limits and feature flags are not enforced against them.
+   * Whether paid enforcement (plan quotas / feature gating) currently applies
+   * to this tenant.
+   *
+   * THE RULE: plan quotas apply exactly when a paid SUBSCRIPTION is what
+   * granted access. Every other grant path in `resolveAccess` — free mode, a
+   * super-admin free-access override, or a per-feature override — admits a
+   * tenant that has no plan at all, and a limit cannot be enforced against a
+   * plan that does not exist. Enforcement is therefore DERIVED from the same
+   * decision the route guard used, never re-derived independently: that
+   * asymmetry is precisely the bug this fixes (the guard admitted a tenant via
+   * FEATURE_OVERRIDE, then `UsageService` demanded a subscription anyway and
+   * threw `No active subscription found for this tenant`).
+   *
+   * `featureKey` — pass the feature(s) the metered action belongs to (see
+   * `USAGE_METRIC_FEATURE_KEYS`), i.e. the same question the route's
+   * `@RequireFeature()` asked. Scoped: an override for one feature never
+   * unmeters another.
+   *
+   * DENIED still means enforced (`true`), never unmetered — so a tenant with
+   * no subscription and no override keeps failing closed at the usage layer,
+   * which is the only gate on worker/bot paths that never pass through
+   * `SubscriptionAccessGuard`.
    *
    * FND-047: pass the caller's `manager` when this is reached from inside an
    * open `dataSource.transaction()` (`UsageService.incrementIfWithinLimit`'s
-   * campaign/appointment call sites) so both nested reads below reuse that
+   * campaign/appointment call sites) so the nested reads reuse that
    * transaction's own connection instead of each borrowing a separate one from
    * the pool — the mechanism behind the FND-047 concurrency hang.
    */
-  async isEnforced(tenantId: string, manager?: EntityManager): Promise<boolean> {
-    if (!(await this.billingMode.isPaidMode(manager))) return false;
-    if (await this.overrides.hasActive(tenantId, manager)) return false;
-    return true;
+  async isEnforced(
+    tenantId: string,
+    manager?: EntityManager,
+    featureKey?: string | readonly string[],
+  ): Promise<boolean> {
+    // Fast path: with no feature key, `resolveAccess`'s step 4 can never fire,
+    // so its verdict collapses to exactly these two checks — provably the same
+    // answer without the subscription read. Matters because
+    // PlatformUsageService calls this once PER TENANT across a listing; going
+    // through the full chain there would double that fan-out.
+    if (!featureKey || (Array.isArray(featureKey) && featureKey.length === 0)) {
+      if (!(await this.billingMode.isPaidMode(manager))) return false;
+      return !(await this.overrides.hasActive(tenantId, manager));
+    }
+
+    const decision = await this.resolveAccess(tenantId, featureKey, manager);
+    if (!decision.allowed) return true; // fail closed — see docstring
+    return decision.source === AccessSource.SUBSCRIPTION;
   }
 
   /**
@@ -164,11 +201,37 @@ export class AccessControlService {
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
-  private findCurrent(tenantId: string): Promise<Subscription | null> {
-    return this.subscriptions.findOne({
+  private findCurrent(
+    tenantId: string,
+    manager?: EntityManager,
+  ): Promise<Subscription | null> {
+    const repo = manager
+      ? manager.getRepository(Subscription)
+      : this.subscriptions;
+    return repo.findOne({
       where: { tenant: { id: tenantId }, deleted_at: IsNull() },
       order: { created_at: 'DESC' },
     });
+  }
+
+  /**
+   * True when ANY of the supplied feature keys is enabled for the tenant.
+   * Sequential (not `Promise.all`) so the common single-key case costs one
+   * query and a hit on the first key short-circuits the rest — and so every
+   * read stays on `manager`'s single connection when one was threaded in.
+   */
+  private async anyFeatureEnabled(
+    tenantId: string,
+    featureKey: string | readonly string[] | undefined,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    if (!featureKey) return false;
+    const keys = typeof featureKey === 'string' ? [featureKey] : featureKey;
+    for (const key of keys) {
+      if (await this.featureFlags.isEnabled(tenantId, key, manager))
+        return true;
+    }
+    return false;
   }
 
   /**
