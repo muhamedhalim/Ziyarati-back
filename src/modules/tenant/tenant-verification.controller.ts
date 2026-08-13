@@ -34,6 +34,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -62,7 +63,8 @@ const S_DOCUMENT_DETAIL = {
     fileUrl: {
       type: 'string',
       example: 'https://storage.example.com/docs/cr-1010123456.pdf',
-      description: 'URL of the already-uploaded file. Upload is handled by the storage layer before calling this endpoint.',
+      description:
+        'URL of the already-uploaded file. Upload is handled by the storage layer before calling this endpoint.',
     },
     status: {
       type: 'string',
@@ -91,6 +93,7 @@ const S_DOCUMENT_DETAIL = {
  *  - admin routes: super-admin oversight & review.
  */
 @ApiTags('Verification Documents')
+@NoEntitlementRequired()
 @Controller('verification-documents')
 @UseGuards(RolesGuard)
 @ApiBearerAuth('JWT-auth')
@@ -142,14 +145,19 @@ platform.
     `.trim(),
   })
   @ApiCreatedResponse({
-    description: 'Document submitted. Status is `pending` until reviewed by a super-admin.',
+    description:
+      'Document submitted. Status is `pending` until reviewed by a super-admin.',
     schema: S_DOCUMENT_DETAIL,
   })
   @ApiBadRequestResponse({
-    description: 'Validation failed — `docType` or `fileUrl` is missing or too long.',
+    description:
+      'Validation failed — `docType` or `fileUrl` is missing or too long.',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller is not the clinic `owner`.',
     schema: S_ERROR,
@@ -218,7 +226,12 @@ documents return their stored URL. The bucket is never public, so clients must
 call this each time they need to view a file.
     `.trim(),
   })
-  @ApiParam({ name: 'documentId', description: 'UUID of the document', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'documentId',
+    description: 'UUID of the document',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'A viewable URL (presigned for private objects).',
     schema: {
@@ -229,8 +242,14 @@ call this each time they need to view a file.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks access to this document.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks access to this document.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Document not found.', schema: S_ERROR })
   @Get(':documentId/file-url')
   @Roles(ROLE.OWNER, ROLE.MANAGER, ROLE.SUPER_ADMIN)
@@ -249,7 +268,7 @@ call this each time they need to view a file.
   }
 
   @ApiOperation({
-    summary: 'List my clinic\'s verification documents (owner self-service)',
+    summary: "List my clinic's verification documents (owner self-service)",
     description: `
 **Protected — \`owner\` or \`manager\` role required.**
 
@@ -270,10 +289,13 @@ review status to understand what action is required.
     `.trim(),
   })
   @ApiOkResponse({
-    description: 'All verification documents for the caller\'s clinic.',
+    description: "All verification documents for the caller's clinic.",
     schema: { type: 'array', items: S_DOCUMENT_DETAIL },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller is not `owner` or `manager`.',
     schema: S_ERROR,
@@ -301,13 +323,24 @@ in the admin dashboard.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'tenantId', description: 'UUID of the tenant to inspect', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'UUID of the tenant to inspect',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'All verification documents for the specified tenant.',
     schema: { type: 'array', items: S_DOCUMENT_DETAIL },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Get('tenants/:tenantId')
   @Roles(ROLE.SUPER_ADMIN)
@@ -320,9 +353,17 @@ in the admin dashboard.
     description:
       '**Protected — `super_admin` role required.** Returns the immutable audit log (uploaded / replaced / deleted / viewed / approved / rejected / submitted) for a tenant, newest first, with actor, IP and user agent.',
   })
-  @ApiParam({ name: 'tenantId', description: 'UUID of the tenant', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'UUID of the tenant',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Audit entries, newest first.' })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @Get('tenants/:tenantId/audit')
   @Roles(ROLE.SUPER_ADMIN)
   listAudit(
@@ -370,7 +411,12 @@ opens a fresh \`pending\` document) and review that instead.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'documentId', description: 'UUID of the document to review', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'documentId',
+    description: 'UUID of the document to review',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Document review recorded.',
     schema: S_DOCUMENT_DETAIL,
@@ -379,11 +425,18 @@ opens a fresh \`pending\` document) and review that instead.
     description: '`status` must be `approved` or `rejected`.',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Document not found.', schema: S_ERROR })
   @ApiConflictResponse({
-    description: 'This document was already approved/rejected and cannot be re-decided.',
+    description:
+      'This document was already approved/rejected and cannot be re-decided.',
     schema: S_ERROR,
   })
   @Patch(':documentId/review')

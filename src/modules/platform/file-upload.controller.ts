@@ -32,6 +32,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -50,6 +51,7 @@ const S_ERROR = {
  */
 @ApiTags('Platform File Uploads')
 @ApiBearerAuth('JWT-auth')
+@NoEntitlementRequired()
 @Controller('platform/files')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class FileUploadController {
@@ -58,10 +60,20 @@ export class FileUploadController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Register upload metadata', description: '**Protected — `platform.files.manage`. Clinic active.** Records file metadata (name/url/type/size) + uploader. The binary lives in external storage.' })
+  @ApiOperation({
+    summary: 'Register upload metadata',
+    description:
+      '**Protected — `platform.files.manage`. Clinic active.** Records file metadata (name/url/type/size) + uploader. The binary lives in external storage.',
+  })
   @ApiCreatedResponse({ description: 'File metadata registered.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.files.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `platform.files.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.PLATFORM_FILES_MANAGE)
   register(@Body() dto: CreateFileUploadDto) {
@@ -72,44 +84,100 @@ export class FileUploadController {
     );
   }
 
-  @ApiOperation({ summary: 'List uploaded files', description: '**Protected — `platform.files.read`. Clinic active.** Tenant-scoped, newest first, optional type filter + pagination.' })
+  @ApiOperation({
+    summary: 'List uploaded files',
+    description:
+      '**Protected — `platform.files.read`. Clinic active.** Tenant-scoped, newest first, optional type filter + pagination.',
+  })
   @ApiOkResponse({ description: 'Paginated file uploads.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.files.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `platform.files.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.PLATFORM_FILES_READ)
   list(@Query() query: QueryFileUploadsDto) {
     return this.files.list(this.ctx.requireTenantId(), query);
   }
 
-  @ApiOperation({ summary: 'Storage usage summary', description: '**Protected — `platform.files.read`. Clinic active.** Total files + bytes and a per-type breakdown for the tenant.' })
+  @ApiOperation({
+    summary: 'Storage usage summary',
+    description:
+      '**Protected — `platform.files.read`. Clinic active.** Total files + bytes and a per-type breakdown for the tenant.',
+  })
   @ApiOkResponse({ description: 'Storage usage.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.files.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `platform.files.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('usage')
   @RequirePermissions(PERMISSION.PLATFORM_FILES_READ)
   usage() {
     return this.files.storageUsage(this.ctx.requireTenantId());
   }
 
-  @ApiOperation({ summary: 'Get upload details', description: '**Protected — `platform.files.read`. Clinic active.** Another tenant\'s file returns 404.' })
-  @ApiParam({ name: 'id', description: 'File UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get upload details',
+    description:
+      "**Protected — `platform.files.read`. Clinic active.** Another tenant's file returns 404.",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'File UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'File metadata.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.files.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'File not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `platform.files.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'File not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.PLATFORM_FILES_READ)
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.files.get(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Delete upload metadata', description: '**Protected — `platform.files.manage`. Clinic active.** Removes the metadata record (does not touch external storage).' })
-  @ApiParam({ name: 'id', description: 'File UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete upload metadata',
+    description:
+      '**Protected — `platform.files.manage`. Clinic active.** Removes the metadata record (does not touch external storage).',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'File UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'File metadata deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.files.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'File not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `platform.files.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'File not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_FILES_MANAGE)

@@ -3,13 +3,22 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
-import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
+import {
+  AUTHORITATIVE_FLAG_SOURCES,
+  FeatureFlag,
+} from '../../entities/SaaS-Core/FeatureFlag';
 import { FeaturePlan } from '../../entities/SaaS-Core/FeaturePlan';
 import { FeatureDependency } from '../../entities/SaaS-Core/FeatureDependency';
 
 import { AccessControlService } from './access-control.service';
 import { SubscriptionService } from './subscription.service';
 import { UsageService } from './usage.service';
+import { FeatureKey, isFeatureKey } from './feature-registry';
+import {
+  AccessSource,
+  QuotaPolicy,
+  TenantAccessDecision,
+} from './tenant-access-decision';
 
 /** Maps a feature's `usage_metric` to a `UsageService.getBreakdown` line. */
 const METRIC_TO_BREAKDOWN: Record<string, keyof BreakdownMetrics> = {
@@ -39,6 +48,7 @@ export type BlockedReason =
   | 'plan_restricted'
   | 'dependency_missing'
   | 'quota_exceeded'
+  | 'suspended'
   | null;
 
 export interface ResolvedFeature {
@@ -51,6 +61,9 @@ export interface ResolvedFeature {
   isDeprecated: boolean;
   enabled: boolean;
   override: boolean | null;
+  /** Who recorded the override, when there is one. */
+  overrideSource: string | null;
+  suspended: boolean;
   allowedPlanIds: string[];
   planIncluded: boolean;
   dependencies: string[];
@@ -59,6 +72,8 @@ export interface ResolvedFeature {
   usageMetric: string | null;
   usage: BreakdownLine | null;
   available: boolean;
+  /** Set when access came from an override on a DIFFERENT capability. */
+  grantedVia: string | null;
   blockedReason: BlockedReason;
 }
 
@@ -78,14 +93,19 @@ export interface TenantFeatureResolution {
 }
 
 /**
- * THE single effective-feature resolver. A feature is available only when ALL
- * hold: subscription active · plan includes it · globally enabled · tenant
- * override allows · dependencies satisfied · usage quota not exceeded.
+ * The PRESENTATION view of the access policy: one row per catalog feature,
+ * with everything the admin console and the tenant's own settings screen need
+ * to explain the current state.
  *
- * It never re-implements subscription or quota logic — it composes
- * {@link AccessControlService} (access + enforcement), {@link SubscriptionService}
- * (current plan/status), and {@link UsageService} (plan limits + usage). All
- * modules resolve feature availability through here.
+ * It decides nothing. `available` comes verbatim from
+ * `AccessControlService.resolveAll`, so route gating and this view cannot
+ * disagree — they are the same computation. Previously this service ran its
+ * own chain (calling `resolveAccess` WITHOUT a feature key and then rescuing
+ * per-feature overrides by hand), which is precisely the duplicated
+ * entitlement logic that let the two drift apart.
+ *
+ * `blockedReason` is the one thing computed here, because it is a LABEL, not a
+ * verdict: it explains a denial the policy already made.
  */
 @Injectable()
 export class FeatureResolverService {
@@ -106,14 +126,12 @@ export class FeatureResolverService {
   ) {}
 
   async resolveTenant(tenantId: string): Promise<TenantFeatureResolution> {
-    const [access, enforced, subView, breakdown, defs, overrides, plans, deps] =
+    const [decisions, base, subView, breakdown, defs, overrides, plans, deps] =
       await Promise.all([
-        this.access.resolveAccess(tenantId),
-        this.access.isEnforced(tenantId),
+        this.access.resolveAll(tenantId),
+        this.access.resolve(tenantId, null),
         this.subscriptions.getCurrent(tenantId).catch(() => null),
-        this.usage
-          .getBreakdown(tenantId)
-          .catch(() => null) as Promise<{
+        this.usage.getBreakdown(tenantId).catch(() => null) as Promise<{
           planId: string;
           planName: string;
           metrics: BreakdownMetrics;
@@ -124,83 +142,55 @@ export class FeatureResolverService {
         this.dependencies.find(),
       ]);
 
-    const currentPlanId = breakdown?.planId ?? null;
-    const overrideMap = new Map(overrides.map((o) => [o.feature_key, o.is_enabled]));
+    const enforced = base.quotaPolicy === QuotaPolicy.PLAN_ENFORCED;
+    const currentPlanId = base.planId ?? breakdown?.planId ?? null;
+
+    const flagByKey = new Map(overrides.map((o) => [o.feature_key, o]));
     const planMap = new Map<string, string[]>();
     for (const p of plans) {
-      planMap.set(p.feature_key, [...(planMap.get(p.feature_key) ?? []), p.plan_id]);
+      planMap.set(p.feature_key, [
+        ...(planMap.get(p.feature_key) ?? []),
+        p.plan_id,
+      ]);
     }
     const depMap = new Map<string, string[]>();
     for (const d of deps) {
-      depMap.set(d.feature_key, [...(depMap.get(d.feature_key) ?? []), d.requires_key]);
-    }
-
-    // Base state per feature (enabled + plan inclusion) — used by the dep walk.
-    // Each feature's OWN override (if any) also lifts plan gating for itself,
-    // same as the `base`/`features` loops below — a dependency with its own
-    // tenant override is judged on that override, not the target feature's.
-    const base = new Map<string, { enabled: boolean; planIncluded: boolean }>();
-    for (const d of defs) {
-      const override = overrideMap.has(d.feature_key)
-        ? (overrideMap.get(d.feature_key) as boolean)
-        : null;
-      const enabled = override ?? d.default_enabled;
-      const planIncluded = this.planIncluded(
-        planMap.get(d.feature_key) ?? [],
-        currentPlanId,
-        enforced,
-        override === true,
-      );
-      base.set(d.feature_key, { enabled, planIncluded });
+      depMap.set(d.feature_key, [
+        ...(depMap.get(d.feature_key) ?? []),
+        d.requires_key,
+      ]);
     }
 
     const features: ResolvedFeature[] = defs.map((d) => {
-      const override = overrideMap.has(d.feature_key)
-        ? (overrideMap.get(d.feature_key) as boolean)
-        : null;
-      // A super-admin tenant override (PUT /platform/feature-flags/tenants/
-      // :tenantId/features) is a deliberate per-feature exception: it must
-      // grant THIS feature even with no usable subscription, without
-      // widening access to any other, non-overridden feature — so it's
-      // consulted per-feature here, never by relaxing `access.allowed`
-      // itself (that stays tenant-wide and unrelated features still gate on
-      // it normally).
-      const hasActiveOverride = override === true;
-      const enabled = override ?? d.default_enabled;
+      const flag = flagByKey.get(d.feature_key);
+      const authoritative =
+        flag && AUTHORITATIVE_FLAG_SOURCES.includes(flag.source);
+      // Only an authoritative row is an "override" — a tenant-written row is a
+      // local preference with no bearing on access, and showing it as an
+      // override would tell an operator the tenant had been granted something
+      // it had not.
+      const override = authoritative ? flag.is_enabled : null;
+      const suspended = flag?.is_suspended === true;
+
+      const decision = isFeatureKey(d.feature_key)
+        ? decisions.get(d.feature_key)
+        : undefined;
+
       const allowedPlanIds = planMap.get(d.feature_key) ?? [];
-      const planIncluded = this.planIncluded(
-        allowedPlanIds,
-        currentPlanId,
-        enforced,
-        hasActiveOverride,
-      );
+      const planIncluded =
+        allowedPlanIds.length === 0 ||
+        !enforced ||
+        (!!currentPlanId && allowedPlanIds.includes(currentPlanId));
       const directDeps = depMap.get(d.feature_key) ?? [];
-      const depResult = this.resolveDeps(d.feature_key, depMap, base);
+      const depResult = this.resolveDeps(d.feature_key, depMap, decisions);
 
       const usage = this.usageLine(d.usage_metric, breakdown?.metrics);
-      // Usage quotas are a separate concern from access gating (FND-031) —
-      // a feature override grants the feature, not unmetered usage, so
-      // quota enforcement is deliberately NOT bypassed here.
-      const quotaExceeded = enforced && !!usage?.exceeded;
+      const enabled = override ?? d.default_enabled;
 
-      let available = true;
-      let blockedReason: BlockedReason = null;
-      if (!access.allowed && !hasActiveOverride) {
-        available = false;
-        blockedReason = 'subscription_inactive';
-      } else if (!enabled) {
-        available = false;
-        blockedReason = 'disabled';
-      } else if (!planIncluded) {
-        available = false;
-        blockedReason = 'plan_restricted';
-      } else if (!depResult.satisfied) {
-        available = false;
-        blockedReason = 'dependency_missing';
-      } else if (quotaExceeded) {
-        available = false;
-        blockedReason = 'quota_exceeded';
-      }
+      // `available` is the policy's verdict, not ours. A key with no registry
+      // entry (a legacy row the sync no longer owns) resolves to `undefined`
+      // and is reported unavailable — fail closed.
+      const available = decision?.allowed === true;
 
       return {
         featureKey: d.feature_key,
@@ -212,6 +202,8 @@ export class FeatureResolverService {
         isDeprecated: d.is_deprecated,
         enabled,
         override,
+        overrideSource: flag?.source ?? null,
+        suspended,
         allowedPlanIds,
         planIncluded,
         dependencies: directDeps,
@@ -220,19 +212,31 @@ export class FeatureResolverService {
         usageMetric: d.usage_metric ?? null,
         usage,
         available,
-        blockedReason,
+        grantedVia: decision?.grantedVia?.viaDependencyOf ?? null,
+        blockedReason: available
+          ? null
+          : this.explain({
+              decision,
+              suspended,
+              enabled,
+              planIncluded,
+              depsSatisfied: depResult.satisfied,
+              quotaExceeded: enforced && !!usage?.exceeded,
+            }),
       };
     });
 
     return {
       subscription: {
-        active: access.allowed,
+        active: base.allowed,
         enforced,
-        status: subView?.effectiveStatus ?? this.sourceStatus(access.source),
-        source: access.source,
+        status: subView?.effectiveStatus ?? this.sourceStatus(base.source),
+        source: base.source,
         planId: currentPlanId,
         planName: breakdown?.planName ?? null,
-        expiresAt: access.expiresAt ? new Date(access.expiresAt).toISOString() : null,
+        expiresAt: base.expiresAt
+          ? new Date(base.expiresAt).toISOString()
+          : null,
       },
       features,
     };
@@ -243,7 +247,10 @@ export class FeatureResolverService {
     const deps = await this.dependencies.find();
     const depMap = new Map<string, string[]>();
     for (const d of deps) {
-      depMap.set(d.feature_key, [...(depMap.get(d.feature_key) ?? []), d.requires_key]);
+      depMap.set(d.feature_key, [
+        ...(depMap.get(d.feature_key) ?? []),
+        d.requires_key,
+      ]);
     }
     const out = new Set<string>();
     const walk = (key: string, seen: Set<string>) => {
@@ -259,25 +266,40 @@ export class FeatureResolverService {
 
   // ── Private ────────────────────────────────────────────────────────────
 
-  private planIncluded(
-    allowedPlanIds: string[],
-    currentPlanId: string | null,
-    enforced: boolean,
-    hasActiveOverride = false,
-  ): boolean {
-    if (allowedPlanIds.length === 0) return true; // available on all plans
-    // Free mode / tenant-wide free-access override / this feature's OWN
-    // tenant override all ignore plan gating — a plan restriction can't
-    // apply to a tenant with no current plan to check it against.
-    if (!enforced || hasActiveOverride) return true;
-    if (!currentPlanId) return false; // enforced but plan unknown → restricted
-    return allowedPlanIds.includes(currentPlanId);
+  /**
+   * Why the policy said no. A LABEL for a verdict already made — ordered from
+   * most specific cause to least, so an operator sees the thing they can act
+   * on rather than a generic "subscription inactive" on top of a suspension.
+   */
+  private explain(input: {
+    decision?: TenantAccessDecision;
+    suspended: boolean;
+    enabled: boolean;
+    planIncluded: boolean;
+    depsSatisfied: boolean;
+    quotaExceeded: boolean;
+  }): BlockedReason {
+    if (input.suspended) return 'suspended';
+    if (!input.enabled) return 'disabled';
+    if (!input.planIncluded) return 'plan_restricted';
+    if (!input.depsSatisfied) return 'dependency_missing';
+    if (input.quotaExceeded) return 'quota_exceeded';
+    if (input.decision && input.decision.source === AccessSource.DENIED) {
+      return 'subscription_inactive';
+    }
+    return 'disabled';
   }
 
+  /**
+   * A dependency counts as satisfied when the POLICY grants it — the same
+   * question the dependent capability's own routes will ask. Judging it from
+   * raw catalog state instead (as this used to) reported dependencies missing
+   * for tenants who in fact held them through an override.
+   */
   private resolveDeps(
     key: string,
     depMap: Map<string, string[]>,
-    base: Map<string, { enabled: boolean; planIncluded: boolean }>,
+    decisions: Map<FeatureKey, TenantAccessDecision>,
   ): { satisfied: boolean; missing: string[] } {
     const missing = new Set<string>();
     const walk = (k: string, seen: Set<string>): void => {
@@ -286,10 +308,9 @@ export class FeatureResolverService {
           this.logger.warn(`Circular feature dependency detected at "${req}"`);
           continue;
         }
-        const b = base.get(req);
-        if (!b || !b.enabled || !b.planIncluded) {
-          missing.add(req);
-        }
+        const granted =
+          isFeatureKey(req) && decisions.get(req)?.allowed === true;
+        if (!granted) missing.add(req);
         walk(req, new Set([...seen, k]));
       }
     };
@@ -306,9 +327,18 @@ export class FeatureResolverService {
     return bkey ? metrics[bkey] : null;
   }
 
-  private sourceStatus(source: string): string {
-    if (source === 'PLATFORM_FREE_MODE') return 'FREE';
-    if (source === 'FREE_OVERRIDE') return 'OVERRIDE';
+  /**
+   * Display status when there is no subscription row to read one from.
+   *
+   * Compares against `AccessSource` VALUES. The previous version compared
+   * against the uppercase member names (`'PLATFORM_FREE_MODE'`) while the enum
+   * values are lowercase, so both branches were dead and a tenant on a free
+   * platform was reported as `NONE`.
+   */
+  private sourceStatus(source: AccessSource | string): string {
+    if (source === AccessSource.PLATFORM_FREE_MODE) return 'FREE';
+    if (source === AccessSource.ADMIN_FREE_ACCESS) return 'OVERRIDE';
+    if (source === AccessSource.FEATURE_OVERRIDE) return 'FEATURE_OVERRIDE';
     return 'NONE';
   }
 }

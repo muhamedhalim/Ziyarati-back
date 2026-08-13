@@ -1,11 +1,18 @@
 import { Controller, Get, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { AvailabilityService } from '../scheduling/availability.service';
 import { AvailabilityQueryDto } from '../scheduling/dto/availability-query.dto';
 import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decorator';
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Read-only external view of free/busy windows for a staff member on a given
@@ -16,6 +23,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
  */
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('integrations/availability')
 export class IntegrationAvailabilityController {
   constructor(

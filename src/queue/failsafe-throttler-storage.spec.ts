@@ -24,7 +24,13 @@ describe('FailsafeThrottlerStorage', () => {
     };
     const storage = new FailsafeThrottlerStorage(primary, metrics);
 
-    const result = await storage.increment('key', 60_000, 300, 60_000, 'default');
+    const result = await storage.increment(
+      'key',
+      60_000,
+      300,
+      60_000,
+      'default',
+    );
 
     expect(result).toEqual({
       totalHits: 1,
@@ -32,19 +38,35 @@ describe('FailsafeThrottlerStorage', () => {
       isBlocked: false,
       timeToBlockExpire: 0,
     });
-    expect(primary.increment).toHaveBeenCalledWith('key', 60_000, 300, 60_000, 'default');
+    expect(primary.increment).toHaveBeenCalledWith(
+      'key',
+      60_000,
+      300,
+      60_000,
+      'default',
+    );
     expect(recordSpy).not.toHaveBeenCalled();
   });
 
   it('degrades to the in-memory fallback and records a metric when the primary throws', async () => {
     const primary: ThrottlerStorage = {
-      increment: jest.fn().mockRejectedValue(
-        new Error("Stream isn't writeable and enableOfflineQueue options is false"),
-      ),
+      increment: jest
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Stream isn't writeable and enableOfflineQueue options is false",
+          ),
+        ),
     };
     const storage = new FailsafeThrottlerStorage(primary, metrics);
 
-    const result = await storage.increment('key', 60_000, 300, 60_000, 'default');
+    const result = await storage.increment(
+      'key',
+      60_000,
+      300,
+      60_000,
+      'default',
+    );
 
     expect(result.isBlocked).toBe(false);
     expect(result.totalHits).toBe(1);
@@ -57,9 +79,17 @@ describe('FailsafeThrottlerStorage', () => {
     };
     const storage = new FailsafeThrottlerStorage(primary, metrics);
 
-    let lastResult: Awaited<ReturnType<FailsafeThrottlerStorage['increment']>> | undefined;
+    let lastResult:
+      | Awaited<ReturnType<FailsafeThrottlerStorage['increment']>>
+      | undefined;
     for (let i = 0; i < 5; i++) {
-      lastResult = await storage.increment('same-key', 60_000, 3, 60_000, 'default');
+      lastResult = await storage.increment(
+        'same-key',
+        60_000,
+        3,
+        60_000,
+        'default',
+      );
     }
 
     expect(lastResult?.isBlocked).toBe(true);
@@ -80,8 +110,20 @@ describe('FailsafeThrottlerStorage', () => {
     const primary: ThrottlerStorage = { increment };
     const storage = new FailsafeThrottlerStorage(primary, metrics);
 
-    const duringOutage = await storage.increment('key', 60_000, 300, 60_000, 'default');
-    const afterRecovery = await storage.increment('key', 60_000, 300, 60_000, 'default');
+    const duringOutage = await storage.increment(
+      'key',
+      60_000,
+      300,
+      60_000,
+      'default',
+    );
+    const afterRecovery = await storage.increment(
+      'key',
+      60_000,
+      300,
+      60_000,
+      'default',
+    );
 
     expect(duringOutage.isBlocked).toBe(false);
     expect(afterRecovery).toEqual({
@@ -112,7 +154,13 @@ describe('FailsafeThrottlerStorage', () => {
     // is itself evidence neither defect survived the replacement.
     const startedAt = Date.now();
     for (let i = 0; i < 100_000; i++) {
-      await storage.increment(`distinct-key-${i}`, 60_000, 300, 60_000, 'default');
+      await storage.increment(
+        `distinct-key-${i}`,
+        60_000,
+        300,
+        60_000,
+        'default',
+      );
     }
     const elapsedMs = Date.now() - startedAt;
     expect(elapsedMs).toBeLessThan(5_000);
@@ -137,7 +185,9 @@ describe('FailsafeThrottlerStorage', () => {
   });
 
   it('bounds log volume over a sustained simulated outage — one line on entry, not one per request', async () => {
-    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
     const primary: ThrottlerStorage = {
       increment: jest.fn().mockRejectedValue(new Error('connection refused')),
     };

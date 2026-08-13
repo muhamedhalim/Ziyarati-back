@@ -1,5 +1,6 @@
 import { JOB, JobName } from './queue.constants';
 import { PERMISSION, PermissionSlug } from '../rbac/rbac.constants';
+import { FeatureKey } from '../modules/subscription-billing/feature-registry';
 
 /**
  * Per-job-name authorization tier (gap-closure pass — see
@@ -56,6 +57,22 @@ export type JobAuthzTier = 'system' | 'tenant' | 'system-or-tenant';
 export interface JobAuthzPolicy {
   tier: JobAuthzTier;
   requiredPermission?: PermissionSlug;
+  /**
+   * The platform capability this job exercises on the tenant's behalf.
+   *
+   * Background work used to evaluate NOTHING about entitlement — no reference
+   * to `AccessControlService` existed anywhere under `src/worker` or
+   * `src/queue`, so a queued WhatsApp send, campaign fan-out or AI turn ran for
+   * a tenant whose capability was switched off, suspended, or never granted.
+   * Naming the capability here makes a job ask the SAME question its HTTP
+   * sibling asks at the route.
+   *
+   * Omit for jobs that are not tenant-scoped work (sweeps, reaps) or that must
+   * run regardless of entitlement — e.g. webhook delivery of events already
+   * produced, and inbound integration ingest, which must keep accepting data
+   * so nothing is lost while a tenant is blocked.
+   */
+  featureKey?: FeatureKey;
 }
 
 const SYSTEM: JobAuthzPolicy = { tier: 'system' };
@@ -63,18 +80,30 @@ const TENANT: JobAuthzPolicy = { tier: 'tenant' };
 const SYSTEM_OR_TENANT: JobAuthzPolicy = { tier: 'system-or-tenant' };
 
 export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
-  [JOB.NOTIFICATIONS_DISPATCH]: TENANT,
+  [JOB.NOTIFICATIONS_DISPATCH]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.NOTIFICATIONS,
+  },
   [JOB.NOTIFICATIONS_REAP]: SYSTEM,
-  [JOB.WHATSAPP_SEND]: TENANT,
-  [JOB.WHATSAPP_RETRY]: TENANT,
+  [JOB.WHATSAPP_SEND]: { tier: 'tenant', featureKey: FeatureKey.WHATSAPP },
+  [JOB.WHATSAPP_RETRY]: { tier: 'tenant', featureKey: FeatureKey.WHATSAPP },
   // Own type declares `tenantId: string | null` — null is a legitimate,
   // documented case (event matched no live account), not a bug.
   [JOB.WHATSAPP_WEBHOOK_PROCESS]: SYSTEM_OR_TENANT,
-  [JOB.WHATSAPP_MEDIA_DOWNLOAD]: TENANT,
-  [JOB.CAMPAIGNS_LAUNCH]: TENANT,
-  [JOB.CAMPAIGNS_FANOUT_CHUNK]: TENANT,
-  [JOB.CAMPAIGNS_PROCESS_RECIPIENT]: TENANT,
-  [JOB.AI_EXECUTE]: TENANT,
+  [JOB.WHATSAPP_MEDIA_DOWNLOAD]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.WHATSAPP,
+  },
+  [JOB.CAMPAIGNS_LAUNCH]: { tier: 'tenant', featureKey: FeatureKey.CAMPAIGNS },
+  [JOB.CAMPAIGNS_FANOUT_CHUNK]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.CAMPAIGNS,
+  },
+  [JOB.CAMPAIGNS_PROCESS_RECIPIENT]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.CAMPAIGNS,
+  },
+  [JOB.AI_EXECUTE]: { tier: 'tenant', featureKey: FeatureKey.AI_ASSISTANT },
   [JOB.AI_MEMORY_CLEANUP]: SYSTEM,
   [JOB.AI_BATCH_POLL]: SYSTEM,
   // Fans a null-tenantId sweep out into real-tenantId jobs of the SAME name.
@@ -93,11 +122,21 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   // Report schedules are platform-level (super-admin), never per-tenant.
   [JOB.USAGE_REPORT_TICK]: SYSTEM,
   [JOB.USAGE_REPORT_RUN]: SYSTEM,
-  [JOB.WORKFLOW_RUN]: TENANT,
-  [JOB.WORKFLOW_ACTION]: { tier: 'tenant', requiredPermission: PERMISSION.AI_MANAGE },
+  [JOB.WORKFLOW_RUN]: { tier: 'tenant', featureKey: FeatureKey.AUTOMATIONS },
+  [JOB.WORKFLOW_ACTION]: {
+    tier: 'tenant',
+    requiredPermission: PERMISSION.AI_MANAGE,
+    featureKey: FeatureKey.AUTOMATIONS,
+  },
   [JOB.WEBHOOKS_DELIVER]: TENANT,
-  [JOB.INTEGRATION_IMPORT]: TENANT,
-  [JOB.INTEGRATION_SYNC]: TENANT,
+  [JOB.INTEGRATION_IMPORT]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.INTEGRATIONS,
+  },
+  [JOB.INTEGRATION_SYNC]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.INTEGRATIONS,
+  },
   [JOB.INTEGRATION_INBOUND]: TENANT,
   [JOB.INTEGRATION_RECOVER_STALE]: SYSTEM,
   [JOB.CAMPAIGNS_RECOVER_DLQ]: SYSTEM,

@@ -27,7 +27,9 @@ export class UpsertFeatureDefinitionDto {
   @ApiProperty({ example: 'ai.assistant', maxLength: 100 })
   @IsString()
   @MaxLength(100)
-  @Matches(KEY_PATTERN, { message: 'featureKey must be lowercase alphanumeric with . _ -' })
+  @Matches(KEY_PATTERN, {
+    message: 'featureKey must be lowercase alphanumeric with . _ -',
+  })
   featureKey!: string;
 
   @ApiProperty({ example: 'AI Assistant', maxLength: 120 })
@@ -47,17 +49,24 @@ export class UpsertFeatureDefinitionDto {
   @MaxLength(60)
   category?: string;
 
-  @ApiPropertyOptional({ description: 'Effective value for tenants without an override.' })
+  @ApiPropertyOptional({
+    description: 'Effective value for tenants without an override.',
+  })
   @IsOptional()
   @IsBoolean()
   defaultEnabled?: boolean;
 
-  @ApiPropertyOptional({ description: 'Whether the feature is shown in management.' })
+  @ApiPropertyOptional({
+    description: 'Whether the feature is shown in management.',
+  })
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 
-  @ApiPropertyOptional({ enum: ['public', 'internal'], description: 'Tenant-visible or platform-only.' })
+  @ApiPropertyOptional({
+    enum: ['public', 'internal'],
+    description: 'Tenant-visible or platform-only.',
+  })
   @IsOptional()
   @IsIn(['public', 'internal'])
   visibility?: string;
@@ -74,7 +83,8 @@ export class UpsertFeatureDefinitionDto {
 
   @ApiPropertyOptional({
     enum: FEATURE_USAGE_METRICS,
-    description: 'Metered quota this feature is capped by (limit read from the plan).',
+    description:
+      'Metered quota this feature is capped by (limit read from the plan).',
   })
   @IsOptional()
   @IsIn(FEATURE_USAGE_METRICS as unknown as string[])
@@ -83,7 +93,10 @@ export class UpsertFeatureDefinitionDto {
 
 /** Set the plans a feature is available on (empty = all plans). */
 export class SetFeaturePlansDto {
-  @ApiProperty({ type: [String], description: 'Subscription plan ids (from the Subscription Module).' })
+  @ApiProperty({
+    type: [String],
+    description: 'Subscription plan ids (from the Subscription Module).',
+  })
   @IsArray()
   @IsUUID(undefined, { each: true })
   planIds!: string[];
@@ -94,7 +107,10 @@ export class SetFeatureDependenciesDto {
   @ApiProperty({ type: [String], description: 'Required feature keys.' })
   @IsArray()
   @IsString({ each: true })
-  @Matches(KEY_PATTERN, { each: true, message: 'requires keys must be lowercase alphanumeric with . _ -' })
+  @Matches(KEY_PATTERN, {
+    each: true,
+    message: 'requires keys must be lowercase alphanumeric with . _ -',
+  })
   requires!: string[];
 }
 
@@ -103,7 +119,9 @@ export class SetTenantFeatureDto {
   @ApiProperty({ example: 'ai.assistant', maxLength: 100 })
   @IsString()
   @MaxLength(100)
-  @Matches(KEY_PATTERN, { message: 'featureKey must be lowercase alphanumeric with . _ -' })
+  @Matches(KEY_PATTERN, {
+    message: 'featureKey must be lowercase alphanumeric with . _ -',
+  })
   featureKey!: string;
 
   @ApiProperty({ example: true })

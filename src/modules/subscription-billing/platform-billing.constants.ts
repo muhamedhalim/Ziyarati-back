@@ -37,18 +37,10 @@ export enum OverrideStatus {
   REVOKED = 'REVOKED',
 }
 
-/** Where a granted access decision came from (for observability / API responses). */
-export enum AccessSource {
-  PLATFORM_FREE_MODE = 'platform_free_mode',
-  FREE_OVERRIDE = 'free_override',
-  SUBSCRIPTION = 'subscription',
-  /**
-   * A tenant-specific `feature_flags` override (set via
-   * `/platform/feature-flags`) grants access to the ONE route/feature it was
-   * set for, despite no usable subscription — scoped, not a blanket bypass.
-   * Only reachable when the caller passes a `featureKey` to
-   * `resolveAccess`/`assertUsable`; unrelated features/routes stay gated.
-   */
-  FEATURE_OVERRIDE = 'feature_override',
-  NONE = 'none',
-}
+/**
+ * `AccessSource` now lives with the rest of the decision shape in
+ * `tenant-access-decision.ts` — re-exported here so the many existing
+ * `from './platform-billing.constants'` imports keep working. The string
+ * values are unchanged; only the member names were clarified.
+ */
+export { AccessSource } from './tenant-access-decision';

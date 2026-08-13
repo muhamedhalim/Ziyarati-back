@@ -57,7 +57,11 @@ function baseOptions(config: ConfigService): RedisOptions {
  * which is the opposite of what this profile is for.
  */
 export function producerConnectionOptions(config: ConfigService): RedisOptions {
-  return { ...baseOptions(config), enableOfflineQueue: true, connectionName: 'bullmq:producer' };
+  return {
+    ...baseOptions(config),
+    enableOfflineQueue: true,
+    connectionName: 'bullmq:producer',
+  };
 }
 
 /**
@@ -111,7 +115,9 @@ export function eventsConnectionOptions(config: ConfigService): RedisOptions {
  * (`maxRetriesPerRequest: 1`) so a call site's own catch block actually runs
  * within a bounded time.
  */
-export function applicationConnectionOptions(config: ConfigService): RedisOptions {
+export function applicationConnectionOptions(
+  config: ConfigService,
+): RedisOptions {
   return {
     ...baseOptions(config),
     commandTimeout: 2000,
@@ -128,7 +134,9 @@ export function applicationConnectionOptions(config: ConfigService): RedisOption
  * branch that must actually run, not hang for the ~60-80s a buffered producer
  * connection would take to give up.
  */
-export function rateLimiterConnectionOptions(config: ConfigService): RedisOptions {
+export function rateLimiterConnectionOptions(
+  config: ConfigService,
+): RedisOptions {
   return {
     ...baseOptions(config),
     commandTimeout: 2000,

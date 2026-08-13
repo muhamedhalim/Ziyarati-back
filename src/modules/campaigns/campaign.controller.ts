@@ -45,6 +45,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
 const S_ERROR = {
@@ -62,15 +63,30 @@ const S_CAMPAIGN = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    type: { type: 'string', enum: ['BIRTHDAY', 'HOLIDAY', 'REACTIVATION', 'PROMOTION', 'CUSTOM'], example: 'PROMOTION' },
+    type: {
+      type: 'string',
+      enum: ['BIRTHDAY', 'HOLIDAY', 'REACTIVATION', 'PROMOTION', 'CUSTOM'],
+      example: 'PROMOTION',
+    },
     name: { type: 'string', example: 'Summer Whitening Promo' },
-    lifecycle: { type: 'string', enum: ['DRAFT', 'SCHEDULED', 'ACTIVE', 'PAUSED', 'ARCHIVED'], example: 'DRAFT' },
+    lifecycle: {
+      type: 'string',
+      enum: ['DRAFT', 'SCHEDULED', 'ACTIVE', 'PAUSED', 'ARCHIVED'],
+      example: 'DRAFT',
+    },
     segment: { type: 'object', nullable: true, additionalProperties: true },
     scheduled_at: { type: 'string', format: 'date-time', nullable: true },
     throttle_per_minute: { type: 'number', example: 30 },
     daily_cap: { type: 'number', nullable: true, example: 1000 },
     monthly_cap: { type: 'number', nullable: true, example: 20000 },
-    template: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+    template: {
+      type: 'object',
+      nullable: true,
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
+    },
     created_at: { type: 'string', format: 'date-time' },
     updated_at: { type: 'string', format: 'date-time', nullable: true },
   },
@@ -97,7 +113,7 @@ const S_CAMPAIGN_LIST = {
 @Controller('campaigns')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('campaigns')
+@RequireFeature(FeatureKey.CAMPAIGNS)
 export class CampaignController {
   constructor(
     private readonly campaigns: CampaignService,
@@ -120,11 +136,23 @@ delivery pacing for the future execution engine.
 authenticated user.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Campaign created (DRAFT).', schema: S_CAMPAIGN })
+  @ApiCreatedResponse({
+    description: 'Campaign created (DRAFT).',
+    schema: S_CAMPAIGN,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Referenced template not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Referenced template not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
   create(@Body() dto: CreateCampaignDto, @CurrentUser('id') userId: string) {
@@ -143,9 +171,18 @@ Returns the tenant's campaigns with filters (\`status\`, \`type\`, \`search\`,
 **Who can call this:** Owner, Manager, Receptionist (\`campaigns.read\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Paginated campaigns.', schema: S_CAMPAIGN_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Paginated campaigns.',
+    schema: S_CAMPAIGN_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.CAMPAIGNS_READ)
   findAll(@Query() query: CampaignQueryDto) {
@@ -156,11 +193,25 @@ Returns the tenant's campaigns with filters (\`status\`, \`type\`, \`search\`,
     summary: 'Get campaign details',
     description: `**Protected — requires \`campaigns.read\`. Clinic must be active.** A campaign from another tenant (or archived) returns 404.`,
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign details.', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.CAMPAIGNS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -179,17 +230,37 @@ dedicated lifecycle endpoints, not this one.
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign updated.', schema: S_CAMPAIGN })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Campaign is not in an editable status.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Referenced template not found in this tenant.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Campaign is not in an editable status.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Referenced template not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCampaignDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCampaignDto,
+  ) {
     return this.campaigns.update(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -204,10 +275,21 @@ use **archive** instead.
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Campaign deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -228,10 +310,21 @@ lists but preserved for history/analytics. Re-list it with
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign archived.', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
   @Post(':id/archive')
   @HttpCode(HttpStatus.OK)
@@ -251,15 +344,35 @@ segment, throttle, caps) into a new \`DRAFT\`. Recipients are **not** copied.
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Source campaign UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Duplicated campaign (DRAFT).', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Source campaign not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Source campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiCreatedResponse({
+    description: 'Duplicated campaign (DRAFT).',
+    schema: S_CAMPAIGN,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Source campaign not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/duplicate')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
-  duplicate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string) {
+  duplicate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
     return this.campaigns.duplicate(this.ctx.requireTenantId(), userId, id);
   }
 
@@ -277,17 +390,37 @@ transition). This is the produce step a future delayed-queue job hooks into.
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign scheduled.', schema: S_CAMPAIGN })
-  @ApiBadRequestResponse({ description: 'scheduledAt is not in the future / invalid.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'scheduledAt is not in the future / invalid.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Illegal status transition.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Illegal status transition.',
+    schema: S_ERROR,
+  })
   @Post(':id/schedule')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
-  schedule(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ScheduleCampaignDto) {
+  schedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ScheduleCampaignDto,
+  ) {
     return this.execution.schedule(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -304,17 +437,40 @@ layer / future worker.
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Campaign launched (RUNNING).', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Campaign launched (RUNNING).',
+    schema: S_CAMPAIGN,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Illegal status transition.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Campaign has no recipients (and force not set).', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Illegal status transition.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Campaign has no recipients (and force not set).',
+    schema: S_ERROR,
+  })
   @Post(':id/launch')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
-  launch(@Param('id', ParseUUIDPipe) id: string, @Body() dto: LaunchCampaignDto) {
+  launch(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: LaunchCampaignDto,
+  ) {
     return this.execution.launch(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -322,12 +478,26 @@ layer / future worker.
     summary: 'Pause a running campaign',
     description: `**Protected — requires \`campaigns.manage\`. Clinic must be active.** \`RUNNING\` → \`PAUSED\` (409 otherwise).`,
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign paused.', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Illegal status transition.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Illegal status transition.',
+    schema: S_ERROR,
+  })
   @Post(':id/pause')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
@@ -339,12 +509,26 @@ layer / future worker.
     summary: 'Resume a paused campaign',
     description: `**Protected — requires \`campaigns.manage\`. Clinic must be active.** \`PAUSED\` → \`RUNNING\` (409 otherwise).`,
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign resumed.', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Illegal status transition.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Illegal status transition.',
+    schema: S_ERROR,
+  })
   @Post(':id/resume')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
@@ -363,16 +547,33 @@ audit logging only (no column to persist it).
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Campaign cancelled.', schema: S_CAMPAIGN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Campaign is already terminal.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Campaign is already terminal.',
+    schema: S_ERROR,
+  })
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
-  cancel(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelCampaignDto) {
+  cancel(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelCampaignDto,
+  ) {
     return this.execution.cancel(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -388,13 +589,27 @@ re-queued. Queue-ready: no synchronous mass-send happens here.
 **Who can call this:** Owner, Manager (\`campaigns.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Failed recipients re-queued.',
-    schema: { type: 'object', properties: { requeued: { type: 'number', example: 12 } } },
+    schema: {
+      type: 'object',
+      properties: { requeued: { type: 'number', example: 12 } },
+    },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaigns.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaigns.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Campaign not found.', schema: S_ERROR })
   @Post(':id/retry')
   @HttpCode(HttpStatus.OK)

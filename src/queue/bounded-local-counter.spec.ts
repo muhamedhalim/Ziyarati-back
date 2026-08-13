@@ -9,14 +9,22 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
 
   describe('memory bound', () => {
     it('allocates a fixed byte size at construction, matching 2 × width × depth × 4 plus the depth-sized row-seed array', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       // Two generations (2 × width × depth × 4) plus the small per-row seed
       // array (depth × 4) — the only other allocation this class makes.
       expect(counter.allocatedBytes).toBe(2 * 4096 * 3 * 4 + 3 * 4);
     });
 
     it('allocated size does not change after 1,000,000 distinct keys, and heap growth stays small', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       const before = counter.allocatedBytes;
 
       if (global.gc) global.gc();
@@ -42,7 +50,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     });
 
     it('further distinct keys beyond 1,000,000 still do not grow allocated storage', () => {
-      const counter = new BoundedLocalCounter({ width: 256, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 256,
+        depth: 3,
+        windowMs: 60_000,
+      });
       for (let i = 0; i < 1_000; i++) counter.increment(`k-${i}`);
       const mid = counter.allocatedBytes;
       for (let i = 1_000; i < 1_100_000; i++) counter.increment(`k-${i}`);
@@ -59,7 +71,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
 
       jest.useFakeTimers();
       jest.setSystemTime(0);
-      const counter = new BoundedLocalCounter({ width: 64, depth: 3, windowMs: 1_000 });
+      const counter = new BoundedLocalCounter({
+        width: 64,
+        depth: 3,
+        windowMs: 1_000,
+      });
 
       for (let i = 0; i < 50; i++) counter.increment(`k-${i}`);
       counter.peek('k-1');
@@ -84,7 +100,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
 
   describe('counting correctness (non-colliding conditions)', () => {
     it('repeated requests for one identity are counted', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       counter.increment('same@example.test');
       counter.increment('same@example.test');
       const count = counter.increment('same@example.test');
@@ -92,7 +112,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     });
 
     it('independent identities remain independent', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       counter.increment('a@example.test');
       counter.increment('a@example.test');
       counter.increment('b@example.test');
@@ -101,7 +125,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     });
 
     it('peek() never writes — repeated peeks do not change the count', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       counter.increment('x@example.test');
       counter.peek('x@example.test');
       counter.peek('x@example.test');
@@ -109,7 +137,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     });
 
     it('an unseen key reads as zero', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       expect(counter.peek('never-seen@example.test')).toBe(0);
     });
   });
@@ -118,8 +150,16 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
 
   describe('collision safety and salt non-targetability', () => {
     it('two instances with different process salts map the same submitted key to different buckets', () => {
-      const a = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
-      const b = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const a = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
+      const b = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
 
       const bucketsA = a.bucketsFor('victim@example.test');
       const bucketsB = b.bucketsFor('victim@example.test');
@@ -132,7 +172,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     it('collisions can only over-count: two colliding keys never report a count lower than their true individual count', () => {
       // A tiny table (width=1) forces every key into the same bucket per
       // row, i.e. a guaranteed collision — the worst case.
-      const counter = new BoundedLocalCounter({ width: 1, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 1,
+        depth: 3,
+        windowMs: 60_000,
+      });
       counter.increment('a@example.test');
       counter.increment('a@example.test');
       const countA = counter.peek('a@example.test');
@@ -148,7 +192,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     });
 
     it('the salt never appears in JSON.stringify of the instance', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       counter.increment('probe@example.test');
       const serialized = JSON.stringify(counter);
       // A `#`-private field is not an own enumerable property, so it cannot
@@ -157,7 +205,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     });
 
     it('the salt never appears via Object.keys/getOwnPropertyNames enumeration', () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       const keys = [
         ...Object.keys(counter),
         ...Object.getOwnPropertyNames(counter),
@@ -170,7 +222,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
 
   describe('high-cardinality attacker input (SC-010, FR-028)', () => {
     it('random high-cardinality keys never change allocated storage size', () => {
-      const counter = new BoundedLocalCounter({ width: 1024, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 1024,
+        depth: 3,
+        windowMs: 60_000,
+      });
       const before = counter.allocatedBytes;
       for (let i = 0; i < 200_000; i++) {
         counter.increment(`${Math.random()}-${i}-${Date.now()}`);
@@ -185,7 +241,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     it('a one-window rotation reduces a prior count via the two-generation slide, and a two-window jump clears it entirely', () => {
       jest.useFakeTimers();
       jest.setSystemTime(0);
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 1_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 1_000,
+      });
 
       counter.increment('rotating@example.test');
       counter.increment('rotating@example.test');
@@ -206,7 +266,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     it('a long idle gap spanning many windows clears state rather than exposing a stale generation', () => {
       jest.useFakeTimers();
       jest.setSystemTime(0);
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 1_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 1_000,
+      });
 
       counter.increment('idle@example.test');
       jest.setSystemTime(500_000); // 500 windows later
@@ -220,7 +284,11 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
     it('rotation does not allocate a new typed array — allocatedBytes is unchanged across many rotations', () => {
       jest.useFakeTimers();
       jest.setSystemTime(0);
-      const counter = new BoundedLocalCounter({ width: 512, depth: 3, windowMs: 1_000 });
+      const counter = new BoundedLocalCounter({
+        width: 512,
+        depth: 3,
+        windowMs: 1_000,
+      });
       const before = counter.allocatedBytes;
       for (let w = 1; w <= 20; w++) {
         jest.setSystemTime(w * 1_000 + 1);
@@ -234,17 +302,27 @@ describe('BoundedLocalCounter (ZT-002 — bounded degraded-mode primitive)', () 
 
   describe('concurrency (FR-031, SC-013)', () => {
     it('50 concurrent increments against one key advance the count by exactly 50', async () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       await Promise.all(
         Array.from({ length: 50 }, () =>
-          Promise.resolve().then(() => counter.increment('concurrent@example.test')),
+          Promise.resolve().then(() =>
+            counter.increment('concurrent@example.test'),
+          ),
         ),
       );
       expect(counter.peek('concurrent@example.test')).toBe(50);
     });
 
     it('the final increment in a concurrent burst reports a value consistent with exactly-once counting (no lost/double increments)', async () => {
-      const counter = new BoundedLocalCounter({ width: 4096, depth: 3, windowMs: 60_000 });
+      const counter = new BoundedLocalCounter({
+        width: 4096,
+        depth: 3,
+        windowMs: 60_000,
+      });
       const results = await Promise.all(
         Array.from({ length: 50 }, () =>
           Promise.resolve().then(() => counter.increment('race@example.test')),

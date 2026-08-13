@@ -1,7 +1,15 @@
 import { BillingUpgradeEntitlementListener } from './billing-upgrade-entitlement.listener';
 import { BillingUpgradeRequest } from '../../entities/BillingUpgrades/BillingUpgradeRequest';
-import { PaymentFailedEvent, PaymentSucceededEvent } from '../../events/payment.events';
-import { BILLING_UPGRADE_STATUS, BILLING_UPGRADE_TYPE } from './billing-upgrade.constants';
+import {
+  PaymentFailedEvent,
+  PaymentSucceededEvent,
+} from '../../events/payment.events';
+import {
+  BILLING_UPGRADE_STATUS,
+  BILLING_UPGRADE_TYPE,
+} from './billing-upgrade.constants';
+import { FeatureKey } from '../subscription-billing/feature-registry';
+import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
 import {
   createMockDataSource,
   createMockEntityManager,
@@ -44,7 +52,7 @@ describe('BillingUpgradeEntitlementListener', () => {
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
         type: BILLING_UPGRADE_TYPE.FEATURE,
-        feature_key: 'ai_agent',
+        feature_key: FeatureKey.AI_ASSISTANT,
         tenant: { id: 't1' },
       });
       requests.save.mockImplementationOnce(async (r: any) => r);
@@ -53,7 +61,15 @@ describe('BillingUpgradeEntitlementListener', () => {
         new PaymentSucceededEvent('t1', 'pay-1', 150.5, 'SAR', undefined),
       );
 
-      expect(featureFlags.set).toHaveBeenCalledWith('t1', 'ai_agent', true, expect.anything());
+      // Stamped BILLING_UPGRADE, not PLATFORM_ADMIN: a paid grant is
+      // authoritative, but the audit trail must still say it came from a
+      // purchase rather than a super-admin decision.
+      expect(featureFlags.set).toHaveBeenCalledWith(
+        't1',
+        FeatureKey.AI_ASSISTANT,
+        true,
+        expect.objectContaining({ source: FeatureFlagSource.BILLING_UPGRADE }),
+      );
       expect(requests.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: BILLING_UPGRADE_STATUS.COMPLETED }),
       );
@@ -75,13 +91,40 @@ describe('BillingUpgradeEntitlementListener', () => {
       });
       requests.save.mockImplementationOnce(async (r: any) => r);
 
-      await listener.onPaymentSucceeded(new PaymentSucceededEvent('t1', 'pay-2', 300, 'SAR', undefined));
+      await listener.onPaymentSucceeded(
+        new PaymentSucceededEvent('t1', 'pay-2', 300, 'SAR', undefined),
+      );
 
       expect(limitOverrides.grantOrExtend).toHaveBeenCalledWith(
         't1',
         'AI_TOKENS',
-        expect.objectContaining({ overrideLimit: 50000, sourceRequestId: 'req-2' }),
+        expect.objectContaining({
+          overrideLimit: 50000,
+          sourceRequestId: 'req-2',
+        }),
         expect.anything(),
+      );
+    });
+
+    it('refuses to grant an unknown feature key rather than writing a dead flag', async () => {
+      // A request row created before the typed registry (or naming a renamed
+      // capability) must fail loudly. Writing the flag anyway would leave a
+      // customer who has PAID with a row that grants nothing.
+      requests.findOne.mockResolvedValueOnce({
+        id: 'req-3',
+        status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
+        type: BILLING_UPGRADE_TYPE.FEATURE,
+        feature_key: 'ai_agent', // never existed in the catalog
+        tenant: { id: 't1' },
+      });
+
+      await listener.onPaymentSucceeded(
+        new PaymentSucceededEvent('t1', 'pay-3', 150.5, 'SAR', undefined),
+      );
+
+      expect(featureFlags.set).not.toHaveBeenCalled();
+      expect(requests.save).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: BILLING_UPGRADE_STATUS.COMPLETED }),
       );
     });
 
@@ -90,7 +133,7 @@ describe('BillingUpgradeEntitlementListener', () => {
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.COMPLETED, // already applied by an earlier delivery
         type: BILLING_UPGRADE_TYPE.FEATURE,
-        feature_key: 'ai_agent',
+        feature_key: FeatureKey.AI_ASSISTANT,
         tenant: { id: 't1' },
       });
 
@@ -105,7 +148,15 @@ describe('BillingUpgradeEntitlementListener', () => {
     it('is a silent no-op for a payment that is not linked to any billing-upgrade request', async () => {
       requests.findOne.mockResolvedValueOnce(null);
       await expect(
-        listener.onPaymentSucceeded(new PaymentSucceededEvent('t1', 'unrelated-payment', 10, 'SAR', undefined)),
+        listener.onPaymentSucceeded(
+          new PaymentSucceededEvent(
+            't1',
+            'unrelated-payment',
+            10,
+            'SAR',
+            undefined,
+          ),
+        ),
       ).resolves.toBeUndefined();
       expect(featureFlags.set).not.toHaveBeenCalled();
     });
@@ -115,13 +166,15 @@ describe('BillingUpgradeEntitlementListener', () => {
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
         type: BILLING_UPGRADE_TYPE.FEATURE,
-        feature_key: 'ai_agent',
+        feature_key: FeatureKey.AI_ASSISTANT,
         tenant: { id: 't1' },
       });
       featureFlags.set.mockRejectedValueOnce(new Error('db exploded'));
 
       await expect(
-        listener.onPaymentSucceeded(new PaymentSucceededEvent('t1', 'pay-1', 150.5, 'SAR', undefined)),
+        listener.onPaymentSucceeded(
+          new PaymentSucceededEvent('t1', 'pay-1', 150.5, 'SAR', undefined),
+        ),
       ).resolves.toBeUndefined(); // caught & logged, never rethrown (must not fail the webhook response)
       expect(requests.save).not.toHaveBeenCalled(); // status flip never happened — no partial state
     });
@@ -135,10 +188,14 @@ describe('BillingUpgradeEntitlementListener', () => {
       });
       requests.save.mockImplementationOnce(async (r: any) => r);
 
-      await listener.onPaymentFailed(new PaymentFailedEvent('t1', 'pay-1', undefined));
+      await listener.onPaymentFailed(
+        new PaymentFailedEvent('t1', 'pay-1', undefined),
+      );
 
       expect(requests.save).toHaveBeenCalledWith(
-        expect.objectContaining({ status: BILLING_UPGRADE_STATUS.PAYMENT_FAILED }),
+        expect.objectContaining({
+          status: BILLING_UPGRADE_STATUS.PAYMENT_FAILED,
+        }),
       );
       expect(featureFlags.set).not.toHaveBeenCalled();
       expect(limitOverrides.grantOrExtend).not.toHaveBeenCalled();
@@ -149,7 +206,9 @@ describe('BillingUpgradeEntitlementListener', () => {
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.CANCELLED,
       });
-      await listener.onPaymentFailed(new PaymentFailedEvent('t1', 'pay-1', undefined));
+      await listener.onPaymentFailed(
+        new PaymentFailedEvent('t1', 'pay-1', undefined),
+      );
       expect(requests.save).not.toHaveBeenCalled();
     });
   });

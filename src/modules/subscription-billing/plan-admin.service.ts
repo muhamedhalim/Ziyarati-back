@@ -76,7 +76,8 @@ export class PlanAdminService {
         billing_cycle: dto.billingCycle,
         max_branches: dto.maxBranches ?? undefined,
         max_users: dto.maxUsers ?? undefined,
-        max_ai_tokens: dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined,
+        max_ai_tokens:
+          dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined,
         max_whatsapp_messages: dto.maxWhatsappMessages ?? undefined,
         max_appointments: dto.maxAppointments ?? undefined,
         max_campaigns: dto.maxCampaigns ?? undefined,
@@ -105,7 +106,9 @@ export class PlanAdminService {
 
     const desiredTerms = this.toTermPatch(dto);
     const changesTerms = Object.entries(desiredTerms).some(
-      ([k, v]) => v !== undefined && String(v) !== String(plan[k as keyof SubscriptionPlan]),
+      ([k, v]) =>
+        v !== undefined &&
+        String(v) !== String(plan[k as keyof SubscriptionPlan]),
     );
 
     if (changesTerms && (await this.isInUse(id))) {
@@ -118,7 +121,10 @@ export class PlanAdminService {
         entityType: 'subscription_plan',
         entityId: id,
         before,
-        after: { attemptedTerms: desiredTerms, result: 'rejected: plan is in use' },
+        after: {
+          attemptedTerms: desiredTerms,
+          result: 'rejected: plan is in use',
+        },
       });
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
@@ -131,15 +137,18 @@ export class PlanAdminService {
     // Term edits are only reachable here when the plan is NOT in use.
     if (dto.price !== undefined) plan.price = dto.price.toFixed(2);
     if (dto.billingCycle !== undefined) plan.billing_cycle = dto.billingCycle;
-    if (dto.maxBranches !== undefined) plan.max_branches = dto.maxBranches ?? undefined;
+    if (dto.maxBranches !== undefined)
+      plan.max_branches = dto.maxBranches ?? undefined;
     if (dto.maxUsers !== undefined) plan.max_users = dto.maxUsers ?? undefined;
     if (dto.maxAiTokens !== undefined)
-      plan.max_ai_tokens = dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined;
+      plan.max_ai_tokens =
+        dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined;
     if (dto.maxWhatsappMessages !== undefined)
       plan.max_whatsapp_messages = dto.maxWhatsappMessages ?? undefined;
     if (dto.maxAppointments !== undefined)
       plan.max_appointments = dto.maxAppointments ?? undefined;
-    if (dto.maxCampaigns !== undefined) plan.max_campaigns = dto.maxCampaigns ?? undefined;
+    if (dto.maxCampaigns !== undefined)
+      plan.max_campaigns = dto.maxCampaigns ?? undefined;
     if (dto.isCustom !== undefined) plan.is_custom = dto.isCustom;
 
     const result = await this.plans.save(plan);
@@ -206,13 +215,16 @@ export class PlanAdminService {
     };
   }
 
-  private toTermPatch(dto: UpdatePlanDto): Partial<Record<keyof SubscriptionPlan, unknown>> {
+  private toTermPatch(
+    dto: UpdatePlanDto,
+  ): Partial<Record<keyof SubscriptionPlan, unknown>> {
     return {
       price: dto.price != null ? dto.price.toFixed(2) : undefined,
       billing_cycle: dto.billingCycle,
       max_branches: dto.maxBranches,
       max_users: dto.maxUsers,
-      max_ai_tokens: dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined,
+      max_ai_tokens:
+        dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined,
       max_whatsapp_messages: dto.maxWhatsappMessages,
       max_appointments: dto.maxAppointments,
       max_campaigns: dto.maxCampaigns,

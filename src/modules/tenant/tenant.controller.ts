@@ -39,6 +39,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -62,7 +63,11 @@ const S_APPROVAL_EVENT = {
       enum: ['pending', 'approved', 'rejected', 'suspended'],
       example: 'approved',
     },
-    reason: { type: 'string', nullable: true, example: 'All documents verified.' },
+    reason: {
+      type: 'string',
+      nullable: true,
+      example: 'All documents verified.',
+    },
     actorId: { type: 'string', format: 'uuid', nullable: true },
     createdAt: { type: 'string', format: 'date-time' },
   },
@@ -76,18 +81,21 @@ const S_SETTINGS = {
       type: 'string',
       enum: ['AUTO', 'MANUAL'],
       example: 'AUTO',
-      description: 'Whether bookings are auto-confirmed or require staff approval.',
+      description:
+        'Whether bookings are auto-confirmed or require staff approval.',
     },
     paymentRequired: { type: 'boolean', example: false },
     cancellationHours: {
       type: 'number',
       example: 24,
-      description: 'Hours before appointment within which cancellation is blocked.',
+      description:
+        'Hours before appointment within which cancellation is blocked.',
     },
     feedbackDelayMinutes: {
       type: 'number',
       example: 360,
-      description: 'Minutes after appointment before the feedback request is sent.',
+      description:
+        'Minutes after appointment before the feedback request is sent.',
     },
     defaultLanguage: { type: 'string', example: 'ar' },
     currency: { type: 'string', example: 'SAR' },
@@ -105,9 +113,17 @@ const S_TENANT_DETAIL = {
       example: 'al-noor-clinic',
       description: 'Immutable URL-safe identifier used at login.',
     },
-    legalName: { type: 'string', nullable: true, example: 'Al-Noor Medical Services LLC' },
+    legalName: {
+      type: 'string',
+      nullable: true,
+      example: 'Al-Noor Medical Services LLC',
+    },
     commercialRegistrationNumber: { type: 'string', example: '1010123456' },
-    contactEmail: { type: 'string', format: 'email', example: 'admin@al-noor.com' },
+    contactEmail: {
+      type: 'string',
+      format: 'email',
+      example: 'admin@al-noor.com',
+    },
     contactPhone: { type: 'string', nullable: true, example: '+966112345678' },
     logoUrl: { type: 'string', nullable: true },
     approvalStatus: {
@@ -147,6 +163,7 @@ const S_TENANT_LIST = {
  * `/me*` routes are declared before `/:id` so they are matched literally.
  */
 @ApiTags('Tenants')
+@NoEntitlementRequired()
 @Controller('tenants')
 @UseGuards(RolesGuard)
 @ApiBearerAuth('JWT-auth')
@@ -181,17 +198,26 @@ are already known customers.
 **Tenant scoping:** None — creates a new top-level tenant.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Tenant created with pending approval status.', schema: S_TENANT_DETAIL })
+  @ApiCreatedResponse({
+    description: 'Tenant created with pending approval status.',
+    schema: S_TENANT_DETAIL,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Slug or commercial registration number already exists.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Slug or commercial registration number already exists.',
+    schema: S_ERROR,
+  })
   @Post()
   @Roles(ROLE.SUPER_ADMIN)
-  create(
-    @Body() dto: CreateTenantDto,
-    @CurrentUser('id') actorId: string,
-  ) {
+  create(@Body() dto: CreateTenantDto, @CurrentUser('id') actorId: string) {
     return this.tenantService.create(dto, actorId);
   }
 
@@ -219,14 +245,34 @@ is applied.
   @ApiQuery({
     name: 'search',
     required: false,
-    description: 'Search by clinic name or slug (case-insensitive, partial match).',
+    description:
+      'Search by clinic name or slug (case-insensitive, partial match).',
     example: 'al-noor',
   })
-  @ApiQuery({ name: 'page', required: false, description: 'Page number (default: 1).', example: 1 })
-  @ApiQuery({ name: 'limit', required: false, description: 'Results per page (default: 20, max: 100).', example: 20 })
-  @ApiOkResponse({ description: 'Paginated list of tenants.', schema: S_TENANT_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    description: 'Page number (default: 1).',
+    example: 1,
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    description: 'Results per page (default: 20, max: 100).',
+    example: 20,
+  })
+  @ApiOkResponse({
+    description: 'Paginated list of tenants.',
+    schema: S_TENANT_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @Get()
   @Roles(ROLE.SUPER_ADMIN)
   findAll(@Query() query: ListTenantsQueryDto) {
@@ -236,7 +282,7 @@ is applied.
   // ─────────────────────────── Self-service ──────────────────────────────── //
 
   @ApiOperation({
-    summary: 'Get my clinic\'s profile (self-service)',
+    summary: "Get my clinic's profile (self-service)",
     description: `
 **Protected — any authenticated tenant user.**
 
@@ -250,10 +296,17 @@ resolved from the JWT principal — no tenant ID in the URL or body.
 Super-admins (tenantId = null) will receive a 403.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Caller\'s clinic profile.', schema: S_TENANT_DETAIL })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: "Caller's clinic profile.",
+    schema: S_TENANT_DETAIL,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
-    description: 'Caller has no tenant context (super-admin accounts do not belong to a clinic).',
+    description:
+      'Caller has no tenant context (super-admin accounts do not belong to a clinic).',
     schema: S_ERROR,
   })
   @Get('me')
@@ -262,7 +315,7 @@ Super-admins (tenantId = null) will receive a 403.
   }
 
   @ApiOperation({
-    summary: 'Update my clinic\'s profile (owner self-service)',
+    summary: "Update my clinic's profile (owner self-service)",
     description: `
 **Protected — \`owner\` role required.**
 
@@ -278,9 +331,15 @@ Updates the mutable profile fields of the caller's own clinic.
 **Tenant scoping:** Always operates on the caller's own tenant.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Clinic profile updated.', schema: S_TENANT_DETAIL })
+  @ApiOkResponse({
+    description: 'Clinic profile updated.',
+    schema: S_TENANT_DETAIL,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller is not the clinic `owner`.',
     schema: S_ERROR,
@@ -292,7 +351,7 @@ Updates the mutable profile fields of the caller's own clinic.
   }
 
   @ApiOperation({
-    summary: 'Get my clinic\'s operational settings (self-service)',
+    summary: "Get my clinic's operational settings (self-service)",
     description: `
 **Protected — any authenticated tenant user.**
 
@@ -305,16 +364,25 @@ feedback delay, language, currency, and AI bot toggle.
 **Tenant scoping:** Always returns settings for the caller's own clinic.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Clinic operational settings.', schema: S_SETTINGS })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller has no tenant context.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Clinic operational settings.',
+    schema: S_SETTINGS,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller has no tenant context.',
+    schema: S_ERROR,
+  })
   @Get('me/settings')
   mySettings() {
     return this.tenantService.getSettings(this.ctx.requireTenantId());
   }
 
   @ApiOperation({
-    summary: 'Update my clinic\'s operational settings',
+    summary: "Update my clinic's operational settings",
     description: `
 **Protected — \`owner\` or \`manager\` role required.**
 
@@ -336,8 +404,14 @@ current values.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Settings updated.', schema: S_SETTINGS })
-  @ApiBadRequestResponse({ description: 'Validation failed (e.g. cancellationHours > 720).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (e.g. cancellationHours > 720).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller is not `owner` or `manager`.',
     schema: S_ERROR,
@@ -361,10 +435,21 @@ approval events and settings.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Tenant UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Tenant UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Tenant found.', schema: S_TENANT_DETAIL })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Get(':id')
   @Roles(ROLE.SUPER_ADMIN)
@@ -373,7 +458,7 @@ approval events and settings.
   }
 
   @ApiOperation({
-    summary: 'Update any tenant\'s profile (platform admin)',
+    summary: "Update any tenant's profile (platform admin)",
     description: `
 **Protected — \`super_admin\` role required.**
 
@@ -384,18 +469,29 @@ must use the dedicated \`approve\`/\`reject\`/\`suspend\` actions.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Tenant UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Tenant profile updated.', schema: S_TENANT_DETAIL })
+  @ApiParam({
+    name: 'id',
+    description: 'Tenant UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Tenant profile updated.',
+    schema: S_TENANT_DETAIL,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Patch(':id')
   @Roles(ROLE.SUPER_ADMIN)
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateTenantDto,
-  ) {
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateTenantDto) {
     return this.tenantService.updateProfile(id, dto);
   }
 
@@ -421,14 +517,28 @@ The optional \`reason\` is recorded in the audit trail.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Tenant UUID to approve', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Tenant approved and activated.', schema: S_TENANT_DETAIL })
+  @ApiParam({
+    name: 'id',
+    description: 'Tenant UUID to approve',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Tenant approved and activated.',
+    schema: S_TENANT_DETAIL,
+  })
   @ApiBadRequestResponse({
     description: 'State transition is invalid (e.g. already approved).',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Post(':id/approve')
   @HttpCode(HttpStatus.OK)
@@ -461,11 +571,25 @@ surfaced to the clinic owner via the rejection notification.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Tenant UUID to reject', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Tenant UUID to reject',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Tenant rejected.', schema: S_TENANT_DETAIL })
-  @ApiBadRequestResponse({ description: 'Invalid state transition.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Invalid state transition.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Post(':id/reject')
   @HttpCode(HttpStatus.OK)
@@ -499,11 +623,25 @@ documents. Re-approval transitions back to \`approved\`.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Tenant UUID to suspend', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Tenant UUID to suspend',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Tenant suspended.', schema: S_TENANT_DETAIL })
-  @ApiBadRequestResponse({ description: 'Invalid state transition.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Invalid state transition.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Post(':id/suspend')
   @HttpCode(HttpStatus.OK)
@@ -533,13 +671,24 @@ Useful for auditing a clinic's compliance history.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Tenant UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Tenant UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Chronological approval event log.',
     schema: { type: 'array', items: S_APPROVAL_EVENT },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not `super_admin`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not `super_admin`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Tenant not found.', schema: S_ERROR })
   @Get(':id/approval-events')
   @Roles(ROLE.SUPER_ADMIN)

@@ -68,7 +68,10 @@ export class FixedWindowLimiterService {
   `;
 
   /** One bounded local counter per scope, constructed lazily on first use — bounded by the closed scope enum (never attacker-controlled), not by request volume. */
-  private readonly fallbacks = new Map<AuthAbuseLimiterScope, BoundedLocalCounter>();
+  private readonly fallbacks = new Map<
+    AuthAbuseLimiterScope,
+    BoundedLocalCounter
+  >();
 
   constructor(
     private readonly appRedis: AppRedisService,
@@ -102,10 +105,20 @@ export class FixedWindowLimiterService {
       );
       this.degradedLog.recordSuccess();
       const allowed = count <= limit;
-      this.metrics.recordAuthAbuseLimiterEvent(scope, allowed ? 'allowed' : 'refused');
+      this.metrics.recordAuthAbuseLimiterEvent(
+        scope,
+        allowed ? 'allowed' : 'refused',
+      );
       return { allowed, degraded: false, count };
     } catch (err) {
-      return this.consumeDegraded(scope, subject, limit, windowSeconds, err, true);
+      return this.consumeDegraded(
+        scope,
+        subject,
+        limit,
+        windowSeconds,
+        err,
+        true,
+      );
     }
   }
 
@@ -129,7 +142,14 @@ export class FixedWindowLimiterService {
       this.degradedLog.recordSuccess();
       return { allowed: count < limit, degraded: false, count };
     } catch (err) {
-      return this.consumeDegraded(scope, subject, limit, windowSeconds, err, false);
+      return this.consumeDegraded(
+        scope,
+        subject,
+        limit,
+        windowSeconds,
+        err,
+        false,
+      );
     }
   }
 
@@ -142,7 +162,10 @@ export class FixedWindowLimiterService {
     write: boolean,
   ): Promise<FixedWindowDecision> {
     this.degradedLog.recordFailure((err as Error)?.message ?? String(err));
-    const degradedFactor = this.config.get<number>('AUTH_ABUSE_DEGRADED_FACTOR', 0.5);
+    const degradedFactor = this.config.get<number>(
+      'AUTH_ABUSE_DEGRADED_FACTOR',
+      0.5,
+    );
     const degradedLimit = Math.max(1, Math.ceil(limit * degradedFactor));
     const counter = this.fallbackFor(scope, windowSeconds);
     const localKey = `${scope}:${subject}`;
@@ -165,17 +188,28 @@ export class FixedWindowLimiterService {
     return { allowed, degraded: true, count };
   }
 
-  private fallbackFor(scope: AuthAbuseLimiterScope, windowSeconds: number): BoundedLocalCounter {
+  private fallbackFor(
+    scope: AuthAbuseLimiterScope,
+    windowSeconds: number,
+  ): BoundedLocalCounter {
     let counter = this.fallbacks.get(scope);
     if (!counter) {
       const width = this.config.get<number>('AUTH_ABUSE_FALLBACK_WIDTH', 4096);
-      counter = new BoundedLocalCounter({ width, depth: 3, windowMs: windowSeconds * 1000 });
+      counter = new BoundedLocalCounter({
+        width,
+        depth: 3,
+        windowMs: windowSeconds * 1000,
+      });
       this.fallbacks.set(scope, counter);
     }
     return counter;
   }
 
-  private buildKey(scope: AuthAbuseLimiterScope, subject: string, windowIndex: number): string {
+  private buildKey(
+    scope: AuthAbuseLimiterScope,
+    subject: string,
+    windowIndex: number,
+  ): string {
     return `${cacheKeyPrefix()}${AUTH_ABUSE_KEY_NAMESPACE}${scope}:${windowIndex}:${subject}`;
   }
 }

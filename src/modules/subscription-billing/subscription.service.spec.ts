@@ -11,7 +11,10 @@ import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { BillingCycle, SubscriptionStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 const future = new Date(Date.now() + 86_400_000);
@@ -24,7 +27,13 @@ describe('SubscriptionService', () => {
   let billing: { generateInvoice: jest.Mock };
   let access: { assertUsable: jest.Mock };
 
-  const plan = (overrides = {}) => ({ id: 'p1', is_active: true, price: 100, billing_cycle: BillingCycle.MONTHLY, ...overrides });
+  const plan = (overrides = {}) => ({
+    id: 'p1',
+    is_active: true,
+    price: 100,
+    billing_cycle: BillingCycle.MONTHLY,
+    ...overrides,
+  });
 
   beforeEach(async () => {
     subscriptions = createMockRepository();
@@ -44,7 +53,10 @@ describe('SubscriptionService', () => {
           useValue: { getTyped: jest.fn().mockResolvedValue(14) },
         },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(14) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(14) },
+        },
       ],
     }).compile();
     service = moduleRef.get(SubscriptionService);
@@ -57,7 +69,12 @@ describe('SubscriptionService', () => {
       plans.findOne.mockResolvedValueOnce(plan());
       subscriptions.findOne.mockResolvedValueOnce(null); // no existing
       subscriptions.save.mockResolvedValueOnce({ id: 'sub1' });
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', status: SubscriptionStatus.ACTIVE, ends_at: future, plan: plan() });
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+        plan: plan(),
+      });
 
       const res = await service.create(TENANT, { planId: 'p1' } as any);
       expect(billing.generateInvoice).toHaveBeenCalledWith(TENANT, 'sub1', 100);
@@ -68,14 +85,21 @@ describe('SubscriptionService', () => {
       plans.findOne.mockResolvedValueOnce(plan());
       subscriptions.findOne.mockResolvedValueOnce(null);
       subscriptions.save.mockResolvedValueOnce({ id: 'sub1' });
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', status: SubscriptionStatus.TRIAL, ends_at: future, plan: plan() });
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        status: SubscriptionStatus.TRIAL,
+        ends_at: future,
+        plan: plan(),
+      });
       await service.create(TENANT, { planId: 'p1', startTrial: true } as any);
       expect(billing.generateInvoice).not.toHaveBeenCalled();
     });
 
     it('rejects an inactive plan with 422', async () => {
       plans.findOne.mockResolvedValueOnce(plan({ is_active: false }));
-      await expect(service.create(TENANT, { planId: 'p1' } as any)).rejects.toMatchObject({
+      await expect(
+        service.create(TENANT, { planId: 'p1' } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
     });
@@ -83,41 +107,78 @@ describe('SubscriptionService', () => {
     it('rejects when a subscription already exists', async () => {
       plans.findOne.mockResolvedValueOnce(plan());
       subscriptions.findOne.mockResolvedValueOnce({ id: 'existing' });
-      await expect(service.create(TENANT, { planId: 'p1' } as any)).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      await expect(
+        service.create(TENANT, { planId: 'p1' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
     });
   });
 
   describe('changePlan', () => {
     it('switches plans and invoices the new price', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', plan: { id: 'p1' } }); // getActiveSubscription
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        plan: { id: 'p1' },
+      }); // getActiveSubscription
       plans.findOne.mockResolvedValueOnce(plan({ id: 'p2', price: 200 }));
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', status: SubscriptionStatus.ACTIVE, ends_at: future, plan: plan({ id: 'p2' }) });
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+        plan: plan({ id: 'p2' }),
+      });
       await service.changePlan(TENANT, { planId: 'p2' } as any);
       expect(billing.generateInvoice).toHaveBeenCalledWith(TENANT, 'sub1', 200);
     });
 
     it('rejects changing to the same plan', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', plan: { id: 'p1' } });
-      await expect(service.changePlan(TENANT, { planId: 'p1' } as any)).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        plan: { id: 'p1' },
+      });
+      await expect(
+        service.changePlan(TENANT, { planId: 'p1' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
     });
   });
 
   describe('cancel / reactivate', () => {
     it('cancels immediately when not at period end', async () => {
       subscriptions.findOne
-        .mockResolvedValueOnce({ id: 'sub1', plan: { id: 'p1' }, status: SubscriptionStatus.ACTIVE })
-        .mockResolvedValueOnce({ id: 'sub1', status: SubscriptionStatus.CANCELLED, ends_at: future, plan: plan() });
+        .mockResolvedValueOnce({
+          id: 'sub1',
+          plan: { id: 'p1' },
+          status: SubscriptionStatus.ACTIVE,
+        })
+        .mockResolvedValueOnce({
+          id: 'sub1',
+          status: SubscriptionStatus.CANCELLED,
+          ends_at: future,
+          plan: plan(),
+        });
       await service.cancel(TENANT, { cancelAtPeriodEnd: false } as any);
-      expect(subscriptions.save).toHaveBeenCalledWith(expect.objectContaining({ status: SubscriptionStatus.CANCELLED }));
+      expect(subscriptions.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: SubscriptionStatus.CANCELLED }),
+      );
     });
 
     it('reactivate rejects an already-active subscription', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', status: SubscriptionStatus.ACTIVE, plan: plan() });
-      await expect(service.reactivate(TENANT)).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        status: SubscriptionStatus.ACTIVE,
+        plan: plan(),
+      });
+      await expect(service.reactivate(TENANT)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
     });
 
     it('reactivate renews an expired subscription window', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub1', status: SubscriptionStatus.PAST_DUE, ends_at: past, plan: plan() });
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub1',
+        status: SubscriptionStatus.PAST_DUE,
+        ends_at: past,
+        plan: plan(),
+      });
       const res = await service.reactivate(TENANT);
       expect(res.subscription.status).toBe(SubscriptionStatus.ACTIVE);
     });
@@ -132,41 +193,53 @@ describe('SubscriptionService', () => {
     // instead of a separate limbo state.
     it('derives PAST_DUE (not the old EXPIRED limbo) for an active subscription past its end date', () => {
       expect(
-        service.getEffectiveStatus({ status: SubscriptionStatus.ACTIVE, ends_at: past } as any),
+        service.getEffectiveStatus({
+          status: SubscriptionStatus.ACTIVE,
+          ends_at: past,
+        } as any),
       ).toBe(SubscriptionStatus.PAST_DUE);
     });
 
     it('derives GRACE_EXPIRED for a PAST_DUE subscription whose grace window has elapsed', () => {
       const longAgo = new Date(Date.now() - 30 * 86_400_000);
       expect(
-        service.getEffectiveStatus({
-          status: SubscriptionStatus.PAST_DUE,
-          ends_at: past,
-          grace_started_at: longAgo,
-        } as any, /* graceDurationDays */ 7),
+        service.getEffectiveStatus(
+          {
+            status: SubscriptionStatus.PAST_DUE,
+            ends_at: past,
+            grace_started_at: longAgo,
+          } as any,
+          /* graceDurationDays */ 7,
+        ),
       ).toBe(SubscriptionStatus.GRACE_EXPIRED);
     });
 
     it('stays PAST_DUE while still within the grace window', () => {
       const justNow = new Date(Date.now() - 60_000);
       expect(
-        service.getEffectiveStatus({
-          status: SubscriptionStatus.PAST_DUE,
-          ends_at: past,
-          grace_started_at: justNow,
-        } as any, 7),
+        service.getEffectiveStatus(
+          {
+            status: SubscriptionStatus.PAST_DUE,
+            ends_at: past,
+            grace_started_at: justNow,
+          } as any,
+          7,
+        ),
       ).toBe(SubscriptionStatus.PAST_DUE);
     });
 
     it('getCurrent throws when there is no subscription', async () => {
       subscriptions.findOne.mockResolvedValueOnce(null);
-      await expect(service.getCurrent(TENANT)).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.getCurrent(TENANT)).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
     });
 
-    it('assertUsable delegates to AccessControlService', async () => {
-      await service.assertUsable(TENANT);
-      expect(access.assertUsable).toHaveBeenCalledWith(TENANT);
-    });
+    // The `assertUsable` pass-through this used to cover is gone: it had no
+    // callers, and being tenant-WIDE it could never carry the capability a
+    // route was gating, so adopting it would have re-created the split where a
+    // request is admitted by the guard and refused deeper in. Access is now
+    // asserted through AccessControlService with a FeatureKey in hand.
 
     // FR-B007d: read access (isUsable) is preserved in EVERY non-terminal
     // state, including grace-expired — only CANCELLED/SUSPENDED are not usable.
@@ -177,11 +250,14 @@ describe('SubscriptionService', () => {
       [SubscriptionStatus.GRACE_EXPIRED, true],
       [SubscriptionStatus.CANCELLED, false],
       [SubscriptionStatus.SUSPENDED, false],
-    ])('isUsable(%s) === %s (read access preserved through grace)', (status, expected) => {
-      expect(
-        service.isUsable({ status, ends_at: future } as any),
-      ).toBe(expected);
-    });
+    ])(
+      'isUsable(%s) === %s (read access preserved through grace)',
+      (status, expected) => {
+        expect(service.isUsable({ status, ends_at: future } as any)).toBe(
+          expected,
+        );
+      },
+    );
   });
 
   describe('assertBillableActionAllowed (FND-031/T082)', () => {
@@ -192,7 +268,9 @@ describe('SubscriptionService', () => {
         ends_at: past,
         plan: plan(),
       });
-      await expect(service.assertBillableActionAllowed(TENANT)).rejects.toMatchObject({
+      await expect(
+        service.assertBillableActionAllowed(TENANT),
+      ).rejects.toMatchObject({
         code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
       });
     });
@@ -205,7 +283,9 @@ describe('SubscriptionService', () => {
         grace_started_at: new Date(),
         plan: plan(),
       });
-      await expect(service.assertBillableActionAllowed(TENANT)).resolves.toBeUndefined();
+      await expect(
+        service.assertBillableActionAllowed(TENANT),
+      ).resolves.toBeUndefined();
     });
 
     it('allows a billable action for an active subscription', async () => {
@@ -215,7 +295,9 @@ describe('SubscriptionService', () => {
         ends_at: future,
         plan: plan(),
       });
-      await expect(service.assertBillableActionAllowed(TENANT)).resolves.toBeUndefined();
+      await expect(
+        service.assertBillableActionAllowed(TENANT),
+      ).resolves.toBeUndefined();
     });
   });
 });

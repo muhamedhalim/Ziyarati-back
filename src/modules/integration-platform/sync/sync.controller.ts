@@ -11,7 +11,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -23,6 +28,8 @@ import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.gu
 import { IntegrationSyncService } from './integration-sync.service';
 import { StartSyncDto } from '../dto/start-sync.dto';
 import { QueryJobsDto } from '../dto/query-jobs.dto';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Tenant-admin synchronization dashboard (Phase 4). Start full/incremental syncs,
@@ -32,6 +39,7 @@ import { QueryJobsDto } from '../dto/query-jobs.dto';
  */
 @ApiTags('Integration Sync')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations/sync')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationSyncController {
@@ -48,18 +56,28 @@ export class IntegrationSyncController {
   @Post()
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  start(@Body() dto: StartSyncDto, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  start(
+    @Body() dto: StartSyncDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     return this.sync.start(this.ctx.requireTenantId(), dto, { userId, ip });
   }
 
-  @ApiOperation({ summary: 'List sync runs (history)', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({
+    summary: 'List sync runs (history)',
+    description: '**Protected — `platform.integrations.read`.**',
+  })
   @Get()
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
   list(@Query() query: QueryJobsDto) {
     return this.sync.list(this.ctx.requireTenantId(), query);
   }
 
-  @ApiOperation({ summary: 'Get a sync run', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({
+    summary: 'Get a sync run',
+    description: '**Protected — `platform.integrations.read`.**',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get(':id')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -67,24 +85,37 @@ export class IntegrationSyncController {
     return this.sync.getStatus(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Cancel a sync run', description: '**Protected — `platform.integrations.manage`.** Honored at the next page boundary.' })
+  @ApiOperation({
+    summary: 'Cancel a sync run',
+    description:
+      '**Protected — `platform.integrations.manage`.** Honored at the next page boundary.',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  cancel(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  cancel(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     return this.sync.cancel(this.ctx.requireTenantId(), id, { userId, ip });
   }
 
   @ApiOperation({
     summary: 'Retry/resume a sync run',
-    description: '**Protected — `platform.integrations.manage`.** Starts a fresh run from the last successful cursor.',
+    description:
+      '**Protected — `platform.integrations.manage`.** Starts a fresh run from the last successful cursor.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/retry')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  retry(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  retry(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     return this.sync.retry(this.ctx.requireTenantId(), id, { userId, ip });
   }
 }

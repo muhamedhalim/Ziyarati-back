@@ -104,16 +104,19 @@ export const PERMISSION = {
   PLATFORM_SUPPORT_CLINICS_READ_BASIC: 'platform.support.clinics.read_basic',
   PLATFORM_SUPPORT_SUBSCRIPTIONS_READ: 'platform.support.subscriptions.read',
   PLATFORM_SUPPORT_FEATURES_READ: 'platform.support.features.read',
-  PLATFORM_SUPPORT_CLINIC_SETTINGS_READ: 'platform.support.clinic_settings.read',
+  PLATFORM_SUPPORT_CLINIC_SETTINGS_READ:
+    'platform.support.clinic_settings.read',
   PLATFORM_SUPPORT_INTEGRATIONS_READ: 'platform.support.integrations.read',
   PLATFORM_SUPPORT_NOTIFICATIONS_READ: 'platform.support.notifications.read',
   PLATFORM_SUPPORT_JOBS_READ: 'platform.support.jobs.read',
   PLATFORM_SUPPORT_AUDIT_READ: 'platform.support.audit.read',
   PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS:
     'platform.support.appointments.read_diagnostics',
-  PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS: 'platform.support.payments.read_diagnostics',
+  PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS:
+    'platform.support.payments.read_diagnostics',
   PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS: 'platform.support.ai.read_diagnostics',
-  PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS: 'platform.support.whatsapp.read_diagnostics',
+  PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS:
+    'platform.support.whatsapp.read_diagnostics',
 
   // Safe recovery actions. Each is granted ONLY because an existing service
   // already proves the underlying operation idempotent and destination-safe:
@@ -128,7 +131,8 @@ export const PERMISSION = {
   // No financial, subscription, feature-flag, RBAC or medical write exists.
   PLATFORM_SUPPORT_NOTIFICATIONS_RETRY: 'platform.support.notifications.retry',
   PLATFORM_SUPPORT_EMAIL_RESEND: 'platform.support.email.resend',
-  PLATFORM_SUPPORT_INTEGRATIONS_RECHECK: 'platform.support.integrations.recheck',
+  PLATFORM_SUPPORT_INTEGRATIONS_RECHECK:
+    'platform.support.integrations.recheck',
 
   // Profile (self-service)
   PROFILE_UPDATE_OWN: 'profile.update_own', // ABAC — see below
@@ -294,11 +298,12 @@ export const ALL_PERMISSION_SLUGS: PermissionSlug[] = Object.values(PERMISSION);
  * currentUser.id`). They are listed separately so this requirement is explicit
  * and discoverable.
  */
-export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> = new Set([
-  PERMISSION.APPOINTMENTS_READ_OWN,
-  PERMISSION.PROFILE_UPDATE_OWN,
-  PERMISSION.BRANCHES_UPDATE_OWN,
-]);
+export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> =
+  new Set([
+    PERMISSION.APPOINTMENTS_READ_OWN,
+    PERMISSION.PROFILE_UPDATE_OWN,
+    PERMISSION.BRANCHES_UPDATE_OWN,
+  ]);
 
 /**
  * Permissions in the catalogue with NO verified enforcing consumer — no
@@ -320,9 +325,9 @@ export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> = new Set
  * structurally impossible state rather than a live one, so a future change
  * that starts assigning `customer` cannot silently ship the gap live.
  */
-export const UNENFORCED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
-  PERMISSION.PROFILE_UPDATE_OWN,
-]);
+export const UNENFORCED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set(
+  [PERMISSION.PROFILE_UPDATE_OWN],
+);
 
 /**
  * Catalogue permissions verified to be enforced via ROLE-IDENTITY gating
@@ -335,11 +340,13 @@ export const UNENFORCED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set(
  * these are excluded from its "unenforced" computation via this explicit,
  * human-verified allow-list rather than read as a false-positive gap.
  */
-export const ROLE_GATED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
-  PERMISSION.PLATFORM_SETTINGS_READ, // system-setting.controller.ts:70, @Roles(ROLE.SUPER_ADMIN)
-  PERMISSION.PLATFORM_SETTINGS_MANAGE, // ditto — same blanket controller-level gate
-  PERMISSION.TENANTS_MANAGE, // tenant.controller.ts:151 (class) + per-method @Roles(ROLE.SUPER_ADMIN)
-]);
+export const ROLE_GATED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set(
+  [
+    PERMISSION.PLATFORM_SETTINGS_READ, // system-setting.controller.ts:70, @Roles(ROLE.SUPER_ADMIN)
+    PERMISSION.PLATFORM_SETTINGS_MANAGE, // ditto — same blanket controller-level gate
+    PERMISSION.TENANTS_MANAGE, // tenant.controller.ts:151 (class) + per-method @Roles(ROLE.SUPER_ADMIN)
+  ],
+);
 
 /**
  * Additional catalogue permissions the coverage test discovered to have NO
@@ -366,13 +373,14 @@ export const ROLE_GATED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set(
  * role would break real signup today — a regression this task must not
  * introduce for a problem it wasn't asked to fix.
  */
-export const UNTRIAGED_COVERAGE_GAP_SLUGS: ReadonlySet<PermissionSlug> = new Set([
-  PERMISSION.CUSTOMERS_CREATE,
-  PERMISSION.CUSTOMERS_UPDATE,
-  PERMISSION.REPORTS_READ,
-  PERMISSION.REPORTS_EXPORT,
-  PERMISSION.AI_CHAT,
-]);
+export const UNTRIAGED_COVERAGE_GAP_SLUGS: ReadonlySet<PermissionSlug> =
+  new Set([
+    PERMISSION.CUSTOMERS_CREATE,
+    PERMISSION.CUSTOMERS_UPDATE,
+    PERMISSION.REPORTS_READ,
+    PERMISSION.REPORTS_EXPORT,
+    PERMISSION.AI_CHAT,
+  ]);
 
 /**
  * Permissions that can never be delegated through the "Other" custom-role
@@ -418,6 +426,14 @@ export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
   PERMISSION.ROLES_MANAGE,
   PERMISSION.USERS_MANAGE,
   PERMISSION.TENANTS_MANAGE,
+  // Entitlement toggles. A clinic Owner holds `roles.manage`, so anything NOT
+  // reserved here can be minted into a tenant custom role and self-granted.
+  // `featureflag.manage` writes the `feature_flags` table that the access
+  // policy reads, which made it a direct paid-plan bypass: enable the
+  // capability for yourself, and (because the grant path is unmetered) get it
+  // without quotas too. Provenance (`feature_flags.source`) already neuters a
+  // tenant-written row, and reserving the permission is the second lock.
+  PERMISSION.FEATUREFLAG_MANAGE,
   // Platform support-ticket slugs (defence in depth alongside
   // API_PROTECTED_ROLE_SLUGS blocking `platform_support` itself) — a clinic
   // Owner must never be able to delegate cross-tenant platform authority into
@@ -508,182 +524,718 @@ export interface RoleDef {
 }
 
 export const PERMISSIONS: PermissionDef[] = [
-  { slug: PERMISSION.DASHBOARD_ACCESS, name: 'Access clinic dashboard', module: 'general' },
+  {
+    slug: PERMISSION.DASHBOARD_ACCESS,
+    name: 'Access clinic dashboard',
+    module: 'general',
+  },
 
-  { slug: PERMISSION.APPOINTMENTS_CREATE, name: 'Create appointments', module: 'appointments' },
-  { slug: PERMISSION.APPOINTMENTS_READ, name: 'Read appointments', module: 'appointments' },
-  { slug: PERMISSION.APPOINTMENTS_READ_OWN, name: 'Read own appointments', module: 'appointments' },
-  { slug: PERMISSION.APPOINTMENTS_UPDATE, name: 'Update appointments', module: 'appointments' },
-  { slug: PERMISSION.APPOINTMENTS_RESCHEDULE, name: 'Reschedule appointments', module: 'appointments' },
-  { slug: PERMISSION.APPOINTMENTS_CANCEL, name: 'Cancel appointments', module: 'appointments' },
-  { slug: PERMISSION.APPOINTMENTS_MANAGE_ALL, name: 'Manage all appointments', module: 'appointments' },
+  {
+    slug: PERMISSION.APPOINTMENTS_CREATE,
+    name: 'Create appointments',
+    module: 'appointments',
+  },
+  {
+    slug: PERMISSION.APPOINTMENTS_READ,
+    name: 'Read appointments',
+    module: 'appointments',
+  },
+  {
+    slug: PERMISSION.APPOINTMENTS_READ_OWN,
+    name: 'Read own appointments',
+    module: 'appointments',
+  },
+  {
+    slug: PERMISSION.APPOINTMENTS_UPDATE,
+    name: 'Update appointments',
+    module: 'appointments',
+  },
+  {
+    slug: PERMISSION.APPOINTMENTS_RESCHEDULE,
+    name: 'Reschedule appointments',
+    module: 'appointments',
+  },
+  {
+    slug: PERMISSION.APPOINTMENTS_CANCEL,
+    name: 'Cancel appointments',
+    module: 'appointments',
+  },
+  {
+    slug: PERMISSION.APPOINTMENTS_MANAGE_ALL,
+    name: 'Manage all appointments',
+    module: 'appointments',
+  },
 
-  { slug: PERMISSION.REVIEWS_READ, name: 'Read customer reviews', module: 'reviews' },
-  { slug: PERMISSION.REVIEWS_CREATE, name: 'Create customer reviews', module: 'reviews' },
-  { slug: PERMISSION.REVIEWS_MANAGE, name: 'Manage / reply to reviews', module: 'reviews' },
+  {
+    slug: PERMISSION.REVIEWS_READ,
+    name: 'Read customer reviews',
+    module: 'reviews',
+  },
+  {
+    slug: PERMISSION.REVIEWS_CREATE,
+    name: 'Create customer reviews',
+    module: 'reviews',
+  },
+  {
+    slug: PERMISSION.REVIEWS_MANAGE,
+    name: 'Manage / reply to reviews',
+    module: 'reviews',
+  },
 
-  { slug: PERMISSION.CUSTOMERS_CREATE, name: 'Create customers', module: 'customers' },
-  { slug: PERMISSION.CUSTOMERS_READ, name: 'Read customers', module: 'customers' },
-  { slug: PERMISSION.CUSTOMERS_UPDATE, name: 'Update customers', module: 'customers' },
-  { slug: PERMISSION.CUSTOMERS_MANAGE, name: 'Manage customers', module: 'customers' },
+  {
+    slug: PERMISSION.CUSTOMERS_CREATE,
+    name: 'Create customers',
+    module: 'customers',
+  },
+  {
+    slug: PERMISSION.CUSTOMERS_READ,
+    name: 'Read customers',
+    module: 'customers',
+  },
+  {
+    slug: PERMISSION.CUSTOMERS_UPDATE,
+    name: 'Update customers',
+    module: 'customers',
+  },
+  {
+    slug: PERMISSION.CUSTOMERS_MANAGE,
+    name: 'Manage customers',
+    module: 'customers',
+  },
 
-  { slug: PERMISSION.CRM_CUSTOMERS_READ, name: 'Read CRM customers', module: 'crm' },
-  { slug: PERMISSION.CRM_CUSTOMERS_MANAGE, name: 'Manage CRM customers', module: 'crm' },
-  { slug: PERMISSION.CRM_NOTES_READ, name: 'Read customer notes', module: 'crm' },
-  { slug: PERMISSION.CRM_NOTES_MANAGE, name: 'Manage customer notes', module: 'crm' },
+  {
+    slug: PERMISSION.CRM_CUSTOMERS_READ,
+    name: 'Read CRM customers',
+    module: 'crm',
+  },
+  {
+    slug: PERMISSION.CRM_CUSTOMERS_MANAGE,
+    name: 'Manage CRM customers',
+    module: 'crm',
+  },
+  {
+    slug: PERMISSION.CRM_NOTES_READ,
+    name: 'Read customer notes',
+    module: 'crm',
+  },
+  {
+    slug: PERMISSION.CRM_NOTES_MANAGE,
+    name: 'Manage customer notes',
+    module: 'crm',
+  },
   { slug: PERMISSION.CRM_TAGS_READ, name: 'Read customer tags', module: 'crm' },
-  { slug: PERMISSION.CRM_TAGS_MANAGE, name: 'Manage customer tags', module: 'crm' },
-  { slug: PERMISSION.CRM_FILES_READ, name: 'Read customer files', module: 'crm' },
-  { slug: PERMISSION.CRM_FILES_MANAGE, name: 'Manage customer files', module: 'crm' },
+  {
+    slug: PERMISSION.CRM_TAGS_MANAGE,
+    name: 'Manage customer tags',
+    module: 'crm',
+  },
+  {
+    slug: PERMISSION.CRM_FILES_READ,
+    name: 'Read customer files',
+    module: 'crm',
+  },
+  {
+    slug: PERMISSION.CRM_FILES_MANAGE,
+    name: 'Manage customer files',
+    module: 'crm',
+  },
 
-  { slug: PERMISSION.SUPPORT_TICKETS_READ, name: 'Read support tickets', module: 'support_tickets' },
-  { slug: PERMISSION.SUPPORT_TICKETS_CREATE, name: 'Create support tickets', module: 'support_tickets' },
-  { slug: PERMISSION.SUPPORT_TICKETS_CLOSE, name: 'Close own resolved support tickets', module: 'support_tickets' },
-  { slug: PERMISSION.SUPPORT_TICKETS_REPLY, name: 'Reply to own support tickets', module: 'support_tickets' },
-  { slug: PERMISSION.SUPPORT_TICKETS_REOPEN, name: 'Reopen own resolved support tickets ("Issue not resolved")', module: 'support_tickets' },
+  {
+    slug: PERMISSION.SUPPORT_TICKETS_READ,
+    name: 'Read support tickets',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.SUPPORT_TICKETS_CREATE,
+    name: 'Create support tickets',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.SUPPORT_TICKETS_CLOSE,
+    name: 'Close own resolved support tickets',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.SUPPORT_TICKETS_REPLY,
+    name: 'Reply to own support tickets',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.SUPPORT_TICKETS_REOPEN,
+    name: 'Reopen own resolved support tickets ("Issue not resolved")',
+    module: 'support_tickets',
+  },
 
-  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_READ, name: 'Read platform support tickets (cross-tenant)', module: 'support_tickets' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE, name: 'Triage platform support tickets (status/priority, cannot close)', module: 'support_tickets' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY, name: 'Reply to / add internal notes on platform support tickets', module: 'support_tickets' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE, name: 'Close platform support tickets', module: 'support_tickets' },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_READ,
+    name: 'Read platform support tickets (cross-tenant)',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE,
+    name: 'Triage platform support tickets (status/priority, cannot close)',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
+    name: 'Reply to / add internal notes on platform support tickets',
+    module: 'support_tickets',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_TICKETS_CLOSE,
+    name: 'Close platform support tickets',
+    module: 'support_tickets',
+  },
 
-  { slug: PERMISSION.PLATFORM_SUPPORT_CLINICS_READ_BASIC, name: 'Read a clinic support profile (basic operational identity)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_SUBSCRIPTIONS_READ, name: 'Read clinic subscription diagnostics (no pricing/cost)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_FEATURES_READ, name: 'Read clinic feature/module availability diagnostics', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_CLINIC_SETTINGS_READ, name: 'Read safe clinic operational configuration', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_READ, name: 'Read clinic integration status (no credentials)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_READ, name: 'Read clinic email/notification delivery history', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_JOBS_READ, name: 'Read queue/worker health (no Redis administration)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_AUDIT_READ, name: 'Read sanitized clinic operational activity timeline', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS, name: 'Read appointment diagnostics (no medical data)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS, name: 'Read payment diagnostics (no card data, fees or secrets)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS, name: 'Read AI diagnostics (no costs, prompts or provider keys)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS, name: 'Read WhatsApp diagnostics (no Meta tokens or secrets)', module: 'support_diagnostics' },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_CLINICS_READ_BASIC,
+    name: 'Read a clinic support profile (basic operational identity)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_SUBSCRIPTIONS_READ,
+    name: 'Read clinic subscription diagnostics (no pricing/cost)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_FEATURES_READ,
+    name: 'Read clinic feature/module availability diagnostics',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_CLINIC_SETTINGS_READ,
+    name: 'Read safe clinic operational configuration',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_READ,
+    name: 'Read clinic integration status (no credentials)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_READ,
+    name: 'Read clinic email/notification delivery history',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_JOBS_READ,
+    name: 'Read queue/worker health (no Redis administration)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_AUDIT_READ,
+    name: 'Read sanitized clinic operational activity timeline',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_APPOINTMENTS_READ_DIAGNOSTICS,
+    name: 'Read appointment diagnostics (no medical data)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_PAYMENTS_READ_DIAGNOSTICS,
+    name: 'Read payment diagnostics (no card data, fees or secrets)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_AI_READ_DIAGNOSTICS,
+    name: 'Read AI diagnostics (no costs, prompts or provider keys)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_WHATSAPP_READ_DIAGNOSTICS,
+    name: 'Read WhatsApp diagnostics (no Meta tokens or secrets)',
+    module: 'support_diagnostics',
+  },
 
-  { slug: PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY, name: 'Retry one failed notification (safe, audited)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND, name: 'Resend one eligible transactional email (safe, audited)', module: 'support_diagnostics' },
-  { slug: PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK, name: 'Trigger a read-only integration health recheck (audited)', module: 'support_diagnostics' },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY,
+    name: 'Retry one failed notification (safe, audited)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND,
+    name: 'Resend one eligible transactional email (safe, audited)',
+    module: 'support_diagnostics',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK,
+    name: 'Trigger a read-only integration health recheck (audited)',
+    module: 'support_diagnostics',
+  },
 
-  { slug: PERMISSION.PROFILE_UPDATE_OWN, name: 'Update own profile', module: 'profile' },
+  {
+    slug: PERMISSION.PROFILE_UPDATE_OWN,
+    name: 'Update own profile',
+    module: 'profile',
+  },
 
-  { slug: PERMISSION.SERVICES_CREATE, name: 'Create services', module: 'services' },
+  {
+    slug: PERMISSION.SERVICES_CREATE,
+    name: 'Create services',
+    module: 'services',
+  },
   { slug: PERMISSION.SERVICES_READ, name: 'Read services', module: 'services' },
-  { slug: PERMISSION.SERVICES_UPDATE, name: 'Update services', module: 'services' },
-  { slug: PERMISSION.SERVICES_DELETE, name: 'Delete services', module: 'services' },
+  {
+    slug: PERMISSION.SERVICES_UPDATE,
+    name: 'Update services',
+    module: 'services',
+  },
+  {
+    slug: PERMISSION.SERVICES_DELETE,
+    name: 'Delete services',
+    module: 'services',
+  },
 
   { slug: PERMISSION.STAFF_CREATE, name: 'Create staff', module: 'staff' },
   { slug: PERMISSION.STAFF_READ, name: 'Read staff', module: 'staff' },
   { slug: PERMISSION.STAFF_UPDATE, name: 'Update staff', module: 'staff' },
   { slug: PERMISSION.STAFF_MANAGE, name: 'Manage staff', module: 'staff' },
-  { slug: PERMISSION.STAFF_SCHEDULE_MANAGE, name: 'Manage staff schedules & working hours', module: 'staff' },
-  { slug: PERMISSION.STAFF_TIMEOFF_MANAGE, name: 'Manage staff time off', module: 'staff' },
-  { slug: PERMISSION.STAFF_COMMISSION_READ, name: 'Read staff commissions', module: 'staff' },
-  { slug: PERMISSION.STAFF_RATING_READ, name: 'Read staff ratings', module: 'staff' },
+  {
+    slug: PERMISSION.STAFF_SCHEDULE_MANAGE,
+    name: 'Manage staff schedules & working hours',
+    module: 'staff',
+  },
+  {
+    slug: PERMISSION.STAFF_TIMEOFF_MANAGE,
+    name: 'Manage staff time off',
+    module: 'staff',
+  },
+  {
+    slug: PERMISSION.STAFF_COMMISSION_READ,
+    name: 'Read staff commissions',
+    module: 'staff',
+  },
+  {
+    slug: PERMISSION.STAFF_RATING_READ,
+    name: 'Read staff ratings',
+    module: 'staff',
+  },
 
-  { slug: PERMISSION.SCHEDULING_SLOTS_READ, name: 'Read calendar slots', module: 'scheduling' },
-  { slug: PERMISSION.SCHEDULING_SLOTS_MANAGE, name: 'Manage calendar slots', module: 'scheduling' },
-  { slug: PERMISSION.SCHEDULING_BLOCKED_READ, name: 'Read blocked slots', module: 'scheduling' },
-  { slug: PERMISSION.SCHEDULING_BLOCKED_MANAGE, name: 'Manage blocked slots', module: 'scheduling' },
-  { slug: PERMISSION.SCHEDULING_HOLIDAYS_READ, name: 'Read holidays', module: 'scheduling' },
-  { slug: PERMISSION.SCHEDULING_HOLIDAYS_MANAGE, name: 'Manage holidays', module: 'scheduling' },
-  { slug: PERMISSION.SCHEDULING_AVAILABILITY_READ, name: 'Read availability', module: 'scheduling' },
+  {
+    slug: PERMISSION.SCHEDULING_SLOTS_READ,
+    name: 'Read calendar slots',
+    module: 'scheduling',
+  },
+  {
+    slug: PERMISSION.SCHEDULING_SLOTS_MANAGE,
+    name: 'Manage calendar slots',
+    module: 'scheduling',
+  },
+  {
+    slug: PERMISSION.SCHEDULING_BLOCKED_READ,
+    name: 'Read blocked slots',
+    module: 'scheduling',
+  },
+  {
+    slug: PERMISSION.SCHEDULING_BLOCKED_MANAGE,
+    name: 'Manage blocked slots',
+    module: 'scheduling',
+  },
+  {
+    slug: PERMISSION.SCHEDULING_HOLIDAYS_READ,
+    name: 'Read holidays',
+    module: 'scheduling',
+  },
+  {
+    slug: PERMISSION.SCHEDULING_HOLIDAYS_MANAGE,
+    name: 'Manage holidays',
+    module: 'scheduling',
+  },
+  {
+    slug: PERMISSION.SCHEDULING_AVAILABILITY_READ,
+    name: 'Read availability',
+    module: 'scheduling',
+  },
 
   { slug: PERMISSION.PAYMENTS_READ, name: 'Read payments', module: 'payments' },
-  { slug: PERMISSION.PAYMENTS_MANAGE, name: 'Manage payments', module: 'payments' },
-  { slug: PERMISSION.REFUNDS_MANAGE, name: 'Manage refunds', module: 'payments' },
+  {
+    slug: PERMISSION.PAYMENTS_MANAGE,
+    name: 'Manage payments',
+    module: 'payments',
+  },
+  {
+    slug: PERMISSION.REFUNDS_MANAGE,
+    name: 'Manage refunds',
+    module: 'payments',
+  },
   { slug: PERMISSION.INVOICES_READ, name: 'Read invoices', module: 'payments' },
-  { slug: PERMISSION.INVOICES_MANAGE, name: 'Manage invoices', module: 'payments' },
-  { slug: PERMISSION.SETTLEMENTS_READ, name: 'Read settlements', module: 'payments' },
-  { slug: PERMISSION.SETTLEMENTS_MANAGE, name: 'Generate / manage settlements', module: 'payments' },
+  {
+    slug: PERMISSION.INVOICES_MANAGE,
+    name: 'Manage invoices',
+    module: 'payments',
+  },
+  {
+    slug: PERMISSION.SETTLEMENTS_READ,
+    name: 'Read settlements',
+    module: 'payments',
+  },
+  {
+    slug: PERMISSION.SETTLEMENTS_MANAGE,
+    name: 'Generate / manage settlements',
+    module: 'payments',
+  },
 
   { slug: PERMISSION.REPORTS_READ, name: 'Read reports', module: 'reports' },
-  { slug: PERMISSION.REPORTS_EXPORT, name: 'Export reports', module: 'reports' },
+  {
+    slug: PERMISSION.REPORTS_EXPORT,
+    name: 'Export reports',
+    module: 'reports',
+  },
 
-  { slug: PERMISSION.ANALYTICS_EVENTS_READ, name: 'Read analytics events', module: 'analytics' },
-  { slug: PERMISSION.ANALYTICS_EVENTS_MANAGE, name: 'Track analytics events', module: 'analytics' },
-  { slug: PERMISSION.ANALYTICS_DASHBOARD_READ, name: 'Read dashboard metrics', module: 'analytics' },
-  { slug: PERMISSION.ANALYTICS_REPORTS_READ, name: 'Read analytics reports', module: 'analytics' },
-  { slug: PERMISSION.ANALYTICS_REPORTS_MANAGE, name: 'Generate analytics reports', module: 'analytics' },
+  {
+    slug: PERMISSION.ANALYTICS_EVENTS_READ,
+    name: 'Read analytics events',
+    module: 'analytics',
+  },
+  {
+    slug: PERMISSION.ANALYTICS_EVENTS_MANAGE,
+    name: 'Track analytics events',
+    module: 'analytics',
+  },
+  {
+    slug: PERMISSION.ANALYTICS_DASHBOARD_READ,
+    name: 'Read dashboard metrics',
+    module: 'analytics',
+  },
+  {
+    slug: PERMISSION.ANALYTICS_REPORTS_READ,
+    name: 'Read analytics reports',
+    module: 'analytics',
+  },
+  {
+    slug: PERMISSION.ANALYTICS_REPORTS_MANAGE,
+    name: 'Generate analytics reports',
+    module: 'analytics',
+  },
 
-  { slug: PERMISSION.WHATSAPP_SEND, name: 'Send WhatsApp messages', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_ACCOUNTS_READ, name: 'Read WhatsApp accounts', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_ACCOUNTS_MANAGE, name: 'Manage WhatsApp accounts', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_TEMPLATES_READ, name: 'Read WhatsApp templates', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_TEMPLATES_MANAGE, name: 'Manage WhatsApp templates', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_CONTACTS_READ, name: 'Read WhatsApp contacts', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_CONTACTS_MANAGE, name: 'Manage WhatsApp contacts', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_WEBHOOKS_MANAGE, name: 'Manage WhatsApp webhooks', module: 'whatsapp' },
-  { slug: PERMISSION.WHATSAPP_ANALYTICS_READ, name: 'Read WhatsApp analytics', module: 'whatsapp' },
+  {
+    slug: PERMISSION.WHATSAPP_SEND,
+    name: 'Send WhatsApp messages',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_ACCOUNTS_READ,
+    name: 'Read WhatsApp accounts',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_ACCOUNTS_MANAGE,
+    name: 'Manage WhatsApp accounts',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_TEMPLATES_READ,
+    name: 'Read WhatsApp templates',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_TEMPLATES_MANAGE,
+    name: 'Manage WhatsApp templates',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_CONTACTS_READ,
+    name: 'Read WhatsApp contacts',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_CONTACTS_MANAGE,
+    name: 'Manage WhatsApp contacts',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_WEBHOOKS_MANAGE,
+    name: 'Manage WhatsApp webhooks',
+    module: 'whatsapp',
+  },
+  {
+    slug: PERMISSION.WHATSAPP_ANALYTICS_READ,
+    name: 'Read WhatsApp analytics',
+    module: 'whatsapp',
+  },
 
-  { slug: PERMISSION.CONVERSATIONS_READ, name: 'Read conversations', module: 'conversations' },
-  { slug: PERMISSION.CONVERSATIONS_MANAGE, name: 'Manage conversations', module: 'conversations' },
-  { slug: PERMISSION.MESSAGES_SEND, name: 'Send messages', module: 'conversations' },
-  { slug: PERMISSION.MESSAGES_READ, name: 'Read messages', module: 'conversations' },
-  { slug: PERMISSION.PARTICIPANTS_MANAGE, name: 'Manage conversation participants', module: 'conversations' },
-  { slug: PERMISSION.ATTACHMENTS_MANAGE, name: 'Manage message attachments', module: 'conversations' },
-  { slug: PERMISSION.CONVERSATION_ANALYTICS_READ, name: 'Read conversation analytics', module: 'conversations' },
+  {
+    slug: PERMISSION.CONVERSATIONS_READ,
+    name: 'Read conversations',
+    module: 'conversations',
+  },
+  {
+    slug: PERMISSION.CONVERSATIONS_MANAGE,
+    name: 'Manage conversations',
+    module: 'conversations',
+  },
+  {
+    slug: PERMISSION.MESSAGES_SEND,
+    name: 'Send messages',
+    module: 'conversations',
+  },
+  {
+    slug: PERMISSION.MESSAGES_READ,
+    name: 'Read messages',
+    module: 'conversations',
+  },
+  {
+    slug: PERMISSION.PARTICIPANTS_MANAGE,
+    name: 'Manage conversation participants',
+    module: 'conversations',
+  },
+  {
+    slug: PERMISSION.ATTACHMENTS_MANAGE,
+    name: 'Manage message attachments',
+    module: 'conversations',
+  },
+  {
+    slug: PERMISSION.CONVERSATION_ANALYTICS_READ,
+    name: 'Read conversation analytics',
+    module: 'conversations',
+  },
 
   { slug: PERMISSION.AI_CHAT, name: 'Use AI assistant', module: 'ai' },
   { slug: PERMISSION.AI_MANAGE, name: 'Manage AI assistant', module: 'ai' },
   { slug: PERMISSION.AI_AGENTS_READ, name: 'Read AI agents', module: 'ai' },
   { slug: PERMISSION.AI_AGENTS_MANAGE, name: 'Manage AI agents', module: 'ai' },
-  { slug: PERMISSION.AI_KNOWLEDGE_READ, name: 'Read AI knowledge bases', module: 'ai' },
-  { slug: PERMISSION.AI_KNOWLEDGE_MANAGE, name: 'Manage AI knowledge bases', module: 'ai' },
-  { slug: PERMISSION.AI_TRAINING_READ, name: 'Read AI training files', module: 'ai' },
-  { slug: PERMISSION.AI_TRAINING_MANAGE, name: 'Manage AI training files', module: 'ai' },
+  {
+    slug: PERMISSION.AI_KNOWLEDGE_READ,
+    name: 'Read AI knowledge bases',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_KNOWLEDGE_MANAGE,
+    name: 'Manage AI knowledge bases',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_TRAINING_READ,
+    name: 'Read AI training files',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_TRAINING_MANAGE,
+    name: 'Manage AI training files',
+    module: 'ai',
+  },
   { slug: PERMISSION.AI_PROMPTS_READ, name: 'Read AI prompts', module: 'ai' },
-  { slug: PERMISSION.AI_PROMPTS_MANAGE, name: 'Manage AI prompts', module: 'ai' },
-  { slug: PERMISSION.AI_CONVERSATIONS_READ, name: 'Read AI conversations', module: 'ai' },
-  { slug: PERMISSION.AI_CONVERSATIONS_MANAGE, name: 'Manage AI conversations', module: 'ai' },
-  { slug: PERMISSION.AI_HANDOVER_READ, name: 'Read AI handover requests', module: 'ai' },
-  { slug: PERMISSION.AI_HANDOVER_MANAGE, name: 'Manage AI handover requests', module: 'ai' },
-  { slug: PERMISSION.AI_ANALYTICS_READ, name: 'Read AI analytics', module: 'ai' },
+  {
+    slug: PERMISSION.AI_PROMPTS_MANAGE,
+    name: 'Manage AI prompts',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_CONVERSATIONS_READ,
+    name: 'Read AI conversations',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_CONVERSATIONS_MANAGE,
+    name: 'Manage AI conversations',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_HANDOVER_READ,
+    name: 'Read AI handover requests',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_HANDOVER_MANAGE,
+    name: 'Manage AI handover requests',
+    module: 'ai',
+  },
+  {
+    slug: PERMISSION.AI_ANALYTICS_READ,
+    name: 'Read AI analytics',
+    module: 'ai',
+  },
 
-  { slug: PERMISSION.SUBSCRIPTION_READ, name: 'Read subscription', module: 'billing' },
-  { slug: PERMISSION.SUBSCRIPTION_MANAGE, name: 'Manage subscription', module: 'billing' },
-  { slug: PERMISSION.BILLING_READ, name: 'Read billing & invoices', module: 'billing' },
-  { slug: PERMISSION.BILLING_MANAGE, name: 'Manage billing & invoices', module: 'billing' },
+  {
+    slug: PERMISSION.SUBSCRIPTION_READ,
+    name: 'Read subscription',
+    module: 'billing',
+  },
+  {
+    slug: PERMISSION.SUBSCRIPTION_MANAGE,
+    name: 'Manage subscription',
+    module: 'billing',
+  },
+  {
+    slug: PERMISSION.BILLING_READ,
+    name: 'Read billing & invoices',
+    module: 'billing',
+  },
+  {
+    slug: PERMISSION.BILLING_MANAGE,
+    name: 'Manage billing & invoices',
+    module: 'billing',
+  },
   { slug: PERMISSION.USAGE_READ, name: 'Read usage stats', module: 'billing' },
-  { slug: PERMISSION.FEATUREFLAG_READ, name: 'Read feature flags', module: 'billing' },
-  { slug: PERMISSION.FEATUREFLAG_MANAGE, name: 'Manage feature flags', module: 'billing' },
-  { slug: PERMISSION.BILLING_UPGRADE_READ, name: 'Read billing upgrade requests', module: 'billing' },
-  { slug: PERMISSION.BILLING_UPGRADE_MANAGE, name: 'Create / accept / cancel billing upgrade requests', module: 'billing' },
+  {
+    slug: PERMISSION.FEATUREFLAG_READ,
+    name: 'Read feature flags',
+    module: 'billing',
+  },
+  {
+    slug: PERMISSION.FEATUREFLAG_MANAGE,
+    name: 'Manage feature flags',
+    module: 'billing',
+  },
+  {
+    slug: PERMISSION.BILLING_UPGRADE_READ,
+    name: 'Read billing upgrade requests',
+    module: 'billing',
+  },
+  {
+    slug: PERMISSION.BILLING_UPGRADE_MANAGE,
+    name: 'Create / accept / cancel billing upgrade requests',
+    module: 'billing',
+  },
 
-  { slug: PERMISSION.NOTIFICATIONS_READ, name: 'Read notifications', module: 'notifications' },
-  { slug: PERMISSION.NOTIFICATIONS_MANAGE, name: 'Manage notifications', module: 'notifications' },
-  { slug: PERMISSION.NOTIFICATION_TEMPLATES_READ, name: 'Read notification templates', module: 'notifications' },
-  { slug: PERMISSION.NOTIFICATION_TEMPLATES_MANAGE, name: 'Manage notification templates', module: 'notifications' },
-  { slug: PERMISSION.NOTIFICATION_RULES_READ, name: 'Read notification rules', module: 'notifications' },
-  { slug: PERMISSION.NOTIFICATION_RULES_MANAGE, name: 'Manage notification rules', module: 'notifications' },
+  {
+    slug: PERMISSION.NOTIFICATIONS_READ,
+    name: 'Read notifications',
+    module: 'notifications',
+  },
+  {
+    slug: PERMISSION.NOTIFICATIONS_MANAGE,
+    name: 'Manage notifications',
+    module: 'notifications',
+  },
+  {
+    slug: PERMISSION.NOTIFICATION_TEMPLATES_READ,
+    name: 'Read notification templates',
+    module: 'notifications',
+  },
+  {
+    slug: PERMISSION.NOTIFICATION_TEMPLATES_MANAGE,
+    name: 'Manage notification templates',
+    module: 'notifications',
+  },
+  {
+    slug: PERMISSION.NOTIFICATION_RULES_READ,
+    name: 'Read notification rules',
+    module: 'notifications',
+  },
+  {
+    slug: PERMISSION.NOTIFICATION_RULES_MANAGE,
+    name: 'Manage notification rules',
+    module: 'notifications',
+  },
 
-  { slug: PERMISSION.CAMPAIGNS_READ, name: 'Read campaigns', module: 'campaigns' },
-  { slug: PERMISSION.CAMPAIGNS_MANAGE, name: 'Manage campaigns', module: 'campaigns' },
-  { slug: PERMISSION.CAMPAIGN_RECIPIENTS_READ, name: 'Read campaign recipients', module: 'campaigns' },
-  { slug: PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE, name: 'Manage campaign recipients', module: 'campaigns' },
-  { slug: PERMISSION.CAMPAIGN_ANALYTICS_READ, name: 'Read campaign analytics', module: 'campaigns' },
+  {
+    slug: PERMISSION.CAMPAIGNS_READ,
+    name: 'Read campaigns',
+    module: 'campaigns',
+  },
+  {
+    slug: PERMISSION.CAMPAIGNS_MANAGE,
+    name: 'Manage campaigns',
+    module: 'campaigns',
+  },
+  {
+    slug: PERMISSION.CAMPAIGN_RECIPIENTS_READ,
+    name: 'Read campaign recipients',
+    module: 'campaigns',
+  },
+  {
+    slug: PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE,
+    name: 'Manage campaign recipients',
+    module: 'campaigns',
+  },
+  {
+    slug: PERMISSION.CAMPAIGN_ANALYTICS_READ,
+    name: 'Read campaign analytics',
+    module: 'campaigns',
+  },
 
-  { slug: PERMISSION.PLATFORM_API_KEYS_READ, name: 'Read API keys', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_API_KEYS_MANAGE, name: 'Manage API keys', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_API_LOGS_READ, name: 'Read API logs', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_WEBHOOKS_READ, name: 'Read webhook logs', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_WEBHOOKS_MANAGE, name: 'Manage webhook logs', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ, name: 'Read outbound webhooks', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE, name: 'Manage outbound webhooks', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_INTEGRATIONS_READ, name: 'Read integration connections', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_INTEGRATIONS_MANAGE, name: 'Manage integration connections', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_FILES_READ, name: 'Read file uploads', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_FILES_MANAGE, name: 'Manage file uploads', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_SETTINGS_READ, name: 'Read system settings', module: 'platform' },
-  { slug: PERMISSION.PLATFORM_SETTINGS_MANAGE, name: 'Manage system settings', module: 'platform' },
+  {
+    slug: PERMISSION.PLATFORM_API_KEYS_READ,
+    name: 'Read API keys',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_API_KEYS_MANAGE,
+    name: 'Manage API keys',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_API_LOGS_READ,
+    name: 'Read API logs',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_WEBHOOKS_READ,
+    name: 'Read webhook logs',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_WEBHOOKS_MANAGE,
+    name: 'Manage webhook logs',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ,
+    name: 'Read outbound webhooks',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE,
+    name: 'Manage outbound webhooks',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_INTEGRATIONS_READ,
+    name: 'Read integration connections',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_INTEGRATIONS_MANAGE,
+    name: 'Manage integration connections',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_FILES_READ,
+    name: 'Read file uploads',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_FILES_MANAGE,
+    name: 'Manage file uploads',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SETTINGS_READ,
+    name: 'Read system settings',
+    module: 'platform',
+  },
+  {
+    slug: PERMISSION.PLATFORM_SETTINGS_MANAGE,
+    name: 'Manage system settings',
+    module: 'platform',
+  },
 
   { slug: PERMISSION.USERS_MANAGE, name: 'Manage users', module: 'admin' },
   { slug: PERMISSION.ROLES_MANAGE, name: 'Manage roles', module: 'admin' },
   { slug: PERMISSION.TENANTS_MANAGE, name: 'Manage tenants', module: 'admin' },
 
-  { slug: PERMISSION.BRANCHES_CREATE, name: 'Create branches', module: 'branches' },
-  { slug: PERMISSION.BRANCHES_UPDATE, name: 'Update branches', module: 'branches' },
-  { slug: PERMISSION.BRANCHES_UPDATE_OWN, name: 'Update own assigned branch', module: 'branches' },
-  { slug: PERMISSION.BRANCHES_DELETE, name: 'Delete branches', module: 'branches' },
+  {
+    slug: PERMISSION.BRANCHES_CREATE,
+    name: 'Create branches',
+    module: 'branches',
+  },
+  {
+    slug: PERMISSION.BRANCHES_UPDATE,
+    name: 'Update branches',
+    module: 'branches',
+  },
+  {
+    slug: PERMISSION.BRANCHES_UPDATE_OWN,
+    name: 'Update own assigned branch',
+    module: 'branches',
+  },
+  {
+    slug: PERMISSION.BRANCHES_DELETE,
+    name: 'Delete branches',
+    module: 'branches',
+  },
 ];
 
 export const ROLES: RoleDef[] = [
@@ -705,12 +1257,14 @@ export const ROLES: RoleDef[] = [
   {
     slug: ROLE.RECEPTIONIST,
     name: 'Receptionist',
-    description: 'Front desk. Handles bookings, customers and WhatsApp replies.',
+    description:
+      'Front desk. Handles bookings, customers and WhatsApp replies.',
   },
   {
     slug: ROLE.DOCTOR,
     name: 'Doctor',
-    description: 'Clinical staff who treat customers. Manages own appointments and schedule.',
+    description:
+      'Clinical staff who treat customers. Manages own appointments and schedule.',
   },
   {
     slug: ROLE.CUSTOMER,
@@ -720,7 +1274,8 @@ export const ROLES: RoleDef[] = [
   {
     slug: ROLE.PLATFORM_SUPPORT,
     name: 'Platform Customer Service',
-    description: 'ZiyaraTech support employee. Triages clinic support tickets across tenants. Cannot close tickets or access Super Admin functionality.',
+    description:
+      'ZiyaraTech support employee. Triages clinic support tickets across tenants. Cannot close tickets or access Super Admin functionality.',
   },
 ];
 

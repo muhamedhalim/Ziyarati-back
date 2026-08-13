@@ -40,6 +40,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -60,8 +62,15 @@ const S_WORKFLOW = {
     description: { type: 'string', nullable: true },
     trigger_event: { type: 'string', example: 'appointment.created' },
     is_active: { type: 'boolean', example: true },
-    conditions: { type: 'array', items: { type: 'object', additionalProperties: true }, nullable: true },
-    actions: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    conditions: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+      nullable: true,
+    },
+    actions: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
     created_at: { type: 'string', format: 'date-time' },
     updated_at: { type: 'string', format: 'date-time' },
   },
@@ -76,6 +85,7 @@ const S_WORKFLOW = {
  */
 @ApiTags('Workflows')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.AUTOMATIONS)
 @Controller('workflows')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequirePermissions(PERMISSION.AI_MANAGE)
@@ -86,8 +96,12 @@ export class WorkflowController {
     private readonly queue: QueueService,
   ) {}
 
-  @ApiOperation({ summary: 'List available triggers, action types and operators' })
-  @ApiOkResponse({ description: 'Static engine metadata for building workflows.' })
+  @ApiOperation({
+    summary: 'List available triggers, action types and operators',
+  })
+  @ApiOkResponse({
+    description: 'Static engine metadata for building workflows.',
+  })
   @Get('meta')
   meta() {
     return {
@@ -99,8 +113,14 @@ export class WorkflowController {
 
   @ApiOperation({ summary: 'Create a workflow' })
   @ApiCreatedResponse({ description: 'Workflow created.', schema: S_WORKFLOW })
-  @ApiForbiddenResponse({ description: 'Missing `ai.manage` or clinic inactive.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description: 'Missing `ai.manage` or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @Post()
   create(@Body() dto: CreateWorkflowDto) {
     return this.workflows.create(this.ctx.requireTenantId(), dto);
@@ -122,7 +142,7 @@ export class WorkflowController {
     return this.workflows.findOne(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'List a workflow\'s execution runs (audit)' })
+  @ApiOperation({ summary: "List a workflow's execution runs (audit)" })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ description: 'Paginated runs for the workflow.' })
   @Get(':id/runs')
@@ -144,20 +164,27 @@ export class WorkflowController {
   @ApiOkResponse({ description: 'Workflow updated.', schema: S_WORKFLOW })
   @ApiNotFoundResponse({ description: 'Workflow not found.', schema: S_ERROR })
   @Patch(':id')
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWorkflowDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWorkflowDto,
+  ) {
     return this.workflows.update(this.ctx.requireTenantId(), id, dto);
   }
 
   @ApiOperation({
     summary: 'Manually run a workflow now (test)',
-    description: 'Creates a run with the provided context and enqueues its actions — bypasses the trigger, not the conditions.',
+    description:
+      'Creates a run with the provided context and enqueues its actions — bypasses the trigger, not the conditions.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({ description: 'Run enqueued.' })
   @ApiNotFoundResponse({ description: 'Workflow not found.', schema: S_ERROR })
   @Post(':id/run')
   @HttpCode(HttpStatus.OK)
-  async run(@Param('id', ParseUUIDPipe) id: string, @Body() body: { context?: Record<string, unknown> }) {
+  async run(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { context?: Record<string, unknown> },
+  ) {
     const tenantId = this.ctx.requireTenantId();
     const workflow = await this.workflows.findOne(tenantId, id);
     const context = body?.context ?? {};
@@ -175,10 +202,14 @@ export class WorkflowController {
 
   @ApiOperation({
     summary: 'Duplicate a workflow',
-    description: 'Copies name/trigger/conditions/actions into a NEW, inactive workflow so it can be reviewed before enabling.',
+    description:
+      'Copies name/trigger/conditions/actions into a NEW, inactive workflow so it can be reviewed before enabling.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Duplicated workflow.', schema: S_WORKFLOW })
+  @ApiCreatedResponse({
+    description: 'Duplicated workflow.',
+    schema: S_WORKFLOW,
+  })
   @ApiNotFoundResponse({ description: 'Workflow not found.', schema: S_ERROR })
   @Post(':id/duplicate')
   duplicate(@Param('id', ParseUUIDPipe) id: string) {
@@ -186,8 +217,9 @@ export class WorkflowController {
   }
 
   @ApiOperation({
-    summary: 'Retry a run\'s failed actions',
-    description: 'Re-enqueues every action whose last outcome was FAILED (SUCCEEDED/SKIPPED actions are left untouched).',
+    summary: "Retry a run's failed actions",
+    description:
+      'Re-enqueues every action whose last outcome was FAILED (SUCCEEDED/SKIPPED actions are left untouched).',
   })
   @ApiParam({ name: 'runId', format: 'uuid' })
   @ApiOkResponse({ description: 'Retry enqueued.' })
@@ -198,7 +230,8 @@ export class WorkflowController {
     const tenantId = this.ctx.requireTenantId();
     const run = await this.workflows.getOwnedRun(tenantId, runId);
     const failedIndices = this.workflows.failedActionIndices(run);
-    if (!failedIndices.length) return { retried: 0, reason: 'no_failed_actions' };
+    if (!failedIndices.length)
+      return { retried: 0, reason: 'no_failed_actions' };
 
     await this.workflows.reopenForRetry(runId);
     for (const actionIndex of failedIndices) {

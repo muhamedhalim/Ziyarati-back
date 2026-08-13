@@ -10,11 +10,11 @@ import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
+import { COUNT_LIMIT_FEATURE, featuresForMetric } from './feature-registry';
 import {
   CountLimitColumn,
   RESOURCE_LIMIT_MAP,
   ResourceMetric,
-  USAGE_METRIC_FEATURE_KEYS,
   USAGE_METRIC_MAP,
   UnifiedUsageLine,
   UsageMetric,
@@ -57,50 +57,12 @@ export class UsageService {
       !(await this.access.isEnforced(
         tenantId,
         undefined,
-        USAGE_METRIC_FEATURE_KEYS[metric],
+        featuresForMetric(metric),
       ))
     ) {
       return;
     }
-    const { usageColumn } = USAGE_METRIC_MAP[metric];
-    // Best-effort: metering must NEVER break the operation it accompanies, so a
-    // missing subscription (e.g. a worker/bot flow for an unsubscribed tenant)
-    // is a silent no-op rather than a throw.
-    const subscription = await this.findCurrentSubscription(tenantId);
-    if (!subscription) return;
-    const period = currentPeriodMonth();
-
-    // 1) Ensure the (subscription, period) row exists — ON CONFLICT DO NOTHING.
-    await this.usage
-      .createQueryBuilder()
-      .insert()
-      .into(SubscriptionUsage)
-      .values({
-        tenant_id: tenantId,
-        subscription_id: subscription.id,
-        period_month: period,
-        ai_tokens_used: '0',
-        whatsapp_messages_used: 0,
-        appointments_used: 0,
-        campaigns_used: 0,
-      })
-      .orIgnore()
-      .execute();
-
-    // 2) Atomic increment.
-    await this.usage
-      .createQueryBuilder()
-      .update(SubscriptionUsage)
-      .set({
-        [usageColumn]: () => `"${usageColumn}" + :amount`,
-        updated_at: () => 'now()',
-      })
-      .where('subscription_id = :sid AND period_month = :pm', {
-        sid: subscription.id,
-        pm: period,
-      })
-      .setParameter('amount', amount)
-      .execute();
+    await this.applyDelta(this.usage, tenantId, metric, amount, 'add');
   }
 
   /**
@@ -117,24 +79,7 @@ export class UsageService {
     amount = 1,
   ): Promise<void> {
     if (amount <= 0) return;
-    const subscription = await this.findCurrentSubscription(tenantId);
-    if (!subscription) return;
-    const { usageColumn } = USAGE_METRIC_MAP[metric];
-    const period = currentPeriodMonth();
-
-    await this.usage
-      .createQueryBuilder()
-      .update(SubscriptionUsage)
-      .set({
-        [usageColumn]: () => `GREATEST("${usageColumn}" - :amount, 0)`,
-        updated_at: () => 'now()',
-      })
-      .where('subscription_id = :sid AND period_month = :pm', {
-        sid: subscription.id,
-        pm: period,
-      })
-      .setParameter('amount', amount)
-      .execute();
+    await this.applyDelta(this.usage, tenantId, metric, amount, 'subtract');
   }
 
   /**
@@ -177,22 +122,32 @@ export class UsageService {
       !(await this.access.isEnforced(
         tenantId,
         manager,
-        USAGE_METRIC_FEATURE_KEYS[metric],
+        featuresForMetric(metric),
       ))
     ) {
       await this.rawIncrement(repo, tenantId, metric, amount, manager);
       return { applied: true, used: 0, limit: null };
     }
 
-    const subscription = await this.resolveSubscription(tenantId, true, manager);
+    const subscription = await this.resolveSubscription(
+      tenantId,
+      true,
+      manager,
+    );
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
-    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[limitColumn];
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
+      limitColumn
+    ];
     if (limitRaw === null || limitRaw === undefined) {
       await this.rawIncrement(repo, tenantId, metric, amount, manager);
       return { applied: true, used: 0, limit: null }; // unlimited
     }
 
-    const override = await this.limitOverrides.getActive(tenantId, metric, manager);
+    const override = await this.limitOverrides.getActive(
+      tenantId,
+      metric,
+      manager,
+    );
     const limit = override
       ? Math.max(Number(limitRaw), Number(override.override_limit))
       : Number(limitRaw);
@@ -255,19 +210,41 @@ export class UsageService {
     amount: number,
     manager?: EntityManager,
   ): Promise<void> {
-    const subscription = await this.findCurrentSubscription(tenantId, manager);
-    if (!subscription) return;
-    const { usageColumn } = USAGE_METRIC_MAP[metric];
-    const period = currentPeriodMonth();
+    await this.applyDelta(repo, tenantId, metric, amount, 'add', manager);
+  }
 
+  /**
+   * The one place a usage counter moves.
+   *
+   * Records against the tenant's subscription when it has one, and against a
+   * subscription-less row for the tenant-month when it does not. That second
+   * case is the point: a clinic running on a super-admin feature grant has no
+   * plan and therefore no cap, but its consumption still has to be visible —
+   * previously these calls simply returned early and the platform recorded
+   * nothing at all for those tenants.
+   */
+  private async applyDelta(
+    repo: Repository<SubscriptionUsage>,
+    tenantId: string,
+    metric: UsageMetric,
+    amount: number,
+    direction: 'add' | 'subtract',
+    manager?: EntityManager,
+  ): Promise<void> {
+    const subscription = await this.findCurrentSubscription(tenantId, manager);
+    const scope = this.scopeOf(tenantId, subscription?.id ?? null);
+    const { usageColumn } = USAGE_METRIC_MAP[metric];
+
+    // Idempotent upsert: harmless under concurrency (ON CONFLICT DO NOTHING),
+    // and covered by the partial unique index on the subscription-less path.
     await repo
       .createQueryBuilder()
       .insert()
       .into(SubscriptionUsage)
       .values({
         tenant_id: tenantId,
-        subscription_id: subscription.id,
-        period_month: period,
+        subscription_id: scope.subscriptionId,
+        period_month: scope.period,
         ai_tokens_used: '0',
         whatsapp_messages_used: 0,
         appointments_used: 0,
@@ -276,19 +253,74 @@ export class UsageService {
       .orIgnore()
       .execute();
 
+    const expression =
+      direction === 'add'
+        ? `"${usageColumn}" + :amount`
+        : // Clamp at zero so a duplicate or late release cannot drive a
+          // counter negative.
+          `GREATEST("${usageColumn}" - :amount, 0)`;
+
     await repo
       .createQueryBuilder()
       .update(SubscriptionUsage)
       .set({
-        [usageColumn]: () => `"${usageColumn}" + :amount`,
+        [usageColumn]: () => expression,
         updated_at: () => 'now()',
       })
-      .where('subscription_id = :sid AND period_month = :pm', {
-        sid: subscription.id,
-        pm: period,
-      })
+      .where(scope.where, scope.params)
       .setParameter('amount', amount)
       .execute();
+  }
+
+  /**
+   * Identifies the usage row for a tenant-month.
+   *
+   * Subscribed tenants key on `subscription_id` (the historical unique
+   * constraint). Subscription-less tenants key on `(tenant_id, period_month)`
+   * with `subscription_id IS NULL`, which the partial unique index keeps to one
+   * row — plain `subscription_id = NULL` would never match anything, and the
+   * default unique constraint treats NULLs as distinct.
+   */
+  private scopeOf(
+    tenantId: string,
+    subscriptionId: string | null,
+    periodMonth?: string,
+  ): {
+    subscriptionId: string | null;
+    period: string;
+    where: string;
+    params: Record<string, unknown>;
+  } {
+    const period = periodMonth ?? currentPeriodMonth();
+    return subscriptionId
+      ? {
+          subscriptionId,
+          period,
+          where: 'subscription_id = :sid AND period_month = :pm',
+          params: { sid: subscriptionId, pm: period },
+        }
+      : {
+          subscriptionId: null,
+          period,
+          where:
+            'tenant_id = :tid AND period_month = :pm AND subscription_id IS NULL',
+          params: { tid: tenantId, pm: period },
+        };
+  }
+
+  /** TypeORM `findOne` shape matching {@link scopeOf}. */
+  private rowFilter(
+    tenantId: string,
+    subscriptionId: string | null,
+    period: string,
+  ) {
+    return subscriptionId
+      ? { subscription_id: subscriptionId, period_month: period }
+      : {
+          tenant_id: tenantId,
+          subscription_id: IsNull(),
+          period_month: period,
+        };
   }
 
   /**
@@ -311,7 +343,7 @@ export class UsageService {
       !(await this.access.isEnforced(
         tenantId,
         undefined,
-        USAGE_METRIC_FEATURE_KEYS[metric],
+        featuresForMetric(metric),
       ))
     ) {
       return;
@@ -320,7 +352,9 @@ export class UsageService {
     const subscription = await this.resolveSubscription(tenantId, true);
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
 
-    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[limitColumn];
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
+      limitColumn
+    ];
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
     // A paid, tenant-specific raise (billing-upgrade workflow) never LOWERS the
@@ -335,7 +369,9 @@ export class UsageService {
         period_month: currentPeriodMonth(),
       },
     });
-    const used = row ? Number((row as unknown as Record<string, unknown>)[usageColumn]) : 0;
+    const used = row
+      ? Number((row as unknown as Record<string, unknown>)[usageColumn])
+      : 0;
 
     if (used + amount > limit) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -358,9 +394,21 @@ export class UsageService {
     currentCount: number,
     amount = 1,
   ): Promise<void> {
-    if (!(await this.access.isEnforced(tenantId))) return;
+    // Scoped by the capability this cap belongs to, exactly like the metered
+    // paths. Asking the UNSCOPED question here is what made branch creation
+    // and staff invites fail with a bare 404 for a tenant running on a
+    // super-admin grant: enforcement was reported as on, and the next line
+    // then demanded a subscription that by design does not exist.
+    if (
+      !(await this.access.isEnforced(tenantId, undefined, [
+        COUNT_LIMIT_FEATURE[limitColumn],
+      ]))
+    ) {
+      return;
+    }
 
-    const subscription = await this.resolveSubscription(tenantId, true);
+    const subscription = await this.findCurrentSubscriptionWithPlan(tenantId);
+    if (!subscription) return; // enforced but no plan to compare against
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
       limitColumn
     ];
@@ -370,7 +418,12 @@ export class UsageService {
     if (currentCount + amount > limit) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
-        publicContext: { limit: limitColumn, current: currentCount, max: limit, requested: amount },
+        publicContext: {
+          limit: limitColumn,
+          current: currentCount,
+          max: limit,
+          requested: amount,
+        },
       });
     }
   }
@@ -398,9 +451,17 @@ export class UsageService {
     manager: EntityManager,
     amount = 1,
   ): Promise<void> {
-    if (!(await this.access.isEnforced(tenantId))) return;
+    if (
+      !(await this.access.isEnforced(tenantId, manager, [
+        COUNT_LIMIT_FEATURE.max_users,
+      ]))
+    ) {
+      return;
+    }
 
-    await manager.query('SELECT id FROM tenants WHERE id = $1 FOR UPDATE', [tenantId]);
+    await manager.query('SELECT id FROM tenants WHERE id = $1 FOR UPDATE', [
+      tenantId,
+    ]);
 
     const subscription = await manager.getRepository(Subscription).findOne({
       where: {
@@ -411,12 +472,14 @@ export class UsageService {
       relations: { plan: true },
       order: { created_at: 'DESC' },
     });
-    if (!subscription) {
-      throw new AppError(ErrorCode.NOT_FOUND, {
-        message: 'No active subscription found for this tenant',
-      });
-    }
-    const limitRaw = (subscription.plan as unknown as Record<string, unknown>).max_users;
+    // No plan means no seat cap to enforce. This used to throw a bare 404
+    // ("No active subscription found for this tenant"), which surfaced to an
+    // operator inviting staff as a confusing not-found rather than anything to
+    // do with billing — and blocked tenants the platform had deliberately
+    // granted access to.
+    if (!subscription) return;
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)
+      .max_users;
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
     const limit = Number(limitRaw);
@@ -458,7 +521,8 @@ export class UsageService {
     });
     if (rows.length === 0) return null;
     const total = rows.reduce(
-      (sum, r) => sum + Number((r as unknown as Record<string, unknown>)[usageColumn]),
+      (sum, r) =>
+        sum + Number((r as unknown as Record<string, unknown>)[usageColumn]),
       0,
     );
     return total / rows.length;
@@ -466,16 +530,19 @@ export class UsageService {
 
   /** Raw usage row for a period (zeros if none yet). */
   async getUsage(tenantId: string, periodMonth?: string) {
-    const subscription = await this.resolveSubscription(tenantId);
+    // Non-throwing: a tenant on a super-admin grant has no subscription but
+    // does have recorded usage, and reporting its own consumption back to it
+    // must not 404.
+    const subscription = await this.findCurrentSubscription(tenantId);
     const period = periodMonth ?? currentPeriodMonth();
 
     const row = await this.usage.findOne({
-      where: { tenant_id: tenantId, subscription_id: subscription.id, period_month: period },
+      where: this.rowFilter(tenantId, subscription?.id ?? null, period),
     });
 
     return {
       tenantId,
-      subscriptionId: subscription.id,
+      subscriptionId: subscription?.id ?? null,
       periodMonth: period,
       aiTokensUsed: row ? Number(row.ai_tokens_used) : 0,
       whatsappMessagesUsed: row?.whatsapp_messages_used ?? 0,
@@ -487,27 +554,52 @@ export class UsageService {
 
   /** Usage vs plan limits, with remaining + percentage per metric. */
   async getBreakdown(tenantId: string, periodMonth?: string) {
-    const subscription = await this.resolveSubscription(tenantId, true);
+    // Non-throwing. This used to `resolveSubscription(…)` and 404 for any
+    // tenant without one, which made `GET /usage/breakdown`, the AI
+    // GET_USAGE_QUOTA tool and the billing-upgrade estimate all fail for
+    // clinics running on a super-admin grant — tenants whose usage the
+    // platform now records precisely so it can be reported.
+    const subscription = await this.findCurrentSubscriptionWithPlan(tenantId);
     const usage = await this.getUsage(tenantId, periodMonth);
-    const plan = subscription.plan as unknown as Record<string, unknown>;
+    const plan = (subscription?.plan ?? {}) as unknown as Record<
+      string,
+      unknown
+    >;
     const overrides = await this.limitOverrides.getActiveMap(tenantId);
 
     // Public shape is unchanged — the historical 5 fields, derived from the same
     // single line formula used everywhere (buildLine).
     const line = (used: number, limitRaw: unknown, metric: string) => {
-      const l = this.buildLine(used, this.mergeLimit(limitRaw, overrides.get(metric)));
-      return { used: l.used, limit: l.limit, remaining: l.remaining, percentUsed: l.percentUsed, exceeded: l.exceeded };
+      const l = this.buildLine(
+        used,
+        this.mergeLimit(limitRaw, overrides.get(metric)),
+      );
+      return {
+        used: l.used,
+        limit: l.limit,
+        remaining: l.remaining,
+        percentUsed: l.percentUsed,
+        exceeded: l.exceeded,
+      };
     };
 
     return {
       tenantId,
       periodMonth: usage.periodMonth,
-      planId: subscription.plan.id,
-      planName: subscription.plan.name,
+      planId: subscription?.plan?.id ?? null,
+      planName: subscription?.plan?.name ?? null,
       metrics: {
         aiTokens: line(usage.aiTokensUsed, plan.max_ai_tokens, 'AI_TOKENS'),
-        whatsappMessages: line(usage.whatsappMessagesUsed, plan.max_whatsapp_messages, 'WHATSAPP_MESSAGES'),
-        appointments: line(usage.appointmentsUsed, plan.max_appointments, 'APPOINTMENTS'),
+        whatsappMessages: line(
+          usage.whatsappMessagesUsed,
+          plan.max_whatsapp_messages,
+          'WHATSAPP_MESSAGES',
+        ),
+        appointments: line(
+          usage.appointmentsUsed,
+          plan.max_appointments,
+          'APPOINTMENTS',
+        ),
         campaigns: line(usage.campaignsUsed, plan.max_campaigns, 'CAMPAIGNS'),
       },
     };
@@ -533,20 +625,45 @@ export class UsageService {
   ): Promise<Record<string, UnifiedUsageLine>> {
     const enforced = await this.access.isEnforced(tenantId).catch(() => true);
     const subscription = await this.findCurrentSubscriptionWithPlan(tenantId);
-    const plan = subscription?.plan as unknown as Record<string, unknown> | undefined;
+    const plan = subscription?.plan as unknown as
+      | Record<string, unknown>
+      | undefined;
     const period = periodMonth ?? currentPeriodMonth();
-    const usageRow = subscription
-      ? await this.usage.findOne({ where: { subscription_id: subscription.id, period_month: period } })
-      : null;
+    // Reads the subscription-less row too, so an override tenant's consumption
+    // shows up here rather than reporting a flat zero.
+    const usageRow = await this.usage.findOne({
+      where: this.rowFilter(tenantId, subscription?.id ?? null, period),
+    });
     const overrides = await this.limitOverrides.getActiveMap(tenantId);
     const uv = (col: string): number =>
-      usageRow ? Number((usageRow as unknown as Record<string, unknown>)[col]) : 0;
+      usageRow
+        ? Number((usageRow as unknown as Record<string, unknown>)[col])
+        : 0;
 
     const out: Record<string, UnifiedUsageLine> = {
-      aiTokens: this.buildLine(uv('ai_tokens_used'), this.mergeLimit(plan?.max_ai_tokens, overrides.get('AI_TOKENS')), enforced),
-      whatsappMessages: this.buildLine(uv('whatsapp_messages_used'), this.mergeLimit(plan?.max_whatsapp_messages, overrides.get('WHATSAPP_MESSAGES')), enforced),
-      appointments: this.buildLine(uv('appointments_used'), this.mergeLimit(plan?.max_appointments, overrides.get('APPOINTMENTS')), enforced),
-      campaigns: this.buildLine(uv('campaigns_used'), this.mergeLimit(plan?.max_campaigns, overrides.get('CAMPAIGNS')), enforced),
+      aiTokens: this.buildLine(
+        uv('ai_tokens_used'),
+        this.mergeLimit(plan?.max_ai_tokens, overrides.get('AI_TOKENS')),
+        enforced,
+      ),
+      whatsappMessages: this.buildLine(
+        uv('whatsapp_messages_used'),
+        this.mergeLimit(
+          plan?.max_whatsapp_messages,
+          overrides.get('WHATSAPP_MESSAGES'),
+        ),
+        enforced,
+      ),
+      appointments: this.buildLine(
+        uv('appointments_used'),
+        this.mergeLimit(plan?.max_appointments, overrides.get('APPOINTMENTS')),
+        enforced,
+      ),
+      campaigns: this.buildLine(
+        uv('campaigns_used'),
+        this.mergeLimit(plan?.max_campaigns, overrides.get('CAMPAIGNS')),
+        enforced,
+      ),
     };
     for (const [metric, col] of Object.entries(RESOURCE_LIMIT_MAP)) {
       out[metric] = this.buildLine(
@@ -563,21 +680,32 @@ export class UsageService {
    * never disturbing an unlimited (null) plan limit. A no-op when no override
    * exists for the metric — existing callers/tests are unaffected.
    */
-  private mergeLimit(planRaw: unknown, overrideLimit: number | undefined): unknown {
+  private mergeLimit(
+    planRaw: unknown,
+    overrideLimit: number | undefined,
+  ): unknown {
     if (planRaw === null || planRaw === undefined) return planRaw;
     if (overrideLimit === undefined) return planRaw;
     return Math.max(Number(planRaw), overrideLimit);
   }
 
   /** The one line formula — used by getBreakdown and getUnifiedBreakdown. */
-  private buildLine(used: number, limitRaw: unknown, enforced = false): UnifiedUsageLine {
-    const limit = limitRaw === null || limitRaw === undefined ? null : Number(limitRaw);
+  private buildLine(
+    used: number,
+    limitRaw: unknown,
+    enforced = false,
+  ): UnifiedUsageLine {
+    const limit =
+      limitRaw === null || limitRaw === undefined ? null : Number(limitRaw);
     const exceeded = limit === null ? false : used > limit;
     return {
       used,
       limit,
       remaining: limit === null ? null : Math.max(limit - used, 0),
-      percentUsed: limit === null || limit === 0 ? null : +((used / limit) * 100).toFixed(1),
+      percentUsed:
+        limit === null || limit === 0
+          ? null
+          : +((used / limit) * 100).toFixed(1),
       exceeded,
       unlimited: limit === null,
       blocked: exceeded && enforced,
@@ -585,7 +713,9 @@ export class UsageService {
   }
 
   /** Non-throwing current subscription WITH plan (for the unified breakdown). */
-  private findCurrentSubscriptionWithPlan(tenantId: string): Promise<Subscription | null> {
+  private findCurrentSubscriptionWithPlan(
+    tenantId: string,
+  ): Promise<Subscription | null> {
     return this.subscriptions.findOne({
       where: {
         tenant: { id: tenantId },
@@ -612,7 +742,9 @@ export class UsageService {
     withPlan = false,
     manager?: EntityManager,
   ): Promise<Subscription> {
-    const repo = manager ? manager.getRepository(Subscription) : this.subscriptions;
+    const repo = manager
+      ? manager.getRepository(Subscription)
+      : this.subscriptions;
     const subscription = await repo.findOne({
       where: {
         tenant: { id: tenantId },
@@ -631,8 +763,13 @@ export class UsageService {
   }
 
   /** Non-throwing variant for best-effort metering (returns null when none). Same FND-047 manager-threading rule as `resolveSubscription`. */
-  private findCurrentSubscription(tenantId: string, manager?: EntityManager): Promise<Subscription | null> {
-    const repo = manager ? manager.getRepository(Subscription) : this.subscriptions;
+  private findCurrentSubscription(
+    tenantId: string,
+    manager?: EntityManager,
+  ): Promise<Subscription | null> {
+    const repo = manager
+      ? manager.getRepository(Subscription)
+      : this.subscriptions;
     return repo.findOne({
       where: {
         tenant: { id: tenantId },

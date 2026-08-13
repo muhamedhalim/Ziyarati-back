@@ -33,6 +33,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -51,6 +53,7 @@ const S_ERROR = {
  */
 @ApiTags('CRM Customer Addresses')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CRM)
 @Controller('crm/customers/:customerId/addresses')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -60,12 +63,30 @@ export class CustomerAddressController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Add an address', description: '**Protected — `crm.customers.manage`. Clinic active.** Setting default unsets the others.' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Add an address',
+    description:
+      '**Protected — `crm.customers.manage`. Clinic active.** Setting default unsets the others.',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Address added.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.customers.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Customer not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.customers.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Customer not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
   add(
@@ -75,25 +96,65 @@ export class CustomerAddressController {
     return this.addresses.add(this.ctx.requireTenantId(), customerId, dto);
   }
 
-  @ApiOperation({ summary: 'List addresses', description: '**Protected — `crm.customers.read`. Clinic active.** Tenant + customer scoped; default first.' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'List addresses',
+    description:
+      '**Protected — `crm.customers.read`. Clinic active.** Tenant + customer scoped; default first.',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Customer addresses.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.customers.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Customer not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.customers.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Customer not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_READ)
   list(@Param('customerId', ParseUUIDPipe) customerId: string) {
     return this.addresses.list(this.ctx.requireTenantId(), customerId);
   }
 
-  @ApiOperation({ summary: 'Update an address', description: '**Protected — `crm.customers.manage`. Clinic active.**' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'addressId', description: 'Address UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Update an address',
+    description: '**Protected — `crm.customers.manage`. Clinic active.**',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'addressId',
+    description: 'Address UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Address updated.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.customers.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Address not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.customers.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Address not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':addressId')
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
   update(
@@ -101,16 +162,43 @@ export class CustomerAddressController {
     @Param('addressId', ParseUUIDPipe) addressId: string,
     @Body() dto: UpdateCustomerAddressDto,
   ) {
-    return this.addresses.update(this.ctx.requireTenantId(), customerId, addressId, dto);
+    return this.addresses.update(
+      this.ctx.requireTenantId(),
+      customerId,
+      addressId,
+      dto,
+    );
   }
 
-  @ApiOperation({ summary: 'Delete an address', description: '**Protected — `crm.customers.manage`. Clinic active.**' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'addressId', description: 'Address UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete an address',
+    description: '**Protected — `crm.customers.manage`. Clinic active.**',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'addressId',
+    description: 'Address UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Address deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.customers.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Address not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.customers.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Address not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':addressId')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
@@ -118,6 +206,10 @@ export class CustomerAddressController {
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Param('addressId', ParseUUIDPipe) addressId: string,
   ) {
-    return this.addresses.remove(this.ctx.requireTenantId(), customerId, addressId);
+    return this.addresses.remove(
+      this.ctx.requireTenantId(),
+      customerId,
+      addressId,
+    );
   }
 }

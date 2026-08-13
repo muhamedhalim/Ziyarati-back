@@ -28,7 +28,11 @@ class BoundedThrottlerFallback {
     throttlerName: string,
   ): ReturnType<ThrottlerStorage['increment']> {
     if (!this.counter) {
-      this.counter = new BoundedLocalCounter({ width: this.width, depth: 3, windowMs: ttl });
+      this.counter = new BoundedLocalCounter({
+        width: this.width,
+        depth: 3,
+        windowMs: ttl,
+      });
     }
     const count = this.counter.increment(`${throttlerName}:${key}`);
     const isBlocked = count > limit;
@@ -36,7 +40,9 @@ class BoundedThrottlerFallback {
       totalHits: count,
       timeToExpire: Math.max(0, Math.ceil(ttl / 1000)),
       isBlocked,
-      timeToBlockExpire: isBlocked ? Math.max(0, Math.ceil(blockDuration / 1000)) : 0,
+      timeToBlockExpire: isBlocked
+        ? Math.max(0, Math.ceil(blockDuration / 1000))
+        : 0,
     });
   }
 }
@@ -71,7 +77,10 @@ class BoundedThrottlerFallback {
  */
 export class FailsafeThrottlerStorage implements ThrottlerStorage {
   private readonly logger = new Logger(FailsafeThrottlerStorage.name);
-  private readonly degradedLog = new DegradedModeLogLimiter(this.logger, 'Throttler Redis storage');
+  private readonly degradedLog = new DegradedModeLogLimiter(
+    this.logger,
+    'Throttler Redis storage',
+  );
   private readonly fallback: BoundedThrottlerFallback;
 
   /**
@@ -99,7 +108,13 @@ export class FailsafeThrottlerStorage implements ThrottlerStorage {
     throttlerName: string,
   ): ReturnType<ThrottlerStorage['increment']> {
     try {
-      const result = await this.primary.increment(key, ttl, limit, blockDuration, throttlerName);
+      const result = await this.primary.increment(
+        key,
+        ttl,
+        limit,
+        blockDuration,
+        throttlerName,
+      );
       this.degradedLog.recordSuccess();
       return result;
     } catch (err) {
@@ -109,7 +124,13 @@ export class FailsafeThrottlerStorage implements ThrottlerStorage {
       // the metric-cardinality contract failsafe-throttler-storage.spec.ts
       // pins exactly (5 failures -> 5 calls; 1 failure + 1 success -> 1 call).
       this.metrics.recordThrottlerStorageEvent('redis_unavailable');
-      return this.fallback.increment(key, ttl, limit, blockDuration, throttlerName);
+      return this.fallback.increment(
+        key,
+        ttl,
+        limit,
+        blockDuration,
+        throttlerName,
+      );
     }
   }
 }

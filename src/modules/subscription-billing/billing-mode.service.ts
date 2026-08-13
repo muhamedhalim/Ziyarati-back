@@ -82,7 +82,9 @@ export class BillingModeService {
     let setting = await this.settings.findOne({
       where: { key: BILLING_MODE_SETTING_KEY },
     });
-    const previousMode = (setting?.value as { mode?: string } | undefined)?.mode ?? DEFAULT_BILLING_MODE;
+    const previousMode =
+      (setting?.value as { mode?: string } | undefined)?.mode ??
+      DEFAULT_BILLING_MODE;
     if (setting) {
       setting.value = { mode };
     } else {

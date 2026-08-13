@@ -140,7 +140,12 @@ describe('FixedWindowLimiterService (ZT-002, ZT-006)', () => {
     it('independent scopes never share a degraded fallback bucket', async () => {
       incrMock.mockRejectedValue(new Error('ECONNREFUSED'));
       await service.consume('forgot', 'same-digest', 100, 900);
-      const registerDecision = await service.consume('register_identity', 'same-digest', 100, 3600);
+      const registerDecision = await service.consume(
+        'register_identity',
+        'same-digest',
+        100,
+        3600,
+      );
       expect(registerDecision.count).toBe(1); // not 2 — the two scopes are independent
     });
 

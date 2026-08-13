@@ -1,5 +1,10 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { AppointmentsService } from '../appointment/appointment.service';
 import { QueryAppointmentsDto } from '../appointment/dto/query-appointments.dto';
@@ -8,6 +13,8 @@ import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { toIntegrationAppointment } from './integration.mappers';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * M2M API-key access is authorized entirely by integration SCOPES
@@ -17,7 +24,10 @@ import { PERMISSION } from '../../rbac/rbac.constants';
  * behavior and opts out of AppointmentsService's ownership scoping, which
  * only applies to `appointments.read_own` callers.
  */
-const INTEGRATION_CALLER = { id: '', permissions: [PERMISSION.APPOINTMENTS_READ] };
+const INTEGRATION_CALLER = {
+  id: '',
+  permissions: [PERMISSION.APPOINTMENTS_READ],
+};
 
 /**
  * Read-only external view of appointments. Delegates to the existing
@@ -27,6 +37,7 @@ const INTEGRATION_CALLER = { id: '', permissions: [PERMISSION.APPOINTMENTS_READ]
  */
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('integrations/appointments')
 export class IntegrationAppointmentsController {
   constructor(
@@ -53,12 +64,15 @@ export class IntegrationAppointmentsController {
 
   @ApiOperation({
     summary: 'Get an appointment',
-    description: 'Requires scope `integration.appointments.read`. An appointment from another tenant returns 404.',
+    description:
+      'Requires scope `integration.appointments.read`. An appointment from another tenant returns 404.',
   })
   @ApiOkResponse({ description: 'Appointment detail.' })
   @ApiKeyProtected(INTEGRATION_SCOPE.APPOINTMENTS_READ)
   @Get(':id')
   async get(@Param('id', ParseUUIDPipe) id: string) {
-    return toIntegrationAppointment(await this.appointments.findOne(this.ctx.requireTenantId(), id));
+    return toIntegrationAppointment(
+      await this.appointments.findOne(this.ctx.requireTenantId(), id),
+    );
   }
 }

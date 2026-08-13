@@ -36,6 +36,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -56,6 +58,7 @@ const S_ERROR = {
  */
 @ApiTags('Platform Webhooks (Outbound)')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/webhooks/endpoints')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class WebhookEndpointController {
@@ -64,10 +67,23 @@ export class WebhookEndpointController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Register a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Returns the plaintext secret ONCE.' })
-  @ApiCreatedResponse({ description: 'Webhook endpoint created (secret returned once).' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.webhooks-outbound.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiOperation({
+    summary: 'Register a webhook endpoint',
+    description:
+      '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Returns the plaintext secret ONCE.',
+  })
+  @ApiCreatedResponse({
+    description: 'Webhook endpoint created (secret returned once).',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `platform.webhooks-outbound.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE)
   create(
@@ -75,33 +91,71 @@ export class WebhookEndpointController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.create(this.ctx.requireTenantId(), dto, { userId, ip });
+    return this.endpoints.create(this.ctx.requireTenantId(), dto, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'List webhook endpoints', description: '**Protected — `platform.webhooks-outbound.read`. Clinic active.** Tenant-scoped; secrets never included.' })
+  @ApiOperation({
+    summary: 'List webhook endpoints',
+    description:
+      '**Protected — `platform.webhooks-outbound.read`. Clinic active.** Tenant-scoped; secrets never included.',
+  })
   @ApiOkResponse({ description: 'Paginated webhook endpoints (no secrets).' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `platform.webhooks-outbound.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `platform.webhooks-outbound.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ)
   list(@Query() query: QueryWebhookEndpointsDto) {
     return this.endpoints.list(this.ctx.requireTenantId(), query);
   }
 
-  @ApiOperation({ summary: 'Get a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.read`. Clinic active.** Another tenant\'s endpoint returns 404.' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get a webhook endpoint',
+    description:
+      "**Protected — `platform.webhooks-outbound.read`. Clinic active.** Another tenant's endpoint returns 404.",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook endpoint details (no secret).' })
-  @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })
+  @ApiNotFoundResponse({
+    description: 'Not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_READ)
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.endpoints.get(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Update a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Updates name, URL, and/or subscribed events. A URL change is re-validated by the same SSRF guard used at creation.' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Update a webhook endpoint',
+    description:
+      '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Updates name, URL, and/or subscribed events. A URL change is re-validated by the same SSRF guard used at creation.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook endpoint updated.' })
-  @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })
+  @ApiNotFoundResponse({
+    description: 'Not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE)
   update(
@@ -110,13 +164,30 @@ export class WebhookEndpointController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.update(this.ctx.requireTenantId(), id, dto, { userId, ip });
+    return this.endpoints.update(this.ctx.requireTenantId(), id, dto, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'Rotate the webhook signing secret', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Issues a new secret (returned once); the old secret stops signing future deliveries immediately.' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Secret rotated (new plaintext returned once).' })
-  @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })
+  @ApiOperation({
+    summary: 'Rotate the webhook signing secret',
+    description:
+      '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Issues a new secret (returned once); the old secret stops signing future deliveries immediately.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Secret rotated (new plaintext returned once).',
+  })
+  @ApiNotFoundResponse({
+    description: 'Not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post(':id/rotate-secret')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE)
@@ -125,11 +196,23 @@ export class WebhookEndpointController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.rotateSecret(this.ctx.requireTenantId(), id, { userId, ip });
+    return this.endpoints.rotateSecret(this.ctx.requireTenantId(), id, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'Activate a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.**' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Activate a webhook endpoint',
+    description:
+      '**Protected — `platform.webhooks-outbound.manage`. Clinic active.**',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook endpoint activated.' })
   @Post(':id/activate')
   @HttpCode(HttpStatus.OK)
@@ -139,11 +222,23 @@ export class WebhookEndpointController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.setActive(this.ctx.requireTenantId(), id, true, { userId, ip });
+    return this.endpoints.setActive(this.ctx.requireTenantId(), id, true, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'Deactivate a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Reversible via activate; no further deliveries are attempted while inactive.' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Deactivate a webhook endpoint',
+    description:
+      '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Reversible via activate; no further deliveries are attempted while inactive.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook endpoint deactivated.' })
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
@@ -153,13 +248,28 @@ export class WebhookEndpointController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.setActive(this.ctx.requireTenantId(), id, false, { userId, ip });
+    return this.endpoints.setActive(this.ctx.requireTenantId(), id, false, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'Delete a webhook endpoint', description: '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Soft-deletes the endpoint (stops delivery immediately); its delivery history and audit trail are preserved.' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete a webhook endpoint',
+    description:
+      '**Protected — `platform.webhooks-outbound.manage`. Clinic active.** Soft-deletes the endpoint (stops delivery immediately); its delivery history and audit trail are preserved.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook endpoint deleted.' })
-  @ApiNotFoundResponse({ description: 'Not found in this tenant.', schema: S_ERROR })
+  @ApiNotFoundResponse({
+    description: 'Not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE)
   remove(
@@ -167,6 +277,9 @@ export class WebhookEndpointController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.remove(this.ctx.requireTenantId(), id, { userId, ip });
+    return this.endpoints.remove(this.ctx.requireTenantId(), id, {
+      userId,
+      ip,
+    });
   }
 }

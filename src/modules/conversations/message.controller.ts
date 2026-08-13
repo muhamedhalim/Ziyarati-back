@@ -40,6 +40,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -56,10 +58,18 @@ const S_MESSAGE = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    sender_type: { type: 'string', enum: ['CUSTOMER', 'AGENT', 'BOT', 'SYSTEM'], example: 'AGENT' },
+    sender_type: {
+      type: 'string',
+      enum: ['CUSTOMER', 'AGENT', 'BOT', 'SYSTEM'],
+      example: 'AGENT',
+    },
     content: { type: 'string', nullable: true },
     message_type: { type: 'string', example: 'text' },
-    sender_user: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
+    sender_user: {
+      type: 'object',
+      nullable: true,
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -80,6 +90,7 @@ const S_MESSAGE_LIST = {
  */
 @ApiTags('Messages')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CONVERSATIONS)
 @Controller('conversations/:conversationId/messages')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -107,12 +118,29 @@ content; \`image\`/\`file\` carry content on the attachment.
 the tenant.
     `.trim(),
   })
-  @ApiParam({ name: 'conversationId', description: 'Conversation UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'conversationId',
+    description: 'Conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Message sent.', schema: S_MESSAGE })
-  @ApiBadRequestResponse({ description: 'Validation failed / missing content for text.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.send`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Conversation not found in this tenant.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed / missing content for text.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.send`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Conversation not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.MESSAGES_SEND)
   send(
@@ -120,44 +148,101 @@ the tenant.
     @Body() dto: SendMessageDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.execution.sendMessage(this.ctx.requireTenantId(), userId, conversationId, dto);
+    return this.execution.sendMessage(
+      this.ctx.requireTenantId(),
+      userId,
+      conversationId,
+      dto,
+    );
   }
 
   @ApiOperation({
     summary: 'Get messages in a conversation',
     description: `**Protected — requires \`messages.read\`. Clinic must be active.** Ordered oldest→newest with sender/type/date filters and pagination.`,
   })
-  @ApiParam({ name: 'conversationId', description: 'Conversation UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Paginated messages (chronological).', schema: S_MESSAGE_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Conversation not found in this tenant.', schema: S_ERROR })
+  @ApiParam({
+    name: 'conversationId',
+    description: 'Conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Paginated messages (chronological).',
+    schema: S_MESSAGE_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Conversation not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.MESSAGES_READ)
   list(
     @Param('conversationId', ParseUUIDPipe) conversationId: string,
     @Query() filter: MessageFilterDto,
   ) {
-    return this.messages.list(this.ctx.requireTenantId(), conversationId, filter);
+    return this.messages.list(
+      this.ctx.requireTenantId(),
+      conversationId,
+      filter,
+    );
   }
 
-  @ApiOperation({ summary: 'Get a message + status history', description: `**Protected — \`messages.read\`. Clinic active.** Returns the message and its delivery status history.` })
-  @ApiParam({ name: 'conversationId', description: 'Conversation UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get a message + status history',
+    description: `**Protected — \`messages.read\`. Clinic active.** Returns the message and its delivery status history.`,
+  })
+  @ApiParam({
+    name: 'conversationId',
+    description: 'Conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Message with status history.',
     schema: {
       type: 'object',
       properties: {
         message: S_MESSAGE,
-        statusHistory: { type: 'array', items: { type: 'object', properties: { status: { type: 'string' }, created_at: { type: 'string', format: 'date-time' } } } },
+        statusHistory: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              status: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
+        },
         currentStatus: { type: 'string', nullable: true, example: 'SENT' },
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Message not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Message not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':messageId')
   @RequirePermissions(PERMISSION.MESSAGES_READ)
   async findOne(
@@ -170,7 +255,9 @@ the tenant.
     return {
       message,
       statusHistory,
-      currentStatus: statusHistory.length ? statusHistory[statusHistory.length - 1].status : null,
+      currentStatus: statusHistory.length
+        ? statusHistory[statusHistory.length - 1].status
+        : null,
     };
   }
 
@@ -178,13 +265,32 @@ the tenant.
     summary: 'Edit a message',
     description: `**Protected — requires \`messages.send\`. Clinic must be active.** Updates message content. Schema note: no \`edited_at\` column, so the edit is not separately audited.`,
   })
-  @ApiParam({ name: 'conversationId', description: 'Conversation UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'conversationId',
+    description: 'Conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Message updated.', schema: S_MESSAGE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.send`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Message not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.send`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Message not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':messageId')
   @RequirePermissions(PERMISSION.MESSAGES_SEND)
   edit(
@@ -199,15 +305,41 @@ the tenant.
     summary: 'Mark a message as read',
     description: `**Protected — requires \`messages.read\`. Clinic must be active.** Appends a READ entry to the message status log.`,
   })
-  @ApiParam({ name: 'conversationId', description: 'Conversation UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'conversationId',
+    description: 'Conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Read status recorded.',
-    schema: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, status: { type: 'string', example: 'READ' }, created_at: { type: 'string', format: 'date-time' } } },
+    schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        status: { type: 'string', example: 'READ' },
+        created_at: { type: 'string', format: 'date-time' },
+      },
+    },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Message not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Message not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post(':messageId/read')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.MESSAGES_READ)
@@ -222,12 +354,31 @@ the tenant.
     summary: 'Delete a message',
     description: `**Protected — requires \`messages.send\`. Clinic must be active.** Schema note: \`messages\` has no \`deleted_at\` column, so this is a HARD delete (CASCADE removes attachments + status logs).`,
   })
-  @ApiParam({ name: 'conversationId', description: 'Conversation UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'conversationId',
+    description: 'Conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Message deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.send`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Message not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.send`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Message not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':messageId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.MESSAGES_SEND)

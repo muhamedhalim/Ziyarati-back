@@ -8,7 +8,8 @@ import { ApiProperty } from '@nestjs/swagger';
  */
 export class ChangePlanDto {
   @ApiProperty({
-    description: 'The target plan to switch to. Must be active and different from the current plan.',
+    description:
+      'The target plan to switch to. Must be active and different from the current plan.',
     format: 'uuid',
     example: 'a1b2c3d4-0000-0000-0000-000000000200',
   })

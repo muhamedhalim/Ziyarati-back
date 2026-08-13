@@ -1,5 +1,10 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { CustomerService } from '../crm/customer.service';
 import { QueryCustomersDto } from '../crm/dto/query-customers.dto';
@@ -7,6 +12,8 @@ import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decora
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { toIntegrationCustomer } from './integration.mappers';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Read-only external view of clinic customers. Delegates to the existing
@@ -17,6 +24,7 @@ import { toIntegrationCustomer } from './integration.mappers';
  */
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('integrations/customers')
 export class IntegrationCustomersController {
   constructor(
@@ -26,7 +34,8 @@ export class IntegrationCustomersController {
 
   @ApiOperation({
     summary: 'List customers',
-    description: 'Requires scope `integration.customers.read`. Paginated (max 100/page).',
+    description:
+      'Requires scope `integration.customers.read`. Paginated (max 100/page).',
   })
   @ApiOkResponse({ description: 'Paginated customers.' })
   @ApiKeyProtected(INTEGRATION_SCOPE.CUSTOMERS_READ)
@@ -38,12 +47,15 @@ export class IntegrationCustomersController {
 
   @ApiOperation({
     summary: 'Get a customer',
-    description: 'Requires scope `integration.customers.read`. A customer from another tenant returns 404.',
+    description:
+      'Requires scope `integration.customers.read`. A customer from another tenant returns 404.',
   })
   @ApiOkResponse({ description: 'Customer detail.' })
   @ApiKeyProtected(INTEGRATION_SCOPE.CUSTOMERS_READ)
   @Get(':id')
   async get(@Param('id', ParseUUIDPipe) id: string) {
-    return toIntegrationCustomer(await this.customers.findOneOrThrow(this.ctx.requireTenantId(), id));
+    return toIntegrationCustomer(
+      await this.customers.findOneOrThrow(this.ctx.requireTenantId(), id),
+    );
   }
 }

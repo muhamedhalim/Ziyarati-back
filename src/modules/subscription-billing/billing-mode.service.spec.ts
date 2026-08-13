@@ -4,7 +4,10 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BillingModeService } from './billing-mode.service';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { BillingMode } from './platform-billing.constants';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 import { PlatformAdminAuditService } from '../platform/platform-admin-audit.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
@@ -17,7 +20,9 @@ describe('BillingModeService', () => {
   beforeEach(async () => {
     settings = createMockRepository();
     audit = { record: jest.fn().mockResolvedValue(undefined) };
-    tenantContext = { getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }) };
+    tenantContext = {
+      getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
+    };
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         BillingModeService,
@@ -37,12 +42,16 @@ describe('BillingModeService', () => {
   });
 
   it('reads PAID mode and reports isPaidMode true', async () => {
-    settings.findOne.mockResolvedValueOnce({ value: { mode: BillingMode.PAID } });
+    settings.findOne.mockResolvedValueOnce({
+      value: { mode: BillingMode.PAID },
+    });
     expect(await service.isPaidMode()).toBe(true);
   });
 
   it('caches the mode (a second read does not hit the DB)', async () => {
-    settings.findOne.mockResolvedValueOnce({ value: { mode: BillingMode.PAID } });
+    settings.findOne.mockResolvedValueOnce({
+      value: { mode: BillingMode.PAID },
+    });
     await service.get();
     await service.get();
     expect(settings.findOne).toHaveBeenCalledTimes(1);
@@ -53,8 +62,14 @@ describe('BillingModeService', () => {
   // connection instead of borrowing a second one from the pool.
   describe('manager threading (FND-047)', () => {
     it('reads through manager.getRepository(SystemSetting) when a manager is supplied', async () => {
-      const managerSettings = { findOne: jest.fn().mockResolvedValueOnce({ value: { mode: BillingMode.PAID } }) };
-      const manager = { getRepository: jest.fn().mockReturnValue(managerSettings) } as any;
+      const managerSettings = {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({ value: { mode: BillingMode.PAID } }),
+      };
+      const manager = {
+        getRepository: jest.fn().mockReturnValue(managerSettings),
+      } as any;
 
       expect(await service.isPaidMode(manager)).toBe(true);
 
@@ -63,13 +78,17 @@ describe('BillingModeService', () => {
     });
 
     it('a fresh (non-cached) call with no manager still uses the injected repo (standalone callers unchanged)', async () => {
-      settings.findOne.mockResolvedValueOnce({ value: { mode: BillingMode.PAID } });
+      settings.findOne.mockResolvedValueOnce({
+        value: { mode: BillingMode.PAID },
+      });
       expect(await service.isPaidMode()).toBe(true);
       expect(settings.findOne).toHaveBeenCalledTimes(1);
     });
 
     it('a cache HIT never touches the manager either (no connection needed at all)', async () => {
-      settings.findOne.mockResolvedValueOnce({ value: { mode: BillingMode.PAID } });
+      settings.findOne.mockResolvedValueOnce({
+        value: { mode: BillingMode.PAID },
+      });
       await service.get(); // primes the cache via the plain repo
       const manager = { getRepository: jest.fn() } as any;
       expect(await service.get(manager)).toBe(BillingMode.PAID);
@@ -88,7 +107,10 @@ describe('BillingModeService', () => {
   });
 
   it('set() updates an existing setting row', async () => {
-    settings.findOne.mockResolvedValueOnce({ key: 'billing.mode', value: { mode: BillingMode.FREE } });
+    settings.findOne.mockResolvedValueOnce({
+      key: 'billing.mode',
+      value: { mode: BillingMode.FREE },
+    });
     await service.set(BillingMode.PAID);
     const saved = settings.save.mock.calls[0][0];
     expect(saved.value).toEqual({ mode: BillingMode.PAID });
@@ -119,7 +141,10 @@ describe('BillingModeService', () => {
 
   it('audits the FIRST-ever mode switch (no prior row) against the documented default', async () => {
     settings.findOne.mockResolvedValueOnce(null);
-    settings.save.mockImplementationOnce(async (s: any) => ({ id: 'setting-1', ...s }));
+    settings.save.mockImplementationOnce(async (s: any) => ({
+      id: 'setting-1',
+      ...s,
+    }));
 
     await service.set(BillingMode.PAID);
 

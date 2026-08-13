@@ -1,5 +1,10 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { StaffService } from '../staff/staff.service';
 import { QueryStaffDto } from '../staff/dto/query-staff.dto';
@@ -7,6 +12,8 @@ import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decora
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { toIntegrationStaff } from './integration.mappers';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Read-only external view of the staff directory. Delegates to the existing
@@ -16,6 +23,7 @@ import { toIntegrationStaff } from './integration.mappers';
  */
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('integrations/staff')
 export class IntegrationStaffController {
   constructor(
@@ -38,12 +46,15 @@ export class IntegrationStaffController {
 
   @ApiOperation({
     summary: 'Get a staff member',
-    description: 'Requires scope `integration.staff.read`. A staff member from another tenant returns 404.',
+    description:
+      'Requires scope `integration.staff.read`. A staff member from another tenant returns 404.',
   })
   @ApiOkResponse({ description: 'Staff detail.' })
   @ApiKeyProtected(INTEGRATION_SCOPE.STAFF_READ)
   @Get(':id')
   async get(@Param('id', ParseUUIDPipe) id: string) {
-    return toIntegrationStaff(await this.staff.findOne(this.ctx.requireTenantId(), id));
+    return toIntegrationStaff(
+      await this.staff.findOne(this.ctx.requireTenantId(), id),
+    );
   }
 }

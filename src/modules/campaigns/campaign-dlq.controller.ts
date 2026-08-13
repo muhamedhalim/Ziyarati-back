@@ -19,6 +19,8 @@ import { CampaignDlqService } from './campaign-dlq.service';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Campaign DLQ admin endpoints. Inspect parked (poison) recipient jobs and
@@ -26,6 +28,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
  */
 @ApiTags('Campaign DLQ (Admin)')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CAMPAIGNS)
 @Controller('admin/campaigns/dlq')
 @UseGuards(PermissionsGuard)
 export class CampaignDlqController {

@@ -40,6 +40,7 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -63,9 +64,18 @@ const S_TEMPLATE = {
     name: { type: 'string', example: 'appointment_reminder' },
     language: { type: 'string', example: 'ar' },
     category: { type: 'string', nullable: true, example: 'UTILITY' },
-    status: { type: 'string', enum: ['draft', 'pending_review', 'approved', 'rejected', 'disabled'], example: 'approved' },
+    status: {
+      type: 'string',
+      enum: ['draft', 'pending_review', 'approved', 'rejected', 'disabled'],
+      example: 'approved',
+    },
     components: { type: 'object', nullable: true, additionalProperties: true },
-    provider_template_id: { type: 'string', nullable: true, description: "Meta's own template id.", example: '1234567890123456' },
+    provider_template_id: {
+      type: 'string',
+      nullable: true,
+      description: "Meta's own template id.",
+      example: '1234567890123456',
+    },
     waba_id: { type: 'string', nullable: true, example: '102290129340398' },
     last_synced_at: { type: 'string', format: 'date-time', nullable: true },
     created_at: { type: 'string', format: 'date-time' },
@@ -85,9 +95,24 @@ const S_TEMPLATE_LIST = {
 const S_SEND_RESULT = {
   type: 'object',
   properties: {
-    status: { type: 'string', enum: ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED'], example: 'SENT' },
-    providerMessageId: { type: 'string', nullable: true, example: 'noop_wamid_...' },
-    recipient: { type: 'object', properties: { type: { type: 'string' }, id: { type: 'string', nullable: true }, to: { type: 'string' } } },
+    status: {
+      type: 'string',
+      enum: ['QUEUED', 'SENT', 'DELIVERED', 'READ', 'FAILED'],
+      example: 'SENT',
+    },
+    providerMessageId: {
+      type: 'string',
+      nullable: true,
+      example: 'noop_wamid_...',
+    },
+    recipient: {
+      type: 'object',
+      properties: {
+        type: { type: 'string' },
+        id: { type: 'string', nullable: true },
+        to: { type: 'string' },
+      },
+    },
     logId: { type: 'string', format: 'uuid' },
   },
 };
@@ -101,7 +126,7 @@ const S_SEND_RESULT = {
 @Controller('whatsapp/templates')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('whatsapp')
+@RequireFeature(FeatureKey.WHATSAPP)
 export class WhatsappTemplateController {
   constructor(
     private readonly templates: WhatsappTemplateService,
@@ -131,11 +156,28 @@ Unique per (tenant, name, language) — a duplicate returns 409.
 **Who can call this:** Owner, Manager (\`whatsapp.templates.manage\`).
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Template created on Meta and mirrored locally.', schema: S_TEMPLATE })
-  @ApiBadRequestResponse({ description: 'Validation failed (name format, language code, category, components).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Template name+language already exists.', schema: S_ERROR })
+  @ApiCreatedResponse({
+    description: 'Template created on Meta and mirrored locally.',
+    schema: S_TEMPLATE,
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Validation failed (name format, language code, category, components).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `whatsapp.templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Template name+language already exists.',
+    schema: S_ERROR,
+  })
   @ApiUnprocessableEntityResponse({
     description:
       'No connected WhatsApp account, referenced account not in this tenant, invalid component structure (missing BODY, placeholders without examples), or Meta rejected the template.',
@@ -151,20 +193,43 @@ Unique per (tenant, name, language) — a duplicate returns 409.
     summary: 'List templates',
     description: `**Protected — requires \`whatsapp.templates.read\`. Clinic must be active.** Tenant-scoped, filter by status/category/language/search.`,
   })
-  @ApiOkResponse({ description: 'Paginated templates.', schema: S_TEMPLATE_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Paginated templates.',
+    schema: S_TEMPLATE_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.templates.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_READ)
   findAll(@Query() filter: WhatsappTemplateFilterDto) {
     return this.templates.findAll(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Get template details', description: `**Protected — \`whatsapp.templates.read\`. Clinic active.** Foreign-tenant template returns 404.` })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get template details',
+    description: `**Protected — \`whatsapp.templates.read\`. Clinic active.** Foreign-tenant template returns 404.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Template details.', schema: S_TEMPLATE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.templates.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Get(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_READ)
@@ -172,16 +237,34 @@ Unique per (tenant, name, language) — a duplicate returns 409.
     return this.templates.findOne(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Update a template', description: `**Protected — \`whatsapp.templates.manage\`. Clinic active.** Partial update.` })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Update a template',
+    description: `**Protected — \`whatsapp.templates.manage\`. Clinic active.** Partial update.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Template updated.', schema: S_TEMPLATE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `whatsapp.templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Patch(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWhatsappTemplateDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWhatsappTemplateDto,
+  ) {
     return this.templates.update(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -200,7 +283,12 @@ caller or permission. Attempting to set it is refused with 403.
 **Who can call this:** Owner, Manager (\`whatsapp.templates.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiBody({
     schema: {
       type: 'object',
@@ -209,30 +297,56 @@ caller or permission. Attempting to set it is refused with 403.
         status: {
           type: 'string',
           enum: WHATSAPP_TEMPLATE_STATUSES as unknown as string[],
-          description: '`approved` is rejected — see the operation description.',
+          description:
+            '`approved` is rejected — see the operation description.',
         },
       },
     },
   })
   @ApiOkResponse({ description: 'Status updated.', schema: S_TEMPLATE })
-  @ApiBadRequestResponse({ description: 'Invalid status value.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Invalid status value.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `whatsapp.templates.manage`, the clinic is inactive, or `status` was `approved` (GAP-002 — Meta-callback-only).',
+    description:
+      'Caller lacks `whatsapp.templates.manage`, the clinic is inactive, or `status` was `approved` (GAP-002 — Meta-callback-only).',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Patch(':id/status')
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
-  setStatus(@Param('id', ParseUUIDPipe) id: string, @Body('status') status: string) {
+  setStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('status') status: string,
+  ) {
     return this.templates.setStatus(this.ctx.requireTenantId(), id, status);
   }
 
-  @ApiOperation({ summary: 'Delete a template (soft)', description: `**Protected — \`whatsapp.templates.manage\`. Clinic active.** Soft-deletes the template.` })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete a template (soft)',
+    description: `**Protected — \`whatsapp.templates.manage\`. Clinic active.** Soft-deletes the template.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Template deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `whatsapp.templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -258,18 +372,48 @@ no recipient supplied (400), recipient not found (404).
 **Who can call this:** Owner, Manager, Receptionist (\`whatsapp.send\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Message dispatched; outcome logged.', schema: S_SEND_RESULT })
-  @ApiBadRequestResponse({ description: 'No/invalid recipient.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.send`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Template, account, or recipient not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Template not approved, or account inactive.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiCreatedResponse({
+    description: 'Message dispatched; outcome logged.',
+    schema: S_SEND_RESULT,
+  })
+  @ApiBadRequestResponse({
+    description: 'No/invalid recipient.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.send`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Template, account, or recipient not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Template not approved, or account inactive.',
+    schema: S_ERROR,
+  })
   @Post(':id/send')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.WHATSAPP_SEND)
-  send(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SendTemplateMessageDto) {
-    return this.execution.sendTemplateMessage(this.ctx.requireTenantId(), id, dto);
+  send(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SendTemplateMessageDto,
+  ) {
+    return this.execution.sendTemplateMessage(
+      this.ctx.requireTenantId(),
+      id,
+      dto,
+    );
   }
 
   @ApiOperation({
@@ -284,7 +428,12 @@ BullMQ delayed job carrying the send params.
 **Who can call this:** Owner, Manager, Receptionist (\`whatsapp.send\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({
     description: 'Message queued.',
     schema: {
@@ -296,15 +445,33 @@ BullMQ delayed job carrying the send params.
       },
     },
   })
-  @ApiBadRequestResponse({ description: 'Missing scheduledAt / recipient.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.send`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Template, account, or recipient not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Template not approved, or account inactive.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Missing scheduledAt / recipient.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.send`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Template, account, or recipient not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Template not approved, or account inactive.',
+    schema: S_ERROR,
+  })
   @Post(':id/schedule')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.WHATSAPP_SEND)
-  schedule(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SendTemplateMessageDto) {
+  schedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SendTemplateMessageDto,
+  ) {
     return this.execution.scheduleMessage(this.ctx.requireTenantId(), id, dto);
   }
 }

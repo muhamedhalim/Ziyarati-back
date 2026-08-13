@@ -11,7 +11,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -22,6 +27,8 @@ import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.gu
 
 import { IntegrationOAuthService } from './integration-oauth.service';
 import { OAuthCallbackDto } from '../dto/oauth.dto';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * OAuth2 Authorization-Code + PKCE CLIENT endpoints (Phase 4).
@@ -37,6 +44,7 @@ import { OAuthCallbackDto } from '../dto/oauth.dto';
  */
 @ApiTags('Integration OAuth')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations/oauth')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationOAuthController {
@@ -70,7 +78,10 @@ export class IntegrationOAuthController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.oauth.authorize(this.ctx.requireTenantId(), connectionId, { userId, ip });
+    return this.oauth.authorize(this.ctx.requireTenantId(), connectionId, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({
@@ -81,7 +92,11 @@ export class IntegrationOAuthController {
   @Post('callback')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  callback(@Body() dto: OAuthCallbackDto, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  callback(
+    @Body() dto: OAuthCallbackDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     return this.oauth.callback(this.ctx.requireTenantId(), dto, { userId, ip });
   }
 
@@ -131,6 +146,9 @@ export class IntegrationOAuthController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.oauth.disconnect(this.ctx.requireTenantId(), connectionId, { userId, ip });
+    return this.oauth.disconnect(this.ctx.requireTenantId(), connectionId, {
+      userId,
+      ip,
+    });
   }
 }

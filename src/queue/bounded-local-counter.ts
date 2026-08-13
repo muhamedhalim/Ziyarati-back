@@ -89,7 +89,9 @@ export class BoundedLocalCounter {
 
   /** Total bytes allocated by this instance — fixed at construction, never changes. Exposed for the memory-bound test (SC-010) rather than relying on flaky heap snapshots. */
   get allocatedBytes(): number {
-    return this.genA.byteLength + this.genB.byteLength + this.#rowSeeds.byteLength;
+    return (
+      this.genA.byteLength + this.genB.byteLength + this.#rowSeeds.byteLength
+    );
   }
 
   /**

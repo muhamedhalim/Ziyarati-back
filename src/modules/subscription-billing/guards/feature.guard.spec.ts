@@ -2,95 +2,144 @@ import { ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
 import { FeatureGuard } from './feature.guard';
-import { BillingModeService } from '../billing-mode.service';
-import { FeatureResolverService } from '../feature-resolver.service';
+import { AccessControlService } from '../access-control.service';
+import { FeatureKey } from '../feature-registry';
+import {
+  AccessSource,
+  QuotaPolicy,
+  TenantAccessDecision,
+} from '../tenant-access-decision';
+import { ErrorCode } from '../../../common/errors';
+
+const allow = (
+  over: Partial<TenantAccessDecision> = {},
+): TenantAccessDecision => ({
+  allowed: true,
+  tenantId: 't1',
+  featureKey: FeatureKey.AI_ASSISTANT,
+  source: AccessSource.ACTIVE_SUBSCRIPTION,
+  quotaPolicy: QuotaPolicy.PLAN_ENFORCED,
+  ...over,
+});
+
+const deny = (reason = 'nope'): TenantAccessDecision => ({
+  allowed: false,
+  tenantId: 't1',
+  featureKey: FeatureKey.AI_ASSISTANT,
+  source: AccessSource.DENIED,
+  quotaPolicy: QuotaPolicy.BLOCKED,
+  reason,
+});
 
 /**
- * FND-033 — the route-level guard used to check ONLY the raw per-tenant
- * `feature_flags` row (`FeatureFlagService.assertEnabled`) — a SEPARATE,
- * simpler mechanism from `FeatureResolverService`'s plan/dependency/quota
- * resolution (the "/effective" view). Since `PUT /feature-flags` lets any
- * caller holding `featureflag.manage` set that SAME raw flag for their OWN
- * tenant with zero plan check, a tenant on a plan that does NOT include a
- * feature could self-enable it at the route level. FR-B009: route gating
- * MUST use the SAME resolution chain as the effective-feature view.
- *
- * RED recorded verbatim (temporary probe against the unmodified pre-fix
- * class, deleted immediately after — the fix below changes the constructor
- * signature, so the vulnerable shape can't coexist with the fixed tests in
- * this same file): given `features.assertEnabled` resolving (raw flag says
- * enabled) and NO plan check anywhere in the guard,
- * `guard.canActivate(context)` for a `'ai'`-gated route returned `true` —
- * console output: `RESULT (true = bug confirmed, plan restriction never
- * checked): true`. Confirms the route was admitted regardless of plan
- * inclusion. GREEN below, using the fixed (resolver-based) constructor.
+ * FND-033 — route gating and the effective-feature view MUST agree. They now
+ * agree BY CONSTRUCTION: both read `AccessControlService`, so there is no
+ * second chain to drift. The exploit this guards against is unchanged — a
+ * tenant self-enabling a raw `feature_flags` row for a capability its plan
+ * excludes — but it is now neutralised inside the policy (tenant-written rows
+ * are not authoritative), and this guard simply enforces the verdict.
  */
-describe('FeatureGuard (FND-033 — must agree with the effective-feature view)', () => {
+describe('FeatureGuard', () => {
   let guard: FeatureGuard;
-  let resolver: { resolveTenant: jest.Mock };
-  let billingMode: { isPaidMode: jest.Mock };
+  let access: { resolve: jest.Mock };
   let reflector: { getAllAndOverride: jest.Mock };
 
-  const contextFor = (tenantId: string | null = 't1'): ExecutionContext =>
-    ({
+  const contextFor = (tenantId: string | null = 't1') => {
+    const request = { user: tenantId ? { tenantId } : undefined };
+    return {
       getHandler: () => ({}),
       getClass: () => ({}),
-      switchToHttp: () => ({
-        getRequest: () => ({ user: tenantId ? { tenantId } : undefined }),
-      }),
-    }) as unknown as ExecutionContext;
+      switchToHttp: () => ({ getRequest: () => request }),
+    } as unknown as ExecutionContext;
+  };
 
   beforeEach(() => {
-    resolver = { resolveTenant: jest.fn() };
-    billingMode = { isPaidMode: jest.fn().mockResolvedValue(true) };
-    reflector = { getAllAndOverride: jest.fn().mockReturnValue('ai') }; // route gated on 'ai'
+    access = { resolve: jest.fn() };
+    reflector = {
+      getAllAndOverride: jest.fn().mockReturnValue(FeatureKey.AI_ASSISTANT),
+    };
     guard = new FeatureGuard(
       reflector as unknown as Reflector,
-      billingMode as unknown as BillingModeService,
-      resolver as unknown as FeatureResolverService,
+      access as unknown as AccessControlService,
     );
   });
 
-  it('refuses a plan-restricted feature even when the tenant has self-enabled the raw flag (the actual exploit)', async () => {
-    // A tenant on a plan that does NOT include 'ai' called PUT /feature-flags
-    // {featureKey:'ai', isEnabled:true} — the raw flag says enabled, but the
-    // EFFECTIVE resolution (same as GET /feature-flags/effective) correctly
-    // reports it as plan_restricted.
-    resolver.resolveTenant.mockResolvedValueOnce({
-      subscription: { active: true, enforced: true, status: 'ACTIVE', source: 'SUBSCRIPTION', planId: 'p1', planName: 'Starter', expiresAt: null },
-      features: [
-        { featureKey: 'ai', enabled: true, planIncluded: false, dependenciesSatisfied: true, available: false, blockedReason: 'plan_restricted' },
-      ],
-    });
+  afterEach(() => jest.clearAllMocks());
 
-    await expect(guard.canActivate(contextFor())).rejects.toThrow();
+  it('allows a capability the policy grants', async () => {
+    access.resolve.mockResolvedValueOnce(allow());
+    await expect(guard.canActivate(contextFor())).resolves.toBe(true);
   });
 
-  it('allows a feature the plan genuinely includes', async () => {
-    resolver.resolveTenant.mockResolvedValueOnce({
-      subscription: { active: true, enforced: true, status: 'ACTIVE', source: 'SUBSCRIPTION', planId: 'p1', planName: 'Pro', expiresAt: null },
-      features: [
-        { featureKey: 'ai', enabled: true, planIncluded: true, dependenciesSatisfied: true, available: true, blockedReason: null },
-      ],
-    });
+  it('refuses a capability the policy denies', async () => {
+    access.resolve
+      .mockResolvedValueOnce(deny('plan does not include it'))
+      // The follow-up tenant-wide check: this tenant DOES have access, it just
+      // lacks this capability.
+      .mockResolvedValueOnce(allow({ featureKey: null }));
 
-    await expect(guard.canActivate(contextFor())).resolves.toBe(true);
+    await expect(guard.canActivate(contextFor())).rejects.toMatchObject({
+      code: ErrorCode.FORBIDDEN,
+    });
+  });
+
+  it('reports a billing problem as NO_ACTIVE_SUBSCRIPTION, not a generic 403', async () => {
+    // A tenant with no access path at all needs the "choose a plan" remedy;
+    // telling them the FEATURE is unavailable would send them to the wrong place.
+    access.resolve
+      .mockResolvedValueOnce(deny('no subscription'))
+      .mockResolvedValueOnce({ ...deny(), featureKey: null });
+
+    await expect(guard.canActivate(contextFor())).rejects.toMatchObject({
+      code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
+    });
+  });
+
+  it('never leaks the technical reason to the client', async () => {
+    access.resolve
+      .mockResolvedValueOnce(
+        deny('Subscription is not active (status: CANCELLED)'),
+      )
+      .mockResolvedValueOnce(allow({ featureKey: null }));
+
+    await expect(guard.canActivate(contextFor())).rejects.toMatchObject({
+      publicContext: { featureKey: FeatureKey.AI_ASSISTANT },
+    });
   });
 
   it('is a no-op when the route carries no @RequireFeature()', async () => {
     reflector.getAllAndOverride.mockReturnValueOnce(undefined);
     await expect(guard.canActivate(contextFor())).resolves.toBe(true);
-    expect(resolver.resolveTenant).not.toHaveBeenCalled();
+    expect(access.resolve).not.toHaveBeenCalled();
   });
 
   it('bypasses super-admin / no-tenant callers entirely', async () => {
     await expect(guard.canActivate(contextFor(null))).resolves.toBe(true);
-    expect(resolver.resolveTenant).not.toHaveBeenCalled();
+    expect(access.resolve).not.toHaveBeenCalled();
   });
 
-  it('allows everyone under global FREE platform mode (unchanged behavior)', async () => {
-    billingMode.isPaidMode.mockResolvedValueOnce(false);
+  it('allows everyone under global FREE platform mode', async () => {
+    // The guard no longer short-circuits on billing mode itself — the policy
+    // reports PLATFORM_FREE_MODE, which keeps FREE mode subject to the one
+    // thing that must still apply there: an administrative suspension.
+    access.resolve.mockResolvedValueOnce(
+      allow({
+        source: AccessSource.PLATFORM_FREE_MODE,
+        quotaPolicy: QuotaPolicy.UNMETERED_PLATFORM_FREE,
+      }),
+    );
     await expect(guard.canActivate(contextFor())).resolves.toBe(true);
-    expect(resolver.resolveTenant).not.toHaveBeenCalled();
+  });
+
+  it('resolves the decision only ONCE per request across both guards', async () => {
+    const context = contextFor();
+    access.resolve.mockResolvedValue(allow());
+
+    await guard.canActivate(context);
+    await guard.canActivate(context);
+
+    // The per-request memo is what removed the duplicate 8-query resolution
+    // that used to run on every gated route.
+    expect(access.resolve).toHaveBeenCalledTimes(1);
   });
 });

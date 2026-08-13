@@ -25,6 +25,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -48,6 +50,7 @@ const S_ERROR = {
  */
 @ApiTags('Analytics Dashboard')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.ANALYTICS)
 @Controller('analytics/dashboard')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -59,11 +62,18 @@ export class DashboardController {
 
   @ApiOperation({
     summary: 'Get dashboard metrics',
-    description: '**Protected — `analytics.dashboard.read`. Clinic active.** Fast key/value read of the precomputed KPI snapshot (no computation).',
+    description:
+      '**Protected — `analytics.dashboard.read`. Clinic active.** Fast key/value read of the precomputed KPI snapshot (no computation).',
   })
   @ApiOkResponse({ description: 'Dashboard metrics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.dashboard.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.dashboard.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.ANALYTICS_DASHBOARD_READ)
   get(@Query() query: QueryDashboardDto) {
@@ -72,11 +82,18 @@ export class DashboardController {
 
   @ApiOperation({
     summary: 'Refresh dashboard metrics',
-    description: '**Protected — `analytics.reports.manage`. Clinic active.** Recomputes the KPI snapshot from source and upserts the metric rows.',
+    description:
+      '**Protected — `analytics.reports.manage`. Clinic active.** Recomputes the KPI snapshot from source and upserts the metric rows.',
   })
   @ApiOkResponse({ description: 'Refreshed dashboard metrics.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.reports.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.reports.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_MANAGE)

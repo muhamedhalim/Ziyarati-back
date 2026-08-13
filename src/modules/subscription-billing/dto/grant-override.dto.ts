@@ -1,5 +1,11 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsPositive, IsString, MaxLength } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsPositive,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 /**
  * Grant a free-access override to a tenant (super-admin only).
@@ -27,7 +33,8 @@ export class GrantOverrideDto {
 /** Extend (or make unlimited) a tenant's active override. */
 export class ExtendOverrideDto {
   @ApiPropertyOptional({
-    description: 'Extra days to extend by, measured from the later of now / current end. Omit to make it unlimited.',
+    description:
+      'Extra days to extend by, measured from the later of now / current end. Omit to make it unlimited.',
     example: 30,
   })
   @IsOptional()

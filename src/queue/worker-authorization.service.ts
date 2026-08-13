@@ -7,9 +7,14 @@ import { User } from '../entities/Auth&RBAC/User';
 import { TenantApprovalStatus } from '../entities/enums';
 import { TenantLookupService } from '../core/tenant-context/tenant-lookup.service';
 import { AuthService } from '../modules/auth/auth.service';
+import { AccessControlService } from '../modules/subscription-billing/access-control.service';
+import { FeatureKey } from '../modules/subscription-billing/feature-registry';
 import { ROLE } from '../rbac/rbac.constants';
 import { BaseJobData } from './job-data.interface';
-import { JOB_AUTHZ_POLICY, resolveJobAuthzPolicy } from './job-authorization.constants';
+import {
+  JOB_AUTHZ_POLICY,
+  resolveJobAuthzPolicy,
+} from './job-authorization.constants';
 
 interface CacheEntry {
   ok: boolean;
@@ -62,6 +67,7 @@ export class WorkerAuthorizationService {
     private readonly tenantLookup: TenantLookupService,
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly authService: AuthService,
+    private readonly access: AccessControlService,
   ) {}
 
   /**
@@ -88,7 +94,9 @@ export class WorkerAuthorizationService {
 
     if (policy.tier === 'system') {
       if (data.tenantId) {
-        this.logger.debug(`system-tier job "${jobName}" unexpectedly carries tenantId=${data.tenantId} — proceeding anyway`);
+        this.logger.debug(
+          `system-tier job "${jobName}" unexpectedly carries tenantId=${data.tenantId} — proceeding anyway`,
+        );
       }
       return;
     }
@@ -103,18 +111,73 @@ export class WorkerAuthorizationService {
     // not a legitimate system invocation (that silent-downgrade is exactly
     // the bug this tiering closes).
     if (!data.tenantId) {
-      this.logger.warn(`Rejecting job "${jobName}": tier "${policy.tier}" requires a tenantId but none was present`);
-      throw new UnrecoverableError(`Job "${jobName}" is tenant-scoped but carries no tenantId — job permanently rejected`);
+      this.logger.warn(
+        `Rejecting job "${jobName}": tier "${policy.tier}" requires a tenantId but none was present`,
+      );
+      throw new UnrecoverableError(
+        `Job "${jobName}" is tenant-scoped but carries no tenantId — job permanently rejected`,
+      );
     }
 
     await this.assertTenantActive(data.tenantId);
 
+    // Entitlement, asked exactly as the HTTP sibling of this job asks it.
+    // Background work previously evaluated NOTHING here — there was no
+    // reference to the access policy anywhere under src/worker or src/queue —
+    // so a queued WhatsApp send, campaign fan-out or AI turn ran happily for a
+    // tenant whose capability was suspended, never granted, or whose
+    // subscription had lapsed.
+    if (policy.featureKey) {
+      await this.assertEntitled(jobName, data.tenantId, policy.featureKey);
+    }
+
     if (data.actorId && data.actorId !== 'system') {
       await this.assertActorValid(data.tenantId, data.actorId);
       if (policy.requiredPermission) {
-        await this.assertActorHasPermission(data.tenantId, data.actorId, policy.requiredPermission);
+        await this.assertActorHasPermission(
+          data.tenantId,
+          data.actorId,
+          policy.requiredPermission,
+        );
       }
     }
+  }
+
+  /**
+   * Refuses a job whose capability the tenant does not hold.
+   *
+   * `UnrecoverableError`, not a retry: entitlement does not fix itself on a
+   * backoff, so retrying would just burn the attempt budget and land the job in
+   * a DLQ with a misleading "transient failure" story. If a super-admin grants
+   * the capability afterwards, the work is re-enqueued by whatever produced it.
+   *
+   * Fails CLOSED on an unreadable decision — the worker is the last gate on
+   * these paths, and "we could not tell" must not run the job.
+   */
+  private async assertEntitled(
+    jobName: string,
+    tenantId: string,
+    featureKey: FeatureKey,
+  ): Promise<void> {
+    let allowed = false;
+    let reason = 'access decision could not be resolved';
+    try {
+      const decision = await this.access.resolve(tenantId, featureKey);
+      allowed = decision.allowed;
+      reason = decision.reason ?? `source=${decision.source}`;
+    } catch (err) {
+      this.logger.error(
+        `Entitlement check failed for job "${jobName}" (tenant=${tenantId}, feature=${featureKey}): ${(err as Error)?.message}`,
+      );
+    }
+    if (allowed) return;
+
+    this.logger.warn(
+      `Rejecting job "${jobName}": tenant ${tenantId} is not entitled to "${featureKey}" (${reason})`,
+    );
+    throw new UnrecoverableError(
+      `Job "${jobName}" requires the "${featureKey}" feature, which this tenant does not hold — job permanently rejected`,
+    );
   }
 
   private async assertTenantActive(tenantId: string): Promise<void> {
@@ -125,12 +188,18 @@ export class WorkerAuthorizationService {
     }
 
     const tenant = await this.tenantLookup.findById(tenantId);
-    const ok = !!tenant && tenant.approval_status === TenantApprovalStatus.APPROVED && tenant.is_active;
+    const ok =
+      !!tenant &&
+      tenant.approval_status === TenantApprovalStatus.APPROVED &&
+      tenant.is_active;
     this.writeCache(this.tenantCache, tenantId, ok);
     if (!ok) this.rejectTenant(tenantId);
   }
 
-  private async assertActorValid(tenantId: string, actorId: string): Promise<void> {
+  private async assertActorValid(
+    tenantId: string,
+    actorId: string,
+  ): Promise<void> {
     const key = `${tenantId}:${actorId}`;
     const cached = this.readCache(this.actorCache, key);
     if (cached !== undefined) {
@@ -138,7 +207,10 @@ export class WorkerAuthorizationService {
       return;
     }
 
-    const user = await this.users.findOne({ where: { id: actorId }, relations: { tenant: true } });
+    const user = await this.users.findOne({
+      where: { id: actorId },
+      relations: { tenant: true },
+    });
     const ok = !!user && user.is_active && user.tenant?.id === tenantId;
     this.writeCache(this.actorCache, key, ok);
     if (!ok) this.rejectActor(tenantId, actorId);
@@ -149,7 +221,11 @@ export class WorkerAuthorizationService {
    * resolution HTTP's `PermissionsGuard` relies on) rather than a second RBAC
    * join. `super_admin` bypasses, mirroring `PermissionsGuard`'s own rule.
    */
-  private async assertActorHasPermission(tenantId: string, actorId: string, permission: string): Promise<void> {
+  private async assertActorHasPermission(
+    tenantId: string,
+    actorId: string,
+    permission: string,
+  ): Promise<void> {
     const key = `${actorId}:${permission}`;
     const cached = this.readCache(this.permissionCache, key);
     if (cached !== undefined) {
@@ -160,7 +236,9 @@ export class WorkerAuthorizationService {
     let ok: boolean;
     try {
       const principal = await this.authService.buildAuthenticatedUser(actorId);
-      ok = principal.roles.includes(ROLE.SUPER_ADMIN) || principal.permissions.includes(permission as never);
+      ok =
+        principal.roles.includes(ROLE.SUPER_ADMIN) ||
+        principal.permissions.includes(permission as never);
     } catch {
       ok = false; // inactive/missing user — treated as lacking the permission
     }
@@ -169,27 +247,53 @@ export class WorkerAuthorizationService {
   }
 
   private rejectTenant(tenantId: string): never {
-    this.logger.warn(`Rejecting job: tenant ${tenantId} is not APPROVED+active`);
-    throw new UnrecoverableError(`Tenant ${tenantId} is not active — job permanently rejected`);
+    this.logger.warn(
+      `Rejecting job: tenant ${tenantId} is not APPROVED+active`,
+    );
+    throw new UnrecoverableError(
+      `Tenant ${tenantId} is not active — job permanently rejected`,
+    );
   }
 
   private rejectActor(tenantId: string, actorId: string): never {
-    this.logger.warn(`Rejecting job: actor ${actorId} is not an active member of tenant ${tenantId}`);
-    throw new UnrecoverableError(`Actor ${actorId} is not a valid, active member of tenant ${tenantId} — job permanently rejected`);
+    this.logger.warn(
+      `Rejecting job: actor ${actorId} is not an active member of tenant ${tenantId}`,
+    );
+    throw new UnrecoverableError(
+      `Actor ${actorId} is not a valid, active member of tenant ${tenantId} — job permanently rejected`,
+    );
   }
 
-  private rejectPermission(tenantId: string, actorId: string, permission: string): never {
-    this.logger.warn(`Rejecting job: actor ${actorId} (tenant ${tenantId}) lacks required permission "${permission}"`);
-    throw new UnrecoverableError(`Actor ${actorId} lacks required permission "${permission}" — job permanently rejected`);
+  private rejectPermission(
+    tenantId: string,
+    actorId: string,
+    permission: string,
+  ): never {
+    this.logger.warn(
+      `Rejecting job: actor ${actorId} (tenant ${tenantId}) lacks required permission "${permission}"`,
+    );
+    throw new UnrecoverableError(
+      `Actor ${actorId} lacks required permission "${permission}" — job permanently rejected`,
+    );
   }
 
-  private readCache(cache: Map<string, CacheEntry>, key: string): boolean | undefined {
+  private readCache(
+    cache: Map<string, CacheEntry>,
+    key: string,
+  ): boolean | undefined {
     const entry = cache.get(key);
     if (entry && entry.expiresAt > Date.now()) return entry.ok;
     return undefined;
   }
 
-  private writeCache(cache: Map<string, CacheEntry>, key: string, ok: boolean): void {
-    cache.set(key, { ok, expiresAt: Date.now() + WorkerAuthorizationService.CACHE_TTL_MS });
+  private writeCache(
+    cache: Map<string, CacheEntry>,
+    key: string,
+    ok: boolean,
+  ): void {
+    cache.set(key, {
+      ok,
+      expiresAt: Date.now() + WorkerAuthorizationService.CACHE_TTL_MS,
+    });
   }
 }

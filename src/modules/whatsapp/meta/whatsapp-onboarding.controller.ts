@@ -1,4 +1,13 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
@@ -21,6 +30,8 @@ import { PermissionsGuard } from '../../auth/guards/permissions.guard';
 import { PERMISSION } from '../../../rbac/rbac.constants';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 // `complete` and `templates/sync` each trigger several outbound Meta Graph
 // API calls per request. Authenticated (unlike the webhook endpoints), but a
@@ -28,7 +39,10 @@ import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.gu
 // burn the shared platform app's Graph API quota. Relaxed under Jest for the
 // same reason as the app-wide default in app.module.ts.
 const META_GRAPH_THROTTLE = {
-  default: { limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 20, ttl: 60_000 },
+  default: {
+    limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 20,
+    ttl: 60_000,
+  },
 };
 
 const S_ERROR = {
@@ -56,6 +70,7 @@ const S_ERROR = {
  * persisted under the caller's own tenant, never a tenant id from the body.
  */
 @ApiTags('WhatsApp Onboarding')
+@RequireFeature(FeatureKey.WHATSAPP)
 @Controller('whatsapp/onboarding')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @ApiBearerAuth('JWT-auth')
@@ -92,9 +107,13 @@ the browser has no use for them and no way to obtain them.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `whatsapp.accounts.manage`, or the clinic is not active.',
+    description:
+      'Caller lacks `whatsapp.accounts.manage`, or the clinic is not active.',
     schema: S_ERROR,
   })
   @ApiUnprocessableEntityResponse({
@@ -123,11 +142,18 @@ secret — this endpoint exists purely so the UI has a stable value to branch on
   })
   @ApiOkResponse({
     description: 'Onboarding configuration status.',
-    schema: { type: 'object', properties: { configured: { type: 'boolean', example: false } } },
+    schema: {
+      type: 'object',
+      properties: { configured: { type: 'boolean', example: false } },
+    },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `whatsapp.accounts.manage`, or the clinic is not active.',
+    description:
+      'Caller lacks `whatsapp.accounts.manage`, or the clinic is not active.',
     schema: S_ERROR,
   })
   @Get('status')
@@ -137,7 +163,8 @@ secret — this endpoint exists purely so the UI has a stable value to branch on
   }
 
   @ApiOperation({
-    summary: 'Complete Embedded Signup and connect the clinic\'s WhatsApp number',
+    summary:
+      "Complete Embedded Signup and connect the clinic's WhatsApp number",
     description: `
 **Protected — requires \`whatsapp.accounts.manage\`. Clinic must be active.**
 
@@ -165,7 +192,8 @@ response then lists the numbers so the user can choose).
     `.trim(),
   })
   @ApiOkResponse({
-    description: 'WhatsApp account connected. The access token is never returned.',
+    description:
+      'WhatsApp account connected. The access token is never returned.',
     schema: {
       type: 'object',
       properties: {
@@ -180,14 +208,18 @@ response then lists the numbers so the user can choose).
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `whatsapp.accounts.manage`, the clinic is not active, or the authorization was issued for a different Meta app.',
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description: 'This WhatsApp phone number is already connected to another tenant.',
+    description:
+      'This WhatsApp phone number is already connected to another tenant.',
     schema: S_ERROR,
   })
   @ApiUnprocessableEntityResponse({
@@ -246,9 +278,13 @@ Runs automatically after onboarding; call this to refresh on demand.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `whatsapp.templates.manage`, or the clinic is not active.',
+    description:
+      'Caller lacks `whatsapp.templates.manage`, or the clinic is not active.',
     schema: S_ERROR,
   })
   @ApiUnprocessableEntityResponse({
@@ -260,6 +296,9 @@ Runs automatically after onboarding; call this to refresh on demand.
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.WHATSAPP_TEMPLATES_MANAGE)
   syncTemplates(@Query() dto: SyncTemplatesDto) {
-    return this.templateSync.syncAccount(this.ctx.requireTenantId(), dto.accountId);
+    return this.templateSync.syncAccount(
+      this.ctx.requireTenantId(),
+      dto.accountId,
+    );
   }
 }

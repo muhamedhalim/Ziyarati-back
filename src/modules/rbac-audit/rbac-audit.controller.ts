@@ -1,4 +1,11 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -35,7 +42,9 @@ import { ROLE } from '../../rbac/rbac.constants';
 @UseGuards(RolesGuard)
 @Roles(ROLE.SUPER_ADMIN)
 @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.' })
-@ApiForbiddenResponse({ description: 'Caller does not have the super_admin role.' })
+@ApiForbiddenResponse({
+  description: 'Caller does not have the super_admin role.',
+})
 export class RbacAuditController {
   constructor(
     private readonly perms: PermissionsAuditService,
@@ -58,7 +67,9 @@ export class RbacAuditController {
     description:
       'Each row includes assigned-role count and DISTINCT effective-user count. Sortable columns are whitelisted; search/filters are parameterised.',
   })
-  @ApiOkResponse({ description: 'Paginated permission rows: `{ data, total, page, limit }`.' })
+  @ApiOkResponse({
+    description: 'Paginated permission rows: `{ data, total, page, limit }`.',
+  })
   @Get('permissions')
   list(@Query() query: QueryPermissionsDto) {
     return this.perms.list(query);
@@ -69,7 +80,12 @@ export class RbacAuditController {
     description:
       'Full metadata plus assigned roles (with aggregate user counts only — no PII), related permissions in the same module, and RBAC audit warnings for this permission.',
   })
-  @ApiParam({ name: 'id', description: 'UUID of the permission', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the permission',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Permission details payload.' })
   @Get('permissions/:id')
   details(@Param('id', ParseUUIDPipe) id: string) {

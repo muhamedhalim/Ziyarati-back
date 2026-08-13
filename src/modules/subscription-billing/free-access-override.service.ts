@@ -67,7 +67,10 @@ export class FreeAccessOverrideService {
    * second one from the pool — under enough concurrency to hold every pool
    * connection open in a transaction, that second borrow can never resolve.
    */
-  async getActive(tenantId: string, manager?: EntityManager): Promise<FreeAccessOverride | null> {
+  async getActive(
+    tenantId: string,
+    manager?: EntityManager,
+  ): Promise<FreeAccessOverride | null> {
     const runner = manager ?? this.dataSource;
     const rows = await runner.query(
       `SELECT * FROM free_access_overrides
@@ -107,7 +110,10 @@ export class FreeAccessOverrideService {
         entityType: 'free_access_override',
         tenantId,
         before: null,
-        after: { attemptedReason: input.reason ?? null, result: 'rejected: override already active' },
+        after: {
+          attemptedReason: input.reason ?? null,
+          result: 'rejected: override already active',
+        },
       });
       throw new AppError(ErrorCode.CONFLICT, {
         message:
@@ -120,7 +126,13 @@ export class FreeAccessOverrideService {
          (id, tenant_id, granted_by, reason, starts_at, ends_at, status)
        VALUES ($1, $2, $3, $4, now(), $5, 'ACTIVE')
        RETURNING *`,
-      [randomUUID(), tenantId, input.grantedBy ?? null, input.reason ?? null, endsAt],
+      [
+        randomUUID(),
+        tenantId,
+        input.grantedBy ?? null,
+        input.reason ?? null,
+        endsAt,
+      ],
     );
     const result = this.map(rows[0]);
     await this.audit.record({
@@ -155,7 +167,9 @@ export class FreeAccessOverrideService {
       endsAt = null; // unlimited
     } else {
       const base =
-        active.ends_at && active.ends_at > new Date() ? active.ends_at : new Date();
+        active.ends_at && active.ends_at > new Date()
+          ? active.ends_at
+          : new Date();
       endsAt = this.endsFromDuration(durationDays, base);
     }
     const rows = await this.dataSource.query(
@@ -188,7 +202,9 @@ export class FreeAccessOverrideService {
     );
     // node-postgres UPDATE returns [ rows, affectedCount ] via TypeORM's raw driver.
     const rows = Array.isArray(res) ? (res[0] as Array<{ id: string }>) : [];
-    const affected = Array.isArray(res) ? res[1] : (res as { rowCount?: number })?.rowCount;
+    const affected = Array.isArray(res)
+      ? res[1]
+      : (res as { rowCount?: number })?.rowCount;
     if (!affected) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'No active free-access override to revoke',

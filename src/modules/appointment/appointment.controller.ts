@@ -51,6 +51,8 @@ import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.in
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -86,11 +88,30 @@ const S_APPOINTMENT = {
     },
     total_amount: { type: 'number', example: 250.0, nullable: true },
     currency: { type: 'string', example: 'SAR' },
-    source: { type: 'string', enum: ['PLATFORM', 'WHATSAPP_BOT', 'MANUAL'], example: 'MANUAL' },
+    source: {
+      type: 'string',
+      enum: ['PLATFORM', 'WHATSAPP_BOT', 'MANUAL'],
+      example: 'MANUAL',
+    },
     notes: { type: 'string', nullable: true },
-    branch: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
-    customer: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, full_name: { type: 'string' } } },
-    staff: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } },
+    branch: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
+    },
+    customer: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        full_name: { type: 'string' },
+      },
+    },
+    staff: {
+      type: 'object',
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     services: {
       type: 'array',
       items: {
@@ -99,7 +120,13 @@ const S_APPOINTMENT = {
           id: { type: 'string', format: 'uuid' },
           price: { type: 'number', example: 120.0 },
           duration_minutes: { type: 'number', example: 30 },
-          service: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+          service: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              name: { type: 'string' },
+            },
+          },
         },
       },
     },
@@ -123,7 +150,11 @@ const S_NOTE = {
   properties: {
     id: { type: 'string', format: 'uuid' },
     content: { type: 'string' },
-    user: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, nullable: true },
+    user: {
+      type: 'object',
+      properties: { id: { type: 'string', format: 'uuid' } },
+      nullable: true,
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -135,7 +166,14 @@ const S_TIMELINE = {
     properties: {
       type: {
         type: 'string',
-        enum: ['created', 'status_log', 'history', 'note', 'reschedule', 'cancellation'],
+        enum: [
+          'created',
+          'status_log',
+          'history',
+          'note',
+          'reschedule',
+          'cancellation',
+        ],
       },
       at: { type: 'string', format: 'date-time' },
       data: { type: 'object', additionalProperties: true },
@@ -150,7 +188,10 @@ const S_REVIEW = {
     rating: { type: 'number', example: 5 },
     comment: { type: 'string', nullable: true },
     reply: { type: 'string', nullable: true },
-    customer: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } },
+    customer: {
+      type: 'object',
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -169,6 +210,7 @@ const S_REVIEW = {
  */
 @ApiTags('Appointments')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.APPOINTMENTS)
 @Controller('appointments')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -206,22 +248,32 @@ holding \`appointments.create\`). The WhatsApp bot uses the same path with
 \`source = WHATSAPP_BOT\`.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Appointment booked.', schema: S_APPOINTMENT })
+  @ApiCreatedResponse({
+    description: 'Appointment booked.',
+    schema: S_APPOINTMENT,
+  })
   @ApiBadRequestResponse({
-    description: 'Validation failed, or neither `endAt` nor any service was provided to derive the duration.',
+    description:
+      'Validation failed, or neither `endAt` nor any service was provided to derive the duration.',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `appointments.create`, or the clinic is not active.',
+    description:
+      'Caller lacks `appointments.create`, or the clinic is not active.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
-    description: 'Branch, customer, staff, or a service was not found within this clinic.',
+    description:
+      'Branch, customer, staff, or a service was not found within this clinic.',
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description: 'The staff member already has an appointment overlapping this time window.',
+    description:
+      'The staff member already has an appointment overlapping this time window.',
     schema: S_ERROR,
   })
   @Post()
@@ -253,12 +305,27 @@ Doctor, own appointments only (\`appointments.read_own\`).
 **Tenant scoping:** Only the caller's clinic appointments are ever returned.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Paginated appointments.', schema: S_APPOINTMENT_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Paginated appointments.',
+    schema: S_APPOINTMENT_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
-  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
-  findAll(@Query() query: QueryAppointmentsDto, @CurrentUser() user: AuthenticatedUser) {
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
+  findAll(
+    @Query() query: QueryAppointmentsDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
     return this.appointments.findAll(this.ctx.requireTenantId(), query, {
       id: user.id,
       permissions: user.permissions,
@@ -284,14 +351,34 @@ different staff member, so existence is never distinguishable from "not
 yours".
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Appointment found.', schema: S_APPOINTMENT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Get(':id')
-  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
-  findOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
     return this.appointments.findOne(this.ctx.requireTenantId(), id, {
       id: user.id,
       permissions: user.permissions,
@@ -322,13 +409,32 @@ Every change is written to the appointment history.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Appointment updated.', schema: S_APPOINTMENT })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment, new staff or new branch not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Appointment is terminal, or the new staff member has a conflicting booking.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Appointment, new staff or new branch not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description:
+      'Appointment is terminal, or the new staff member has a conflicting booking.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.APPOINTMENTS_UPDATE)
   update(
@@ -336,7 +442,12 @@ Every change is written to the appointment history.
     @Body() dto: UpdateAppointmentDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.appointments.update(this.ctx.requireTenantId(), userId, id, dto);
+    return this.appointments.update(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto,
+    );
   }
 
   @ApiOperation({
@@ -354,13 +465,36 @@ appointments cannot be modified.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Services replaced; totals recomputed.', schema: S_APPOINTMENT })
-  @ApiBadRequestResponse({ description: 'Validation failed (e.g. empty service list).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment or one of the services not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Appointment is in a terminal status.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Services replaced; totals recomputed.',
+    schema: S_APPOINTMENT,
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (e.g. empty service list).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment or one of the services not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Appointment is in a terminal status.',
+    schema: S_ERROR,
+  })
   @Put(':id/services')
   @RequirePermissions(PERMISSION.APPOINTMENTS_UPDATE)
   setServices(
@@ -368,7 +502,12 @@ appointments cannot be modified.
     @Body() dto: SetAppointmentServicesDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.appointments.setServices(this.ctx.requireTenantId(), userId, id, dto);
+    return this.appointments.setServices(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto,
+    );
   }
 
   // ─────────────────────────── Status lifecycle ──────────────────────────── //
@@ -397,13 +536,34 @@ captures reason/actor/refund.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Status changed.', schema: S_APPOINTMENT })
-  @ApiBadRequestResponse({ description: 'Target is `CANCELLED` (use cancel), or status is already set.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Illegal status transition for the current state.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description:
+      'Target is `CANCELLED` (use cancel), or status is already set.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Illegal status transition for the current state.',
+    schema: S_ERROR,
+  })
   @Post(':id/status')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.APPOINTMENTS_UPDATE)
@@ -412,7 +572,12 @@ captures reason/actor/refund.
     @Body() dto: ChangeAppointmentStatusDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.appointments.changeStatus(this.ctx.requireTenantId(), userId, id, dto);
+    return this.appointments.changeStatus(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto,
+    );
   }
 
   // ─────────────────────────── Cancellation ──────────────────────────────── //
@@ -432,13 +597,33 @@ belongs to the payments domain.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.cancel\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Appointment cancelled.', schema: S_APPOINTMENT })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Appointment cancelled.',
+    schema: S_APPOINTMENT,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.cancel`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Appointment is already completed/cancelled/no-show.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.cancel`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Appointment is already completed/cancelled/no-show.',
+    schema: S_ERROR,
+  })
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.APPOINTMENTS_CANCEL)
@@ -447,7 +632,12 @@ belongs to the payments domain.
     @Body() dto: CancelAppointmentDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.appointments.cancel(this.ctx.requireTenantId(), userId, id, dto);
+    return this.appointments.cancel(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto,
+    );
   }
 
   // ─────────────────────────── Reschedule ────────────────────────────────── //
@@ -468,13 +658,37 @@ Persists an \`appointment_reschedules\` audit row (reason + actor) and an
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.reschedule\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Appointment rescheduled.', schema: S_APPOINTMENT })
-  @ApiBadRequestResponse({ description: 'Validation failed, or end is not after start.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.reschedule`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Appointment is terminal, or the staff member is busy in the new window.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Appointment rescheduled.',
+    schema: S_APPOINTMENT,
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed, or end is not after start.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.reschedule`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description:
+      'Appointment is terminal, or the staff member is busy in the new window.',
+    schema: S_ERROR,
+  })
   @Post(':id/reschedule')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.APPOINTMENTS_RESCHEDULE)
@@ -483,7 +697,12 @@ Persists an \`appointment_reschedules\` audit row (reason + actor) and an
     @Body() dto: RescheduleAppointmentDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.appointments.reschedule(this.ctx.requireTenantId(), userId, id, dto);
+    return this.appointments.reschedule(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto,
+    );
   }
 
   // ───────────────────────────── Notes ───────────────────────────────────── //
@@ -500,12 +719,29 @@ body.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Note added.', schema: S_NOTE })
-  @ApiBadRequestResponse({ description: 'Validation failed (empty content).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (empty content).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Post(':id/notes')
   @RequirePermissions(PERMISSION.APPOINTMENTS_UPDATE)
   addNote(
@@ -513,7 +749,12 @@ body.
     @Body() dto: AddAppointmentNoteDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.appointments.addNote(this.ctx.requireTenantId(), userId, id, dto);
+    return this.appointments.addNote(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto,
+    );
   }
 
   @ApiOperation({
@@ -526,14 +767,37 @@ Returns all internal staff notes for the appointment, newest first.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Notes for the appointment.', schema: { type: 'array', items: S_NOTE } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Notes for the appointment.',
+    schema: { type: 'array', items: S_NOTE },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Get(':id/notes')
-  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
-  listNotes(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
+  listNotes(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
     return this.appointments.listNotes(this.ctx.requireTenantId(), id, {
       id: user.id,
       permissions: user.permissions,
@@ -556,14 +820,37 @@ Ideal for rendering an activity feed on the appointment detail screen.
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Merged, time-ordered timeline.', schema: S_TIMELINE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Merged, time-ordered timeline.',
+    schema: S_TIMELINE,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Get(':id/timeline')
-  @RequireAnyPermission(PERMISSION.APPOINTMENTS_READ, PERMISSION.APPOINTMENTS_READ_OWN)
-  timeline(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
+  timeline(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
     return this.appointments.getTimeline(this.ctx.requireTenantId(), id, {
       id: user.id,
       permissions: user.permissions,
@@ -585,16 +872,37 @@ cancelled first.
 **Who can call this:** Owner or Manager (\`appointments.manage_all\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Appointment soft-deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `appointments.manage_all`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Appointment is not cancelled/no-show, so it cannot be deleted.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.manage_all`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description:
+      'Appointment is not cancelled/no-show, so it cannot be deleted.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.APPOINTMENTS_MANAGE_ALL)
-  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string) {
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ) {
     return this.appointments.remove(this.ctx.requireTenantId(), userId, id);
   }
 
@@ -614,14 +922,37 @@ Creates the customer review for an appointment. Business rules:
 the permission may also submit on a customer's behalf.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Review created.', schema: S_REVIEW })
-  @ApiBadRequestResponse({ description: 'Validation failed (rating must be 1–5).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `reviews.create`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Appointment not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'The appointment has already been reviewed.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'The appointment is not completed yet.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (rating must be 1–5).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `reviews.create`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'The appointment has already been reviewed.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'The appointment is not completed yet.',
+    schema: S_ERROR,
+  })
   @Post(':id/review')
   @RequirePermissions(PERMISSION.REVIEWS_CREATE)
   createReview(
@@ -641,11 +972,25 @@ Returns the single review attached to the appointment (if any).
 **Who can call this:** Owner, Manager, Receptionist (\`reviews.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Appointment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'The appointment review.', schema: S_REVIEW })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `reviews.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No review found for this appointment.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `reviews.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No review found for this appointment.',
+    schema: S_ERROR,
+  })
   @Get(':id/review')
   @RequirePermissions(PERMISSION.REVIEWS_READ)
   getReview(@Param('id', ParseUUIDPipe) id: string) {

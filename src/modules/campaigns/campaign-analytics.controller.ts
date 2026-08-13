@@ -27,6 +27,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -84,7 +85,7 @@ const S_PERFORMANCE = {
 @Controller('campaign-analytics')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('campaigns')
+@RequireFeature(FeatureKey.CAMPAIGNS)
 export class CampaignAnalyticsController {
   constructor(
     private readonly analytics: CampaignAnalyticsService,

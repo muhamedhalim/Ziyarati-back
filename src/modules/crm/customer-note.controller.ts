@@ -35,6 +35,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -54,6 +56,7 @@ const S_ERROR = {
  */
 @ApiTags('CRM Customer Notes')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CRM)
 @Controller('crm/customers/:customerId/notes')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -63,12 +66,30 @@ export class CustomerNoteController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Add a note', description: '**Protected — `crm.notes.manage`. Clinic active.** Records the authoring user.' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Add a note',
+    description:
+      '**Protected — `crm.notes.manage`. Clinic active.** Records the authoring user.',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Note added.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.notes.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Customer not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.notes.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Customer not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.CRM_NOTES_MANAGE)
   add(
@@ -83,12 +104,30 @@ export class CustomerNoteController {
     );
   }
 
-  @ApiOperation({ summary: 'List notes', description: '**Protected — `crm.notes.read`. Clinic active.** Tenant + customer scoped, newest first, paginated.' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'List notes',
+    description:
+      '**Protected — `crm.notes.read`. Clinic active.** Tenant + customer scoped, newest first, paginated.',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Paginated notes.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.notes.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Customer not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.notes.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Customer not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.CRM_NOTES_READ)
   list(
@@ -98,13 +137,35 @@ export class CustomerNoteController {
     return this.notes.list(this.ctx.requireTenantId(), customerId, query);
   }
 
-  @ApiOperation({ summary: 'Update a note', description: '**Protected — `crm.notes.manage`. Clinic active.**' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'noteId', description: 'Note UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Update a note',
+    description: '**Protected — `crm.notes.manage`. Clinic active.**',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'noteId',
+    description: 'Note UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Note updated.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.notes.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Note not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.notes.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Note not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':noteId')
   @RequirePermissions(PERMISSION.CRM_NOTES_MANAGE)
   update(
@@ -112,16 +173,43 @@ export class CustomerNoteController {
     @Param('noteId', ParseUUIDPipe) noteId: string,
     @Body() dto: UpdateCustomerNoteDto,
   ) {
-    return this.notes.update(this.ctx.requireTenantId(), customerId, noteId, dto);
+    return this.notes.update(
+      this.ctx.requireTenantId(),
+      customerId,
+      noteId,
+      dto,
+    );
   }
 
-  @ApiOperation({ summary: 'Delete a note', description: '**Protected — `crm.notes.manage`. Clinic active.**' })
-  @ApiParam({ name: 'customerId', description: 'Customer UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'noteId', description: 'Note UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete a note',
+    description: '**Protected — `crm.notes.manage`. Clinic active.**',
+  })
+  @ApiParam({
+    name: 'customerId',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'noteId',
+    description: 'Note UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Note deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.notes.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Note not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.notes.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Note not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':noteId')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CRM_NOTES_MANAGE)

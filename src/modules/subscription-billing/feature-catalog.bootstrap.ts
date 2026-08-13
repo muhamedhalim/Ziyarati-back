@@ -1,26 +1,22 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { FeatureCatalogService } from './feature-catalog.service';
-import { UpsertFeatureDefinitionDto } from './dto/feature-catalog.dto';
 
 /**
- * Seeds a starter feature catalog on boot (idempotent — only when empty). This
- * is initial DATA, not hardcoded logic: super-admins add/edit features via the
- * API afterwards, so the catalog is unbounded.
+ * Reconciles `feature_definitions` / `feature_dependencies` with the code-owned
+ * {@link FEATURE_REGISTRY} on every boot.
+ *
+ * The previous version seeded a hardcoded STARTER_CATALOG *only when the table
+ * was empty*, which meant the catalog froze at whatever the first deployment
+ * wrote. Capabilities added to the code afterwards never got a row, so a
+ * super-admin had no toggle for them and `FeatureGuard` — which resolves a
+ * feature by looking it up in that table — denied every request naming a key
+ * with no definition. Syncing instead of seeding removes the drift entirely.
+ *
+ * Failures are logged, not thrown: the catalog is management metadata, and a
+ * transient DB hiccup at boot must not stop the API from starting. The policy
+ * itself fails closed independently, so a stale catalog cannot widen access.
  */
-const STARTER_CATALOG: UpsertFeatureDefinitionDto[] = [
-  { featureKey: 'appointments', name: 'Appointments', category: 'Core', defaultEnabled: true, description: 'Booking & calendar.' },
-  { featureKey: 'crm', name: 'CRM', category: 'Core', defaultEnabled: true, description: 'Customer records, tags, notes.' },
-  { featureKey: 'analytics', name: 'Analytics', category: 'Core', defaultEnabled: true, description: 'Dashboards & reports.' },
-  { featureKey: 'reviews', name: 'Reviews', category: 'Growth', defaultEnabled: false, description: 'Customer reviews & ratings.' },
-  { featureKey: 'campaigns', name: 'Campaigns', category: 'Growth', defaultEnabled: false, description: 'Marketing campaigns.' },
-  { featureKey: 'whatsapp', name: 'WhatsApp', category: 'Communication', defaultEnabled: false, description: 'WhatsApp messaging.' },
-  { featureKey: 'whatsapp.campaigns', name: 'WhatsApp Campaigns', category: 'Communication', defaultEnabled: false, description: 'Bulk WhatsApp campaigns.' },
-  { featureKey: 'notifications', name: 'Notifications', category: 'Communication', defaultEnabled: true, description: 'Automated notifications.' },
-  { featureKey: 'ai.assistant', name: 'AI Assistant', category: 'AI', defaultEnabled: false, description: 'AI chat + booking assistant.' },
-  { featureKey: 'payments', name: 'Payments', category: 'Payments', defaultEnabled: false, description: 'Online payments & settlements.' },
-];
-
 @Injectable()
 export class FeatureCatalogBootstrap implements OnModuleInit {
   private readonly logger = new Logger(FeatureCatalogBootstrap.name);
@@ -29,9 +25,11 @@ export class FeatureCatalogBootstrap implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     try {
-      await this.catalog.seedDefaults(STARTER_CATALOG);
+      await this.catalog.syncRegistry();
     } catch (err) {
-      this.logger.warn(`Feature catalog seed skipped: ${(err as Error)?.message}`);
+      this.logger.warn(
+        `Feature registry sync skipped: ${(err as Error)?.message}`,
+      );
     }
   }
 }

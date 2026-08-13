@@ -54,7 +54,11 @@ const S_ERROR = {
 const S_PERMISSION_DETAIL = {
   type: 'object',
   properties: {
-    id: { type: 'string', format: 'uuid', example: 'b2c3d4e5-0000-0000-0000-000000000020' },
+    id: {
+      type: 'string',
+      format: 'uuid',
+      example: 'b2c3d4e5-0000-0000-0000-000000000020',
+    },
     name: { type: 'string', example: 'Create Appointments' },
     slug: { type: 'string', example: 'appointments.create' },
     module: {
@@ -103,15 +107,27 @@ operational use by the platform team when rolling out new features.
 tenants.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Permission created.', schema: S_PERMISSION_DETAIL })
+  @ApiCreatedResponse({
+    description: 'Permission created.',
+    schema: S_PERMISSION_DETAIL,
+  })
   @ApiBadRequestResponse({
     description:
       'Validation failed or slug does not match the required pattern `[a-z0-9:._-]+` (use dot-notation e.g. `appointments.create`).',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller does not have the `super_admin` role.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'A permission with this slug already exists.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller does not have the `super_admin` role.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'A permission with this slug already exists.',
+    schema: S_ERROR,
+  })
   @Post()
   @UseGuards(RolesGuard)
   @Roles(ROLE.SUPER_ADMIN)
@@ -145,15 +161,22 @@ clinic owners and managers who configure RBAC for their staff.
   @ApiQuery({
     name: 'module',
     required: false,
-    description: 'Filter by module group (e.g. `appointments`, `reports`, `users`).',
+    description:
+      'Filter by module group (e.g. `appointments`, `reports`, `users`).',
     example: 'appointments',
   })
   @ApiOkResponse({
     description: 'Permission catalogue, optionally filtered by module.',
     schema: { type: 'array', items: S_PERMISSION_DETAIL },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
   @Get()
   @UseGuards(PermissionsGuard)
   @RequirePermissions(PERMISSION.ROLES_MANAGE)
@@ -176,11 +199,28 @@ after fetching it from a role's permission list.
 **Tenant scoping:** None — permissions are global.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the permission', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Permission found.', schema: S_PERMISSION_DETAIL })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Permission not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the permission',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Permission found.',
+    schema: S_PERMISSION_DETAIL,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Permission not found.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @UseGuards(PermissionsGuard)
   @RequirePermissions(PERMISSION.ROLES_MANAGE)
@@ -189,7 +229,7 @@ after fetching it from a role's permission list.
   }
 
   @ApiOperation({
-    summary: 'Update a permission\'s name or module (platform only)',
+    summary: "Update a permission's name or module (platform only)",
     description: `
 **Protected — \`super_admin\` role required.**
 
@@ -207,12 +247,29 @@ code deploy + migration.
 **Tenant scoping:** None.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the permission to update', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Permission updated.', schema: S_PERMISSION_DETAIL })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the permission to update',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Permission updated.',
+    schema: S_PERMISSION_DETAIL,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller does not have the `super_admin` role.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Permission not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller does not have the `super_admin` role.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Permission not found.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles(ROLE.SUPER_ADMIN)
@@ -245,11 +302,25 @@ from \`rbac.constants.ts\`.
 **Who can call this:** \`super_admin\` only.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the permission to delete', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the permission to delete',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Permission deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller does not have the `super_admin` role.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Permission not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller does not have the `super_admin` role.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Permission not found.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(RolesGuard)

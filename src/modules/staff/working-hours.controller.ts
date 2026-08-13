@@ -38,6 +38,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -54,11 +56,21 @@ const S_WORKING_HOURS = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    day_of_week: { type: 'number', example: 1, description: '0=Sunday … 6=Saturday' },
+    day_of_week: {
+      type: 'number',
+      example: 1,
+      description: '0=Sunday … 6=Saturday',
+    },
     start_time: { type: 'string', example: '08:00' },
     end_time: { type: 'string', example: '18:00' },
     is_closed: { type: 'boolean', example: false },
-    branch: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+    branch: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
+    },
   },
 };
 
@@ -71,6 +83,7 @@ const S_WORKING_HOURS = {
  */
 @ApiTags('Working Hours')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.STAFF)
 @Controller('working-hours')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -95,12 +108,30 @@ represent a closed day.
 **Who can call this:** Owner, Manager (\`staff.schedule.manage\`).
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Working-hours slot created.', schema: S_WORKING_HOURS })
-  @ApiBadRequestResponse({ description: 'Validation failed or end ≤ start.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Slot overlaps an existing open slot that day.', schema: S_ERROR })
+  @ApiCreatedResponse({
+    description: 'Working-hours slot created.',
+    schema: S_WORKING_HOURS,
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed or end ≤ start.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Slot overlaps an existing open slot that day.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.STAFF_SCHEDULE_MANAGE)
   create(@Body() dto: CreateWorkingHoursDto) {
@@ -108,7 +139,7 @@ represent a closed day.
   }
 
   @ApiOperation({
-    summary: 'List a branch\'s working hours',
+    summary: "List a branch's working hours",
     description: `
 **Protected — requires \`staff.read\`. Clinic must be active.**
 
@@ -118,16 +149,39 @@ time.
 **Who can call this:** Owner, Manager, Receptionist (\`staff.read\`).
     `.trim(),
   })
-  @ApiQuery({ name: 'branchId', required: true, description: 'Branch UUID', example: 'c1d2e3f4-0000-0000-0000-000000000010' })
-  @ApiOkResponse({ description: 'Working-hours rows.', schema: { type: 'array', items: S_WORKING_HOURS } })
-  @ApiBadRequestResponse({ description: 'Missing/invalid branchId.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch not found in this clinic.', schema: S_ERROR })
+  @ApiQuery({
+    name: 'branchId',
+    required: true,
+    description: 'Branch UUID',
+    example: 'c1d2e3f4-0000-0000-0000-000000000010',
+  })
+  @ApiOkResponse({
+    description: 'Working-hours rows.',
+    schema: { type: 'array', items: S_WORKING_HOURS },
+  })
+  @ApiBadRequestResponse({
+    description: 'Missing/invalid branchId.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.STAFF_READ)
   list(@Query('branchId', ParseUUIDPipe) branchId: string) {
-    return this.schedules.listWorkingHours(this.ctx.requireTenantId(), branchId);
+    return this.schedules.listWorkingHours(
+      this.ctx.requireTenantId(),
+      branchId,
+    );
   }
 
   @ApiOperation({
@@ -141,28 +195,72 @@ and (when open) overlap.
 **Who can call this:** Owner, Manager (\`staff.schedule.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Working-hours row UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Working-hours slot updated.', schema: S_WORKING_HOURS })
-  @ApiBadRequestResponse({ description: 'Validation failed or end ≤ start.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Working-hours row or branch not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Updated slot overlaps an existing open slot.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Working-hours row UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Working-hours slot updated.',
+    schema: S_WORKING_HOURS,
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed or end ≤ start.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Working-hours row or branch not found.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Updated slot overlaps an existing open slot.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.STAFF_SCHEDULE_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWorkingHoursDto) {
-    return this.schedules.updateWorkingHours(this.ctx.requireTenantId(), id, dto);
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWorkingHoursDto,
+  ) {
+    return this.schedules.updateWorkingHours(
+      this.ctx.requireTenantId(),
+      id,
+      dto,
+    );
   }
 
   @ApiOperation({
     summary: 'Delete a branch working-hours slot',
     description: `**Protected — requires \`staff.schedule.manage\`. Clinic must be active.** Removes an operating-hours row.`,
   })
-  @ApiParam({ name: 'id', description: 'Working-hours row UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Working-hours row UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Working-hours slot deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Working-hours row not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Working-hours row not found.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.STAFF_SCHEDULE_MANAGE)

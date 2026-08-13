@@ -93,10 +93,22 @@ campaigns) for the given \`periodMonth\` (defaults to the current month).
 **Tenant scoping:** Resolved from the caller's own subscription + \`tenant_id\`.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Usage counters for the period.', schema: S_USAGE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `usage.read`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No active subscription found for this tenant.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Usage counters for the period.',
+    schema: S_USAGE,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `usage.read`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No active subscription found for this tenant.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.USAGE_READ)
   getUsage(@Query() query: QueryUsageDto) {
@@ -115,13 +127,28 @@ metric is unlimited on the plan. Powers usage meters/progress bars.
 **Who can call this:** Owner, Manager (\`usage.read\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Usage vs limits breakdown.', schema: S_BREAKDOWN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `usage.read`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No active subscription found for this tenant.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Usage vs limits breakdown.',
+    schema: S_BREAKDOWN,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `usage.read`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No active subscription found for this tenant.',
+    schema: S_ERROR,
+  })
   @Get('breakdown')
   @RequirePermissions(PERMISSION.USAGE_READ)
   getBreakdown(@Query() query: QueryUsageDto) {
-    return this.usage.getBreakdown(this.ctx.requireTenantId(), query.periodMonth);
+    return this.usage.getBreakdown(
+      this.ctx.requireTenantId(),
+      query.periodMonth,
+    );
   }
 }

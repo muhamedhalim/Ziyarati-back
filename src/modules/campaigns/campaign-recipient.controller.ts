@@ -38,6 +38,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -54,13 +55,32 @@ const S_RECIPIENT = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    processing: { type: 'string', enum: ['PENDING', 'DISPATCHING', 'DISPATCHED', 'FAILED', 'SKIPPED'], example: 'PENDING' },
-    delivery: { type: 'string', enum: ['NONE', 'ACCEPTED', 'DELIVERED', 'READ', 'BOUNCED'], example: 'NONE' },
+    processing: {
+      type: 'string',
+      enum: ['PENDING', 'DISPATCHING', 'DISPATCHED', 'FAILED', 'SKIPPED'],
+      example: 'PENDING',
+    },
+    delivery: {
+      type: 'string',
+      enum: ['NONE', 'ACCEPTED', 'DELIVERED', 'READ', 'BOUNCED'],
+      example: 'NONE',
+    },
     provider_ref: { type: 'string', nullable: true },
     attempts: { type: 'number', example: 0 },
-    failure_class: { type: 'string', enum: ['TRANSIENT', 'PERMANENT'], nullable: true },
+    failure_class: {
+      type: 'string',
+      enum: ['TRANSIENT', 'PERMANENT'],
+      nullable: true,
+    },
     dispatched_at: { type: 'string', format: 'date-time', nullable: true },
-    customer: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, full_name: { type: 'string', nullable: true }, phone: { type: 'string' } } },
+    customer: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        full_name: { type: 'string', nullable: true },
+        phone: { type: 'string' },
+      },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -88,7 +108,7 @@ const S_RECIPIENT_LIST = {
 @Controller('campaigns/:campaignId/recipients')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('campaigns')
+@RequireFeature(FeatureKey.CAMPAIGNS)
 export class CampaignRecipientController {
   constructor(
     private readonly recipients: CampaignRecipientService,
@@ -111,24 +131,56 @@ tenant (422 otherwise). Allowed only while the campaign is editable
 the tenant.
     `.trim(),
   })
-  @ApiParam({ name: 'campaignId', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'campaignId',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({
     description: 'Recipients added.',
-    schema: { type: 'object', properties: { requested: { type: 'number' }, added: { type: 'number' }, skipped: { type: 'number' } } },
+    schema: {
+      type: 'object',
+      properties: {
+        requested: { type: 'number' },
+        added: { type: 'number' },
+        skipped: { type: 'number' },
+      },
+    },
   })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_recipients.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Campaign is not in an editable status.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'One or more customers not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `campaign_recipients.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Campaign is not in an editable status.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'One or more customers not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE)
   add(
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
     @Body() dto: AddCampaignRecipientsDto,
   ) {
-    return this.recipients.addRecipients(this.ctx.requireTenantId(), campaignId, dto);
+    return this.recipients.addRecipients(
+      this.ctx.requireTenantId(),
+      campaignId,
+      dto,
+    );
   }
 
   @ApiOperation({
@@ -142,11 +194,28 @@ and pagination.
 **Who can call this:** Owner, Manager, Receptionist (\`campaign_recipients.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'campaignId', description: 'Campaign UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Paginated recipients.', schema: S_RECIPIENT_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
+  @ApiParam({
+    name: 'campaignId',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Paginated recipients.',
+    schema: S_RECIPIENT_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.CAMPAIGN_RECIPIENTS_READ)
   list(
@@ -167,7 +236,12 @@ status).
 **Who can call this:** Owner, Manager, Receptionist (\`campaign_recipients.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'campaignId', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'campaignId',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Recipient status counts.',
     schema: {
@@ -176,13 +250,26 @@ status).
         campaignId: { type: 'string', format: 'uuid' },
         runId: { type: 'string', format: 'uuid', nullable: true },
         total: { type: 'number', example: 540 },
-        byProcessing: { type: 'object', additionalProperties: { type: 'number' }, example: { PENDING: 40, DISPATCHED: 480, FAILED: 20 } },
+        byProcessing: {
+          type: 'object',
+          additionalProperties: { type: 'number' },
+          example: { PENDING: 40, DISPATCHED: 480, FAILED: 20 },
+        },
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('statistics')
   @RequirePermissions(PERMISSION.CAMPAIGN_RECIPIENTS_READ)
   statistics(@Param('campaignId', ParseUUIDPipe) campaignId: string) {
@@ -203,7 +290,12 @@ names for specific reason strings.
 **Who can call this:** Owner, Manager, Receptionist (\`campaign_recipients.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'campaignId', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'campaignId',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Reason breakdown.',
     schema: {
@@ -225,13 +317,25 @@ names for specific reason strings.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `campaign_recipients.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('reasons')
   @RequirePermissions(PERMISSION.CAMPAIGN_RECIPIENTS_READ)
   reasons(@Param('campaignId', ParseUUIDPipe) campaignId: string) {
-    return this.recipients.reasonBreakdown(this.ctx.requireTenantId(), campaignId);
+    return this.recipients.reasonBreakdown(
+      this.ctx.requireTenantId(),
+      campaignId,
+    );
   }
 
   @ApiOperation({
@@ -245,16 +349,37 @@ while the campaign is editable (\`DRAFT\`/\`SCHEDULED\`/\`PAUSED\`).
 **Who can call this:** Owner, Manager (\`campaign_recipients.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'campaignId', description: 'Campaign UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'campaignId',
+    description: 'Campaign UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Recipients removed.',
-    schema: { type: 'object', properties: { removed: { type: 'number', example: 3 } } },
+    schema: {
+      type: 'object',
+      properties: { removed: { type: 'number', example: 3 } },
+    },
   })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `campaign_recipients.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Campaign not found in this tenant.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Campaign is not in an editable status.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `campaign_recipients.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Campaign not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Campaign is not in an editable status.',
+    schema: S_ERROR,
+  })
   @Delete()
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CAMPAIGN_RECIPIENTS_MANAGE)
@@ -262,6 +387,10 @@ while the campaign is editable (\`DRAFT\`/\`SCHEDULED\`/\`PAUSED\`).
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
     @Body() dto: RemoveCampaignRecipientsDto,
   ) {
-    return this.recipients.removeRecipients(this.ctx.requireTenantId(), campaignId, dto);
+    return this.recipients.removeRecipients(
+      this.ctx.requireTenantId(),
+      campaignId,
+      dto,
+    );
   }
 }

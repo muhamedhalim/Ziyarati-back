@@ -22,15 +22,30 @@ describe('runInTenantContext', () => {
       return 'ok';
     });
 
-    const result = await runInTenantContext(ctx, authz as never, 'test.job', { tenantId: 't1' }, fn);
+    const result = await runInTenantContext(
+      ctx,
+      authz as never,
+      'test.job',
+      { tenantId: 't1' },
+      fn,
+    );
 
     expect(order).toEqual(['authz', 'fn']);
     expect(result).toBe('ok');
   });
 
   it('passes the job name through to authz.assertAuthorized (job-name-driven tiering — gap-closure pass)', async () => {
-    await runInTenantContext(ctx, authz as never, 'notifications.dispatch', { tenantId: 't1' }, jest.fn());
-    expect(authz.assertAuthorized).toHaveBeenCalledWith('notifications.dispatch', { tenantId: 't1' });
+    await runInTenantContext(
+      ctx,
+      authz as never,
+      'notifications.dispatch',
+      { tenantId: 't1' },
+      jest.fn(),
+    );
+    expect(authz.assertAuthorized).toHaveBeenCalledWith(
+      'notifications.dispatch',
+      { tenantId: 't1' },
+    );
   });
 
   it('restores the principal from the job payload when tenantId is set', async () => {
@@ -38,7 +53,13 @@ describe('runInTenantContext', () => {
       expect(ctx.getUser()).toMatchObject({ id: 'actor-1', tenantId: 't1' });
       return 'ok';
     });
-    await runInTenantContext(ctx, authz as never, 'test.job', { tenantId: 't1', actorId: 'actor-1' }, fn);
+    await runInTenantContext(
+      ctx,
+      authz as never,
+      'test.job',
+      { tenantId: 't1', actorId: 'actor-1' },
+      fn,
+    );
     expect(fn).toHaveBeenCalled();
   });
 
@@ -47,15 +68,31 @@ describe('runInTenantContext', () => {
       expect(ctx.getUser()).toBeNull();
       return 'ok';
     });
-    await runInTenantContext(ctx, authz as never, 'test.job', { tenantId: null }, fn);
+    await runInTenantContext(
+      ctx,
+      authz as never,
+      'test.job',
+      { tenantId: null },
+      fn,
+    );
     expect(fn).toHaveBeenCalled();
   });
 
   it('propagates an UnrecoverableError from authz WITHOUT ever calling fn', async () => {
-    authz.assertAuthorized.mockRejectedValueOnce(new UnrecoverableError('tenant suspended'));
+    authz.assertAuthorized.mockRejectedValueOnce(
+      new UnrecoverableError('tenant suspended'),
+    );
     const fn = jest.fn();
 
-    await expect(runInTenantContext(ctx, authz as never, 'test.job', { tenantId: 't1' }, fn)).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(
+      runInTenantContext(
+        ctx,
+        authz as never,
+        'test.job',
+        { tenantId: 't1' },
+        fn,
+      ),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
     expect(fn).not.toHaveBeenCalled();
   });
 
@@ -63,6 +100,14 @@ describe('runInTenantContext', () => {
     // A non-async function that throws before returning does so synchronously;
     // an `async function` would instead return an (unhandled, if the caller
     // doesn't await/catch) rejected promise for the exact same mistake.
-    expect(() => runInTenantContext(ctx, undefined as never, 'test.job', { tenantId: 't1' }, jest.fn())).toThrow();
+    expect(() =>
+      runInTenantContext(
+        ctx,
+        undefined as never,
+        'test.job',
+        { tenantId: 't1' },
+        jest.fn(),
+      ),
+    ).toThrow();
   });
 });

@@ -24,20 +24,26 @@ describe('dlqExpiresAt (FND-037 — DLQ retention class)', () => {
   const now = new Date('2026-01-01T00:00:00.000Z');
 
   it('stamps the SHORT PII-adjacent class (6h) for a PII-bearing DLQ (e.g. WHATSAPP_DLQ)', () => {
-    const expected = new Date(now.getTime() + PII_REMOVE_ON_FAIL_SECONDS * 1000).toISOString();
+    const expected = new Date(
+      now.getTime() + PII_REMOVE_ON_FAIL_SECONDS * 1000,
+    ).toISOString();
     expect(dlqExpiresAt(true, now)).toBe(expected);
     expect(PII_REMOVE_ON_FAIL_SECONDS).toBe(6 * 3600); // sanity: matches the existing pre-DLQ constant exactly, no drift
   });
 
   it('stamps the STANDARD class (7d) for a non-PII-bearing DLQ (e.g. CAMPAIGNS_DLQ, NOTIFICATIONS_DLQ, WEBHOOKS_DLQ)', () => {
-    const expected = new Date(now.getTime() + STANDARD_REMOVE_ON_FAIL_SECONDS * 1000).toISOString();
+    const expected = new Date(
+      now.getTime() + STANDARD_REMOVE_ON_FAIL_SECONDS * 1000,
+    ).toISOString();
     expect(dlqExpiresAt(false, now)).toBe(expected);
     expect(STANDARD_REMOVE_ON_FAIL_SECONDS).toBe(7 * 24 * 3600); // matches defaultJobOptions' removeOnFail.age exactly
   });
 
   it('the two classes are genuinely different (the whole point of the finding)', () => {
     expect(dlqExpiresAt(true, now)).not.toBe(dlqExpiresAt(false, now));
-    expect(PII_REMOVE_ON_FAIL_SECONDS).toBeLessThan(STANDARD_REMOVE_ON_FAIL_SECONDS);
+    expect(PII_REMOVE_ON_FAIL_SECONDS).toBeLessThan(
+      STANDARD_REMOVE_ON_FAIL_SECONDS,
+    );
   });
 });
 

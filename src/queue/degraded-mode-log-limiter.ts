@@ -37,7 +37,9 @@ export class DegradedModeLogLimiter {
       this.degraded = true;
       this.lastLogAt = now;
       this.eventsSinceLastLog = 0;
-      this.logger.warn(`${this.label} — entering degraded mode: ${errorMessage}`);
+      this.logger.warn(
+        `${this.label} — entering degraded mode: ${errorMessage}`,
+      );
       return;
     }
     if (now - this.lastLogAt >= this.summaryIntervalMs) {

@@ -15,7 +15,8 @@ export class CreateSubscriptionDto {
   planId!: string;
 
   @ApiPropertyOptional({
-    description: 'Start as a trial (status = TRIAL) instead of ACTIVE. Defaults to false.',
+    description:
+      'Start as a trial (status = TRIAL) instead of ACTIVE. Defaults to false.',
     example: false,
     default: false,
   })
@@ -24,7 +25,8 @@ export class CreateSubscriptionDto {
   startTrial?: boolean;
 
   @ApiPropertyOptional({
-    description: 'Whether the subscription auto-renews at period end. Defaults to true.',
+    description:
+      'Whether the subscription auto-renews at period end. Defaults to true.',
     example: true,
     default: true,
   })

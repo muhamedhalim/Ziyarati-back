@@ -12,8 +12,12 @@ import {
 
 import { FeatureFlagService } from './feature-flag.service';
 import { FeatureCatalogService } from './feature-catalog.service';
+import { isFeatureKey } from './feature-registry';
 import { SetFeatureFlagDto } from './dto/set-feature-flag.dto';
 
+import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
+import { AppError, ErrorCode } from '../../common/errors';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -61,7 +65,9 @@ export class FeatureFlagController {
     description:
       "**Requires `featureflag.read`.** Full resolution for the caller's own tenant — subscription state, plan inclusion, dependencies and usage quota → what's actually available. Read-only: tenants cannot enable features their subscription does not include.",
   })
-  @ApiOkResponse({ description: 'Subscription context + resolved feature list.' })
+  @ApiOkResponse({
+    description: 'Subscription context + resolved feature list.',
+  })
   @Get('effective')
   @RequirePermissions(PERMISSION.FEATUREFLAG_READ)
   effective() {
@@ -69,7 +75,7 @@ export class FeatureFlagController {
   }
 
   @ApiOperation({
-    summary: 'List the tenant\'s feature flags',
+    summary: "List the tenant's feature flags",
     description: `
 **Protected — requires \`featureflag.read\`.**
 
@@ -81,9 +87,18 @@ uses these to show/hide modules (appointments, AI, WhatsApp, …).
 **Tenant scoping:** Only the caller's own flags.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Feature flags.', schema: { type: 'array', items: S_FLAG } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `featureflag.read`.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Feature flags.',
+    schema: { type: 'array', items: S_FLAG },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `featureflag.read`.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.FEATUREFLAG_READ)
   list() {
@@ -101,17 +116,34 @@ not configured). Lightweight runtime check for conditional UI/flows.
 **Who can call this:** Owner, Manager (\`featureflag.read\`).
     `.trim(),
   })
-  @ApiQuery({ name: 'featureKey', required: true, description: 'Feature key to check', example: 'ai.assistant' })
+  @ApiQuery({
+    name: 'featureKey',
+    required: true,
+    description: 'Feature key to check',
+    example: 'ai.assistant',
+  })
   @ApiOkResponse({
     description: 'Feature availability.',
     schema: {
       type: 'object',
-      properties: { featureKey: { type: 'string' }, enabled: { type: 'boolean' } },
+      properties: {
+        featureKey: { type: 'string' },
+        enabled: { type: 'boolean' },
+      },
     },
   })
-  @ApiBadRequestResponse({ description: 'Missing featureKey.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `featureflag.read`.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Missing featureKey.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `featureflag.read`.',
+    schema: S_ERROR,
+  })
   @Get('check')
   @RequirePermissions(PERMISSION.FEATUREFLAG_READ)
   async check(@Query('featureKey') featureKey: string) {
@@ -137,16 +169,38 @@ controlled.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Flag set.', schema: S_FLAG })
-  @ApiBadRequestResponse({ description: 'Validation failed (bad featureKey).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `featureflag.manage`.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (bad featureKey).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `featureflag.manage`.',
+    schema: S_ERROR,
+  })
   @Put()
   @RequirePermissions(PERMISSION.FEATUREFLAG_MANAGE)
-  set(@Body() dto: SetFeatureFlagDto) {
+  set(@Body() dto: SetFeatureFlagDto, @CurrentUser('id') userId: string) {
+    if (!isFeatureKey(dto.featureKey)) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: `Unknown feature "${dto.featureKey}"`,
+        publicContext: { featureKey: dto.featureKey },
+      });
+    }
+    // Written with source TENANT, which the access policy ignores entirely.
+    // This endpoint used to write the SAME row the policy granted access from,
+    // so a clinic Owner (who holds `roles.manage`) could mint a custom role
+    // carrying `featureflag.manage` and self-grant paid features plus
+    // unmetered usage. The row is now a tenant-local preference and nothing
+    // more; only `/platform/feature-flags` can grant.
     return this.features.set(
       this.ctx.requireTenantId(),
       dto.featureKey,
       dto.isEnabled,
+      { source: FeatureFlagSource.TENANT, actorId: userId },
     );
   }
 }

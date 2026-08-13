@@ -59,8 +59,14 @@ export class MerchantAccountAdminController {
     description: '**Super admin.** Every clinic’s financial onboarding state.',
   })
   @ApiOkResponse({ description: 'Merchant accounts with tenant info.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
   @Get()
   list() {
     return this.merchants.listAll();
@@ -70,10 +76,21 @@ export class MerchantAccountAdminController {
     summary: 'Get one clinic’s merchant account',
     description: '**Super admin.** A missing record reads as NOT_STARTED.',
   })
-  @ApiParam({ name: 'tenantId', description: 'Tenant UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'Tenant UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Merchant account.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
   @Get(':tenantId')
   get(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
     return this.merchants.getForTenant(tenantId);
@@ -84,11 +101,25 @@ export class MerchantAccountAdminController {
     description:
       '**Super admin.** Apply a status transition (validated against the onboarding state machine), set a reviewer note, and/or record the gateway-issued split recipient id.',
   })
-  @ApiParam({ name: 'tenantId', description: 'Tenant UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'Tenant UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Merchant account after the review action.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Illegal status transition.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Illegal status transition.',
+    schema: S_ERROR,
+  })
   @Patch(':tenantId/review')
   review(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,

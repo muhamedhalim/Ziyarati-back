@@ -19,6 +19,8 @@ import { WhatsappDlqService } from './whatsapp-dlq.service';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * WhatsApp DLQ admin endpoints — parked (poison) inbound webhook/media jobs.
@@ -27,6 +29,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
  */
 @ApiTags('WhatsApp DLQ (Admin)')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.WHATSAPP)
 @Controller('admin/whatsapp/dlq')
 @UseGuards(PermissionsGuard)
 export class WhatsappDlqController {

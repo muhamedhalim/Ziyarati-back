@@ -5,36 +5,59 @@ import { SubscriptionAccessGuard } from './subscription-access.guard';
 import { REQUIRE_ACTIVE_SUBSCRIPTION_KEY } from '../decorators/require-active-subscription.decorator';
 import { REQUIRE_FEATURE_KEY } from '../decorators/require-feature.decorator';
 import { AccessControlService } from '../access-control.service';
+import { FeatureKey } from '../feature-registry';
+import {
+  AccessSource,
+  QuotaPolicy,
+  TenantAccessDecision,
+} from '../tenant-access-decision';
 import { ErrorCode } from '../../../common/errors';
+
+const ALLOWED: TenantAccessDecision = {
+  allowed: true,
+  tenantId: 't1',
+  featureKey: null,
+  source: AccessSource.ACTIVE_SUBSCRIPTION,
+  quotaPolicy: QuotaPolicy.PLAN_ENFORCED,
+};
+
+const DENIED: TenantAccessDecision = {
+  allowed: false,
+  tenantId: 't1',
+  featureKey: null,
+  source: AccessSource.DENIED,
+  quotaPolicy: QuotaPolicy.BLOCKED,
+  reason: 'Subscription is not active (status: CANCELLED)',
+};
 
 /**
  * FND-031/T082 — the guard is the single global choke point for ~50
- * controllers' `@RequireActiveSubscription()`. This proves the write-specific
+ * controllers' `@RequireActiveSubscription()`. It proves the write-specific
  * grace-expired refusal without touching any of those controllers.
  *
- * Feature Flags override (platform/feature-flags) — the guard also reads the
- * SAME route's `@RequireFeature()` key and threads it through to
- * `assertUsable`, so a tenant-specific feature-flag override can substitute
- * for a missing subscription on that one route (AccessControlService owns
- * the actual precedence; this only proves the guard reads and forwards the
- * key correctly).
+ * It also forwards the SAME route's `@RequireFeature()` key to the policy, so
+ * a super-admin per-feature grant can substitute for a missing subscription on
+ * that one route. `AccessControlService` owns the precedence; these tests only
+ * prove the guard reads, forwards and enforces correctly.
  */
 describe('SubscriptionAccessGuard', () => {
   let guard: SubscriptionAccessGuard;
-  let access: { assertUsable: jest.Mock; isBillableAllowed: jest.Mock };
+  let access: { resolve: jest.Mock; isBillableAllowed: jest.Mock };
   let reflector: { getAllAndOverride: jest.Mock };
 
-  const contextFor = (method: string, tenantId: string | null = 't1'): ExecutionContext =>
-    ({
+  const contextFor = (method: string, tenantId: string | null = 't1') => {
+    const request = { method, user: tenantId ? { tenantId } : undefined };
+    return {
       getHandler: () => ({}),
       getClass: () => ({}),
-      switchToHttp: () => ({
-        getRequest: () => ({ method, user: tenantId ? { tenantId } : undefined }),
-      }),
-    }) as unknown as ExecutionContext;
+      switchToHttp: () => ({ getRequest: () => request }),
+    } as unknown as ExecutionContext;
+  };
 
-  /** Routes REQUIRE_ACTIVE_SUBSCRIPTION_KEY/REQUIRE_FEATURE_KEY independently, like the real Reflector. */
-  const mockReflector = (opts: { gated?: boolean; featureKey?: string } = {}) => {
+  /** Routes carry the two metadata keys independently, like the real Reflector. */
+  const mockReflector = (
+    opts: { gated?: boolean; featureKey?: FeatureKey } = {},
+  ) => {
     const { gated = true, featureKey = undefined } = opts;
     reflector.getAllAndOverride.mockImplementation((key: string) => {
       if (key === REQUIRE_ACTIVE_SUBSCRIPTION_KEY) return gated;
@@ -45,18 +68,19 @@ describe('SubscriptionAccessGuard', () => {
 
   beforeEach(() => {
     access = {
-      assertUsable: jest.fn().mockResolvedValue(undefined),
+      resolve: jest.fn().mockResolvedValue(ALLOWED),
       isBillableAllowed: jest.fn().mockResolvedValue(true),
     };
     reflector = { getAllAndOverride: jest.fn() };
-    // Default: route IS gated, no @RequireFeature() — matches most of the
-    // ~50 @RequireActiveSubscription()-only controllers.
+    // Default: route IS gated, no @RequireFeature().
     mockReflector();
     guard = new SubscriptionAccessGuard(
       reflector as unknown as Reflector,
       access as unknown as AccessControlService,
     );
   });
+
+  afterEach(() => jest.clearAllMocks());
 
   it('allows a GET even when grace-expired (read access preserved)', async () => {
     access.isBillableAllowed.mockResolvedValueOnce(false);
@@ -89,49 +113,65 @@ describe('SubscriptionAccessGuard', () => {
     expect(access.isBillableAllowed).toHaveBeenCalledWith('t1');
   });
 
-  it('always checks the broad assertUsable gate first, regardless of method', async () => {
+  it('refuses with NO_ACTIVE_SUBSCRIPTION when the policy denies', async () => {
+    access.resolve.mockResolvedValueOnce(DENIED);
+    await expect(guard.canActivate(contextFor('GET'))).rejects.toMatchObject({
+      code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
+    });
+  });
+
+  it('keeps the technical reason server-side', async () => {
+    access.resolve.mockResolvedValueOnce(DENIED);
+    await expect(guard.canActivate(contextFor('GET'))).rejects.toMatchObject({
+      publicContext: { source: AccessSource.DENIED },
+      internalContext: { reason: DENIED.reason },
+    });
+  });
+
+  it('resolves the tenant-wide decision when the route names no capability', async () => {
     await guard.canActivate(contextFor('GET'));
-    expect(access.assertUsable).toHaveBeenCalledWith('t1', undefined);
+    expect(access.resolve).toHaveBeenCalledWith('t1', null);
   });
 
   it('is a no-op when the route carries no @RequireActiveSubscription()', async () => {
     mockReflector({ gated: false });
     await expect(guard.canActivate(contextFor('POST'))).resolves.toBe(true);
-    expect(access.assertUsable).not.toHaveBeenCalled();
+    expect(access.resolve).not.toHaveBeenCalled();
   });
 
   it('bypasses super-admin / no-tenant callers entirely', async () => {
-    await expect(guard.canActivate(contextFor('POST', null))).resolves.toBe(true);
-    expect(access.assertUsable).not.toHaveBeenCalled();
+    await expect(guard.canActivate(contextFor('POST', null))).resolves.toBe(
+      true,
+    );
+    expect(access.resolve).not.toHaveBeenCalled();
   });
 
-  describe('feature-flag override passthrough (platform/feature-flags)', () => {
-    it('passes the route\'s @RequireFeature() key through to assertUsable', async () => {
-      mockReflector({ featureKey: 'ai' });
+  describe('per-feature grant passthrough (/platform/feature-flags)', () => {
+    it("forwards the route's @RequireFeature() key to the policy", async () => {
+      mockReflector({ featureKey: FeatureKey.AI_ASSISTANT });
       await guard.canActivate(contextFor('GET'));
-      expect(access.assertUsable).toHaveBeenCalledWith('t1', 'ai');
-    });
-
-    it('passes undefined when the route carries no @RequireFeature() (unaffected — normal subscription gating)', async () => {
-      mockReflector(); // gated=true, no featureKey
-      await guard.canActivate(contextFor('GET'));
-      expect(access.assertUsable).toHaveBeenCalledWith('t1', undefined);
-    });
-
-    it('propagates NO_ACTIVE_SUBSCRIPTION when assertUsable rejects even with a featureKey present (no override set)', async () => {
-      mockReflector({ featureKey: 'ai' });
-      access.assertUsable.mockRejectedValueOnce(
-        Object.assign(new Error('no access'), { code: ErrorCode.NO_ACTIVE_SUBSCRIPTION }),
+      expect(access.resolve).toHaveBeenCalledWith(
+        't1',
+        FeatureKey.AI_ASSISTANT,
       );
+    });
+
+    it('still refuses when no grant covers that capability', async () => {
+      mockReflector({ featureKey: FeatureKey.AI_ASSISTANT });
+      access.resolve.mockResolvedValueOnce(DENIED);
       await expect(guard.canActivate(contextFor('GET'))).rejects.toMatchObject({
         code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
       });
     });
 
-    it('a feature override that satisfies assertUsable still runs the billable-methods check on write', async () => {
-      mockReflector({ featureKey: 'ai' });
+    it('a grant that admits the route still runs the billable-methods check', async () => {
+      mockReflector({ featureKey: FeatureKey.AI_ASSISTANT });
+      access.resolve.mockResolvedValueOnce({
+        ...ALLOWED,
+        source: AccessSource.FEATURE_OVERRIDE,
+        quotaPolicy: QuotaPolicy.UNMETERED_BY_PLAN,
+      });
       await expect(guard.canActivate(contextFor('POST'))).resolves.toBe(true);
-      expect(access.assertUsable).toHaveBeenCalledWith('t1', 'ai');
       expect(access.isBillableAllowed).toHaveBeenCalledWith('t1');
     });
   });
