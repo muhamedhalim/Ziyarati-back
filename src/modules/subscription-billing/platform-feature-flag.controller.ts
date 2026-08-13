@@ -48,7 +48,9 @@ export class PlatformFeatureFlagController {
   constructor(private readonly catalog: FeatureCatalogService) {}
 
   @ApiOperation({ summary: 'List the feature catalog (super-admin)' })
-  @ApiOkResponse({ description: 'Feature definitions (global metadata + defaults).' })
+  @ApiOkResponse({
+    description: 'Feature definitions (global metadata + defaults).',
+  })
   @Get('definitions')
   listDefinitions(@Query() query: QueryFeatureDefinitionsDto) {
     return this.catalog.listDefinitions(query);
@@ -56,7 +58,8 @@ export class PlatformFeatureFlagController {
 
   @ApiOperation({
     summary: 'Create or update a feature definition (super-admin)',
-    description: 'Features are DB-driven — add a new one by upserting its definition; nothing is hardcoded.',
+    description:
+      'Features are DB-driven — add a new one by upserting its definition; nothing is hardcoded.',
   })
   @ApiOkResponse({ description: 'The upserted definition.' })
   @Post('definitions')
@@ -74,7 +77,9 @@ export class PlatformFeatureFlagController {
       'Full resolution via the single resolver: subscription state + plan inclusion + global/override enablement + dependency satisfaction + usage quota → `available` + `blockedReason` per feature.',
   })
   @ApiParam({ name: 'tenantId', format: 'uuid' })
-  @ApiOkResponse({ description: 'Subscription context + resolved feature list.' })
+  @ApiOkResponse({
+    description: 'Subscription context + resolved feature list.',
+  })
   @Get('tenants/:tenantId/features')
   tenantFeatures(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
     return this.catalog.getTenantFeatures(tenantId);
@@ -82,7 +87,8 @@ export class PlatformFeatureFlagController {
 
   @ApiOperation({
     summary: 'Set the plans a feature is available on (super-admin)',
-    description: 'Empty list = available on all plans. Plan ids come from the Subscription Module.',
+    description:
+      'Empty list = available on all plans. Plan ids come from the Subscription Module.',
   })
   @ApiParam({ name: 'featureKey' })
   @ApiOkResponse({ description: 'Updated plan availability.' })
@@ -97,8 +103,9 @@ export class PlatformFeatureFlagController {
   }
 
   @ApiOperation({
-    summary: 'Set a feature\'s dependencies (super-admin)',
-    description: 'Stores the dependency edges; rejects self- and circular dependencies.',
+    summary: "Set a feature's dependencies (super-admin)",
+    description:
+      'Stores the dependency edges; rejects self- and circular dependencies.',
   })
   @ApiParam({ name: 'featureKey' })
   @ApiOkResponse({ description: 'Updated dependency edges.' })
@@ -109,7 +116,10 @@ export class PlatformFeatureFlagController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.catalog.setDependencies(featureKey, dto.requires, { id: userId, ip });
+    return this.catalog.setDependencies(featureKey, dto.requires, {
+      id: userId,
+      ip,
+    });
   }
 
   @ApiOperation({ summary: 'Toggle a feature for a tenant (super-admin)' })
@@ -122,13 +132,20 @@ export class PlatformFeatureFlagController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.catalog.setTenantFeature(tenantId, dto.featureKey, dto.enabled, {
-      id: userId,
-      ip,
-    });
+    return this.catalog.setTenantFeature(
+      tenantId,
+      dto.featureKey,
+      dto.enabled,
+      {
+        id: userId,
+        ip,
+      },
+    );
   }
 
-  @ApiOperation({ summary: 'Bulk enable/disable features for a tenant (super-admin)' })
+  @ApiOperation({
+    summary: 'Bulk enable/disable features for a tenant (super-admin)',
+  })
   @ApiParam({ name: 'tenantId', format: 'uuid' })
   @ApiOkResponse({ description: '{ updated } count.' })
   @Put('tenants/:tenantId/features/bulk')
@@ -138,6 +155,9 @@ export class PlatformFeatureFlagController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.catalog.bulkSetTenantFeatures(tenantId, dto, { id: userId, ip });
+    return this.catalog.bulkSetTenantFeatures(tenantId, dto, {
+      id: userId,
+      ip,
+    });
   }
 }

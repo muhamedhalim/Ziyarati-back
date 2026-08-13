@@ -10,7 +10,8 @@ import {
 } from './redis.config';
 
 const config = {
-  get: (k: string) => (k === 'REDIS_URL' ? 'redis://localhost:6379' : undefined),
+  get: (k: string) =>
+    k === 'REDIS_URL' ? 'redis://localhost:6379' : undefined,
 } as unknown as ConfigService;
 
 /**
@@ -71,6 +72,8 @@ describe('redis.config — Phase 0 fail-fast contract', () => {
 
   it('throws when REDIS_URL is unset (the queue subsystem cannot boot without it)', () => {
     const empty = { get: () => undefined } as unknown as ConfigService;
-    expect(() => applicationConnectionOptions(empty)).toThrow(/REDIS_URL is required/);
+    expect(() => applicationConnectionOptions(empty)).toThrow(
+      /REDIS_URL is required/,
+    );
   });
 });

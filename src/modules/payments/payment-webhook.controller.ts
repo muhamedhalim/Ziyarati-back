@@ -61,7 +61,10 @@ export class PaymentWebhookController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Invalid webhook signature.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Invalid webhook signature.',
+    schema: S_ERROR,
+  })
   @Public()
   @Post('moyasar')
   @HttpCode(HttpStatus.OK)

@@ -31,6 +31,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -49,6 +51,7 @@ const S_ERROR = {
  */
 @ApiTags('Payment Links')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.PAYMENTS)
 @Controller('payment-links')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -60,11 +63,18 @@ export class PaymentLinkController {
 
   @ApiOperation({
     summary: 'Generate a payment link',
-    description: '**Protected — `payments.manage`. Clinic active.** Mints an unguessable, tenant-scoped link with an optional expiry (defaults to 72h).',
+    description:
+      '**Protected — `payments.manage`. Clinic active.** Mints an unguessable, tenant-scoped link with an optional expiry (defaults to 72h).',
   })
   @ApiOkResponse({ description: 'Payment link created.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.PAYMENTS_MANAGE)
   create(@Body() dto: CreatePaymentLinkDto) {
@@ -73,11 +83,18 @@ export class PaymentLinkController {
 
   @ApiOperation({
     summary: 'List payment links',
-    description: '**Protected — `payments.read`. Clinic active.** Tenant-scoped, newest first, with optional status filter and pagination.',
+    description:
+      '**Protected — `payments.read`. Clinic active.** Tenant-scoped, newest first, with optional status filter and pagination.',
   })
   @ApiOkResponse({ description: 'Paginated payment links.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   list(@Query() query: QueryPaymentLinksDto) {
@@ -86,13 +103,23 @@ export class PaymentLinkController {
 
   @ApiOperation({
     summary: 'Track a payment link by token',
-    description: '**Protected — `payments.read`. Clinic active.** Returns the link state for the token (lazily marks an expired link EXPIRED).',
+    description:
+      '**Protected — `payments.read`. Clinic active.** Returns the link state for the token (lazily marks an expired link EXPIRED).',
   })
   @ApiParam({ name: 'token', description: 'Public link token', type: 'string' })
   @ApiOkResponse({ description: 'Payment link state.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Link not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Link not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('token/:token')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   getByToken(@Param('token') token: string) {
@@ -101,13 +128,28 @@ export class PaymentLinkController {
 
   @ApiOperation({
     summary: 'Get a payment link',
-    description: '**Protected — `payments.read`. Clinic active.** A link from another tenant returns 404.',
+    description:
+      '**Protected — `payments.read`. Clinic active.** A link from another tenant returns 404.',
   })
-  @ApiParam({ name: 'id', description: 'Payment link UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment link UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Payment link details.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Link not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Link not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -116,13 +158,28 @@ export class PaymentLinkController {
 
   @ApiOperation({
     summary: 'Disable a payment link',
-    description: '**Protected — `payments.manage`. Clinic active.** Disables an active link so it can no longer be used.',
+    description:
+      '**Protected — `payments.manage`. Clinic active.** Disables an active link so it can no longer be used.',
   })
-  @ApiParam({ name: 'id', description: 'Payment link UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment link UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Payment link disabled.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Link not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Link not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post(':id/disable')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PAYMENTS_MANAGE)

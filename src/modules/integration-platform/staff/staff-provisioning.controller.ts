@@ -11,7 +11,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -27,6 +32,8 @@ import {
   QueryStaffProvisioningDto,
   RejectStaffProvisioningDto,
 } from '../dto/staff-provisioning.dto';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Staff provisioning review queue (Phase 4).
@@ -40,6 +47,7 @@ import {
  */
 @ApiTags('Integration Staff Provisioning')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations/staff-provisioning')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationStaffProvisioningController {
@@ -60,21 +68,28 @@ export class IntegrationStaffProvisioningController {
   }
 
   @ApiOperation({
-    summary: 'Approve — provision the account and send a set-password invitation',
+    summary:
+      'Approve — provision the account and send a set-password invitation',
     description:
       '**Protected — `platform.integrations.manage` AND `staff.manage`.** Creates the user + staff profile through the verified domain flow with the role YOU select (validated against the assignable-role policy — owner/super-admin are refused), maps the external id, and sends the standard single-use set-password invitation. No temporary password is ever exposed.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/approve')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE, PERMISSION.STAFF_MANAGE)
+  @RequirePermissions(
+    PERMISSION.PLATFORM_INTEGRATIONS_MANAGE,
+    PERMISSION.STAFF_MANAGE,
+  )
   approve(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ApproveStaffProvisioningDto,
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.provisioning.approve(this.ctx.requireTenantId(), id, dto, { userId, ip });
+    return this.provisioning.approve(this.ctx.requireTenantId(), id, dto, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({
@@ -92,12 +107,16 @@ export class IntegrationStaffProvisioningController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.provisioning.link(this.ctx.requireTenantId(), id, dto, { userId, ip });
+    return this.provisioning.link(this.ctx.requireTenantId(), id, dto, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({
     summary: 'Reject a provisioning request',
-    description: '**Protected — `platform.integrations.manage`.** No account is created and no mapping is made.',
+    description:
+      '**Protected — `platform.integrations.manage`.** No account is created and no mapping is made.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/reject')
@@ -109,7 +128,10 @@ export class IntegrationStaffProvisioningController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.provisioning.reject(this.ctx.requireTenantId(), id, dto, { userId, ip });
+    return this.provisioning.reject(this.ctx.requireTenantId(), id, dto, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({
@@ -120,8 +142,18 @@ export class IntegrationStaffProvisioningController {
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/resend-invitation')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE, PERMISSION.STAFF_MANAGE)
-  resend(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
-    return this.provisioning.resendInvitation(this.ctx.requireTenantId(), id, { userId, ip });
+  @RequirePermissions(
+    PERMISSION.PLATFORM_INTEGRATIONS_MANAGE,
+    PERMISSION.STAFF_MANAGE,
+  )
+  resend(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.provisioning.resendInvitation(this.ctx.requireTenantId(), id, {
+      userId,
+      ip,
+    });
   }
 }

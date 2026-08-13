@@ -11,7 +11,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -25,6 +30,8 @@ import { IntegrationConflictResolutionService } from './integration-conflict-res
 import { CONFLICT_STATUS } from '../integration-platform.constants';
 import { QueryConflictsDto } from '../dto/query-conflicts.dto';
 import { ResolveConflictDto } from '../dto/resolve-conflict.dto';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Tenant-admin conflict queue (Phase 4). Lists persisted conflicts (safe
@@ -34,6 +41,7 @@ import { ResolveConflictDto } from '../dto/resolve-conflict.dto';
  */
 @ApiTags('Integration Conflicts')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations/conflicts')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationConflictsController {
@@ -45,7 +53,8 @@ export class IntegrationConflictsController {
 
   @ApiOperation({
     summary: 'List conflicts',
-    description: '**Protected — `platform.integrations.read`.** Field names + safe hash comparison only; never values.',
+    description:
+      '**Protected — `platform.integrations.read`.** Field names + safe hash comparison only; never values.',
   })
   @Get()
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -53,7 +62,10 @@ export class IntegrationConflictsController {
     return this.conflicts.list(this.ctx.requireTenantId(), query);
   }
 
-  @ApiOperation({ summary: 'Get a conflict', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({
+    summary: 'Get a conflict',
+    description: '**Protected — `platform.integrations.read`.**',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get(':id')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -66,7 +78,10 @@ export class IntegrationConflictsController {
       externalId: c.external_id,
       internalResourceId: c.internal_resource_id ?? null,
       conflictingFields: c.conflicting_fields,
-      stillDiffers: !!c.external_hash && !!c.platform_hash && c.external_hash !== c.platform_hash,
+      stillDiffers:
+        !!c.external_hash &&
+        !!c.platform_hash &&
+        c.external_hash !== c.platform_hash,
       policy: c.policy,
       reason: c.reason,
       status: c.status,
@@ -92,6 +107,9 @@ export class IntegrationConflictsController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.resolution.resolve(this.ctx.requireTenantId(), id, dto, { userId, ip });
+    return this.resolution.resolve(this.ctx.requireTenantId(), id, dto, {
+      userId,
+      ip,
+    });
   }
 }

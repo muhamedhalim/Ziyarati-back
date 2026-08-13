@@ -33,6 +33,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -63,6 +65,7 @@ const S_ATTACHMENT = {
  */
 @ApiTags('Message Attachments')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CONVERSATIONS)
 @Controller('messages/:messageId/attachments')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -87,12 +90,29 @@ the metadata here.
 the tenant.
     `.trim(),
   })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Attachment metadata stored.', schema: S_ATTACHMENT })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiCreatedResponse({
+    description: 'Attachment metadata stored.',
+    schema: S_ATTACHMENT,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `attachments.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Message not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `attachments.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Message not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.ATTACHMENTS_MANAGE)
   add(
@@ -106,15 +126,35 @@ the tenant.
     summary: 'Get attachments for a message',
     description: `**Protected — requires \`messages.read\`. Clinic must be active.** Lists attachment metadata for the message.`,
   })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Attachments.', schema: { type: 'array', items: S_ATTACHMENT } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Message not found in this tenant.', schema: S_ERROR })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Attachments.',
+    schema: { type: 'array', items: S_ATTACHMENT },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Message not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.MESSAGES_READ)
   list(@Param('messageId', ParseUUIDPipe) messageId: string) {
-    return this.attachments.listByMessage(this.ctx.requireTenantId(), messageId);
+    return this.attachments.listByMessage(
+      this.ctx.requireTenantId(),
+      messageId,
+    );
   }
 
   @ApiOperation({
@@ -126,8 +166,18 @@ Returns a time-limited access descriptor (download abstraction). No storage
 provider is implemented — a real adapter would mint a signed URL here.
     `.trim(),
   })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'attachmentId', description: 'Attachment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'attachmentId',
+    description: 'Attachment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Download access descriptor.',
     schema: {
@@ -141,28 +191,59 @@ provider is implemented — a real adapter would mint a signed URL here.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `messages.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Attachment not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `messages.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Attachment not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':attachmentId/download')
   @RequirePermissions(PERMISSION.MESSAGES_READ)
   download(
     @Param('messageId', ParseUUIDPipe) _messageId: string,
     @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
   ) {
-    return this.attachments.downloadAccess(this.ctx.requireTenantId(), attachmentId);
+    return this.attachments.downloadAccess(
+      this.ctx.requireTenantId(),
+      attachmentId,
+    );
   }
 
   @ApiOperation({
     summary: 'Delete an attachment',
     description: `**Protected — requires \`attachments.manage\`. Clinic must be active.** Removes the attachment metadata row.`,
   })
-  @ApiParam({ name: 'messageId', description: 'Message UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'attachmentId', description: 'Attachment UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'messageId',
+    description: 'Message UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'attachmentId',
+    description: 'Attachment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Attachment deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `attachments.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Attachment not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `attachments.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Attachment not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':attachmentId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.ATTACHMENTS_MANAGE)

@@ -18,6 +18,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -41,7 +42,7 @@ const S_ERROR = {
 @Controller('ai/metrics')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('ai')
+@RequireFeature(FeatureKey.AI_ASSISTANT)
 export class AiMetricsController {
   constructor(
     private readonly metrics: AiMetricsService,

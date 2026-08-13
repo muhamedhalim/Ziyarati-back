@@ -5,39 +5,87 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { AccessControlService } from './access-control.service';
 import { BillingModeService } from './billing-mode.service';
 import { FreeAccessOverrideService } from './free-access-override.service';
-import { FeatureFlagService } from './feature-flag.service';
+import { FeatureFlagService, FlagState } from './feature-flag.service';
+import { FeatureKey } from './feature-registry';
+import { AccessSource, QuotaPolicy } from './tenant-access-decision';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
+import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
+import { FeaturePlan } from '../../entities/SaaS-Core/FeaturePlan';
+import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
 import { SubscriptionStatus } from '../../entities/enums';
-import { AccessSource } from './platform-billing.constants';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
+
+/** An authoritative (super-admin) grant for `keys`. */
+function granted(...keys: FeatureKey[]): Map<string, FlagState> {
+  return new Map(
+    keys.map((k) => [
+      k,
+      {
+        granted: true,
+        suspended: false,
+        source: FeatureFlagSource.PLATFORM_ADMIN,
+      },
+    ]),
+  );
+}
 
 describe('AccessControlService', () => {
   let service: AccessControlService;
   let subscriptions: MockRepository;
+  let definitions: MockRepository;
+  let featurePlans: MockRepository;
   let billingMode: { isPaidMode: jest.Mock };
   let overrides: { getActive: jest.Mock; hasActive: jest.Mock };
-  let featureFlags: { isEnabled: jest.Mock };
+  let featureFlags: { getStates: jest.Mock };
 
   const future = new Date(Date.now() + 86_400_000);
   const past = new Date(Date.now() - 86_400_000);
   const longAgo = new Date(Date.now() - 30 * 86_400_000);
   const justNow = new Date(Date.now() - 60_000);
 
+  const activeSub = {
+    id: 'sub-1',
+    status: SubscriptionStatus.ACTIVE,
+    ends_at: future,
+    plan: { id: 'plan-1' },
+  };
+
   beforeEach(async () => {
     subscriptions = createMockRepository();
+    definitions = createMockRepository();
+    featurePlans = createMockRepository();
     billingMode = { isPaidMode: jest.fn() };
     overrides = { getActive: jest.fn(), hasActive: jest.fn() };
-    featureFlags = { isEnabled: jest.fn() };
+    featureFlags = { getStates: jest.fn() };
+
+    // Defaults: nothing configured. Individual tests override.
+    definitions.find.mockResolvedValue([]);
+    featurePlans.find.mockResolvedValue([]);
+    featureFlags.getStates.mockResolvedValue(new Map());
+    subscriptions.findOne.mockResolvedValue(null);
+    overrides.getActive.mockResolvedValue(null);
+    overrides.hasActive.mockResolvedValue(false);
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         AccessControlService,
         { provide: getRepositoryToken(Subscription), useValue: subscriptions },
+        {
+          provide: getRepositoryToken(FeatureDefinition),
+          useValue: definitions,
+        },
+        { provide: getRepositoryToken(FeaturePlan), useValue: featurePlans },
         { provide: BillingModeService, useValue: billingMode },
         { provide: FreeAccessOverrideService, useValue: overrides },
         { provide: FeatureFlagService, useValue: featureFlags },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(7) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(7) },
+        },
       ],
     }).compile();
     service = moduleRef.get(AccessControlService);
@@ -45,379 +93,492 @@ describe('AccessControlService', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  describe('resolveAccess priority chain', () => {
-    it('1) global FREE mode allows everyone', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(false);
-      const d = await service.resolveAccess('t1');
-      expect(d).toEqual({ allowed: true, source: AccessSource.PLATFORM_FREE_MODE });
+  // ─────────────────────── Tenant-wide precedence ────────────────────────
+
+  describe('precedence chain (tenant-wide)', () => {
+    it('FREE mode allows everyone and never reads the subscription', async () => {
+      billingMode.isPaidMode.mockResolvedValue(false);
+      const d = await service.resolve('t1');
+      expect(d.allowed).toBe(true);
+      expect(d.source).toBe(AccessSource.PLATFORM_FREE_MODE);
+      expect(d.quotaPolicy).toBe(QuotaPolicy.UNMETERED_PLATFORM_FREE);
       expect(overrides.getActive).not.toHaveBeenCalled();
     });
 
-    it('2) an active free override outranks the paid check', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce({ ends_at: future });
-      const d = await service.resolveAccess('t1');
-      expect(d.allowed).toBe(true);
-      expect(d.source).toBe(AccessSource.FREE_OVERRIDE);
+    it('an active admin free-access grant outranks the paid check', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      overrides.getActive.mockResolvedValue({ ends_at: future });
+      const d = await service.resolve('t1');
+      expect(d.source).toBe(AccessSource.ADMIN_FREE_ACCESS);
+      expect(d.quotaPolicy).toBe(QuotaPolicy.UNMETERED_ADMIN_GRANT);
       expect(subscriptions.findOne).not.toHaveBeenCalled();
     });
 
-    it('3) a usable subscription grants access in paid mode', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
-      const d = await service.resolveAccess('t1');
-      expect(d.allowed).toBe(true);
-      expect(d.source).toBe(AccessSource.SUBSCRIPTION);
+    it('a usable subscription grants access, carrying plan and quota policy', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue(activeSub);
+      const d = await service.resolve('t1');
+      expect(d.source).toBe(AccessSource.ACTIVE_SUBSCRIPTION);
       expect(d.subscriptionId).toBe('sub-1');
+      expect(d.planId).toBe('plan-1');
+      expect(d.quotaPolicy).toBe(QuotaPolicy.PLAN_ENFORCED);
     });
 
-    it('denies when paid, no override, and no subscription', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      const d = await service.resolveAccess('t1');
+    it('denies when paid with no override and no subscription', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      const d = await service.resolve('t1');
       expect(d.allowed).toBe(false);
-      expect(d.source).toBe(AccessSource.NONE);
-      // No featureKey was passed, so step 4 never even consults the flag store.
-      expect(featureFlags.isEnabled).not.toHaveBeenCalled();
+      expect(d.source).toBe(AccessSource.DENIED);
+      expect(d.quotaPolicy).toBe(QuotaPolicy.BLOCKED);
+      // A tenant-wide question must never consult per-feature grants — a
+      // feature override is not a substitute for a subscription.
+      expect(featureFlags.getStates).not.toHaveBeenCalled();
     });
 
-    // Feature Flags (Platform) — Super Admin toggles a tenant-specific
-    // `feature_flags` override via /platform/feature-flags even when the
-    // clinic has no active subscription. Step 4 must grant access to that
-    // ONE route/feature without touching the tenant-wide `allowed`/`source`
-    // semantics used everywhere else (e.g. the FeatureFlagService lookup is
-    // only ever consulted after steps 1-3 have already failed).
-    describe('4) tenant feature-flag override (scoped, evaluated only after subscription fails)', () => {
-      it('an enabled tenant override for the route\'s own feature grants access despite no subscription', async () => {
-        billingMode.isPaidMode.mockResolvedValueOnce(true);
-        overrides.getActive.mockResolvedValueOnce(null);
-        subscriptions.findOne.mockResolvedValueOnce(null);
-        featureFlags.isEnabled.mockResolvedValueOnce(true);
-
-        const d = await service.resolveAccess('t1', 'ai');
-        expect(d.allowed).toBe(true);
-        expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
-        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'ai', undefined);
-      });
-
-      it('a disabled (explicit false) override does NOT grant access — same as no override', async () => {
-        billingMode.isPaidMode.mockResolvedValueOnce(true);
-        overrides.getActive.mockResolvedValueOnce(null);
-        subscriptions.findOne.mockResolvedValueOnce(null);
-        featureFlags.isEnabled.mockResolvedValueOnce(false);
-
-        const d = await service.resolveAccess('t1', 'ai');
-        expect(d.allowed).toBe(false);
-        expect(d.source).toBe(AccessSource.NONE);
-      });
-
-      it('no override at all (featureKey unset for the tenant) still denies', async () => {
-        billingMode.isPaidMode.mockResolvedValueOnce(true);
-        overrides.getActive.mockResolvedValueOnce(null);
-        subscriptions.findOne.mockResolvedValueOnce(null);
-        featureFlags.isEnabled.mockResolvedValueOnce(false); // no row → default false
-
-        const d = await service.resolveAccess('t1', 'campaigns');
-        expect(d.allowed).toBe(false);
-      });
-
-      it('an override enabled for a DIFFERENT feature than the one being checked does not leak across', async () => {
-        billingMode.isPaidMode.mockResolvedValueOnce(true);
-        overrides.getActive.mockResolvedValueOnce(null);
-        subscriptions.findOne.mockResolvedValueOnce(null);
-        // Tenant has 'ai' overridden, but this call is gating 'campaigns'.
-        featureFlags.isEnabled.mockImplementation(
-          async (_tenantId: string, key: string) => key === 'ai',
-        );
-
-        const d = await service.resolveAccess('t1', 'campaigns');
-        expect(d.allowed).toBe(false);
-        expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'campaigns', undefined);
-      });
-
-      it('an active PAID subscription is granted via step 3 and never even reaches the feature-flag check', async () => {
-        billingMode.isPaidMode.mockResolvedValueOnce(true);
-        overrides.getActive.mockResolvedValueOnce(null);
-        subscriptions.findOne.mockResolvedValueOnce({
-          id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future,
-        });
-
-        const d = await service.resolveAccess('t1', 'ai');
-        expect(d.allowed).toBe(true);
-        expect(d.source).toBe(AccessSource.SUBSCRIPTION);
-        expect(featureFlags.isEnabled).not.toHaveBeenCalled();
-      });
-
-      it('global FREE mode is granted via step 1 and never reaches the feature-flag check', async () => {
-        billingMode.isPaidMode.mockResolvedValueOnce(false);
-        const d = await service.resolveAccess('t1', 'ai');
-        expect(d.allowed).toBe(true);
-        expect(d.source).toBe(AccessSource.PLATFORM_FREE_MODE);
-        expect(featureFlags.isEnabled).not.toHaveBeenCalled();
-      });
-    });
-
-    // FND-031: this used to deny outright — that WAS the "silent lapse" bug
-    // (an active-past-end-date tenant became unusable forever, with no
-    // grace, no notice, no path back). It now live-derives into
-    // "expired-in-grace" (== PAST_DUE), which has FULL, unchanged
-    // capabilities — corrected here, not weakened; the old assertion
-    // encoded the exact defect this finding fixes.
-    it('an ACTIVE subscription past its end date live-derives into full expired-in-grace access, not a denial', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: past });
-      const d = await service.resolveAccess('t1');
+    // FND-031: this used to deny outright — that WAS the "silent lapse" bug.
+    it('an ACTIVE subscription past its end date is expired-in-grace, not denied', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({ ...activeSub, ends_at: past });
+      const d = await service.resolve('t1');
       expect(d.allowed).toBe(true);
-      expect(d.source).toBe(AccessSource.SUBSCRIPTION);
+      expect(d.source).toBe(AccessSource.ACTIVE_SUBSCRIPTION);
     });
 
-    it('a PAST_DUE subscription still WITHIN its grace window is fully usable', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub-1', status: SubscriptionStatus.PAST_DUE, ends_at: past, grace_started_at: justNow,
+    it('a PAST_DUE subscription within its grace window is fully usable', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.PAST_DUE,
+        ends_at: past,
+        grace_started_at: justNow,
       });
-      const d = await service.resolveAccess('t1');
-      expect(d.allowed).toBe(true);
+      expect((await service.resolve('t1')).allowed).toBe(true);
     });
 
-    // FR-B007d: read access (resolveAccess/assertUsable is the BROAD gate,
-    // reads included) is preserved even once grace-expired — only
-    // isBillableAllowed (a narrower, write-specific gate) refuses there.
-    it('a GRACE_EXPIRED subscription is still "allowed" (read access preserved)', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub-1', status: SubscriptionStatus.GRACE_EXPIRED, ends_at: past, grace_started_at: longAgo,
+    // FR-B007d: reads survive grace expiry; only isBillableAllowed refuses.
+    it('a GRACE_EXPIRED subscription still has read access', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.GRACE_EXPIRED,
+        ends_at: past,
+        grace_started_at: longAgo,
       });
-      const d = await service.resolveAccess('t1');
-      expect(d.allowed).toBe(true);
+      expect((await service.resolve('t1')).allowed).toBe(true);
     });
 
-    it('CANCELLED remains denied (terminal, unchanged)', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', status: SubscriptionStatus.CANCELLED, ends_at: past });
-      const d = await service.resolveAccess('t1');
-      expect(d.allowed).toBe(false);
+    it('CANCELLED remains denied (terminal)', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.CANCELLED,
+        ends_at: past,
+      });
+      expect((await service.resolve('t1')).allowed).toBe(false);
     });
   });
 
-  describe('isBillableAllowed (FND-031/T082 — narrow, write-specific gate)', () => {
-    it('refuses once grace-expired (live-derived from an elapsed PAST_DUE window)', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub-1', status: SubscriptionStatus.PAST_DUE, ends_at: past, grace_started_at: longAgo,
+  // ────────────────────── Per-feature administrative grant ────────────────
+
+  describe('feature override (super-admin, no subscription)', () => {
+    beforeEach(() => billingMode.isPaidMode.mockResolvedValue(true));
+
+    it('grants the toggled capability despite no subscription', async () => {
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+      const d = await service.resolve('t1', FeatureKey.WHATSAPP);
+      expect(d.allowed).toBe(true);
+      expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
+      expect(d.quotaPolicy).toBe(QuotaPolicy.UNMETERED_BY_PLAN);
+      expect(d.grantedVia).toEqual({ directly: true });
+    });
+
+    it('grants the dependency closure so the capability actually works', async () => {
+      // The user-facing requirement: "WhatsApp override = enabled → WhatsApp
+      // works end-to-end". The inbox reads conversations and customer records,
+      // both of which used to return NO_ACTIVE_SUBSCRIPTION.
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+
+      for (const dep of [FeatureKey.CONVERSATIONS, FeatureKey.CRM]) {
+        const d = await service.resolve('t1', dep);
+        expect(d.allowed).toBe(true);
+        expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
+        expect(d.grantedVia).toEqual({
+          directly: false,
+          viaDependencyOf: FeatureKey.WHATSAPP,
+        });
+      }
+    });
+
+    it('does NOT leak to unrelated capabilities', async () => {
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+      for (const other of [
+        FeatureKey.CAMPAIGNS,
+        FeatureKey.PAYMENTS,
+        FeatureKey.AI_ASSISTANT,
+      ]) {
+        expect((await service.resolve('t1', other)).allowed).toBe(false);
+      }
+    });
+
+    it('opens exactly the capabilities named by multiple overrides', async () => {
+      featureFlags.getStates.mockResolvedValue(
+        granted(FeatureKey.WHATSAPP, FeatureKey.AI_ASSISTANT),
+      );
+      expect((await service.resolve('t1', FeatureKey.WHATSAPP)).allowed).toBe(
+        true,
+      );
+      expect(
+        (await service.resolve('t1', FeatureKey.AI_ASSISTANT)).allowed,
+      ).toBe(true);
+      expect((await service.resolve('t1', FeatureKey.CAMPAIGNS)).allowed).toBe(
+        false,
+      );
+    });
+
+    it('a tenant-written row grants NOTHING', async () => {
+      // The paid-plan bypass: `featureflag.manage` is delegable into a tenant
+      // custom role, so a clinic could write its own grant. Provenance is what
+      // stops that row from meaning anything.
+      featureFlags.getStates.mockResolvedValue(
+        new Map([
+          [
+            FeatureKey.WHATSAPP,
+            {
+              granted: false,
+              suspended: false,
+              source: FeatureFlagSource.TENANT,
+            },
+          ],
+        ]),
+      );
+      const d = await service.resolve('t1', FeatureKey.WHATSAPP);
+      expect(d.allowed).toBe(false);
+    });
+
+    it('an absent row denies (no row is not a grant)', async () => {
+      expect((await service.resolve('t1', FeatureKey.WHATSAPP)).allowed).toBe(
+        false,
+      );
+    });
+
+    it('an unknown key fails closed rather than throwing', async () => {
+      const d = await service.resolve('t1', 'not-a-feature' as FeatureKey);
+      expect(d.allowed).toBe(false);
+      expect(d.source).toBe(AccessSource.DENIED);
+    });
+  });
+
+  // ─────────────────────────── Suspension ────────────────────────────────
+
+  describe('administrative suspension', () => {
+    const suspended = new Map<string, FlagState>([
+      [
+        FeatureKey.WHATSAPP,
+        {
+          granted: true,
+          suspended: true,
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+        },
+      ],
+    ]);
+
+    it('outranks a paid subscription', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue(activeSub);
+      featureFlags.getStates.mockResolvedValue(suspended);
+      const d = await service.resolve('t1', FeatureKey.WHATSAPP);
+      expect(d.allowed).toBe(false);
+      expect(d.reason).toMatch(/suspended/i);
+    });
+
+    it('outranks platform FREE mode (it is an incident kill-switch)', async () => {
+      billingMode.isPaidMode.mockResolvedValue(false);
+      featureFlags.getStates.mockResolvedValue(suspended);
+      expect((await service.resolve('t1', FeatureKey.WHATSAPP)).allowed).toBe(
+        false,
+      );
+    });
+
+    it('is scoped to the suspended capability only', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue(activeSub);
+      featureFlags.getStates.mockResolvedValue(suspended);
+      expect((await service.resolve('t1', FeatureKey.CRM)).allowed).toBe(true);
+    });
+
+    it('cannot lock a tenant out of billing (always-on capabilities)', async () => {
+      // Otherwise a suspension would leave the clinic with no route back to a
+      // subscription — a denial with no recovery path.
+      billingMode.isPaidMode.mockResolvedValue(true);
+      featureFlags.getStates.mockResolvedValue(
+        new Map([
+          [
+            FeatureKey.BILLING,
+            {
+              granted: false,
+              suspended: true,
+              source: FeatureFlagSource.PLATFORM_ADMIN,
+            },
+          ],
+        ]),
+      );
+      expect((await service.resolve('t1', FeatureKey.BILLING)).allowed).toBe(
+        true,
+      );
+    });
+  });
+
+  // ───────────────────────── Plan entitlement ────────────────────────────
+
+  describe('plan entitlement', () => {
+    beforeEach(() => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue(activeSub);
+    });
+
+    it('allows a capability with no plan restriction rows (available on all plans)', async () => {
+      expect((await service.resolve('t1', FeatureKey.CRM)).allowed).toBe(true);
+    });
+
+    it('allows a capability the current plan is listed for', async () => {
+      featurePlans.find.mockResolvedValue([
+        { feature_key: FeatureKey.CAMPAIGNS, plan_id: 'plan-1' },
+      ]);
+      // `campaigns` is default-off, so an explicit grant switches it on; plan
+      // inclusion is the separate question under test here.
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.CAMPAIGNS));
+      const d = await service.resolve('t1', FeatureKey.CAMPAIGNS);
+      expect(d.allowed).toBe(true);
+      expect(d.source).toBe(AccessSource.ACTIVE_SUBSCRIPTION);
+    });
+
+    it('refuses a capability restricted to a different plan', async () => {
+      featurePlans.find.mockResolvedValue([
+        { feature_key: FeatureKey.CRM, plan_id: 'plan-OTHER' },
+      ]);
+      expect((await service.resolve('t1', FeatureKey.CRM)).allowed).toBe(false);
+    });
+
+    it('lets a super-admin grant cover a capability the plan excludes', async () => {
+      featurePlans.find.mockResolvedValue([
+        { feature_key: FeatureKey.CRM, plan_id: 'plan-OTHER' },
+      ]);
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.CRM));
+      const d = await service.resolve('t1', FeatureKey.CRM);
+      expect(d.allowed).toBe(true);
+      expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
+    });
+
+    it('honours a catalog default of OFF for a paying tenant', async () => {
+      definitions.find.mockResolvedValue([
+        { feature_key: FeatureKey.CAMPAIGNS, default_enabled: false },
+      ]);
+      expect((await service.resolve('t1', FeatureKey.CAMPAIGNS)).allowed).toBe(
+        false,
+      );
+    });
+  });
+
+  // ─────────────────────────── resolveAll ────────────────────────────────
+
+  describe('resolveAll', () => {
+    it('answers for every registry key from one set of reads', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+
+      const all = await service.resolveAll('t1');
+
+      expect(all.get(FeatureKey.WHATSAPP)?.allowed).toBe(true);
+      expect(all.get(FeatureKey.CONVERSATIONS)?.allowed).toBe(true); // closure
+      expect(all.get(FeatureKey.CAMPAIGNS)?.allowed).toBe(false);
+      // One round of reads for the whole catalog, not one per key.
+      expect(subscriptions.findOne).toHaveBeenCalledTimes(1);
+      expect(definitions.find).toHaveBeenCalledTimes(1);
+      expect(featurePlans.find).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ───────────────────── isBillableAllowed (narrow gate) ──────────────────
+
+  describe('isBillableAllowed (FND-031/T082)', () => {
+    it('refuses once grace-expired (live-derived from an elapsed window)', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.PAST_DUE,
+        ends_at: past,
+        grace_started_at: longAgo,
       });
       expect(await service.isBillableAllowed('t1')).toBe(false);
     });
 
     it('refuses once the status column already says GRACE_EXPIRED', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', status: SubscriptionStatus.GRACE_EXPIRED, ends_at: past });
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.GRACE_EXPIRED,
+        ends_at: past,
+      });
       expect(await service.isBillableAllowed('t1')).toBe(false);
     });
 
-    it('allows during expired-in-grace (PAST_DUE, still within the window) — full capabilities unchanged', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub-1', status: SubscriptionStatus.PAST_DUE, ends_at: past, grace_started_at: justNow,
+    it('allows during expired-in-grace — full capabilities unchanged', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.PAST_DUE,
+        ends_at: past,
+        grace_started_at: justNow,
       });
       expect(await service.isBillableAllowed('t1')).toBe(true);
     });
 
     it('allows for an active subscription', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue(activeSub);
       expect(await service.isBillableAllowed('t1')).toBe(true);
     });
 
-    it('allows unconditionally under free platform mode', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(false);
+    it('allows unconditionally under free mode and under an admin grant', async () => {
+      billingMode.isPaidMode.mockResolvedValue(false);
       expect(await service.isBillableAllowed('t1')).toBe(true);
-      expect(subscriptions.findOne).not.toHaveBeenCalled();
-    });
 
-    it('allows unconditionally under an active free-access override', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(true);
+      billingMode.isPaidMode.mockResolvedValue(true);
+      overrides.hasActive.mockResolvedValue(true);
       expect(await service.isBillableAllowed('t1')).toBe(true);
       expect(subscriptions.findOne).not.toHaveBeenCalled();
     });
   });
 
-  describe('assertUsable', () => {
-    it('passes silently when access is allowed', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(false);
-      await expect(service.assertUsable('t1')).resolves.toBeUndefined();
+  // ──────────────────────────── assertAccess ─────────────────────────────
+
+  describe('assertAccess', () => {
+    it('returns the decision when access is allowed', async () => {
+      billingMode.isPaidMode.mockResolvedValue(false);
+      await expect(service.assertAccess('t1')).resolves.toMatchObject({
+        allowed: true,
+      });
     });
 
-    it('throws NO_ACTIVE_SUBSCRIPTION when access is denied', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      await expect(service.assertUsable('t1')).rejects.toMatchObject({
+    it('throws NO_ACTIVE_SUBSCRIPTION when denied', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      await expect(service.assertAccess('t1')).rejects.toMatchObject({
         code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
       });
     });
 
-    // Mirrors the SubscriptionAccessGuard call shape: it reads the route's
-    // own @RequireFeature() key and passes it straight through here.
-    it('passes silently when the route\'s own feature has an enabled tenant override, despite no subscription', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      featureFlags.isEnabled.mockResolvedValueOnce(true);
-      await expect(service.assertUsable('t1', 'ai')).resolves.toBeUndefined();
+    it('passes for a capability held only through a super-admin grant', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      featureFlags.getStates.mockResolvedValue(
+        granted(FeatureKey.AI_ASSISTANT),
+      );
+      await expect(
+        service.assertAccess('t1', FeatureKey.AI_ASSISTANT),
+      ).resolves.toMatchObject({ source: AccessSource.FEATURE_OVERRIDE });
     });
 
-    it('still throws NO_ACTIVE_SUBSCRIPTION when the override is disabled/absent for that feature', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.getActive.mockResolvedValueOnce(null);
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      featureFlags.isEnabled.mockResolvedValueOnce(false);
-      await expect(service.assertUsable('t1', 'ai')).rejects.toMatchObject({
-        code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
+    it('never leaks the technical reason to the client', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue({
+        ...activeSub,
+        status: SubscriptionStatus.CANCELLED,
+      });
+      await expect(service.assertAccess('t1')).rejects.toMatchObject({
+        // `publicContext` carries only the source; the status-naming reason
+        // stays server-side in `internalContext`.
+        publicContext: { source: AccessSource.DENIED },
       });
     });
   });
+
+  // ───────────────────────────── isEnforced ──────────────────────────────
 
   describe('isEnforced', () => {
-    it('is false under free mode', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(false);
+    it('is false under free mode and under an admin free-access grant', async () => {
+      billingMode.isPaidMode.mockResolvedValue(false);
       expect(await service.isEnforced('t1')).toBe(false);
-    });
 
-    it('is false when an override is active', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(true);
+      billingMode.isPaidMode.mockResolvedValue(true);
+      overrides.hasActive.mockResolvedValue(true);
       expect(await service.isEnforced('t1')).toBe(false);
     });
 
     it('is true in paid mode with no override', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-      expect(await service.isEnforced('t1')).toBe(true);
-    });
-
-    // FND-047: `isEnforced` is called from inside `UsageService.incrementIfWithinLimit`,
-    // which may already be running inside a caller's open `dataSource.transaction()`
-    // (campaigns, appointments). Without threading that transaction's manager through,
-    // this call must borrow a SECOND pool connection while the first is held open —
-    // under enough concurrency to saturate the pool with held transactions, that
-    // second borrow can never be satisfied (see evidence/fnd-047-fix.md). Passing the
-    // manager through makes every nested read reuse the SAME connection.
-    it('threads a supplied manager through to billingMode.isPaidMode and overrides.hasActive', async () => {
-      const manager = { marker: 'fake-manager' } as any;
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-
-      expect(await service.isEnforced('t1', manager)).toBe(true);
-
-      expect(billingMode.isPaidMode).toHaveBeenCalledWith(manager);
-      expect(overrides.hasActive).toHaveBeenCalledWith('t1', manager);
-    });
-
-    it('omits the manager for standalone callers (AI/WhatsApp execution paths — unchanged)', async () => {
-      billingMode.isPaidMode.mockResolvedValueOnce(true);
-      overrides.hasActive.mockResolvedValueOnce(false);
-
-      expect(await service.isEnforced('t1')).toBe(true);
-
-      expect(billingMode.isPaidMode).toHaveBeenCalledWith(undefined);
-      expect(overrides.hasActive).toHaveBeenCalledWith('t1', undefined);
-    });
-  });
-
-  /**
-   * The admin-free-access fix: enforcement is DERIVED from the same decision
-   * the route guard used, so a tenant admitted by a super-admin grant is not
-   * then required to hold a subscription by the usage layer.
-   *
-   * Regression origin: `POST /whatsapp/templates/:id/send` 500'd with
-   * "No active subscription found for this tenant" — the guard admitted the
-   * tenant via FEATURE_OVERRIDE while `isEnforced` (billing-mode + free-override
-   * only) still reported `true`.
-   */
-  describe('isEnforced — feature-scoped access (admin free access)', () => {
-    const paidNoFreeOverride = () => {
       billingMode.isPaidMode.mockResolvedValue(true);
-      overrides.hasActive.mockResolvedValue(false);
-      overrides.getActive.mockResolvedValue(null);
-    };
-
-    it('is NOT enforced when a per-feature override is what grants access (no subscription)', async () => {
-      paidNoFreeOverride();
-      subscriptions.findOne.mockResolvedValueOnce(null); // no subscription at all
-      featureFlags.isEnabled.mockResolvedValueOnce(true); // super-admin enabled 'whatsapp'
-
-      expect(await service.isEnforced('t1', undefined, ['whatsapp'])).toBe(false);
+      expect(await service.isEnforced('t1')).toBe(true);
     });
 
-    it('STAYS enforced for a paid tenant even when the feature flag is also on (paid behavior preserved)', async () => {
-      paidNoFreeOverride();
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub-1',
-        status: SubscriptionStatus.ACTIVE,
-        ends_at: future,
-      });
-      featureFlags.isEnabled.mockResolvedValue(true);
-
-      // Access came from the SUBSCRIPTION, so its plan quotas still apply —
-      // otherwise enabling a feature flag would silently unmeter every payer.
-      expect(await service.isEnforced('t1', undefined, ['whatsapp'])).toBe(true);
+    /**
+     * The 2026-08-13 regression: `POST /whatsapp/templates/:id/send` failed
+     * with "No active subscription found for this tenant" — the guard admitted
+     * the tenant via a feature override while the usage layer re-derived
+     * enforcement without the feature and demanded a subscription.
+     */
+    it('is NOT enforced when a per-feature grant is what admitted the tenant', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+      expect(
+        await service.isEnforced('t1', undefined, [FeatureKey.WHATSAPP]),
+      ).toBe(false);
     });
 
-    it('does not let an override for one feature unmeter a different one', async () => {
-      paidNoFreeOverride();
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      featureFlags.isEnabled.mockResolvedValue(false); // 'appointments' NOT granted
-
-      expect(await service.isEnforced('t1', undefined, ['appointments'])).toBe(true);
-      expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'appointments', undefined);
+    it('STAYS enforced for a paying tenant whose flag is also on', async () => {
+      // Otherwise enabling a flag would silently unmeter every payer.
+      billingMode.isPaidMode.mockResolvedValue(true);
+      subscriptions.findOne.mockResolvedValue(activeSub);
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+      expect(
+        await service.isEnforced('t1', undefined, [FeatureKey.WHATSAPP]),
+      ).toBe(true);
     });
 
-    it('fails closed: no subscription and no override at all stays enforced (denied downstream)', async () => {
-      paidNoFreeOverride();
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      featureFlags.isEnabled.mockResolvedValue(false);
-
-      expect(await service.isEnforced('t1', undefined, ['whatsapp'])).toBe(true);
+    it('does not let a grant for one capability unmeter another', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+      expect(
+        await service.isEnforced('t1', undefined, [FeatureKey.CAMPAIGNS]),
+      ).toBe(true);
     });
 
-    it('accepts any of several candidate keys for one metric (e.g. ai / ai.assistant)', async () => {
-      paidNoFreeOverride();
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      // 'ai' absent, but the catalog key 'ai.assistant' is enabled.
-      featureFlags.isEnabled
-        .mockResolvedValueOnce(false)
-        .mockResolvedValueOnce(true);
-
-      expect(await service.isEnforced('t1', undefined, ['ai', 'ai.assistant'])).toBe(false);
+    it('fails closed: denied tenants stay enforced', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      expect(
+        await service.isEnforced('t1', undefined, [FeatureKey.WHATSAPP]),
+      ).toBe(true);
     });
 
-    it('threads the manager through the feature-scoped path too (FND-047)', async () => {
-      paidNoFreeOverride();
+    /**
+     * FND-047: reached from inside `UsageService.incrementIfWithinLimit`'s open
+     * transaction, every nested read must reuse that connection instead of
+     * borrowing a second one from the pool — the mechanism behind the FND-047
+     * concurrency hang.
+     */
+    it('threads a supplied manager through every nested read', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
       const managerRepo = createMockRepository();
-      managerRepo.findOne.mockResolvedValueOnce(null);
-      const manager = { getRepository: jest.fn().mockReturnValue(managerRepo) } as any;
-      featureFlags.isEnabled.mockResolvedValueOnce(true);
+      managerRepo.findOne.mockResolvedValue(null);
+      managerRepo.find.mockResolvedValue([]);
+      const manager = {
+        getRepository: jest.fn().mockReturnValue(managerRepo),
+      } as never;
+      featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
 
-      expect(await service.isEnforced('t1', manager, ['whatsapp'])).toBe(false);
+      expect(
+        await service.isEnforced('t1', manager, [FeatureKey.WHATSAPP]),
+      ).toBe(false);
 
       expect(billingMode.isPaidMode).toHaveBeenCalledWith(manager);
-      // The subscription read went through the transaction's repository, not
-      // the injected non-transactional one (FND-047).
       expect(managerRepo.findOne).toHaveBeenCalled();
       expect(subscriptions.findOne).not.toHaveBeenCalled();
-      expect(featureFlags.isEnabled).toHaveBeenCalledWith('t1', 'whatsapp', manager);
+      expect(featureFlags.getStates).toHaveBeenCalledWith('t1', manager);
+    });
+
+    it('skips the subscription read entirely on the tenant-wide fast path', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      await service.isEnforced('t1');
+      // PlatformUsageService calls this once PER TENANT across a listing.
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(featureFlags.getStates).not.toHaveBeenCalled();
     });
   });
 });

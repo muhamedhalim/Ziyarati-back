@@ -1,4 +1,12 @@
-import { Body, Controller, Headers, HttpCode, HttpStatus, Ip, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Ip,
+  Post,
+} from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags, ApiHeader } from '@nestjs/swagger';
 
 import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decorator';
@@ -7,6 +15,8 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { IntegrationWriteService } from '../integration-platform/write/integration-write.service';
 import { INTEGRATION_RESOURCE } from '../integration-platform/integration-platform.constants';
 import { UpsertRecordDto } from '../integration-platform/dto/upsert-record.dto';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * External (M2M) staff UPSERT — deliberately UPDATE/LINK ONLY.
@@ -25,6 +35,7 @@ import { UpsertRecordDto } from '../integration-platform/dto/upsert-record.dto';
  */
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('integrations/staff')
 export class IntegrationWriteStaffController {
   constructor(
@@ -37,7 +48,11 @@ export class IntegrationWriteStaffController {
     description:
       'Requires scope `integration.staff.write`. Never creates staff, accounts, roles or access. Send `matchEmail` to link an existing member.',
   })
-  @ApiHeader({ name: 'Idempotency-Key', required: false, description: 'Retry-safe write key (unique per tenant).' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Retry-safe write key (unique per tenant).',
+  })
   @ApiKeyProtected(INTEGRATION_SCOPE.STAFF_WRITE)
   @Post('upsert')
   @HttpCode(HttpStatus.OK)

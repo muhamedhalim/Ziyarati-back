@@ -19,6 +19,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -38,6 +40,7 @@ const S_ERROR = {
  */
 @ApiTags('Scheduling Availability')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.SCHEDULING)
 @Controller('scheduling/availability')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -49,13 +52,27 @@ export class AvailabilityController {
 
   @ApiOperation({
     summary: 'Check availability of a window',
-    description: '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `staffId`, `startTime`, `endTime`. Returns availability + conflict breakdown (holiday/blocked/occupied/outside-slot).',
+    description:
+      '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `staffId`, `startTime`, `endTime`. Returns availability + conflict breakdown (holiday/blocked/occupied/outside-slot).',
   })
   @ApiOkResponse({ description: 'Availability result.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `scheduling.availability.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch or staff not found in this tenant.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Invalid time range.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `scheduling.availability.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch or staff not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Invalid time range.',
+    schema: S_ERROR,
+  })
   @Get('check')
   @RequirePermissions(PERMISSION.SCHEDULING_AVAILABILITY_READ)
   check(@Query() query: AvailabilityQueryDto) {
@@ -64,12 +81,23 @@ export class AvailabilityController {
 
   @ApiOperation({
     summary: 'Get available windows for a day',
-    description: '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `staffId`, `date`. Returns free windows (slots minus blocks/appointments), optionally chunked by `slotMinutes`. Holidays return an empty set.',
+    description:
+      '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `staffId`, `date`. Returns free windows (slots minus blocks/appointments), optionally chunked by `slotMinutes`. Holidays return an empty set.',
   })
   @ApiOkResponse({ description: 'Available windows.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `scheduling.availability.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch or staff not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `scheduling.availability.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch or staff not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('windows')
   @RequirePermissions(PERMISSION.SCHEDULING_AVAILABILITY_READ)
   windows(@Query() query: AvailabilityQueryDto) {
@@ -78,12 +106,23 @@ export class AvailabilityController {
 
   @ApiOperation({
     summary: 'Availability summary for a day',
-    description: '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `date` (`staffId` optional). Returns available / blocked / holiday / occupied facets for the day.',
+    description:
+      '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `date` (`staffId` optional). Returns available / blocked / holiday / occupied facets for the day.',
   })
   @ApiOkResponse({ description: 'Availability summary.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `scheduling.availability.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch or staff not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `scheduling.availability.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch or staff not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('summary')
   @RequirePermissions(PERMISSION.SCHEDULING_AVAILABILITY_READ)
   summary(@Query() query: AvailabilityQueryDto) {
@@ -92,13 +131,27 @@ export class AvailabilityController {
 
   @ApiOperation({
     summary: 'Validate booking availability',
-    description: '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `staffId`, `startTime`, `endTime`. Returns `{ valid, reasons[] }` — the check the Appointment module runs before creating a booking.',
+    description:
+      '**Protected — `scheduling.availability.read`. Clinic active.** Requires `branchId`, `staffId`, `startTime`, `endTime`. Returns `{ valid, reasons[] }` — the check the Appointment module runs before creating a booking.',
   })
   @ApiOkResponse({ description: 'Validation result.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `scheduling.availability.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch or staff not found in this tenant.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Invalid time range.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `scheduling.availability.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch or staff not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Invalid time range.',
+    schema: S_ERROR,
+  })
   @Get('validate')
   @RequirePermissions(PERMISSION.SCHEDULING_AVAILABILITY_READ)
   validate(@Query() query: AvailabilityQueryDto) {

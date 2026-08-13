@@ -52,7 +52,9 @@ export class BillingService {
   }
 
   async listInvoices(tenantId: string, query: QueryInvoicesDto) {
-    const where: FindOptionsWhere<SubscriptionInvoice> = { tenant_id: tenantId };
+    const where: FindOptionsWhere<SubscriptionInvoice> = {
+      tenant_id: tenantId,
+    };
     if (query.status) where.status = query.status;
     if (query.from && query.to) {
       where.issued_at = Between(new Date(query.from), new Date(query.to));
@@ -99,7 +101,9 @@ export class BillingService {
     currency = 'USD',
   ): Promise<SubscriptionInvoice> {
     // ── Phase 1: atomic claim (UPDATE … WHERE claim free/stale) ──
-    const staleBefore = new Date(Date.now() - BillingService.CHARGE_CLAIM_STALE_MS);
+    const staleBefore = new Date(
+      Date.now() - BillingService.CHARGE_CLAIM_STALE_MS,
+    );
     const claim = await this.invoices
       .createQueryBuilder()
       .update(SubscriptionInvoice)
@@ -112,15 +116,20 @@ export class BillingService {
           InvoiceStatus.UNCOLLECTIBLE,
         ],
       })
-      .andWhere('(charge_started_at IS NULL OR charge_started_at < :staleBefore)', {
-        staleBefore,
-      })
+      .andWhere(
+        '(charge_started_at IS NULL OR charge_started_at < :staleBefore)',
+        {
+          staleBefore,
+        },
+      )
       .execute();
 
     if (!claim.affected) {
       const invoice = await this.getInvoice(tenantId, id);
       if (invoice.status === InvoiceStatus.PAID) {
-        throw new AppError(ErrorCode.CONFLICT, { message: 'Invoice is already paid' });
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: 'Invoice is already paid',
+        });
       }
       if (
         invoice.status === InvoiceStatus.VOID ||
@@ -153,7 +162,9 @@ export class BillingService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!locked) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Invoice not found' });
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Invoice not found',
+        });
       }
       if (locked.status === InvoiceStatus.PAID) return locked;
 

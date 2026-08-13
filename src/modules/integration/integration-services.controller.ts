@@ -1,5 +1,10 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { ServiceService } from '../services/service.service';
 import { QueryServicesDto } from '../services/dto/query-services.dto';
@@ -7,6 +12,8 @@ import { ApiKeyProtected } from '../platform/decorators/api-key-protected.decora
 import { INTEGRATION_SCOPE } from '../platform/integration-scopes.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { toIntegrationService } from './integration.mappers';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Read-only external view of the service catalog. Delegates entirely to the
@@ -14,6 +21,7 @@ import { toIntegrationService } from './integration.mappers';
  */
 @ApiTags('Integration API')
 @ApiSecurity('ApiKey-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('integrations/services')
 export class IntegrationServicesController {
   constructor(
@@ -36,12 +44,15 @@ export class IntegrationServicesController {
 
   @ApiOperation({
     summary: 'Get a service',
-    description: 'Requires scope `integration.services.read`. A service from another tenant returns 404.',
+    description:
+      'Requires scope `integration.services.read`. A service from another tenant returns 404.',
   })
   @ApiOkResponse({ description: 'Service detail.' })
   @ApiKeyProtected(INTEGRATION_SCOPE.SERVICES_READ)
   @Get(':id')
   async get(@Param('id', ParseUUIDPipe) id: string) {
-    return toIntegrationService(await this.services.getDetails(this.ctx.requireTenantId(), id));
+    return toIntegrationService(
+      await this.services.getDetails(this.ctx.requireTenantId(), id),
+    );
   }
 }

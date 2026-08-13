@@ -42,7 +42,11 @@ export type EffectiveStatus = SubscriptionStatus;
  * FND-031/T086 — the three access states named in the finding/spec, additive
  * to (never replacing or translating) the underlying `status` enum (LG-10).
  */
-export type AccessState = 'active' | 'expired-in-grace' | 'grace-expired' | 'terminal';
+export type AccessState =
+  | 'active'
+  | 'expired-in-grace'
+  | 'grace-expired'
+  | 'terminal';
 
 export interface SubscriptionView {
   subscription: Subscription;
@@ -123,7 +127,9 @@ export class SubscriptionService {
     let status: SubscriptionStatus;
 
     if (dto.startTrial) {
-      const trialDays = await this.platformSettings.getTyped<number>(SettingKey.TRIAL_DURATION_DAYS);
+      const trialDays = await this.platformSettings.getTyped<number>(
+        SettingKey.TRIAL_DURATION_DAYS,
+      );
       endsAt = new Date(startsAt.getTime() + trialDays * 86_400_000);
       status = SubscriptionStatus.TRIAL;
     } else {
@@ -144,15 +150,26 @@ export class SubscriptionService {
 
     // Issue the first invoice for paid (non-trial) subscriptions.
     if (status !== SubscriptionStatus.TRIAL) {
-      await this.billing.generateInvoice(tenantId, subscription.id, Number(plan.price));
+      await this.billing.generateInvoice(
+        tenantId,
+        subscription.id,
+        Number(plan.price),
+      );
     }
 
-    const view = await this.view(await this.loadWithPlan(tenantId, subscription.id));
+    const view = await this.view(
+      await this.loadWithPlan(tenantId, subscription.id),
+    );
 
     if (status === SubscriptionStatus.TRIAL) {
       this.emitter.emit(
         SubscriptionTrialStartedEvent.eventName,
-        new SubscriptionTrialStartedEvent(tenantId, subscription.id, plan.id, endsAt),
+        new SubscriptionTrialStartedEvent(
+          tenantId,
+          subscription.id,
+          plan.id,
+          endsAt,
+        ),
       );
     } else {
       this.emitter.emit(
@@ -196,7 +213,11 @@ export class SubscriptionService {
     await this.subscriptions.save(current);
 
     // Proration is abstracted: issue an invoice for the new plan price.
-    await this.billing.generateInvoice(tenantId, current.id, Number(newPlan.price));
+    await this.billing.generateInvoice(
+      tenantId,
+      current.id,
+      Number(newPlan.price),
+    );
 
     const view = await this.view(await this.loadWithPlan(tenantId, current.id));
     this.emitter.emit(
@@ -223,7 +244,11 @@ export class SubscriptionService {
     const view = await this.view(await this.loadWithPlan(tenantId, current.id));
     this.emitter.emit(
       SubscriptionCancelledEvent.eventName,
-      new SubscriptionCancelledEvent(tenantId, current.id, dto.cancelAtPeriodEnd ?? false),
+      new SubscriptionCancelledEvent(
+        tenantId,
+        current.id,
+        dto.cancelAtPeriodEnd ?? false,
+      ),
     );
     return view;
   }
@@ -275,7 +300,10 @@ export class SubscriptionService {
    */
   getEffectiveStatus(
     subscription: Subscription,
-    graceDurationDays: number = this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14),
+    graceDurationDays: number = this.config.get<number>(
+      'SUBSCRIPTION_GRACE_DAYS',
+      14,
+    ),
   ): EffectiveStatus {
     const now = new Date();
     if (
@@ -288,7 +316,8 @@ export class SubscriptionService {
     if (subscription.status === SubscriptionStatus.PAST_DUE) {
       if (subscription.grace_started_at) {
         const graceEndsAt = new Date(
-          subscription.grace_started_at.getTime() + graceDurationDays * 86_400_000,
+          subscription.grace_started_at.getTime() +
+            graceDurationDays * 86_400_000,
         );
         if (graceEndsAt < now) return SubscriptionStatus.GRACE_EXPIRED;
       }
@@ -324,26 +353,31 @@ export class SubscriptionService {
       order: { created_at: 'DESC' },
     });
     if (!subscription) return; // no subscription at all is AccessControlService's concern, not this gate's
-    if (this.getEffectiveStatus(subscription) === SubscriptionStatus.GRACE_EXPIRED) {
+    if (
+      this.getEffectiveStatus(subscription) === SubscriptionStatus.GRACE_EXPIRED
+    ) {
       throw new AppError(ErrorCode.SUBSCRIPTION_GRACE_EXPIRED);
     }
   }
 
-  /**
-   * Throws 403 unless the tenant currently has platform access. Delegates to
-   * AccessControlService so the FULL priority chain is honoured (global free
-   * mode → free-access override → usable paid subscription) — not just the raw
-   * subscription state. Exported for other domains to gate protected actions.
-   */
-  async assertUsable(tenantId: string): Promise<void> {
-    await this.access.assertUsable(tenantId);
-  }
+  // NOTE: a pass-through `assertUsable(tenantId)` used to live here, delegating
+  // to `AccessControlService`. It had no callers, and as a tenant-WIDE check it
+  // could never carry the capability a route was gating — so anything that did
+  // adopt it would have re-introduced exactly the split this work removed
+  // (admitted by the guard, refused here). Gate on `AccessControlService`
+  // directly, with the FeatureKey in hand.
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   private view(subscription: Subscription): SubscriptionView {
-    const graceDurationDays = this.config.get<number>('SUBSCRIPTION_GRACE_DAYS', 14);
-    const effectiveStatus = this.getEffectiveStatus(subscription, graceDurationDays);
+    const graceDurationDays = this.config.get<number>(
+      'SUBSCRIPTION_GRACE_DAYS',
+      14,
+    );
+    const effectiveStatus = this.getEffectiveStatus(
+      subscription,
+      graceDurationDays,
+    );
     const isUsable = this.isUsable(subscription, graceDurationDays);
 
     let accessState: AccessState;
@@ -360,7 +394,8 @@ export class SubscriptionService {
         accessState = 'expired-in-grace';
         if (subscription.grace_started_at) {
           graceEndsAt = new Date(
-            subscription.grace_started_at.getTime() + graceDurationDays * 86_400_000,
+            subscription.grace_started_at.getTime() +
+              graceDurationDays * 86_400_000,
           );
         }
         break;
@@ -368,7 +403,13 @@ export class SubscriptionService {
         accessState = 'active';
     }
 
-    return { subscription, effectiveStatus, isUsable, accessState, graceEndsAt };
+    return {
+      subscription,
+      effectiveStatus,
+      isUsable,
+      accessState,
+      graceEndsAt,
+    };
   }
 
   private async getActivePlan(planId: string): Promise<SubscriptionPlan> {
@@ -402,13 +443,18 @@ export class SubscriptionService {
     return subscription;
   }
 
-  private async loadWithPlan(tenantId: string, id: string): Promise<Subscription> {
+  private async loadWithPlan(
+    tenantId: string,
+    id: string,
+  ): Promise<Subscription> {
     const subscription = await this.subscriptions.findOne({
       where: { id, tenant: { id: tenantId } },
       relations: { plan: true },
     });
     if (!subscription) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Subscription not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Subscription not found',
+      });
     }
     return subscription;
   }

@@ -59,6 +59,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -82,19 +84,24 @@ const S_STAFF = {
     avatar_url: {
       type: 'string',
       nullable: true,
-      description: 'Short-lived signed URL when an avatar was uploaded via `POST /uploads`; re-fetch the resource once it expires.',
+      description:
+        'Short-lived signed URL when an avatar was uploaded via `POST /uploads`; re-fetch the resource once it expires.',
     },
     booking_buffer_minutes: { type: 'number', example: 10 },
     is_available_for_booking: { type: 'boolean', example: true },
     role: {
       type: 'object',
       nullable: true,
-      description: 'The linked account\'s currently held role (null if it holds zero or more than one).',
+      description:
+        "The linked account's currently held role (null if it holds zero or more than one).",
       properties: {
         id: { type: 'string', format: 'uuid' },
         slug: { type: 'string', example: 'doctor' },
         name: { type: 'string', example: 'Doctor' },
-        isCustom: { type: 'boolean', description: 'True for a synthesized "Other" role.' },
+        isCustom: {
+          type: 'boolean',
+          description: 'True for a synthesized "Other" role.',
+        },
         permissionSlugs: {
           type: 'array',
           items: { type: 'string' },
@@ -116,7 +123,13 @@ const S_STAFF = {
         type: 'object',
         properties: {
           id: { type: 'string', format: 'uuid' },
-          service: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+          service: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', format: 'uuid' },
+              name: { type: 'string' },
+            },
+          },
         },
       },
     },
@@ -143,7 +156,10 @@ const S_ELIGIBLE_USER = {
     role: {
       type: 'object',
       nullable: true,
-      properties: { slug: { type: 'string', example: 'receptionist' }, name: { type: 'string', example: 'Receptionist' } },
+      properties: {
+        slug: { type: 'string', example: 'receptionist' },
+        name: { type: 'string', example: 'Receptionist' },
+      },
     },
   },
 };
@@ -164,7 +180,8 @@ const S_STAFF_WITH_CREDENTIALS = {
     profile: S_STAFF,
     temporaryPassword: {
       type: 'string',
-      description: 'Generated once — never retrievable again. Share it with the new staff member out of band.',
+      description:
+        'Generated once — never retrievable again. Share it with the new staff member out of band.',
       example: 'aZ3f9Qk2mN7p',
     },
   },
@@ -174,11 +191,21 @@ const S_SCHEDULE = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    day_of_week: { type: 'number', example: 1, description: '0=Sunday … 6=Saturday' },
+    day_of_week: {
+      type: 'number',
+      example: 1,
+      description: '0=Sunday … 6=Saturday',
+    },
     start_time: { type: 'string', example: '09:00' },
     end_time: { type: 'string', example: '13:00' },
     is_active: { type: 'boolean', example: true },
-    branch: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+    branch: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
+    },
   },
 };
 
@@ -197,9 +224,20 @@ const S_COMMISSION = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    commission_type: { type: 'string', enum: ['PERCENT', 'FIXED'], example: 'PERCENT' },
+    commission_type: {
+      type: 'string',
+      enum: ['PERCENT', 'FIXED'],
+      example: 'PERCENT',
+    },
     commission_value: { type: 'number', example: 15 },
-    service: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+    service: {
+      type: 'object',
+      nullable: true,
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -244,8 +282,16 @@ const S_RATING_LIST = {
           id: { type: 'string', format: 'uuid' },
           rating: { type: 'number', example: 5 },
           comment: { type: 'string', nullable: true },
-          customer: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
-          appointment: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
+          customer: {
+            type: 'object',
+            nullable: true,
+            properties: { id: { type: 'string', format: 'uuid' } },
+          },
+          appointment: {
+            type: 'object',
+            nullable: true,
+            properties: { id: { type: 'string', format: 'uuid' } },
+          },
           created_at: { type: 'string', format: 'date-time' },
         },
       },
@@ -262,7 +308,13 @@ const S_AVAILABILITY = {
     open: { type: 'boolean', example: true },
     branchHours: {
       type: 'array',
-      items: { type: 'object', properties: { start: { type: 'string', example: '08:00' }, end: { type: 'string', example: '18:00' } } },
+      items: {
+        type: 'object',
+        properties: {
+          start: { type: 'string', example: '08:00' },
+          end: { type: 'string', example: '18:00' },
+        },
+      },
     },
     staff: {
       type: 'array',
@@ -274,7 +326,13 @@ const S_AVAILABILITY = {
           name: { type: 'string', nullable: true },
           windows: {
             type: 'array',
-            items: { type: 'object', properties: { start: { type: 'string', example: '09:00' }, end: { type: 'string', example: '13:00' } } },
+            items: {
+              type: 'object',
+              properties: {
+                start: { type: 'string', example: '09:00' },
+                end: { type: 'string', example: '13:00' },
+              },
+            },
           },
         },
       },
@@ -293,6 +351,7 @@ const S_AVAILABILITY = {
  */
 @ApiTags('Staff')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.STAFF)
 @Controller('staff')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -324,12 +383,27 @@ user first via the auth flow (\`POST /auth/register-user\`), then link it here.
 **Who can call this:** Owner, Manager (\`staff.create\`).
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Staff profile created.', schema: S_STAFF })
+  @ApiCreatedResponse({
+    description: 'Staff profile created.',
+    schema: S_STAFF,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Referenced user not found in this clinic.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'This user already has a staff profile.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.create`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Referenced user not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'This user already has a staff profile.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   create(@Body() dto: CreateStaffDto) {
@@ -366,16 +440,33 @@ new staff member out of band. It cannot be retrieved again.
 **Who can call this:** Owner, Manager (\`staff.create\`).
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'User + staff profile created.', schema: S_STAFF_WITH_CREDENTIALS })
+  @ApiCreatedResponse({
+    description: 'User + staff profile created.',
+    schema: S_STAFF_WITH_CREDENTIALS,
+  })
   @ApiBadRequestResponse({
     description:
       'Validation failed, primaryBranchId not in branchIds, or roleSlug is "other" with an empty permissionSlugs.',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, attempted a privileged role, or clinic inactive.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Email address already exists within this clinic.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Plan user limit reached, or a branch was not found in this clinic.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.create`, attempted a privileged role, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Email address already exists within this clinic.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Plan user limit reached, or a branch was not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Post('from-new-user')
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   createFromNewUser(
@@ -404,9 +495,18 @@ never displays or lets the admin type a UUID.
 **Who can call this:** Owner, Manager (\`staff.create\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Eligible users.', schema: S_ELIGIBLE_USER_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Eligible users.',
+    schema: S_ELIGIBLE_USER_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.create`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('eligible-users')
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   findEligibleUsers(@Query() query: EligibleUsersQueryDto) {
@@ -443,8 +543,14 @@ drives the dropdown.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.create`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('assignable-roles')
   @RequirePermissions(PERMISSION.STAFF_CREATE)
   findAssignableRoles() {
@@ -452,7 +558,8 @@ drives the dropdown.
   }
 
   @ApiOperation({
-    summary: 'List permissions the caller may grant via the "Other" role ("Create new user")',
+    summary:
+      'List permissions the caller may grant via the "Other" role ("Create new user")',
     description: `
 **Protected — requires \`staff.create\`. Clinic must be active.**
 
@@ -486,11 +593,19 @@ regardless of what the client sends).
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.create`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.create`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('assignable-permissions')
   @RequirePermissions(PERMISSION.STAFF_CREATE)
-  findAssignablePermissions(@CurrentUser('permissions') callerPermissions: string[]) {
+  findAssignablePermissions(
+    @CurrentUser('permissions') callerPermissions: string[],
+  ) {
     return this.staff.findAssignablePermissions(callerPermissions);
   }
 
@@ -515,7 +630,10 @@ about what gets granted.
 **Who can call this:** Owner, Manager (\`staff.create\`).
     `.trim(),
   })
-  @ApiParam({ name: 'roleId', description: 'A role id from `GET /staff/assignable-roles`.' })
+  @ApiParam({
+    name: 'roleId',
+    description: 'A role id from `GET /staff/assignable-roles`.',
+  })
   @ApiOkResponse({
     description: "The role's permissions.",
     schema: {
@@ -534,16 +652,28 @@ about what gets granted.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({
-    description: 'Caller lacks `staff.create`, the role cannot be assigned to staff, or clinic inactive.',
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
     schema: S_ERROR,
   })
-  @ApiNotFoundResponse({ description: 'Role not found or not visible to this tenant.', schema: S_ERROR })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.create`, the role cannot be assigned to staff, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Role not found or not visible to this tenant.',
+    schema: S_ERROR,
+  })
   @Get('assignable-roles/:roleId/permissions')
   @RequirePermissions(PERMISSION.STAFF_CREATE)
-  findAssignableRolePermissions(@Param('roleId', ParseUUIDPipe) roleId: string) {
-    return this.staff.findAssignableRolePermissions(roleId, this.ctx.requireTenantId());
+  findAssignableRolePermissions(
+    @Param('roleId', ParseUUIDPipe) roleId: string,
+  ) {
+    return this.staff.findAssignableRolePermissions(
+      roleId,
+      this.ctx.requireTenantId(),
+    );
   }
 
   @ApiOperation({
@@ -560,8 +690,14 @@ Returns the clinic's staff. Optional filters: \`search\` (title),
     `.trim(),
   })
   @ApiOkResponse({ description: 'Paginated staff list.', schema: S_STAFF_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.STAFF_READ)
   findAll(@Query() query: QueryStaffDto) {
@@ -586,11 +722,26 @@ Used by the booking UI and the WhatsApp availability bot.
 **Who can call this:** Owner, Manager, Receptionist (\`staff.read\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Computed availability.', schema: S_AVAILABILITY })
-  @ApiBadRequestResponse({ description: 'Invalid branchId or date.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Branch not found in this clinic.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Computed availability.',
+    schema: S_AVAILABILITY,
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid branchId or date.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Branch not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Get('availability')
   @RequirePermissions(PERMISSION.STAFF_READ)
   availability(@Query() query: AvailabilityQueryDto) {
@@ -612,11 +763,25 @@ from another clinic returns 404 (no cross-tenant leak).
 **Who can call this:** Owner, Manager, Receptionist (\`staff.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Staff profile.', schema: S_STAFF })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.STAFF_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -642,16 +807,27 @@ refuses to touch an \`owner\`/\`super_admin\` account.
 required to change the role).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Staff profile updated.', schema: S_STAFF })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `staff.update` (or `staff.manage` when changing the role), attempted a privileged role, or clinic inactive.',
     schema: S_ERROR,
   })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.STAFF_UPDATE)
   update(
@@ -680,11 +856,25 @@ in availability lookups.
 **Who can call this:** Owner, Manager (\`staff.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Staff activated.', schema: S_STAFF })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/activate')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.STAFF_UPDATE)
@@ -704,11 +894,25 @@ are unaffected.
 **Who can call this:** Owner, Manager (\`staff.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Staff deactivated.', schema: S_STAFF })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.STAFF_UPDATE)
@@ -727,11 +931,25 @@ appointments, commissions and ratings are retained.
 **Who can call this:** Owner, Manager (\`staff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Staff profile soft-deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.STAFF_MANAGE)
@@ -774,16 +992,27 @@ and will not sign them out or re-send an invitation.
 only \`staff.read\` and therefore cannot grant access to themselves or anyone else.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Access granted; returns the new access state.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Access granted; returns the new access state.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `staff.manage`, the target holds a protected role (`owner`/`super_admin`), or the clinic is inactive.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
-    description: 'Staff member not found in this clinic (also returned for another clinic\'s id).',
+    description:
+      "Staff member not found in this clinic (also returned for another clinic's id).",
     schema: S_ERROR,
   })
   @ApiUnprocessableEntityResponse({
@@ -801,7 +1030,7 @@ only \`staff.read\` and therefore cannot grant access to themselves or anyone el
   }
 
   @ApiOperation({
-    summary: 'Disable a staff member\'s dashboard login access',
+    summary: "Disable a staff member's dashboard login access",
     description: `
 **Protected — requires \`staff.manage\`. Clinic must be active.**
 
@@ -816,12 +1045,32 @@ employment/bookability and login access are deliberately independent.
 **Who can call this:** Owner, Manager (\`staff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Access disabled; returns the new access state.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or the target holds a protected role.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'The staff member does not have dashboard access yet.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Access disabled; returns the new access state.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.manage`, or the target holds a protected role.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'The staff member does not have dashboard access yet.',
+    schema: S_ERROR,
+  })
   @Post(':id/dashboard-access/disable')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.STAFF_MANAGE)
@@ -829,11 +1078,16 @@ employment/bookability and login access are deliberately independent.
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') actorId: string,
   ) {
-    return this.access.setEnabled(this.ctx.requireTenantId(), id, false, actorId);
+    return this.access.setEnabled(
+      this.ctx.requireTenantId(),
+      id,
+      false,
+      actorId,
+    );
   }
 
   @ApiOperation({
-    summary: 'Re-enable a staff member\'s dashboard login access',
+    summary: "Re-enable a staff member's dashboard login access",
     description: `
 **Protected — requires \`staff.manage\`. Clinic must be active.**
 
@@ -843,12 +1097,32 @@ The receptionist role must already be present (grant access first).
 **Who can call this:** Owner, Manager (\`staff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Access enabled; returns the new access state.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or the target holds a protected role.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'The staff member does not have dashboard access yet.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Access enabled; returns the new access state.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.manage`, or the target holds a protected role.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'The staff member does not have dashboard access yet.',
+    schema: S_ERROR,
+  })
   @Post(':id/dashboard-access/enable')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.STAFF_MANAGE)
@@ -856,7 +1130,12 @@ The receptionist role must already be present (grant access first).
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') actorId: string,
   ) {
-    return this.access.setEnabled(this.ctx.requireTenantId(), id, true, actorId);
+    return this.access.setEnabled(
+      this.ctx.requireTenantId(),
+      id,
+      true,
+      actorId,
+    );
   }
 
   @ApiOperation({
@@ -876,13 +1155,31 @@ their password and should use forgot-password instead.
 **Who can call this:** Owner, Manager (\`staff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Invitation re-sent; returns the current access state.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or the target holds a protected role.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Invitation re-sent; returns the current access state.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `staff.manage`, or the target holds a protected role.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @ApiUnprocessableEntityResponse({
-    description: 'No dashboard access yet, the staff member has already signed in, or they have no email address.',
+    description:
+      'No dashboard access yet, the staff member has already signed in, or they have no email address.',
     schema: S_ERROR,
   })
   @Post(':id/dashboard-access/resend-invitation')
@@ -892,7 +1189,11 @@ their password and should use forgot-password instead.
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('id') actorId: string,
   ) {
-    return this.access.resendInvitation(this.ctx.requireTenantId(), id, actorId);
+    return this.access.resendInvitation(
+      this.ctx.requireTenantId(),
+      id,
+      actorId,
+    );
   }
 
   // ─────────────────────── Service / branch mapping ──────────────────────── //
@@ -909,16 +1210,39 @@ qualification business-rule hook (extend for licence/skill checks).
 **Who can call this:** Owner, Manager (\`staff.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Services assigned; returns the updated profile.', schema: S_STAFF })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Services assigned; returns the updated profile.',
+    schema: S_STAFF,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'A service is inactive, missing, or from another clinic.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'A service is inactive, missing, or from another clinic.',
+    schema: S_ERROR,
+  })
   @Put(':id/services')
   @RequirePermissions(PERMISSION.STAFF_UPDATE)
-  assignServices(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignServicesDto) {
+  assignServices(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignServicesDto,
+  ) {
     return this.staff.assignServices(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -926,11 +1250,25 @@ qualification business-rule hook (extend for licence/skill checks).
     summary: 'List the services a staff member can perform',
     description: `**Protected — requires \`staff.read\`. Clinic must be active.** Returns the staff member's assigned services.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Assigned services.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/services')
   @RequirePermissions(PERMISSION.STAFF_READ)
   listServices(@Param('id', ParseUUIDPipe) id: string) {
@@ -949,16 +1287,39 @@ one of \`branchIds\`.
 **Who can call this:** Owner, Manager (\`staff.update\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Branch assignments updated.' })
-  @ApiBadRequestResponse({ description: 'primaryBranchId not in branchIds, or validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.update`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'A branch was not found in this clinic.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'primaryBranchId not in branchIds, or validation failed.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.update`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'A branch was not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Put(':id/branches')
   @RequirePermissions(PERMISSION.STAFF_UPDATE)
-  assignBranches(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignBranchesDto) {
+  assignBranches(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignBranchesDto,
+  ) {
     return this.staff.assignBranches(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -966,11 +1327,25 @@ one of \`branchIds\`.
     summary: 'List the branches a staff member is assigned to',
     description: `**Protected — requires \`staff.read\`. Clinic must be active.** Returns the staff member's branch assignments.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Branch assignments.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/branches')
   @RequirePermissions(PERMISSION.STAFF_READ)
   listBranches(@Param('id', ParseUUIDPipe) id: string) {
@@ -994,28 +1369,71 @@ slots on the same day are rejected (409).**
 **Who can call this:** Owner, Manager (\`staff.schedule.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Schedule slot created.', schema: S_SCHEDULE })
-  @ApiBadRequestResponse({ description: 'Validation failed or end ≤ start.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member or branch not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Slot overlaps an existing active slot that day.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiCreatedResponse({
+    description: 'Schedule slot created.',
+    schema: S_SCHEDULE,
+  })
+  @ApiBadRequestResponse({
+    description: 'Validation failed or end ≤ start.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member or branch not found.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Slot overlaps an existing active slot that day.',
+    schema: S_ERROR,
+  })
   @Post(':id/schedules')
   @RequirePermissions(PERMISSION.STAFF_SCHEDULE_MANAGE)
-  createSchedule(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateScheduleDto) {
+  createSchedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateScheduleDto,
+  ) {
     return this.schedules.createSchedule(this.ctx.requireTenantId(), id, dto);
   }
 
   @ApiOperation({
-    summary: 'List a staff member\'s weekly schedule',
+    summary: "List a staff member's weekly schedule",
     description: `**Protected — requires \`staff.read\`. Clinic must be active.** Returns all schedule slots ordered by weekday then start time.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Schedule slots.', schema: { type: 'array', items: S_SCHEDULE } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Schedule slots.',
+    schema: { type: 'array', items: S_SCHEDULE },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/schedules')
   @RequirePermissions(PERMISSION.STAFF_READ)
   listSchedules(@Param('id', ParseUUIDPipe) id: string) {
@@ -1033,14 +1451,39 @@ and (if active) overlap with the staff member's other slots that day.
 **Who can call this:** Owner, Manager (\`staff.schedule.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'scheduleId', description: 'Schedule slot UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'scheduleId',
+    description: 'Schedule slot UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Schedule slot updated.', schema: S_SCHEDULE })
-  @ApiBadRequestResponse({ description: 'Validation failed or end ≤ start.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member, schedule, or branch not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Updated slot overlaps an existing active slot.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed or end ≤ start.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member, schedule, or branch not found.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Updated slot overlaps an existing active slot.',
+    schema: S_ERROR,
+  })
   @Patch(':id/schedules/:scheduleId')
   @RequirePermissions(PERMISSION.STAFF_SCHEDULE_MANAGE)
   updateSchedule(
@@ -1048,19 +1491,43 @@ and (if active) overlap with the staff member's other slots that day.
     @Param('scheduleId', ParseUUIDPipe) scheduleId: string,
     @Body() dto: UpdateScheduleDto,
   ) {
-    return this.schedules.updateSchedule(this.ctx.requireTenantId(), id, scheduleId, dto);
+    return this.schedules.updateSchedule(
+      this.ctx.requireTenantId(),
+      id,
+      scheduleId,
+      dto,
+    );
   }
 
   @ApiOperation({
     summary: 'Delete a schedule slot',
     description: `**Protected — requires \`staff.schedule.manage\`. Clinic must be active.** Permanently removes a recurring slot.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'scheduleId', description: 'Schedule slot UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'scheduleId',
+    description: 'Schedule slot UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Schedule slot deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member or schedule not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.schedule.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member or schedule not found.',
+    schema: S_ERROR,
+  })
   @Delete(':id/schedules/:scheduleId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.STAFF_SCHEDULE_MANAGE)
@@ -1068,7 +1535,11 @@ and (if active) overlap with the staff member's other slots that day.
     @Param('id', ParseUUIDPipe) id: string,
     @Param('scheduleId', ParseUUIDPipe) scheduleId: string,
   ) {
-    return this.schedules.removeSchedule(this.ctx.requireTenantId(), id, scheduleId);
+    return this.schedules.removeSchedule(
+      this.ctx.requireTenantId(),
+      id,
+      scheduleId,
+    );
   }
 
   // ─────────────────────────── Time off ──────────────────────────────────── //
@@ -1092,27 +1563,64 @@ of scope; this endpoint therefore both "requests" and commits the leave.
 **Who can call this:** Owner, Manager (\`staff.timeoff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Time off recorded.', schema: S_TIME_OFF })
-  @ApiBadRequestResponse({ description: 'endDate before startDate, or validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.timeoff.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'endDate before startDate, or validation failed.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.timeoff.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/time-off')
   @RequirePermissions(PERMISSION.STAFF_TIMEOFF_MANAGE)
-  createTimeOff(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateTimeOffDto) {
+  createTimeOff(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateTimeOffDto,
+  ) {
     return this.timeOff.create(this.ctx.requireTenantId(), id, dto);
   }
 
   @ApiOperation({
-    summary: 'List a staff member\'s time off',
+    summary: "List a staff member's time off",
     description: `**Protected — requires \`staff.read\`. Clinic must be active.** Returns time-off records, most recent first.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Time-off records.', schema: { type: 'array', items: S_TIME_OFF } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Time-off records.',
+    schema: { type: 'array', items: S_TIME_OFF },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/time-off')
   @RequirePermissions(PERMISSION.STAFF_READ)
   listTimeOff(@Param('id', ParseUUIDPipe) id: string) {
@@ -1123,12 +1631,31 @@ of scope; this endpoint therefore both "requests" and commits the leave.
     summary: 'Delete a time-off record',
     description: `**Protected — requires \`staff.timeoff.manage\`. Clinic must be active.** Removes a time-off block (e.g. a cancelled vacation).`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'timeOffId', description: 'Time-off record UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'timeOffId',
+    description: 'Time-off record UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Time-off record deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.timeoff.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member or time-off record not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.timeoff.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member or time-off record not found.',
+    schema: S_ERROR,
+  })
   @Delete(':id/time-off/:timeOffId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.STAFF_TIMEOFF_MANAGE)
@@ -1153,27 +1680,64 @@ member's default rule.
 **Who can call this:** Owner, Manager (\`staff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Commission rule created.', schema: S_COMMISSION })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiCreatedResponse({
+    description: 'Commission rule created.',
+    schema: S_COMMISSION,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/commissions')
   @RequirePermissions(PERMISSION.STAFF_MANAGE)
-  createCommission(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateCommissionDto) {
+  createCommission(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateCommissionDto,
+  ) {
     return this.commissions.create(this.ctx.requireTenantId(), id, dto);
   }
 
   @ApiOperation({
-    summary: 'List a staff member\'s commission rules',
+    summary: "List a staff member's commission rules",
     description: `**Protected — requires \`staff.commission.read\`. Clinic must be active.** Returns the configured commission rules.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Commission rules.', schema: { type: 'array', items: S_COMMISSION } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.commission.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Commission rules.',
+    schema: { type: 'array', items: S_COMMISSION },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.commission.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/commissions')
   @RequirePermissions(PERMISSION.STAFF_COMMISSION_READ)
   listCommissions(@Param('id', ParseUUIDPipe) id: string) {
@@ -1181,7 +1745,7 @@ member's default rule.
   }
 
   @ApiOperation({
-    summary: 'Get a staff member\'s commission summary (report)',
+    summary: "Get a staff member's commission summary (report)",
     description: `
 **Protected — requires \`staff.commission.read\`. Clinic must be active.**
 
@@ -1193,12 +1757,32 @@ Defaults to the current month when \`from\`/\`to\` are omitted.
 **Who can call this:** Owner, Manager (\`staff.commission.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Aggregated commission report.', schema: S_COMMISSION_SUMMARY })
-  @ApiBadRequestResponse({ description: 'Invalid date range.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.commission.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Aggregated commission report.',
+    schema: S_COMMISSION_SUMMARY,
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid date range.',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.commission.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/commissions/summary')
   @RequirePermissions(PERMISSION.STAFF_COMMISSION_READ)
   commissionSummary(
@@ -1227,29 +1811,73 @@ this staff member. The customer is derived from the appointment.
 **Who can call this:** Owner, Manager, or system feedback jobs (\`staff.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Rating recorded.' })
-  @ApiBadRequestResponse({ description: 'Validation failed (rating 1–5).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member or appointment not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'This appointment was already rated for this staff member.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Appointment is not completed or not handled by this staff member.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (rating 1–5).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member or appointment not found.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'This appointment was already rated for this staff member.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Appointment is not completed or not handled by this staff member.',
+    schema: S_ERROR,
+  })
   @Post(':id/ratings')
   @RequirePermissions(PERMISSION.STAFF_MANAGE)
-  createRating(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateStaffRatingDto) {
+  createRating(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateStaffRatingDto,
+  ) {
     return this.ratings.create(this.ctx.requireTenantId(), id, dto);
   }
 
   @ApiOperation({
-    summary: 'Get a staff member\'s ratings (with average)',
+    summary: "Get a staff member's ratings (with average)",
     description: `**Protected — requires \`staff.rating.read\`. Clinic must be active.** Returns the rating list plus count and average.`,
   })
-  @ApiParam({ name: 'id', description: 'Staff profile UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Ratings with aggregate.', schema: S_RATING_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `staff.rating.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Staff member not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Staff profile UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Ratings with aggregate.',
+    schema: S_RATING_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.rating.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/ratings')
   @RequirePermissions(PERMISSION.STAFF_RATING_READ)
   listRatings(@Param('id', ParseUUIDPipe) id: string) {

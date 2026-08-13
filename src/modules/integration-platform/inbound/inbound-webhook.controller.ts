@@ -8,7 +8,12 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { ApiExcludeEndpoint, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiExcludeEndpoint,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 
 import { Public } from '../../auth/decorators/public.decorator';
@@ -66,7 +71,9 @@ export class IntegrationInboundWebhookController {
     // Exact received bytes. Falls back to a re-serialized body only when the raw
     // buffer is unavailable, which would itself break signature verification and
     // therefore fail closed rather than accept an unverified delivery.
-    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(req.body ?? {});
+    const rawBody = req.rawBody
+      ? req.rawBody.toString('utf8')
+      : JSON.stringify(req.body ?? {});
     const receipt = await this.inbound.receive(
       connectionId,
       rawBody,

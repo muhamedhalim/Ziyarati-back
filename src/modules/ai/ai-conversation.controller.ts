@@ -40,18 +40,30 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
 /** Pagination for history endpoint. */
 class HistoryQueryDto {
-  @ApiPropertyOptional({ description: 'Page number (1-based).', example: 1, minimum: 1, default: 1 })
+  @ApiPropertyOptional({
+    description: 'Page number (1-based).',
+    example: 1,
+    minimum: 1,
+    default: 1,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   page: number = 1;
 
-  @ApiPropertyOptional({ description: 'Results per page. Max 200.', example: 50, minimum: 1, maximum: 200, default: 50 })
+  @ApiPropertyOptional({
+    description: 'Results per page. Max 200.',
+    example: 50,
+    minimum: 1,
+    maximum: 200,
+    default: 50,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -75,9 +87,21 @@ const S_CONVERSATION = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    status: { type: 'string', enum: ['ACTIVE', 'COMPLETED', 'HANDED_OVER', 'ARCHIVED'], example: 'ACTIVE' },
-    agent: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
-    conversation: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
+    status: {
+      type: 'string',
+      enum: ['ACTIVE', 'COMPLETED', 'HANDED_OVER', 'ARCHIVED'],
+      example: 'ACTIVE',
+    },
+    agent: {
+      type: 'object',
+      nullable: true,
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
+    conversation: {
+      type: 'object',
+      nullable: true,
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -104,7 +128,12 @@ const S_SEND_RESULT = {
         totalTokens: { type: 'number' },
       },
     },
-    fallback: { type: 'boolean', example: true, description: 'True when produced by the no-op provider (no real LLM configured).' },
+    fallback: {
+      type: 'boolean',
+      example: true,
+      description:
+        'True when produced by the no-op provider (no real LLM configured).',
+    },
   },
 };
 
@@ -117,7 +146,7 @@ const S_SEND_RESULT = {
 @Controller('ai/conversations')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('ai')
+@RequireFeature(FeatureKey.AI_ASSISTANT)
 export class AiConversationController {
   constructor(
     private readonly conversations: AiConversationService,
@@ -126,34 +155,75 @@ export class AiConversationController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Start an AI conversation', description: `**Protected — \`ai.conversations.manage\`. Clinic active.** Creates an ACTIVE session, optionally bound to an agent + messaging conversation (validated tenant-scoped).` })
-  @ApiCreatedResponse({ description: 'Conversation started.', schema: S_CONVERSATION })
+  @ApiOperation({
+    summary: 'Start an AI conversation',
+    description: `**Protected — \`ai.conversations.manage\`. Clinic active.** Creates an ACTIVE session, optionally bound to an agent + messaging conversation (validated tenant-scoped).`,
+  })
+  @ApiCreatedResponse({
+    description: 'Conversation started.',
+    schema: S_CONVERSATION,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Agent or linked conversation not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Agent or linked conversation not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)
   start(@Body() dto: CreateConversationDto) {
     return this.conversations.start(this.ctx.requireTenantId(), dto);
   }
 
-  @ApiOperation({ summary: 'List AI conversations', description: `**Protected — \`ai.conversations.read\`. Clinic active.** Filter by status/agent.` })
+  @ApiOperation({
+    summary: 'List AI conversations',
+    description: `**Protected — \`ai.conversations.read\`. Clinic active.** Filter by status/agent.`,
+  })
   @ApiOkResponse({ description: 'Paginated AI conversations.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_READ)
   findAll(@Query() filter: ConversationFilterDto) {
     return this.conversations.findAll(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Get an AI conversation', description: `**Protected — \`ai.conversations.read\`. Clinic active.**` })
-  @ApiParam({ name: 'id', description: 'AI conversation UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get an AI conversation',
+    description: `**Protected — \`ai.conversations.read\`. Clinic active.**`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'AI conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'AI conversation.', schema: S_CONVERSATION })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'AI conversation not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'AI conversation not found.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -171,13 +241,33 @@ abstraction (no-op fallback by default) → persists the assistant message →
 records usage + cost. 422 if the conversation is not ACTIVE.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'AI conversation UUID', type: 'string', format: 'uuid' })
-  @ApiCreatedResponse({ description: 'Assistant reply + usage.', schema: S_SEND_RESULT })
+  @ApiParam({
+    name: 'id',
+    description: 'AI conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiCreatedResponse({
+    description: 'Assistant reply + usage.',
+    schema: S_SEND_RESULT,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'AI conversation not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Conversation is not ACTIVE.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'AI conversation not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Conversation is not ACTIVE.',
+    schema: S_ERROR,
+  })
   @Post(':id/messages')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)
@@ -185,24 +275,69 @@ records usage + cost. 422 if the conversation is not ACTIVE.
     return this.execution.sendMessage(this.ctx.requireTenantId(), id, dto);
   }
 
-  @ApiOperation({ summary: 'Get conversation history', description: `**Protected — \`ai.conversations.read\`. Clinic active.** Chronological messages (paginated).` })
-  @ApiParam({ name: 'id', description: 'AI conversation UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get conversation history',
+    description: `**Protected — \`ai.conversations.read\`. Clinic active.** Chronological messages (paginated).`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'AI conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Paginated message history.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'AI conversation not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'AI conversation not found.',
+    schema: S_ERROR,
+  })
   @Get(':id/messages')
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_READ)
-  history(@Param('id', ParseUUIDPipe) id: string, @Query() query: HistoryQueryDto) {
-    return this.messages.history(this.ctx.requireTenantId(), id, query.page, query.limit);
+  history(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: HistoryQueryDto,
+  ) {
+    return this.messages.history(
+      this.ctx.requireTenantId(),
+      id,
+      query.page,
+      query.limit,
+    );
   }
 
-  @ApiOperation({ summary: 'Close a conversation', description: `**Protected — \`ai.conversations.manage\`. Clinic active.** Sets status COMPLETED.` })
-  @ApiParam({ name: 'id', description: 'AI conversation UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Conversation closed.', schema: S_CONVERSATION })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'AI conversation not found.', schema: S_ERROR })
+  @ApiOperation({
+    summary: 'Close a conversation',
+    description: `**Protected — \`ai.conversations.manage\`. Clinic active.** Sets status COMPLETED.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'AI conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Conversation closed.',
+    schema: S_CONVERSATION,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'AI conversation not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/close')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)
@@ -210,12 +345,32 @@ records usage + cost. 422 if the conversation is not ACTIVE.
     return this.conversations.close(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Archive a conversation', description: `**Protected — \`ai.conversations.manage\`. Clinic active.** Sets status ARCHIVED.` })
-  @ApiParam({ name: 'id', description: 'AI conversation UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Conversation archived.', schema: S_CONVERSATION })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'AI conversation not found.', schema: S_ERROR })
+  @ApiOperation({
+    summary: 'Archive a conversation',
+    description: `**Protected — \`ai.conversations.manage\`. Clinic active.** Sets status ARCHIVED.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'AI conversation UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Conversation archived.',
+    schema: S_CONVERSATION,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.conversations.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'AI conversation not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/archive')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.AI_CONVERSATIONS_MANAGE)

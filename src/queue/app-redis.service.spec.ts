@@ -5,9 +5,15 @@ type Handler = (...args: unknown[]) => void;
 class FakeRedis {
   static instances: FakeRedis[] = [];
   /** Every new instance starts with this — set it BEFORE constructing AppRedisService to control what the very first CONFIG GET (maxmemory-policy) sees. */
-  static nextConfigResult: [string, string] | Error = ['maxmemory-policy', 'noeviction'];
+  static nextConfigResult: [string, string] | Error = [
+    'maxmemory-policy',
+    'noeviction',
+  ];
   /** Separate knob for the maxmemory (ceiling) CONFIG GET, keyed independently of the policy one above. */
-  static nextMaxmemoryResult: [string, string] | Error = ['maxmemory', '536870912'];
+  static nextMaxmemoryResult: [string, string] | Error = [
+    'maxmemory',
+    '536870912',
+  ];
   /** Set to something other than 'ready' to exercise the onModuleInit "not ready in time" path. */
   static nextStatus: string = 'ready';
   handlers = new Map<string, Handler>();
@@ -39,7 +45,8 @@ class FakeRedis {
     return Promise.resolve();
   }
   config(_sub: string, key: string) {
-    const result = key === 'maxmemory' ? this.maxmemoryResult : this.configResult;
+    const result =
+      key === 'maxmemory' ? this.maxmemoryResult : this.configResult;
     if (result instanceof Error) return Promise.reject(result);
     return Promise.resolve(result);
   }
@@ -51,13 +58,16 @@ class FakeRedis {
   }
 }
 
-jest.mock('ioredis', () => ({ Redis: jest.fn((opts: Record<string, unknown>) => new FakeRedis(opts)) }));
+jest.mock('ioredis', () => ({
+  Redis: jest.fn((opts: Record<string, unknown>) => new FakeRedis(opts)),
+}));
 
 // Import AFTER the mock so the service picks up the mocked constructor.
 import { AppRedisService } from './app-redis.service';
 
 const config = {
-  get: (k: string) => (k === 'REDIS_URL' ? 'redis://localhost:6379' : undefined),
+  get: (k: string) =>
+    k === 'REDIS_URL' ? 'redis://localhost:6379' : undefined,
 } as unknown as ConfigService;
 
 const prodConfig = {
@@ -114,19 +124,25 @@ describe('AppRedisService', () => {
   describe('onModuleInit — maxmemory-policy check (Phase 0 — original audit C1; enforcement added §0.8.9)', () => {
     it('outside production: WARNS (does not throw) when maxmemory-policy is not noeviction', async () => {
       const nestCommon = require('@nestjs/common');
-      const warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       FakeRedis.nextConfigResult = ['maxmemory-policy', 'allkeys-lru'];
       const service = new AppRedisService(config);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
 
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('allkeys-lru'));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('allkeys-lru'),
+      );
       warnSpy.mockRestore();
     });
 
     it('stays silent when maxmemory-policy is already noeviction', async () => {
       const nestCommon = require('@nestjs/common');
-      const warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       const service = new AppRedisService(config);
       await service.onModuleInit();
@@ -136,31 +152,45 @@ describe('AppRedisService', () => {
     });
 
     it('outside production: does not throw when CONFIG GET is disallowed by the provider (best-effort check)', async () => {
-      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextConfigResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(config);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
 
     it('PRODUCTION, CONFIG GET blocked (gap-closure pass §0.11): throws — a check that cannot run is not evidence of safety', async () => {
-      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextConfigResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(prodConfig);
-      await expect(service.onModuleInit()).rejects.toThrow(/could not be verified via CONFIG GET/);
+      await expect(service.onModuleInit()).rejects.toThrow(
+        /could not be verified via CONFIG GET/,
+      );
     });
 
     it('PRODUCTION, CONFIG GET blocked, REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true: does not throw (explicit operator attestation)', async () => {
       const nestCommon = require('@nestjs/common');
-      const logSpy = jest.spyOn(nestCommon.Logger.prototype, 'log').mockImplementation(() => undefined);
+      const logSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
 
-      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextConfigResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(prodConfigIacVerified);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
 
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('VERIFIED_VIA_IAC'));
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining('VERIFIED_VIA_IAC'),
+      );
       logSpy.mockRestore();
     });
 
     it('PRODUCTION, CONFIG GET blocked, REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true: does not throw (unsafe-config escape hatch also covers this)', async () => {
-      FakeRedis.nextConfigResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextConfigResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(prodConfigUnsafeAllowed);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
@@ -173,13 +203,17 @@ describe('AppRedisService', () => {
 
     it('the escape hatch (REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true) downgrades production back to a warning', async () => {
       const nestCommon = require('@nestjs/common');
-      const warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       FakeRedis.nextConfigResult = ['maxmemory-policy', 'allkeys-lru'];
       const service = new AppRedisService(prodConfigUnsafeAllowed);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
 
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('allkeys-lru'));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('allkeys-lru'),
+      );
       warnSpy.mockRestore();
     });
   });
@@ -187,41 +221,57 @@ describe('AppRedisService', () => {
   describe('onModuleInit — maxmemory ceiling check (gap-closure pass — §0.8.9)', () => {
     it('outside production: stays silent even when maxmemory is unlimited (dev default)', async () => {
       const nestCommon = require('@nestjs/common');
-      const warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       FakeRedis.nextMaxmemoryResult = ['maxmemory', '0'];
       const service = new AppRedisService(config);
       await service.onModuleInit();
 
-      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('maxmemory is unset/unlimited'));
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('maxmemory is unset/unlimited'),
+      );
       warnSpy.mockRestore();
     });
 
     it('stays silent in production when maxmemory has a real ceiling', async () => {
       const nestCommon = require('@nestjs/common');
-      const warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       const service = new AppRedisService(prodConfig);
       await service.onModuleInit();
 
-      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('maxmemory is unset/unlimited'));
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('maxmemory is unset/unlimited'),
+      );
       warnSpy.mockRestore();
     });
 
     it('outside production: does not throw when the maxmemory CONFIG GET is disallowed by the provider', async () => {
-      FakeRedis.nextMaxmemoryResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextMaxmemoryResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(config);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
 
     it('PRODUCTION, maxmemory CONFIG GET blocked (gap-closure pass §0.11): throws without an IaC/unsafe-config escape hatch', async () => {
-      FakeRedis.nextMaxmemoryResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextMaxmemoryResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(prodConfig);
-      await expect(service.onModuleInit()).rejects.toThrow(/could not be verified via CONFIG GET/);
+      await expect(service.onModuleInit()).rejects.toThrow(
+        /could not be verified via CONFIG GET/,
+      );
     });
 
     it('PRODUCTION, maxmemory CONFIG GET blocked, REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true: does not throw', async () => {
-      FakeRedis.nextMaxmemoryResult = new Error('NOPERM this command is not allowed');
+      FakeRedis.nextMaxmemoryResult = new Error(
+        'NOPERM this command is not allowed',
+      );
       const service = new AppRedisService(prodConfigIacVerified);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
@@ -234,13 +284,17 @@ describe('AppRedisService', () => {
 
     it('the escape hatch (REDIS_ALLOW_UNSAFE_MEMORY_CONFIG=true) downgrades production back to a warning', async () => {
       const nestCommon = require('@nestjs/common');
-      const warnSpy = jest.spyOn(nestCommon.Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(nestCommon.Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       FakeRedis.nextMaxmemoryResult = ['maxmemory', '0'];
       const service = new AppRedisService(prodConfigUnsafeAllowed);
       await expect(service.onModuleInit()).resolves.toBeUndefined();
 
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unset/unlimited'));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('unset/unlimited'),
+      );
       warnSpy.mockRestore();
     });
   });

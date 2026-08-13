@@ -3,6 +3,8 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 
 import { BillingUpgradeRequest } from '../../entities/BillingUpgrades/BillingUpgradeRequest';
+import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
+import { AppError, ErrorCode } from '../../common/errors';
 import {
   PAYMENT_EVENT,
   PaymentFailedEvent,
@@ -10,6 +12,7 @@ import {
 } from '../../events/payment.events';
 
 import { FeatureFlagService } from '../subscription-billing/feature-flag.service';
+import { isFeatureKey } from '../subscription-billing/feature-registry';
 import { TenantUsageLimitOverrideService } from '../subscription-billing/tenant-usage-limit-override.service';
 
 import { BillingUpgradeEventService } from './billing-upgrade-event.service';
@@ -61,8 +64,26 @@ export class BillingUpgradeEntitlementListener {
         // Idempotent: already applied (this is a duplicate/re-delivered event).
         if (request.status === BILLING_UPGRADE_STATUS.COMPLETED) return;
 
-        if (request.type === BILLING_UPGRADE_TYPE.FEATURE && request.feature_key) {
-          await this.featureFlags.set(request.tenant.id, request.feature_key, true, manager);
+        if (
+          request.type === BILLING_UPGRADE_TYPE.FEATURE &&
+          request.feature_key
+        ) {
+          // The stored key came from a request row that predates the typed
+          // registry, so it is validated here rather than trusted: a stale or
+          // renamed key must fail loudly at grant time, not silently write a
+          // flag that grants nothing and leave the customer paid-but-blocked.
+          if (!isFeatureKey(request.feature_key)) {
+            throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+              message: `Billing upgrade names an unknown feature "${request.feature_key}"`,
+              publicContext: { featureKey: request.feature_key },
+            });
+          }
+          await this.featureFlags.set(
+            request.tenant.id,
+            request.feature_key,
+            true,
+            { source: FeatureFlagSource.BILLING_UPGRADE, manager },
+          );
         } else if (
           request.type === BILLING_UPGRADE_TYPE.USAGE_LIMIT &&
           request.usage_metric &&
@@ -116,7 +137,8 @@ export class BillingUpgradeEntitlementListener {
         if (!request) return;
         // Only a request still awaiting this payment transitions — a request
         // already terminal (e.g. cancelled in the meantime) is left alone.
-        if (request.status !== BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING) return;
+        if (request.status !== BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING)
+          return;
 
         const fromStatus = request.status;
         request.status = BILLING_UPGRADE_STATUS.PAYMENT_FAILED;

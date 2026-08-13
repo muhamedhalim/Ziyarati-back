@@ -80,7 +80,11 @@ const S_ROLE_ITEM = {
 const S_AUTH_USER = {
   type: 'object',
   properties: {
-    id: { type: 'string', format: 'uuid', example: 'a1b2c3d4-0000-0000-0000-000000000001' },
+    id: {
+      type: 'string',
+      format: 'uuid',
+      example: 'a1b2c3d4-0000-0000-0000-000000000001',
+    },
     email: { type: 'string', format: 'email', example: 'owner@al-noor.com' },
     fullName: { type: 'string', example: 'Dr. Ahmed Hassan' },
     phone: { type: 'string', example: '+966501234567', nullable: true },
@@ -219,7 +223,7 @@ public clinic sign-up page.
   // ────────────────────────── Staff creation ─────────────────────────────── //
 
   @ApiOperation({
-    summary: 'Create a staff member in the caller\'s clinic',
+    summary: "Create a staff member in the caller's clinic",
     description: `
 **Protected — requires \`users.manage\` permission.**
 
@@ -255,7 +259,10 @@ permission.
       'Validation failed, or \`roleSlug\` is not an assignable staff role (only `manager`/`receptionist` are allowed).',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks the \`users.manage\` permission, attempted to assign a privileged role, or the caller has no tenant context (super-admin cannot create clinic staff this way).',
@@ -307,7 +314,8 @@ token row for security audit purposes.
     `.trim(),
   })
   @ApiOkResponse({
-    description: 'Login successful. Returns the authenticated user principal and token pair.',
+    description:
+      'Login successful. Returns the authenticated user principal and token pair.',
     schema: {
       type: 'object',
       properties: {
@@ -376,7 +384,8 @@ on other endpoints — it will be rejected (\`type !== "access"\`).
     schema: S_ERROR,
   })
   @ApiUnauthorizedResponse({
-    description: 'Refresh token is expired, revoked, not found, or has already been used (replay).',
+    description:
+      'Refresh token is expired, revoked, not found, or has already been used (replay).',
     schema: S_ERROR,
   })
   @Public()
@@ -418,15 +427,17 @@ To invalidate **all sessions** across all devices, use
 \`POST /auth/logout-all\` (requires a valid access token).
     `.trim(),
   })
-  @ApiNoContentResponse({ description: 'Session revoked. The refresh token is now invalid.' })
-  @ApiBadRequestResponse({ description: 'The value is not a valid JWT string.', schema: S_ERROR })
+  @ApiNoContentResponse({
+    description: 'Session revoked. The refresh token is now invalid.',
+  })
+  @ApiBadRequestResponse({
+    description: 'The value is not a valid JWT string.',
+    schema: S_ERROR,
+  })
   @Public()
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async logout(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = req.cookies?.[CookieService.REFRESH_COOKIE] as
       | string
       | undefined;
@@ -462,7 +473,8 @@ with \`429\`.
     `.trim(),
   })
   @ApiOkResponse({
-    description: 'Request accepted. A reset link will be sent if the email is registered.',
+    description:
+      'Request accepted. A reset link will be sent if the email is registered.',
     schema: {
       type: 'object',
       properties: {
@@ -473,7 +485,10 @@ with \`429\`.
       },
     },
   })
-  @ApiBadRequestResponse({ description: 'Invalid email format.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Invalid email format.',
+    schema: S_ERROR,
+  })
   @ApiTooManyRequestsResponse({
     description: 'Too many requests for this address. Try again later.',
     schema: S_ERROR,
@@ -554,13 +569,18 @@ password changes by someone who grabbed an unattended session).
 super-admin).
     `.trim(),
   })
-  @ApiNoContentResponse({ description: 'Password changed. All sessions revoked.' })
+  @ApiNoContentResponse({
+    description: 'Password changed. All sessions revoked.',
+  })
   @ApiBadRequestResponse({
     description:
       '`currentPassword` is incorrect, or `newPassword` is too short (< 8 chars) or too long (> 72 chars).',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @Post('change-password')
   @HttpCode(HttpStatus.NO_CONTENT)
   changePassword(
@@ -594,7 +614,10 @@ them in local state across reloads.
     description: 'Current user principal with live roles and permissions.',
     schema: S_AUTH_USER,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return user;
@@ -619,8 +642,13 @@ is required.
 **Who can call this:** Any authenticated user.
     `.trim(),
   })
-  @ApiNoContentResponse({ description: 'All sessions revoked across all devices.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiNoContentResponse({
+    description: 'All sessions revoked across all devices.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @Post('logout-all')
   @HttpCode(HttpStatus.NO_CONTENT)
   logoutAll(@CurrentUser('id') userId: string) {

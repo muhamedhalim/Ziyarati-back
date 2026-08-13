@@ -9,8 +9,16 @@ export class SubscriptionUsage {
   @Column()
   tenant_id!: string;
 
-  @Column()
-  subscription_id!: string;
+  /**
+   * NULL for a tenant with no subscription — one running on a super-admin
+   * feature grant or a free platform. Their usage is still recorded (there is
+   * simply no plan limit to compare it against), which is what keeps the
+   * platform from being blind to what those clinics consume. A partial unique
+   * index on `(tenant_id, period_month) WHERE subscription_id IS NULL` keeps
+   * exactly one row per tenant-month on that path.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  subscription_id!: string | null;
 
   @Column()
   period_month!: string;

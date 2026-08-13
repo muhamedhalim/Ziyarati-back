@@ -1,4 +1,11 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -20,6 +27,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -62,8 +71,16 @@ const S_STATS = {
   properties: {
     tenantId: { type: 'string', format: 'uuid' },
     total: { type: 'number', example: 1420 },
-    byStatus: { type: 'object', additionalProperties: { type: 'number' }, example: { SENT: 1300, FAILED: 120 } },
-    byChannel: { type: 'object', additionalProperties: { type: 'number' }, example: { WHATSAPP: 1000, EMAIL: 420 } },
+    byStatus: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
+      example: { SENT: 1300, FAILED: 120 },
+    },
+    byChannel: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
+      example: { WHATSAPP: 1000, EMAIL: 420 },
+    },
   },
 };
 
@@ -74,6 +91,7 @@ const S_STATS = {
  */
 @ApiTags('Notification Logs')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.NOTIFICATIONS)
 @Controller('notification-logs')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -101,8 +119,14 @@ scoped delivery tracking is on \`GET /scheduled-notifications?appointmentId=\`.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Paginated logs.', schema: S_LOG_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.NOTIFICATIONS_READ)
   findAll(@Query() filter: NotificationLogFilterDto) {
@@ -121,11 +145,25 @@ dashboards (sent vs failed, channel mix).
 **Who can call this:** Owner, Manager (\`notifications.read\`).
     `.trim(),
   })
-  @ApiQuery({ name: 'from', required: false, description: 'ISO-8601 lower bound on created_at.' })
-  @ApiQuery({ name: 'to', required: false, description: 'ISO-8601 upper bound on created_at.' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO-8601 lower bound on created_at.',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO-8601 upper bound on created_at.',
+  })
   @ApiOkResponse({ description: 'Delivery statistics.', schema: S_STATS })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('statistics')
   @RequirePermissions(PERMISSION.NOTIFICATIONS_READ)
   statistics(@Query('from') from?: string, @Query('to') to?: string) {
@@ -136,11 +174,25 @@ dashboards (sent vs failed, channel mix).
     summary: 'Get log details',
     description: `**Protected — requires \`notifications.read\`. Clinic must be active.** A log from another tenant returns 404.`,
   })
-  @ApiParam({ name: 'id', description: 'Log UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Log UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Log entry.', schema: S_LOG })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Log entry not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Log entry not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.NOTIFICATIONS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {

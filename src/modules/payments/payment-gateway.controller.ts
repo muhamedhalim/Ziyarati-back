@@ -59,11 +59,18 @@ export class PaymentGatewayController {
 
   @ApiOperation({
     summary: 'List payment gateways (super admin)',
-    description: '**Platform-only — SUPER ADMIN.** Lists configured gateways (platform infrastructure).',
+    description:
+      '**Platform-only — SUPER ADMIN.** Lists configured gateways (platform infrastructure).',
   })
   @ApiOkResponse({ description: 'Configured gateways.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
   @Get()
   list() {
     return this.gateways.list();
@@ -71,11 +78,18 @@ export class PaymentGatewayController {
 
   @ApiOperation({
     summary: 'Register a payment gateway (super admin)',
-    description: '**Platform-only — SUPER ADMIN.** Registers a gateway configuration. NEVER include live secrets — those live in env/ConfigService.',
+    description:
+      '**Platform-only — SUPER ADMIN.** Registers a gateway configuration. NEVER include live secrets — those live in env/ConfigService.',
   })
   @ApiCreatedResponse({ description: 'Gateway registered.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
   @Post()
   create(@Body() dto: CreatePaymentGatewayDto) {
     return this.gateways.create(dto);
@@ -85,10 +99,21 @@ export class PaymentGatewayController {
     summary: 'Get a payment gateway (super admin)',
     description: '**Platform-only — SUPER ADMIN.**',
   })
-  @ApiParam({ name: 'id', description: 'Gateway UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Gateway UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Gateway details.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Gateway not found.', schema: S_ERROR })
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
@@ -97,15 +122,30 @@ export class PaymentGatewayController {
 
   @ApiOperation({
     summary: 'Update a payment gateway (super admin)',
-    description: '**Platform-only — SUPER ADMIN.** Update name / active flag / non-secret config.',
+    description:
+      '**Platform-only — SUPER ADMIN.** Update name / active flag / non-secret config.',
   })
-  @ApiParam({ name: 'id', description: 'Gateway UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Gateway UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Gateway updated.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller is not a super admin.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not a super admin.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Gateway not found.', schema: S_ERROR })
   @Patch(':id')
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePaymentGatewayDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePaymentGatewayDto,
+  ) {
     return this.gateways.update(id, dto);
   }
 }

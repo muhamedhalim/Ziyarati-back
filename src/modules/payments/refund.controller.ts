@@ -31,6 +31,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -49,6 +51,7 @@ const S_ERROR = {
  */
 @ApiTags('Refunds')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.PAYMENTS)
 @Controller('refunds')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -64,10 +67,23 @@ export class RefundController {
       '**Protected — `refunds.manage`. Clinic active.** Refunds a paid payment through the gateway abstraction. Omit `amount` for a full refund of the remaining balance; partial refunds advance the payment to PARTIALLY_REFUNDED. A gateway decline returns 422 and persists nothing.',
   })
   @ApiCreatedResponse({ description: 'Refund created.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `refunds.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Payment not found in this tenant.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Payment not refundable, amount exceeds remaining, or gateway declined.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `refunds.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Payment not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Payment not refundable, amount exceeds remaining, or gateway declined.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.REFUNDS_MANAGE)
   create(@Body() dto: CreateRefundDto) {
@@ -80,11 +96,18 @@ export class RefundController {
 
   @ApiOperation({
     summary: 'List refunds',
-    description: '**Protected — `payments.read`. Clinic active.** Tenant-scoped, newest first, with optional payment/status filters.',
+    description:
+      '**Protected — `payments.read`. Clinic active.** Tenant-scoped, newest first, with optional payment/status filters.',
   })
   @ApiOkResponse({ description: 'Paginated refunds.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   list(@Query() query: QueryRefundsDto) {
@@ -93,13 +116,28 @@ export class RefundController {
 
   @ApiOperation({
     summary: 'Get refund details',
-    description: '**Protected — `payments.read`. Clinic active.** A refund from another tenant returns 404.',
+    description:
+      '**Protected — `payments.read`. Clinic active.** A refund from another tenant returns 404.',
   })
-  @ApiParam({ name: 'id', description: 'Refund UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Refund UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Refund details.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Refund not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Refund not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {

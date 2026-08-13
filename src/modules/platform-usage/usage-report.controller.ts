@@ -68,7 +68,9 @@ export class UsageReportController {
     @Ip() ip: string,
   ) {
     const result = await this.reports.create(dto, userId);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, result.id, { action: 'report_schedule_create' });
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, result.id, {
+      action: 'report_schedule_create',
+    });
     return result;
   }
 
@@ -82,7 +84,9 @@ export class UsageReportController {
     @Ip() ip: string,
   ) {
     const result = await this.reports.update(id, dto);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, id, { action: 'report_schedule_update' });
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, id, {
+      action: 'report_schedule_update',
+    });
     return result;
   }
 
@@ -95,7 +99,9 @@ export class UsageReportController {
     @Ip() ip: string,
   ) {
     const result = await this.reports.remove(id);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, id, { action: 'report_schedule_delete' });
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, id, {
+      action: 'report_schedule_delete',
+    });
     return result;
   }
 
@@ -108,7 +114,9 @@ export class UsageReportController {
     @Ip() ip: string,
   ) {
     const result = await this.reports.runSchedule(id);
-    await this.audit.record(USAGE_AUDIT_ACTION.EXPORT, userId, ip, id, { action: 'report_run' });
+    await this.audit.record(USAGE_AUDIT_ACTION.EXPORT, userId, ip, id, {
+      action: 'report_run',
+    });
     return result;
   }
 }

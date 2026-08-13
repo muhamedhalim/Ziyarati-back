@@ -11,7 +11,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -24,7 +29,12 @@ import { AppError, ErrorCode } from '../../../common/errors';
 import { IntegrationImportJobService } from './integration-import-job.service';
 import { CreateImportJobDto } from '../dto/create-import-job.dto';
 import { QueryJobsDto } from '../dto/query-jobs.dto';
-import { INTEGRATION_RESOURCE, isIntegrationResource } from '../integration-platform.constants';
+import {
+  INTEGRATION_RESOURCE,
+  isIntegrationResource,
+} from '../integration-platform.constants';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Tenant-admin ASYNC import jobs (Phase 4) — the primary production import flow.
@@ -33,6 +43,7 @@ import { INTEGRATION_RESOURCE, isIntegrationResource } from '../integration-plat
  */
 @ApiTags('Integration Import Jobs')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations/import-jobs')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationImportJobsController {
@@ -46,7 +57,14 @@ export class IntegrationImportJobsController {
     description:
       '**Protected — `platform.integrations.manage`.** Validates, enqueues, and returns a job id immediately. Supports `dryRun` (preview).',
   })
-  @ApiParam({ name: 'resource', enum: [INTEGRATION_RESOURCE.CUSTOMER, INTEGRATION_RESOURCE.SERVICE, INTEGRATION_RESOURCE.STAFF] })
+  @ApiParam({
+    name: 'resource',
+    enum: [
+      INTEGRATION_RESOURCE.CUSTOMER,
+      INTEGRATION_RESOURCE.SERVICE,
+      INTEGRATION_RESOURCE.STAFF,
+    ],
+  })
   @Post(':resource')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
   create(
@@ -56,19 +74,30 @@ export class IntegrationImportJobsController {
     @Ip() ip: string,
   ) {
     if (!isIntegrationResource(resource)) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Unknown resource type' });
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'Unknown resource type',
+      });
     }
-    return this.imports.create(this.ctx.requireTenantId(), resource, dto, { userId, ip });
+    return this.imports.create(this.ctx.requireTenantId(), resource, dto, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'List import jobs', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({
+    summary: 'List import jobs',
+    description: '**Protected — `platform.integrations.read`.**',
+  })
   @Get()
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
   list(@Query() query: QueryJobsDto) {
     return this.imports.list(this.ctx.requireTenantId(), query);
   }
 
-  @ApiOperation({ summary: 'Get import job status/progress', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({
+    summary: 'Get import job status/progress',
+    description: '**Protected — `platform.integrations.read`.**',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get(':id')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -76,7 +105,11 @@ export class IntegrationImportJobsController {
     return this.imports.getStatus(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'List per-item results', description: '**Protected — `platform.integrations.read`.** Safe fields only.' })
+  @ApiOperation({
+    summary: 'List per-item results',
+    description:
+      '**Protected — `platform.integrations.read`.** Safe fields only.',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get(':id/items')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -93,21 +126,37 @@ export class IntegrationImportJobsController {
     );
   }
 
-  @ApiOperation({ summary: 'Cancel an import job', description: '**Protected — `platform.integrations.manage`.** Honored at the next item boundary.' })
+  @ApiOperation({
+    summary: 'Cancel an import job',
+    description:
+      '**Protected — `platform.integrations.manage`.** Honored at the next item boundary.',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  cancel(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  cancel(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     return this.imports.cancel(this.ctx.requireTenantId(), id, { userId, ip });
   }
 
-  @ApiOperation({ summary: 'Retry failed items', description: '**Protected — `platform.integrations.manage`.** Re-enqueues the failed records.' })
+  @ApiOperation({
+    summary: 'Retry failed items',
+    description:
+      '**Protected — `platform.integrations.manage`.** Re-enqueues the failed records.',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Post(':id/retry')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  retry(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  retry(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     return this.imports.retry(this.ctx.requireTenantId(), id, { userId, ip });
   }
 }

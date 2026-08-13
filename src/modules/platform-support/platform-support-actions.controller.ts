@@ -1,6 +1,18 @@
-import { Controller, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -41,13 +53,23 @@ export class PlatformSupportActionsController {
   @ApiOperation({
     summary: 'Resend one eligible invitation email',
     description:
-      'Identifies a RECORD in the clinic\'s email history, never a recipient. The template must be ' +
+      "Identifies a RECORD in the clinic's email history, never a recipient. The template must be " +
       'on the resendable allow-list; the destination, locale and a fresh single-use token are ' +
-      're-resolved server-side from the staff member\'s user record by the same service the ' +
-      'clinic\'s own Owner uses. Takes no request body. Refusals are audited too.',
+      "re-resolved server-side from the staff member's user record by the same service the " +
+      "clinic's own Owner uses. Takes no request body. Refusals are audited too.",
   })
-  @ApiParam({ name: 'tenantId', description: 'Clinic UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'emailLogId', description: 'email_logs row UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'Clinic UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'emailLogId',
+    description: 'email_logs row UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Invitation re-issued and re-sent.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND)
   @Post(':tenantId/emails/:emailLogId/resend')
@@ -62,12 +84,22 @@ export class PlatformSupportActionsController {
   @ApiOperation({
     summary: 'Retry one failed notification',
     description:
-      'Delegates to the notification domain\'s own audited retry override, which refuses anything ' +
+      "Delegates to the notification domain's own audited retry override, which refuses anything " +
       'outside FAILED / SEND_UNCERTAIN and clears the duplicate-send guard. One notification per ' +
       'call — there is no retry-all anywhere in this module, and no raw queue access.',
   })
-  @ApiParam({ name: 'tenantId', description: 'Clinic UUID', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'notificationId', description: 'Scheduled notification UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'Clinic UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'notificationId',
+    description: 'Scheduled notification UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Notification re-queued.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY)
   @Post(':tenantId/notifications/:notificationId/retry')
@@ -87,7 +119,12 @@ export class PlatformSupportActionsController {
       'integration state — it re-runs the same health queries as the integrations view plus a live ' +
       'queue-backend ping, and records who triggered it and when.',
   })
-  @ApiParam({ name: 'tenantId', description: 'Clinic UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'tenantId',
+    description: 'Clinic UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Freshly probed integration health.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK)
   @Post(':tenantId/integrations/recheck')

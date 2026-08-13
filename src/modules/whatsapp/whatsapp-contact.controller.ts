@@ -40,6 +40,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -58,7 +59,11 @@ const S_CONTACT = {
     id: { type: 'string', format: 'uuid' },
     wa_id: { type: 'string', nullable: true, example: '966501234567' },
     display_name: { type: 'string', nullable: true, example: 'Sara Al-Amin' },
-    customer: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
+    customer: {
+      type: 'object',
+      nullable: true,
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -85,7 +90,7 @@ const S_CONTACT_LIST = {
 @Controller('whatsapp/contacts')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('whatsapp')
+@RequireFeature(FeatureKey.WHATSAPP)
 export class WhatsappContactController {
   constructor(
     private readonly contacts: WhatsappContactService,
@@ -98,9 +103,18 @@ export class WhatsappContactController {
   })
   @ApiCreatedResponse({ description: 'Contact created.', schema: S_CONTACT })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Linked customer not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Linked customer not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.WHATSAPP_CONTACTS_MANAGE)
   create(@Body() dto: CreateWhatsappContactDto) {
@@ -120,12 +134,28 @@ tenant are skipped. Any linked customers are validated against the tenant.
   })
   @ApiCreatedResponse({
     description: 'Import result.',
-    schema: { type: 'object', properties: { requested: { type: 'number' }, imported: { type: 'number' }, skipped: { type: 'number' } } },
+    schema: {
+      type: 'object',
+      properties: {
+        requested: { type: 'number' },
+        imported: { type: 'number' },
+        skipped: { type: 'number' },
+      },
+    },
   })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'A linked customer was not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'A linked customer was not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post('bulk-import')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.WHATSAPP_CONTACTS_MANAGE)
@@ -138,19 +168,39 @@ tenant are skipped. Any linked customers are validated against the tenant.
     description: `**Protected — requires \`whatsapp.contacts.read\`. Clinic must be active.** Tenant-scoped; filter by search (name/wa_id), customerId, hasCustomer.`,
   })
   @ApiOkResponse({ description: 'Paginated contacts.', schema: S_CONTACT_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.contacts.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.contacts.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.WHATSAPP_CONTACTS_READ)
   findAll(@Query() filter: WhatsappContactFilterDto) {
     return this.contacts.findAll(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Get contact details', description: `**Protected — \`whatsapp.contacts.read\`. Clinic active.** Foreign-tenant contact returns 404.` })
-  @ApiParam({ name: 'id', description: 'Contact UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Get contact details',
+    description: `**Protected — \`whatsapp.contacts.read\`. Clinic active.** Foreign-tenant contact returns 404.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Contact UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Contact details.', schema: S_CONTACT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.contacts.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.contacts.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Contact not found.', schema: S_ERROR })
   @Get(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_CONTACTS_READ)
@@ -158,25 +208,59 @@ tenant are skipped. Any linked customers are validated against the tenant.
     return this.contacts.findOne(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Update a contact', description: `**Protected — \`whatsapp.contacts.manage\`. Clinic active.** Partial update; a new linked customer is validated against the tenant.` })
-  @ApiParam({ name: 'id', description: 'Contact UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Update a contact',
+    description: `**Protected — \`whatsapp.contacts.manage\`. Clinic active.** Partial update; a new linked customer is validated against the tenant.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Contact UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Contact updated.', schema: S_CONTACT })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Contact not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Linked customer not found in this tenant.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'Linked customer not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_CONTACTS_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWhatsappContactDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWhatsappContactDto,
+  ) {
     return this.contacts.update(this.ctx.requireTenantId(), id, dto);
   }
 
-  @ApiOperation({ summary: 'Delete a contact', description: `**Protected — \`whatsapp.contacts.manage\`. Clinic active.** Permanently removes the contact.` })
-  @ApiParam({ name: 'id', description: 'Contact UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete a contact',
+    description: `**Protected — \`whatsapp.contacts.manage\`. Clinic active.** Permanently removes the contact.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Contact UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Contact deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.contacts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Contact not found.', schema: S_ERROR })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)

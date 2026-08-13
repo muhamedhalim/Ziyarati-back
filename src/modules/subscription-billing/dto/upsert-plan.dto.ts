@@ -26,7 +26,10 @@ export class CreatePlanDto {
   @MaxLength(120)
   name!: string;
 
-  @ApiProperty({ description: 'Price in major units. 0 = free plan.', example: 299 })
+  @ApiProperty({
+    description: 'Price in major units. 0 = free plan.',
+    example: 299,
+  })
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   price!: number;
@@ -47,25 +50,33 @@ export class CreatePlanDto {
   @IsPositive()
   maxUsers?: number;
 
-  @ApiPropertyOptional({ description: 'Max AI tokens / month (null = unlimited).' })
+  @ApiPropertyOptional({
+    description: 'Max AI tokens / month (null = unlimited).',
+  })
   @IsOptional()
   @IsInt()
   @IsPositive()
   maxAiTokens?: number;
 
-  @ApiPropertyOptional({ description: 'Max WhatsApp messages / month (null = unlimited).' })
+  @ApiPropertyOptional({
+    description: 'Max WhatsApp messages / month (null = unlimited).',
+  })
   @IsOptional()
   @IsInt()
   @IsPositive()
   maxWhatsappMessages?: number;
 
-  @ApiPropertyOptional({ description: 'Max appointments / month (null = unlimited).' })
+  @ApiPropertyOptional({
+    description: 'Max appointments / month (null = unlimited).',
+  })
   @IsOptional()
   @IsInt()
   @IsPositive()
   maxAppointments?: number;
 
-  @ApiPropertyOptional({ description: 'Max campaigns / month (null = unlimited).' })
+  @ApiPropertyOptional({
+    description: 'Max campaigns / month (null = unlimited).',
+  })
   @IsOptional()
   @IsInt()
   @IsPositive()
@@ -76,7 +87,10 @@ export class CreatePlanDto {
   @IsBoolean()
   isActive?: boolean;
 
-  @ApiPropertyOptional({ description: 'Custom/bespoke plan flag.', default: false })
+  @ApiPropertyOptional({
+    description: 'Custom/bespoke plan flag.',
+    default: false,
+  })
   @IsOptional()
   @IsBoolean()
   isCustom?: boolean;

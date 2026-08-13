@@ -22,6 +22,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
 
 /**
  * Owner-facing billing upgrade requests. Tenant is always
@@ -29,6 +30,7 @@ import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.in
  */
 @ApiTags('Billing Upgrade Requests')
 @ApiBearerAuth('JWT-auth')
+@NoEntitlementRequired()
 @Controller('billing-upgrade-requests')
 @UseGuards(PermissionsGuard)
 export class BillingUpgradeController {
@@ -44,13 +46,21 @@ export class BillingUpgradeController {
   })
   @Post()
   @RequirePermissions(PERMISSION.BILLING_UPGRADE_MANAGE)
-  create(@Body() dto: CreateBillingUpgradeRequestDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.create(this.ctx.requireTenantId(), { id: user.id, email: user.email ?? undefined }, dto);
+  create(
+    @Body() dto: CreateBillingUpgradeRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.create(
+      this.ctx.requireTenantId(),
+      { id: user.id, email: user.email ?? undefined },
+      dto,
+    );
   }
 
   @ApiOperation({
     summary: "List the tenant's billing upgrade requests",
-    description: '**Protected — `billing_upgrade.read`.** Paginated, newest first.',
+    description:
+      '**Protected — `billing_upgrade.read`.** Paginated, newest first.',
   })
   @Get()
   @RequirePermissions(PERMISSION.BILLING_UPGRADE_READ)
@@ -60,7 +70,8 @@ export class BillingUpgradeController {
 
   @ApiOperation({
     summary: 'Get a billing upgrade request (with owner-visible history)',
-    description: '**Protected — `billing_upgrade.read`.** 404 if it belongs to another tenant.',
+    description:
+      '**Protected — `billing_upgrade.read`.** 404 if it belongs to another tenant.',
   })
   @Get(':id')
   @RequirePermissions(PERMISSION.BILLING_UPGRADE_READ)
@@ -76,8 +87,14 @@ export class BillingUpgradeController {
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.BILLING_UPGRADE_MANAGE)
-  cancel(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.cancel(this.ctx.requireTenantId(), id, { id: user.id, email: user.email ?? undefined });
+  cancel(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.cancel(this.ctx.requireTenantId(), id, {
+      id: user.id,
+      email: user.email ?? undefined,
+    });
   }
 
   @ApiOperation({
@@ -88,7 +105,13 @@ export class BillingUpgradeController {
   @Post(':id/accept')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.BILLING_UPGRADE_MANAGE)
-  accept(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.accept(this.ctx.requireTenantId(), id, { id: user.id, email: user.email ?? undefined });
+  accept(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.accept(this.ctx.requireTenantId(), id, {
+      id: user.id,
+      email: user.email ?? undefined,
+    });
   }
 }

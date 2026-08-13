@@ -18,6 +18,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -37,6 +39,7 @@ const S_ERROR = {
  */
 @ApiTags('Merchant Account')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.PAYMENTS)
 @Controller('payments/merchant-account')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -52,8 +55,14 @@ export class MerchantAccountController {
       '**Protected — `payments.read`. Clinic active.** The clinic’s financial onboarding record (status, masked bank details). A missing record reads as NOT_STARTED.',
   })
   @ApiOkResponse({ description: 'Merchant account.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   get() {
@@ -66,9 +75,18 @@ export class MerchantAccountController {
       '**Protected — `payments.manage`. Clinic active.** Moves the account to SUBMITTED. The IBAN is stored masked (last 4) — the bank certificate itself is uploaded via verification documents.',
   })
   @ApiOkResponse({ description: 'Merchant account after submission.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `payments.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Account not in a submittable status.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Account not in a submittable status.',
+    schema: S_ERROR,
+  })
   @Post('submit')
   @RequirePermissions(PERMISSION.PAYMENTS_MANAGE)
   submit(@Body() dto: SubmitMerchantAccountDto) {

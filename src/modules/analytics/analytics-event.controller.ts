@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -26,6 +19,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -44,6 +39,7 @@ const S_ERROR = {
  */
 @ApiTags('Analytics Events')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.ANALYTICS)
 @Controller('analytics/events')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -55,11 +51,18 @@ export class AnalyticsEventController {
 
   @ApiOperation({
     summary: 'Track an event',
-    description: '**Protected — `analytics.events.manage`. Clinic active.** Records a raw analytics event for the caller tenant.',
+    description:
+      '**Protected — `analytics.events.manage`. Clinic active.** Records a raw analytics event for the caller tenant.',
   })
   @ApiCreatedResponse({ description: 'Event recorded.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.events.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.events.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.ANALYTICS_EVENTS_MANAGE)
   track(@Body() dto: TrackEventDto) {
@@ -68,11 +71,18 @@ export class AnalyticsEventController {
 
   @ApiOperation({
     summary: 'List / filter events',
-    description: '**Protected — `analytics.events.read`. Clinic active.** Tenant-scoped, newest first, with type/entity/branch/date filters + pagination.',
+    description:
+      '**Protected — `analytics.events.read`. Clinic active.** Tenant-scoped, newest first, with type/entity/branch/date filters + pagination.',
   })
   @ApiOkResponse({ description: 'Paginated events.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.events.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.events.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.ANALYTICS_EVENTS_READ)
   list(@Query() query: QueryEventsDto) {

@@ -11,6 +11,7 @@ import { TenantRateLimiterService } from './tenant-rate-limiter.service';
 import { AppRedisService } from './app-redis.service';
 import { FixedWindowLimiterService } from './fixed-window-limiter.service';
 import { WorkerAuthorizationService } from './worker-authorization.service';
+import { SubscriptionBillingModule } from '../modules/subscription-billing/subscription-billing.module';
 import { DistributedLockService } from './distributed-lock.service';
 import { AuthModule } from '../modules/auth/auth.module';
 import { User } from '../entities/Auth&RBAC/User';
@@ -63,6 +64,12 @@ import { User } from '../entities/Auth&RBAC/User';
     // reimplementing a second RBAC join.
     TypeOrmModule.forFeature([User]),
     AuthModule,
+    // Entitlement for tenant-scoped jobs. Background work must reach the SAME
+    // decision the HTTP route would, and the only way to guarantee that is to
+    // call the same service rather than re-derive it worker-side. Safe to
+    // import: SubscriptionBillingModule does not import QueueModule (it is
+    // @Global, so nothing needs to), leaving no cycle.
+    SubscriptionBillingModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -74,7 +81,24 @@ import { User } from '../entities/Auth&RBAC/User';
       }),
     }),
   ],
-  providers: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService, FixedWindowLimiterService],
-  exports: [QueueService, ProducerQueues, TenantRateLimiterService, AppRedisService, WorkerAuthorizationService, DistributedLockService, BullModule, FixedWindowLimiterService],
+  providers: [
+    QueueService,
+    ProducerQueues,
+    TenantRateLimiterService,
+    AppRedisService,
+    WorkerAuthorizationService,
+    DistributedLockService,
+    FixedWindowLimiterService,
+  ],
+  exports: [
+    QueueService,
+    ProducerQueues,
+    TenantRateLimiterService,
+    AppRedisService,
+    WorkerAuthorizationService,
+    DistributedLockService,
+    BullModule,
+    FixedWindowLimiterService,
+  ],
 })
 export class QueueModule {}

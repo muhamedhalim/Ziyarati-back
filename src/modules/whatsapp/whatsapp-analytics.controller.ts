@@ -18,6 +18,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -55,7 +56,7 @@ const S_OVERVIEW = {
 @Controller('whatsapp/analytics')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('whatsapp')
+@RequireFeature(FeatureKey.WHATSAPP)
 export class WhatsappAnalyticsController {
   constructor(
     private readonly analytics: WhatsappAnalyticsService,
@@ -67,8 +68,14 @@ export class WhatsappAnalyticsController {
     description: `**Protected — requires \`whatsapp.analytics.read\`. Clinic must be active.** Totals + delivery/read/failure rates for the tenant's WhatsApp messages, optional date/template filters.`,
   })
   @ApiOkResponse({ description: 'Messaging overview.', schema: S_OVERVIEW })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('overview')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
   async overview(@Query() filter: WhatsappAnalyticsFilterDto) {
@@ -104,15 +111,22 @@ export class WhatsappAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('templates')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
   async templates(@Query() filter: WhatsappAnalyticsFilterDto) {
-    const { tenantId: _tenantId, ...rest } = await this.analytics.templatePerformance(
-      this.ctx.requireTenantId(),
-      filter,
-    );
+    const { tenantId: _tenantId, ...rest } =
+      await this.analytics.templatePerformance(
+        this.ctx.requireTenantId(),
+        filter,
+      );
     return rest;
   }
 
@@ -139,8 +153,14 @@ export class WhatsappAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('engagement')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
   async engagement(@Query() filter: WhatsappAnalyticsFilterDto) {
@@ -167,8 +187,14 @@ export class WhatsappAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('accounts')
   @RequirePermissions(PERMISSION.WHATSAPP_ANALYTICS_READ)
   async accounts() {

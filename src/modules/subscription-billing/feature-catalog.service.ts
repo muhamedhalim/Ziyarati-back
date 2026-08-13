@@ -14,6 +14,14 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { FeatureFlagService } from './feature-flag.service';
 import { FeatureResolverService } from './feature-resolver.service';
 import {
+  FEATURE_KEYS,
+  FEATURE_REGISTRY,
+  FeatureKey,
+  dependencyClosure,
+  isFeatureKey,
+} from './feature-registry';
+import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
+import {
   BulkSetTenantFeaturesDto,
   QueryFeatureDefinitionsDto,
   UpsertFeatureDefinitionDto,
@@ -76,7 +84,8 @@ export class FeatureCatalogService {
     def.name = dto.name;
     def.description = dto.description;
     def.category = dto.category ?? def.category ?? 'General';
-    if (dto.defaultEnabled !== undefined) def.default_enabled = dto.defaultEnabled;
+    if (dto.defaultEnabled !== undefined)
+      def.default_enabled = dto.defaultEnabled;
     if (dto.isActive !== undefined) def.is_active = dto.isActive;
     if (dto.visibility !== undefined) def.visibility = dto.visibility;
     if (dto.isBeta !== undefined) def.is_beta = dto.isBeta;
@@ -144,11 +153,16 @@ export class FeatureCatalogService {
     if (unique.length) {
       await this.dependencies.save(
         unique.map((r) =>
-          this.dependencies.create({ feature_key: featureKey, requires_key: r }),
+          this.dependencies.create({
+            feature_key: featureKey,
+            requires_key: r,
+          }),
         ),
       );
     }
-    await this.audit('FEATURE_DEPS_SET', actor, featureKey, { requires: unique });
+    await this.audit('FEATURE_DEPS_SET', actor, featureKey, {
+      requires: unique,
+    });
     return { featureKey, requires: unique };
   }
 
@@ -161,21 +175,32 @@ export class FeatureCatalogService {
     actor: CatalogActor,
   ): Promise<FeatureFlag> {
     await this.assertTenant(tenantId);
+    const key = this.toFeatureKey(featureKey);
 
-    // Enabling requires all dependencies to already be satisfied for this tenant.
-    if (enabled) {
-      const resolution = await this.resolver.resolveTenant(tenantId);
-      const target = resolution.features.find((f) => f.featureKey === featureKey);
-      if (target && target.missingDependencies.length > 0) {
-        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-          message: `Cannot enable "${featureKey}": missing dependencies: ${target.missingDependencies.join(', ')}.`,
-          publicContext: { featureKey, missing: target.missingDependencies },
-        });
-      }
-    }
-
-    const flag = await this.featureFlags.set(tenantId, featureKey, enabled);
-    await this.audit('FEATURE_FLAG_SET', actor, tenantId, { featureKey, enabled });
+    // NOTE: this used to REFUSE the toggle when the feature's dependencies
+    // were not already satisfied for the tenant. That check is now not just
+    // unnecessary but wrong: `AccessControlService` grants a feature override
+    // together with its registry-declared dependency closure, so enabling
+    // WhatsApp for a tenant with no subscription is exactly the supported
+    // workflow — and the old check refused it, because `conversations` and
+    // `crm` were reported missing for precisely the reason the operator was
+    // trying to fix.
+    const previous = await this.featureFlags.isEnabled(tenantId, key);
+    const flag = await this.featureFlags.set(tenantId, key, enabled, {
+      source: FeatureFlagSource.PLATFORM_ADMIN,
+      actorId: actor.id,
+    });
+    await this.audit(
+      'FEATURE_FLAG_SET',
+      actor,
+      tenantId,
+      {
+        featureKey: key,
+        enabled,
+        grants: enabled ? [key, ...dependencyClosure(key)] : [],
+      },
+      { featureKey: key, enabled: previous },
+    );
     return flag;
   }
 
@@ -185,35 +210,127 @@ export class FeatureCatalogService {
     actor: CatalogActor,
   ): Promise<{ updated: number }> {
     await this.assertTenant(tenantId);
-    for (const u of dto.updates) {
-      await this.featureFlags.set(tenantId, u.featureKey, u.enabled);
+    // Validate the WHOLE batch before writing any of it — a partial apply
+    // would leave the tenant in a state neither the operator nor the audit
+    // record describes.
+    const updates = dto.updates.map((u) => ({
+      featureKey: this.toFeatureKey(u.featureKey),
+      enabled: u.enabled,
+    }));
+
+    const before = await this.featureFlags.getStates(tenantId);
+    for (const u of updates) {
+      await this.featureFlags.set(tenantId, u.featureKey, u.enabled, {
+        source: FeatureFlagSource.PLATFORM_ADMIN,
+        actorId: actor.id,
+      });
     }
-    await this.audit('FEATURE_FLAG_BULK', actor, tenantId, {
-      count: dto.updates.length,
-      updates: dto.updates,
-    });
-    return { updated: dto.updates.length };
+    await this.audit(
+      'FEATURE_FLAG_BULK',
+      actor,
+      tenantId,
+      { count: updates.length, updates },
+      {
+        updates: updates.map((u) => ({
+          featureKey: u.featureKey,
+          enabled: before.get(u.featureKey)?.granted ?? false,
+        })),
+      },
+    );
+    return { updated: updates.length };
   }
 
-  // ── Bootstrap seed (idempotent) ──────────────────────────────────────────
+  // ── Registry sync (idempotent, every boot) ───────────────────────────────
 
-  /** Seeds a starter catalog when empty. New features are added via the API. */
-  async seedDefaults(catalog: Omit<UpsertFeatureDefinitionDto, never>[]): Promise<void> {
-    const count = await this.definitions.count();
-    if (count > 0) return;
-    await this.definitions.save(
-      catalog.map((c) =>
-        this.definitions.create({
-          feature_key: c.featureKey,
-          name: c.name,
-          description: c.description,
-          category: c.category ?? 'General',
-          default_enabled: c.defaultEnabled ?? false,
-          is_active: c.isActive ?? true,
-        }),
-      ),
+  /**
+   * Reconciles `feature_definitions` + `feature_dependencies` with
+   * {@link FEATURE_REGISTRY}.
+   *
+   * This replaces the old `seedDefaults`, which only ran when the table was
+   * EMPTY. That "seed once" behaviour is why the catalog silently fell behind
+   * the code: `@RequireFeature` gained routes for capabilities no row ever
+   * described, so a super-admin had no toggle for them, and `FeatureGuard` —
+   * which looks a feature up by key — refused every request for a key with no
+   * definition. Syncing on every boot means adding a capability to the registry
+   * is the ONLY step required for it to appear in `/platform/feature-flags`.
+   *
+   * What the code owns vs what the operator owns: a NEW row is written entirely
+   * from the registry, but on an EXISTING row only the descriptive fields are
+   * refreshed. `default_enabled`, `is_active` and `visibility` are left as the
+   * operator set them — clobbering those on every restart would silently undo
+   * deliberate platform configuration.
+   */
+  async syncRegistry(): Promise<{ created: number; updated: number }> {
+    let created = 0;
+    let updated = 0;
+
+    for (const key of FEATURE_KEYS) {
+      const spec = FEATURE_REGISTRY[key];
+      const existing = await this.definitions.findOne({
+        where: { feature_key: key },
+      });
+
+      if (!existing) {
+        await this.definitions.save(
+          this.definitions.create({
+            feature_key: key,
+            name: spec.name,
+            description: spec.description,
+            category: spec.category,
+            default_enabled: spec.defaultEnabled,
+            is_active: true,
+            visibility: spec.visibility ?? 'public',
+            is_deprecated: spec.isDeprecated ?? false,
+            usage_metric: spec.usageMetric,
+          }),
+        );
+        created++;
+        continue;
+      }
+
+      existing.name = spec.name;
+      existing.description = spec.description;
+      existing.category = spec.category;
+      existing.is_deprecated = spec.isDeprecated ?? false;
+      existing.usage_metric = spec.usageMetric;
+      await this.definitions.save(existing);
+      updated++;
+    }
+
+    await this.syncDependencies();
+
+    this.logger.log(
+      `Feature registry synced: ${created} created, ${updated} refreshed, ${FEATURE_KEYS.length} total`,
     );
-    this.logger.log(`Seeded ${catalog.length} feature definitions`);
+    return { created, updated };
+  }
+
+  /**
+   * Mirrors each spec's `dependsOn` into `feature_dependencies`, so the
+   * resolver's `missingDependencies` view and the policy's override closure
+   * are computed from the same edges rather than two lists that can disagree.
+   * Only registry keys are touched — edges a super-admin added for a key that
+   * is not in the registry are left alone.
+   */
+  private async syncDependencies(): Promise<void> {
+    for (const key of FEATURE_KEYS) {
+      const wanted = [...FEATURE_REGISTRY[key].dependsOn];
+      const current = await this.dependencies.find({
+        where: { feature_key: key },
+      });
+      const currentKeys = current.map((d) => d.requires_key).sort();
+      if (JSON.stringify(currentKeys) === JSON.stringify([...wanted].sort())) {
+        continue; // already correct — no write
+      }
+      await this.dependencies.delete({ feature_key: key });
+      if (wanted.length) {
+        await this.dependencies.save(
+          wanted.map((r) =>
+            this.dependencies.create({ feature_key: key, requires_key: r }),
+          ),
+        );
+      }
+    }
   }
 
   // ── Private ──────────────────────────────────────────────────────────────
@@ -223,8 +340,26 @@ export class FeatureCatalogService {
     if (!exists) throw new AppError(ErrorCode.TENANT_NOT_FOUND);
   }
 
+  /**
+   * Refuses a key that is not a real platform capability.
+   *
+   * Without this, `PUT …/tenants/:id/features` accepted ANY string matching
+   * `/^[a-z0-9._-]+$/` and wrote a row for it. A typo produced a flag that
+   * looked enabled in the UI and granted nothing, which is precisely how
+   * "the override is on but the feature still 403s" happens.
+   */
+  private toFeatureKey(featureKey: string): FeatureKey {
+    if (isFeatureKey(featureKey)) return featureKey;
+    throw new AppError(ErrorCode.BAD_REQUEST, {
+      message: `Unknown feature "${featureKey}". Known features: ${FEATURE_KEYS.join(', ')}`,
+      publicContext: { featureKey },
+    });
+  }
+
   private async assertDefinition(featureKey: string): Promise<void> {
-    const exists = await this.definitions.exists({ where: { feature_key: featureKey } });
+    const exists = await this.definitions.exists({
+      where: { feature_key: featureKey },
+    });
     if (!exists) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: `Feature "${featureKey}" is not in the catalog`,
@@ -237,6 +372,7 @@ export class FeatureCatalogService {
     actor: CatalogActor,
     entityId: string,
     newValues: Record<string, unknown>,
+    oldValues?: Record<string, unknown>,
   ): Promise<void> {
     try {
       await this.auditLogs.save(
@@ -245,12 +381,18 @@ export class FeatureCatalogService {
           action,
           entity_type: 'feature_flag',
           entity_id: entityId,
+          // Recording the PREVIOUS value too: an entitlement audit that only
+          // says what a flag became cannot answer "what did this change?",
+          // which is the question every access-control incident starts with.
+          old_values: oldValues,
           new_values: newValues,
           ip_address: actor.ip,
         }),
       );
     } catch (err) {
-      this.logger.warn(`Feature audit write failed (${action}): ${(err as Error)?.message}`);
+      this.logger.warn(
+        `Feature audit write failed (${action}): ${(err as Error)?.message}`,
+      );
     }
   }
 }

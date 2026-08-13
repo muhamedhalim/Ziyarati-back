@@ -47,7 +47,12 @@ export class NotificationWebhookController {
     @Query('hub.challenge') challenge?: string,
   ): string {
     const expected = this.config.get<string>('WHATSAPP_VERIFY_TOKEN');
-    if (mode === 'subscribe' && token && expected && constantTimeEqual(token, expected)) {
+    if (
+      mode === 'subscribe' &&
+      token &&
+      expected &&
+      constantTimeEqual(token, expected)
+    ) {
       return challenge ?? '';
     }
     throw new ForbiddenException('verification failed');
@@ -80,9 +85,11 @@ export class NotificationWebhookController {
     }
     const header = req.header('x-hub-signature-256');
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
-    if (!header || !raw) throw new BadRequestException('missing signature or raw body');
+    if (!header || !raw)
+      throw new BadRequestException('missing signature or raw body');
 
-    const expected = 'sha256=' + createHmac('sha256', secret).update(raw).digest('hex');
+    const expected =
+      'sha256=' + createHmac('sha256', secret).update(raw).digest('hex');
     const a = Buffer.from(header);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !timingSafeEqual(a, b)) {

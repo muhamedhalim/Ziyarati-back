@@ -38,6 +38,8 @@ import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.in
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -57,14 +59,19 @@ const S_BRANCH_DETAIL = {
   properties: {
     id: { type: 'string', format: 'uuid' },
     name: { type: 'string', example: 'Riyadh - Olaya Branch' },
-    address: { type: 'string', nullable: true, example: 'King Fahad Rd, Olaya, Riyadh 12211' },
+    address: {
+      type: 'string',
+      nullable: true,
+      example: 'King Fahad Rd, Olaya, Riyadh 12211',
+    },
     cityId: { type: 'string', format: 'uuid', nullable: true },
     phone: { type: 'string', nullable: true, example: '+966112345678' },
     whatsappPhone: {
       type: 'string',
       nullable: true,
       example: '+966501234567',
-      description: 'Branch-specific WhatsApp number. Each branch can run its own WhatsApp AI chatbot.',
+      description:
+        'Branch-specific WhatsApp number. Each branch can run its own WhatsApp AI chatbot.',
     },
     timezone: { type: 'string', nullable: true, example: 'Asia/Riyadh' },
     isActive: { type: 'boolean', example: true },
@@ -84,6 +91,7 @@ const S_BRANCH_DETAIL = {
  *    no `requireTenant(...)` duplication, no tenantId in the URL/body.
  */
 @ApiTags('Branches')
+@RequireFeature(FeatureKey.BRANCHES)
 @Controller('branches')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @ApiBearerAuth('JWT-auth')
@@ -116,9 +124,15 @@ The tenantId comes from the JWT — never from the request body.
 \`approved\` or \`isActive\` is false.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Branch created.', schema: S_BRANCH_DETAIL })
+  @ApiCreatedResponse({
+    description: 'Branch created.',
+    schema: S_BRANCH_DETAIL,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `branches.create`, OR the clinic is not approved/active (ActiveTenantGuard).',
@@ -131,7 +145,7 @@ The tenantId comes from the JWT — never from the request body.
   }
 
   @ApiOperation({
-    summary: 'List all branches of the caller\'s clinic',
+    summary: "List all branches of the caller's clinic",
     description: `
 **Protected — any authenticated tenant user. Tenant must be active.**
 
@@ -148,10 +162,13 @@ navigating between branch-level management screens.
     `.trim(),
   })
   @ApiOkResponse({
-    description: 'All branches for the caller\'s clinic.',
+    description: "All branches for the caller's clinic.",
     schema: { type: 'array', items: S_BRANCH_DETAIL },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller has no tenant context, or the clinic is not active.',
     schema: S_ERROR,
@@ -176,10 +193,21 @@ to the caller's clinic — branches from other clinics return 404
 tenant before returning data.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Branch UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Branch UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Branch found.', schema: S_BRANCH_DETAIL })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Clinic is not active.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Clinic is not active.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({
     description: 'Branch not found or does not belong to this clinic.',
     schema: S_ERROR,
@@ -212,10 +240,18 @@ caller is assigned to via staff branch membership.
 can be updated.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Branch UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Branch UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Branch updated.', schema: S_BRANCH_DETAIL })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `branches.update`/`branches.update_own`, holds only `branches.update_own` for a DIFFERENT branch, or the clinic is not active.',
@@ -223,7 +259,10 @@ can be updated.
   })
   @ApiNotFoundResponse({ description: 'Branch not found.', schema: S_ERROR })
   @Patch(':id')
-  @RequireAnyPermission(PERMISSION.BRANCHES_UPDATE, PERMISSION.BRANCHES_UPDATE_OWN)
+  @RequireAnyPermission(
+    PERMISSION.BRANCHES_UPDATE,
+    PERMISSION.BRANCHES_UPDATE_OWN,
+  )
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateBranchDto,
@@ -254,9 +293,17 @@ For a softer option that preserves history, consider setting
 can be deleted.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Branch UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Branch UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Branch deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller lacks `branches.delete`, or the clinic is not active.',
     schema: S_ERROR,

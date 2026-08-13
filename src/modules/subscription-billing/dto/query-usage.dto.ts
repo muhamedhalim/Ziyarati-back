@@ -9,6 +9,8 @@ export class QueryUsageDto {
     pattern: '^\\d{4}-(0[1-9]|1[0-2])$',
   })
   @IsOptional()
-  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { message: 'periodMonth must be YYYY-MM' })
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, {
+    message: 'periodMonth must be YYYY-MM',
+  })
   periodMonth?: string;
 }

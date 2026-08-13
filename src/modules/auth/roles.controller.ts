@@ -63,10 +63,18 @@ const S_PERMISSION_ITEM = {
 const S_ROLE_DETAIL = {
   type: 'object',
   properties: {
-    id: { type: 'string', format: 'uuid', example: 'a1b2c3d4-0000-0000-0000-000000000010' },
+    id: {
+      type: 'string',
+      format: 'uuid',
+      example: 'a1b2c3d4-0000-0000-0000-000000000010',
+    },
     name: { type: 'string', example: 'Senior Receptionist' },
     slug: { type: 'string', example: 'senior-receptionist' },
-    description: { type: 'string', nullable: true, example: 'Handles VIP bookings' },
+    description: {
+      type: 'string',
+      nullable: true,
+      example: 'Handles VIP bookings',
+    },
     tenantId: {
       type: 'string',
       format: 'uuid',
@@ -130,18 +138,26 @@ permission.
 Super-admins (\`tenantId = null\`) create global system roles.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Custom role created.', schema: S_ROLE_DETAIL })
+  @ApiCreatedResponse({
+    description: 'Custom role created.',
+    schema: S_ROLE_DETAIL,
+  })
   @ApiBadRequestResponse({
-    description: 'Validation failed or slug does not match the required pattern `[a-z0-9-]+`.',
+    description:
+      'Validation failed or slug does not match the required pattern `[a-z0-9-]+`.',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description: 'Caller lacks the `roles.manage` permission.',
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description: 'A role with this slug already exists within the tenant scope.',
+    description:
+      'A role with this slug already exists within the tenant scope.',
     schema: S_ERROR,
   })
   @Post()
@@ -179,8 +195,14 @@ tenant — no cross-tenant data is exposed.
     description: 'Roles visible to the caller.',
     schema: { type: 'array', items: S_ROLE_DETAIL },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.ROLES_MANAGE)
   findAll(@CurrentUser('tenantId') tenantId: string | null) {
@@ -200,10 +222,21 @@ Returns the full role record including its complete permission set.
 global system role. Roles from other tenants return 404.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the role to fetch', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the role to fetch',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Role found.', schema: S_ROLE_DETAIL })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({
     description: 'Role not found or does not belong to this tenant.',
     schema: S_ERROR,
@@ -237,10 +270,18 @@ To fully replace a role's permission set, use the dedicated
 mutable.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the role to update', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the role to update',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Role updated.', schema: S_ROLE_DETAIL })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `roles.manage` permission, or attempted to modify a system role.',
@@ -275,9 +316,17 @@ System roles cannot be deleted.
 deleted.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the role to delete', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the role to delete',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Role deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `roles.manage` permission, tried to delete a system role, or the role still has active user assignments.',
@@ -297,7 +346,7 @@ deleted.
   // ─────────────────────── Permission assignment ─────────────────────────── //
 
   @ApiOperation({
-    summary: 'Replace a role\'s full permission set',
+    summary: "Replace a role's full permission set",
     description: `
 **Protected — requires \`roles.manage\` permission.**
 
@@ -316,19 +365,33 @@ add/remove operations are not supported — always send the full desired set.
 **Tenant scoping:** Operates only on roles in the caller's tenant.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the role to configure', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the role to configure',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
-    description: 'Permissions replaced. Returns the updated role with its new permission set.',
+    description:
+      'Permissions replaced. Returns the updated role with its new permission set.',
     schema: S_ROLE_DETAIL,
   })
   @ApiBadRequestResponse({
-    description: 'Validation failed — one or more values in `permissionIds` is not a valid UUID v4.',
+    description:
+      'Validation failed — one or more values in `permissionIds` is not a valid UUID v4.',
     schema: S_ERROR,
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({
-    description: 'Role not found, or one or more of the permission UUIDs does not exist.',
+    description:
+      'Role not found, or one or more of the permission UUIDs does not exist.',
     schema: S_ERROR,
   })
   @Put(':id/permissions')
@@ -339,7 +402,12 @@ add/remove operations are not supported — always send the full desired set.
     @CurrentUser('tenantId') tenantId: string | null,
     @CurrentUser('permissions') callerPermissions: string[],
   ) {
-    return this.rolesService.setPermissions(id, dto.permissionIds, tenantId, callerPermissions);
+    return this.rolesService.setPermissions(
+      id,
+      dto.permissionIds,
+      tenantId,
+      callerPermissions,
+    );
   }
 
   // ──────────────────────── User assignment ──────────────────────────────── //
@@ -367,10 +435,23 @@ the user already holds is a no-op.
 caller's tenant. Cross-tenant assignment is rejected.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the role to assign', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'userId', description: 'UUID of the target user', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the role to assign',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'userId',
+    description: 'UUID of the target user',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiCreatedResponse({ description: 'Role assigned to user.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
   @ApiForbiddenResponse({
     description:
       'Caller lacks `roles.manage` permission, or attempted to assign `super_admin` / `owner` role.',
@@ -405,11 +486,27 @@ until a new role is assigned.
 caller's tenant.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'UUID of the role to remove', type: 'string', format: 'uuid' })
-  @ApiParam({ name: 'userId', description: 'UUID of the target user', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'UUID of the role to remove',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiParam({
+    name: 'userId',
+    description: 'UUID of the target user',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Role removed from the user.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({
     description: 'Role, user, or the role-assignment record was not found.',
     schema: S_ERROR,
@@ -438,14 +535,28 @@ the full role detail and its permission set.
 **Tenant scoping:** The target user must belong to the caller's tenant.
     `.trim(),
   })
-  @ApiParam({ name: 'userId', description: 'UUID of the user', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'userId',
+    description: 'UUID of the user',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'All roles currently assigned to the user.',
     schema: { type: 'array', items: S_USER_ROLE_ITEM },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `roles.manage` permission.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'User not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `roles.manage` permission.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'User not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('users/:userId')
   @RequirePermissions(PERMISSION.ROLES_MANAGE)
   userRoles(

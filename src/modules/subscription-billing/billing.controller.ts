@@ -113,8 +113,14 @@ issued-date filters and pagination.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Paginated invoices.', schema: S_INVOICE_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `billing.read`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.read`.',
+    schema: S_ERROR,
+  })
   @Get('invoices')
   @RequirePermissions(PERMISSION.BILLING_READ)
   listInvoices(@Query() query: QueryInvoicesDto) {
@@ -134,8 +140,14 @@ dashboard widget.
     `.trim(),
   })
   @ApiOkResponse({ description: 'Billing summary.', schema: S_SUMMARY })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `billing.read`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.read`.',
+    schema: S_ERROR,
+  })
   @Get('summary')
   @RequirePermissions(PERMISSION.BILLING_READ)
   summary() {
@@ -153,11 +165,25 @@ Returns a single invoice. An invoice belonging to another tenant returns
 **Who can call this:** Owner, Manager (\`billing.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Invoice UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Invoice UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Invoice details.', schema: S_INVOICE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `billing.read`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Invoice not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.read`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Invoice not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get('invoices/:id')
   @RequirePermissions(PERMISSION.BILLING_READ)
   getInvoice(@Param('id', ParseUUIDPipe) id: string) {
@@ -183,13 +209,33 @@ is marked PAID; on a decline it stays unpaid and returns 422.
 **Tenant scoping:** Only the caller's own invoices are payable.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Invoice UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Invoice UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Invoice paid.', schema: S_INVOICE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `billing.manage`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Invoice not found in this tenant.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Invoice already paid.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Invoice not payable, or payment declined.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Invoice not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Invoice already paid.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Invoice not payable, or payment declined.',
+    schema: S_ERROR,
+  })
   @Post('invoices/:id/pay')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.BILLING_MANAGE)

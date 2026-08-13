@@ -27,7 +27,9 @@ describe('FreeAccessOverrideService', () => {
   beforeEach(() => {
     query = jest.fn();
     audit = { record: jest.fn().mockResolvedValue(undefined) };
-    tenantContext = { getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }) };
+    tenantContext = {
+      getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
+    };
     service = new FreeAccessOverrideService(
       { query } as unknown as DataSource,
       audit as unknown as PlatformAdminAuditService,
@@ -40,7 +42,11 @@ describe('FreeAccessOverrideService', () => {
   it('getActive maps the active override row', async () => {
     query.mockResolvedValueOnce([row()]);
     const active = await service.getActive('t1');
-    expect(active).toMatchObject({ id: 'ov-1', tenant_id: 't1', status: 'ACTIVE' });
+    expect(active).toMatchObject({
+      id: 'ov-1',
+      tenant_id: 't1',
+      status: 'ACTIVE',
+    });
   });
 
   it('hasActive is false when there is no active override', async () => {
@@ -86,19 +92,26 @@ describe('FreeAccessOverrideService', () => {
   it('grant inserts a new override when none is active', async () => {
     query.mockResolvedValueOnce([]); // hasActive → getActive → none
     query.mockResolvedValueOnce([row()]); // INSERT RETURNING
-    const granted = await service.grant('t1', { grantedBy: 'admin-1', durationDays: 30 });
+    const granted = await service.grant('t1', {
+      grantedBy: 'admin-1',
+      durationDays: 30,
+    });
     expect(granted.id).toBe('ov-1');
     expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('grant rejects when an override is already active', async () => {
     query.mockResolvedValueOnce([row()]); // hasActive → active
-    await expect(service.grant('t1', {})).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    await expect(service.grant('t1', {})).rejects.toMatchObject({
+      code: ErrorCode.CONFLICT,
+    });
   });
 
   it('extend throws when there is no active override', async () => {
     query.mockResolvedValueOnce([]); // getActive → none
-    await expect(service.extend('t1', 30)).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    await expect(service.extend('t1', 30)).rejects.toMatchObject({
+      code: ErrorCode.NOT_FOUND,
+    });
   });
 
   it('extend updates the active override', async () => {
@@ -115,7 +128,9 @@ describe('FreeAccessOverrideService', () => {
 
   it('revoke throws when nothing was active', async () => {
     query.mockResolvedValueOnce({ rowCount: 0 });
-    await expect(service.revoke('t1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    await expect(service.revoke('t1')).rejects.toMatchObject({
+      code: ErrorCode.NOT_FOUND,
+    });
   });
 
   // FND-015 — grant/extend/revoke previously wrote NO audit entry.
@@ -124,7 +139,11 @@ describe('FreeAccessOverrideService', () => {
       query.mockResolvedValueOnce([]); // hasActive → none
       query.mockResolvedValueOnce([row()]); // INSERT RETURNING
 
-      await service.grant('t1', { grantedBy: 'admin-1', reason: 'partner', durationDays: 30 });
+      await service.grant('t1', {
+        grantedBy: 'admin-1',
+        reason: 'partner',
+        durationDays: 30,
+      });
 
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -141,7 +160,9 @@ describe('FreeAccessOverrideService', () => {
     it('audits a REJECTED grant (AD-14: refusals recorded too)', async () => {
       query.mockResolvedValueOnce([row()]); // hasActive → already active
 
-      await expect(service.grant('t1', {})).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      await expect(service.grant('t1', {})).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
 
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -36,6 +36,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -54,6 +56,7 @@ const S_ERROR = {
  */
 @ApiTags('CRM Customer Tags')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CRM)
 @Controller('crm/tags')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -63,46 +66,110 @@ export class CustomerTagController {
     private readonly ctx: TenantContextService,
   ) {}
 
-  @ApiOperation({ summary: 'Create a tag', description: '**Protected — `crm.tags.manage`. Clinic active.** Name unique per tenant (409 on conflict).' })
+  @ApiOperation({
+    summary: 'Create a tag',
+    description:
+      '**Protected — `crm.tags.manage`. Clinic active.** Name unique per tenant (409 on conflict).',
+  })
   @ApiCreatedResponse({ description: 'Tag created.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.tags.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Tag name already exists.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.tags.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Tag name already exists.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.CRM_TAGS_MANAGE)
   create(@Body() dto: CreateCustomerTagDto) {
     return this.tags.create(this.ctx.requireTenantId(), dto);
   }
 
-  @ApiOperation({ summary: 'List tags', description: '**Protected — `crm.tags.read`. Clinic active.** Tenant-scoped, optional name search + pagination.' })
+  @ApiOperation({
+    summary: 'List tags',
+    description:
+      '**Protected — `crm.tags.read`. Clinic active.** Tenant-scoped, optional name search + pagination.',
+  })
   @ApiOkResponse({ description: 'Paginated tags.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.tags.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.tags.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.CRM_TAGS_READ)
   list(@Query() query: QueryCustomerTagsDto) {
     return this.tags.list(this.ctx.requireTenantId(), query);
   }
 
-  @ApiOperation({ summary: 'Update a tag', description: '**Protected — `crm.tags.manage`. Clinic active.**' })
-  @ApiParam({ name: 'id', description: 'Tag UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Update a tag',
+    description: '**Protected — `crm.tags.manage`. Clinic active.**',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Tag UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Tag updated.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.tags.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Tag not found in this tenant.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Tag name already exists.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.tags.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Tag not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Tag name already exists.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.CRM_TAGS_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCustomerTagDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCustomerTagDto,
+  ) {
     return this.tags.update(this.ctx.requireTenantId(), id, dto);
   }
 
-  @ApiOperation({ summary: 'Delete a tag', description: '**Protected — `crm.tags.manage`. Clinic active.** Removes the tag and its customer assignments (cascade).' })
-  @ApiParam({ name: 'id', description: 'Tag UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete a tag',
+    description:
+      '**Protected — `crm.tags.manage`. Clinic active.** Removes the tag and its customer assignments (cascade).',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Tag UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Tag deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `crm.tags.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Tag not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `crm.tags.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Tag not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.CRM_TAGS_MANAGE)

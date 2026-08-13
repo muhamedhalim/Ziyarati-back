@@ -19,7 +19,8 @@ export class CancelSubscriptionDto {
   cancelAtPeriodEnd?: boolean;
 
   @ApiPropertyOptional({
-    description: 'Optional cancellation reason (logged for audit; not stored on the record).',
+    description:
+      'Optional cancellation reason (logged for audit; not stored on the record).',
     example: 'Switching to annual billing later.',
     maxLength: 1000,
   })

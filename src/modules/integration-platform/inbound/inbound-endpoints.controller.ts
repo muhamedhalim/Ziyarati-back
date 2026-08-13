@@ -13,7 +13,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -29,7 +34,12 @@ import {
   QueryInboundEventsDto,
   UpdateWebhookEndpointDto,
 } from '../dto/webhook-endpoint.dto';
-import { INBOUND_EVENTS, WEBHOOK_SIGNATURE_SCHEMES } from '../integration-platform.constants';
+import {
+  INBOUND_EVENTS,
+  WEBHOOK_SIGNATURE_SCHEMES,
+} from '../integration-platform.constants';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Tenant-admin management of inbound webhook endpoints + delivery history
@@ -42,6 +52,7 @@ import { INBOUND_EVENTS, WEBHOOK_SIGNATURE_SCHEMES } from '../integration-platfo
  */
 @ApiTags('Integration Webhooks')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations/webhooks')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationInboundEndpointsController {
@@ -53,17 +64,22 @@ export class IntegrationInboundEndpointsController {
 
   @ApiOperation({
     summary: 'Supported inbound event types and signature schemes',
-    description: '**Protected — `platform.integrations.read`.** The compiled allowlists.',
+    description:
+      '**Protected — `platform.integrations.read`.** The compiled allowlists.',
   })
   @Get('catalog')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
   catalog() {
-    return { events: INBOUND_EVENTS, signatureSchemes: WEBHOOK_SIGNATURE_SCHEMES };
+    return {
+      events: INBOUND_EVENTS,
+      signatureSchemes: WEBHOOK_SIGNATURE_SCHEMES,
+    };
   }
 
   @ApiOperation({
     summary: 'List inbound webhook endpoints',
-    description: '**Protected — `platform.integrations.read`.** Secret prefix only; never the secret.',
+    description:
+      '**Protected — `platform.integrations.read`.** Secret prefix only; never the secret.',
   })
   @Get('endpoints')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -79,11 +95,21 @@ export class IntegrationInboundEndpointsController {
   @Post('endpoints')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  create(@Body() dto: CreateWebhookEndpointDto, @CurrentUser('id') userId: string, @Ip() ip: string) {
-    return this.endpoints.create(this.ctx.requireTenantId(), dto, { userId, ip });
+  create(
+    @Body() dto: CreateWebhookEndpointDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.endpoints.create(this.ctx.requireTenantId(), dto, {
+      userId,
+      ip,
+    });
   }
 
-  @ApiOperation({ summary: 'Get an endpoint', description: '**Protected — `platform.integrations.read`.**' })
+  @ApiOperation({
+    summary: 'Get an endpoint',
+    description: '**Protected — `platform.integrations.read`.**',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
   @Get('endpoints/:id')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_READ)
@@ -104,7 +130,10 @@ export class IntegrationInboundEndpointsController {
     @CurrentUser('id') userId: string,
     @Ip() ip: string,
   ) {
-    return this.endpoints.update(this.ctx.requireTenantId(), id, dto, { userId, ip });
+    return this.endpoints.update(this.ctx.requireTenantId(), id, dto, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({
@@ -116,8 +145,15 @@ export class IntegrationInboundEndpointsController {
   @Post('endpoints/:id/rotate-secret')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  rotate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
-    return this.endpoints.rotateSecret(this.ctx.requireTenantId(), id, { userId, ip });
+  rotate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.endpoints.rotateSecret(this.ctx.requireTenantId(), id, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({
@@ -128,8 +164,15 @@ export class IntegrationInboundEndpointsController {
   @ApiParam({ name: 'id', format: 'uuid' })
   @Delete('endpoints/:id')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
-    return this.endpoints.remove(this.ctx.requireTenantId(), id, { userId, ip });
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.endpoints.remove(this.ctx.requireTenantId(), id, {
+      userId,
+      ip,
+    });
   }
 
   @ApiOperation({

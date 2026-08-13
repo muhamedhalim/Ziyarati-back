@@ -1,6 +1,19 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { CookieOptions, Request, Response } from 'express';
 
 import { GuestSessionService } from './guest-session.service';
@@ -24,12 +37,17 @@ export class GuestChatController {
     description:
       'Mints a guest session token scoped to the system discovery tenant and sets it as the httpOnly `guest_token` cookie (path `/` so the AI WebSocket handshake receives it). The visitor can then chat with the AI without logging in. Returns the guest id.',
   })
-  @ApiOkResponse({ description: '{ guestId } — the guest_token cookie is set.' })
+  @ApiOkResponse({
+    description: '{ guestId } — the guest_token cookie is set.',
+  })
   @Post('session')
   @HttpCode(HttpStatus.OK)
   async session(@Res({ passthrough: true }) res: Response) {
     const { token, guestId, maxAgeMs } = await this.guest.createSession();
-    res.cookie('guest_token', token, { ...this.cookieOptions(), maxAge: maxAgeMs });
+    res.cookie('guest_token', token, {
+      ...this.cookieOptions(),
+      maxAge: maxAgeMs,
+    });
     return { guestId };
   }
 
@@ -49,12 +67,18 @@ export class GuestChatController {
     // Source binding: the browser's httpOnly guest cookie (path `/`, so it is
     // sent alongside `access_token` on this same-origin call).
     const guestToken = this.readGuestToken(req);
-    return this.guest.convert(dto.guestConversationId, targetTenantId, guestToken, dto.customerId);
+    return this.guest.convert(
+      dto.guestConversationId,
+      targetTenantId,
+      guestToken,
+      dto.customerId,
+    );
   }
 
   /** Reads the httpOnly `guest_token` cookie (mirrors WsAuthService's approach). */
   private readGuestToken(req: Request): string | undefined {
-    const fromParser = (req as unknown as { cookies?: Record<string, string> }).cookies?.guest_token;
+    const fromParser = (req as unknown as { cookies?: Record<string, string> })
+      .cookies?.guest_token;
     if (fromParser) return fromParser;
     const header = req.headers?.cookie;
     if (!header) return undefined;
@@ -70,7 +94,10 @@ export class GuestChatController {
     return {
       httpOnly: true,
       secure: this.config.get<string>('NODE_ENV') === 'production',
-      sameSite: (this.config.get<string>('COOKIE_SAMESITE', 'lax') as CookieOptions['sameSite']),
+      sameSite: this.config.get<string>(
+        'COOKIE_SAMESITE',
+        'lax',
+      ) as CookieOptions['sameSite'],
       domain: this.config.get<string>('COOKIE_DOMAIN') || undefined,
       path: '/',
     };

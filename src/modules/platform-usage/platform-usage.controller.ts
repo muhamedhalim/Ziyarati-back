@@ -1,4 +1,12 @@
-import { Controller, Get, Ip, Param, ParseUUIDPipe, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Ip,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -73,9 +81,12 @@ export class PlatformUsageController {
 
   @ApiOperation({
     summary: 'Export tenant usage overview (super-admin)',
-    description: 'CSV (`format=csv`) or Excel/SpreadsheetML (`format=excel`) of the filtered tenant usage list. Audited.',
+    description:
+      'CSV (`format=csv`) or Excel/SpreadsheetML (`format=excel`) of the filtered tenant usage list. Audited.',
   })
-  @ApiOkResponse({ description: '{ filename, content, mimeType } download payload.' })
+  @ApiOkResponse({
+    description: '{ filename, content, mimeType } download payload.',
+  })
   @Get('export')
   async export(
     @Query() query: QueryTenantUsageDto,
@@ -106,7 +117,10 @@ export class PlatformUsageController {
     description:
       'All-tenant drill-down for a totals card (`:metric`): aggregate used vs total finite quota plus hourly/daily/weekly/monthly time-series and a top-N breakdown. Powers the clickable platform summary cards.',
   })
-  @ApiParam({ name: 'metric', description: 'Metric key, e.g. aiTokens, apiCalls, storageBytes.' })
+  @ApiParam({
+    name: 'metric',
+    description: 'Metric key, e.g. aiTokens, apiCalls, storageBytes.',
+  })
   @ApiQuery({ name: 'periodMonth', required: false, example: '2026-07' })
   @ApiOkResponse({ description: 'Platform-wide metric drill-down.' })
   @Get('metrics/:metric')
@@ -116,8 +130,14 @@ export class PlatformUsageController {
     @Ip() ip: string,
     @Query('periodMonth') periodMonth?: string,
   ) {
-    const result = await this.usage.platformMetricDrilldown(metric, periodMonth);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, undefined, { metric, scope: 'platform' });
+    const result = await this.usage.platformMetricDrilldown(
+      metric,
+      periodMonth,
+    );
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, undefined, {
+      metric,
+      scope: 'platform',
+    });
     return result;
   }
 
@@ -157,7 +177,9 @@ export class PlatformUsageController {
     @Query('periodMonth') periodMonth?: string,
   ) {
     const result = await this.usage.recommendUpgrade(tenantId, periodMonth);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, { view: 'recommendation' });
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, {
+      view: 'recommendation',
+    });
     return result;
   }
 
@@ -167,7 +189,9 @@ export class PlatformUsageController {
       'Per-tenant timeline (PART 3): a live quota-state snapshot plus paginated / filtered / searchable history from the shared audit log. View is audited.',
   })
   @ApiParam({ name: 'tenantId', format: 'uuid' })
-  @ApiOkResponse({ description: 'Timeline (current snapshot + paginated history).' })
+  @ApiOkResponse({
+    description: 'Timeline (current snapshot + paginated history).',
+  })
   @Get(':tenantId/timeline')
   async timeline(
     @Param('tenantId', ParseUUIDPipe) tenantId: string,
@@ -176,7 +200,9 @@ export class PlatformUsageController {
     @Ip() ip: string,
   ) {
     const result = await this.usage.tenantTimeline(tenantId, query);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, { view: 'timeline' });
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, {
+      view: 'timeline',
+    });
     return result;
   }
 
@@ -186,7 +212,10 @@ export class PlatformUsageController {
       'Drill-down for one metric of one tenant: authoritative headline (from getBreakdown for quota metrics) plus daily/monthly time-series and a top-N breakdown where the underlying table supports it.',
   })
   @ApiParam({ name: 'tenantId', format: 'uuid' })
-  @ApiParam({ name: 'metric', description: 'Metric key, e.g. aiTokens, apiCalls, storageBytes.' })
+  @ApiParam({
+    name: 'metric',
+    description: 'Metric key, e.g. aiTokens, apiCalls, storageBytes.',
+  })
   @ApiQuery({ name: 'periodMonth', required: false, example: '2026-07' })
   @ApiOkResponse({ description: 'Metric drill-down with charts.' })
   @Get(':tenantId/:metric')
@@ -197,8 +226,14 @@ export class PlatformUsageController {
     @Ip() ip: string,
     @Query('periodMonth') periodMonth?: string,
   ) {
-    const result = await this.usage.metricDrilldown(tenantId, metric, periodMonth);
-    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, { metric });
+    const result = await this.usage.metricDrilldown(
+      tenantId,
+      metric,
+      periodMonth,
+    );
+    await this.audit.record(USAGE_AUDIT_ACTION.VIEW, userId, ip, tenantId, {
+      metric,
+    });
     return result;
   }
 }

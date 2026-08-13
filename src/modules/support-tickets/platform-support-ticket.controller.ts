@@ -59,7 +59,9 @@ export class PlatformSupportTicketController {
    * never hardcoded to `super_admin` regardless of who is actually acting.
    */
   private actorFrom(user: AuthenticatedUser): TicketActor {
-    const role = user.roles.includes(ROLE.SUPER_ADMIN) ? ROLE.SUPER_ADMIN : (user.roles[0] ?? undefined);
+    const role = user.roles.includes(ROLE.SUPER_ADMIN)
+      ? ROLE.SUPER_ADMIN
+      : (user.roles[0] ?? undefined);
     return {
       id: user.id,
       email: user.email,
@@ -70,7 +72,9 @@ export class PlatformSupportTicketController {
   }
 
   @ApiOperation({ summary: 'Aggregate KPI counts' })
-  @ApiOkResponse({ description: 'Open / in-progress / resolved / urgent counts.' })
+  @ApiOkResponse({
+    description: 'Open / in-progress / resolved / urgent counts.',
+  })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_READ)
   @Get('kpis')
   kpis() {
@@ -78,7 +82,8 @@ export class PlatformSupportTicketController {
   }
 
   @ApiOperation({
-    summary: "List every clinic that has at least one ticket (Support Desk clinic filter, D4)",
+    summary:
+      'List every clinic that has at least one ticket (Support Desk clinic filter, D4)',
     description:
       'Minimal-disclosure clinic list for the Support Desk console — NOT the full tenant directory.',
   })
@@ -90,7 +95,8 @@ export class PlatformSupportTicketController {
 
   @ApiOperation({
     summary: "List all tenants' support tickets",
-    description: 'Filterable by status/category/priority/tenant, searchable, sorted, server-paginated.',
+    description:
+      'Filterable by status/category/priority/tenant, searchable, sorted, server-paginated.',
   })
   @ApiOkResponse({ description: 'Paginated tickets across every tenant.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_READ)
@@ -104,7 +110,12 @@ export class PlatformSupportTicketController {
     description:
       'Full detail: tenant identity + contact, creator info, attachment, status history and internal notes.',
   })
-  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Ticket UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Ticket details.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_READ)
   @Get(':id')
@@ -121,7 +132,12 @@ export class PlatformSupportTicketController {
       'closed timestamps are updated automatically; reopening clears them. Every change is recorded ' +
       'in the event log.',
   })
-  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Ticket UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Ticket updated.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE)
   @Patch(':id/status')
@@ -134,7 +150,12 @@ export class PlatformSupportTicketController {
   }
 
   @ApiOperation({ summary: 'Change ticket priority' })
-  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Ticket UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Ticket updated.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_TRIAGE)
   @Patch(':id/priority')
@@ -148,9 +169,15 @@ export class PlatformSupportTicketController {
 
   @ApiOperation({
     summary: 'Add an internal admin note',
-    description: 'Never visible to tenant users — only platform staff can add or read these.',
+    description:
+      'Never visible to tenant users — only platform staff can add or read these.',
   })
-  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Ticket UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Ticket updated with the new note.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY)
   @Post(':id/notes')
@@ -164,9 +191,15 @@ export class PlatformSupportTicketController {
 
   @ApiOperation({
     summary: 'Reply to a ticket (clinic-visible)',
-    description: 'Visible to the clinic in their own ticket timeline. Never changes ticket status.',
+    description:
+      'Visible to the clinic in their own ticket timeline. Never changes ticket status.',
   })
-  @ApiParam({ name: 'id', description: 'Ticket UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Ticket UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Ticket updated with the new reply.' })
   @RequirePermissions(PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY)
   @Post(':id/replies')

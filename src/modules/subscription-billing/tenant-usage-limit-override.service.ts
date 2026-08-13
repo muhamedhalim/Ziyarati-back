@@ -37,7 +37,9 @@ export class TenantUsageLimitOverrideService {
     metric: UsageMetric | string,
     manager?: EntityManager,
   ): Promise<TenantUsageLimitOverride | null> {
-    const repo = manager ? manager.getRepository(TenantUsageLimitOverride) : this.overrides;
+    const repo = manager
+      ? manager.getRepository(TenantUsageLimitOverride)
+      : this.overrides;
     const rows = await repo.find({
       where: {
         tenant: { id: tenantId },
@@ -81,7 +83,9 @@ export class TenantUsageLimitOverrideService {
     input: GrantUsageLimitOverrideInput,
     manager?: EntityManager,
   ): Promise<TenantUsageLimitOverride> {
-    const repo = manager ? manager.getRepository(TenantUsageLimitOverride) : this.overrides;
+    const repo = manager
+      ? manager.getRepository(TenantUsageLimitOverride)
+      : this.overrides;
     const existing = await this.getActive(tenantId, metric, manager);
     if (existing) {
       existing.override_limit = String(
@@ -89,7 +93,9 @@ export class TenantUsageLimitOverrideService {
       );
       existing.expires_at = this.laterOf(existing.expires_at, input.expiresAt);
       if (input.sourceRequestId) {
-        existing.sourceRequest = { id: input.sourceRequestId } as BillingUpgradeRequest;
+        existing.sourceRequest = {
+          id: input.sourceRequestId,
+        } as BillingUpgradeRequest;
       }
       if (input.grantedById) {
         existing.grantedBy = { id: input.grantedById } as User;
@@ -104,7 +110,9 @@ export class TenantUsageLimitOverrideService {
         sourceRequest: input.sourceRequestId
           ? ({ id: input.sourceRequestId } as BillingUpgradeRequest)
           : undefined,
-        grantedBy: input.grantedById ? ({ id: input.grantedById } as User) : undefined,
+        grantedBy: input.grantedById
+          ? ({ id: input.grantedById } as User)
+          : undefined,
         expires_at: input.expiresAt ?? undefined,
         is_active: true,
       }),

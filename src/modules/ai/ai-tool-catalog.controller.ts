@@ -1,5 +1,10 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { DataSource } from 'typeorm';
 
 import { AI_TOOLS } from './tools/ai-tools.constants';
@@ -10,6 +15,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * AI Tool Management (read-only). Surfaces the EXACT tool catalog the model is
@@ -20,6 +27,7 @@ import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard
  */
 @ApiTags('AI Analytics')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.AI_ASSISTANT)
 @Controller('ai/tools')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class AiToolCatalogController {
@@ -37,8 +45,14 @@ export class AiToolCatalogController {
   @RequirePermissions(PERMISSION.AI_ANALYTICS_READ)
   catalog() {
     return {
-      bookingAndDiscovery: AI_TOOLS.map((t) => ({ name: t.name, description: t.description })),
-      dashboardAssistant: AI_ADMIN_TOOLS.map((t) => ({ name: t.name, description: t.description })),
+      bookingAndDiscovery: AI_TOOLS.map((t) => ({
+        name: t.name,
+        description: t.description,
+      })),
+      dashboardAssistant: AI_ADMIN_TOOLS.map((t) => ({
+        name: t.name,
+        description: t.description,
+      })),
     };
   }
 

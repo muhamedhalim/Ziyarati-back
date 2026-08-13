@@ -50,6 +50,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /** ZT-004b: bounds field-name nesting depth and non-file field count. */
 const UPLOAD_LIMITS: MulterLimitsWithNestingDepth = {
@@ -99,7 +100,7 @@ const S_FILE = {
 @Controller('ai/training-files')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('ai')
+@RequireFeature(FeatureKey.AI_ASSISTANT)
 export class AiTrainingFileController {
   constructor(
     private readonly files: AiTrainingFileService,

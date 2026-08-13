@@ -1,8 +1,16 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
 
-import { applicationConnectionOptions, rateLimiterConnectionOptions } from './redis.config';
+import {
+  applicationConnectionOptions,
+  rateLimiterConnectionOptions,
+} from './redis.config';
 import { DegradedModeLogLimiter } from './degraded-mode-log-limiter';
 
 /**
@@ -30,17 +38,26 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
   private readonly allowUnsafeMemoryConfig: boolean;
   private readonly verifiedViaIac: boolean;
 
-  constructor(
-    private readonly config: ConfigService,
-  ) {
-    this.application = this.build(applicationConnectionOptions(config), 'application');
-    this.rateLimiter = this.build(rateLimiterConnectionOptions(config), 'rate-limiter');
+  constructor(private readonly config: ConfigService) {
+    this.application = this.build(
+      applicationConnectionOptions(config),
+      'application',
+    );
+    this.rateLimiter = this.build(
+      rateLimiterConnectionOptions(config),
+      'rate-limiter',
+    );
     this.isProduction = config.get<string>('NODE_ENV') === 'production';
-    this.allowUnsafeMemoryConfig = config.get<string>('REDIS_ALLOW_UNSAFE_MEMORY_CONFIG') === 'true';
-    this.verifiedViaIac = config.get<string>('REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC') === 'true';
+    this.allowUnsafeMemoryConfig =
+      config.get<string>('REDIS_ALLOW_UNSAFE_MEMORY_CONFIG') === 'true';
+    this.verifiedViaIac =
+      config.get<string>('REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC') === 'true';
   }
 
-  private build(options: ReturnType<typeof applicationConnectionOptions>, label: string): Redis {
+  private build(
+    options: ReturnType<typeof applicationConnectionOptions>,
+    label: string,
+  ): Redis {
     const client = new Redis({ ...options, lazyConnect: true });
     // 009-auth-abuse-resistance (ZT-002, FR-035/SC-012): a sustained outage
     // makes ioredis emit repeated 'error' events (one per failed
@@ -49,10 +66,19 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
     // per-request warning. Rate-limited the same way: one line entering
     // degraded mode, at most one summary per interval, one line on 'ready'
     // (ioredis's own recovery signal).
-    const degradedLog = new DegradedModeLogLimiter(this.logger, `Redis ${label} client`);
+    const degradedLog = new DegradedModeLogLimiter(
+      this.logger,
+      `Redis ${label} client`,
+    );
     client.on('error', (err) => degradedLog.recordFailure(err.message));
     client.on('ready', () => degradedLog.recordSuccess());
-    client.connect().catch((err) => this.logger.warn(`Redis ${label} client initial connect failed: ${err.message}`));
+    client
+      .connect()
+      .catch((err) =>
+        this.logger.warn(
+          `Redis ${label} client initial connect failed: ${err.message}`,
+        ),
+      );
     return client;
   }
 
@@ -201,7 +227,9 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
    */
   private checkConfigGetBlocked(setting: string, err: Error): void {
     if (!this.isProduction) {
-      this.logger.debug(`${setting} check skipped (non-production): ${err.message}`);
+      this.logger.debug(
+        `${setting} check skipped (non-production): ${err.message}`,
+      );
       return;
     }
     if (this.verifiedViaIac || this.allowUnsafeMemoryConfig) {
@@ -222,6 +250,9 @@ export class AppRedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await Promise.all([this.application.quit().catch(() => undefined), this.rateLimiter.quit().catch(() => undefined)]);
+    await Promise.all([
+      this.application.quit().catch(() => undefined),
+      this.rateLimiter.quit().catch(() => undefined),
+    ]);
   }
 }

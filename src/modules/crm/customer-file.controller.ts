@@ -44,6 +44,8 @@ import {
 } from '../storage/storage.constants';
 import { UploadedFileLike } from '../storage/uploads.controller';
 import { AppError, ErrorCode } from '../../common/errors';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /** ZT-004b: bounds field-name nesting depth and non-file field count. */
 const UPLOAD_LIMITS: MulterLimitsWithNestingDepth = {
@@ -69,6 +71,7 @@ const S_ERROR = {
  */
 @ApiTags('CRM Customer Files')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CRM)
 @Controller('crm/customers/:customerId/files')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()

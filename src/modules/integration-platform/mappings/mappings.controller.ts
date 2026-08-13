@@ -11,7 +11,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -21,9 +26,14 @@ import { TenantContextService } from '../../../core/tenant-context/tenant-contex
 import { ActiveTenantGuard } from '../../../core/tenant-context/active-tenant.guard';
 
 import { IntegrationIdMapService } from './integration-id-map.service';
-import { IntegrationAuditService, INTEGRATION_AUDIT_ACTION } from '../integration-audit.service';
+import {
+  IntegrationAuditService,
+  INTEGRATION_AUDIT_ACTION,
+} from '../integration-audit.service';
 import { QueryMappingsDto } from '../dto/query-mappings.dto';
 import { RelinkMappingDto } from '../dto/relink-mapping.dto';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Tenant-admin viewer + lifecycle for external-id ⇄ internal-id mappings
@@ -36,6 +46,7 @@ import { RelinkMappingDto } from '../dto/relink-mapping.dto';
  */
 @ApiTags('Integration Mappings')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationMappingsController {
@@ -65,14 +76,25 @@ export class IntegrationMappingsController {
   @Post('mappings/:id/unlink')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
-  async unlink(@Param('id', ParseUUIDPipe) id: string, @CurrentUser('id') userId: string, @Ip() ip: string) {
+  async unlink(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
     const tenantId = this.ctx.requireTenantId();
     const m = await this.idMap.unlink(tenantId, id);
-    await this.audit.record(INTEGRATION_AUDIT_ACTION.MAPPING_UNLINK, tenantId, m.resource_type, id, { userId, ip }, {
-      connectionId: m.connection?.id ?? null,
-      externalId: m.external_id,
-      internalResourceId: m.internal_resource_id,
-    });
+    await this.audit.record(
+      INTEGRATION_AUDIT_ACTION.MAPPING_UNLINK,
+      tenantId,
+      m.resource_type,
+      id,
+      { userId, ip },
+      {
+        connectionId: m.connection?.id ?? null,
+        externalId: m.external_id,
+        internalResourceId: m.internal_resource_id,
+      },
+    );
     return { unlinked: true, id };
   }
 
@@ -93,12 +115,19 @@ export class IntegrationMappingsController {
   ) {
     const tenantId = this.ctx.requireTenantId();
     const m = await this.idMap.relink(tenantId, id, dto.internalResourceId);
-    await this.audit.record(INTEGRATION_AUDIT_ACTION.MAPPING_RELINK, tenantId, m.resource_type, id, { userId, ip }, {
-      connectionId: m.connection?.id ?? null,
-      externalId: m.external_id,
-      internalResourceId: m.internal_resource_id,
-      retargeted: !!dto.internalResourceId,
-    });
+    await this.audit.record(
+      INTEGRATION_AUDIT_ACTION.MAPPING_RELINK,
+      tenantId,
+      m.resource_type,
+      id,
+      { userId, ip },
+      {
+        connectionId: m.connection?.id ?? null,
+        externalId: m.external_id,
+        internalResourceId: m.internal_resource_id,
+        retargeted: !!dto.internalResourceId,
+      },
+    );
     return { relinked: true, id, internalResourceId: m.internal_resource_id };
   }
 }

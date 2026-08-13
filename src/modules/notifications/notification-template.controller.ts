@@ -38,6 +38,8 @@ import { RequireActiveSubscription } from '../subscription-billing/decorators/re
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -80,6 +82,7 @@ const S_TEMPLATE_LIST = {
  */
 @ApiTags('Notification Templates')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.NOTIFICATIONS)
 @Controller('notification-templates')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -106,8 +109,15 @@ contain placeholders rendered at send time.
   })
   @ApiCreatedResponse({ description: 'Template created.', schema: S_TEMPLATE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.NOTIFICATION_TEMPLATES_MANAGE)
   create(@Body() dto: CreateNotificationTemplateDto) {
@@ -127,9 +137,19 @@ Returns the tenant's templates with optional filters (\`search\`, \`type\`,
 **Tenant scoping:** Only the caller's templates are returned.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Paginated templates.', schema: S_TEMPLATE_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Paginated templates.',
+    schema: S_TEMPLATE_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.NOTIFICATION_TEMPLATES_READ)
   findAll(@Query() filter: NotificationTemplateFilterDto) {
@@ -146,11 +166,26 @@ Returns one template. A template from another tenant returns 404 (no leak).
 **Who can call this:** Owner, Manager, Receptionist (\`notification_templates.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Template details.', schema: S_TEMPLATE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Template not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Template not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.NOTIFICATION_TEMPLATES_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -168,11 +203,23 @@ endpoints for toggling availability.
 **Who can call this:** Owner, Manager (\`notification_templates.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Template updated.', schema: S_TEMPLATE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Patch(':id')
   @RequirePermissions(PERMISSION.NOTIFICATION_TEMPLATES_MANAGE)
@@ -187,10 +234,22 @@ endpoints for toggling availability.
     summary: 'Activate a template',
     description: `**Protected — requires \`notification_templates.manage\`. Clinic must be active.** Sets \`is_active = true\`.`,
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Template activated.', schema: S_TEMPLATE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Post(':id/activate')
   @HttpCode(HttpStatus.OK)
@@ -203,10 +262,22 @@ endpoints for toggling availability.
     summary: 'Deactivate a template',
     description: `**Protected — requires \`notification_templates.manage\`. Clinic must be active.** Sets \`is_active = false\` (kept but unusable for new rules/sends).`,
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Template deactivated.', schema: S_TEMPLATE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
@@ -227,12 +298,28 @@ notification — detach those first or deactivate instead.
 **Who can call this:** Owner, Manager (\`notification_templates.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Template UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Template UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Template deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_templates.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_templates.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Template not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Template is still referenced by rules or pending notifications.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description:
+      'Template is still referenced by rules or pending notifications.',
+    schema: S_ERROR,
+  })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions(PERMISSION.NOTIFICATION_TEMPLATES_MANAGE)

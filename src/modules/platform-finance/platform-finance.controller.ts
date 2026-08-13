@@ -16,7 +16,10 @@ import {
 } from '@nestjs/swagger';
 
 import { MarketplaceFinanceService } from './marketplace-finance.service';
-import { FinancialAuditService, FINANCIAL_AUDIT_ACTION } from './financial-audit.service';
+import {
+  FinancialAuditService,
+  FINANCIAL_AUDIT_ACTION,
+} from './financial-audit.service';
 import { QueryMarketplaceTransactionsDto } from './dto/query-marketplace-transactions.dto';
 
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -49,14 +52,20 @@ export class PlatformFinanceController {
   }
 
   @ApiOperation({ summary: 'List marketplace transactions (super-admin)' })
-  @ApiOkResponse({ description: 'Server-paginated, filtered, sorted transactions.' })
+  @ApiOkResponse({
+    description: 'Server-paginated, filtered, sorted transactions.',
+  })
   @Get('transactions')
   list(@Query() query: QueryMarketplaceTransactionsDto) {
     return this.finance.listTransactions(query);
   }
 
-  @ApiOperation({ summary: 'Export filtered transactions as CSV (super-admin)' })
-  @ApiOkResponse({ description: '{ filename, content } CSV payload (Excel-native).' })
+  @ApiOperation({
+    summary: 'Export filtered transactions as CSV (super-admin)',
+  })
+  @ApiOkResponse({
+    description: '{ filename, content } CSV payload (Excel-native).',
+  })
   @Get('transactions/export')
   async export(
     @Query() query: QueryMarketplaceTransactionsDto,
@@ -64,15 +73,25 @@ export class PlatformFinanceController {
     @Ip() ip: string,
   ) {
     const result = await this.finance.exportCsv(query);
-    await this.audit.record(FINANCIAL_AUDIT_ACTION.EXPORT, userId, ip, undefined, {
-      filters: { ...query },
-      rows: result.content.split('\n').length - 1,
-    });
+    await this.audit.record(
+      FINANCIAL_AUDIT_ACTION.EXPORT,
+      userId,
+      ip,
+      undefined,
+      {
+        filters: { ...query },
+        rows: result.content.split('\n').length - 1,
+      },
+    );
     return result;
   }
 
-  @ApiOperation({ summary: 'Transaction detail with timeline + webhooks (super-admin)' })
-  @ApiOkResponse({ description: 'Full transaction breakdown for the detail drawer.' })
+  @ApiOperation({
+    summary: 'Transaction detail with timeline + webhooks (super-admin)',
+  })
+  @ApiOkResponse({
+    description: 'Full transaction breakdown for the detail drawer.',
+  })
   @Get('transactions/:id')
   async detail(
     @Param('id', ParseUUIDPipe) id: string,
@@ -89,7 +108,10 @@ export class PlatformFinanceController {
     description:
       'Rich drill-down for a dashboard KPI (`:metric` from the finance metric registry): summary, totals, statistics, charts (daily/monthly/status), breakdowns (clinic/branch/gateway/method/service) and the underlying transactions — all server-side filtered/sorted/paginated. Reuses the transactions filter DTO.',
   })
-  @ApiParam({ name: 'metric', description: 'KPI key, e.g. platformRevenue, refunds, moneyWaitingPayout.' })
+  @ApiParam({
+    name: 'metric',
+    description: 'KPI key, e.g. platformRevenue, refunds, moneyWaitingPayout.',
+  })
   @ApiOkResponse({ description: 'Metric drill-down payload.' })
   @Get('metrics/:metric')
   async metricDrilldown(
@@ -99,12 +121,20 @@ export class PlatformFinanceController {
     @Ip() ip: string,
   ) {
     const result = await this.finance.metricDrilldown(metric, query);
-    await this.audit.record(FINANCIAL_AUDIT_ACTION.VIEW, userId, ip, undefined, { metric });
+    await this.audit.record(
+      FINANCIAL_AUDIT_ACTION.VIEW,
+      userId,
+      ip,
+      undefined,
+      { metric },
+    );
     return result;
   }
 
   @ApiOperation({ summary: 'Per-clinic financial summary (super-admin)' })
-  @ApiOkResponse({ description: 'Totals, fees, refunds, growth, daily/monthly series.' })
+  @ApiOkResponse({
+    description: 'Totals, fees, refunds, growth, daily/monthly series.',
+  })
   @Get('clinics/:tenantId/summary')
   clinicSummary(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
     return this.finance.clinicSummary(tenantId);

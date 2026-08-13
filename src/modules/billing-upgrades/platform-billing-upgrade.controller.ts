@@ -42,7 +42,9 @@ export class PlatformBillingUpgradeController {
     return this.service.list(query);
   }
 
-  @ApiOperation({ summary: 'Get a request (full history, including internal notes)' })
+  @ApiOperation({
+    summary: 'Get a request (full history, including internal notes)',
+  })
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.get(id);
@@ -55,8 +57,14 @@ export class PlatformBillingUpgradeController {
   })
   @Post(':id/ai-estimate')
   @HttpCode(HttpStatus.OK)
-  generateEstimate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.service.generateEstimate(id, { id: user.id, email: user.email ?? undefined });
+  generateEstimate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.generateEstimate(id, {
+      id: user.id,
+      email: user.email ?? undefined,
+    });
   }
 
   @ApiOperation({
@@ -71,7 +79,11 @@ export class PlatformBillingUpgradeController {
     @Body() dto: QuoteBillingUpgradeRequestDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.service.quote(id, { id: user.id, email: user.email ?? undefined }, dto);
+    return this.service.quote(
+      id,
+      { id: user.id, email: user.email ?? undefined },
+      dto,
+    );
   }
 
   @ApiOperation({ summary: 'Reject the request' })
@@ -82,6 +94,10 @@ export class PlatformBillingUpgradeController {
     @Body() dto: RejectBillingUpgradeRequestDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.service.reject(id, { id: user.id, email: user.email ?? undefined }, dto);
+    return this.service.reject(
+      id,
+      { id: user.id, email: user.email ?? undefined },
+      dto,
+    );
   }
 }

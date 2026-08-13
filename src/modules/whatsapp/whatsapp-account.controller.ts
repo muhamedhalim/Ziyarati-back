@@ -40,6 +40,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -54,14 +55,21 @@ const S_ERROR = {
 
 const S_ACCOUNT = {
   type: 'object',
-  description: 'WhatsApp account — `access_token` is never returned; `hasCredentials` indicates whether one is stored.',
+  description:
+    'WhatsApp account — `access_token` is never returned; `hasCredentials` indicates whether one is stored.',
   properties: {
     id: { type: 'string', format: 'uuid' },
     phone_number_id: { type: 'string', nullable: true, example: '1234567890' },
     waba_id: { type: 'string', nullable: true, example: '9876543210' },
     is_active: { type: 'boolean', example: true },
     hasCredentials: { type: 'boolean', example: true },
-    branch: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } } },
+    branch: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -86,7 +94,7 @@ const S_ACCOUNT_LIST = {
 @Controller('whatsapp/accounts')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('whatsapp')
+@RequireFeature(FeatureKey.WHATSAPP)
 export class WhatsappAccountController {
   constructor(
     private readonly accounts: WhatsappAccountService,
@@ -108,12 +116,27 @@ logs.
 against the tenant.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Account created (token omitted).', schema: S_ACCOUNT })
+  @ApiCreatedResponse({
+    description: 'Account created (token omitted).',
+    schema: S_ACCOUNT,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'This branch already has a WhatsApp account.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Branch not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'This branch already has a WhatsApp account.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Branch not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
   create(@Body() dto: CreateWhatsappAccountDto) {
@@ -125,8 +148,14 @@ against the tenant.
     description: `**Protected — requires \`whatsapp.accounts.read\`. Clinic must be active.** Tenant-scoped, filter by branch/active; tokens omitted.`,
   })
   @ApiOkResponse({ description: 'Paginated accounts.', schema: S_ACCOUNT_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_READ)
   findAll(@Query() filter: WhatsappAccountFilterDto) {
@@ -153,8 +182,14 @@ would be offered a number the send path then rejects.
     description: 'Accounts that can send. Empty when nothing is connected.',
     schema: { type: 'array', items: S_ACCOUNT },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   // MUST stay above `@Get(':id')`: Nest matches in declaration order, so a
   // literal route declared after the param route would be parsed as a UUID.
   @Get('eligible')
@@ -167,11 +202,25 @@ would be offered a number the send path then rejects.
     summary: 'Get account details',
     description: `**Protected — requires \`whatsapp.accounts.read\`. Clinic must be active.** A foreign-tenant account returns 404. Token omitted.`,
   })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Account details.', schema: S_ACCOUNT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Account not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Account not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -182,7 +231,12 @@ would be offered a number the send path then rejects.
     summary: 'Get connection status',
     description: `**Protected — requires \`whatsapp.accounts.read\`. Clinic must be active.** Derived status (active + credentials + phone/WABA configured). No live provider call.`,
   })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({
     description: 'Connection status.',
     schema: {
@@ -197,8 +251,14 @@ would be offered a number the send path then rejects.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Get(':id/connection-status')
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_READ)
@@ -210,23 +270,51 @@ would be offered a number the send path then rejects.
     summary: 'Update account settings',
     description: `**Protected — requires \`whatsapp.accounts.manage\`. Clinic must be active.** Updates credentials/settings (branch is immutable). Supplying \`accessToken\` rotates the stored secret.`,
   })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Account updated.', schema: S_ACCOUNT })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Patch(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_ACCOUNTS_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWhatsappAccountDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWhatsappAccountDto,
+  ) {
     return this.accounts.update(this.ctx.requireTenantId(), id, dto);
   }
 
-  @ApiOperation({ summary: 'Activate account', description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Sets \`is_active = true\`.` })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Activate account',
+    description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Sets \`is_active = true\`.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Account activated.', schema: S_ACCOUNT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Post(':id/activate')
   @HttpCode(HttpStatus.OK)
@@ -235,11 +323,25 @@ would be offered a number the send path then rejects.
     return this.accounts.setActive(this.ctx.requireTenantId(), id, true);
   }
 
-  @ApiOperation({ summary: 'Deactivate account', description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Sets \`is_active = false\` (blocks sending from this account).` })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Deactivate account',
+    description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Sets \`is_active = false\` (blocks sending from this account).`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Account deactivated.', schema: S_ACCOUNT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Post(':id/deactivate')
   @HttpCode(HttpStatus.OK)
@@ -268,10 +370,21 @@ To remove the account entirely instead, use \`DELETE /whatsapp/accounts/:id\`
 Idempotent: disconnecting an already-disconnected account succeeds.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Account disconnected.', schema: S_ACCOUNT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Post(':id/disconnect')
   @HttpCode(HttpStatus.OK)
@@ -281,7 +394,7 @@ Idempotent: disconnecting an already-disconnected account succeeds.
   }
 
   @ApiOperation({
-    summary: 'Make this the clinic\'s default sending number',
+    summary: "Make this the clinic's default sending number",
     description: `
 **Protected — \`whatsapp.accounts.manage\`. Clinic active.**
 
@@ -298,10 +411,24 @@ from.
 the one everything else falls back to.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Account is now the default.', schema: S_ACCOUNT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Account is now the default.',
+    schema: S_ACCOUNT,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Post(':id/default')
   @HttpCode(HttpStatus.OK)
@@ -310,11 +437,25 @@ the one everything else falls back to.
     return this.accounts.setDefault(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Delete account (soft)', description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Soft-deletes the account (sets \`deleted_at\`). Frees the phone number for reconnection.` })
-  @ApiParam({ name: 'id', description: 'Account UUID', type: 'string', format: 'uuid' })
+  @ApiOperation({
+    summary: 'Delete account (soft)',
+    description: `**Protected — \`whatsapp.accounts.manage\`. Clinic active.** Soft-deletes the account (sets \`deleted_at\`). Frees the phone number for reconnection.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Account UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Account deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.accounts.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Account not found.', schema: S_ERROR })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)

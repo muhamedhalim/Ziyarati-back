@@ -209,8 +209,13 @@ export const STANDARD_REMOVE_ON_FAIL_SECONDS = 7 * 24 * 3600;
  * those alone rather than retroactively shrinking their (previously
  * unenforced) retention the moment this code deploys.
  */
-export function dlqExpiresAt(piiAdjacent: boolean, now: Date = new Date()): string {
-  const seconds = piiAdjacent ? PII_REMOVE_ON_FAIL_SECONDS : STANDARD_REMOVE_ON_FAIL_SECONDS;
+export function dlqExpiresAt(
+  piiAdjacent: boolean,
+  now: Date = new Date(),
+): string {
+  const seconds = piiAdjacent
+    ? PII_REMOVE_ON_FAIL_SECONDS
+    : STANDARD_REMOVE_ON_FAIL_SECONDS;
   return new Date(now.getTime() + seconds * 1000).toISOString();
 }
 

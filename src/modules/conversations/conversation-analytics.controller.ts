@@ -17,6 +17,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -35,6 +37,7 @@ const S_ERROR = {
  */
 @ApiTags('Conversation Analytics')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CONVERSATIONS)
 @Controller('conversation-analytics')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -62,8 +65,14 @@ export class ConversationAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('overview')
   @RequirePermissions(PERMISSION.CONVERSATION_ANALYTICS_READ)
   overview(@Query() filter: ConversationAnalyticsFilterDto) {
@@ -81,12 +90,22 @@ export class ConversationAnalyticsController {
       properties: {
         tenantId: { type: 'string', format: 'uuid' },
         totalMessages: { type: 'number', example: 5400 },
-        bySenderType: { type: 'object', additionalProperties: { type: 'number' }, example: { AGENT: 2600, CUSTOMER: 2700, BOT: 100 } },
+        bySenderType: {
+          type: 'object',
+          additionalProperties: { type: 'number' },
+          example: { AGENT: 2600, CUSTOMER: 2700, BOT: 100 },
+        },
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('messages')
   @RequirePermissions(PERMISSION.CONVERSATION_ANALYTICS_READ)
   messages(@Query() filter: ConversationAnalyticsFilterDto) {
@@ -117,8 +136,14 @@ export class ConversationAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('agents')
   @RequirePermissions(PERMISSION.CONVERSATION_ANALYTICS_READ)
   agents(@Query() filter: ConversationAnalyticsFilterDto) {
@@ -142,8 +167,14 @@ export class ConversationAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('response-time')
   @RequirePermissions(PERMISSION.CONVERSATION_ANALYTICS_READ)
   responseTime(@Query() filter: ConversationAnalyticsFilterDto) {
@@ -180,8 +211,14 @@ export class ConversationAnalyticsController {
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `analytics.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get('handover')
   @RequirePermissions(PERMISSION.CONVERSATION_ANALYTICS_READ)
   handover(@Query() filter: ConversationAnalyticsFilterDto) {

@@ -38,6 +38,8 @@ import { RequireActiveSubscription } from '../subscription-billing/decorators/re
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -60,7 +62,10 @@ const S_RULE = {
     template: {
       type: 'object',
       nullable: true,
-      properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' } },
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+      },
     },
     created_at: { type: 'string', format: 'date-time' },
   },
@@ -82,6 +87,7 @@ const S_RULE_LIST = {
  */
 @ApiTags('Notification Rules')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.NOTIFICATIONS)
 @Controller('notification-rules')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -110,9 +116,19 @@ tenant (422 otherwise).
   })
   @ApiCreatedResponse({ description: 'Rule created.', schema: S_RULE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Referenced template not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_rules.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Referenced template not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.NOTIFICATION_RULES_MANAGE)
   create(@Body() dto: CreateNotificationRuleDto) {
@@ -131,8 +147,14 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
     `.trim(),
   })
   @ApiOkResponse({ description: 'Paginated rules.', schema: S_RULE_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notification_rules.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.NOTIFICATION_RULES_READ)
   findAll(@Query() filter: NotificationRuleFilterDto) {
@@ -143,11 +165,25 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
     summary: 'Get rule details',
     description: `**Protected — requires \`notification_rules.read\`. Clinic must be active.** A rule from another tenant returns 404.`,
   })
-  @ApiParam({ name: 'id', description: 'Rule UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Rule UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Rule details.', schema: S_RULE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Rule not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notification_rules.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Rule not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.NOTIFICATION_RULES_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -158,13 +194,28 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
     summary: 'Update a notification rule',
     description: `**Protected — requires \`notification_rules.manage\`. Clinic must be active.** Partially updates the rule; a new \`templateId\` is validated against the tenant.`,
   })
-  @ApiParam({ name: 'id', description: 'Rule UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Rule UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Rule updated.', schema: S_RULE })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_rules.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Rule not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Referenced template not found in this tenant.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'Referenced template not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.NOTIFICATION_RULES_MANAGE)
   update(
@@ -178,10 +229,22 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
     summary: 'Enable a rule',
     description: `**Protected — requires \`notification_rules.manage\`. Clinic must be active.** Sets \`is_active = true\`.`,
   })
-  @ApiParam({ name: 'id', description: 'Rule UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Rule UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Rule enabled.', schema: S_RULE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_rules.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Rule not found.', schema: S_ERROR })
   @Post(':id/enable')
   @HttpCode(HttpStatus.OK)
@@ -194,10 +257,22 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
     summary: 'Disable a rule',
     description: `**Protected — requires \`notification_rules.manage\`. Clinic must be active.** Sets \`is_active = false\` (rule stops firing).`,
   })
-  @ApiParam({ name: 'id', description: 'Rule UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Rule UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Rule disabled.', schema: S_RULE })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_rules.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Rule not found.', schema: S_ERROR })
   @Post(':id/disable')
   @HttpCode(HttpStatus.OK)
@@ -210,10 +285,22 @@ Returns the tenant's rules with optional filters (\`triggerEvent\`,
     summary: 'Delete a rule',
     description: `**Protected — requires \`notification_rules.manage\`. Clinic must be active.** Hard-deletes the rule.`,
   })
-  @ApiParam({ name: 'id', description: 'Rule UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Rule UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiNoContentResponse({ description: 'Rule deleted.' })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notification_rules.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Caller lacks `notification_rules.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Rule not found.', schema: S_ERROR })
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)

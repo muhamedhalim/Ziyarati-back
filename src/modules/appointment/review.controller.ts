@@ -32,6 +32,8 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -51,8 +53,14 @@ const S_REVIEW = {
     rating: { type: 'number', example: 5 },
     comment: { type: 'string', nullable: true },
     reply: { type: 'string', nullable: true },
-    customer: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } },
-    appointment: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } },
+    customer: {
+      type: 'object',
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
+    appointment: {
+      type: 'object',
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -73,6 +81,7 @@ const S_REVIEW_LIST = {
  */
 @ApiTags('Reviews')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.REVIEWS)
 @Controller('reviews')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -96,8 +105,14 @@ Returns the clinic's customer reviews, newest first. Optional filters:
     `.trim(),
   })
   @ApiOkResponse({ description: 'Paginated reviews.', schema: S_REVIEW_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `reviews.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `reviews.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.REVIEWS_READ)
   findAll(@Query() query: ListReviewsQueryDto) {
@@ -116,12 +131,29 @@ Adds (or replaces) the clinic's public reply to a customer review.
 **Tenant scoping:** A review from another clinic returns 404.
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Review UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Review UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Reply saved.', schema: S_REVIEW })
-  @ApiBadRequestResponse({ description: 'Validation failed (empty reply).', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `reviews.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Review not found in this clinic.', schema: S_ERROR })
+  @ApiBadRequestResponse({
+    description: 'Validation failed (empty reply).',
+    schema: S_ERROR,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `reviews.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Review not found in this clinic.',
+    schema: S_ERROR,
+  })
   @Post(':id/reply')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.REVIEWS_MANAGE)

@@ -38,6 +38,8 @@ import { RequireActiveSubscription } from '../subscription-billing/decorators/re
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -57,13 +59,33 @@ const S_SCHEDULED = {
     scheduled_at: { type: 'string', format: 'date-time' },
     status: {
       type: 'string',
-      enum: ['PENDING', 'SCHEDULED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'CANCELLED'],
+      enum: [
+        'PENDING',
+        'SCHEDULED',
+        'PROCESSING',
+        'SENT',
+        'DELIVERED',
+        'FAILED',
+        'CANCELLED',
+      ],
       example: 'SCHEDULED',
     },
     recipient_type: { type: 'string', nullable: true, example: 'CUSTOMER' },
     recipient_id: { type: 'string', format: 'uuid', nullable: true },
-    template: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' }, name: { type: 'string' }, channel: { type: 'string' } } },
-    appointment: { type: 'object', nullable: true, properties: { id: { type: 'string', format: 'uuid' } } },
+    template: {
+      type: 'object',
+      nullable: true,
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name: { type: 'string' },
+        channel: { type: 'string' },
+      },
+    },
+    appointment: {
+      type: 'object',
+      nullable: true,
+      properties: { id: { type: 'string', format: 'uuid' } },
+    },
     created_at: { type: 'string', format: 'date-time' },
   },
 };
@@ -90,7 +112,13 @@ const S_DISPATCH_RESULT = {
         error: { type: 'string', nullable: true },
       },
     },
-    log: { type: 'object', properties: { id: { type: 'string', format: 'uuid' }, status: { type: 'string' } } },
+    log: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        status: { type: 'string' },
+      },
+    },
   },
 };
 
@@ -102,6 +130,7 @@ const S_DISPATCH_RESULT = {
  */
 @ApiTags('Scheduled Notifications')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.NOTIFICATIONS)
 @Controller('scheduled-notifications')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
@@ -126,11 +155,23 @@ tenant (422 otherwise).
 **Tenant scoping:** Stamped with the caller's tenant.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Notification scheduled.', schema: S_SCHEDULED })
+  @ApiCreatedResponse({
+    description: 'Notification scheduled.',
+    schema: S_SCHEDULED,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Template or appointment not found in this tenant.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Template or appointment not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.NOTIFICATIONS_MANAGE)
   schedule(@Body() dto: ScheduleNotificationDto) {
@@ -150,9 +191,18 @@ ordered by \`scheduled_at\`. Use \`status=SCHEDULED\`/\`PENDING\` for pending an
 **Who can call this:** Owner, Manager, Receptionist (\`notifications.read\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Paginated scheduled notifications.', schema: S_SCHEDULED_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.read`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Paginated scheduled notifications.',
+    schema: S_SCHEDULED_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.NOTIFICATIONS_READ)
   findAll(@Query() filter: ScheduledNotificationFilterDto) {
@@ -163,11 +213,28 @@ ordered by \`scheduled_at\`. Use \`status=SCHEDULED\`/\`PENDING\` for pending an
     summary: 'Get a scheduled notification',
     description: `**Protected — requires \`notifications.read\`. Clinic must be active.** A row from another tenant returns 404.`,
   })
-  @ApiParam({ name: 'id', description: 'Scheduled notification UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Scheduled notification.', schema: S_SCHEDULED })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.read`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Scheduled notification not found.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Scheduled notification UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Scheduled notification.',
+    schema: S_SCHEDULED,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Scheduled notification not found.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.NOTIFICATIONS_READ)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
@@ -178,13 +245,27 @@ ordered by \`scheduled_at\`. Use \`status=SCHEDULED\`/\`PENDING\` for pending an
     summary: 'Update a scheduled notification',
     description: `**Protected — requires \`notifications.manage\`. Clinic must be active.** Generic update (recipient, time, administrative status). Prefer cancel/reschedule/retry for lifecycle changes.`,
   })
-  @ApiParam({ name: 'id', description: 'Scheduled notification UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Scheduled notification UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Updated.', schema: S_SCHEDULED })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Referenced template/appointment not found in this tenant.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'Referenced template/appointment not found in this tenant.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.NOTIFICATIONS_MANAGE)
   update(
@@ -205,12 +286,26 @@ Sets status to \`CANCELLED\`. Allowed only from \`PENDING\`/\`SCHEDULED\`/\`FAIL
 **Who can call this:** Owner, Manager (\`notifications.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Scheduled notification UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Scheduled notification UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Cancelled.', schema: S_SCHEDULED })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Cannot cancel from the current status.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Cannot cancel from the current status.',
+    schema: S_ERROR,
+  })
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.NOTIFICATIONS_MANAGE)
@@ -229,13 +324,27 @@ Moves the notification to a new \`scheduledAt\` and resets status to
 **Who can call this:** Owner, Manager (\`notifications.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Scheduled notification UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Scheduled notification UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Rescheduled.', schema: S_SCHEDULED })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Cannot reschedule from the current status.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Cannot reschedule from the current status.',
+    schema: S_ERROR,
+  })
   @Post(':id/reschedule')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.NOTIFICATIONS_MANAGE)
@@ -266,12 +375,29 @@ invoke automatically.
 **Who can call this:** Owner, Manager (\`notifications.manage\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Scheduled notification UUID', type: 'string', format: 'uuid' })
-  @ApiOkResponse({ description: 'Retry attempted; returns dispatch result + log.', schema: S_DISPATCH_RESULT })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `notifications.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiParam({
+    name: 'id',
+    description: 'Scheduled notification UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Retry attempted; returns dispatch result + log.',
+    schema: S_DISPATCH_RESULT,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `notifications.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Not found.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Notification is not in FAILED or SEND_UNCERTAIN status.', schema: S_ERROR })
+  @ApiUnprocessableEntityResponse({
+    description: 'Notification is not in FAILED or SEND_UNCERTAIN status.',
+    schema: S_ERROR,
+  })
   @Post(':id/retry')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.NOTIFICATIONS_MANAGE)

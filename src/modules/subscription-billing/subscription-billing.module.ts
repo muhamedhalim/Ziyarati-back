@@ -114,7 +114,9 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
         const live =
           config.get<string>('NODE_ENV') === 'production' &&
           (config.get<string>('PAYMENT_PROVIDER') ?? 'moyasar') !== 'noop';
-        return live ? new RecurringUnavailableProvider() : new StubPaymentProvider();
+        return live
+          ? new RecurringUnavailableProvider()
+          : new StubPaymentProvider();
       },
     },
   ],

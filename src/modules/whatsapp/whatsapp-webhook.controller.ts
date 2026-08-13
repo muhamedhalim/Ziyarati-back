@@ -50,7 +50,10 @@ import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard
 // default in app.module.ts — a single e2e spec file's requests all land in
 // one in-memory bucket.
 const PUBLIC_WEBHOOK_THROTTLE = {
-  default: { limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 60, ttl: 60_000 },
+  default: {
+    limit: process.env.NODE_ENV === 'test' ? 1_000_000 : 60,
+    ttl: 60_000,
+  },
 };
 
 const S_ERROR = {
@@ -136,12 +139,18 @@ export class WhatsappWebhookController {
   @Public()
   @Throttle(PUBLIC_WEBHOOK_THROTTLE)
   @Get('events')
-  verifyOnEventsPath(@Query() query: Record<string, string>, @Res() res: Response) {
+  verifyOnEventsPath(
+    @Query() query: Record<string, string>,
+    @Res() res: Response,
+  ) {
     this.respondToChallenge(query, res);
   }
 
   /** Echo `hub.challenge` when the token matches, else 403. */
-  private respondToChallenge(query: Record<string, string>, res: Response): void {
+  private respondToChallenge(
+    query: Record<string, string>,
+    res: Response,
+  ): void {
     const challenge = this.webhooks.resolveChallenge(
       query['hub.mode'],
       query['hub.verify_token'],
@@ -179,7 +188,10 @@ JWT; the tenant is NEVER taken from the request body.
       },
     },
   })
-  @ApiUnauthorizedResponse({ description: 'Invalid webhook signature.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Invalid webhook signature.',
+    schema: S_ERROR,
+  })
   @Public()
   @Throttle(PUBLIC_WEBHOOK_THROTTLE)
   @Post('events')
@@ -200,8 +212,14 @@ JWT; the tenant is NEVER taken from the request body.
   })
   @ApiBearerAuth('JWT-auth')
   @ApiOkResponse({ description: 'Webhook entry created.', schema: S_WEBHOOK })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.WHATSAPP_WEBHOOKS_MANAGE)
   create(@Body() dto: CreateWhatsappWebhookDto) {
@@ -213,38 +231,84 @@ JWT; the tenant is NEVER taken from the request body.
     description: `**Protected — requires \`whatsapp.webhooks.manage\`. Clinic active.** Tenant-scoped, filter by event type / processed / date range.`,
   })
   @ApiBearerAuth('JWT-auth')
-  @ApiOkResponse({ description: 'Paginated webhook logs.', schema: S_WEBHOOK_LIST })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Paginated webhook logs.',
+    schema: S_WEBHOOK_LIST,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
   @Get()
   @RequirePermissions(PERMISSION.WHATSAPP_WEBHOOKS_MANAGE)
   findAll(@Query() filter: WhatsappWebhookFilterDto) {
     return this.webhooks.findAll(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({ summary: 'Get a webhook event', description: `**Protected — \`whatsapp.webhooks.manage\`. Clinic active.** Foreign-tenant event returns 404.` })
+  @ApiOperation({
+    summary: 'Get a webhook event',
+    description: `**Protected — \`whatsapp.webhooks.manage\`. Clinic active.** Foreign-tenant event returns 404.`,
+  })
   @ApiBearerAuth('JWT-auth')
-  @ApiParam({ name: 'id', description: 'Webhook event UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook event UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook event.', schema: S_WEBHOOK })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Webhook event not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Webhook event not found.',
+    schema: S_ERROR,
+  })
   @Get(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_WEBHOOKS_MANAGE)
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.webhooks.findOne(this.ctx.requireTenantId(), id);
   }
 
-  @ApiOperation({ summary: 'Update a webhook event', description: `**Protected — \`whatsapp.webhooks.manage\`. Clinic active.** Update event type / payload / processed flag.` })
+  @ApiOperation({
+    summary: 'Update a webhook event',
+    description: `**Protected — \`whatsapp.webhooks.manage\`. Clinic active.** Update event type / payload / processed flag.`,
+  })
   @ApiBearerAuth('JWT-auth')
-  @ApiParam({ name: 'id', description: 'Webhook event UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook event UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Webhook event updated.', schema: S_WEBHOOK })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Webhook event not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Webhook event not found.',
+    schema: S_ERROR,
+  })
   @Patch(':id')
   @RequirePermissions(PERMISSION.WHATSAPP_WEBHOOKS_MANAGE)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateWhatsappWebhookDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWhatsappWebhookDto,
+  ) {
     return this.webhooks.update(this.ctx.requireTenantId(), id, dto);
   }
 
@@ -253,11 +317,25 @@ JWT; the tenant is NEVER taken from the request body.
     description: `**Protected — requires \`whatsapp.webhooks.manage\`. Clinic active.** Re-queues the event (sets \`processed = false\`) for the processing worker. Architecture seam — no synchronous reprocessing here.`,
   })
   @ApiBearerAuth('JWT-auth')
-  @ApiParam({ name: 'id', description: 'Webhook event UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook event UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Event re-queued.', schema: S_WEBHOOK })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'Webhook event not found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `whatsapp.webhooks.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Webhook event not found.',
+    schema: S_ERROR,
+  })
   @Post(':id/retry')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.WHATSAPP_WEBHOOKS_MANAGE)

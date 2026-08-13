@@ -14,6 +14,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
+import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Delivery-receipt ingestion seam.
@@ -34,6 +36,7 @@ import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard
  */
 @ApiTags('Campaign Delivery')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.CAMPAIGNS)
 @Controller('campaigns/delivery')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class RecipientDeliveryController {
@@ -43,7 +46,9 @@ export class RecipientDeliveryController {
   ) {}
 
   @ApiOperation({ summary: 'Record a delivery receipt (provider callback)' })
-  @ApiOkResponse({ description: 'Receipt applied (or ignored if not a forward transition).' })
+  @ApiOkResponse({
+    description: 'Receipt applied (or ignored if not a forward transition).',
+  })
   @Post('receipts')
   @RequirePermissions(PERMISSION.CAMPAIGNS_MANAGE)
   record(@Body() dto: RecordDeliveryDto) {

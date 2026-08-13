@@ -51,7 +51,11 @@ const S_PLAN = {
     id: { type: 'string', format: 'uuid' },
     name: { type: 'string', example: 'Professional' },
     price: { type: 'string', example: '299.00' },
-    billing_cycle: { type: 'string', enum: ['MONTHLY', 'YEARLY', 'CUSTOM'], example: 'MONTHLY' },
+    billing_cycle: {
+      type: 'string',
+      enum: ['MONTHLY', 'YEARLY', 'CUSTOM'],
+      example: 'MONTHLY',
+    },
     max_branches: { type: 'number', nullable: true, example: 5 },
     max_users: { type: 'number', nullable: true, example: 25 },
     max_ai_tokens: { type: 'string', nullable: true, example: '1000000' },
@@ -70,33 +74,70 @@ const S_SUBSCRIPTION = {
       type: 'object',
       properties: {
         id: { type: 'string', format: 'uuid' },
-        status: { type: 'string', enum: ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'SUSPENDED', 'GRACE_EXPIRED'], example: 'ACTIVE' },
+        status: {
+          type: 'string',
+          enum: [
+            'TRIAL',
+            'ACTIVE',
+            'PAST_DUE',
+            'CANCELLED',
+            'SUSPENDED',
+            'GRACE_EXPIRED',
+          ],
+          example: 'ACTIVE',
+        },
         starts_at: { type: 'string', format: 'date-time' },
         ends_at: { type: 'string', format: 'date-time' },
-        grace_started_at: { type: 'string', format: 'date-time', nullable: true, description: 'FND-031: when PAST_DUE ("expired-in-grace") was entered.' },
-        grace_expired_at: { type: 'string', format: 'date-time', nullable: true, description: 'FND-031: when GRACE_EXPIRED was entered.' },
+        grace_started_at: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+          description:
+            'FND-031: when PAST_DUE ("expired-in-grace") was entered.',
+        },
+        grace_expired_at: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+          description: 'FND-031: when GRACE_EXPIRED was entered.',
+        },
         auto_renew: { type: 'boolean', example: true },
         plan: S_PLAN,
       },
     },
     effectiveStatus: {
       type: 'string',
-      enum: ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELLED', 'SUSPENDED', 'GRACE_EXPIRED'],
+      enum: [
+        'TRIAL',
+        'ACTIVE',
+        'PAST_DUE',
+        'CANCELLED',
+        'SUSPENDED',
+        'GRACE_EXPIRED',
+      ],
       example: 'ACTIVE',
-      description: 'Live-derived status: ACTIVE/TRIAL past ends_at reads as PAST_DUE; PAST_DUE whose grace window has elapsed reads as GRACE_EXPIRED — never a race against the background transition sweep.',
+      description:
+        'Live-derived status: ACTIVE/TRIAL past ends_at reads as PAST_DUE; PAST_DUE whose grace window has elapsed reads as GRACE_EXPIRED — never a race against the background transition sweep.',
     },
-    isUsable: { type: 'boolean', example: true, description: 'Read access — true for every state except CANCELLED/SUSPENDED (FR-B007d).' },
+    isUsable: {
+      type: 'boolean',
+      example: true,
+      description:
+        'Read access — true for every state except CANCELLED/SUSPENDED (FR-B007d).',
+    },
     accessState: {
       type: 'string',
       enum: ['active', 'expired-in-grace', 'grace-expired', 'terminal'],
       example: 'active',
-      description: 'FND-031 — the three (plus terminal) access states named in the finding. Additive; never derive this from `status` client-side (LG-10).',
+      description:
+        'FND-031 — the three (plus terminal) access states named in the finding. Additive; never derive this from `status` client-side (LG-10).',
     },
     graceEndsAt: {
       type: 'string',
       format: 'date-time',
       nullable: true,
-      description: 'FND-031 — set only while accessState is "expired-in-grace"; when new billable/usage-increasing actions will start being refused.',
+      description:
+        'FND-031 — set only while accessState is "expired-in-grace"; when new billable/usage-increasing actions will start being refused.',
     },
   },
 };
@@ -132,9 +173,18 @@ feature caps) so the client can render a comparison/pricing table.
 (not tenant-scoped) but only authenticated tenant users can browse them here.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Active plans.', schema: { type: 'array', items: S_PLAN } })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.read`.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Active plans.',
+    schema: { type: 'array', items: S_PLAN },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.read`.',
+    schema: S_ERROR,
+  })
   @Get('plans')
   @RequirePermissions(PERMISSION.SUBSCRIPTION_READ)
   listPlans() {
@@ -152,10 +202,21 @@ comparison view.
 **Who can call this:** Owner, Manager (\`subscription.read\`).
     `.trim(),
   })
-  @ApiParam({ name: 'id', description: 'Plan UUID', type: 'string', format: 'uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Plan UUID',
+    type: 'string',
+    format: 'uuid',
+  })
   @ApiOkResponse({ description: 'Plan details.', schema: S_PLAN })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.read`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.read`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Plan not found.', schema: S_ERROR })
   @Get('plans/:id')
   @RequirePermissions(PERMISSION.SUBSCRIPTION_READ)
@@ -166,7 +227,7 @@ comparison view.
   // ─────────────────────────── Subscription ──────────────────────────────── //
 
   @ApiOperation({
-    summary: 'Create a subscription for the caller\'s tenant',
+    summary: "Create a subscription for the caller's tenant",
     description: `
 **Protected — requires \`subscription.manage\`.**
 
@@ -183,13 +244,28 @@ invoice is issued automatically (OPEN).
 **Tenant scoping:** Always created for the caller's own tenant.
     `.trim(),
   })
-  @ApiCreatedResponse({ description: 'Subscription created.', schema: S_SUBSCRIPTION })
+  @ApiCreatedResponse({
+    description: 'Subscription created.',
+    schema: S_SUBSCRIPTION,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.manage`.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.manage`.',
+    schema: S_ERROR,
+  })
   @ApiNotFoundResponse({ description: 'Plan not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Tenant already has an active subscription.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Plan is inactive.', schema: S_ERROR })
+  @ApiConflictResponse({
+    description: 'Tenant already has an active subscription.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Plan is inactive.',
+    schema: S_ERROR,
+  })
   @Post()
   @RequirePermissions(PERMISSION.SUBSCRIPTION_MANAGE)
   create(@Body() dto: CreateSubscriptionDto) {
@@ -210,10 +286,22 @@ passed) and an \`isUsable\` flag the frontend can use to gate UI.
 **Tenant scoping:** Always the caller's own subscription.
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Current subscription.', schema: S_SUBSCRIPTION })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.read`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No subscription found for this tenant.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Current subscription.',
+    schema: S_SUBSCRIPTION,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.read`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No subscription found for this tenant.',
+    schema: S_ERROR,
+  })
   @Get('current')
   @RequirePermissions(PERMISSION.SUBSCRIPTION_READ)
   getCurrent() {
@@ -237,11 +325,26 @@ current plan (409 if same).
   })
   @ApiOkResponse({ description: 'Plan changed.', schema: S_SUBSCRIPTION })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.manage`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No active subscription, or target plan not found.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Already on the requested plan.', schema: S_ERROR })
-  @ApiUnprocessableEntityResponse({ description: 'Target plan is inactive.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No active subscription, or target plan not found.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Already on the requested plan.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Target plan is inactive.',
+    schema: S_ERROR,
+  })
   @Post('change-plan')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.SUBSCRIPTION_MANAGE)
@@ -264,11 +367,23 @@ persist it).
 **Who can call this:** Owner (\`subscription.manage\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Subscription cancelled.', schema: S_SUBSCRIPTION })
+  @ApiOkResponse({
+    description: 'Subscription cancelled.',
+    schema: S_SUBSCRIPTION,
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.manage`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No active subscription found.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No active subscription found.',
+    schema: S_ERROR,
+  })
   @Post('cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.SUBSCRIPTION_MANAGE)
@@ -290,11 +405,26 @@ from now using the plan's billing cycle.
 **Who can call this:** Owner (\`subscription.manage\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Subscription reactivated.', schema: S_SUBSCRIPTION })
-  @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.', schema: S_ERROR })
-  @ApiForbiddenResponse({ description: 'Caller lacks `subscription.manage`.', schema: S_ERROR })
-  @ApiNotFoundResponse({ description: 'No subscription found for this tenant.', schema: S_ERROR })
-  @ApiConflictResponse({ description: 'Subscription is already active.', schema: S_ERROR })
+  @ApiOkResponse({
+    description: 'Subscription reactivated.',
+    schema: S_SUBSCRIPTION,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `subscription.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'No subscription found for this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Subscription is already active.',
+    schema: S_ERROR,
+  })
   @Post('reactivate')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.SUBSCRIPTION_MANAGE)

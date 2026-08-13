@@ -103,7 +103,10 @@ export class PlatformBillingAdminController {
   })
   @ApiOkResponse({ description: 'Plan updated.' })
   @Patch('plans/:id')
-  updatePlan(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePlanDto) {
+  updatePlan(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePlanDto,
+  ) {
     return this.plans.update(id, dto);
   }
 
@@ -117,7 +120,8 @@ export class PlatformBillingAdminController {
 
   @ApiOperation({
     summary: 'Deactivate a plan',
-    description: 'Hides the plan from the catalogue. Existing subscribers are unaffected.',
+    description:
+      'Hides the plan from the catalogue. Existing subscribers are unaffected.',
   })
   @ApiOkResponse({ description: 'Plan deactivated.' })
   @Post('plans/:id/deactivate')
@@ -144,7 +148,8 @@ export class PlatformBillingAdminController {
 
   @ApiOperation({
     summary: 'Grant a free-access override to a tenant',
-    description: 'Gives the tenant free access regardless of subscription. Omit `durationDays` for unlimited.',
+    description:
+      'Gives the tenant free access regardless of subscription. Omit `durationDays` for unlimited.',
   })
   @ApiOkResponse({ description: 'Override granted.' })
   @Post('tenants/:tenantId/override')
@@ -159,7 +164,9 @@ export class PlatformBillingAdminController {
     });
   }
 
-  @ApiOperation({ summary: "Extend (or make unlimited) a tenant's active override" })
+  @ApiOperation({
+    summary: "Extend (or make unlimited) a tenant's active override",
+  })
   @ApiOkResponse({ description: 'Override extended.' })
   @Patch('tenants/:tenantId/override')
   extendOverride(

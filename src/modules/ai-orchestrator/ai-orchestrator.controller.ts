@@ -32,6 +32,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 
 /**
@@ -47,7 +48,7 @@ import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard
 @Controller('ai/orchestrator')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 @RequireActiveSubscription()
-@RequireFeature('ai')
+@RequireFeature(FeatureKey.AI_ASSISTANT)
 export class AiOrchestratorController {
   constructor(
     private readonly orchestrator: AiOrchestratorService,

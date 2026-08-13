@@ -1,5 +1,10 @@
 import { Body, Controller, Ip, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { RequirePermissions } from '../../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../../auth/guards/permissions.guard';
@@ -11,7 +16,12 @@ import { AppError, ErrorCode } from '../../../common/errors';
 
 import { IntegrationImportService } from './integration-import.service';
 import { BatchImportDto } from '../dto/batch-import.dto';
-import { INTEGRATION_RESOURCE, isIntegrationResource } from '../integration-platform.constants';
+import {
+  INTEGRATION_RESOURCE,
+  isIntegrationResource,
+} from '../integration-platform.constants';
+import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
+import { FeatureKey } from '../../subscription-billing/feature-registry';
 
 /**
  * Tenant-admin synchronous batch import (Phase 3). The resource is a path param
@@ -23,6 +33,7 @@ import { INTEGRATION_RESOURCE, isIntegrationResource } from '../integration-plat
  */
 @ApiTags('Integration Imports')
 @ApiBearerAuth('JWT-auth')
+@RequireFeature(FeatureKey.INTEGRATIONS)
 @Controller('platform/integrations')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class IntegrationImportsController {
@@ -36,7 +47,14 @@ export class IntegrationImportsController {
     description:
       '**Protected — `platform.integrations.manage`.** Bounded synchronous import (customers|services|staff). Supports `dryRun`. Returns per-record counts + safe errors.',
   })
-  @ApiParam({ name: 'resource', enum: [INTEGRATION_RESOURCE.CUSTOMER, INTEGRATION_RESOURCE.SERVICE, INTEGRATION_RESOURCE.STAFF] })
+  @ApiParam({
+    name: 'resource',
+    enum: [
+      INTEGRATION_RESOURCE.CUSTOMER,
+      INTEGRATION_RESOURCE.SERVICE,
+      INTEGRATION_RESOURCE.STAFF,
+    ],
+  })
   @Post('imports/:resource')
   @RequirePermissions(PERMISSION.PLATFORM_INTEGRATIONS_MANAGE)
   import(
@@ -46,8 +64,13 @@ export class IntegrationImportsController {
     @Ip() ip: string,
   ) {
     if (!isIntegrationResource(resource)) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Unknown resource type' });
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'Unknown resource type',
+      });
     }
-    return this.imports.import(this.ctx.requireTenantId(), resource, dto, { userId, ip });
+    return this.imports.import(this.ctx.requireTenantId(), resource, dto, {
+      userId,
+      ip,
+    });
   }
 }

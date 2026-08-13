@@ -2,11 +2,20 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { FeatureFlagService } from './feature-flag.service';
-import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
+import { FeatureKey } from './feature-registry';
+import {
+  FeatureFlag,
+  FeatureFlagSource,
+} from '../../entities/SaaS-Core/FeatureFlag';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
+const KEY = FeatureKey.AI_ASSISTANT;
+const PLATFORM = { source: FeatureFlagSource.PLATFORM_ADMIN };
 
 describe('FeatureFlagService', () => {
   let service: FeatureFlagService;
@@ -15,7 +24,10 @@ describe('FeatureFlagService', () => {
   beforeEach(async () => {
     flags = createMockRepository();
     const moduleRef: TestingModule = await Test.createTestingModule({
-      providers: [FeatureFlagService, { provide: getRepositoryToken(FeatureFlag), useValue: flags }],
+      providers: [
+        FeatureFlagService,
+        { provide: getRepositoryToken(FeatureFlag), useValue: flags },
+      ],
     }).compile();
     service = moduleRef.get(FeatureFlagService);
   });
@@ -23,36 +35,152 @@ describe('FeatureFlagService', () => {
   afterEach(() => jest.clearAllMocks());
 
   it('lists tenant flags', async () => {
-    flags.find.mockResolvedValueOnce([{ feature_key: 'ai' }]);
+    flags.find.mockResolvedValueOnce([{ feature_key: KEY }]);
     await expect(service.list(TENANT)).resolves.toHaveLength(1);
   });
 
-  it('set creates a new flag when none exists', async () => {
+  it('set creates a new flag when none exists, recording provenance', async () => {
     flags.findOne.mockResolvedValueOnce(null);
-    flags.create.mockReturnValueOnce({ feature_key: 'ai', is_enabled: true });
-    flags.save.mockImplementationOnce(async (f: any) => f);
-    const res = await service.set(TENANT, 'ai', true);
-    expect(res).toEqual(expect.objectContaining({ is_enabled: true }));
+    flags.create.mockImplementationOnce((f: unknown) => f);
+    flags.save.mockImplementationOnce(async (f: unknown) => f);
+
+    const res = await service.set(TENANT, KEY, true, {
+      ...PLATFORM,
+      actorId: 'admin-1',
+    });
+
+    expect(res).toEqual(
+      expect.objectContaining({
+        is_enabled: true,
+        source: FeatureFlagSource.PLATFORM_ADMIN,
+        updated_by: 'admin-1',
+      }),
+    );
   });
 
-  it('set updates an existing flag', async () => {
-    flags.findOne.mockResolvedValueOnce({ feature_key: 'ai', is_enabled: false });
-    flags.save.mockImplementationOnce(async (f: any) => f);
-    const res = await service.set(TENANT, 'ai', true);
+  it('set updates an existing flag and re-stamps the source', async () => {
+    // A tenant-written row later overwritten by a super-admin must become
+    // authoritative — otherwise the platform's own grant would be ignored.
+    flags.findOne.mockResolvedValueOnce({
+      feature_key: KEY,
+      is_enabled: false,
+      source: FeatureFlagSource.TENANT,
+    });
+    flags.save.mockImplementationOnce(async (f: unknown) => f);
+
+    const res = await service.set(TENANT, KEY, true, PLATFORM);
+
     expect(res.is_enabled).toBe(true);
+    expect(res.source).toBe(FeatureFlagSource.PLATFORM_ADMIN);
     expect(flags.create).not.toHaveBeenCalled();
+  });
+
+  describe('getStates', () => {
+    it('treats only platform and billing-upgrade rows as grants', async () => {
+      flags.find.mockResolvedValueOnce([
+        {
+          feature_key: FeatureKey.WHATSAPP,
+          is_enabled: true,
+          is_suspended: false,
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+        },
+        {
+          feature_key: FeatureKey.CAMPAIGNS,
+          is_enabled: true,
+          is_suspended: false,
+          source: FeatureFlagSource.BILLING_UPGRADE,
+        },
+        {
+          // The paid-plan bypass: a clinic writing its own grant.
+          feature_key: FeatureKey.PAYMENTS,
+          is_enabled: true,
+          is_suspended: false,
+          source: FeatureFlagSource.TENANT,
+        },
+      ]);
+
+      const states = await service.getStates(TENANT);
+
+      expect(states.get(FeatureKey.WHATSAPP)?.granted).toBe(true);
+      expect(states.get(FeatureKey.CAMPAIGNS)?.granted).toBe(true);
+      expect(states.get(FeatureKey.PAYMENTS)?.granted).toBe(false);
+    });
+
+    it('reports a suspension regardless of who recorded it', async () => {
+      // Honouring a suspension can only ever REMOVE access, so its provenance
+      // does not need to be trusted the way a grant's does.
+      flags.find.mockResolvedValueOnce([
+        {
+          feature_key: FeatureKey.WHATSAPP,
+          is_enabled: true,
+          is_suspended: true,
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+        },
+      ]);
+      const states = await service.getStates(TENANT);
+      expect(states.get(FeatureKey.WHATSAPP)?.suspended).toBe(true);
+    });
+  });
+
+  describe('isGranted', () => {
+    it('is false when the row is missing', async () => {
+      flags.findOne.mockResolvedValueOnce(null);
+      expect(await service.isGranted(TENANT, KEY)).toBe(false);
+    });
+
+    it('is false when the capability is suspended, even if enabled', async () => {
+      flags.findOne.mockResolvedValueOnce({
+        is_enabled: true,
+        is_suspended: true,
+      });
+      expect(await service.isGranted(TENANT, KEY)).toBe(false);
+    });
+
+    it('is true for an enabled, unsuspended authoritative row', async () => {
+      flags.findOne.mockResolvedValueOnce({
+        is_enabled: true,
+        is_suspended: false,
+      });
+      expect(await service.isGranted(TENANT, KEY)).toBe(true);
+    });
+  });
+
+  it('setSuspension records reason, actor and timestamp, and clears them on lift', async () => {
+    flags.findOne.mockResolvedValue({ feature_key: KEY, is_enabled: true });
+    flags.save.mockImplementation(async (f: unknown) => f);
+
+    const on = await service.setSuspension(TENANT, KEY, true, {
+      actorId: 'admin-1',
+      reason: 'abuse investigation',
+    });
+    expect(on.is_suspended).toBe(true);
+    expect(on.suspended_reason).toBe('abuse investigation');
+    expect(on.suspended_by).toBe('admin-1');
+    expect(on.suspended_at).toBeInstanceOf(Date);
+
+    const off = await service.setSuspension(TENANT, KEY, false, {
+      actorId: 'admin-1',
+    });
+    expect(off.is_suspended).toBe(false);
+    expect(off.suspended_reason).toBeNull();
+    expect(off.suspended_at).toBeNull();
   });
 
   it('isEnabled defaults to false when the flag is missing', async () => {
     flags.findOne.mockResolvedValueOnce(null);
-    expect(await service.isEnabled(TENANT, 'ai')).toBe(false);
+    expect(await service.isEnabled(TENANT, KEY)).toBe(false);
   });
 
-  it('assertEnabled passes when enabled and throws 403 when not', async () => {
-    flags.findOne.mockResolvedValueOnce({ is_enabled: true });
-    await expect(service.assertEnabled(TENANT, 'ai')).resolves.toBeUndefined();
+  it('assertEnabled passes when granted and throws 403 when not', async () => {
+    flags.findOne.mockResolvedValueOnce({
+      is_enabled: true,
+      is_suspended: false,
+    });
+    await expect(service.assertEnabled(TENANT, KEY)).resolves.toBeUndefined();
 
     flags.findOne.mockResolvedValueOnce(null);
-    await expect(service.assertEnabled(TENANT, 'ai')).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+    await expect(service.assertEnabled(TENANT, KEY)).rejects.toMatchObject({
+      code: ErrorCode.FORBIDDEN,
+    });
   });
 });

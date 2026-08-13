@@ -25,7 +25,9 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
   constructor(private readonly dataSource: DataSource) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    await this.run('free_access_overrides table', `
+    await this.run(
+      'free_access_overrides table',
+      `
       CREATE TABLE IF NOT EXISTS free_access_overrides (
         id          uuid PRIMARY KEY,
         tenant_id   uuid NOT NULL,
@@ -37,14 +39,18 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
         created_at  timestamptz NOT NULL DEFAULT now(),
         updated_at  timestamptz
       )
-    `);
+    `,
+    );
 
     // Fast lookup of a tenant's current override (the hot path on every gated
     // request runs `WHERE tenant_id = $ AND status = 'ACTIVE'`).
-    await this.run('free_access_overrides active index', `
+    await this.run(
+      'free_access_overrides active index',
+      `
       CREATE INDEX IF NOT EXISTS idx_free_override_tenant_status
       ON free_access_overrides (tenant_id, status)
-    `);
+    `,
+    );
   }
 
   private async run(label: string, sql: string): Promise<void> {
