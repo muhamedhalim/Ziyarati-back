@@ -19,10 +19,15 @@ import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.
 import { splitIntoChunks } from './ingestion/text-splitter';
 import { AiBatchService } from './batch/ai-batch.service';
 import { AiExecutionPolicyService } from './execution/ai-execution-policy.service';
-import { AI_EXECUTION_MODE, AI_FEATURE, isTerminalBatchStatus } from './execution/ai-execution.constants';
+import {
+  AI_EXECUTION_MODE,
+  AI_FEATURE,
+  isTerminalBatchStatus,
+} from './execution/ai-execution.constants';
 import { AiBatchCompletedEvent } from '../../events/ai-batch.events';
 import { StorageService } from '../storage/storage.service';
 import { AI_TRAINING_UPLOAD_POLICY } from '../storage/storage.constants';
+import { UsageService } from '../subscription-billing/usage.service';
 
 /**
  * AI training files and their physical private-storage indexing lifecycle.
@@ -39,15 +44,35 @@ export class AiTrainingFileService {
     @InjectRepository(AiTrainingFile)
     private readonly files: Repository<AiTrainingFile>,
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
-    @InjectRepository(AiBatchJob) private readonly batchJobs: Repository<AiBatchJob>,
+    @InjectRepository(AiBatchJob)
+    private readonly batchJobs: Repository<AiBatchJob>,
     private readonly ingestion: AiKnowledgeIngestionService,
     private readonly batch: AiBatchService,
     private readonly policy: AiExecutionPolicyService,
     private readonly storage: StorageService,
     private readonly config: ConfigService,
+    private readonly usage: UsageService,
   ) {}
 
-  async upload(tenantId: string, dto: UploadTrainingFileDto): Promise<AiTrainingFile> {
+  /**
+   * `max_training_files` — a real plan cap on a deliberate clinic upload.
+   * Shared by both upload entry points (metadata registration and direct
+   * content upload) so neither can bypass it. Scoped to AI_ASSISTANT, so a
+   * tenant on a super-admin AI grant has no plan cap and passes.
+   */
+  private async assertTrainingFileQuota(tenantId: string): Promise<void> {
+    await this.usage.assertResourceWithinLimit(
+      tenantId,
+      'trainingFiles',
+      await this.files.count({ where: { tenant: { id: tenantId } } }),
+    );
+  }
+
+  async upload(
+    tenantId: string,
+    dto: UploadTrainingFileDto,
+  ): Promise<AiTrainingFile> {
+    await this.assertTrainingFileQuota(tenantId);
     if (dto.agentId) await this.assertAgent(tenantId, dto.agentId);
     this.storage.assertKeyBelongsToTenant(dto.fileUrl, tenantId);
     const file = this.files.create({
@@ -63,18 +88,42 @@ export class AiTrainingFileService {
 
   async uploadContent(
     tenantId: string,
-    file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+    file: {
+      originalname: string;
+      mimetype: string;
+      size: number;
+      buffer: Buffer;
+    },
     agentId?: string,
   ): Promise<AiTrainingFile> {
+    // Checked here as well as in `upload` below: this path writes the file to
+    // private storage FIRST, and a quota refusal after that would leave an
+    // orphaned object nothing references.
+    await this.assertTrainingFileQuota(tenantId);
     if (agentId) await this.assertAgent(tenantId, agentId);
-    const maxBytes = Number(this.config.get('AI_TRAINING_FILE_MAX_BYTES', 10 * 1024 * 1024));
-    if (!file.buffer?.length || file.size > maxBytes || file.buffer.length > maxBytes) {
-      throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Training file is empty or exceeds the indexing size limit.' });
+    const maxBytes = Number(
+      this.config.get('AI_TRAINING_FILE_MAX_BYTES', 10 * 1024 * 1024),
+    );
+    if (
+      !file.buffer?.length ||
+      file.size > maxBytes ||
+      file.buffer.length > maxBytes
+    ) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Training file is empty or exceeds the indexing size limit.',
+      });
     }
-    const stored = await this.storage.upload({
-      tenantId, docType: 'ai_training', originalName: file.originalname,
-      mimeType: file.mimetype, size: file.size, buffer: file.buffer,
-    }, AI_TRAINING_UPLOAD_POLICY);
+    const stored = await this.storage.upload(
+      {
+        tenantId,
+        docType: 'ai_training',
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        buffer: file.buffer,
+      },
+      AI_TRAINING_UPLOAD_POLICY,
+    );
     return this.upload(tenantId, {
       fileName: stored.filename,
       fileUrl: stored.storageKey,
@@ -84,7 +133,9 @@ export class AiTrainingFileService {
   }
 
   async findAll(tenantId: string, filter: TrainingFileFilterDto) {
-    const where: FindOptionsWhere<AiTrainingFile> = { tenant: { id: tenantId } };
+    const where: FindOptionsWhere<AiTrainingFile> = {
+      tenant: { id: tenantId },
+    };
     if (filter.agentId) where.agent = { id: filter.agentId };
     if (filter.status) where.status = filter.status;
 
@@ -103,11 +154,18 @@ export class AiTrainingFileService {
       where: { id, tenant: { id: tenantId } },
       relations: { agent: true },
     });
-    if (!file) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Training file not found' });
+    if (!file)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Training file not found',
+      });
     return file;
   }
 
-  async update(tenantId: string, id: string, dto: UpdateTrainingFileDto): Promise<AiTrainingFile> {
+  async update(
+    tenantId: string,
+    id: string,
+    dto: UpdateTrainingFileDto,
+  ): Promise<AiTrainingFile> {
     const file = await this.findOne(tenantId, id);
     if (dto.fileName !== undefined) file.file_name = dto.fileName;
     return this.files.save(file);
@@ -117,10 +175,17 @@ export class AiTrainingFileService {
   async process(tenantId: string, id: string): Promise<AiTrainingFile> {
     const file = await this.findOne(tenantId, id);
     if (file.status === TRAINING_FILE_STATUS.PROCESSING) {
-      throw new AppError(ErrorCode.CONFLICT, { message: 'Training file is already processing' });
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'Training file is already processing',
+      });
     }
     if (file.status === TRAINING_FILE_STATUS.INDEXED) return file;
-    if (!file.agent?.id) return this.fail(file, 'AGENT_REQUIRED', 'An AI agent is required before indexing.');
+    if (!file.agent?.id)
+      return this.fail(
+        file,
+        'AGENT_REQUIRED',
+        'An AI agent is required before indexing.',
+      );
 
     file.status = TRAINING_FILE_STATUS.PROCESSING;
     file.error_code = undefined;
@@ -132,27 +197,57 @@ export class AiTrainingFileService {
     try {
       const type = this.detectType(file);
       if (!['TXT', 'MD'].includes(type)) {
-        return this.fail(file, 'UNSUPPORTED_EXTRACTOR', `No text extractor is configured for ${type}.`);
+        return this.fail(
+          file,
+          'UNSUPPORTED_EXTRACTOR',
+          `No text extractor is configured for ${type}.`,
+        );
       }
       if (/^https?:\/\//i.test(file.file_url)) {
-        return this.fail(file, 'EXTERNAL_URL_REJECTED', 'Training files must use a tenant-owned private storage key.');
+        return this.fail(
+          file,
+          'EXTERNAL_URL_REJECTED',
+          'Training files must use a tenant-owned private storage key.',
+        );
       }
-      const maxBytes = Number(this.config.get('AI_TRAINING_FILE_MAX_BYTES', 10 * 1024 * 1024));
-      const buffer = await this.storage.downloadObject(file.file_url, tenantId, maxBytes);
-      const text = buffer.toString('utf8').replace(/^\uFEFF/, '').trim();
+      const maxBytes = Number(
+        this.config.get('AI_TRAINING_FILE_MAX_BYTES', 10 * 1024 * 1024),
+      );
+      const buffer = await this.storage.downloadObject(
+        file.file_url,
+        tenantId,
+        maxBytes,
+      );
+      const text = buffer
+        .toString('utf8')
+        .replace(/^\uFEFF/, '')
+        .trim();
       if (!text || text.includes('\uFFFD')) {
-        return this.fail(file, 'TEXT_EXTRACTION_FAILED', 'The file is empty or is not valid UTF-8 text.');
+        return this.fail(
+          file,
+          'TEXT_EXTRACTION_FAILED',
+          'The file is empty or is not valid UTF-8 text.',
+        );
       }
-      const contentHash = createHash('sha256').update(text.normalize('NFKC')).digest('hex');
+      const contentHash = createHash('sha256')
+        .update(text.normalize('NFKC'))
+        .digest('hex');
 
       // Decide the route via the execution policy. Large files use the async
       // BATCH route when enabled; small files index synchronously. When batch is
       // DISABLED the policy applies the per-feature safe behavior — it will NOT
       // silently fan a very large file out synchronously (that FAILS with a clear
       // error rather than risking a huge single request / unexpected cost).
-      const chunkCount = splitIntoChunks(text, { maxTokens: 500, overlapTokens: 60 }).length;
-      const canBatch = this.batch.isConfigured() && this.ingestion.canStoreEmbeddings();
-      const decision = this.policy.resolveEmbeddingExecution(AI_FEATURE.FILE_INDEXING, chunkCount);
+      const chunkCount = splitIntoChunks(text, {
+        maxTokens: 500,
+        overlapTokens: 60,
+      }).length;
+      const canBatch =
+        this.batch.isConfigured() && this.ingestion.canStoreEmbeddings();
+      const decision = this.policy.resolveEmbeddingExecution(
+        AI_FEATURE.FILE_INDEXING,
+        chunkCount,
+      );
 
       if (decision.action === 'FAIL' || decision.action === 'DEFER') {
         return this.fail(
@@ -164,9 +259,18 @@ export class AiTrainingFileService {
       }
 
       if (decision.mode === AI_EXECUTION_MODE.BATCH && canBatch) {
-        const prepared = await this.ingestion.prepareBatchDocument(tenantId, file.agent.id, text, file.id);
+        const prepared = await this.ingestion.prepareBatchDocument(
+          tenantId,
+          file.agent.id,
+          text,
+          file.id,
+        );
         if (prepared.chunks <= 0) {
-          return this.fail(file, 'NO_INDEXABLE_CONTENT', 'The file did not contain indexable text.');
+          return this.fail(
+            file,
+            'NO_INDEXABLE_CONTENT',
+            'The file did not contain indexable text.',
+          );
         }
         file.content_hash = contentHash;
         file.chunk_count = prepared.chunks;
@@ -201,9 +305,19 @@ export class AiTrainingFileService {
       }
 
       // STANDARD synchronous indexing (small file, or batch unavailable & small).
-      const result = await this.ingestion.ingestDocument(tenantId, file.agent.id, text, file.id, { requireEmbedding: true });
+      const result = await this.ingestion.ingestDocument(
+        tenantId,
+        file.agent.id,
+        text,
+        file.id,
+        { requireEmbedding: true },
+      );
       if (result.chunks + result.deduplicated <= 0) {
-        return this.fail(file, 'NO_INDEXABLE_CONTENT', 'The file did not contain indexable text.');
+        return this.fail(
+          file,
+          'NO_INDEXABLE_CONTENT',
+          'The file did not contain indexable text.',
+        );
       }
       file.status = TRAINING_FILE_STATUS.INDEXED;
       file.error_code = undefined;
@@ -212,14 +326,23 @@ export class AiTrainingFileService {
       file.indexed_at = new Date();
       return this.files.save(file);
     } catch (err) {
-      if (err instanceof AppError && file.status === TRAINING_FILE_STATUS.FAILED) throw err;
-      await this.ingestion.cleanupSource(tenantId, file.id).catch(() => undefined);
-      const code = (err as Error).message === 'AI_EMBEDDING_UNAVAILABLE'
-        ? 'EMBEDDING_UNAVAILABLE'
-        : (err as Error).message === 'AI_EMBEDDING_INCOMPLETE'
-          ? 'EMBEDDING_INCOMPLETE'
-          : 'INDEXING_FAILED';
-      this.logger.warn(`Training indexing failed tenant=${tenantId} file=${file.id} code=${code}`);
+      if (
+        err instanceof AppError &&
+        file.status === TRAINING_FILE_STATUS.FAILED
+      )
+        throw err;
+      await this.ingestion
+        .cleanupSource(tenantId, file.id)
+        .catch(() => undefined);
+      const code =
+        (err as Error).message === 'AI_EMBEDDING_UNAVAILABLE'
+          ? 'EMBEDDING_UNAVAILABLE'
+          : (err as Error).message === 'AI_EMBEDDING_INCOMPLETE'
+            ? 'EMBEDDING_INCOMPLETE'
+            : 'INDEXING_FAILED';
+      this.logger.warn(
+        `Training indexing failed tenant=${tenantId} file=${file.id} code=${code}`,
+      );
       return this.fail(file, code, 'Training file indexing failed.');
     }
   }
@@ -256,19 +379,30 @@ export class AiTrainingFileService {
    * Guarded by `status === PROCESSING`, so concurrent/repeated calls are no-ops.
    */
   async finalizeIndexing(tenantId: string, fileId: string): Promise<void> {
-    const file = await this.files.findOne({ where: { id: fileId, tenant: { id: tenantId } } });
+    const file = await this.files.findOne({
+      where: { id: fileId, tenant: { id: tenantId } },
+    });
     if (!file || file.status !== TRAINING_FILE_STATUS.PROCESSING) return;
 
     const job = await this.batchJobs.findOne({
-      where: { tenant_id: tenantId, source_type: 'training_file', source_id: fileId },
+      where: {
+        tenant_id: tenantId,
+        source_type: 'training_file',
+        source_id: fileId,
+      },
       order: { created_at: 'DESC' },
     });
     // No job yet (submission still in flight) or batch not terminal → revisit later.
     if (!job || !isTerminalBatchStatus(job.status as never)) return;
 
-    const unembedded = await this.ingestion.countUnembeddedChunks(tenantId, fileId);
+    const unembedded = await this.ingestion.countUnembeddedChunks(
+      tenantId,
+      fileId,
+    );
     const fullySucceeded =
-      job.status === 'COMPLETED' && job.failed_requests === 0 && unembedded === 0;
+      job.status === 'COMPLETED' &&
+      job.failed_requests === 0 &&
+      unembedded === 0;
 
     if (fullySucceeded) {
       file.status = TRAINING_FILE_STATUS.INDEXED;
@@ -281,7 +415,10 @@ export class AiTrainingFileService {
     // Partial-failure policy: fail the whole file and delete the partial index.
     await this.ingestion.cleanupSource(tenantId, fileId).catch(() => undefined);
     file.status = TRAINING_FILE_STATUS.FAILED;
-    file.error_code = job.status === 'COMPLETED' ? 'EMBEDDING_INCOMPLETE' : `BATCH_${job.status}`;
+    file.error_code =
+      job.status === 'COMPLETED'
+        ? 'EMBEDDING_INCOMPLETE'
+        : `BATCH_${job.status}`;
     file.chunk_count = 0;
     file.indexed_at = undefined;
     await this.files.save(file);
@@ -297,8 +434,12 @@ export class AiTrainingFileService {
    * crash between "all embeddings saved" and "event handled" cannot leave a file
    * PROCESSING forever.
    */
-  async reconcileProcessing(limit = 50): Promise<{ scanned: number; finalized: number }> {
-    const graceMin = Number(this.config.get('AI_TRAINING_FINALIZE_GRACE_MINUTES', 1));
+  async reconcileProcessing(
+    limit = 50,
+  ): Promise<{ scanned: number; finalized: number }> {
+    const graceMin = Number(
+      this.config.get('AI_TRAINING_FINALIZE_GRACE_MINUTES', 1),
+    );
     const files = await this.files.find({
       where: { status: TRAINING_FILE_STATUS.PROCESSING },
       relations: { tenant: true },
@@ -308,13 +449,21 @@ export class AiTrainingFileService {
     let finalized = 0;
     for (const file of files) {
       // Give the synchronous path a moment before the reconciler intervenes.
-      if (file.processing_started_at
-        && Date.now() - new Date(file.processing_started_at).getTime() < graceMin * 60_000) continue;
+      if (
+        file.processing_started_at &&
+        Date.now() - new Date(file.processing_started_at).getTime() <
+          graceMin * 60_000
+      )
+        continue;
       const tenantId = file.tenant?.id;
       if (!tenantId) continue;
       await this.finalizeIndexing(tenantId, file.id);
-      const after = await this.files.findOne({ where: { id: file.id }, select: { id: true, status: true } });
-      if (after && after.status !== TRAINING_FILE_STATUS.PROCESSING) finalized += 1;
+      const after = await this.files.findOne({
+        where: { id: file.id },
+        select: { id: true, status: true },
+      });
+      if (after && after.status !== TRAINING_FILE_STATUS.PROCESSING)
+        finalized += 1;
     }
     return { scanned: files.length, finalized };
   }
@@ -329,8 +478,14 @@ export class AiTrainingFileService {
   }
 
   private async assertAgent(tenantId: string, agentId: string): Promise<void> {
-    if (!(await this.agents.exists({ where: { id: agentId, tenant: { id: tenantId } } }))) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'AI agent not found in this tenant' });
+    if (
+      !(await this.agents.exists({
+        where: { id: agentId, tenant: { id: tenantId } },
+      }))
+    ) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'AI agent not found in this tenant',
+      });
     }
   }
 
@@ -340,7 +495,11 @@ export class AiTrainingFileService {
     return ext === 'MARKDOWN' ? 'MD' : (ext ?? 'UNKNOWN');
   }
 
-  private async fail(file: AiTrainingFile, code: string, message: string): Promise<AiTrainingFile> {
+  private async fail(
+    file: AiTrainingFile,
+    code: string,
+    message: string,
+  ): Promise<AiTrainingFile> {
     file.status = TRAINING_FILE_STATUS.FAILED;
     file.error_code = code;
     file.indexed_at = undefined;

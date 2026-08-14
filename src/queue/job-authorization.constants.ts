@@ -89,6 +89,16 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   [JOB.WHATSAPP_RETRY]: { tier: 'tenant', featureKey: FeatureKey.WHATSAPP },
   // Own type declares `tenantId: string | null` — null is a legitimate,
   // documented case (event matched no live account), not a bug.
+  //
+  // NO `featureKey`, DELIBERATELY. This job INGESTS: it stores the customer's
+  // inbound message and status updates. Refusing it for an unentitled or
+  // suspended clinic would silently destroy real customer messages that the
+  // clinic never gets to read once access is restored — a data-loss cure worse
+  // than the disease. What the ingested event goes on to DO is gated instead,
+  // at the two seams that act: `WhatsappInboundAiService.handleInboundValue`
+  // (AI_ASSISTANT + WHATSAPP, checked once per batch),
+  // `AiExecutionService` (AI_ASSISTANT, per turn) and
+  // `WhatsappMessagingService.sendSession` (WHATSAPP, per outbound reply).
   [JOB.WHATSAPP_WEBHOOK_PROCESS]: SYSTEM_OR_TENANT,
   [JOB.WHATSAPP_MEDIA_DOWNLOAD]: {
     tier: 'tenant',
@@ -128,6 +138,13 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
     requiredPermission: PERMISSION.AI_MANAGE,
     featureKey: FeatureKey.AUTOMATIONS,
   },
+  // NO `featureKey`, DELIBERATELY. Outbound webhook delivery ships events that
+  // were ALREADY produced by work the tenant was entitled to do at the time.
+  // Gating delivery would drop those events on the floor after the fact, which
+  // breaks the receiving system's view of the world without preventing
+  // anything — the capability that produced the event is where entitlement
+  // belongs, and that is where it is enforced. Registering the webhook in the
+  // first place goes through `@RequireFeature(INTEGRATIONS)` on the HTTP route.
   [JOB.WEBHOOKS_DELIVER]: TENANT,
   [JOB.INTEGRATION_IMPORT]: {
     tier: 'tenant',

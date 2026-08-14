@@ -4,6 +4,8 @@ import { FreeAccessOverrideService } from './free-access-override.service';
 import { ErrorCode } from '../../common/errors';
 import { PlatformAdminAuditService } from '../platform/platform-admin-audit.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { AccessCacheService } from './access-cache.service';
+import { createMockAccessCache } from '../../../test/utils/mock-factories';
 
 const row = (overrides: Record<string, unknown> = {}) => ({
   id: 'ov-1',
@@ -23,6 +25,7 @@ describe('FreeAccessOverrideService', () => {
   let query: jest.Mock;
   let audit: { record: jest.Mock };
   let tenantContext: { getUser: jest.Mock };
+  let accessCache: ReturnType<typeof createMockAccessCache>;
 
   beforeEach(() => {
     query = jest.fn();
@@ -30,10 +33,12 @@ describe('FreeAccessOverrideService', () => {
     tenantContext = {
       getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
     };
+    accessCache = createMockAccessCache();
     service = new FreeAccessOverrideService(
       { query } as unknown as DataSource,
       audit as unknown as PlatformAdminAuditService,
       tenantContext as unknown as TenantContextService,
+      accessCache as unknown as AccessCacheService,
     );
   });
 
@@ -130,6 +135,34 @@ describe('FreeAccessOverrideService', () => {
     query.mockResolvedValueOnce({ rowCount: 0 });
     await expect(service.revoke('t1')).rejects.toMatchObject({
       code: ErrorCode.NOT_FOUND,
+    });
+  });
+
+  /**
+   * Plan §16 — "caching is never allowed to extend a grant". A revoked
+   * tenant-wide override that stays cached IS an extended grant, so the bust is
+   * part of the revocation, not an optimisation detail.
+   */
+  describe('access-cache invalidation', () => {
+    it('busts the tenant on grant', async () => {
+      query.mockResolvedValueOnce([]); // hasActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+      await service.grant('t1', { durationDays: 30 });
+      expect(accessCache.invalidate).toHaveBeenCalledWith('t1');
+    });
+
+    it('busts the tenant on revoke', async () => {
+      query.mockResolvedValueOnce([[{ id: 'ov-1' }], 1]);
+      await service.revoke('t1');
+      expect(accessCache.invalidate).toHaveBeenCalledWith('t1');
+    });
+
+    it('does NOT bust when the revoke found nothing to revoke', async () => {
+      query.mockResolvedValueOnce({ rowCount: 0 });
+      await expect(service.revoke('t1')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+      expect(accessCache.invalidate).not.toHaveBeenCalled();
     });
   });
 

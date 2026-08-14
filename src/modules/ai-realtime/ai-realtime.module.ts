@@ -7,6 +7,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AiModule } from '../ai/ai.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { ConversationsModule } from '../conversations/conversations.module';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { AiRealtimeGateway } from './ai-realtime.gateway';
 import { WsAuthService } from './ws-auth.service';
 import { AgentPresenceService } from './agent-presence.service';
@@ -41,6 +42,10 @@ import { HandoverChatController } from './handover-chat.controller';
     AiModule,
     WhatsappModule,
     ConversationsModule,
+    // Sockets bypass the HTTP guard chain entirely, so the gateway asks
+    // `AccessControlService` the same entitlement question a route would.
+    // Acyclic: SubscriptionBillingModule imports only PlatformModule.
+    SubscriptionBillingModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

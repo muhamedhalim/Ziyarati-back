@@ -13,6 +13,7 @@ import {
   BILLING_MODE_SETTING_KEY,
   DEFAULT_BILLING_MODE,
 } from './platform-billing.constants';
+import { AccessCacheService } from './access-cache.service';
 
 /**
  * Global platform billing mode (Mode A: free / Mode B: paid).
@@ -51,6 +52,7 @@ export class BillingModeService {
     private readonly settings: Repository<SystemSetting>,
     private readonly audit: PlatformAdminAuditService,
     private readonly tenantContext: TenantContextService,
+    private readonly accessCache: AccessCacheService,
   ) {}
 
   /**
@@ -95,6 +97,11 @@ export class BillingModeService {
     }
     const saved = await this.settings.save(setting);
     this.cached = { mode, at: Date.now() };
+    // Every tenant's decision just changed — this is precedence rule 2, and it
+    // is the single flip that turns the whole platform from ungated to gated.
+    // Busting cross-replica here is what removes the documented 15s lag on the
+    // hottest gate in the request path.
+    this.accessCache.invalidateAll();
     this.logger.log(`Global billing mode set to "${mode}"`);
     // FND-015: this is a platform-wide, immediately-effective switch — every
     // change is audited, whether it's a genuine flip or a no-op re-set.

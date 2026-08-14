@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { StorageModule } from '../storage/storage.module';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { Customer } from '../../entities/CRM/Customer';
 import { CustomerProfile } from '../../entities/CRM/CustomerProfile';
@@ -51,6 +52,9 @@ import { CustomerFileController } from './customer-file.controller';
       CustomerFile,
     ]),
     StorageModule,
+    // `max_customers` is a plan cap enforced at `CustomerService.create`.
+    // Acyclic: SubscriptionBillingModule imports only PlatformModule.
+    SubscriptionBillingModule,
   ],
   controllers: [
     CustomerController,

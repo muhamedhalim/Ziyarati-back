@@ -4,18 +4,30 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { CustomerService } from './customer.service';
 import { Customer } from '../../entities/CRM/Customer';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
+import { UsageService } from '../subscription-billing/usage.service';
 
 const TENANT = 't1';
 
 describe('CustomerService', () => {
   let service: CustomerService;
   let customers: MockRepository;
+  let usage: { assertResourceWithinLimit: jest.Mock };
 
   beforeEach(async () => {
     customers = createMockRepository();
+    usage = {
+      assertResourceWithinLimit: jest.fn().mockResolvedValue(undefined),
+    };
     const moduleRef: TestingModule = await Test.createTestingModule({
-      providers: [CustomerService, { provide: getRepositoryToken(Customer), useValue: customers }],
+      providers: [
+        CustomerService,
+        { provide: getRepositoryToken(Customer), useValue: customers },
+        { provide: UsageService, useValue: usage },
+      ],
     }).compile();
     service = moduleRef.get(CustomerService);
   });
@@ -23,15 +35,48 @@ describe('CustomerService', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('create', () => {
+    // `max_customers` is a real plan cap and "add a patient" is the deliberate
+    // action it should refuse. Scoped to CRM, so a tenant running on a
+    // super-admin grant (no plan) passes rather than 404ing.
+    it('checks the max_customers plan cap before writing', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+      customers.count.mockResolvedValueOnce(7);
+      await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+      } as any);
+      expect(usage.assertResourceWithinLimit).toHaveBeenCalledWith(
+        TENANT,
+        'customers',
+        7,
+      );
+    });
+
+    it('does not write when the plan cap refuses', async () => {
+      usage.assertResourceWithinLimit.mockRejectedValueOnce(
+        Object.assign(new Error('cap'), {
+          code: ErrorCode.UNPROCESSABLE_ENTITY,
+        }),
+      );
+      await expect(
+        service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(customers.save).not.toHaveBeenCalled();
+    });
+
     it('creates a customer after a tenant-scoped phone-uniqueness check', async () => {
       customers.findOne.mockResolvedValueOnce(null);
       customers.save.mockResolvedValueOnce({ id: 'c1' });
-      await expect(service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any)).resolves.toEqual({ id: 'c1' });
+      await expect(
+        service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any),
+      ).resolves.toEqual({ id: 'c1' });
     });
 
     it('rejects a duplicate phone within the tenant', async () => {
       customers.findOne.mockResolvedValueOnce({ id: 'existing' });
-      await expect(service.create(TENANT, { phone: '+966500' } as any)).rejects.toMatchObject({
+      await expect(
+        service.create(TENANT, { phone: '+966500' } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
     });
@@ -53,7 +98,10 @@ describe('CustomerService', () => {
     it('[M-09] leaves preferred_locale undefined (not a guessed default) when omitted', async () => {
       customers.findOne.mockResolvedValueOnce(null);
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+      } as any);
       expect(res.preferred_locale).toBeUndefined();
     });
 
@@ -67,7 +115,10 @@ describe('CustomerService', () => {
         chronic_diseases: 'Type 2 diabetes',
       } as any);
       expect(res).toEqual(
-        expect.objectContaining({ has_chronic_diseases: true, chronic_diseases: 'Type 2 diabetes' }),
+        expect.objectContaining({
+          has_chronic_diseases: true,
+          chronic_diseases: 'Type 2 diabetes',
+        }),
       );
     });
 
@@ -98,7 +149,10 @@ describe('CustomerService', () => {
     it('defaults has_chronic_diseases to false and chronic_diseases to null when omitted', async () => {
       customers.findOne.mockResolvedValueOnce(null);
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+      } as any);
       expect(res.has_chronic_diseases).toBe(false);
       expect(res.chronic_diseases).toBeNull();
     });
@@ -117,7 +171,10 @@ describe('CustomerService', () => {
     it('leaves has_health_insurance undefined (tri-state "never asked") when omitted', async () => {
       customers.findOne.mockResolvedValueOnce(null);
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any);
+      const res = await service.create(TENANT, {
+        phone: '+966500',
+        email: 'a@b.com',
+      } as any);
       expect(res.has_health_insurance).toBeUndefined();
     });
   });
@@ -128,28 +185,43 @@ describe('CustomerService', () => {
         .mockResolvedValueOnce({ id: 'c1', phone: '+966500' }) // findOneOrThrow
         .mockResolvedValueOnce(null); // phone unique
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.update(TENANT, 'c1', { phone: '+966511', full_name: 'New' } as any);
-      expect(res).toEqual(expect.objectContaining({ phone: '+966511', full_name: 'New' }));
+      const res = await service.update(TENANT, 'c1', {
+        phone: '+966511',
+        full_name: 'New',
+      } as any);
+      expect(res).toEqual(
+        expect.objectContaining({ phone: '+966511', full_name: 'New' }),
+      );
     });
 
     it('throws when the customer does not exist', async () => {
       customers.findOne.mockResolvedValueOnce(null);
-      await expect(service.update(TENANT, 'x', {} as any)).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(
+        service.update(TENANT, 'x', {} as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
     });
 
     it('rejects an update to a phone already used by another customer', async () => {
       customers.findOne
         .mockResolvedValueOnce({ id: 'c1', phone: '+966500' })
         .mockResolvedValueOnce({ id: 'c2' }); // phone taken by another
-      await expect(service.update(TENANT, 'c1', { phone: '+966511' } as any)).rejects.toMatchObject({
+      await expect(
+        service.update(TENANT, 'c1', { phone: '+966511' } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
     });
 
     it('[M-09] updates preferred_locale via the generic field loop', async () => {
-      customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500', preferred_locale: undefined });
+      customers.findOne.mockResolvedValueOnce({
+        id: 'c1',
+        phone: '+966500',
+        preferred_locale: undefined,
+      });
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.update(TENANT, 'c1', { preferred_locale: 'ar' } as any);
+      const res = await service.update(TENANT, 'c1', {
+        preferred_locale: 'ar',
+      } as any);
       expect(res).toEqual(expect.objectContaining({ preferred_locale: 'ar' }));
     });
 
@@ -161,7 +233,9 @@ describe('CustomerService', () => {
         chronic_diseases: 'Type 2 diabetes',
       });
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.update(TENANT, 'c1', { has_chronic_diseases: false } as any);
+      const res = await service.update(TENANT, 'c1', {
+        has_chronic_diseases: false,
+      } as any);
       expect(res.has_chronic_diseases).toBe(false);
       expect(res.chronic_diseases).toBeNull();
     });
@@ -187,7 +261,9 @@ describe('CustomerService', () => {
         chronic_diseases: 'Asthma',
       });
       customers.save.mockImplementationOnce(async (c: any) => c);
-      const res = await service.update(TENANT, 'c1', { full_name: 'New' } as any);
+      const res = await service.update(TENANT, 'c1', {
+        full_name: 'New',
+      } as any);
       expect(res.chronic_diseases).toBe('Asthma');
     });
   });
@@ -202,12 +278,16 @@ describe('CustomerService', () => {
 
     it('getDetails throws NOT_FOUND for an unknown/cross-tenant id', async () => {
       customers.findOne.mockResolvedValueOnce(null);
-      await expect(service.getDetails(TENANT, 'x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.getDetails(TENANT, 'x')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
     });
 
     it('findOneOrThrow returns the customer', async () => {
       customers.findOne.mockResolvedValueOnce({ id: 'c1' });
-      await expect(service.findOneOrThrow(TENANT, 'c1')).resolves.toEqual({ id: 'c1' });
+      await expect(service.findOneOrThrow(TENANT, 'c1')).resolves.toEqual({
+        id: 'c1',
+      });
     });
   });
 
@@ -224,13 +304,27 @@ describe('CustomerService', () => {
   describe('list / search', () => {
     it('lists customers with an active filter and pagination', async () => {
       customers.findAndCount.mockResolvedValueOnce([[{ id: 'c1' }], 1]);
-      const res = await service.list(TENANT, { page: 1, limit: 10, isActive: true } as any);
-      expect(res).toEqual({ data: [{ id: 'c1' }], total: 1, page: 1, limit: 10 });
+      const res = await service.list(TENANT, {
+        page: 1,
+        limit: 10,
+        isActive: true,
+      } as any);
+      expect(res).toEqual({
+        data: [{ id: 'c1' }],
+        total: 1,
+        page: 1,
+        limit: 10,
+      });
     });
 
     it('search builds an OR (name/email/phone) when a query term is present', async () => {
       customers.findAndCount.mockResolvedValueOnce([[{ id: 'c1' }], 1]);
-      await service.search(TENANT, { page: 1, limit: 10, q: 'ali', tagIds: ['tag1'] } as any);
+      await service.search(TENANT, {
+        page: 1,
+        limit: 10,
+        q: 'ali',
+        tagIds: ['tag1'],
+      } as any);
       const arg = customers.findAndCount.mock.calls[0][0];
       expect(Array.isArray(arg.where)).toBe(true);
       expect(arg.where).toHaveLength(3);

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Repository } from 'typeorm';
+import { DataSource, ILike, Repository } from 'typeorm';
 
 import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
 import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
@@ -21,6 +21,7 @@ import {
   isFeatureKey,
 } from './feature-registry';
 import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
+import { AccessCacheService } from './access-cache.service';
 import {
   BulkSetTenantFeaturesDto,
   QueryFeatureDefinitionsDto,
@@ -58,6 +59,8 @@ export class FeatureCatalogService {
     private readonly dependencies: Repository<FeatureDependency>,
     private readonly featureFlags: FeatureFlagService,
     private readonly resolver: FeatureResolverService,
+    private readonly cache: AccessCacheService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // ── Catalog ──────────────────────────────────────────────────────────────
@@ -92,6 +95,9 @@ export class FeatureCatalogService {
     if (dto.isDeprecated !== undefined) def.is_deprecated = dto.isDeprecated;
     if (dto.usageMetric !== undefined) def.usage_metric = dto.usageMetric;
     const saved = await this.definitions.save(def);
+    // `default_enabled` / `is_active` feed `isFeatureOn` for every tenant that
+    // has no explicit flag row.
+    this.cache.invalidateAll();
 
     await this.audit('FEATURE_DEFINITION_UPSERT', actor, saved.id, {
       featureKey: dto.featureKey,
@@ -123,6 +129,9 @@ export class FeatureCatalogService {
         ),
       );
     }
+    // Plan entitlement is consulted by EVERY tenant's decision (precedence rule
+    // 4), so this is one of the few genuinely platform-wide busts.
+    this.cache.invalidateAll();
     await this.audit('FEATURE_PLANS_SET', actor, featureKey, { planIds });
     return { featureKey, planIds };
   }
@@ -160,6 +169,7 @@ export class FeatureCatalogService {
         ),
       );
     }
+    this.cache.invalidateAll();
     await this.audit('FEATURE_DEPS_SET', actor, featureKey, {
       requires: unique,
     });
@@ -202,6 +212,102 @@ export class FeatureCatalogService {
       { featureKey: key, enabled: previous },
     );
     return flag;
+  }
+
+  /**
+   * Suspend or lift the suspension of one capability for one tenant.
+   *
+   * This is the operator's kill-switch, and it is the ONLY control that
+   * outranks a paid subscription. Four properties it must have, and how each is
+   * obtained:
+   *
+   *  - **Reachable.** `FeatureFlagService.setSuspension` existed with no route
+   *    to it, so the precedence rule was enforced but the switch could not be
+   *    thrown. This endpoint is that route.
+   *  - **Justified.** A suspension without a reason is unauditable six months
+   *    later, so one is required to suspend (never to lift — an operator
+   *    restoring service should not be made to explain themselves first).
+   *  - **Durably recorded.** Unlike every other catalog write, the audit here
+   *    is NOT best-effort: the flag write and the audit row commit in ONE
+   *    transaction, so a failed audit rolls the suspension back. An
+   *    entitlement kill-switch with no record of who threw it and why is worse
+   *    than no kill-switch.
+   *  - **Immediate.** Invalidated across replicas after the commit, so the
+   *    suspension takes effect on the next request everywhere rather than when
+   *    a TTL happens to lapse.
+   *
+   * Refuses `alwaysOn` capabilities. Billing, support and the workspace shell
+   * are exempt from gating by design — a blocked clinic must still be able to
+   * pay and ask for help — so a suspension there would be silently ignored by
+   * the policy. Refusing loudly beats accepting a control that does nothing.
+   */
+  async setTenantFeatureSuspension(
+    tenantId: string,
+    featureKey: string,
+    suspended: boolean,
+    reason: string | undefined,
+    actor: CatalogActor,
+  ): Promise<FeatureFlag> {
+    await this.assertTenant(tenantId);
+    const key = this.toFeatureKey(featureKey);
+
+    if (FEATURE_REGISTRY[key].alwaysOn) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message:
+          `"${key}" is an always-on capability and cannot be suspended — a tenant blocked from ` +
+          'everything must still be able to reach billing and support. Suspend the specific ' +
+          'capability you mean to block instead.',
+        publicContext: { featureKey: key },
+      });
+    }
+    if (suspended && !reason?.trim()) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'A reason is required when suspending a capability',
+        publicContext: { featureKey: key },
+      });
+    }
+
+    const before = await this.flags.findOne({
+      where: { tenant: { id: tenantId }, feature_key: key },
+    });
+
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const flag = await this.featureFlags.setSuspension(
+        tenantId,
+        key,
+        suspended,
+        { actorId: actor.id, reason: reason?.trim(), manager },
+      );
+      // STRICT: no try/catch. If this write fails the transaction aborts and
+      // the suspension never happened — see the docblock.
+      await manager.getRepository(AuditLog).save(
+        manager.getRepository(AuditLog).create({
+          user: actor.id ? ({ id: actor.id } as User) : undefined,
+          action: suspended ? 'FEATURE_FLAG_SUSPEND' : 'FEATURE_FLAG_UNSUSPEND',
+          entity_type: 'feature_flag',
+          entity_id: tenantId,
+          old_values: {
+            featureKey: key,
+            suspended: before?.is_suspended ?? false,
+            reason: before?.suspended_reason ?? null,
+          },
+          new_values: {
+            featureKey: key,
+            suspended,
+            reason: suspended ? (reason?.trim() ?? null) : null,
+            source: flag.source,
+          },
+          ip_address: actor.ip,
+        }),
+      );
+      return flag;
+    });
+
+    // Again after COMMIT: the bust inside the transaction cannot stop another
+    // replica from repopulating its cache from the pre-commit state in the
+    // window between the two.
+    this.cache.invalidate(tenantId);
+    return saved;
   }
 
   async bulkSetTenantFeatures(

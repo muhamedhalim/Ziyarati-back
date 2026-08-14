@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
@@ -28,6 +28,8 @@ import { FeatureCatalogBootstrap } from './feature-catalog.bootstrap';
 import { BillingModeService } from './billing-mode.service';
 import { FreeAccessOverrideService } from './free-access-override.service';
 import { AccessControlService } from './access-control.service';
+import { AccessCacheService } from './access-cache.service';
+import { AccessPolicyModeService } from './access-policy-mode.service';
 import { PlanAdminService } from './plan-admin.service';
 
 import { SubscriptionController } from './subscription.controller';
@@ -74,8 +76,11 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
       Tenant,
       AuditLog,
     ]),
-    // Provides SystemSettingService for typed setting reads (trial duration, etc.)
-    PlatformModule,
+    // Provides SystemSettingService for typed setting reads (trial duration,
+    // etc.). `forwardRef` because PlatformModule now imports THIS module back:
+    // `FileUploadService` applies the plan's `max_storage_bytes` /
+    // `max_uploaded_files` caps via `UsageService`.
+    forwardRef(() => PlatformModule),
   ],
   controllers: [
     SubscriptionController,
@@ -96,6 +101,8 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     FeatureCatalogBootstrap,
     BillingModeService,
     FreeAccessOverrideService,
+    AccessCacheService,
+    AccessPolicyModeService,
     AccessControlService,
     PlanAdminService,
     FeatureGuard,
@@ -136,6 +143,11 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     BillingModeService,
     FreeAccessOverrideService,
     SubscriptionAccessGuard,
+    // Exported so the execution seams outside this module (AI, WhatsApp,
+    // realtime) can invalidate a tenant's cached decision after a mutation
+    // without reaching for a second cache of their own.
+    AccessCacheService,
+    AccessPolicyModeService,
   ],
 })
 export class SubscriptionBillingModule {}

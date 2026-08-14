@@ -19,13 +19,23 @@ describe('UsageService', () => {
   let service: UsageService;
   let subscriptions: MockRepository;
   let usageRepo: MockRepository;
-  let access: { isEnforced: jest.Mock };
+  let access: { isEnforced: jest.Mock; assertAccess: jest.Mock };
   let limitOverrides: { getActive: jest.Mock; getActiveMap: jest.Mock };
+
+  /** The platform's standard access-denied error, as `assertAccess` raises it. */
+  const denied = () =>
+    Object.assign(new Error('no access'), {
+      code: ErrorCode.NO_ACTIVE_SUBSCRIPTION,
+    });
 
   beforeEach(async () => {
     subscriptions = createMockRepository();
     usageRepo = createMockRepository();
-    access = { isEnforced: jest.fn().mockResolvedValue(true) };
+    access = {
+      isEnforced: jest.fn().mockResolvedValue(true),
+      // Default: access IS allowed. A denial is programmed per-test.
+      assertAccess: jest.fn().mockResolvedValue({ allowed: true }),
+    };
     // No active override in any existing scenario — preserves prior behavior.
     limitOverrides = {
       getActive: jest.fn().mockResolvedValue(null),
@@ -433,15 +443,47 @@ describe('UsageService', () => {
       expect(result).toEqual({ applied: true, used: 0, limit: null });
     });
 
-    it('still fails closed when enforcement IS on and the tenant has no subscription', async () => {
+    /**
+     * Still fails closed — the usage layer remains the gate for worker and bot
+     * paths that never pass through a guard — but the REFUSAL now comes from
+     * the centralized policy, not from a subscription lookup.
+     *
+     * This test previously asserted `NOT_FOUND`, i.e. the literal
+     * `404 No active subscription found for this tenant` this work exists to
+     * remove. That response reached unauthenticated visitors on public booking
+     * and guest chat, describing the clinic's billing internals to answer what
+     * is simply an access denial.
+     */
+    it('refuses through the centralized policy, never with a bare NOT_FOUND', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
       subscriptions.findOne.mockResolvedValueOnce(null);
+      access.assertAccess.mockRejectedValueOnce(denied());
 
-      // No override, no subscription → the usage layer remains the gate for
-      // worker/bot paths that never pass through SubscriptionAccessGuard.
       await expect(
         service.incrementIfWithinLimit('t1', USAGE_METRIC.WHATSAPP_MESSAGES, 1),
-      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      ).rejects.toMatchObject({ code: ErrorCode.NO_ACTIVE_SUBSCRIPTION });
+
+      expect(access.assertAccess).toHaveBeenCalledWith(
+        't1',
+        'whatsapp',
+        expect.objectContaining({ surface: 'service' }),
+      );
+    });
+
+    /**
+     * The narrow window where enforcement is reported ON but access is
+     * genuinely allowed and there is still no plan: shadow mode, or a grant
+     * that landed between the two reads. Recording the usage and admitting is
+     * correct — inventing a cap out of a missing subscription is not.
+     */
+    it('records and admits when access is allowed but no plan exists', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValue(null);
+      access.assertAccess.mockResolvedValueOnce({ allowed: false });
+
+      await expect(
+        service.incrementIfWithinLimit('t1', USAGE_METRIC.WHATSAPP_MESSAGES, 1),
+      ).resolves.toEqual({ applied: true, used: 0, limit: null });
     });
 
     it('asks about the feature the metric belongs to — scoped, never a blanket bypass', async () => {
@@ -544,5 +586,82 @@ describe('UsageService', () => {
       // The recorded consumption is reported, not hidden behind a 404.
       expect(breakdown.metrics.aiTokens.used).toBe(12);
     });
+  });
+
+  // ──────────────── Count-based resource caps (plan §9 closure) ──────────── //
+
+  describe('assertResourceWithinLimit', () => {
+    it('enforces the plan column when the tenant is metered', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_customers: 100 },
+      });
+
+      await expect(
+        service.assertResourceWithinLimit('t1', 'customers', 100),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    });
+
+    it('admits below the cap', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_customers: 100 },
+      });
+
+      await expect(
+        service.assertResourceWithinLimit('t1', 'customers', 42),
+      ).resolves.toBeUndefined();
+    });
+
+    /**
+     * The whole point of scoping: a tenant on a super-admin CRM grant has no
+     * plan and no cap, and must not be refused — nor asked for a subscription
+     * that by design does not exist.
+     */
+    it('asks about the CAPABILITY the resource belongs to, not a blanket question', async () => {
+      access.isEnforced.mockResolvedValueOnce(false);
+      await service.assertResourceWithinLimit('t1', 'customers', 999_999);
+      expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined, ['crm']);
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+    });
+
+    it('treats a null plan column as unlimited', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_knowledge_base_files: null },
+      });
+
+      await expect(
+        service.assertResourceWithinLimit('t1', 'knowledgeBaseFiles', 10_000),
+      ).resolves.toBeUndefined();
+    });
+
+    /**
+     * A plan column existing is not a reason to refuse a write. Refusing to
+     * record a payment that already cleared, or dropping an inbound customer
+     * conversation, is worse than exceeding a soft cap — so those metrics are
+     * reporting-only, and enforcing one is a coding error that must surface in
+     * tests rather than in production.
+     */
+    it.each([
+      'payments',
+      'transactions',
+      'invoices',
+      'emails',
+      'apiCalls',
+      'conversations',
+      'crmContacts',
+      'aiRequests',
+    ] as const)(
+      'refuses to enforce the reporting-only metric "%s"',
+      async (metric) => {
+        await expect(
+          service.assertResourceWithinLimit('t1', metric, 1),
+        ).rejects.toThrow(/reporting-only/);
+      },
+    );
   });
 });

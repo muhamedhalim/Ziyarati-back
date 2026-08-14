@@ -41,7 +41,7 @@ const deny = (reason = 'nope'): TenantAccessDecision => ({
  */
 describe('FeatureGuard', () => {
   let guard: FeatureGuard;
-  let access: { resolve: jest.Mock };
+  let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let reflector: { getAllAndOverride: jest.Mock };
 
   const contextFor = (tenantId: string | null = 't1') => {
@@ -54,7 +54,13 @@ describe('FeatureGuard', () => {
   };
 
   beforeEach(() => {
-    access = { resolve: jest.fn() };
+    // `shouldBlock` returns true = ENFORCE, the production default. The shadow
+    // branch is covered in access-control.service.spec.ts, where the mode
+    // service itself is under test.
+    access = {
+      resolve: jest.fn(),
+      shouldBlock: jest.fn().mockReturnValue(true),
+    };
     reflector = {
       getAllAndOverride: jest.fn().mockReturnValue(FeatureKey.AI_ASSISTANT),
     };

@@ -59,6 +59,18 @@ export class FeatureGuard implements CanActivate {
     );
     if (decision.allowed) return true;
 
+    // Rollout switch (plan §18): in shadow mode the denial is recorded and the
+    // request proceeds. Asked here rather than branched on locally so `shadow`
+    // stays one switch in one place — see `AccessPolicyModeService`.
+    if (
+      !this.access.shouldBlock(decision, {
+        surface: 'http',
+        detail: `${request.method} ${request.route?.path ?? request.path}`,
+      })
+    ) {
+      return true;
+    }
+
     // A denial with no access path at all is a billing problem, and the tenant
     // needs the "choose a plan" copy. A denial while the tenant DOES hold
     // platform access is a capability problem — a different remedy, so it gets

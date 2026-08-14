@@ -5,7 +5,10 @@ type Handler = (...args: unknown[]) => void;
 class FakeRedis {
   static instances: FakeRedis[] = [];
   handlers = new Map<string, Handler>();
-  constructor(public readonly urlOrOpts: unknown, public readonly opts?: Record<string, unknown>) {
+  constructor(
+    public readonly urlOrOpts: unknown,
+    public readonly opts?: Record<string, unknown>,
+  ) {
     FakeRedis.instances.push(this);
   }
   on(event: string, handler: Handler) {
@@ -23,8 +26,15 @@ class FakeRedis {
   }
 }
 
-jest.mock('ioredis', () => ({ Redis: jest.fn((...args: unknown[]) => new FakeRedis(args[0], args[1] as Record<string, unknown>)) }));
-jest.mock('@socket.io/redis-adapter', () => ({ createAdapter: jest.fn(() => 'adapter-instance') }));
+jest.mock('ioredis', () => ({
+  Redis: jest.fn(
+    (...args: unknown[]) =>
+      new FakeRedis(args[0], args[1] as Record<string, unknown>),
+  ),
+}));
+jest.mock('@socket.io/redis-adapter', () => ({
+  createAdapter: jest.fn(() => 'adapter-instance'),
+}));
 
 import { RedisIoAdapter } from './redis-io.adapter';
 
@@ -35,11 +45,17 @@ describe('RedisIoAdapter', () => {
 
   const fakeApp = (redisUrl: string | undefined) => ({
     get: (token: unknown) =>
-      token === ConfigService ? ({ get: (k: string) => (k === 'REDIS_URL' ? redisUrl : undefined) } as unknown as ConfigService) : undefined,
+      token === ConfigService
+        ? ({
+            get: (k: string) => (k === 'REDIS_URL' ? redisUrl : undefined),
+          } as unknown as ConfigService)
+        : undefined,
   });
 
   it('attaches an error listener to BOTH the pub and sub clients — an unhandled ioredis "error" event can otherwise crash the whole API process', async () => {
-    const adapter = new RedisIoAdapter(fakeApp('redis://localhost:6379') as never);
+    const adapter = new RedisIoAdapter(
+      fakeApp('redis://localhost:6379') as never,
+    );
     await adapter.connectToRedis();
 
     expect(FakeRedis.instances).toHaveLength(2); // pub + sub (duplicate)

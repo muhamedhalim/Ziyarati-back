@@ -13,7 +13,10 @@ import { E2eApp } from './whatsapp-e2e-app';
 import { Tenant } from '../../src/entities/SaaS-Core/Tenant';
 import { SubscriptionPlan } from '../../src/entities/SaaS-Core/SubscriptionPlan';
 import { Subscription } from '../../src/entities/SaaS-Core/Subscription';
-import { FeatureFlag } from '../../src/entities/SaaS-Core/FeatureFlag';
+import {
+  FeatureFlag,
+  FeatureFlagSource,
+} from '../../src/entities/SaaS-Core/FeatureFlag';
 import { BillingCycle, SubscriptionStatus } from '../../src/entities/enums';
 import { BillingModeService } from '../../src/modules/subscription-billing/billing-mode.service';
 import { BillingMode } from '../../src/modules/subscription-billing/platform-billing.constants';
@@ -82,12 +85,12 @@ export async function createSubscribedOwnerFixture(
   e2e: E2eApp,
   label: string,
   limits: PlanLimits = {},
-  // Route-level `@RequireFeature(key)` (FeatureGuard) reads a raw per-tenant
-  // `feature_flags` row that defaults to DISABLED when absent — a SEPARATE,
-  // simpler mechanism from FeatureResolverService's plan/dependency/quota
-  // resolution (see FND-033). Under PAID mode a gated route 403s unless its
-  // key is listed here. Empty by default — pass e.g. ['campaigns'] for any
-  // route carrying that decorator.
+  // Capabilities to grant this tenant explicitly. Written with
+  // `source = PLATFORM_ADMIN`, because ONLY platform-sourced rows carry
+  // authorization weight — a row left at the column default (`TENANT`) is a UI
+  // preference and grants nothing, which is exactly the self-grant hole the
+  // `source` column closes. Needed for any capability whose registry
+  // `defaultEnabled` is false (whatsapp, campaigns, ai.assistant).
   features: string[] = [],
 ): Promise<SubscribedOwnerFixture> {
   const suffix = `${label}-${randomUUID().slice(0, 8)}`;
@@ -127,7 +130,12 @@ export async function createSubscribedOwnerFixture(
       is_active: true,
     }),
   );
-  await userRoles.save(userRoles.create({ user: { id: user.id } as User, role: { id: role.id } as Role }));
+  await userRoles.save(
+    userRoles.create({
+      user: { id: user.id } as User,
+      role: { id: role.id } as Role,
+    }),
+  );
 
   const plan = await plans.save(
     plans.create({
@@ -157,7 +165,12 @@ export async function createSubscribedOwnerFixture(
     const flags = e2e.dataSource.getRepository(FeatureFlag);
     await flags.save(
       features.map((feature_key) =>
-        flags.create({ tenant: { id: tenant.id } as Tenant, feature_key, is_enabled: true }),
+        flags.create({
+          tenant: { id: tenant.id } as Tenant,
+          feature_key,
+          is_enabled: true,
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+        }),
       ),
     );
   }
@@ -190,7 +203,11 @@ export async function seedUsage(
   e2e: E2eApp,
   tenantId: string,
   subscriptionId: string,
-  column: 'ai_tokens_used' | 'whatsapp_messages_used' | 'appointments_used' | 'campaigns_used',
+  column:
+    | 'ai_tokens_used'
+    | 'whatsapp_messages_used'
+    | 'appointments_used'
+    | 'campaigns_used',
   amount: number,
 ): Promise<void> {
   const periodMonth = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, '0')}`;
@@ -213,7 +230,15 @@ export async function cleanupSubscriptionFixture(
   tenantId: string,
   planId: string,
 ): Promise<void> {
-  await e2e.dataSource.query(`DELETE FROM subscription_usage WHERE tenant_id = $1`, [tenantId]);
-  await e2e.dataSource.query(`DELETE FROM subscriptions WHERE "tenantId" = $1`, [tenantId]);
-  await e2e.dataSource.query(`DELETE FROM subscription_plans WHERE id = $1`, [planId]);
+  await e2e.dataSource.query(
+    `DELETE FROM subscription_usage WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  await e2e.dataSource.query(
+    `DELETE FROM subscriptions WHERE "tenantId" = $1`,
+    [tenantId],
+  );
+  await e2e.dataSource.query(`DELETE FROM subscription_plans WHERE id = $1`, [
+    planId,
+  ]);
 }

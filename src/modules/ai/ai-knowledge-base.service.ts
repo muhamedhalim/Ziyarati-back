@@ -4,13 +4,13 @@ import { FindOptionsWhere, ILike, Repository } from 'typeorm';
 
 import { AiKnowledgeBase } from '../../entities/AI Agent/AiKnowledgeBase';
 import { AiAgent } from '../../entities/AI Agent/AiAgent';
-import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreateKnowledgeBaseDto } from './dto/create-knowledge-base.dto';
 import { UpdateKnowledgeBaseDto } from './dto/update-knowledge-base.dto';
 import { KnowledgeBaseFilterDto } from './dto/knowledge-base-filter.dto';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
+import { UsageService } from '../subscription-billing/usage.service';
 
 /**
  * AI knowledge base.
@@ -31,9 +31,21 @@ export class AiKnowledgeBaseService {
     private readonly kb: Repository<AiKnowledgeBase>,
     @InjectRepository(AiAgent) private readonly agents: Repository<AiAgent>,
     private readonly ingestion: AiKnowledgeIngestionService,
+    private readonly usage: UsageService,
   ) {}
 
-  async create(tenantId: string, dto: CreateKnowledgeBaseDto): Promise<AiKnowledgeBase> {
+  async create(
+    tenantId: string,
+    dto: CreateKnowledgeBaseDto,
+  ): Promise<AiKnowledgeBase> {
+    // `max_knowledge_base_files` is a real plan cap and this is a deliberate
+    // clinic action, so it is enforced here. Scoped to AI_ASSISTANT, so a
+    // tenant on a super-admin AI grant is UNMETERED_BY_PLAN and passes.
+    await this.usage.assertResourceWithinLimit(
+      tenantId,
+      'knowledgeBaseFiles',
+      await this.kb.count({ where: { tenant: { id: tenantId } } }),
+    );
     await this.assertAgent(tenantId, dto.agentId);
     // Creates the chunk AND (best-effort) its embedding in the pgvector sidecar.
     return this.ingestion.ingestChunk(tenantId, dto.agentId, dto.content, {
@@ -43,7 +55,9 @@ export class AiKnowledgeBaseService {
   }
 
   async findAll(tenantId: string, filter: KnowledgeBaseFilterDto) {
-    const where: FindOptionsWhere<AiKnowledgeBase> = { tenant: { id: tenantId } };
+    const where: FindOptionsWhere<AiKnowledgeBase> = {
+      tenant: { id: tenantId },
+    };
     if (filter.agentId) where.agent = { id: filter.agentId };
     if (filter.search) where.content = ILike(`%${filter.search}%`);
 
@@ -62,20 +76,33 @@ export class AiKnowledgeBaseService {
       where: { id, tenant: { id: tenantId } },
       relations: { agent: true },
     });
-    if (!entry) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Knowledge base entry not found' });
+    if (!entry)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Knowledge base entry not found',
+      });
     return entry;
   }
 
-  async update(tenantId: string, id: string, dto: UpdateKnowledgeBaseDto): Promise<AiKnowledgeBase> {
+  async update(
+    tenantId: string,
+    id: string,
+    dto: UpdateKnowledgeBaseDto,
+  ): Promise<AiKnowledgeBase> {
     const entry = await this.findOne(tenantId, id);
-    const contentChanged = dto.content !== undefined && dto.content !== entry.content;
+    const contentChanged =
+      dto.content !== undefined && dto.content !== entry.content;
     if (dto.content !== undefined) entry.content = dto.content;
     if (dto.sourceType !== undefined) entry.source_type = dto.sourceType;
     if (dto.sourceId !== undefined) entry.source_id = dto.sourceId;
     const saved = await this.kb.save(entry);
     // Keep the embedding in sync when the text changes.
     if (contentChanged && entry.agent?.id) {
-      await this.ingestion.reembedChunk(tenantId, entry.agent.id, saved.id, saved.content);
+      await this.ingestion.reembedChunk(
+        tenantId,
+        entry.agent.id,
+        saved.id,
+        saved.content,
+      );
     }
     return saved;
   }
@@ -92,7 +119,10 @@ export class AiKnowledgeBaseService {
    */
   async rebuildEmbeddings(tenantId: string, agentId: string) {
     await this.assertAgent(tenantId, agentId);
-    const { chunks, embedded } = await this.ingestion.reembedAgent(tenantId, agentId);
+    const { chunks, embedded } = await this.ingestion.reembedAgent(
+      tenantId,
+      agentId,
+    );
     return {
       accepted: true,
       agentId,
@@ -106,8 +136,14 @@ export class AiKnowledgeBaseService {
   }
 
   private async assertAgent(tenantId: string, agentId: string): Promise<void> {
-    if (!(await this.agents.exists({ where: { id: agentId, tenant: { id: tenantId } } }))) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'AI agent not found in this tenant' });
+    if (
+      !(await this.agents.exists({
+        where: { id: agentId, tenant: { id: tenantId } },
+      }))
+    ) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'AI agent not found in this tenant',
+      });
     }
   }
 }

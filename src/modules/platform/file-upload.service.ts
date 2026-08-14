@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 
@@ -11,6 +11,7 @@ import { CreateFileUploadDto } from './dto/create-file-upload.dto';
 import { QueryFileUploadsDto } from './dto/query-file-uploads.dto';
 import { SystemSettingService } from './system-setting.service';
 import { SettingKey } from './settings.registry';
+import { UsageService } from '../subscription-billing/usage.service';
 
 /**
  * File upload METADATA tracking (`file_uploads`).
@@ -32,6 +33,11 @@ export class FileUploadService {
     @InjectRepository(FileUpload)
     private readonly files: Repository<FileUpload>,
     private readonly platformSettings: SystemSettingService,
+    // `forwardRef`: SubscriptionBillingModule imports PlatformModule for
+    // SystemSettingService, and this makes the dependency mutual. Same pattern
+    // already used between WhatsappModule and NotificationsModule.
+    @Inject(forwardRef(() => UsageService))
+    private readonly usage: UsageService,
   ) {}
 
   async register(
@@ -63,6 +69,24 @@ export class FileUploadService {
       });
     }
 
+    // The PLAN's own caps, alongside the platform-wide `TENANT_QUOTA_GB` above.
+    // Both are checked, so the lower of the two binds — the platform setting is
+    // a hard infrastructure ceiling, the plan columns are the commercial limit.
+    // Scoped to CORE_WORKSPACE (always-on): a tenant with a paid plan is
+    // PLAN_ENFORCED here, while one running on a super-admin feature grant has
+    // no plan and is UNMETERED_BY_PLAN, so uploads keep working for it.
+    await this.usage.assertResourceWithinLimit(
+      tenantId,
+      'storageBytes',
+      used,
+      size,
+    );
+    await this.usage.assertResourceWithinLimit(
+      tenantId,
+      'uploadedFiles',
+      await this.files.count({ where: { tenant: { id: tenantId } } }),
+    );
+
     return this.files.save(
       this.files.create({
         tenant: { id: tenantId } as Tenant,
@@ -81,13 +105,19 @@ export class FileUploadService {
     try {
       parsed = new URL(url);
     } catch {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'file_url must be a valid URL' });
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'file_url must be a valid URL',
+      });
     }
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'file_url must be http(s)' });
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'file_url must be http(s)',
+      });
     }
     if (FileUploadService.BLOCKED_HOST.test(parsed.hostname)) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'file_url host is not allowed' });
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'file_url host is not allowed',
+      });
     }
   }
 

@@ -16,6 +16,8 @@ import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
+import { AccessControlService } from '../subscription-billing/access-control.service';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 import { isOptOutMessage } from './opt-out.util';
 import type {
   WhatsappListSection,
@@ -25,11 +27,6 @@ import type {
   MetaWebhookChangeValue,
   MetaWebhookMessage,
 } from './webhooks/whatsapp-webhook.types';
-
-const n = (v: unknown): number => {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-};
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -77,16 +74,69 @@ export class WhatsappInboundAiService {
     private readonly customers: CustomerService,
     private readonly ctx: TenantContextService,
     private readonly settings: SystemSettingService,
+    private readonly access: AccessControlService,
   ) {}
 
-  /** Process the inbound messages in a resolved Meta change value. */
-  async handleInboundValue(tenantId: string, value: MetaWebhookChangeValue): Promise<void> {
+  /**
+   * Process the inbound messages in a resolved Meta change value.
+   *
+   * INGEST vs EXECUTE. The webhook job itself (`whatsapp.webhookProcess`) is
+   * deliberately NOT entitlement-gated — inbound events must keep being
+   * accepted and persisted while a clinic is blocked, or a suspension would
+   * silently destroy customer messages the clinic never gets to read. What is
+   * gated is what this bridge DOES with them: driving an AI turn and sending a
+   * reply. Checked once here rather than per message so a blocked tenant's
+   * batch produces one log line instead of one error per inbound message —
+   * `AiExecutionService` and `WhatsappMessagingService.sendSession` still
+   * refuse independently, so this is an early-out, not the enforcement.
+   */
+  async handleInboundValue(
+    tenantId: string,
+    value: MetaWebhookChangeValue,
+  ): Promise<void> {
     const messages = value?.messages ?? [];
+    if (messages.length === 0) return;
+    if (!(await this.mayAutoReply(tenantId))) return;
     for (const message of messages) {
       await this.handleOne(tenantId, value, message).catch((err) =>
         this.logger.error(`inbound AI turn failed: ${(err as Error)?.message}`),
       );
     }
+  }
+
+  /**
+   * Both capabilities this bridge exercises: the AI turn and the WhatsApp
+   * reply. Fails CLOSED — a webhook path that cannot read the decision must not
+   * proceed to run AI and send messages on the clinic's behalf.
+   */
+  private async mayAutoReply(tenantId: string): Promise<boolean> {
+    for (const key of [FeatureKey.AI_ASSISTANT, FeatureKey.WHATSAPP]) {
+      let decision;
+      try {
+        decision = await this.access.resolve(tenantId, key);
+      } catch (err) {
+        this.logger.error(
+          `Access check failed for inbound WhatsApp AI (tenant=${tenantId}, feature=${key}) — ` +
+            `skipping the auto-reply (fail closed): ${(err as Error)?.message}`,
+        );
+        return false;
+      }
+      if (decision.allowed) continue;
+      if (
+        !this.access.shouldBlock(decision, {
+          surface: 'webhook',
+          detail: 'whatsapp.inbound.aiReply',
+        })
+      ) {
+        continue; // ACCESS_POLICY_MODE=shadow — recorded, not enforced
+      }
+      this.logger.warn(
+        `Skipping inbound WhatsApp AI auto-reply for tenant ${tenantId}: not entitled to "${key}" ` +
+          `(source=${decision.source}). The inbound message itself is still stored.`,
+      );
+      return false;
+    }
+    return true;
   }
 
   private async handleOne(
@@ -99,7 +149,9 @@ export class WhatsappInboundAiService {
 
     const content = this.extractContent(message);
     if (!content) {
-      this.logger.debug(`inbound ${message.type ?? 'unknown'} had no actionable content (tenant=${tenantId})`);
+      this.logger.debug(
+        `inbound ${message.type ?? 'unknown'} had no actionable content (tenant=${tenantId})`,
+      );
       return;
     }
 
@@ -121,7 +173,8 @@ export class WhatsappInboundAiService {
     waId: string,
     content: string,
   ): Promise<void> {
-    const displayName = value?.contacts?.find((c) => c.wa_id === message.from)?.profile?.name;
+    const displayName = value?.contacts?.find((c) => c.wa_id === message.from)
+      ?.profile?.name;
     const contact = await this.findOrCreateContact(tenantId, waId, displayName);
 
     // FND-024: an inbound opt-out is recorded and the turn stops HERE — no AI
@@ -133,10 +186,18 @@ export class WhatsappInboundAiService {
     // unrelated sentence containing a keyword-shaped word is never mistaken
     // for an opt-out).
     if (contact.customer?.id) {
-      const keywordsCsv = await this.settings.getTyped<string>(SettingKey.WHATSAPP_OPT_OUT_KEYWORDS);
+      const keywordsCsv = await this.settings.getTyped<string>(
+        SettingKey.WHATSAPP_OPT_OUT_KEYWORDS,
+      );
       if (isOptOutMessage(content, keywordsCsv)) {
-        await this.customers.recordOptOut(tenantId, contact.customer.id, 'inbound_keyword');
-        this.logger.log(`Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`);
+        await this.customers.recordOptOut(
+          tenantId,
+          contact.customer.id,
+          'inbound_keyword',
+        );
+        this.logger.log(
+          `Customer ${contact.customer.id} opted out via inbound WhatsApp keyword`,
+        );
         return;
       }
     }
@@ -155,7 +216,9 @@ export class WhatsappInboundAiService {
         aiConversationId: contact.ai_conversation_id ?? undefined,
         autoRoute: Boolean(contact.ai_conversation_id),
         useMemory: true,
-        sessionPatch: contact.customer?.id ? { context: { customerId: contact.customer.id } } : undefined,
+        sessionPatch: contact.customer?.id
+          ? { context: { customerId: contact.customer.id } }
+          : undefined,
         // Record the provider facts on the mirrored timeline message: the
         // `wamid` (which finally makes the messages(tenantId, wa_message_id)
         // dedupe index effective, and is how media is matched back to its
@@ -184,7 +247,13 @@ export class WhatsappInboundAiService {
     const reply = result.reply?.content?.trim();
     if (!reply) return;
     const interactive = this.buildInteractive(result.lastTool);
-    await this.sendReply(tenantId, waId, reply, interactive, result.mirroredMessageId);
+    await this.sendReply(
+      tenantId,
+      waId,
+      reply,
+      interactive,
+      result.mirroredMessageId,
+    );
   }
 
   /**
@@ -194,7 +263,10 @@ export class WhatsappInboundAiService {
    * it as part of this same turn. Best-effort throughout: media is an
    * enrichment, and losing a photo must never cost the patient their reply.
    */
-  private async attachMedia(tenantId: string, message: MetaWebhookMessage): Promise<void> {
+  private async attachMedia(
+    tenantId: string,
+    message: MetaWebhookMessage,
+  ): Promise<void> {
     if (!WhatsappMediaService.isMediaMessage(message) || !message.id) return;
 
     try {
@@ -211,7 +283,12 @@ export class WhatsappInboundAiService {
         stored.conversation?.whatsapp_account?.id ??
         (await this.router.resolveForSend(tenantId, {})).id;
 
-      await this.media.enqueueForMessage(tenantId, accountId, stored.id, message);
+      await this.media.enqueueForMessage(
+        tenantId,
+        accountId,
+        stored.id,
+        message,
+      );
     } catch (err) {
       this.logger.warn(
         `Could not queue inbound media for message ${message.id}: ${(err as Error)?.message}`,
@@ -257,9 +334,15 @@ export class WhatsappInboundAiService {
       // FND-023 — lets a later delivery/read webhook (matched by wamid) find
       // its way back to this bot reply on the unified timeline.
       await this.conversationExecution
-        .recordProviderMessageId(tenantId, mirroredMessageId, res.providerMessageId)
+        .recordProviderMessageId(
+          tenantId,
+          mirroredMessageId,
+          res.providerMessageId,
+        )
         .catch((err) =>
-          this.logger.warn(`could not record provider message id: ${(err as Error)?.message}`),
+          this.logger.warn(
+            `could not record provider message id: ${(err as Error)?.message}`,
+          ),
         );
     }
   }
@@ -277,33 +360,50 @@ export class WhatsappInboundAiService {
 
     switch (lastTool.name) {
       case 'search_clinics': {
-        const clinics = Array.isArray(lastTool.result.clinics) ? lastTool.result.clinics : [];
+        const clinics = Array.isArray(lastTool.result.clinics)
+          ? lastTool.result.clinics
+          : [];
         const rows = clinics
           .slice(0, 10)
           .map((c: Record<string, unknown>) => ({
             id: String(c.id ?? ''),
             title: this.clip(String(c.name ?? 'Clinic'), 24),
-            description: c.services ? this.clip(String(c.services), 72) : undefined,
+            description: c.services
+              ? this.clip(String(c.services), 72)
+              : undefined,
           }))
           .filter((r) => r.id);
         return this.list('Choose a clinic', rows, 'Clinics found');
       }
       case 'get_clinic_details': {
-        const branches = Array.isArray(lastTool.result.branches) ? lastTool.result.branches : [];
+        const branches = Array.isArray(lastTool.result.branches)
+          ? lastTool.result.branches
+          : [];
         const rows = branches
           .slice(0, 10)
-          .map((b: Record<string, unknown>) => ({ id: String(b.id ?? ''), title: this.clip(String(b.name ?? 'Branch'), 24) }))
+          .map((b: Record<string, unknown>) => ({
+            id: String(b.id ?? ''),
+            title: this.clip(String(b.name ?? 'Branch'), 24),
+          }))
           .filter((r) => r.id);
         return this.list('Choose a branch', rows, 'Branches');
       }
       case 'search_public_availability':
       case 'check_availability': {
-        const windows = Array.isArray(lastTool.result.windows) ? lastTool.result.windows : [];
+        const windows = Array.isArray(lastTool.result.windows)
+          ? lastTool.result.windows
+          : [];
         const rows = windows
           .slice(0, 10)
           .map((w: Record<string, unknown>) => {
             const start = String(w.startTime ?? '');
-            const label = start ? new Date(start).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'Slot';
+            const label = start
+              ? new Date(start).toLocaleString('en-GB', {
+                  weekday: 'short',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : 'Slot';
             return { id: start, title: this.clip(label, 24) };
           })
           .filter((r) => r.id);
@@ -350,13 +450,21 @@ export class WhatsappInboundAiService {
         await this.contacts.save(existing);
       }
       if (!existing.customer) {
-        existing.customer = await this.findOrCreateCustomer(tenantId, waId, displayName);
+        existing.customer = await this.findOrCreateCustomer(
+          tenantId,
+          waId,
+          displayName,
+        );
         await this.contacts.save(existing);
       }
       return existing;
     }
 
-    const customer = await this.findOrCreateCustomer(tenantId, waId, displayName);
+    const customer = await this.findOrCreateCustomer(
+      tenantId,
+      waId,
+      displayName,
+    );
     try {
       return await this.contacts.save(
         this.contacts.create({
@@ -383,9 +491,19 @@ export class WhatsappInboundAiService {
     }
   }
 
-  private async findOrCreateCustomer(tenantId: string, waId: string, displayName?: string) {
-    const search = await this.customers.search(tenantId, { q: waId, page: 1, limit: 5 } as never);
-    const match = search.data.find((c) => c.phone === waId || c.whatsapp_id === waId);
+  private async findOrCreateCustomer(
+    tenantId: string,
+    waId: string,
+    displayName?: string,
+  ) {
+    const search = await this.customers.search(tenantId, {
+      q: waId,
+      page: 1,
+      limit: 5,
+    } as never);
+    const match = search.data.find(
+      (c) => c.phone === waId || c.whatsapp_id === waId,
+    );
     if (match) return match;
 
     return this.customers.create(tenantId, {
@@ -425,14 +543,17 @@ export class WhatsappInboundAiService {
           `[The user sent a document${message.document?.filename ? `: ${message.document.filename}` : ''}.]`
         );
       case 'audio':
-        return message.audio?.voice ? '[The user sent a voice message.]' : '[The user sent an audio message.]';
+        return message.audio?.voice
+          ? '[The user sent a voice message.]'
+          : '[The user sent an audio message.]';
       case 'video':
         return message.video?.caption?.trim() || '[The user sent a video.]';
       case 'sticker':
         return '[The user sent a sticker.]';
       case 'location': {
         const l = message.location;
-        if (l?.latitude == null || l?.longitude == null) return '[The user shared a location.]';
+        if (l?.latitude == null || l?.longitude == null)
+          return '[The user shared a location.]';
         const label = l.name ?? l.address ?? `${l.latitude},${l.longitude}`;
         return `[The user shared a location: ${label}]`;
       }

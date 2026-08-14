@@ -9,6 +9,7 @@ import {
   PLATFORM_ADMIN_AUDIT_ACTION,
 } from '../platform/platform-admin-audit.service';
 import { OverrideStatus } from './platform-billing.constants';
+import { AccessCacheService } from './access-cache.service';
 
 export interface FreeAccessOverride {
   id: string;
@@ -50,6 +51,7 @@ export class FreeAccessOverrideService {
     private readonly dataSource: DataSource,
     private readonly audit: PlatformAdminAuditService,
     private readonly tenantContext: TenantContextService,
+    private readonly cache: AccessCacheService,
   ) {}
 
   /** True when the tenant currently has an ACTIVE, time-valid override. */
@@ -135,6 +137,8 @@ export class FreeAccessOverrideService {
       ],
     );
     const result = this.map(rows[0]);
+    // Tenant-wide grant — every capability's decision just changed.
+    this.cache.invalidate(tenantId);
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_GRANT,
       userId: this.actorId(),
@@ -179,6 +183,7 @@ export class FreeAccessOverrideService {
       [active.id, endsAt],
     );
     const result = this.map(rows[0]);
+    this.cache.invalidate(tenantId);
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_EXTEND,
       userId: this.actorId(),
@@ -210,6 +215,9 @@ export class FreeAccessOverrideService {
         message: 'No active free-access override to revoke',
       });
     }
+    // A revocation must stop access NOW — a cached grant outliving its
+    // revocation is the one staleness this cache is forbidden to produce.
+    this.cache.invalidate(tenantId);
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.OVERRIDE_REVOKE,
       userId: this.actorId(),

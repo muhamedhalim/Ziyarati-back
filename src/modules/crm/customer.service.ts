@@ -10,6 +10,7 @@ import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { QueryCustomersDto } from './dto/query-customers.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
+import { UsageService } from '../subscription-billing/usage.service';
 
 /**
  * Customers — the core CRM aggregate root.
@@ -34,9 +35,22 @@ export class CustomerService {
   constructor(
     @InjectRepository(Customer)
     private readonly customers: Repository<Customer>,
+    private readonly usage: UsageService,
   ) {}
 
   async create(tenantId: string, dto: CreateCustomerDto): Promise<Customer> {
+    // `max_customers` is a real plan cap and this is the deliberate "add a
+    // patient" action, so it is the right place to refuse. Deliberately NOT
+    // applied to `findOrCreateForBooking` below: refusing there would abort a
+    // booking for a patient already mid-conversation with the clinic, turning a
+    // billing limit into a lost appointment. Scoped to CRM via
+    // `RESOURCE_LIMIT_FEATURE`, so a tenant running on a super-admin grant (no
+    // plan, `UNMETERED_BY_PLAN`) passes rather than 404ing.
+    await this.usage.assertResourceWithinLimit(
+      tenantId,
+      'customers',
+      await this.customers.count({ where: { tenant: { id: tenantId } } }),
+    );
     await this.assertPhoneUnique(tenantId, dto.phone);
     const customer = this.customers.create({
       tenant: { id: tenantId } as Tenant,

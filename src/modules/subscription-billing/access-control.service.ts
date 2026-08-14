@@ -26,6 +26,11 @@ import {
   TenantAccessDecision,
   deniedDecision,
 } from './tenant-access-decision';
+import { AccessCacheService } from './access-cache.service';
+import {
+  AccessPolicyModeService,
+  DenialSite,
+} from './access-policy-mode.service';
 
 /**
  * @deprecated Use {@link TenantAccessDecision}. Retained so existing consumers
@@ -101,6 +106,8 @@ export class AccessControlService {
     private readonly overrides: FreeAccessOverrideService,
     private readonly featureFlags: FeatureFlagService,
     private readonly config: ConfigService,
+    private readonly cache: AccessCacheService,
+    private readonly policyMode: AccessPolicyModeService,
   ) {}
 
   // ──────────────────────────── The authority ──────────────────────────── //
@@ -117,11 +124,41 @@ export class AccessControlService {
     manager?: EntityManager,
   ): Promise<TenantAccessDecision> {
     if (featureKey === null) {
-      const base = await this.resolveBase(tenantId, manager);
+      // Reuses an already-cached context when one is warm, but never populates
+      // the cache from here — this path skips the catalog reads, so storing it
+      // would poison a later per-feature resolution with a half-built context.
+      const warm = manager
+        ? undefined
+        : this.cache.get<AccessContext>(tenantId);
+      const base = warm?.base ?? (await this.resolveBase(tenantId, manager));
       return { ...base, tenantId, featureKey: null };
     }
     const ctx = await this.loadContext(tenantId, manager);
     return this.decide(tenantId, featureKey, ctx);
+  }
+
+  /**
+   * Whether a denial must actually BLOCK, or is only being observed.
+   *
+   * Every enforcement point — the two HTTP guards, the worker gate, the AI and
+   * WhatsApp execution seams, the realtime gateway — asks this instead of
+   * branching on the rollout mode itself. One switch, one implementation: see
+   * {@link AccessPolicyModeService}. In `enforce` (the default) this is always
+   * `true` and costs a boolean read.
+   */
+  shouldBlock(decision: TenantAccessDecision, site: DenialSite): boolean {
+    return this.policyMode.shouldBlock(decision, site);
+  }
+
+  /**
+   * Drops the tenant's cached access state here and on every other replica.
+   *
+   * Exposed on the authority (rather than making every caller reach for
+   * `AccessCacheService`) so "what invalidates access?" has one answer that
+   * lives next to "what decides access?".
+   */
+  invalidate(tenantId: string): void {
+    this.cache.invalidate(tenantId);
   }
 
   /**
@@ -249,9 +286,10 @@ export class AccessControlService {
   async assertAccess(
     tenantId: string,
     featureKey: FeatureKey | null = null,
+    site: DenialSite = { surface: 'service', detail: 'assertAccess' },
   ): Promise<TenantAccessDecision> {
     const decision = await this.resolve(tenantId, featureKey);
-    if (!decision.allowed) {
+    if (!decision.allowed && this.shouldBlock(decision, site)) {
       throw new AppError(ErrorCode.NO_ACTIVE_SUBSCRIPTION, {
         publicContext: { source: decision.source, featureKey },
         internalContext: { reason: decision.reason },
@@ -431,6 +469,14 @@ export class AccessControlService {
     tenantId: string,
     manager?: EntityManager,
   ): Promise<AccessContext> {
+    // A transaction NEVER reads the cache: a caller inside one may have just
+    // written the flag being resolved (the super-admin toggle re-reads its own
+    // write to build the audit record), and must observe it.
+    if (!manager) {
+      const cached = this.cache.get<AccessContext>(tenantId);
+      if (cached) return cached;
+    }
+
     const defsRepo = manager
       ? manager.getRepository(FeatureDefinition)
       : this.definitions;
@@ -456,7 +502,9 @@ export class AccessControlService {
       ]);
     }
 
-    return { base, flags, defaults, plans };
+    const ctx: AccessContext = { base, flags, defaults, plans };
+    if (!manager) this.cache.set(tenantId, ctx);
+    return ctx;
   }
 
   /**

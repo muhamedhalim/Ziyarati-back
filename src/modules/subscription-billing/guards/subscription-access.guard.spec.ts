@@ -42,7 +42,11 @@ const DENIED: TenantAccessDecision = {
  */
 describe('SubscriptionAccessGuard', () => {
   let guard: SubscriptionAccessGuard;
-  let access: { resolve: jest.Mock; isBillableAllowed: jest.Mock };
+  let access: {
+    resolve: jest.Mock;
+    isBillableAllowed: jest.Mock;
+    shouldBlock: jest.Mock;
+  };
   let reflector: { getAllAndOverride: jest.Mock };
 
   const contextFor = (method: string, tenantId: string | null = 't1') => {
@@ -70,6 +74,8 @@ describe('SubscriptionAccessGuard', () => {
     access = {
       resolve: jest.fn().mockResolvedValue(ALLOWED),
       isBillableAllowed: jest.fn().mockResolvedValue(true),
+      // true = ENFORCE, the production default (see AccessPolicyModeService).
+      shouldBlock: jest.fn().mockReturnValue(true),
     };
     reflector = { getAllAndOverride: jest.fn() };
     // Default: route IS gated, no @RequireFeature().
