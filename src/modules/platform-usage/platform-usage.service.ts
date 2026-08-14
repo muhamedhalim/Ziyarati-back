@@ -170,7 +170,20 @@ export class PlatformUsageService {
     return { data, total, page: q.page, limit: q.limit, periodMonth: period };
   }
 
-  /** Common CTE: tenant ⨝ latest subscription ⨝ plan ⨝ period usage + derived cols. */
+  /**
+   * Common CTE: tenant ⨝ latest subscription ⨝ plan ⨝ period usage + derived cols.
+   *
+   * NOTE on `su.subscription_id::text = <sub>.id::text` (here and in the three
+   * other raw-SQL joins in this file): the cast is on BOTH sides deliberately,
+   * because `subscription_usage.subscription_id` does not have the same type in
+   * every environment. The baseline migration created it as `character varying`,
+   * while the entity declares `@Column({ type: 'uuid' })` — so a migration-built
+   * database (staging/production, where `TYPEORM_SYNCHRONIZE` is refused) has
+   * `varchar` and a `synchronize` dev box has `uuid`. Casting one side only
+   * works in exactly one of those and raises `operator does not exist: uuid =
+   * text` in the other. Casting both is the only form that holds everywhere.
+   * Do not "simplify" this to a bare `=`.
+   */
   private baseCte(period: string): string {
     // Utilisation reads the SAME subscription_usage rows getBreakdown reads and
     // applies the SAME ratio; it is an OVERVIEW/sort key only. Authoritative
@@ -211,7 +224,7 @@ export class PlatformUsageService {
           ORDER BY s.created_at DESC LIMIT 1
         ) sub ON true
         LEFT JOIN subscription_plans pl ON pl.id = sub."planId"
-        LEFT JOIN subscription_usage su ON su.subscription_id = sub.id::text AND su.period_month = '${period}'
+        LEFT JOIN subscription_usage su ON su.subscription_id::text = sub.id::text AND su.period_month = '${period}'
         WHERE t.deleted_at IS NULL
       )`;
   }
@@ -333,7 +346,7 @@ export class PlatformUsageService {
          )::int AS unlimited
        FROM subscriptions s
        JOIN subscription_plans pl ON pl.id = s."planId"
-       LEFT JOIN subscription_usage su ON su.subscription_id = s.id::text AND su.period_month = $1
+       LEFT JOIN subscription_usage su ON su.subscription_id::text = s.id::text AND su.period_month = $1
        WHERE s.deleted_at IS NULL AND s.status IN ('ACTIVE','TRIAL')`,
       [period],
     );
@@ -417,7 +430,7 @@ export class PlatformUsageService {
          AVG(CASE WHEN pl.max_campaigns > 0 THEN su.campaigns_used::numeric / pl.max_campaigns END) AS ca_util
        FROM subscriptions s
        JOIN subscription_plans pl ON pl.id = s."planId"
-       LEFT JOIN subscription_usage su ON su.subscription_id = s.id::text AND su.period_month = $1
+       LEFT JOIN subscription_usage su ON su.subscription_id::text = s.id::text AND su.period_month = $1
        WHERE s.deleted_at IS NULL AND s.status IN ('ACTIVE','TRIAL')`,
       [period],
     );
@@ -478,9 +491,41 @@ export class PlatformUsageService {
    * SAME subscription_usage vs plan data the quota system uses, via the shared
    * `buildUsageAlert` helper so the notification system can reuse the exact
    * classification. Only ENFORCED plans (with limits) can raise quota alerts.
+   *
+   * @param opts.actionableOnly pushes a PRE-FILTER into SQL so only rows that
+   * could possibly raise an alert are materialised: a subscription in a
+   * lifecycle state worth reporting, or a metric already at ≥80% of a finite
+   * limit (the lowest threshold `buildUsageAlert` acts on). The classification
+   * itself is untouched — the same helper runs over a smaller row set, so the
+   * result is a subset of the unfiltered call, never a different answer.
+   *
+   * Added for the Platform Control Center, whose alert feed must stay bounded:
+   * the unfiltered form loads EVERY subscription ⨝ plan ⨝ usage row into Node
+   * and classifies in a JS loop, which is fine for a dedicated usage page and
+   * far too much for a landing page. Default arguments preserve the original
+   * behaviour exactly for every existing caller.
    */
-  async alerts(periodMonth?: string): Promise<UsageAlert[]> {
+  async alerts(
+    periodMonth?: string,
+    opts?: { actionableOnly?: boolean },
+  ): Promise<UsageAlert[]> {
     const period = periodMonth ?? currentPeriodMonth();
+
+    // 80% is `buildUsageAlert`'s lowest acting threshold. Anything below it can
+    // never produce an alert, so excluding it in SQL cannot change the output.
+    const atRisk = (used: string, limit: string) =>
+      `(pl.${limit} IS NOT NULL AND pl.${limit} > 0 AND COALESCE(su.${used},0)::numeric >= pl.${limit} * 0.8)`;
+    const prefilter = opts?.actionableOnly
+      ? `AND (
+           s.status IN ('PAST_DUE','SUSPENDED','CANCELLED','GRACE_EXPIRED')
+           OR (s.status IN ('ACTIVE','TRIAL') AND s.ends_at < now())
+           OR ${atRisk('ai_tokens_used', 'max_ai_tokens')}
+           OR ${atRisk('whatsapp_messages_used', 'max_whatsapp_messages')}
+           OR ${atRisk('appointments_used', 'max_appointments')}
+           OR ${atRisk('campaigns_used', 'max_campaigns')}
+         )`
+      : '';
+
     const rows = await this.dataSource.query(
       `SELECT t.id AS tenant_id, t.name AS tenant_name,
               s.status AS sub_status, s.ends_at,
@@ -492,8 +537,8 @@ export class PlatformUsageService {
          FROM subscriptions s
          JOIN tenants t ON t.id = s."tenantId" AND t.deleted_at IS NULL
          JOIN subscription_plans pl ON pl.id = s."planId"
-         LEFT JOIN subscription_usage su ON su.subscription_id = s.id::text AND su.period_month = $1
-        WHERE s.deleted_at IS NULL`,
+         LEFT JOIN subscription_usage su ON su.subscription_id::text = s.id::text AND su.period_month = $1
+        WHERE s.deleted_at IS NULL ${prefilter}`,
       [period],
     );
 

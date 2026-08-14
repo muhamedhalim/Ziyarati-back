@@ -77,6 +77,59 @@ export class MonitoringService {
     };
   }
 
+  /**
+   * Light health probe for the Platform Control Center's status strip.
+   *
+   * `overview()` above is deliberately NOT reused for that: it aggregates over
+   * the whole `api_logs` table with no WHERE clause, then does a 24-hour
+   * `GROUP BY endpoint, method`, then sums verification-document bytes — the
+   * heaviest read in the console. Putting it behind the landing page would make
+   * the front door the slowest screen in the product.
+   *
+   * This returns only what a red/amber/green strip can actually show, from
+   * primitives that are already cheap: a `SELECT 1`, a Redis `PING`, the BullMQ
+   * job counts, and one indexed count over `webhook_logs` (bounded by
+   * `IX_webhook_logs_created`). No traffic scan, no storage rollup, no
+   * slow-endpoint ranking — those stay on `/platform/monitoring`, which is where
+   * an operator goes when the strip tells them to look.
+   *
+   * @param webhookSince lower bound for the webhook failure count (UTC).
+   */
+  async healthSnapshot(webhookSince: Date) {
+    const [system, queueList, webhookFailures] = await Promise.all([
+      this.systemHealth(),
+      this.queues.queueCounts().catch(() => ({})),
+      this.recentWebhookFailures(webhookSince).catch(() => 0),
+    ]);
+
+    let queueBacklog = 0;
+    let failedJobs = 0;
+    for (const c of Object.values(queueList)) {
+      queueBacklog += n(c.waiting) + n(c.active) + n(c.delayed);
+      failedJobs += n(c.failed);
+    }
+
+    return {
+      database: system.database.status,
+      redis: system.redis.status,
+      workers: system.workers.status,
+      workerHeartbeatAgeSeconds: system.workers.heartbeatAgeSeconds,
+      queueBacklog,
+      failedJobs,
+      webhookFailures,
+    };
+  }
+
+  /** Failed webhook deliveries since `since` — indexed on `created_at`. */
+  private async recentWebhookFailures(since: Date): Promise<number> {
+    const [row] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM webhook_logs
+        WHERE created_at >= $1 AND status ~* 'fail|error'`,
+      [since],
+    );
+    return n(row?.c);
+  }
+
   // ── System health (reuses QueueService + a DB ping) ─────────────────────
   private async systemHealth() {
     let db: { status: Health; latencyMs: number | null } = { status: 'unknown', latencyMs: null };

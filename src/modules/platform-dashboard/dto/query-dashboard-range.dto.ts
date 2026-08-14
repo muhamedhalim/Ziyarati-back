@@ -1,4 +1,5 @@
-import { IsIn, IsISO8601, IsOptional } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsISO8601, IsOptional, Max, Min } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 /** Preset windows offered by the dashboard range selector. */
@@ -44,4 +45,18 @@ export class QueryDashboardRangeDto {
   @IsOptional()
   @IsISO8601()
   to?: string;
+
+  /**
+   * Rows for the activity feed. Declared HERE rather than as a standalone
+   * `@Query('limit')` because the global `ValidationPipe` runs with
+   * `forbidNonWhitelisted` — a parameter absent from the DTO is rejected
+   * outright, so a separate decorator produces a 400 on every call.
+   */
+  @ApiPropertyOptional({ minimum: 1, maximum: 50, default: 10 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
 }
