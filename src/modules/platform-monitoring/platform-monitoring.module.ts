@@ -15,5 +15,8 @@ import { StorageModule } from '../storage/storage.module';
   imports: [TypeOrmModule.forFeature([ApiLog, WebhookLog]), StorageModule],
   controllers: [PlatformMonitoringController],
   providers: [MonitoringService],
+  // Exported so the Platform Control Center can reuse the health primitives
+  // instead of growing a second set of probes against the same infrastructure.
+  exports: [MonitoringService],
 })
 export class PlatformMonitoringModule {}

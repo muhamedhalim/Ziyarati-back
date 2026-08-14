@@ -19,5 +19,8 @@ import { StorageModule } from '../storage/storage.module';
   imports: [TypeOrmModule.forFeature([SupportTicket, SupportTicketEvent]), StorageModule],
   controllers: [SupportTicketController, PlatformSupportTicketController],
   providers: [SupportTicketService],
+  // Exported so the Platform Control Center reads ticket counts from the
+  // service that owns them rather than re-querying `support_tickets`.
+  exports: [SupportTicketService],
 })
 export class SupportTicketsModule {}

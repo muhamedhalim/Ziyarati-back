@@ -58,6 +58,7 @@ import { PlatformFinanceModule } from './modules/platform-finance/platform-finan
 import { PlatformMonitoringModule } from './modules/platform-monitoring/platform-monitoring.module';
 import { RbacAuditModule } from './modules/rbac-audit/rbac-audit.module';
 import { PlatformUsageModule } from './modules/platform-usage/platform-usage.module';
+import { PlatformDashboardModule } from './modules/platform-dashboard/platform-dashboard.module';
 import { EmailModule } from './modules/email/email.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { CryptoModule } from './common/crypto/crypto.module';
@@ -172,6 +173,7 @@ import { validate } from './config/env.validation';
     PlatformMonitoringModule,
     RbacAuditModule,
     PlatformUsageModule,
+    PlatformDashboardModule,
     EmailModule,
     SeedModule,
   ],

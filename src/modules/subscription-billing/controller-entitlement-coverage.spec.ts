@@ -29,6 +29,7 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'payments/payments-ops.controller.ts',
   'platform/system-setting.controller.ts',
   'platform-ai-monitoring/platform-ai-monitoring.controller.ts',
+  'platform-dashboard/platform-dashboard.controller.ts',
   'platform-finance/platform-finance.controller.ts',
   'platform-monitoring/platform-monitoring.controller.ts',
   'platform-staff/platform-staff.controller.ts',

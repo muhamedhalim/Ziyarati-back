@@ -70,6 +70,7 @@ const CONTROLLER_PATHS: string[] = [
   'modules/notifications/notification-template.controller', 'modules/notifications/notification-rule.controller',
   'modules/notifications/notification-scheduler.controller', 'modules/notifications/notification-log.controller',
   'modules/notifications/notification-webhook.controller',
+  'modules/platform-dashboard/platform-dashboard.controller',
 ];
 
 describe('Controllers (load + invoke smoke coverage)', () => {
