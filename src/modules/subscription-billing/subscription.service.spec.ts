@@ -25,7 +25,7 @@ describe('SubscriptionService', () => {
   let subscriptions: MockRepository;
   let plans: MockRepository;
   let billing: { generateInvoice: jest.Mock };
-  let access: { assertUsable: jest.Mock };
+  let access: { assertUsable: jest.Mock; invalidate: jest.Mock };
 
   const plan = (overrides = {}) => ({
     id: 'p1',
@@ -39,7 +39,12 @@ describe('SubscriptionService', () => {
     subscriptions = createMockRepository();
     plans = createMockRepository();
     billing = { generateInvoice: jest.fn().mockResolvedValue(undefined) };
-    access = { assertUsable: jest.fn().mockResolvedValue(undefined) };
+    access = {
+      assertUsable: jest.fn().mockResolvedValue(undefined),
+      // Every lifecycle transition busts the tenant's cached decisions — a plan
+      // change alters both entitlement and quota policy.
+      invalidate: jest.fn(),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [

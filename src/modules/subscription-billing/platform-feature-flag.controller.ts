@@ -25,6 +25,7 @@ import {
   SetFeatureDependenciesDto,
   SetFeaturePlansDto,
   SetTenantFeatureDto,
+  SetTenantFeatureSuspensionDto,
   UpsertFeatureDefinitionDto,
 } from './dto/feature-catalog.dto';
 
@@ -140,6 +141,34 @@ export class PlatformFeatureFlagController {
         id: userId,
         ip,
       },
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Suspend or lift a tenant capability (super-admin)',
+    description:
+      'The incident kill-switch. A suspension OUTRANKS everything — free platform mode, a paid ' +
+      'subscription and any feature override — and is the only control that does. It is distinct ' +
+      'from `enabled: false`, which merely means "not granted" and never removes something a paid ' +
+      'plan includes. A reason is required to suspend. Always-on capabilities (billing, support, ' +
+      'workspace) are refused: a blocked clinic must still be able to pay and ask for help. ' +
+      'The flag write and its audit record commit together — a failed audit rolls the suspension back.',
+  })
+  @ApiParam({ name: 'tenantId', format: 'uuid' })
+  @ApiOkResponse({ description: 'The updated flag row.' })
+  @Put('tenants/:tenantId/features/suspension')
+  setTenantFeatureSuspension(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @Body() dto: SetTenantFeatureSuspensionDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.catalog.setTenantFeatureSuspension(
+      tenantId,
+      dto.featureKey,
+      dto.suspended,
+      dto.reason,
+      { id: userId, ip },
     );
   }
 

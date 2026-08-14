@@ -1,4 +1,9 @@
-import { USAGE_METRIC, UsageMetric } from './usage-metric';
+import {
+  RESOURCE_LIMIT_MAP,
+  ResourceMetric,
+  USAGE_METRIC,
+  UsageMetric,
+} from './usage-metric';
 
 /**
  * THE canonical list of clinic-facing platform capabilities.
@@ -324,16 +329,107 @@ export function featuresForMetric(metric: UsageMetric): FeatureKey[] {
 }
 
 /**
- * The capability each COUNT-based plan cap belongs to.
+ * The capability every COUNT-based plan cap belongs to — all 15 of them.
  *
- * Count caps (`max_branches`, `max_users`) live on the plan, not on a metered
- * counter, so they were checked with an UNSCOPED enforcement question — which
- * reported "enforced" for a tenant running on a feature grant and then demanded
- * a subscription that by design does not exist, failing branch creation and
- * staff invites with a bare 404. Naming the capability lets those caps ask the
- * same scoped question every metered path asks.
+ * Count caps live on the plan, not on a metered counter, so they used to be
+ * checked with an UNSCOPED enforcement question: `isEnforced(tenantId)` with no
+ * capability named. That reported "enforced" for a tenant running on a
+ * super-admin feature grant and then demanded a subscription that by design
+ * does not exist, failing branch creation and staff invites with a bare 404.
+ * Naming the capability lets every cap ask the same scoped question the metered
+ * paths ask, so a grant unmeters exactly what it granted and nothing else.
+ *
+ * Mapping this table completely is independent of whether a given cap is
+ * ENFORCED (see {@link ENFORCED_RESOURCE_LIMITS}) — a reporting-only limit
+ * still needs the right capability to render "unlimited" correctly for an
+ * override tenant in the platform usage view.
  */
-export const COUNT_LIMIT_FEATURE: Readonly<Record<string, FeatureKey>> = {
-  max_branches: FeatureKey.BRANCHES,
-  max_users: FeatureKey.STAFF,
+export const RESOURCE_LIMIT_FEATURE: Readonly<
+  Record<ResourceMetric, FeatureKey>
+> = {
+  // Enforced at a mutation seam.
+  branches: FeatureKey.BRANCHES,
+  employees: FeatureKey.STAFF,
+  customers: FeatureKey.CRM,
+  storageBytes: FeatureKey.CORE_WORKSPACE,
+  uploadedFiles: FeatureKey.CORE_WORKSPACE,
+  knowledgeBaseFiles: FeatureKey.AI_ASSISTANT,
+  trainingFiles: FeatureKey.AI_ASSISTANT,
+  // Reporting-only — see ENFORCED_RESOURCE_LIMITS for why each one is.
+  aiRequests: FeatureKey.AI_ASSISTANT,
+  crmContacts: FeatureKey.WHATSAPP,
+  conversations: FeatureKey.CONVERSATIONS,
+  apiCalls: FeatureKey.INTEGRATIONS,
+  emails: FeatureKey.NOTIFICATIONS,
+  invoices: FeatureKey.PAYMENTS,
+  payments: FeatureKey.PAYMENTS,
+  transactions: FeatureKey.PAYMENTS,
 };
+
+/**
+ * The count caps that are actually ENFORCED at a domain mutation seam.
+ *
+ * Every entry in {@link RESOURCE_LIMIT_FEATURE} has a `subscription_plans`
+ * column, but a column is not a reason to refuse a write. Each one was reviewed
+ * against a single question: "is there a deliberate, clinic-initiated action
+ * this cap should refuse, and is refusing it better than recording it?".
+ *
+ * ENFORCED (7):
+ *  - `branches`, `employees` — deliberate admin actions, already enforced
+ *    (`BranchService.create`, `UsageService.assertUserSeatWithinLimit`).
+ *  - `customers` — an explicit "add patient" action (`CustomerService.create`).
+ *    NOT applied to `findOrCreateForBooking`: refusing there would break a
+ *    booking mid-flow for a patient who is already talking to the clinic.
+ *  - `storageBytes`, `uploadedFiles` — an explicit upload
+ *    (`FileUploadService.register`), which already enforces a platform-wide
+ *    `TENANT_QUOTA_GB`; the plan cap is applied alongside it, and the LOWER of
+ *    the two wins because both are checked.
+ *  - `knowledgeBaseFiles`, `trainingFiles` — explicit AI content uploads.
+ *
+ * REPORTING-ONLY, and why (8) — these stay visible in the platform usage view
+ * and in `getUnifiedBreakdown`, they are simply never used to refuse a write:
+ *  - `aiRequests` — the same consumption `AI_TOKENS` already caps atomically
+ *    per turn. A second cap on the same hot path would cost an extra aggregate
+ *    read per AI turn to enforce a limit that is already binding.
+ *  - `crmContacts` (`whatsapp_contacts`) and `conversations` — created almost
+ *    entirely by INBOUND customer messages. Refusing to create them would
+ *    silently discard real customer conversations, which is a worse outcome
+ *    than exceeding a soft cap; the same reasoning that leaves the WhatsApp
+ *    webhook job un-gated (see `job-authorization.constants.ts`).
+ *  - `emails` — `email_logs` includes password resets and security
+ *    notifications. A cap here could lock a clinic out of its own account.
+ *  - `apiCalls` — already governed by the per-tenant token-bucket limiter
+ *    (`TenantRateLimiterService`), which is the operative control and is O(1)
+ *    in Redis. Enforcing the monthly plan cap would need a live `COUNT(*)` over
+ *    `api_logs` on every API-key request.
+ *  - `invoices`, `payments`, `transactions` — records of money that has ALREADY
+ *    moved. Refusing to write one does not prevent the payment; it only
+ *    destroys the record of it, which is a financial-integrity bug, not a
+ *    quota.
+ */
+export const ENFORCED_RESOURCE_LIMITS: ReadonlySet<ResourceMetric> =
+  new Set<ResourceMetric>([
+    'branches',
+    'employees',
+    'customers',
+    'storageBytes',
+    'uploadedFiles',
+    'knowledgeBaseFiles',
+    'trainingFiles',
+  ]);
+
+/**
+ * The capability each count cap belongs to, keyed by its PLAN COLUMN.
+ *
+ * Derived from {@link RESOURCE_LIMIT_FEATURE} rather than hand-written, so the
+ * column-keyed and metric-keyed views can never disagree. Note that
+ * `max_branches`/`max_users` are each named by exactly one metric
+ * (`branches`/`employees`), so the derivation is unambiguous.
+ */
+export const COUNT_LIMIT_FEATURE: Readonly<Record<string, FeatureKey>> =
+  Object.fromEntries(
+    (Object.keys(RESOURCE_LIMIT_MAP) as ResourceMetric[]).map((metric) => [
+      RESOURCE_LIMIT_MAP[metric],
+      RESOURCE_LIMIT_FEATURE[metric],
+    ]),
+  );

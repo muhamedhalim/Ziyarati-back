@@ -27,9 +27,15 @@ describe('HandoverChatService.sendAgentReply — FND-023 provider message id', (
       }),
     };
     router = {
-      resolveForSend: jest.fn().mockResolvedValue({ id: 'acc-1', phoneNumberId: 'pid-1', mode: 'LIVE' }),
+      resolveForSend: jest.fn().mockResolvedValue({
+        id: 'acc-1',
+        phoneNumberId: 'pid-1',
+        mode: 'LIVE',
+      }),
     };
-    conversationExecution = { recordProviderMessageId: jest.fn().mockResolvedValue(undefined) };
+    conversationExecution = {
+      recordProviderMessageId: jest.fn().mockResolvedValue(undefined),
+    };
     messaging = { sendSession: jest.fn() };
     service = new HandoverChatService(
       handovers as unknown as HandoverRequestService,
@@ -40,7 +46,10 @@ describe('HandoverChatService.sendAgentReply — FND-023 provider message id', (
   });
 
   it('records the provider message id onto the timeline message after a successful send', async () => {
-    messaging.sendSession.mockResolvedValueOnce({ success: true, providerMessageId: 'wamid.agent-1' });
+    messaging.sendSession.mockResolvedValueOnce({
+      success: true,
+      providerMessageId: 'wamid.agent-1',
+    });
 
     await service.sendAgentReply(TENANT, 'user-1', 'aiconv-1', 'hello there');
 
@@ -52,11 +61,16 @@ describe('HandoverChatService.sendAgentReply — FND-023 provider message id', (
   });
 
   it('does not attempt to record a provider id when the send fails', async () => {
-    messaging.sendSession.mockResolvedValueOnce({ success: false, error: 'boom' });
+    messaging.sendSession.mockResolvedValueOnce({
+      success: false,
+      error: 'boom',
+    });
 
     await service.sendAgentReply(TENANT, 'user-1', 'aiconv-1', 'hello there');
 
-    expect(conversationExecution.recordProviderMessageId).not.toHaveBeenCalled();
+    expect(
+      conversationExecution.recordProviderMessageId,
+    ).not.toHaveBeenCalled();
   });
 
   it('does not attempt to record a provider id when nothing was dispatched (no WhatsApp account/number)', async () => {
@@ -68,6 +82,8 @@ describe('HandoverChatService.sendAgentReply — FND-023 provider message id', (
     await service.sendAgentReply(TENANT, 'user-1', 'aiconv-1', 'hello there');
 
     expect(messaging.sendSession).not.toHaveBeenCalled();
-    expect(conversationExecution.recordProviderMessageId).not.toHaveBeenCalled();
+    expect(
+      conversationExecution.recordProviderMessageId,
+    ).not.toHaveBeenCalled();
   });
 });

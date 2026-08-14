@@ -70,7 +70,10 @@ function controllerFiles(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) controllerFiles(full, out);
-    else if (entry.name.endsWith('.controller.ts') && !entry.name.endsWith('.spec.ts')) {
+    else if (
+      entry.name.endsWith('.controller.ts') &&
+      !entry.name.endsWith('.spec.ts')
+    ) {
       out.push(full);
     }
   }
@@ -91,7 +94,8 @@ describe('every controller has an explicit entitlement policy', () => {
     const unaccounted = files.filter((file) => {
       const src = fs.readFileSync(file, 'utf8');
       const annotated =
-        src.includes('@RequireFeature(') || src.includes('@NoEntitlementRequired()');
+        src.includes('@RequireFeature(') ||
+        src.includes('@NoEntitlementRequired()');
       return !annotated && !PLATFORM_AND_PUBLIC_SURFACES.has(relative(file));
     });
 
@@ -106,7 +110,8 @@ describe('every controller has an explicit entitlement policy', () => {
       if (!present.has(rel)) return true;
       const src = fs.readFileSync(path.join(MODULES_DIR, rel), 'utf8');
       return (
-        src.includes('@RequireFeature(') || src.includes('@NoEntitlementRequired()')
+        src.includes('@RequireFeature(') ||
+        src.includes('@NoEntitlementRequired()')
       );
     });
 

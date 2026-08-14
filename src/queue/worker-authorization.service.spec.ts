@@ -18,7 +18,7 @@ describe('WorkerAuthorizationService', () => {
   let tenantLookup: { findById: jest.Mock };
   let users: { findOne: jest.Mock };
   let authService: { buildAuthenticatedUser: jest.Mock };
-  let access: { resolve: jest.Mock };
+  let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
 
   const approvedTenant = {
     id: 't1',
@@ -39,6 +39,8 @@ describe('WorkerAuthorizationService', () => {
         source: AccessSource.ACTIVE_SUBSCRIPTION,
         quotaPolicy: QuotaPolicy.PLAN_ENFORCED,
       }),
+      // true = ENFORCE, the production default (see AccessPolicyModeService).
+      shouldBlock: jest.fn().mockReturnValue(true),
     };
     service = new WorkerAuthorizationService(
       tenantLookup as unknown as TenantLookupService,
@@ -320,6 +322,45 @@ describe('WorkerAuthorizationService', () => {
         tenantId: null,
       });
       expect(access.resolve).not.toHaveBeenCalled();
+    });
+
+    // Plan §18 — shadow mode must reach the SAME verdict HTTP does, and record
+    // it, without stopping production traffic.
+    it('records but does not reject in shadow mode', async () => {
+      tenantLookup.findById.mockResolvedValueOnce(approvedTenant);
+      access.resolve.mockResolvedValueOnce({
+        allowed: false,
+        tenantId: 't1',
+        featureKey: FeatureKey.CAMPAIGNS,
+        source: AccessSource.DENIED,
+        quotaPolicy: QuotaPolicy.BLOCKED,
+      });
+      access.shouldBlock.mockReturnValueOnce(false);
+
+      await expect(
+        service.assertAuthorized(JOB.CAMPAIGNS_LAUNCH, { tenantId: 't1' }),
+      ).resolves.toBeUndefined();
+      expect(access.shouldBlock).toHaveBeenCalledWith(
+        expect.objectContaining({ allowed: false }),
+        { surface: 'worker', detail: JOB.CAMPAIGNS_LAUNCH },
+      );
+    });
+
+    /**
+     * "We could not tell" is an infrastructure failure, not an entitlement
+     * finding. Shadowing it would turn a database outage into an open door on
+     * every background path at once, which is the opposite of what a rollout
+     * safety net is for.
+     */
+    it('still fails CLOSED in shadow mode when the decision cannot be resolved', async () => {
+      tenantLookup.findById.mockResolvedValueOnce(approvedTenant);
+      access.resolve.mockRejectedValueOnce(new Error('db down'));
+      access.shouldBlock.mockReturnValue(false);
+
+      await expect(
+        service.assertAuthorized(JOB.AI_EXECUTE, { tenantId: 't1' }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(access.shouldBlock).not.toHaveBeenCalled();
     });
   });
 

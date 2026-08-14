@@ -291,6 +291,35 @@ export const createMockHttpService = () => ({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tenant access policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `AccessCacheService` double.
+ *
+ * A pass-through: `get` always misses, so a unit test always exercises the real
+ * resolution path rather than a warm cache it did not populate. `invalidate` /
+ * `invalidateAll` are spies, so a spec can assert that a mutation busts the
+ * cache without standing up Redis.
+ */
+export const createMockAccessCache = () => ({
+  get: jest.fn(() => undefined),
+  set: jest.fn(),
+  invalidate: jest.fn(),
+  invalidateAll: jest.fn(),
+});
+
+/**
+ * `AccessPolicyModeService` double, defaulting to ENFORCE — the production
+ * default. A spec covering shadow mode overrides `shouldBlock` to return false.
+ */
+export const createMockAccessPolicyMode = () => ({
+  current: 'enforce',
+  isShadow: false,
+  shouldBlock: jest.fn(() => true),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Nest guards / interceptors
 // ─────────────────────────────────────────────────────────────────────────────
 

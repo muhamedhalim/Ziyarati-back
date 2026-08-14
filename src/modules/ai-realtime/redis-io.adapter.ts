@@ -56,23 +56,37 @@ export class RedisIoAdapter extends IoAdapter {
     const config = this.app.get(ConfigService);
     const url = config.get<string>('REDIS_URL');
     if (!url) {
-      this.logger.warn('REDIS_URL not set — realtime gateway uses the in-memory adapter (single instance).');
+      this.logger.warn(
+        'REDIS_URL not set — realtime gateway uses the in-memory adapter (single instance).',
+      );
       return;
     }
     try {
-      const pubClient = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: null, connectionName: 'socketio:pub' });
+      const pubClient = new Redis(url, {
+        lazyConnect: true,
+        maxRetriesPerRequest: null,
+        connectionName: 'socketio:pub',
+      });
       const subClient = pubClient.duplicate({ connectionName: 'socketio:sub' });
       // An ioredis client with no 'error' listener throws an unhandled 'error'
       // event on a later socket error (not just at connect time), which can
       // crash the whole process — these were previously unguarded.
-      pubClient.on('error', (err) => this.logger.warn(`Redis pub client error (non-fatal): ${err.message}`));
-      subClient.on('error', (err) => this.logger.warn(`Redis sub client error (non-fatal): ${err.message}`));
+      pubClient.on('error', (err) =>
+        this.logger.warn(`Redis pub client error (non-fatal): ${err.message}`),
+      );
+      subClient.on('error', (err) =>
+        this.logger.warn(`Redis sub client error (non-fatal): ${err.message}`),
+      );
       await pubClient.connect();
       await subClient.connect();
       this.adapterConstructor = createAdapter(pubClient, subClient);
-      this.logger.log('Realtime gateway Redis adapter connected (horizontal scaling enabled).');
+      this.logger.log(
+        'Realtime gateway Redis adapter connected (horizontal scaling enabled).',
+      );
     } catch (err) {
-      this.logger.warn(`Redis adapter unavailable (${(err as Error)?.message}) — in-memory fallback.`);
+      this.logger.warn(
+        `Redis adapter unavailable (${(err as Error)?.message}) — in-memory fallback.`,
+      );
     }
   }
 

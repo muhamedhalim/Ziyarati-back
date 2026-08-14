@@ -21,6 +21,8 @@ import { HandoverChatService } from './handover-chat.service';
 import { AgentPresenceService, PresenceStatus } from './agent-presence.service';
 import { WsAuthService } from './ws-auth.service';
 import { AI_EVENT, room } from './ai-events.constants';
+import { AccessControlService } from '../subscription-billing/access-control.service';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 interface MessagePayload {
   content: string;
@@ -69,7 +71,57 @@ export class AiRealtimeGateway
     private readonly handoverChat: HandoverChatService,
     private readonly presence: AgentPresenceService,
     private readonly access: AiConversationAccessService,
+    private readonly entitlements: AccessControlService,
   ) {}
+
+  /**
+   * Capability gate for the events that actually EXECUTE something.
+   *
+   * A socket never passes through `SubscriptionAccessGuard`/`FeatureGuard` —
+   * those are HTTP guards — so before this check the `ai:message` event reached
+   * `AiOrchestratorService` with no entitlement evaluation whatsoever. A clinic
+   * whose AI capability was never granted, or was administratively suspended
+   * mid-incident, kept running AI turns for as long as a browser tab stayed
+   * open. `AiExecutionService` now refuses those turns at the execution seam
+   * too (defence in depth, and the only cover for non-socket transports); this
+   * gate exists so the socket client gets a clean `ai:error` instead of a
+   * generic failure, and so nothing downstream is touched at all.
+   *
+   * Never throws — a rejected `@SubscribeMessage` handler would surface as an
+   * unhandled exception on the wire. Fails CLOSED on an unreadable decision.
+   */
+  private async mayUseAi(client: Socket, event: string): Promise<boolean> {
+    const tenantId = client.data.tenantId as string | undefined;
+    if (!tenantId) return false;
+    try {
+      const decision = await this.entitlements.resolve(
+        tenantId,
+        FeatureKey.AI_ASSISTANT,
+      );
+      if (decision.allowed) return true;
+      if (
+        !this.entitlements.shouldBlock(decision, {
+          surface: 'websocket',
+          detail: event,
+        })
+      ) {
+        return true; // ACCESS_POLICY_MODE=shadow — recorded, not enforced
+      }
+      this.logger.warn(
+        `Refusing "${event}" for tenant ${tenantId}: not entitled to "${FeatureKey.AI_ASSISTANT}" ` +
+          `(source=${decision.source})`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `AI entitlement check failed for "${event}" (tenant=${tenantId}) — refusing (fail closed): ` +
+          `${(err as Error)?.message}`,
+      );
+    }
+    client.emit(AI_EVENT.ERROR, {
+      message: 'The AI assistant is not available for this clinic',
+    });
+    return false;
+  }
 
   /**
    * F-2: every handler below takes an `aiConversationId` straight off the wire.
@@ -246,6 +298,10 @@ export class AiRealtimeGateway
       client.emit(AI_EVENT.ERROR, { message: 'AI conversation not found' });
       return { ok: false };
     }
+    // Escalating to a human is part of the AI assistant capability — it pauses
+    // an AI conversation and pulls staff into it. A clinic that may not run AI
+    // may not drive its handover lifecycle either.
+    if (!(await this.mayUseAi(client, AI_EVENT.HANDOVER))) return { ok: false };
     try {
       const handover = await this.handovers.create(tenantId, {
         aiConversationId: body.aiConversationId,
@@ -287,6 +343,9 @@ export class AiRealtimeGateway
       client.emit(AI_EVENT.ERROR, { message: 'AI conversation not found' });
       return { ok: false };
     }
+    if (!(await this.mayUseAi(client, AI_EVENT.AGENT_REPLY))) {
+      return { ok: false };
+    }
     try {
       const result = await this.handoverChat.sendAgentReply(
         tenantId,
@@ -317,6 +376,9 @@ export class AiRealtimeGateway
       });
       return;
     }
+    // The gate that closes the WebSocket bypass: before this, `ai:message`
+    // reached the orchestrator with no entitlement evaluation at all.
+    if (!(await this.mayUseAi(client, AI_EVENT.MESSAGE))) return;
     const user = client.data.user as AuthenticatedUser | undefined;
     // Restore the authenticated principal for this turn — every downstream
     // service (booking tools, admin tools, usage metering) reads it via

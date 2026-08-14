@@ -30,7 +30,11 @@ import {
   createMockRepository,
   MockRepository,
   createMockQueryBuilder,
+  createMockAccessCache,
+  createMockAccessPolicyMode,
 } from '../../../test/utils/mock-factories';
+import { AccessCacheService } from '../subscription-billing/access-cache.service';
+import { AccessPolicyModeService } from '../subscription-billing/access-policy-mode.service';
 
 const TENANT = 't1';
 const ACCOUNT = {
@@ -676,6 +680,14 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
         WhatsappExecutionService,
         UsageService,
         AccessControlService,
+        // Real policy, stubbed cache/mode: the cache always misses so every
+        // assertion exercises a genuine resolution, and the mode is ENFORCE
+        // (production default), so a denial really denies.
+        { provide: AccessCacheService, useValue: createMockAccessCache() },
+        {
+          provide: AccessPolicyModeService,
+          useValue: createMockAccessPolicyMode(),
+        },
         { provide: getRepositoryToken(NotificationLog), useValue: logs },
         { provide: getRepositoryToken(WhatsappContact), useValue: contacts },
         { provide: getRepositoryToken(Customer), useValue: customers },
@@ -757,6 +769,13 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
     ).resolves.toBeDefined();
   });
 
+  /**
+   * The refusal is the platform's standard access denial, NOT the
+   * `404 No active subscription found for this tenant` this path used to raise
+   * from `resolveSubscription()`. That response described the platform's own
+   * billing internals to answer what is simply "you may not use WhatsApp", and
+   * on public booking and guest chat it reached unauthenticated visitors.
+   */
   it('[2] is DENIED with no subscription and no grant of any kind', async () => {
     subscriptionRepo.findOne.mockResolvedValue(null);
     featureFlags.getStates.mockResolvedValue(new Map()); // nothing granted
@@ -765,7 +784,7 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
       service.sendTemplateMessage(TENANT, 'tpl-1', {
         toWaId: '966500000000',
       } as any),
-    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    ).rejects.toMatchObject({ code: ErrorCode.NO_ACTIVE_SUBSCRIPTION });
     expect(messaging.send).not.toHaveBeenCalled();
   });
 
@@ -780,7 +799,7 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
       service.sendTemplateMessage(TENANT, 'tpl-1', {
         toWaId: '966500000000',
       } as any),
-    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    ).rejects.toMatchObject({ code: ErrorCode.NO_ACTIVE_SUBSCRIPTION });
     expect(messaging.send).not.toHaveBeenCalled();
   });
 

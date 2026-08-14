@@ -2,7 +2,6 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
-  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -105,10 +104,11 @@ campaigns) for the given \`periodMonth\` (defaults to the current month).
     description: 'Caller lacks `usage.read`.',
     schema: S_ERROR,
   })
-  @ApiNotFoundResponse({
-    description: 'No active subscription found for this tenant.',
-    schema: S_ERROR,
-  })
+  // Deliberately NO 404 here. A tenant running on a super-admin feature grant
+  // has no subscription BY DESIGN, and this endpoint used to answer it with
+  // "No active subscription found for this tenant" — a not-found about the
+  // platform's billing internals in response to a perfectly valid read. It now
+  // returns unlimited lines with `planId: null`.
   @Get()
   @RequirePermissions(PERMISSION.USAGE_READ)
   getUsage(@Query() query: QueryUsageDto) {
@@ -139,10 +139,11 @@ metric is unlimited on the plan. Powers usage meters/progress bars.
     description: 'Caller lacks `usage.read`.',
     schema: S_ERROR,
   })
-  @ApiNotFoundResponse({
-    description: 'No active subscription found for this tenant.',
-    schema: S_ERROR,
-  })
+  // Deliberately NO 404 here. A tenant running on a super-admin feature grant
+  // has no subscription BY DESIGN, and this endpoint used to answer it with
+  // "No active subscription found for this tenant" — a not-found about the
+  // platform's billing internals in response to a perfectly valid read. It now
+  // returns unlimited lines with `planId: null`.
   @Get('breakdown')
   @RequirePermissions(PERMISSION.USAGE_READ)
   getBreakdown(@Query() query: QueryUsageDto) {

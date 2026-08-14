@@ -9,9 +9,11 @@ import {
 } from '../../entities/SaaS-Core/FeatureFlag';
 import { ErrorCode } from '../../common/errors';
 import {
+  createMockAccessCache,
   createMockRepository,
   MockRepository,
 } from '../../../test/utils/mock-factories';
+import { AccessCacheService } from './access-cache.service';
 
 const TENANT = 't1';
 const KEY = FeatureKey.AI_ASSISTANT;
@@ -20,13 +22,16 @@ const PLATFORM = { source: FeatureFlagSource.PLATFORM_ADMIN };
 describe('FeatureFlagService', () => {
   let service: FeatureFlagService;
   let flags: MockRepository;
+  let accessCache: ReturnType<typeof createMockAccessCache>;
 
   beforeEach(async () => {
     flags = createMockRepository();
+    accessCache = createMockAccessCache();
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         FeatureFlagService,
         { provide: getRepositoryToken(FeatureFlag), useValue: flags },
+        { provide: AccessCacheService, useValue: accessCache },
       ],
     }).compile();
     service = moduleRef.get(FeatureFlagService);
@@ -73,6 +78,26 @@ describe('FeatureFlagService', () => {
     expect(res.is_enabled).toBe(true);
     expect(res.source).toBe(FeatureFlagSource.PLATFORM_ADMIN);
     expect(flags.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Plan §16. A grant or a suspension that is still cached has not taken
+   * effect. The suspension case matters most: it is the incident kill-switch,
+   * and an operator throwing it expects it to bind on the next request across
+   * every replica, not when a TTL happens to lapse.
+   */
+  describe('access-cache invalidation', () => {
+    it('busts the tenant after a grant is written', async () => {
+      flags.findOne.mockResolvedValueOnce(null);
+      await service.set(TENANT, KEY, true, PLATFORM);
+      expect(accessCache.invalidate).toHaveBeenCalledWith(TENANT);
+    });
+
+    it('busts the tenant after a suspension is written', async () => {
+      flags.findOne.mockResolvedValueOnce(null);
+      await service.setSuspension(TENANT, KEY, true, { reason: 'abuse' });
+      expect(accessCache.invalidate).toHaveBeenCalledWith(TENANT);
+    });
   });
 
   describe('getStates', () => {

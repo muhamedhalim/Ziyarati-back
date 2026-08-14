@@ -34,77 +34,121 @@ export class HandoverRealtimeListener {
 
   @OnEvent(HandoverRequestedEvent.eventName)
   onRequested(e: HandoverRequestedEvent) {
-    this.broadcast(e.tenantId, { type: 'requested', conversationId: e.conversationId, aiConversationId: e.aiConversationId, reason: e.reason });
+    this.broadcast(e.tenantId, {
+      type: 'requested',
+      conversationId: e.conversationId,
+      aiConversationId: e.aiConversationId,
+      reason: e.reason,
+    });
   }
 
   @OnEvent(HandoverAssignedEvent.eventName)
   onAssigned(e: HandoverAssignedEvent) {
-    this.broadcast(e.tenantId, { type: 'assigned', conversationId: e.conversationId, assignedToUserId: e.assignedToUserId });
+    this.broadcast(e.tenantId, {
+      type: 'assigned',
+      conversationId: e.conversationId,
+      assignedToUserId: e.assignedToUserId,
+    });
   }
 
   @OnEvent(HandoverAcceptedEvent.eventName)
   onAccepted(e: HandoverAcceptedEvent) {
-    const payload = { type: 'accepted', conversationId: e.conversationId, userId: e.userId };
+    const payload = {
+      type: 'accepted',
+      conversationId: e.conversationId,
+      userId: e.userId,
+    };
     this.broadcast(e.tenantId, payload);
     this.toCustomer(e.aiConversationId, payload);
   }
 
   @OnEvent(HandoverTransferredEvent.eventName)
   onTransferred(e: HandoverTransferredEvent) {
-    this.broadcast(e.tenantId, { type: 'transferred', conversationId: e.conversationId, toUserId: e.toUserId });
+    this.broadcast(e.tenantId, {
+      type: 'transferred',
+      conversationId: e.conversationId,
+      toUserId: e.toUserId,
+    });
   }
 
   @OnEvent(HandoverReturnedToAiEvent.eventName)
   onReturnedToAi(e: HandoverReturnedToAiEvent) {
-    const payload = { type: 'returned_to_ai', conversationId: e.conversationId, aiConversationId: e.aiConversationId };
+    const payload = {
+      type: 'returned_to_ai',
+      conversationId: e.conversationId,
+      aiConversationId: e.aiConversationId,
+    };
     this.broadcast(e.tenantId, payload);
     this.toCustomer(e.aiConversationId, payload);
   }
 
   @OnEvent(HandoverResolvedEvent.eventName)
   onResolved(e: HandoverResolvedEvent) {
-    this.broadcast(e.tenantId, { type: 'resolved', conversationId: e.conversationId });
+    this.broadcast(e.tenantId, {
+      type: 'resolved',
+      conversationId: e.conversationId,
+    });
   }
 
   @OnEvent(HandoverRejectedEvent.eventName)
   onRejected(e: HandoverRejectedEvent) {
-    this.broadcast(e.tenantId, { type: 'rejected', conversationId: e.conversationId });
+    this.broadcast(e.tenantId, {
+      type: 'rejected',
+      conversationId: e.conversationId,
+    });
   }
 
   @OnEvent(HandoverReleasedEvent.eventName)
   onReleased(e: HandoverReleasedEvent) {
-    this.broadcast(e.tenantId, { type: 'released', conversationId: e.conversationId });
+    this.broadcast(e.tenantId, {
+      type: 'released',
+      conversationId: e.conversationId,
+    });
   }
 
   @OnEvent(HandoverConversationClosedEvent.eventName)
   onClosed(e: HandoverConversationClosedEvent) {
-    this.broadcast(e.tenantId, { type: 'closed', conversationId: e.conversationId });
+    this.broadcast(e.tenantId, {
+      type: 'closed',
+      conversationId: e.conversationId,
+    });
   }
 
   @OnEvent(HandoverAgentRepliedEvent.eventName)
   onAgentReplied(e: HandoverAgentRepliedEvent) {
     if (e.aiConversationId) {
-      this.gateway.server.to(room.conversation(e.aiConversationId)).emit(AI_EVENT.AGENT_MESSAGE, {
-        aiConversationId: e.aiConversationId,
-        conversationId: e.conversationId,
-        content: e.content,
-        at: new Date().toISOString(),
-      });
+      this.gateway.server
+        .to(room.conversation(e.aiConversationId))
+        .emit(AI_EVENT.AGENT_MESSAGE, {
+          aiConversationId: e.aiConversationId,
+          conversationId: e.conversationId,
+          content: e.content,
+          at: new Date().toISOString(),
+        });
     }
-    this.gateway.server.to(room.tenant(e.tenantId)).emit(AI_EVENT.CONVERSATION_UPDATE, { conversationId: e.conversationId });
+    this.gateway.server
+      .to(room.tenant(e.tenantId))
+      .emit(AI_EVENT.CONVERSATION_UPDATE, { conversationId: e.conversationId });
   }
 
   /** Agent Inbox — every lifecycle event, regardless of which room the customer is in. */
   private broadcast(tenantId: string, payload: Record<string, unknown>): void {
     try {
-      this.gateway.server.to(room.tenant(tenantId)).emit(AI_EVENT.HANDOVER, payload);
+      this.gateway.server
+        .to(room.tenant(tenantId))
+        .emit(AI_EVENT.HANDOVER, payload);
     } catch (err) {
       this.logger.warn(`broadcast failed: ${(err as Error)?.message}`);
     }
   }
 
-  private toCustomer(aiConversationId: string | undefined, payload: Record<string, unknown>): void {
+  private toCustomer(
+    aiConversationId: string | undefined,
+    payload: Record<string, unknown>,
+  ): void {
     if (!aiConversationId) return;
-    this.gateway.server.to(room.conversation(aiConversationId)).emit(AI_EVENT.HANDOVER, payload);
+    this.gateway.server
+      .to(room.conversation(aiConversationId))
+      .emit(AI_EVENT.HANDOVER, payload);
   }
 }

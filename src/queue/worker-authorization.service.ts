@@ -9,6 +9,7 @@ import { TenantLookupService } from '../core/tenant-context/tenant-lookup.servic
 import { AuthService } from '../modules/auth/auth.service';
 import { AccessControlService } from '../modules/subscription-billing/access-control.service';
 import { FeatureKey } from '../modules/subscription-billing/feature-registry';
+import { TenantAccessDecision } from '../modules/subscription-billing/tenant-access-decision';
 import { ROLE } from '../rbac/rbac.constants';
 import { BaseJobData } from './job-data.interface';
 import {
@@ -159,18 +160,28 @@ export class WorkerAuthorizationService {
     tenantId: string,
     featureKey: FeatureKey,
   ): Promise<void> {
-    let allowed = false;
+    let decision: TenantAccessDecision | null = null;
     let reason = 'access decision could not be resolved';
     try {
-      const decision = await this.access.resolve(tenantId, featureKey);
-      allowed = decision.allowed;
+      decision = await this.access.resolve(tenantId, featureKey);
       reason = decision.reason ?? `source=${decision.source}`;
     } catch (err) {
       this.logger.error(
         `Entitlement check failed for job "${jobName}" (tenant=${tenantId}, feature=${featureKey}): ${(err as Error)?.message}`,
       );
     }
-    if (allowed) return;
+    if (decision?.allowed) return;
+
+    // Rollout switch (plan §18): shadow mode records the would-be rejection and
+    // lets the job run. A decision that could not be resolved AT ALL is never
+    // shadowed — "we could not tell" is an infrastructure failure, not an
+    // entitlement finding, and must fail closed in either mode.
+    if (
+      decision &&
+      !this.access.shouldBlock(decision, { surface: 'worker', detail: jobName })
+    ) {
+      return;
+    }
 
     this.logger.warn(
       `Rejecting job "${jobName}": tenant ${tenantId} is not entitled to "${featureKey}" (${reason})`,

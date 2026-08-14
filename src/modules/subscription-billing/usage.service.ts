@@ -10,7 +10,12 @@ import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
-import { COUNT_LIMIT_FEATURE, featuresForMetric } from './feature-registry';
+import {
+  COUNT_LIMIT_FEATURE,
+  ENFORCED_RESOURCE_LIMITS,
+  RESOURCE_LIMIT_FEATURE,
+  featuresForMetric,
+} from './feature-registry';
 import {
   CountLimitColumn,
   RESOURCE_LIMIT_MAP,
@@ -129,11 +134,18 @@ export class UsageService {
       return { applied: true, used: 0, limit: null };
     }
 
-    const subscription = await this.resolveSubscription(
+    const subscription = await this.requirePlanOrDeny(
       tenantId,
-      true,
+      metric,
       manager,
     );
+    if (!subscription) {
+      // Access is allowed but there is genuinely no plan to enforce against
+      // (shadow mode, or a grant that landed between the two reads). Record
+      // and admit — never invent a cap out of a missing subscription.
+      await this.rawIncrement(repo, tenantId, metric, amount, manager);
+      return { applied: true, used: 0, limit: null };
+    }
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
       limitColumn
@@ -349,7 +361,8 @@ export class UsageService {
       return;
     }
 
-    const subscription = await this.resolveSubscription(tenantId, true);
+    const subscription = await this.requirePlanOrDeny(tenantId, metric);
+    if (!subscription) return; // allowed, but no plan to compare against
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
 
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
@@ -409,6 +422,75 @@ export class UsageService {
 
     const subscription = await this.findCurrentSubscriptionWithPlan(tenantId);
     if (!subscription) return; // enforced but no plan to compare against
+    const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
+      limitColumn
+    ];
+    if (limitRaw === null || limitRaw === undefined) return; // unlimited
+
+    const limit = Number(limitRaw);
+    if (currentCount + amount > limit) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
+        publicContext: {
+          limit: limitColumn,
+          current: currentCount,
+          max: limit,
+          requested: amount,
+        },
+      });
+    }
+  }
+
+  /**
+   * Throws (422) when creating `amount` more of a count-limited RESOURCE would
+   * exceed the plan's absolute cap — the generic form of
+   * {@link assertCountWithinLimit}, keyed by the metric rather than the plan
+   * column, so a call site names the thing it is creating ("customers") rather
+   * than a database column ("max_customers").
+   *
+   * Scoped by the capability the resource belongs to
+   * ({@link RESOURCE_LIMIT_FEATURE}), so the whole access model applies without
+   * restating it: a paid tenant is capped by its plan, a tenant on a
+   * super-admin feature grant is `UNMETERED_BY_PLAN` and passes, a tenant in
+   * FREE mode passes, and a DENIED tenant is refused by the centralized policy
+   * rather than by a subscription lookup.
+   *
+   * Refuses to enforce a metric that is not in {@link ENFORCED_RESOURCE_LIMITS}
+   * — a deliberate, reviewed list. A plan column existing is not a reason to
+   * start rejecting writes, and the failure mode of getting that wrong (e.g.
+   * refusing to record a payment that already cleared) is worse than the
+   * missing cap. This throws rather than silently passing so the mistake
+   * surfaces in tests, not in production.
+   */
+  async assertResourceWithinLimit(
+    tenantId: string,
+    metric: ResourceMetric,
+    currentCount: number,
+    amount = 1,
+    manager?: EntityManager,
+  ): Promise<void> {
+    if (!ENFORCED_RESOURCE_LIMITS.has(metric)) {
+      throw new Error(
+        `Resource limit "${metric}" is reporting-only and must not be enforced — see ` +
+          'ENFORCED_RESOURCE_LIMITS in feature-registry.ts for the reviewed rationale. ' +
+          'Add it there (with a reason) before enforcing it at a call site.',
+      );
+    }
+
+    if (
+      !(await this.access.isEnforced(tenantId, manager, [
+        RESOURCE_LIMIT_FEATURE[metric],
+      ]))
+    ) {
+      return;
+    }
+
+    const subscription = await this.findCurrentSubscriptionWithPlan(
+      tenantId,
+      manager,
+    );
+    if (!subscription) return; // enforced but no plan to compare against
+    const limitColumn = RESOURCE_LIMIT_MAP[metric];
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
       limitColumn
     ];
@@ -715,8 +797,12 @@ export class UsageService {
   /** Non-throwing current subscription WITH plan (for the unified breakdown). */
   private findCurrentSubscriptionWithPlan(
     tenantId: string,
+    manager?: EntityManager,
   ): Promise<Subscription | null> {
-    return this.subscriptions.findOne({
+    const repo = manager
+      ? manager.getRepository(Subscription)
+      : this.subscriptions;
+    return repo.findOne({
       where: {
         tenant: { id: tenantId },
         status: Not(SubscriptionStatus.CANCELLED),
@@ -730,36 +816,50 @@ export class UsageService {
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   /**
-   * The tenant's non-cancelled subscription (optionally with the plan loaded).
+   * The plan to enforce against — or a POLICY DENIAL when there is none.
    *
-   * FND-047: pass the caller's `manager` when reached from inside an open
-   * `dataSource.transaction()` (`incrementIfWithinLimit`'s campaign/appointment
-   * call sites) — this read must reuse that transaction's own connection, not
-   * borrow a second one from the pool.
+   * This replaces a `resolveSubscription()` that threw
+   * `404 No active subscription found for this tenant`, and it is the last
+   * place that message could still reach a client. The problem was not the
+   * absence of a subscription; it was WHO decided. `isEnforced` reports `true`
+   * for a DENIED tenant on purpose (fail closed on worker and bot paths that
+   * never meet a guard), so "enforced but no plan" arrived here meaning
+   * "refused", and the usage layer answered it with a bare not-found about the
+   * platform's own billing internals — on public booking and guest chat, to
+   * unauthenticated visitors.
+   *
+   * Now the question goes back to the authority. `assertAccess` raises the
+   * platform's standard access-denied error, whose public payload carries only
+   * the access source and the capability; the subscription state stays in
+   * `internalContext`. A `null` return means access IS allowed and there is
+   * simply no plan — possible in shadow mode, or when a grant lands between
+   * `isEnforced` and this read — and the caller records usage without a cap
+   * rather than inventing one.
+   *
+   * FND-047: `manager` is threaded through both reads so a call from inside an
+   * open `dataSource.transaction()` reuses that transaction's own connection
+   * instead of borrowing a second one from the pool.
    */
-  private async resolveSubscription(
+  private async requirePlanOrDeny(
     tenantId: string,
-    withPlan = false,
+    metric: UsageMetric,
     manager?: EntityManager,
-  ): Promise<Subscription> {
-    const repo = manager
-      ? manager.getRepository(Subscription)
-      : this.subscriptions;
-    const subscription = await repo.findOne({
-      where: {
-        tenant: { id: tenantId },
-        status: Not(SubscriptionStatus.CANCELLED),
-        deleted_at: IsNull(),
+  ): Promise<Subscription | null> {
+    const subscription = await this.findCurrentSubscriptionWithPlan(
+      tenantId,
+      manager,
+    );
+    if (subscription) return subscription;
+
+    await this.access.assertAccess(
+      tenantId,
+      featuresForMetric(metric)[0] ?? null,
+      {
+        surface: 'service',
+        detail: `UsageService.meter:${metric}`,
       },
-      relations: withPlan ? { plan: true } : {},
-      order: { created_at: 'DESC' },
-    });
-    if (!subscription) {
-      throw new AppError(ErrorCode.NOT_FOUND, {
-        message: 'No active subscription found for this tenant',
-      });
-    }
-    return subscription;
+    );
+    return null;
   }
 
   /** Non-throwing variant for best-effort metering (returns null when none). Same FND-047 manager-threading rule as `resolveSubscription`. */

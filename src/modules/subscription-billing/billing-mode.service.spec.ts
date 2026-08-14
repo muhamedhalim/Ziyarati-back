@@ -5,9 +5,11 @@ import { BillingModeService } from './billing-mode.service';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { BillingMode } from './platform-billing.constants';
 import {
+  createMockAccessCache,
   createMockRepository,
   MockRepository,
 } from '../../../test/utils/mock-factories';
+import { AccessCacheService } from './access-cache.service';
 import { PlatformAdminAuditService } from '../platform/platform-admin-audit.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
@@ -16,9 +18,11 @@ describe('BillingModeService', () => {
   let settings: MockRepository;
   let audit: { record: jest.Mock };
   let tenantContext: { getUser: jest.Mock };
+  let accessCache: ReturnType<typeof createMockAccessCache>;
 
   beforeEach(async () => {
     settings = createMockRepository();
+    accessCache = createMockAccessCache();
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     tenantContext = {
       getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
@@ -29,6 +33,7 @@ describe('BillingModeService', () => {
         { provide: getRepositoryToken(SystemSetting), useValue: settings },
         { provide: PlatformAdminAuditService, useValue: audit },
         { provide: TenantContextService, useValue: tenantContext },
+        { provide: AccessCacheService, useValue: accessCache },
       ],
     }).compile();
     service = moduleRef.get(BillingModeService);
@@ -55,6 +60,19 @@ describe('BillingModeService', () => {
     await service.get();
     await service.get();
     expect(settings.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Plan §16. Flipping the platform to PAID changes precedence rule 2 for EVERY
+   * tenant at once — it is the single switch that turns the platform from
+   * ungated to gated. Without a bust, every replica but the one that handled
+   * the write would keep serving cached "allowed" decisions until its TTL
+   * lapsed, which is precisely the staleness the cache is forbidden to produce.
+   */
+  it('busts every cached access decision when the platform mode changes', async () => {
+    settings.findOne.mockResolvedValueOnce(null);
+    await service.set(BillingMode.PAID);
+    expect(accessCache.invalidateAll).toHaveBeenCalled();
   });
 
   // FND-047: on a cache miss inside a caller's open transaction (isEnforced ->

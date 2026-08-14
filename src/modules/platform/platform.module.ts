@@ -1,7 +1,9 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { ApiKey } from '../../entities/System/ApiKey';
 import { ApiLog } from '../../entities/System/ApiLog';
@@ -83,6 +85,13 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
       SystemSetting,
       AuditLog,
     ]),
+    // MUTUAL by necessity: SubscriptionBillingModule imports this module for
+    // SystemSettingService, and `FileUploadService` needs `UsageService` to
+    // apply the plan's own `max_storage_bytes` / `max_uploaded_files` caps
+    // alongside the platform-wide `TENANT_QUOTA_GB` setting. `forwardRef` is
+    // the supported resolution and is already used between WhatsappModule and
+    // NotificationsModule for the same reason.
+    forwardRef(() => SubscriptionBillingModule),
   ],
   controllers: [
     ApiKeyController,

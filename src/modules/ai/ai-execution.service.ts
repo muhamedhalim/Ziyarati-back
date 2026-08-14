@@ -13,14 +13,22 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { AiRagService } from './ai-rag.service';
 import { AiProviderFactory } from './providers/ai-provider.factory';
-import { AiChatMessage, AiCompletionResult } from './providers/ai-provider.interface';
+import {
+  AiChatMessage,
+  AiCompletionResult,
+} from './providers/ai-provider.interface';
 import { SendMessageDto } from './dto/send-message.dto';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
+import { AccessControlService } from '../subscription-billing/access-control.service';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
-import { AiToolDispatchService, ToolContext } from './tools/ai-tool-dispatch.service';
+import {
+  AiToolDispatchService,
+  ToolContext,
+} from './tools/ai-tool-dispatch.service';
 import { AI_TOOLS, AI_TOOL_PERMISSION } from './tools/ai-tools.constants';
 import {
   AI_PUBLIC_BOOKING_TOOLS,
@@ -32,14 +40,20 @@ import {
   AiAdminToolName,
 } from './tools/ai-admin-tools.constants';
 import { AiMetricsService } from './ai-metrics.service';
-import { AiToolCall, AiToolDefinition } from './providers/ai-provider.interface';
+import {
+  AiToolCall,
+  AiToolDefinition,
+} from './providers/ai-provider.interface';
 import {
   AI_CONVERSATION_STATUS,
   AI_MESSAGE_ROLE,
   currentPeriodMonth,
 } from './ai.constants';
 import { HandoverCustomerRepliedEvent } from '../../events/handover.events';
-import { AiPromptBudgetService, PromptBudgetTelemetry } from './prompt/ai-prompt-budget.service';
+import {
+  AiPromptBudgetService,
+  PromptBudgetTelemetry,
+} from './prompt/ai-prompt-budget.service';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
@@ -57,12 +71,18 @@ interface TurnAccounting {
   pricingStatus: 'PRICED' | 'UNPRICED';
 }
 
-export type AiExecutionTransport = 'REST' | 'WEBSOCKET' | 'WHATSAPP' | 'BACKGROUND_JOB';
-export type AiMemoryContextLoader = () => Promise<Array<{
-  type?: string;
-  content: string;
-  score?: number;
-}>>;
+export type AiExecutionTransport =
+  | 'REST'
+  | 'WEBSOCKET'
+  | 'WHATSAPP'
+  | 'BACKGROUND_JOB';
+export type AiMemoryContextLoader = () => Promise<
+  Array<{
+    type?: string;
+    content: string;
+    score?: number;
+  }>
+>;
 
 /**
  * AI turn orchestrator: persist user message → retrieve KB context (RAG) →
@@ -91,7 +111,8 @@ export class AiExecutionService {
   constructor(
     @InjectRepository(AiConversation)
     private readonly aiConversations: Repository<AiConversation>,
-    @InjectRepository(AiMessage) private readonly messages: Repository<AiMessage>,
+    @InjectRepository(AiMessage)
+    private readonly messages: Repository<AiMessage>,
     private readonly rag: AiRagService,
     private readonly providers: AiProviderFactory,
     private readonly dataSource: DataSource,
@@ -106,7 +127,35 @@ export class AiExecutionService {
     private readonly requests: AiRequestExecutionService,
     private readonly modelRouter: AiModelRouterService,
     private readonly subscriptions: SubscriptionService,
+    private readonly access: AccessControlService,
   ) {}
+
+  /**
+   * THE entitlement gate for an AI turn, on every transport.
+   *
+   * `AiOrchestratorService` funnels the REST controller, the `ai:message`
+   * socket event, the WhatsApp inbound bridge, the guest-chat widget and the
+   * queued `ai.execute` job into the two methods below — so this one call
+   * covers all of them, and a sixth transport added later inherits it. Before
+   * this existed, the only checks here were `assertBillableActionAllowed`
+   * (grace-expiry, which permits everything when there is no subscription row
+   * at all) and the token quota: a tenant whose AI capability was never granted
+   * — or was administratively SUSPENDED mid-incident — kept running AI turns on
+   * every path that did not pass through the HTTP guard.
+   *
+   * Deliberately raises the platform's standard access-denied error rather than
+   * a bespoke one: the public payload names only the source and the capability,
+   * and `decision.reason` (which names subscription status) stays in
+   * `internalContext`. The public-facing guest chat resolves the CLINIC's
+   * policy here, so this response is seen by unauthenticated visitors and must
+   * not describe the clinic's billing state.
+   */
+  private async assertAiEntitled(tenantId: string): Promise<void> {
+    await this.access.assertAccess(tenantId, FeatureKey.AI_ASSISTANT, {
+      surface: 'service',
+      detail: 'AiExecutionService.turn',
+    });
+  }
 
   async sendMessage(
     tenantId: string,
@@ -120,7 +169,7 @@ export class AiExecutionService {
     let requestClaimed = false;
     let providerStarted = false;
     let quotaReserved = false;
-    let channel = transport;
+    const channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
     let modelForMetric = 'noop';
@@ -131,7 +180,9 @@ export class AiExecutionService {
         relations: { agent: true, conversation: true },
       });
       if (!aiConv) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'AI conversation not found',
+        });
       }
       if (aiConv.status !== AI_CONVERSATION_STATUS.ACTIVE) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -140,20 +191,32 @@ export class AiExecutionService {
       }
       logicalChannel = aiConv.channel ?? 'API';
       routeForMetric = `ai.chat.${logicalChannel.toLowerCase()}`;
-      const claim = await this.requests.claim(tenantId, requestKey, 'chat', channel);
+      const claim = await this.requests.claim(
+        tenantId,
+        requestKey,
+        'chat',
+        channel,
+      );
       if (claim === 'COMPLETED') {
         const replay = await this.requests.completedResponse<{
-          message: AiMessage; retrievedChunks: number;
-          usage: { promptTokens: number; completionTokens: number; totalTokens: number };
-          fallback: boolean; lastTool?: { name: string; result: Record<string, unknown> };
+          message: AiMessage;
+          retrievedChunks: number;
+          usage: {
+            promptTokens: number;
+            completionTokens: number;
+            totalTokens: number;
+          };
+          fallback: boolean;
+          lastTool?: { name: string; result: Record<string, unknown> };
         }>(tenantId, requestKey);
         if (replay) return replay;
       }
       if (claim !== 'CLAIMED') {
         throw new AppError(ErrorCode.CONFLICT, {
-          message: claim === 'UNKNOWN'
-            ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
-            : 'The same AI request is already in progress.',
+          message:
+            claim === 'UNKNOWN'
+              ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
+              : 'The same AI request is already in progress.',
         });
       }
       requestClaimed = true;
@@ -161,6 +224,10 @@ export class AiExecutionService {
       // When the AI session is linked to a messaging Conversation, every turn is
       // mirrored into the unified Message timeline (see mirrorToTimeline).
       const linkedConversationId = aiConv.conversation?.id;
+
+      // Entitlement first: "may this clinic use AI at all?" precedes "is this
+      // clinic's billing in good standing?" and "is it under its token cap?".
+      await this.assertAiEntitled(tenantId);
 
       // FND-031: also enforced at the route level (SubscriptionAccessGuard,
       // for the HTTP path) — repeated here so a QUEUED/worker-triggered call
@@ -174,7 +241,11 @@ export class AiExecutionService {
       // completes, so the final tally below adds the REMAINDER
       // (totalTokens - 1), and the catch block releases this reservation if
       // the turn fails before reaching that point.
-      const admission = await this.usage.incrementIfWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      const admission = await this.usage.incrementIfWithinLimit(
+        tenantId,
+        USAGE_METRIC.AI_TOKENS,
+        1,
+      );
       if (!admission.applied) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: `Usage limit reached for ${USAGE_METRIC.AI_TOKENS} (${admission.used}/${admission.limit})`,
@@ -205,21 +276,39 @@ export class AiExecutionService {
       // Mirror the inbound customer turn into the unified timeline (real timestamp
       // now, BEFORE the LLM call, so it sorts ahead of the bot reply).
       if (linkedConversationId) {
-        await this.mirrorToTimeline(tenantId, linkedConversationId, 'CUSTOMER', dto.content);
+        await this.mirrorToTimeline(
+          tenantId,
+          linkedConversationId,
+          'CUSTOMER',
+          dto.content,
+        );
       }
 
       // 2) RAG retrieval (read-only) — timed for Advanced AI Monitoring.
       const ragStart = Date.now();
-      const embedTiming: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number } = {};
-      const chunks = agent ? await this.rag.retrieve(
-        tenantId, agent.id, dto.content, undefined, embedTiming,
-        { channel, aiConversationId, idempotencyKey: requestKey },
-      ) : [];
+      const embedTiming: {
+        embeddingMs?: number;
+        embeddingTokens?: number;
+        embeddingCacheHits?: number;
+      } = {};
+      const chunks = agent
+        ? await this.rag.retrieve(
+            tenantId,
+            agent.id,
+            dto.content,
+            undefined,
+            embedTiming,
+            { channel, aiConversationId, idempotencyKey: requestKey },
+          )
+        : [];
       const ragRetrievalMs = Date.now() - ragStart;
       // 3) Fetch a wider recent window, then let the centralized token budget
       // retain complete recent turns rather than relying on a message count.
       const recent = await this.messages.find({
-        where: { ai_conversation_id: aiConversationId, tenant: { id: tenantId } },
+        where: {
+          ai_conversation_id: aiConversationId,
+          tenant: { id: tenantId },
+        },
         order: { created_at: 'DESC' },
         take: 50,
       });
@@ -228,7 +317,9 @@ export class AiExecutionService {
         systemPrompt: agent?.system_prompt,
         ragChunks: chunks,
         memories,
-        history: recent.reverse().map((m) => ({ role: this.mapRole(m.role), content: m.content })),
+        history: recent
+          .reverse()
+          .map((m) => ({ role: this.mapRole(m.role), content: m.content })),
         tools: this.availableTools(),
       });
       let messages: AiChatMessage[] = built.messages;
@@ -239,8 +330,11 @@ export class AiExecutionService {
       //    until the model returns a plain answer (or the iteration cap is hit).
       const route = routeForMetric;
       const routed = this.modelRouter.resolve({
-        tenantId, conversationId: aiConversationId, legacyModel: agent?.model,
-        feature: 'chat', route,
+        tenantId,
+        conversationId: aiConversationId,
+        legacyModel: agent?.model,
+        feature: 'chat',
+        route,
       });
       const provider = this.providers.resolve(routed.model);
       providerForMetric = provider.name;
@@ -267,10 +361,16 @@ export class AiExecutionService {
       let toolSuccessCount = 0;
       let toolFailureCount = 0;
       let toolExecMs = 0;
-      let lastTool: { name: string; result: Record<string, unknown> } | undefined;
+      let lastTool:
+        | { name: string; result: Record<string, unknown> }
+        | undefined;
       const accounting: TurnAccounting = {
-        cachedInputTokens: 0, cachedRequestCount: 0, providerAttempts: 0, toolLoops: 0,
-        costMicrousd: 0n, pricingStatus: PRICING_STATUS.PRICED,
+        cachedInputTokens: 0,
+        cachedRequestCount: 0,
+        providerAttempts: 0,
+        toolLoops: 0,
+        costMicrousd: 0n,
+        pricingStatus: PRICING_STATUS.PRICED,
       };
 
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
@@ -285,18 +385,28 @@ export class AiExecutionService {
           tools,
           maxOutputTokens: this.budgets.maxOutputTokens,
           idempotencyKey: `${requestKey}:loop:${i}`,
-          feature: 'chat', route, channel,
+          feature: 'chat',
+          route,
+          channel,
         });
         promptTokens += completion.promptTokens;
         completionTokens += completion.completionTokens;
         lastModel = completion.model;
         fallback = completion.fallback ?? fallback;
         accounting.cachedInputTokens += completion.cachedPromptTokens ?? 0;
-        if ((completion.cachedPromptTokens ?? 0) > 0) accounting.cachedRequestCount += 1;
+        if ((completion.cachedPromptTokens ?? 0) > 0)
+          accounting.cachedRequestCount += 1;
         accounting.providerAttempts += completion.providerAttempts ?? 1;
         await this.recordCompletionCost(
-          tenantId, aiConversationId, requestKey, channel, route, i,
-          provider.name, completion, accounting,
+          tenantId,
+          aiConversationId,
+          requestKey,
+          channel,
+          route,
+          i,
+          provider.name,
+          completion,
+          accounting,
         );
 
         const calls = completion.toolCalls ?? [];
@@ -307,7 +417,11 @@ export class AiExecutionService {
         accounting.toolLoops += 1;
 
         // Record the assistant's tool-call turn, execute each call, feed results back.
-        messages.push({ role: 'assistant', content: completion.content || null, tool_calls: calls });
+        messages.push({
+          role: 'assistant',
+          content: completion.content || null,
+          tool_calls: calls,
+        });
         for (const call of calls) {
           const [result, ms] = await this.timedToolCall(toolCtx, call);
           toolCallsCount += 1;
@@ -343,7 +457,8 @@ export class AiExecutionService {
             tokens_used: completionTokens,
           }),
         );
-        if (agent) await this.recordUsage(manager, tenantId, agent.id, totalTokens);
+        if (agent)
+          await this.recordUsage(manager, tenantId, agent.id, totalTokens);
         return saved;
       });
 
@@ -351,12 +466,21 @@ export class AiExecutionService {
       // the remainder so the total recorded equals totalTokens, exactly as
       // before this fix (a no-op via increment()'s own guard if totalTokens
       // is somehow <= 1).
-      await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1);
+      await this.usage.increment(
+        tenantId,
+        USAGE_METRIC.AI_TOKENS,
+        totalTokens - 1,
+      );
 
       // Mirror the bot reply into the unified timeline (after the assistant row is
       // committed, so its timestamp follows the customer turn).
       if (linkedConversationId && finalContent) {
-        await this.mirrorToTimeline(tenantId, linkedConversationId, 'BOT', finalContent);
+        await this.mirrorToTimeline(
+          tenantId,
+          linkedConversationId,
+          'BOT',
+          finalContent,
+        );
       }
 
       await this.metrics.record({
@@ -364,7 +488,9 @@ export class AiExecutionService {
         aiConversationId,
         channel,
         model: lastModel,
-        feature: 'chat', route, idempotencyKey: requestKey,
+        feature: 'chat',
+        route,
+        idempotencyKey: requestKey,
         streamed: false,
         fallback,
         success: true,
@@ -377,7 +503,8 @@ export class AiExecutionService {
         pricingStatus: accounting.pricingStatus,
         toolLoopCount: accounting.toolLoops,
         providerAttempts: accounting.providerAttempts,
-        cachedRequestCount: accounting.cachedRequestCount + (embedTiming.embeddingCacheHits ?? 0),
+        cachedRequestCount:
+          accounting.cachedRequestCount + (embedTiming.embeddingCacheHits ?? 0),
         truncatedPromptTokens,
         ragRetrievalMs,
         embeddingMs: embedTiming.embeddingMs,
@@ -402,26 +529,49 @@ export class AiExecutionService {
         // FND-034: the turn didn't reach the final tally, so the 1-token
         // reservation above was never topped up or consumed — release it.
         // Best-effort: a release failure must not mask the real error.
-        await this.usage.release(tenantId, USAGE_METRIC.AI_TOKENS, 1).catch(() => undefined);
+        await this.usage
+          .release(tenantId, USAGE_METRIC.AI_TOKENS, 1)
+          .catch(() => undefined);
       }
       if (providerStarted) {
         await this.costs.record({
-          tenantId, aiConversationId, idempotencyKey: `${requestKey}:failure`,
-          requestKind: 'CHAT', provider: providerForMetric, model: modelForMetric,
-          feature: 'chat', route: routeForMetric, channel,
-          success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
+          tenantId,
+          aiConversationId,
+          idempotencyKey: `${requestKey}:failure`,
+          requestKind: 'CHAT',
+          provider: providerForMetric,
+          model: modelForMetric,
+          feature: 'chat',
+          route: routeForMetric,
+          channel,
+          success: false,
+          errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
           quote: {
-            status: PRICING_STATUS.UNPRICED, provider: providerForMetric,
-            requestedModel: modelForMetric, executionMode: 'STANDARD', costMicrousd: null,
+            status: PRICING_STATUS.UNPRICED,
+            provider: providerForMetric,
+            requestedModel: modelForMetric,
+            executionMode: 'STANDARD',
+            costMicrousd: null,
           },
         });
       }
       if (requestClaimed) {
-        await this.requests.fail(
-          tenantId, requestKey,
-          providerStarted ? 'UNKNOWN_OUTCOME' : (err instanceof AppError ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE'),
-          providerStarted ? 'PROVIDER_OR_POST_PROVIDER_FAILURE' : (err instanceof AppError ? 'PERMANENT_PRE_PROVIDER_FAILURE' : 'RETRYABLE_PRE_PROVIDER_FAILURE'),
-        ).catch(() => undefined);
+        await this.requests
+          .fail(
+            tenantId,
+            requestKey,
+            providerStarted
+              ? 'UNKNOWN_OUTCOME'
+              : err instanceof AppError
+                ? 'FAILED_PERMANENT'
+                : 'FAILED_RETRYABLE',
+            providerStarted
+              ? 'PROVIDER_OR_POST_PROVIDER_FAILURE'
+              : err instanceof AppError
+                ? 'PERMANENT_PRE_PROVIDER_FAILURE'
+                : 'RETRYABLE_PRE_PROVIDER_FAILURE',
+          )
+          .catch(() => undefined);
       }
       await this.metrics.record({
         tenantId,
@@ -445,7 +595,9 @@ export class AiExecutionService {
       });
       throw err instanceof AppError
         ? err
-        : new AppError(ErrorCode.INTERNAL_ERROR, { message: 'The AI request could not be completed.' });
+        : new AppError(ErrorCode.INTERNAL_ERROR, {
+            message: 'The AI request could not be completed.',
+          });
     }
   }
 
@@ -468,7 +620,9 @@ export class AiExecutionService {
       relations: { conversation: { assigned_to: true } },
     });
     if (!aiConv) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'AI conversation not found',
+      });
     }
 
     await this.messages.save(
@@ -483,7 +637,12 @@ export class AiExecutionService {
 
     const linkedConversationId = aiConv.conversation?.id;
     if (linkedConversationId) {
-      await this.mirrorToTimeline(tenantId, linkedConversationId, 'CUSTOMER', content);
+      await this.mirrorToTimeline(
+        tenantId,
+        linkedConversationId,
+        'CUSTOMER',
+        content,
+      );
       // Requirement #10 (notifications): let the assigned agent's channels
       // (WhatsApp/SMS/email, per their NotificationRule) know the customer
       // replied — the realtime WS push only reaches an already-online agent.
@@ -517,10 +676,14 @@ export class AiExecutionService {
    * `WhatsappInboundAiService`). Never trusted from the model; only ever read
    * from the persisted `AiConversation.session` jsonb column.
    */
-  private sessionCustomerId(session: Record<string, unknown> | undefined): string | undefined {
+  private sessionCustomerId(
+    session: Record<string, unknown> | undefined,
+  ): string | undefined {
     const context = session?.context as Record<string, unknown> | undefined;
     const customerId = context?.customerId;
-    return typeof customerId === 'string' && customerId.trim() ? customerId : undefined;
+    return typeof customerId === 'string' && customerId.trim()
+      ? customerId
+      : undefined;
   }
 
   /**
@@ -553,11 +716,12 @@ export class AiExecutionService {
     memoryLoader?: AiMemoryContextLoader,
   ) {
     const turnStart = Date.now();
-    const requestKey = dto.idempotencyKey ?? origin?.waMessageId ?? randomUUID();
+    const requestKey =
+      dto.idempotencyKey ?? origin?.waMessageId ?? randomUUID();
     let requestClaimed = false;
     let providerStarted = false;
     let quotaReserved = false;
-    let channel = transport;
+    const channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
     let modelForMetric = 'noop';
@@ -567,7 +731,10 @@ export class AiExecutionService {
         where: { id: aiConversationId, tenant: { id: tenantId } },
         relations: { agent: true, conversation: true },
       });
-      if (!aiConv) throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
+      if (!aiConv)
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'AI conversation not found',
+        });
       if (aiConv.status !== AI_CONVERSATION_STATUS.ACTIVE) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: `Cannot send to a conversation in status "${aiConv.status}"`,
@@ -575,12 +742,23 @@ export class AiExecutionService {
       }
       logicalChannel = aiConv.channel ?? 'API';
       routeForMetric = `ai.chat.${logicalChannel.toLowerCase()}`;
-      const claim = await this.requests.claim(tenantId, requestKey, 'chat', channel);
+      const claim = await this.requests.claim(
+        tenantId,
+        requestKey,
+        'chat',
+        channel,
+      );
       if (claim === 'COMPLETED') {
         const replay = await this.requests.completedResponse<{
-          message: AiMessage; retrievedChunks: number;
-          usage: { promptTokens: number; completionTokens: number; totalTokens: number };
-          streamed: boolean; lastTool?: { name: string; result: Record<string, unknown> };
+          message: AiMessage;
+          retrievedChunks: number;
+          usage: {
+            promptTokens: number;
+            completionTokens: number;
+            totalTokens: number;
+          };
+          streamed: boolean;
+          lastTool?: { name: string; result: Record<string, unknown> };
           // FND-023 — optional: a response PERSISTED before this field existed
           // replays without it, which is fine (undefined, not a crash) — the
           // caller already treats a missing/null id as "nothing to attach".
@@ -593,14 +771,20 @@ export class AiExecutionService {
       }
       if (claim !== 'CLAIMED') {
         throw new AppError(ErrorCode.CONFLICT, {
-          message: claim === 'UNKNOWN'
-            ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
-            : 'The same AI request is already in progress.',
+          message:
+            claim === 'UNKNOWN'
+              ? 'A previous AI attempt has an unknown provider outcome and requires verification.'
+              : 'The same AI request is already in progress.',
         });
       }
       requestClaimed = true;
       const agent = aiConv.agent;
       const linkedConversationId = aiConv.conversation?.id;
+
+      // Same entitlement gate as the non-streaming path above — this is the
+      // method the WebSocket turn, the WhatsApp inbound bridge and the guest
+      // widget all reach.
+      await this.assertAiEntitled(tenantId);
 
       // FND-031: same route-level-plus-worker-path enforcement as the
       // non-streaming path above.
@@ -608,7 +792,11 @@ export class AiExecutionService {
 
       // FND-034: same atomic reservation as the non-streaming path above —
       // see its comment for the full rationale.
-      const admission = await this.usage.incrementIfWithinLimit(tenantId, USAGE_METRIC.AI_TOKENS, 1);
+      const admission = await this.usage.incrementIfWithinLimit(
+        tenantId,
+        USAGE_METRIC.AI_TOKENS,
+        1,
+      );
       if (!admission.applied) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message: `Usage limit reached for ${USAGE_METRIC.AI_TOKENS} (${admission.used}/${admission.limit})`,
@@ -644,14 +832,27 @@ export class AiExecutionService {
       }
 
       const ragStart = Date.now();
-      const embedTiming: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number } = {};
-      const chunks = agent ? await this.rag.retrieve(
-        tenantId, agent.id, dto.content, undefined, embedTiming,
-        { channel, aiConversationId, idempotencyKey: requestKey },
-      ) : [];
+      const embedTiming: {
+        embeddingMs?: number;
+        embeddingTokens?: number;
+        embeddingCacheHits?: number;
+      } = {};
+      const chunks = agent
+        ? await this.rag.retrieve(
+            tenantId,
+            agent.id,
+            dto.content,
+            undefined,
+            embedTiming,
+            { channel, aiConversationId, idempotencyKey: requestKey },
+          )
+        : [];
       const ragRetrievalMs = Date.now() - ragStart;
       const recent = await this.messages.find({
-        where: { ai_conversation_id: aiConversationId, tenant: { id: tenantId } },
+        where: {
+          ai_conversation_id: aiConversationId,
+          tenant: { id: tenantId },
+        },
         order: { created_at: 'DESC' },
         take: 50,
       });
@@ -660,7 +861,9 @@ export class AiExecutionService {
         systemPrompt: agent?.system_prompt,
         ragChunks: chunks,
         memories,
-        history: recent.reverse().map((m) => ({ role: this.mapRole(m.role), content: m.content })),
+        history: recent
+          .reverse()
+          .map((m) => ({ role: this.mapRole(m.role), content: m.content })),
         tools: this.availableTools(),
       });
       let messages: AiChatMessage[] = built.messages;
@@ -669,8 +872,11 @@ export class AiExecutionService {
 
       const route = routeForMetric;
       const routed = this.modelRouter.resolve({
-        tenantId, conversationId: aiConversationId, legacyModel: agent?.model,
-        feature: 'chat', route,
+        tenantId,
+        conversationId: aiConversationId,
+        legacyModel: agent?.model,
+        feature: 'chat',
+        route,
       });
       const provider = this.providers.resolve(routed.model);
       providerForMetric = provider.name;
@@ -703,10 +909,16 @@ export class AiExecutionService {
       let toolSuccessCount = 0;
       let toolFailureCount = 0;
       let toolExecMs = 0;
-      let lastTool: { name: string; result: Record<string, unknown> } | undefined;
+      let lastTool:
+        | { name: string; result: Record<string, unknown> }
+        | undefined;
       const accounting: TurnAccounting = {
-        cachedInputTokens: 0, cachedRequestCount: 0, providerAttempts: 0, toolLoops: 0,
-        costMicrousd: 0n, pricingStatus: PRICING_STATUS.PRICED,
+        cachedInputTokens: 0,
+        cachedRequestCount: 0,
+        providerAttempts: 0,
+        toolLoops: 0,
+        costMicrousd: 0n,
+        pricingStatus: PRICING_STATUS.PRICED,
       };
 
       if (provider.stream) {
@@ -718,15 +930,29 @@ export class AiExecutionService {
           truncatedPromptTokens += fitted.truncatedTokens;
           let turnContent = '';
           let sawToolCalls: AiToolCall[] = [];
-          let turnUsage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; providerAttempts?: number } | undefined;
+          let turnUsage:
+            | {
+                promptTokens: number;
+                completionTokens: number;
+                cachedPromptTokens?: number;
+                providerAttempts?: number;
+              }
+            | undefined;
           for await (const chunk of provider.stream({
-            tenantId, model, temperature, messages, tools,
+            tenantId,
+            model,
+            temperature,
+            messages,
+            tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
             idempotencyKey: `${requestKey}:loop:${i}`,
-            feature: 'chat', route, channel,
+            feature: 'chat',
+            route,
+            channel,
           })) {
             if (chunk.delta) {
-              if (firstTokenMs === undefined) firstTokenMs = Date.now() - turnStart;
+              if (firstTokenMs === undefined)
+                firstTokenMs = Date.now() - turnStart;
               turnContent += chunk.delta;
               onToken(chunk.delta);
             }
@@ -743,10 +969,16 @@ export class AiExecutionService {
           }
           if (turnUsage) {
             accounting.cachedInputTokens += turnUsage.cachedPromptTokens ?? 0;
-            if ((turnUsage.cachedPromptTokens ?? 0) > 0) accounting.cachedRequestCount += 1;
+            if ((turnUsage.cachedPromptTokens ?? 0) > 0)
+              accounting.cachedRequestCount += 1;
             accounting.providerAttempts += turnUsage.providerAttempts ?? 1;
             await this.recordCompletionCost(
-              tenantId, aiConversationId, requestKey, channel, route, i,
+              tenantId,
+              aiConversationId,
+              requestKey,
+              channel,
+              route,
+              i,
               provider.name,
               {
                 model: lastModel,
@@ -763,7 +995,11 @@ export class AiExecutionService {
             break;
           }
           accounting.toolLoops += 1;
-          messages.push({ role: 'assistant', content: turnContent || null, tool_calls: sawToolCalls });
+          messages.push({
+            role: 'assistant',
+            content: turnContent || null,
+            tool_calls: sawToolCalls,
+          });
           for (const call of sawToolCalls) {
             const [result, ms] = await this.timedToolCall(toolCtx, call);
             toolCallsCount += 1;
@@ -773,9 +1009,15 @@ export class AiExecutionService {
             lastTool = { name: call.name, result };
             const toolOutput = this.budgets.truncateToolResult(result);
             truncatedPromptTokens += toolOutput.truncatedTokens;
-            messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: toolOutput.content });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              name: call.name,
+              content: toolOutput.content,
+            });
           }
-          if (i === MAX_TOOL_ITERATIONS - 1) full = turnContent || 'I have processed your request.';
+          if (i === MAX_TOOL_ITERATIONS - 1)
+            full = turnContent || 'I have processed your request.';
         }
         streamingDurationMs = Date.now() - streamStart;
       } else {
@@ -785,10 +1027,16 @@ export class AiExecutionService {
           messages = fitted.messages;
           truncatedPromptTokens += fitted.truncatedTokens;
           const completion = await provider.complete({
-            tenantId, model, temperature, messages, tools,
+            tenantId,
+            model,
+            temperature,
+            messages,
+            tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
             idempotencyKey: `${requestKey}:loop:${i}`,
-            feature: 'chat', route, channel,
+            feature: 'chat',
+            route,
+            channel,
           });
           promptTokens += completion.promptTokens;
           completionTokens += completion.completionTokens;
@@ -796,11 +1044,19 @@ export class AiExecutionService {
           lastModel = completion.model;
           fallback = completion.fallback ?? fallback;
           accounting.cachedInputTokens += completion.cachedPromptTokens ?? 0;
-          if ((completion.cachedPromptTokens ?? 0) > 0) accounting.cachedRequestCount += 1;
+          if ((completion.cachedPromptTokens ?? 0) > 0)
+            accounting.cachedRequestCount += 1;
           accounting.providerAttempts += completion.providerAttempts ?? 1;
           await this.recordCompletionCost(
-            tenantId, aiConversationId, requestKey, channel, route, i,
-            provider.name, completion, accounting,
+            tenantId,
+            aiConversationId,
+            requestKey,
+            channel,
+            route,
+            i,
+            provider.name,
+            completion,
+            accounting,
           );
 
           const calls = completion.toolCalls ?? [];
@@ -809,7 +1065,11 @@ export class AiExecutionService {
             break;
           }
           accounting.toolLoops += 1;
-          messages.push({ role: 'assistant', content: completion.content || null, tool_calls: calls });
+          messages.push({
+            role: 'assistant',
+            content: completion.content || null,
+            tool_calls: calls,
+          });
           for (const call of calls) {
             const [result, ms] = await this.timedToolCall(toolCtx, call);
             toolCallsCount += 1;
@@ -819,9 +1079,15 @@ export class AiExecutionService {
             lastTool = { name: call.name, result };
             const toolOutput = this.budgets.truncateToolResult(result);
             truncatedPromptTokens += toolOutput.truncatedTokens;
-            messages.push({ role: 'tool', tool_call_id: call.id, name: call.name, content: toolOutput.content });
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              name: call.name,
+              content: toolOutput.content,
+            });
           }
-          if (i === MAX_TOOL_ITERATIONS - 1) full = completion.content || 'I have processed your request.';
+          if (i === MAX_TOOL_ITERATIONS - 1)
+            full = completion.content || 'I have processed your request.';
         }
         if (full) onToken(full);
       }
@@ -850,15 +1116,25 @@ export class AiExecutionService {
             tokens_used: completionTokens,
           }),
         );
-        if (agent) await this.recordUsage(manager, tenantId, agent.id, totalTokens);
+        if (agent)
+          await this.recordUsage(manager, tenantId, agent.id, totalTokens);
         return saved;
       });
 
       // 1 was already reserved atomically by the pre-check above.
-      await this.usage.increment(tenantId, USAGE_METRIC.AI_TOKENS, totalTokens - 1);
+      await this.usage.increment(
+        tenantId,
+        USAGE_METRIC.AI_TOKENS,
+        totalTokens - 1,
+      );
       let mirroredMessageId: string | null = null;
       if (linkedConversationId && full) {
-        const mirrored = await this.mirrorToTimeline(tenantId, linkedConversationId, 'BOT', full);
+        const mirrored = await this.mirrorToTimeline(
+          tenantId,
+          linkedConversationId,
+          'BOT',
+          full,
+        );
         mirroredMessageId = mirrored?.id ?? null;
       }
 
@@ -867,7 +1143,9 @@ export class AiExecutionService {
         aiConversationId,
         channel,
         model: lastModel,
-        feature: 'chat', route, idempotencyKey: requestKey,
+        feature: 'chat',
+        route,
+        idempotencyKey: requestKey,
         streamed,
         fallback,
         success: true,
@@ -880,7 +1158,8 @@ export class AiExecutionService {
         pricingStatus: accounting.pricingStatus,
         toolLoopCount: accounting.toolLoops,
         providerAttempts: accounting.providerAttempts,
-        cachedRequestCount: accounting.cachedRequestCount + (embedTiming.embeddingCacheHits ?? 0),
+        cachedRequestCount:
+          accounting.cachedRequestCount + (embedTiming.embeddingCacheHits ?? 0),
         truncatedPromptTokens,
         ragRetrievalMs,
         embeddingMs: embedTiming.embeddingMs,
@@ -912,26 +1191,49 @@ export class AiExecutionService {
         // FND-034: the turn didn't reach the final tally, so the 1-token
         // reservation above was never topped up or consumed — release it.
         // Best-effort: a release failure must not mask the real error.
-        await this.usage.release(tenantId, USAGE_METRIC.AI_TOKENS, 1).catch(() => undefined);
+        await this.usage
+          .release(tenantId, USAGE_METRIC.AI_TOKENS, 1)
+          .catch(() => undefined);
       }
       if (providerStarted) {
         await this.costs.record({
-          tenantId, aiConversationId, idempotencyKey: `${requestKey}:failure`,
-          requestKind: 'CHAT', provider: providerForMetric, model: modelForMetric,
-          feature: 'chat', route: routeForMetric, channel,
-          success: false, errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
+          tenantId,
+          aiConversationId,
+          idempotencyKey: `${requestKey}:failure`,
+          requestKind: 'CHAT',
+          provider: providerForMetric,
+          model: modelForMetric,
+          feature: 'chat',
+          route: routeForMetric,
+          channel,
+          success: false,
+          errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
           quote: {
-            status: PRICING_STATUS.UNPRICED, provider: providerForMetric,
-            requestedModel: modelForMetric, executionMode: 'STANDARD', costMicrousd: null,
+            status: PRICING_STATUS.UNPRICED,
+            provider: providerForMetric,
+            requestedModel: modelForMetric,
+            executionMode: 'STANDARD',
+            costMicrousd: null,
           },
         });
       }
       if (requestClaimed) {
-        await this.requests.fail(
-          tenantId, requestKey,
-          providerStarted ? 'UNKNOWN_OUTCOME' : (err instanceof AppError ? 'FAILED_PERMANENT' : 'FAILED_RETRYABLE'),
-          providerStarted ? 'PROVIDER_OR_POST_PROVIDER_FAILURE' : (err instanceof AppError ? 'PERMANENT_PRE_PROVIDER_FAILURE' : 'RETRYABLE_PRE_PROVIDER_FAILURE'),
-        ).catch(() => undefined);
+        await this.requests
+          .fail(
+            tenantId,
+            requestKey,
+            providerStarted
+              ? 'UNKNOWN_OUTCOME'
+              : err instanceof AppError
+                ? 'FAILED_PERMANENT'
+                : 'FAILED_RETRYABLE',
+            providerStarted
+              ? 'PROVIDER_OR_POST_PROVIDER_FAILURE'
+              : err instanceof AppError
+                ? 'PERMANENT_PRE_PROVIDER_FAILURE'
+                : 'RETRYABLE_PRE_PROVIDER_FAILURE',
+          )
+          .catch(() => undefined);
       }
       await this.metrics.record({
         tenantId,
@@ -955,7 +1257,9 @@ export class AiExecutionService {
       });
       throw err instanceof AppError
         ? err
-        : new AppError(ErrorCode.INTERNAL_ERROR, { message: 'The AI request could not be completed.' });
+        : new AppError(ErrorCode.INTERNAL_ERROR, {
+            message: 'The AI request could not be completed.',
+          });
     }
   }
 
@@ -1079,32 +1383,62 @@ export class AiExecutionService {
     route: string,
     loop: number,
     provider: string,
-    completion: Pick<AiCompletionResult, 'model' | 'promptTokens' | 'completionTokens' | 'cachedPromptTokens' | 'providerAttempts'>,
+    completion: Pick<
+      AiCompletionResult,
+      | 'model'
+      | 'promptTokens'
+      | 'completionTokens'
+      | 'cachedPromptTokens'
+      | 'providerAttempts'
+    >,
     accounting: TurnAccounting,
   ): Promise<void> {
     const quote = this.costs.quoteChat(
-      completion.model, completion.promptTokens, completion.completionTokens,
-      completion.cachedPromptTokens ?? 0, provider,
+      completion.model,
+      completion.promptTokens,
+      completion.completionTokens,
+      completion.cachedPromptTokens ?? 0,
+      provider,
     );
     await this.costs.record({
-      tenantId, aiConversationId, idempotencyKey: `${requestKey}:chat:${loop}`,
-      requestKind: 'CHAT', provider, model: completion.model,
-      feature: 'chat', route, channel,
+      tenantId,
+      aiConversationId,
+      idempotencyKey: `${requestKey}:chat:${loop}`,
+      requestKind: 'CHAT',
+      provider,
+      model: completion.model,
+      feature: 'chat',
+      route,
+      channel,
       inputTokens: completion.promptTokens,
       cachedInputTokens: completion.cachedPromptTokens ?? 0,
       outputTokens: completion.completionTokens,
       cachedRequestCount: (completion.cachedPromptTokens ?? 0) > 0 ? 1 : 0,
       toolLoopIndex: loop,
       providerAttempts: completion.providerAttempts ?? 1,
-      success: true, quote,
+      success: true,
+      quote,
     });
     if ((completion.providerAttempts ?? 1) > 1) {
       await this.costs.record({
-        tenantId, aiConversationId, idempotencyKey: `${requestKey}:chat:${loop}:retry-uncertainty`,
-        requestKind: 'CHAT', provider, model: completion.model,
-        feature: 'chat', route, channel,
-        success: false, errorCode: 'RETRY_USAGE_UNKNOWN',
-        quote: { status: PRICING_STATUS.UNPRICED, provider, requestedModel: completion.model, executionMode: 'STANDARD', costMicrousd: null },
+        tenantId,
+        aiConversationId,
+        idempotencyKey: `${requestKey}:chat:${loop}:retry-uncertainty`,
+        requestKind: 'CHAT',
+        provider,
+        model: completion.model,
+        feature: 'chat',
+        route,
+        channel,
+        success: false,
+        errorCode: 'RETRY_USAGE_UNKNOWN',
+        quote: {
+          status: PRICING_STATUS.UNPRICED,
+          provider,
+          requestedModel: completion.model,
+          executionMode: 'STANDARD',
+          costMicrousd: null,
+        },
       });
       accounting.pricingStatus = PRICING_STATUS.UNPRICED;
     }
@@ -1117,8 +1451,14 @@ export class AiExecutionService {
   }
 
   private totalTruncated(t: PromptBudgetTelemetry): number {
-    return t.truncatedSystemTokens + t.truncatedHistoryTokens + t.truncatedRagTokens
-      + t.truncatedMemoryTokens + t.truncatedToolTokens + t.truncatedToolSchemaTokens;
+    return (
+      t.truncatedSystemTokens +
+      t.truncatedHistoryTokens +
+      t.truncatedRagTokens +
+      t.truncatedMemoryTokens +
+      t.truncatedToolTokens +
+      t.truncatedToolSchemaTokens
+    );
   }
 
   /**

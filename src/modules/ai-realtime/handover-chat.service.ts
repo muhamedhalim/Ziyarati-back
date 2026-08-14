@@ -33,14 +33,26 @@ export class HandoverChatService {
     userId: string,
     aiConversationId: string,
     content: string,
-  ): Promise<{ message: Message; conversationId: string; dispatchedToWhatsapp: boolean }> {
-    const { message, conversation } = await this.handovers.sendAgentReply(tenantId, userId, aiConversationId, content);
+  ): Promise<{
+    message: Message;
+    conversationId: string;
+    dispatchedToWhatsapp: boolean;
+  }> {
+    const { message, conversation } = await this.handovers.sendAgentReply(
+      tenantId,
+      userId,
+      aiConversationId,
+      content,
+    );
 
     let dispatchedToWhatsapp = false;
-    const to = conversation.customer?.whatsapp_id || conversation.customer?.phone;
+    const to =
+      conversation.customer?.whatsapp_id || conversation.customer?.phone;
     if (conversation.whatsapp_account && to) {
       try {
-        const account = await this.router.resolveForSend(tenantId, { accountId: conversation.whatsapp_account.id });
+        const account = await this.router.resolveForSend(tenantId, {
+          accountId: conversation.whatsapp_account.id,
+        });
         const res = await this.messaging.sendSession({
           tenantId,
           accountId: account.id ?? conversation.whatsapp_account.id,
@@ -54,14 +66,23 @@ export class HandoverChatService {
           // FND-023 — lets a later delivery/read webhook (matched by wamid)
           // find its way back to this reply on the unified timeline.
           await this.conversationExecution
-            .recordProviderMessageId(tenantId, message.id, res.providerMessageId)
+            .recordProviderMessageId(
+              tenantId,
+              message.id,
+              res.providerMessageId,
+            )
             .catch((e) =>
-              this.logger.warn(`could not record provider message id: ${(e as Error)?.message}`),
+              this.logger.warn(
+                `could not record provider message id: ${(e as Error)?.message}`,
+              ),
             );
         }
-        if (!res.success) this.logger.warn(`agent reply WhatsApp send failed: ${res.error}`);
+        if (!res.success)
+          this.logger.warn(`agent reply WhatsApp send failed: ${res.error}`);
       } catch (err) {
-        this.logger.warn(`agent reply WhatsApp dispatch failed: ${(err as Error)?.message}`);
+        this.logger.warn(
+          `agent reply WhatsApp dispatch failed: ${(err as Error)?.message}`,
+        );
       }
     }
 

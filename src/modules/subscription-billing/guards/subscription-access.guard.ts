@@ -77,7 +77,15 @@ export class SubscriptionAccessGuard implements CanActivate {
       user.tenantId,
       featureKey,
     );
-    if (!decision.allowed) {
+    if (
+      !decision.allowed &&
+      // Rollout switch (plan §18) — in shadow mode the denial is recorded and
+      // the request proceeds. See `AccessPolicyModeService`.
+      this.access.shouldBlock(decision, {
+        surface: 'http',
+        detail: `${request.method} ${request.route?.path ?? request.path}`,
+      })
+    ) {
       throw new AppError(ErrorCode.NO_ACTIVE_SUBSCRIPTION, {
         publicContext: { source: decision.source, featureKey },
         internalContext: { reason: decision.reason },

@@ -15,9 +15,13 @@ import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
 import { SubscriptionStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
 import {
+  createMockAccessCache,
+  createMockAccessPolicyMode,
   createMockRepository,
   MockRepository,
 } from '../../../test/utils/mock-factories';
+import { AccessCacheService } from './access-cache.service';
+import { AccessPolicyModeService } from './access-policy-mode.service';
 
 /** An authoritative (super-admin) grant for `keys`. */
 function granted(...keys: FeatureKey[]): Map<string, FlagState> {
@@ -41,6 +45,8 @@ describe('AccessControlService', () => {
   let billingMode: { isPaidMode: jest.Mock };
   let overrides: { getActive: jest.Mock; hasActive: jest.Mock };
   let featureFlags: { getStates: jest.Mock };
+  let accessCache: ReturnType<typeof createMockAccessCache>;
+  let policyMode: ReturnType<typeof createMockAccessPolicyMode>;
 
   const future = new Date(Date.now() + 86_400_000);
   const past = new Date(Date.now() - 86_400_000);
@@ -61,6 +67,8 @@ describe('AccessControlService', () => {
     billingMode = { isPaidMode: jest.fn() };
     overrides = { getActive: jest.fn(), hasActive: jest.fn() };
     featureFlags = { getStates: jest.fn() };
+    accessCache = createMockAccessCache();
+    policyMode = createMockAccessPolicyMode();
 
     // Defaults: nothing configured. Individual tests override.
     definitions.find.mockResolvedValue([]);
@@ -86,6 +94,8 @@ describe('AccessControlService', () => {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue(7) },
         },
+        { provide: AccessCacheService, useValue: accessCache },
+        { provide: AccessPolicyModeService, useValue: policyMode },
       ],
     }).compile();
     service = moduleRef.get(AccessControlService);
@@ -579,6 +589,101 @@ describe('AccessControlService', () => {
       // PlatformUsageService calls this once PER TENANT across a listing.
       expect(subscriptions.findOne).not.toHaveBeenCalled();
       expect(featureFlags.getStates).not.toHaveBeenCalled();
+    });
+  });
+
+  // ────────────────────────── Decision cache (§16) ───────────────────────── //
+
+  describe('decision cache', () => {
+    it('stores the resolved context so a second resolution costs no reads', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      await service.resolve('t1', FeatureKey.WHATSAPP);
+      expect(accessCache.set).toHaveBeenCalledWith('t1', expect.anything());
+    });
+
+    it('serves a warm context without touching the database', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      accessCache.get.mockReturnValue({
+        base: {
+          allowed: true,
+          source: AccessSource.ACTIVE_SUBSCRIPTION,
+          quotaPolicy: QuotaPolicy.PLAN_ENFORCED,
+          subscriptionId: 'sub-1',
+          planId: 'plan-1',
+        },
+        flags: new Map(),
+        defaults: new Map(),
+        plans: new Map(),
+      } as never);
+
+      const decision = await service.resolve('t1', FeatureKey.CRM);
+
+      expect(decision.allowed).toBe(true);
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(featureFlags.getStates).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A caller inside an open transaction may have just WRITTEN the flag being
+     * resolved (the super-admin toggle re-reads its own write to build the
+     * audit record). Reading a cache there would show it the pre-write state.
+     */
+    it('never reads the cache inside a transaction', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      const managerRepo = createMockRepository();
+      managerRepo.find.mockResolvedValue([]);
+      managerRepo.findOne.mockResolvedValue(null);
+      const manager = {
+        getRepository: jest.fn().mockReturnValue(managerRepo),
+      } as never;
+
+      await service.resolve('t1', FeatureKey.WHATSAPP, manager);
+
+      expect(accessCache.get).not.toHaveBeenCalled();
+      expect(accessCache.set).not.toHaveBeenCalled();
+    });
+
+    it('invalidate() delegates to the shared cache', () => {
+      service.invalidate('t1');
+      expect(accessCache.invalidate).toHaveBeenCalledWith('t1');
+    });
+  });
+
+  // ───────────────────── Rollout mode: shadow vs enforce (§18) ───────────── //
+
+  describe('ACCESS_POLICY_MODE', () => {
+    it('assertAccess throws on a denial in enforce mode', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      await expect(
+        service.assertAccess('t1', FeatureKey.WHATSAPP),
+      ).rejects.toMatchObject({ code: ErrorCode.NO_ACTIVE_SUBSCRIPTION });
+    });
+
+    /**
+     * Shadow mode must record the denial and let the request through — and the
+     * DECISION returned must stay truthful, because the usage layer derives
+     * `quotaPolicy` from it. A shadow that reported "allowed" would silently
+     * unmeter every tenant it admitted.
+     */
+    it('assertAccess returns the truthful denial WITHOUT throwing in shadow mode', async () => {
+      billingMode.isPaidMode.mockResolvedValue(true);
+      policyMode.shouldBlock.mockReturnValue(false);
+
+      const decision = await service.assertAccess('t1', FeatureKey.WHATSAPP);
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.quotaPolicy).toBe(QuotaPolicy.BLOCKED);
+      expect(policyMode.shouldBlock).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 't1' }),
+        expect.objectContaining({ surface: 'service' }),
+      );
+    });
+
+    it('shouldBlock is a pass-through to the mode service', () => {
+      const decision = { tenantId: 't1' } as never;
+      const site = { surface: 'worker', detail: 'whatsapp.send' };
+      expect(service.shouldBlock(decision, site)).toBe(true);
+      expect(policyMode.shouldBlock).toHaveBeenCalledWith(decision, site);
     });
   });
 });

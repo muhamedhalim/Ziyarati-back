@@ -6,11 +6,13 @@ import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { ErrorCode } from '../../common/errors';
 import {
+  createMockAccessCache,
   createMockRepository,
   MockRepository,
 } from '../../../test/utils/mock-factories';
 import { PlatformAdminAuditService } from '../platform/platform-admin-audit.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { AccessCacheService } from './access-cache.service';
 
 describe('PlanAdminService', () => {
   let service: PlanAdminService;
@@ -18,6 +20,7 @@ describe('PlanAdminService', () => {
   let subscriptions: MockRepository;
   let audit: { record: jest.Mock };
   let tenantContext: { getUser: jest.Mock };
+  let accessCache: ReturnType<typeof createMockAccessCache>;
 
   const plan = (overrides: Record<string, unknown> = {}) => ({
     id: 'plan-1',
@@ -38,6 +41,7 @@ describe('PlanAdminService', () => {
     tenantContext = {
       getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
     };
+    accessCache = createMockAccessCache();
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         PlanAdminService,
@@ -45,6 +49,7 @@ describe('PlanAdminService', () => {
         { provide: getRepositoryToken(Subscription), useValue: subscriptions },
         { provide: PlatformAdminAuditService, useValue: audit },
         { provide: TenantContextService, useValue: tenantContext },
+        { provide: AccessCacheService, useValue: accessCache },
       ],
     }).compile();
     service = moduleRef.get(PlanAdminService);

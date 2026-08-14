@@ -11,6 +11,7 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { FeatureKey } from './feature-registry';
+import { AccessCacheService } from './access-cache.service';
 
 /** The administrative state of one capability for one tenant. */
 export interface FlagState {
@@ -49,6 +50,7 @@ export class FeatureFlagService {
   constructor(
     @InjectRepository(FeatureFlag)
     private readonly flags: Repository<FeatureFlag>,
+    private readonly cache: AccessCacheService,
   ) {}
 
   /** All feature flags configured for the tenant (every source). */
@@ -91,7 +93,12 @@ export class FeatureFlagService {
         updated_by: opts.actorId ?? null,
       });
     }
-    return repo.save(flag);
+    const saved = await repo.save(flag);
+    // A grant that is still cached is a grant that has not taken effect.
+    // Invalidated AFTER the write so a concurrent read can only ever repopulate
+    // the cache from committed state.
+    this.cache.invalidate(tenantId);
+    return saved;
   }
 
   /**
@@ -129,7 +136,11 @@ export class FeatureFlagService {
     flag.suspended_by = suspended ? (opts.actorId ?? null) : null;
     flag.suspended_at = suspended ? new Date() : null;
     flag.updated_by = opts.actorId ?? null;
-    return repo.save(flag);
+    const saved = await repo.save(flag);
+    // A suspension is the incident kill-switch: it must take effect on every
+    // replica now, not when a TTL happens to lapse.
+    this.cache.invalidate(tenantId);
+    return saved;
   }
 
   /**

@@ -157,6 +157,12 @@ export class SubscriptionService {
       );
     }
 
+    // The tenant just moved from "no subscription" to ACTIVE_SUBSCRIPTION —
+    // every cached capability decision for it is now wrong in BOTH directions
+    // (previously-denied features open, and previously-unmetered ones become
+    // PLAN_ENFORCED).
+    this.access.invalidate(tenantId);
+
     const view = await this.view(
       await this.loadWithPlan(tenantId, subscription.id),
     );
@@ -211,6 +217,9 @@ export class SubscriptionService {
     current.plan = { id: newPlan.id } as SubscriptionPlan;
     current.status = SubscriptionStatus.ACTIVE;
     await this.subscriptions.save(current);
+    // Plan entitlement (`feature_plans`) and every plan limit are keyed off the
+    // plan id that just changed.
+    this.access.invalidate(tenantId);
 
     // Proration is abstracted: issue an invoice for the new plan price.
     await this.billing.generateInvoice(
@@ -240,6 +249,8 @@ export class SubscriptionService {
     }
     // If cancelAtPeriodEnd: keep status/access until ends_at; only auto-renew off.
     await this.subscriptions.save(current);
+    // An immediate cancellation must stop access now, not at the next TTL.
+    this.access.invalidate(tenantId);
 
     const view = await this.view(await this.loadWithPlan(tenantId, current.id));
     this.emitter.emit(
@@ -280,6 +291,7 @@ export class SubscriptionService {
       );
     }
     await this.subscriptions.save(subscription);
+    this.access.invalidate(tenantId);
 
     this.emitter.emit(
       SubscriptionReactivatedEvent.eventName,

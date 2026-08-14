@@ -11,6 +11,7 @@ import {
   PlatformAdminAuditService,
   PLATFORM_ADMIN_AUDIT_ACTION,
 } from '../platform/platform-admin-audit.service';
+import { AccessCacheService } from './access-cache.service';
 
 import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
 
@@ -53,6 +54,7 @@ export class PlanAdminService {
     private readonly subscriptions: Repository<Subscription>,
     private readonly audit: PlatformAdminAuditService,
     private readonly tenantContext: TenantContextService,
+    private readonly accessCache: AccessCacheService,
   ) {}
 
   /** Full catalogue including inactive plans (admin view). */
@@ -152,6 +154,10 @@ export class PlanAdminService {
     if (dto.isCustom !== undefined) plan.is_custom = dto.isCustom;
 
     const result = await this.plans.save(plan);
+    // `is_active` and the limit columns feed the decision (and the quota
+    // arithmetic) of every tenant subscribed to this plan. Cheaper and safer to
+    // drop everything than to look up who those tenants are.
+    this.accessCache.invalidateAll();
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.PLAN_UPDATE,
       userId: this.actorId(),

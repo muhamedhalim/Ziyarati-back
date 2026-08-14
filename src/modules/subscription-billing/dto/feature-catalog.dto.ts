@@ -129,6 +129,46 @@ export class SetTenantFeatureDto {
   enabled!: boolean;
 }
 
+/**
+ * Suspend or un-suspend one capability for one tenant (super-admin).
+ *
+ * DELIBERATELY SEPARATE from {@link SetTenantFeatureDto}. Clearing a grant and
+ * suspending a capability are different statements: "this tenant was never
+ * given this" versus "this tenant is deliberately blocked from this", and only
+ * the second outranks a paid plan. Collapsing them into one boolean — which is
+ * what the original `is_enabled = false` did — meant a stray toggle could
+ * silently de-provision a paying clinic, so they get separate payloads and
+ * separate endpoints.
+ */
+export class SetTenantFeatureSuspensionDto {
+  @ApiProperty({ example: 'whatsapp', maxLength: 100 })
+  @IsString()
+  @MaxLength(100)
+  @Matches(KEY_PATTERN, {
+    message: 'featureKey must be lowercase alphanumeric with . _ -',
+  })
+  featureKey!: string;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'true suspends the capability (outranks FREE mode, a paid plan and any override); false lifts it.',
+  })
+  @IsBoolean()
+  suspended!: boolean;
+
+  @ApiPropertyOptional({
+    example: 'Abuse report #4821 — outbound spam from this clinic.',
+    maxLength: 500,
+    description:
+      'REQUIRED when suspending. Recorded on the flag row and in the audit log; the reason is never returned to the tenant.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 /** Bulk toggle multiple features for a tenant (super-admin). */
 export class BulkSetTenantFeaturesDto {
   @ApiProperty({ type: [SetTenantFeatureDto] })
