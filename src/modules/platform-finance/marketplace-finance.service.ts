@@ -396,7 +396,7 @@ export class MarketplaceFinanceService {
     // Four independent domains (payments, subscriptions, subscription-plan MRR,
     // tenants) — none depends on another's result, so they run concurrently
     // instead of as four sequential round-trips (PERF-BE-005).
-    const [[r], [subs], [mrrRow], [clinics]] = await Promise.all([
+    const [[r], [subs], [mrrRow], [clinics], currencyRows] = await Promise.all([
       // Payment-derived metrics — single pass over the PAID set (no per-card query).
       this.dataSource.query(`
       WITH paid AS (SELECT * FROM payments WHERE status = 'PAID')
@@ -432,6 +432,15 @@ export class MarketplaceFinanceService {
       WHERE s.status = 'ACTIVE' AND s.ends_at > now() AND s.deleted_at IS NULL
     `),
       this.dataSource.query(`SELECT COUNT(*)::int AS total FROM tenants WHERE deleted_at IS NULL`),
+      // Which currencies the figures above actually mix. Every money aggregate
+      // in this method SUMs across `payments` WITHOUT grouping by currency — so
+      // the moment a second currency exists, `todayRevenue` and friends become a
+      // meaningless addition of unlike units. Reporting the set makes that
+      // visible to the caller instead of leaving it to be discovered later; the
+      // sums themselves are unchanged (additive field, no contract break).
+      this.dataSource.query(
+        `SELECT DISTINCT currency FROM payments WHERE status = 'PAID' AND currency IS NOT NULL ORDER BY currency`,
+      ),
     ]);
 
     const clinicCount = n(r.clinic_count);
@@ -463,6 +472,13 @@ export class MarketplaceFinanceService {
       averageClinicRevenue: clinicCount ? round2(n(r.net_total) / clinicCount) : 0,
       // Booking
       averageBookingValue: round2(n(r.avg_booking_value)),
+      /**
+       * Currencies represented in the PAID set the money figures above were
+       * summed over. One entry (or none) means every amount is comparable; more
+       * than one means these totals add unlike units and must not be rendered
+       * with a single currency symbol.
+       */
+      currencies: (currencyRows as { currency: string }[]).map((c) => c.currency),
     };
   }
 

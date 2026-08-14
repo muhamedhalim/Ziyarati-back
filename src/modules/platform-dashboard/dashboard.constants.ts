@@ -182,3 +182,19 @@ export const TOKEN_EXPIRING_SOON_DAYS = 14;
 
 /** Rows returned by each bounded list on the snapshot. */
 export const SNAPSHOT_LIST_LIMIT = 10;
+
+/**
+ * Upgrade-request states that still need a platform decision.
+ *
+ * Listed positively rather than as a NOT-IN of the terminal states: a new status
+ * added to `BILLING_UPGRADE_STATUS` later would silently join a NOT-IN filter
+ * and inflate the operator's queue, whereas an allow-list simply ignores it
+ * until someone decides it belongs. Values mirror
+ * `billing-upgrades/billing-upgrades.constants.ts` (lowercase, `varchar`).
+ */
+export const OPEN_UPGRADE_STATUSES = [
+  'pending_review',
+  'awaiting_owner_approval',
+  'payment_processing',
+  'payment_failed',
+] as const;
