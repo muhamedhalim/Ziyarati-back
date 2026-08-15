@@ -330,5 +330,23 @@ describe('WhatsappAccountService', () => {
       // The phone_number_id unique index is partial on deleted_at IS NULL.
       expect(accounts.softRemove).toHaveBeenCalled();
     });
+
+    it('never hard-deletes — history in conversations/templates/campaigns must survive', async () => {
+      accounts.findOne.mockResolvedValue({ id: 'acc-1', branch: null });
+
+      await service.remove(TENANT, 'acc-1');
+
+      expect(accounts.delete).not.toHaveBeenCalled();
+      expect(accounts.remove).not.toHaveBeenCalled();
+    });
+
+    it('is tenant-scoped — another tenant\'s account is a 404, never removed', async () => {
+      accounts.findOne.mockResolvedValueOnce(null);
+
+      await expect(service.remove(TENANT, 'foreign')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+      expect(accounts.softRemove).not.toHaveBeenCalled();
+    });
   });
 });
