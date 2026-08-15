@@ -232,6 +232,99 @@ describe('WhatsApp Tech Provider (Meta configured) — HTTP e2e', () => {
     });
   });
 
+  // ── #19 remove connection (soft-delete): history survives, number frees up ──
+  describe('#19 remove connection preserves history and frees the number for reconnection', () => {
+    let accountId: string;
+    let templateId: string;
+    let wabaId: string;
+    let phoneNumberId: string;
+
+    beforeAll(async () => {
+      wabaId = `waba-remove-${tenantA.tenantId}`;
+      const connected = await request(e2e.app.getHttpServer())
+        .post(`${API}/whatsapp/onboarding/complete`)
+        .set(...authHeader(tenantA.token))
+        .send({ code: 'auth-code-remove', wabaId })
+        .expect(200);
+      accountId = connected.body.id;
+      phoneNumberId = connected.body.phoneNumberId;
+
+      const tpl = await request(e2e.app.getHttpServer())
+        .post(`${API}/whatsapp/templates`)
+        .set(...authHeader(tenantA.token))
+        .send({
+          name: `remove_test_${randomUUID().slice(0, 8)}`,
+          language: 'en',
+          accountId,
+          ...MINIMAL_TEMPLATE_BODY,
+        })
+        .expect(201);
+      templateId = tpl.body.id;
+    });
+
+    it('a foreign tenant cannot remove another tenant\'s account (404, nothing changed)', async () => {
+      await request(e2e.app.getHttpServer())
+        .delete(`${API}/whatsapp/accounts/${accountId}`)
+        .set(...authHeader(tenantB.token))
+        .expect(404);
+
+      // Still fully visible/usable by its real owner afterwards.
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/whatsapp/accounts/${accountId}`)
+        .set(...authHeader(tenantA.token))
+        .expect(200);
+    });
+
+    it('the owning tenant can remove it (soft-delete, 204)', async () => {
+      await request(e2e.app.getHttpServer())
+        .delete(`${API}/whatsapp/accounts/${accountId}`)
+        .set(...authHeader(tenantA.token))
+        .expect(204);
+
+      // Gone from the normal listing/read surface...
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/whatsapp/accounts/${accountId}`)
+        .set(...authHeader(tenantA.token))
+        .expect(404);
+    });
+
+    it('the row itself still exists (soft-deleted, not hard-deleted) so FK-referencing history resolves', async () => {
+      // The account row must still physically exist — a hard delete here
+      // would violate the ON DELETE NO ACTION FK from whatsapp_templates and
+      // conversations, and would destroy history those tables still point to.
+      const raw = await ds.query(
+        `SELECT id, deleted_at FROM whatsapp_accounts WHERE id = $1`,
+        [accountId],
+      );
+      expect(raw).toHaveLength(1);
+      expect(raw[0].deleted_at).not.toBeNull();
+
+      // The template created against this account is untouched and still
+      // resolves its whatsapp_account relation — nothing was cascaded away.
+      const template = await request(e2e.app.getHttpServer())
+        .get(`${API}/whatsapp/templates/${templateId}`)
+        .set(...authHeader(tenantA.token))
+        .expect(200);
+      expect(template.body.id).toBe(templateId);
+      expect(template.body.waba_id).toBe(wabaId);
+    });
+
+    it('the freed phone number can be reconnected by the same tenant through Embedded Signup', async () => {
+      const reconnected = await request(e2e.app.getHttpServer())
+        .post(`${API}/whatsapp/onboarding/complete`)
+        .set(...authHeader(tenantA.token))
+        .send({ code: 'auth-code-remove-2', wabaId })
+        .expect(200);
+
+      // A NEW row (the removed one stays soft-deleted forever) reusing the
+      // same phone number — proves the partial unique index (WHERE deleted_at
+      // IS NULL) does its job.
+      expect(reconnected.body.id).not.toBe(accountId);
+      expect(reconnected.body.phoneNumberId).toBe(phoneNumberId);
+      expect(reconnected.body.connectionStatus).toBe('CONNECTED');
+    });
+  });
+
   // ── #11 campaign account ownership is enforced ───────────────────────────
   it('#11 a campaign cannot reference another tenant\'s WhatsApp account', async () => {
     const accountsB = await request(e2e.app.getHttpServer())
