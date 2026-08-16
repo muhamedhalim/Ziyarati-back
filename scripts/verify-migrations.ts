@@ -79,6 +79,36 @@ async function main() {
     (await q(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [name])).length >
     0;
 
+  // ── M3 (BotActorTenantQualifiedEmail, AI-001) — G6 round trip ──────────────
+  // M3 is chronologically the newest migration, so at this point (immediately
+  // after the initial `runMigrations()` from empty) it is the top of the
+  // applied stack — the only position from which `undoLastMigration()` can
+  // target it without disturbing anything else's LIFO assumptions further
+  // down this script. Behavioral rewrite proof (seeded legacy row →
+  // qualified, conflict refusal) lives in the dedicated security-lane spec
+  // (T024, `ai-m3-bot-actor-rewrite.spec.ts`) — this block proves only
+  // structural reversibility against a database with no legacy row, i.e. the
+  // literal "up→down→up round trip, then a second up run" G6 asks for.
+  const m3Suffix = Date.now();
+  const [m3Tenant] = await q(
+    `INSERT INTO tenants (name, slug, contact_email) VALUES ('M3VerifyTenant',$1,$2) RETURNING id`,
+    [`m3verify-${m3Suffix}`, `m3verify-${m3Suffix}@example.com`],
+  );
+  await ds.undoLastMigration(); // BotActorTenantQualifiedEmail down — no qualified rows exist yet, must be a no-op
+  check(
+    'M3 down (no data) is a harmless no-op',
+    (await q(`SELECT 1 FROM users WHERE "tenantId" = $1`, [m3Tenant.id]))
+      .length === 0,
+  );
+  await ds.runMigrations(); // BotActorTenantQualifiedEmail up — no legacy rows exist, must be a no-op
+  check(
+    'M3 up (no data) is a harmless no-op',
+    (await q(`SELECT 1 FROM users WHERE "tenantId" = $1`, [m3Tenant.id]))
+      .length === 0,
+  );
+  await ds.runMigrations(); // second up — already applied, TypeORM skips it; still must not throw
+  check('M3 second up run does not throw', true);
+
   // ── Tables ────────────────────────────────────────────────────────────────
   check('ai_batch_jobs table', await tableExists('ai_batch_jobs'));
   check('ai_batch_items table', await tableExists('ai_batch_items'));

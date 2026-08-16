@@ -255,36 +255,32 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       );
 
       const guestSession = harness.app.get(GuestSessionService);
-      // BROKEN, confirmed directly: GuestSessionService.convert()'s atomic
-      // claim query (guest-session.service.ts:188-195) builds
-      // `.andWhere('tenant_id = :tenantId', ...)` against `ai_conversations`,
-      // but that table's real column (confirmed via information_schema.columns
-      // in this task) is the camelCase "tenantId", not snake_case tenant_id.
-      // Every single call to convert() — the ENTIRE Guest → Patient
-      // Conversion feature — throws QueryFailedError before it can ever
-      // reach the ownership-claim UPDATE, let alone summarize/write memory.
-      let conversionError: Error | undefined;
-      try {
-        await guestSession.convert(guestConv.id, seed.tenantA.id, rawGuestToken, seed.tenantA.customerIds[0]);
-      } catch (err) {
-        conversionError = err as Error;
-      }
-      expect(conversionError).toBeDefined();
-      expect(conversionError!.message).toMatch(/tenant_id/);
+      // REMEDIATED (RTP row 4, AI-002): GuestSessionService.convert()'s
+      // atomic claim query (guest-session.service.ts) now builds
+      // `.andWhere('"tenantId" = :tenantId', ...)` against `ai_conversations`
+      // — the camelCase column that table actually has (confirmed via
+      // information_schema.columns). convert() now reaches the
+      // ownership-claim UPDATE and the summarize/write-memory step.
+      const result = await guestSession.convert(guestConv.id, seed.tenantA.id, rawGuestToken, seed.tenantA.customerIds[0]);
+      expect(result.converted).toBe(true);
+      expect(result.memoryId).toBeTruthy();
+
+      const convertedRow = await harness.dataSource.query(`SELECT status FROM ai_conversations WHERE id = $1`, [guestConv.id]);
+      expect(convertedRow[0].status).toBe('CONVERTED');
 
       observed.feature04_guest_to_patient_conversion = {
-        status: 'Broken',
+        status: 'Remediated',
         evidence:
-          `CONFIRMED via direct execution: GuestSessionService.convert() throws on EVERY call — ` +
-          `"${conversionError!.message}". Root cause (guest-chat/guest-session.service.ts:188-195): the atomic ` +
-          `conversion-claim query builder uses .andWhere('tenant_id = :tenantId', ...) against ai_conversations, ` +
-          `but that table's actual column (confirmed: SELECT column_name FROM information_schema.columns WHERE ` +
-          `table_name='ai_conversations' -> "tenantId", camelCase) does not match the raw snake_case identifier the ` +
-          `query builder emits. Every precondition before this line (real guest session, real ownership binding via ` +
-          `sessions.patch, a real user message to summarize) was independently proven correct in this same test — ` +
-          `the failure is exactly and only this one query. This is a total, deterministic, 100%-reproducible break ` +
-          `of the entire feature, not a flaky or environment-specific issue.`,
+          `CONFIRMED via direct execution: GuestSessionService.convert() now succeeds — returns ` +
+          `{ converted: true, memoryId: "${result.memoryId}" } and the conversation's status flips to CONVERTED. ` +
+          `Fix (guest-chat/guest-session.service.ts): the atomic conversion-claim query builder now uses ` +
+          `.andWhere('"tenantId" = :tenantId', ...) against ai_conversations, matching that table's actual column ` +
+          `(confirmed: SELECT column_name FROM information_schema.columns WHERE table_name='ai_conversations' -> ` +
+          `"tenantId", camelCase). Every precondition before this line (real guest session, real ownership binding ` +
+          `via sessions.patch, a real user message to summarize) was independently proven correct in this same ` +
+          `test — the fix is exactly and only this one query.`,
       };
+      await harness.dataSource.query(`DELETE FROM ai_memories WHERE id = $1`, [result.memoryId]).catch(() => undefined);
       await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [guestConv.id]);
       await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [guestConv.id]);
     }, 30_000);
@@ -751,52 +747,51 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       await harness.dataSource.query(`DELETE FROM services WHERE id = $1`, [service.id]);
     }, 30_000);
 
-    it('AI-001 — BROKEN — a SECOND tenant\'s bot actor creation fails, platform-wide, because the "ai-bot" actor email is a GLOBAL literal colliding with uq_user_email_global', async () => {
+    it('AI-001 — REMEDIATED (RTP row 2) — a SECOND tenant\'s bot actor creation now succeeds, because the "ai-bot" actor email is tenant-qualified (RFC 5233 sub-addressing) instead of a GLOBAL literal', async () => {
       // Minimal, robust reproduction. tenantA's bot actor already exists in
       // the DB from the previous test (real INSERT, real row — not just an
-      // in-process cache entry). WhatsappBotActorService.ensureBotActor() is
-      // called for EVERY distinct tenant that reaches book_public_appointment
-      // (or inbound WhatsApp AI auto-reply), and `uq_user_email_global`
-      // (migration 1730035000000-GlobalUserEmailUniqueness.ts) enforces ONE
-      // live user per email ACROSS THE WHOLE PLATFORM, not per tenant.
+      // in-process cache entry), now under its tenant-qualified address.
+      // WhatsappBotActorService.ensureBotActor() is called for EVERY
+      // distinct tenant that reaches book_public_appointment (or inbound
+      // WhatsApp AI auto-reply), and `uq_user_email_global` (migration
+      // 1730035000000-GlobalUserEmailUniqueness.ts) still enforces ONE live
+      // user per email ACROSS THE WHOLE PLATFORM, not per tenant — the fix
+      // is that each tenant now derives its OWN email, so the global
+      // constraint has nothing to collide over.
       const [existingBotA] = await harness.dataSource.query(
-        `SELECT id FROM users WHERE "tenantId" = $1 AND email = 'ai-bot@bot.internal'`,
+        `SELECT id, email FROM users WHERE "tenantId" = $1 AND email LIKE 'ai-bot+%@bot.internal'`,
         [seed.tenantA.id],
       );
-      expect(existingBotA).toBeDefined(); // sanity: the row from the previous test is really there
+      expect(existingBotA).toBeDefined(); // sanity: the row from the previous test is really there, tenant-qualified
       const botA = { id: existingBotA.id };
       const botActor = harness.app.get(WhatsappBotActorService);
 
-      let secondTenantError: Error | undefined;
-      try {
-        await botActor.ensureBotActor(seed.tenantB.id);
-      } catch (err) {
-        secondTenantError = err as Error;
-      }
+      const botB = await botActor.ensureBotActor(seed.tenantB.id);
+      expect(botB.tenantId).toBe(seed.tenantB.id);
 
-      expect(secondTenantError).toBeDefined();
-      expect(secondTenantError!.message).toMatch(/uq_user_email_global/);
+      const [rowB] = await harness.dataSource.query(
+        `SELECT id, email FROM users WHERE "tenantId" = $1 AND email LIKE 'ai-bot+%@bot.internal'`,
+        [seed.tenantB.id],
+      );
+      expect(rowB).toBeDefined();
+      expect(rowB.email).not.toBe(existingBotA.email); // distinct per-tenant addresses, not a shared literal
 
       observed.feature20b_public_guided_booking_cross_tenant_bug = {
-        status: 'Broken',
+        status: 'Remediated',
         evidence:
-          `CONFIRMED, cleanly reproducible, real bug (not a race/flake — re-verified across multiple isolated runs including a standalone ` +
-          `throwaway repro): WhatsappBotActorService.ensureBotActor() uses a fixed literal email 'ai-bot@bot.internal' ` +
-          `(whatsapp-bot-actor.service.ts:15) for EVERY tenant's bot actor. The FIRST tenant on the platform to call it succeeds; every OTHER ` +
-          `tenant's first call throws QueryFailedError("duplicate key value violates unique constraint \\"uq_user_email_global\\""), because that ` +
-          `index (migration 1730035000000-GlobalUserEmailUniqueness.ts, deliberately GLOBAL per its own docblock: "at most one live user row per ` +
-          `email, across every tenant") was never reconciled with this fixed-literal-email actor pattern. Reproduced directly here: tenantA's ` +
-          `ensureBotActor() succeeded (id=${botA.id}), tenantB's threw "${secondTenantError!.message}". Real user-facing consequence, traced via ` +
-          `code read of the two call sites: (1) Public AI-Guided Booking — AiToolDispatchService.bookPublicAppointment() calls ` +
-          `ensureBotActor(booking.tenantId) with no try/catch; the exception propagates out of run()'s executor into executeAndRecord's generic ` +
-          `catch (not an AppError -> state UNKNOWN_OUTCOME), surfacing to the guest as "Unknown execution outcome; manual verification is ` +
-          `required." — independently confirmed via a full end-to-end dispatcher call in an earlier debugging pass of this same task. (2) WhatsApp ` +
-          `AI Auto-Reply (feature 5) — WhatsappInboundAiService.handleOne's caller wraps the WHOLE turn in ` +
-          `.catch((err) => this.logger.error(...)) (whatsapp-inbound-ai.service.ts:101-104): the customer's inbound message is SILENTLY DROPPED, ` +
-          `no reply, no visible error anywhere. This affects EVERY tenant on the platform except whichever one happens to claim the email first, ` +
-          `for BOTH features.`,
+          `CONFIRMED, cleanly reproducible fix (re-verified across multiple isolated runs): WhatsappBotActorService.ensureBotActor() now derives ` +
+          `a tenant-qualified email 'ai-bot+<tenantId>@bot.internal' (whatsapp-bot-actor.service.ts, botEmailFor()) for EVERY tenant's bot actor. ` +
+          `Every tenant on the platform — not just the first to call it — now succeeds. Reproduced directly here: tenantA's ensureBotActor() ` +
+          `succeeded (id=${botA.id}, email=${existingBotA.email}), tenantB's ALSO succeeded (id=${botB.id}, email=${rowB.email}) — distinct ` +
+          `addresses, no collision on 'uq_user_email_global' (migration 1730035000000-GlobalUserEmailUniqueness.ts, still GLOBAL, unchanged). ` +
+          `Real user-facing consequence resolved for both call sites: (1) Public AI-Guided Booking — ` +
+          `AiToolDispatchService.bookPublicAppointment()'s ensureBotActor(booking.tenantId) call now succeeds for every tenant. (2) WhatsApp AI ` +
+          `Auto-Reply (feature 5) — WhatsappInboundAiService.handleOne's bot-actor-restoration step now succeeds for every tenant, not just ` +
+          `whichever one happened to claim the shared literal first.`,
       };
 
+      await harness.dataSource.query(`DELETE FROM user_roles WHERE "userId" = $1`, [botB.id]).catch(() => undefined);
+      await harness.dataSource.query(`DELETE FROM users WHERE id = $1`, [botB.id]).catch(() => undefined);
       await harness.dataSource.query(`DELETE FROM user_roles WHERE "userId" = $1`, [botA.id]).catch(() => undefined);
       await harness.dataSource.query(`DELETE FROM users WHERE id = $1`, [botA.id]).catch(() => undefined);
     }, 30_000);

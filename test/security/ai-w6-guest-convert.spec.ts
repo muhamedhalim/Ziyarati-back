@@ -159,12 +159,12 @@ describe('AI guest → patient convert abuse (T084)', () => {
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [convB.id]);
   });
 
-  it('AI-002 — [legitimate, own conversation — GENUINE GAP observed end-to-end] converting guest A\'s OWN conversation currently fails on every call: 500, conversation stays ACTIVE (never claimed), zero rows cross into the target tenant', async () => {
+  it('AI-002 — [legitimate, own conversation — REMEDIATED, RTP row 3] converting guest A\'s OWN conversation now succeeds: 200, {converted:true, memoryId}, status flips to CONVERTED, exactly one new ai_memories row', async () => {
     const guestA = await mintGuestRaw();
     const convA = await conversations.start(seed.discoveryTenantId, {});
     await sessions.patch(seed.discoveryTenantId, convA.id, { guestSubject: guestA.sub });
     // A real prior user turn to summarize, mirroring T081's setup — proves
-    // the failure below is not merely "there was nothing to summarize".
+    // the success below is not merely "there was nothing to summarize".
     await harness.dataSource.query(
       `INSERT INTO ai_messages (ai_conversation_id, "tenantId", role, content) VALUES ($1, $2, $3, $4)`,
       [convA.id, seed.discoveryTenantId, AI_MESSAGE_ROLE.USER, 'I would like to book a follow-up appointment please.'],
@@ -183,12 +183,14 @@ describe('AI guest → patient convert abuse (T084)', () => {
       .set('Cookie', guestA.guestTokenCookie)
       .send({ guestConversationId: convA.id });
 
-    // Observed live (2026-08-15): 500, code DATABASE_ERROR, underlying cause
-    // `QueryFailedError: column "tenant_id" does not exist` — the SAME error
-    // shape the direct-SQL reproduction above throws, confirming this HTTP
-    // call hits the exact same bug, not a different failure.
-    expect(res.status).toBe(500);
-    expect(res.body).toMatchObject({ code: 'DATABASE_ERROR' });
+    // REMEDIATED: the atomic claim UPDATE now references "tenantId" (the
+    // real column) instead of the nonexistent tenant_id — the same fix the
+    // direct-SQL reproduction above continues to document as still broken
+    // for raw, un-fixed SQL (that test is intentionally unaffected — it
+    // exercises the literal wrong column name on purpose, not this service).
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ converted: true });
+    expect(res.body.memoryId).toBeTruthy();
 
     // Row inventory AFTER the call — this is the "exactly which rows crossed"
     // proof the task asks for.
@@ -199,25 +201,30 @@ describe('AI guest → patient convert abuse (T084)', () => {
     );
     const newMemoryRows = memoriesAfter[0].c - memoriesBefore[0].c;
 
-    // The claim UPDATE itself throws (this file's first test), so it never
-    // commits — the conversation is left ACTIVE, not CONVERTED. Zero memory
-    // rows cross into the target tenant either way. Net effect: the
-    // documented "carries the guest thread forward... by summarising it into
-    // the patient tenant's long-term memory" behavior never happens, for any
-    // caller, ever, in the current codebase state — but at least the
-    // conversation is NOT left in an unrecoverable half-claimed state (a
-    // silver lining this test records precisely rather than assuming).
-    expect(convRow[0].status).toBe('ACTIVE');
-    expect(newMemoryRows).toBe(0);
+    // The claim UPDATE now commits — the conversation is CONVERTED, not
+    // ACTIVE. Exactly one memory row crosses into the target tenant. Net
+    // effect: the documented "carries the guest thread forward... by
+    // summarising it into the patient tenant's long-term memory" behavior
+    // now happens, for the legitimate caller, on the first call.
+    expect(convRow[0].status).toBe('CONVERTED');
+    expect(newMemoryRows).toBe(1);
 
+    await harness.dataSource.query(`DELETE FROM ai_memories WHERE id = $1`, [res.body.memoryId]).catch(() => undefined);
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [convA.id]);
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [convA.id]);
   });
 
-  it('[control] a repeated attempt on the same conversation behaves identically each time (no partial state accumulates from the failed attempts)', async () => {
+  it('[control, updated for the AI-002 fix] a repeated attempt on the same conversation is refused, not double-processed — no partial state accumulates', async () => {
     const guestA = await mintGuestRaw();
     const convA = await conversations.start(seed.discoveryTenantId, {});
     await sessions.patch(seed.discoveryTenantId, convA.id, { guestSubject: guestA.sub });
+    // Seed real content so a successful conversion actually produces a
+    // memory row — otherwise "no duplicate" would be trivially true because
+    // nothing was ever created in the first place.
+    await harness.dataSource.query(
+      `INSERT INTO ai_messages (ai_conversation_id, "tenantId", role, content) VALUES ($1, $2, $3, $4)`,
+      [convA.id, seed.discoveryTenantId, AI_MESSAGE_ROLE.USER, 'Control-case guest transcript line.'],
+    );
     const accessToken = await accessTokenFor(seed.tenantA.staffUserId, seed.tenantA.id);
 
     const attempt = () =>
@@ -230,12 +237,22 @@ describe('AI guest → patient convert abuse (T084)', () => {
     const res1 = await attempt();
     const res2 = await attempt();
 
-    expect(res1.status).toBe(500);
-    expect(res2.status).toBe(500); // still ACTIVE after attempt 1, so attempt 2 hits the identical bug again, not a "not found"
+    // First attempt claims and converts; the conversation is no longer
+    // ACTIVE, so the second attempt's claim UPDATE affects zero rows and is
+    // refused as not-found — never a second, duplicate conversion.
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(404);
 
     const convRow = await harness.dataSource.query(`SELECT status FROM ai_conversations WHERE id = $1`, [convA.id]);
-    expect(convRow[0].status).toBe('ACTIVE');
+    expect(convRow[0].status).toBe('CONVERTED');
 
+    const memoryCount = await harness.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM ai_memories WHERE "tenantId" = $1 AND ai_conversation_id = $2`,
+      [seed.tenantA.id, convA.id],
+    );
+    expect(memoryCount[0].c).toBe(1); // exactly one — the second attempt did not create a duplicate
+
+    await harness.dataSource.query(`DELETE FROM ai_memories WHERE "tenantId" = $1 AND ai_conversation_id = $2`, [seed.tenantA.id, convA.id]).catch(() => undefined);
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [convA.id]);
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [convA.id]);
   });

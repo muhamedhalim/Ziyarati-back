@@ -18,6 +18,13 @@ const VARS_BY_KEY: Partial<Record<EmailTemplateKey, Record<string, unknown>>> = 
   password_reset: { name: 'Sara', resetUrl: 'https://app.test/reset?token=abc' },
   email_verification: { name: 'Sara', verifyUrl: 'https://app.test/verify?token=abc' },
   staff_invitation: { name: 'Sara', invitationUrl: 'https://app.test/invite?token=abc' },
+  staff_credentials: {
+    name: 'Sara',
+    role: 'Receptionist',
+    to: 'sara@clinic.com',
+    temporaryPassword: 'Ab3xQ9zK2mNp',
+    loginUrl: 'https://app.test/auth/login',
+  },
 };
 
 function varsFor(key: EmailTemplateKey): Record<string, unknown> {
@@ -70,5 +77,46 @@ describe('EMAIL_TEMPLATES — Arabic variants (T155)', () => {
   it('an unknown locale falls back to the configured default (English) rather than throwing or rendering blank', () => {
     const rendered = renderEmail('welcome', { name: 'Sara' }, { appUrl: 'https://app.test', locale: 'fr' });
     expect(rendered.subject.length).toBeGreaterThan(0);
+  });
+});
+
+describe('EMAIL_TEMPLATES — staff_credentials', () => {
+  it('shows the recipient email, temporary password and a working login link', () => {
+    const rendered = renderEmail(
+      'staff_credentials',
+      {
+        name: 'Sara',
+        role: 'Receptionist',
+        to: 'sara@clinic.com',
+        temporaryPassword: 'Ab3xQ9zK2mNp',
+        loginUrl: 'https://app.test/auth/login',
+      },
+      enCtx,
+    );
+    expect(rendered.html).toContain('sara@clinic.com');
+    expect(rendered.html).toContain('Ab3xQ9zK2mNp');
+    expect(rendered.html).toContain('https://app.test/auth/login');
+    expect(rendered.text).toContain('Ab3xQ9zK2mNp');
+  });
+
+  // StaffService omits `role` entirely for a synthesized custom role (its
+  // display name embeds the recipient's own full name — see
+  // StaffService.createWithNewUser) — the rendered copy must read cleanly
+  // with no dangling "as" and no literal "undefined".
+  it('renders cleanly with no role/clinicName supplied (the custom-role path)', () => {
+    const rendered = renderEmail(
+      'staff_credentials',
+      {
+        name: 'Sara',
+        to: 'sara@clinic.com',
+        temporaryPassword: 'Ab3xQ9zK2mNp',
+        loginUrl: 'https://app.test/auth/login',
+      },
+      enCtx,
+    );
+    expect(rendered.html).not.toContain('undefined');
+    expect(rendered.html).not.toMatch(/\bas\s*<\/p>|\bas\s*<\/h1>/);
+    expect(rendered.text).not.toContain('undefined');
+    expect(rendered.html).toContain('Ab3xQ9zK2mNp');
   });
 });

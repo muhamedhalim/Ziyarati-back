@@ -100,6 +100,30 @@ describe('EmailService — fallback idempotencyKey (gap-closure pass, §0.8.11)'
     expect(first).not.toBe(second);
   });
 
+  it("sendStaffCredentials keys on the new user's own row id — a recreated account can be re-notified", async () => {
+    await service.sendStaffCredentials({
+      to: 'staff@clinic.com',
+      temporaryPassword: 'temp-pass-1',
+      loginUrl: 'https://app.test/auth/login',
+      tenantId: 't1',
+      userId: 'user-original',
+    });
+    await service.sendStaffCredentials({
+      to: 'staff@clinic.com',
+      temporaryPassword: 'temp-pass-2',
+      loginUrl: 'https://app.test/auth/login',
+      tenantId: 't1',
+      userId: 'user-recreated',
+    });
+
+    const [first, second] = queue.enqueueEmail.mock.calls.map(
+      (c) => c[0].idempotencyKey,
+    );
+    expect(first).toBe('staff-credentials:user-original');
+    expect(second).toBe('staff-credentials:user-recreated');
+    expect(first).not.toBe(second);
+  });
+
   it('a caller of sendDoctorNotification with a business-process key (e.g. UsageReportService) bypasses the content hash entirely — two calls with IDENTICAL content but DIFFERENT keys both send', async () => {
     await service.sendDoctorNotification({
       to: 'admin@x.com',

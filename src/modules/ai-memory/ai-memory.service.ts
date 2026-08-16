@@ -148,7 +148,7 @@ export class AiMemoryService {
     // into the authenticated principal's tenant.
     const rows = await this.dataSource.query(
       `SELECT content FROM ai_messages
-        WHERE ai_conversation_id = $1 AND tenant_id = $2 AND role = 'user'
+        WHERE ai_conversation_id = $1 AND "tenantId" = $2 AND role = 'user'
         ORDER BY created_at DESC LIMIT 6`,
       [aiConversationId, sourceTenantId],
     );

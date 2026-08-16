@@ -133,43 +133,44 @@ describe('W3 — bot-actor least privilege for tenant-behalf writes (T100)', () 
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
   }, 20_000);
 
-  it('AI-001 — CONFIRMED FINDING (execution-proven, not hypothesized): the bot actor is NOT actually scoped per tenant in the current schema — a SECOND tenant provisioning its ai-bot actor fails outright, because WhatsappBotActorService hardcodes the SAME literal email ("ai-bot@bot.internal") for every tenant, while migration 1730035000000-GlobalUserEmailUniqueness ("D7") replaced users\' tenant-scoped email uniqueness with a GLOBAL one', async () => {
+  it('AI-001 — REMEDIATED (RTP row 1): the bot actor IS scoped per tenant — a SECOND (and Nth) tenant provisioning its ai-bot actor now succeeds, because WhatsappBotActorService derives a tenant-qualified address (RFC 5233 sub-addressing, R10) instead of hardcoding the SAME literal email for every tenant, while migration 1730035000000-GlobalUserEmailUniqueness ("D7") still enforces users\' email uniqueness GLOBALLY', async () => {
     // Tenant A's bot provisions fine (already proven above and in the
-    // previous test in this file) — the bug only surfaces for the SECOND
-    // tenant to ever need one, in the SAME database.
+    // previous test in this file) — the fix must hold for every subsequent
+    // tenant too, in the SAME database.
     const botA = await botActor.ensureBotActor(seed.tenantA.id);
     expect(botA.tenantId).toBe(seed.tenantA.id);
 
-    // `WhatsappBotActorService`'s own doc comment (`whatsapp-bot-actor.service.ts:14`)
-    // asserts: "Fixed, per-tenant-unique identity for the bot (users.email is
-    // unique PER TENANT)." That assumption was TRUE against the baseline
-    // schema's `UQ_7346b08032078107fce81e014f6 UNIQUE ("tenantId", "email")`
-    // — but migration `1730035000000-GlobalUserEmailUniqueness.ts` (D7)
-    // deliberately DROPPED that composite constraint and replaced it with
-    // `uq_user_email_global UNIQUE ("email") WHERE deleted_at IS NULL`, a
-    // migration whose own comment explicitly accepts as an intended
-    // behaviour change that "the same email can no longer be reused across
-    // two different clinics." `WhatsappBotActorService` was never updated to
-    // account for this — `ensureBotUser` (`whatsapp-bot-actor.service.ts:82-100`)
-    // still creates every tenant's bot with the IDENTICAL literal email.
+    // `WhatsappBotActorService.botEmailFor()`'s doc comment
+    // (`whatsapp-bot-actor.service.ts`) now correctly states `users.email` is
+    // unique GLOBALLY (`uq_user_email_global`, migration `1730035000000`),
+    // not per tenant — that global constraint is migration
+    // `1730035000000-GlobalUserEmailUniqueness.ts`'s ("D7") deliberate,
+    // documented behaviour, unchanged by this fix. `ensureBotUser`
+    // (`whatsapp-bot-actor.service.ts`) now derives a distinct,
+    // deterministic address per tenant (`ai-bot+<tenantId>@bot.internal`)
+    // instead of the identical literal every tenant previously shared.
     //
     // Observed, executed result: tenant B's FIRST-EVER bot provisioning
-    // attempt throws a raw `QueryFailedError` (unique-violation on
-    // `uq_user_email_global`) — not a clean `AppError`, and not caught
-    // anywhere in the call chain up to `ensureBotActor`. In production this
-    // means: for every tenant except whichever one happens to provision an
-    // AI-bot actor FIRST platform-wide, both the WhatsApp AI booking flow
-    // (`ai-tool-dispatch.service.ts`'s WhatsApp-bound paths that restore this
-    // principal) and the public/guest AI booking flow
-    // (`book_public_appointment`) are BROKEN — the very mechanism T100 exists
-    // to verify (least-privilege, per-tenant actor isolation) does not
-    // function at all for those tenants.
-    await expect(botActor.ensureBotActor(seed.tenantB.id)).rejects.toThrow(/uq_user_email_global|duplicate key/i);
+    // attempt succeeds, with a distinct email from tenant A's. In production
+    // this means: every tenant — not just whichever one happens to
+    // provision an AI-bot actor first platform-wide — gets working WhatsApp
+    // AI booking (`ai-tool-dispatch.service.ts`'s WhatsApp-bound paths that
+    // restore this principal) and public/guest AI booking
+    // (`book_public_appointment`) — the very mechanism T100 exists to verify
+    // (least-privilege, per-tenant actor isolation).
+    const botB = await botActor.ensureBotActor(seed.tenantB.id);
+    expect(botB.tenantId).toBe(seed.tenantB.id);
 
-    // Confirms the SAME literal email is what collided (not a coincidental,
-    // unrelated failure) — direct evidence of the root cause.
-    const existing = await harness.dataSource.query(`SELECT "tenantId", email FROM users WHERE email = 'ai-bot@bot.internal' AND deleted_at IS NULL`);
-    expect(existing).toHaveLength(1);
-    expect(existing[0].tenantId).toBe(seed.tenantA.id); // tenant A "won the race" — tenant B is permanently locked out under this schema
+    // Confirms each tenant got its OWN distinct, tenant-qualified address —
+    // direct evidence the fix, not a coincidence, is what let both succeed.
+    const rowA = await harness.dataSource.query(`SELECT "tenantId", email FROM users WHERE "tenantId" = $1 AND email LIKE 'ai-bot+%@bot.internal' AND deleted_at IS NULL`, [seed.tenantA.id]);
+    const rowB = await harness.dataSource.query(`SELECT "tenantId", email FROM users WHERE "tenantId" = $1 AND email LIKE 'ai-bot+%@bot.internal' AND deleted_at IS NULL`, [seed.tenantB.id]);
+    expect(rowA).toHaveLength(1);
+    expect(rowB).toHaveLength(1);
+    expect(rowA[0].email).not.toBe(rowB[0].email); // distinct addresses, not a shared literal
+
+    // The bare legacy literal is never used by a fresh provisioning under the fix.
+    const legacy = await harness.dataSource.query(`SELECT 1 FROM users WHERE email = 'ai-bot@bot.internal' AND deleted_at IS NULL`);
+    expect(legacy).toHaveLength(0);
   });
 });

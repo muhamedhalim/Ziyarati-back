@@ -28,6 +28,7 @@ export type EmailTemplateKey =
   | 'subscription_entered_grace'
   | 'subscription_grace_ending_soon'
   | 'staff_invitation'
+  | 'staff_credentials'
   | 'security_alert'
   | 'doctor_notification'
   | 'patient_notification'
@@ -81,6 +82,10 @@ const btn = (label: string, url: string): string =>
   `<a href="${esc(url)}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600">${esc(label)}</a>`;
 const p = (html: string): string => `<p style="margin:0 0 14px;line-height:1.6">${html}</p>`;
 const h = (t: string): string => `<h1 style="margin:0 0 16px;font-size:20px">${esc(t)}</h1>`;
+/** One labeled row inside a credentials box (e.g. email / temporary password). */
+const credRow = (label: string, value: string): string =>
+  `<tr><td style="padding:6px 0 0;color:#5b6b7c;font-size:12px">${esc(label)}</td></tr>
+   <tr><td style="padding:0 0 10px;font-family:ui-monospace,Consolas,monospace;font-size:15px;font-weight:600;word-break:break-all">${esc(value)}</td></tr>`;
 
 /** Standard action email: heading + intro + button + fallback link. */
 function action(
@@ -357,6 +362,50 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
       t(ctx, 'This invitation may expire.', 'قد تنتهي صلاحية هذه الدعوة.'),
       ctx,
     ),
+
+  /**
+   * A staff account created WITH a visible temporary password (as opposed to
+   * `staff_invitation`, which hands out a set-password link instead). Shows
+   * the credentials directly since the caller (StaffService.createWithNewUser)
+   * already generated and displays the same password once in the admin UI.
+   */
+  staff_credentials: (v, ctx) => {
+    const title = t(ctx, 'Your account is ready', 'حسابك جاهز');
+    const intro = t(
+      ctx,
+      `An account was created for you${v.clinicName ? ` at ${s(v.clinicName)}` : ''}${v.role ? ` as ${s(v.role)}` : ''}. Use the temporary credentials below to sign in.`,
+      `تم إنشاء حساب لك${v.clinicName ? ` في ${s(v.clinicName)}` : ''}${v.role ? ` بصفة ${s(v.role)}` : ''}. استخدم بيانات الدخول المؤقتة التالية لتسجيل الدخول.`,
+    );
+    const outro = t(
+      ctx,
+      'For your security, please change your password after signing in.',
+      'لأمانك، يرجى تغيير كلمة المرور بعد تسجيل الدخول.',
+    );
+    const emailLabel = t(ctx, 'Email', 'البريد الإلكتروني');
+    const passwordLabel = t(ctx, 'Temporary password', 'كلمة المرور المؤقتة');
+    const loginLabel = t(ctx, 'Log in', 'تسجيل الدخول');
+    const email = s(v.to);
+    const password = s(v.temporaryPassword);
+    const loginUrl = s(v.loginUrl);
+    const body =
+      h(title) +
+      p(esc(greet(v, ctx))) +
+      p(esc(intro)) +
+      `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:4px 0 20px;background:#f7f9fb;border:1px solid #e5e9f0;border-radius:8px;padding:2px 16px 8px">${credRow(emailLabel, email)}${credRow(passwordLabel, password)}</table>` +
+      `<p style="margin:20px 0">${btn(loginLabel, loginUrl)}</p>` +
+      p(esc(outro));
+    const text = [
+      title,
+      '',
+      greet(v, ctx),
+      intro,
+      `${emailLabel}: ${email}`,
+      `${passwordLabel}: ${password}`,
+      `${loginLabel}: ${loginUrl}`,
+      outro,
+    ].join('\n');
+    return { subject: title, html: layout(title, body, ctx), text };
+  },
 
   security_alert: (v, ctx) =>
     action(

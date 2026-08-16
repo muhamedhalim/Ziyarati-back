@@ -74,20 +74,22 @@ describe('AI memory — cross-tenant summarization path (T081)', () => {
     return rows[0]?.c ?? 0;
   }
 
-  it('[GENUINE GAP] the raw SQL predicate references a column that does not exist on ai_messages — the CORRECT-argument call itself throws', async () => {
+  it('[REMEDIATED, RTP row 5] the raw SQL predicate now references the column that actually exists on ai_messages — the CORRECT-argument call returns a populated AiMemory row', async () => {
     const before = await memoryCount(seed.tenantA.id, convA);
 
     // sourceTenantId === the conversation's real owning tenant — the
     // "legitimate" call shape guest-convert uses (targetTenantId happens to
     // equal sourceTenantId here only because this spec has one tenant to
-    // summarize FROM; the bug is in the query itself, independent of whether
+    // summarize FROM; the fix is in the query itself, independent of whether
     // target === source).
-    await expect(
-      memory.summarizeConversation(seed.tenantA.id, convA, undefined, seed.tenantA.id),
-    ).rejects.toThrow(/tenant_id/i);
+    const result = await memory.summarizeConversation(seed.tenantA.id, convA, undefined, seed.tenantA.id);
+    expect(result).toBeTruthy();
+    expect(result?.type).toBe('summary');
 
     const after = await memoryCount(seed.tenantA.id, convA);
-    expect(after).toBe(before); // no memory row from a call that threw
+    expect(after).toBe(before + 1); // exactly one new memory row from the successful call
+
+    await harness.dataSource.query(`DELETE FROM ai_memories WHERE id = $1`, [result!.id]).catch(() => undefined);
   });
 
   it('confirms this is specifically the "tenant_id" vs "tenantId" column-name mismatch, isolated to this one query', async () => {
@@ -113,34 +115,40 @@ describe('AI memory — cross-tenant summarization path (T081)', () => {
     expect(columns.map((c) => c.column_name)).not.toContain('tenant_id');
   });
 
-  it('sourceTenantId OMITTED (bypassing the TypeScript required-parameter guard at the call site): also throws — cannot be distinguished from the bug above, no memory row is created either way', async () => {
+  it('[updated for the AI-005 fix] sourceTenantId OMITTED (bypassing the TypeScript required-parameter guard at the call site): resolves to null (matches zero rows, never rejects) — no memory row is created either way, and no unscoped content is ever read', async () => {
     const before = await memoryCount(seed.tenantA.id, convA);
 
     // `sourceTenantId` has no default and no unscoped overload in the type
     // signature — the only way to call this "unscoped" at runtime is to
     // deliberately bypass TypeScript, exactly as an attacker who reached this
     // method some other way (not through the one real caller, which always
-    // supplies discoveryTenantId) would have to. This is what T081's Verify
-    // column asks the test to prove is refused.
-    await expect(
-      (memory as unknown as { summarizeConversation: (...a: unknown[]) => Promise<unknown> }).summarizeConversation(
-        seed.tenantA.id,
-        convA,
-        undefined,
-        undefined,
-      ),
-    ).rejects.toBeTruthy();
+    // supplies discoveryTenantId) would have to. Observed live, post-fix: the
+    // corrected query's "tenantId" = $2 predicate with $2 undefined/null
+    // matches ZERO rows (SQL NULL never equals anything) — the method
+    // resolves to `null`, it does not throw. The security property this
+    // test exists to pin is unchanged either way: no message content is
+    // ever read back and no memory row is ever created for an unscoped call.
+    const result = await (
+      memory as unknown as { summarizeConversation: (...a: unknown[]) => Promise<unknown> }
+    ).summarizeConversation(seed.tenantA.id, convA, undefined, undefined);
+    expect(result).toBeNull();
 
     const after = await memoryCount(seed.tenantA.id, convA);
     expect(after).toBe(before);
   });
 
-  it('sourceTenantId set to a FOREIGN tenant (tenant B, which does not own convA): also throws before any cross-tenant read could complete, no memory row is created', async () => {
+  it('[updated for the AI-005 fix] sourceTenantId set to a FOREIGN tenant (tenant B, which does not own convA): resolves to null (the tenant predicate correctly excludes tenant A\'s messages) — no cross-tenant content is ever read, no memory row is created', async () => {
     const before = await memoryCount(seed.tenantA.id, convA);
 
-    await expect(
-      memory.summarizeConversation(seed.tenantA.id, convA, undefined, seed.tenantB.id),
-    ).rejects.toBeTruthy();
+    // Observed live, post-fix: querying with tenant B's id against messages
+    // that actually belong to tenant A now correctly matches ZERO rows (the
+    // tenant scoping predicate does its job) — the method resolves to
+    // `null` rather than throwing. This is the intended, safe outcome: the
+    // fix does not create a new way to read another tenant's content: it
+    // is the SAME "no cross-tenant read" guarantee FR-007 requires, now
+    // reached via a working query instead of via an accidental exception.
+    const result = await memory.summarizeConversation(seed.tenantA.id, convA, undefined, seed.tenantB.id);
+    expect(result).toBeNull();
 
     const after = await memoryCount(seed.tenantA.id, convA);
     expect(after).toBe(before);
