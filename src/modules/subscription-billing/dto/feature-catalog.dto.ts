@@ -169,6 +169,77 @@ export class SetTenantFeatureSuspensionDto {
   reason?: string;
 }
 
+/** The three states a super-admin controls, as one value. */
+export const FEATURE_ADMIN_STATES = [
+  'granted',
+  'inherit',
+  'suspended',
+] as const;
+
+/**
+ * Set a capability's administrative state for a tenant (super-admin).
+ *
+ * The unified form of {@link SetTenantFeatureDto} + {@link SetTenantFeatureSuspensionDto}.
+ * Both of those remain, and still mean exactly what they meant; this exists
+ * because the console needs to move a tenant BETWEEN the three states, and
+ * doing that with the two-boolean pair takes two requests with an observable
+ * half-applied state in between (a lifted suspension with no grant yet written
+ * reads as "subscription required" to every route for the duration).
+ */
+export class SetTenantFeatureStateDto {
+  @ApiProperty({ example: 'branches', maxLength: 100 })
+  @IsString()
+  @MaxLength(100)
+  @Matches(KEY_PATTERN, {
+    message: 'featureKey must be lowercase alphanumeric with . _ -',
+  })
+  featureKey!: string;
+
+  @ApiProperty({
+    enum: FEATURE_ADMIN_STATES,
+    example: 'granted',
+    description:
+      '`granted` = free access without a subscription (also covers the feature\'s declared dependency closure). ' +
+      '`inherit` = no override; the subscription/plan decides. ' +
+      '`suspended` = explicit block, outranking FREE mode, a paid plan and any override.',
+  })
+  @IsIn(FEATURE_ADMIN_STATES as unknown as string[])
+  state!: (typeof FEATURE_ADMIN_STATES)[number];
+
+  @ApiPropertyOptional({
+    example: 'Abuse report #4821 — outbound spam from this clinic.',
+    maxLength: 500,
+    description:
+      'REQUIRED when `state` is `suspended`. Recorded on the flag row and in the audit log; never returned to the tenant.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+/** Apply one administrative state to many capabilities at once (super-admin). */
+export class BulkSetTenantFeatureStateDto {
+  @ApiProperty({ type: [String], example: ['branches', 'crm'] })
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(KEY_PATTERN, {
+    each: true,
+    message: 'featureKey must be lowercase alphanumeric with . _ -',
+  })
+  featureKeys!: string[];
+
+  @ApiProperty({ enum: FEATURE_ADMIN_STATES, example: 'granted' })
+  @IsIn(FEATURE_ADMIN_STATES as unknown as string[])
+  state!: (typeof FEATURE_ADMIN_STATES)[number];
+
+  @ApiPropertyOptional({ maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 /** Bulk toggle multiple features for a tenant (super-admin). */
 export class BulkSetTenantFeaturesDto {
   @ApiProperty({ type: [SetTenantFeatureDto] })

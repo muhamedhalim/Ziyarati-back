@@ -489,6 +489,33 @@ export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
 export const CUSTOM_ROLE_SENTINEL = 'other' as const;
 
 /**
+ * Prefix `RolesService.resolveCustomRole` gives a synthesized custom role's
+ * `name` when a display-name hint is available — normally the REQUESTING
+ * staff member's own `fullName`. This makes `name` an ADMIN-FACING label
+ * only: a role synthesized for Alice is named "Custom — Alice", then
+ * persisted as an ordinary, reusable, tenant-scoped `Role` row that any
+ * future staff member can be assigned via `GET /staff/assignable-roles` — so
+ * `name` can end up carrying a DIFFERENT person's name than whoever now
+ * holds it. Anything that echoes a role name back to the role HOLDER (e.g.
+ * an onboarding email) must treat a name matching this prefix (or the
+ * hint-less `'Custom role'` fallback) as unsafe to display — see
+ * {@link isSynthesizedCustomRoleName}.
+ */
+export const CUSTOM_ROLE_NAME_PREFIX = 'Custom — ';
+
+/** The exact fallback `resolveCustomRole` uses when no display-name hint is given. */
+export const CUSTOM_ROLE_NAME_FALLBACK = 'Custom role';
+
+/**
+ * True for a `Role.name` synthesized by `resolveCustomRole` — i.e. one that
+ * may embed a DIFFERENT person's full name and must never be echoed back to
+ * whoever currently holds the role (see {@link CUSTOM_ROLE_NAME_PREFIX}).
+ */
+export function isSynthesizedCustomRoleName(name: string): boolean {
+  return name === CUSTOM_ROLE_NAME_FALLBACK || name.startsWith(CUSTOM_ROLE_NAME_PREFIX);
+}
+
+/**
  * System roles that can never be assigned as a clinic STAFF role:
  * `super_admin`/`owner` are founding/platform roles (granted only via the
  * seeder / `POST /auth/register-owner`), and `customer`/`ai-bot` are not

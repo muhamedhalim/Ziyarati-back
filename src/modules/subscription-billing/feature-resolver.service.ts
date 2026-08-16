@@ -13,7 +13,7 @@ import { FeatureDependency } from '../../entities/SaaS-Core/FeatureDependency';
 import { AccessControlService } from './access-control.service';
 import { SubscriptionService } from './subscription.service';
 import { UsageService } from './usage.service';
-import { FeatureKey, isFeatureKey } from './feature-registry';
+import { FEATURE_REGISTRY, FeatureKey, isFeatureKey } from './feature-registry';
 import {
   AccessSource,
   QuotaPolicy,
@@ -51,6 +51,22 @@ export type BlockedReason =
   | 'suspended'
   | null;
 
+/**
+ * The three states a super-admin actually controls, as ONE field.
+ *
+ * `enabled` below cannot express them: it is `override ?? default_enabled`, so
+ * a capability with `defaultEnabled: true` and NO administrative grant reports
+ * `enabled: true` — indistinguishable from a granted one. The admin console
+ * bound its toggle to that, which is how a clinic could be shown "Branches: on"
+ * while `feature_flags` held no row, `AccessControlService.findGrant` found
+ * nothing, and every branch route answered NO_ACTIVE_SUBSCRIPTION.
+ *
+ *  - `granted`   — an authoritative override exists: free access, no plan needed.
+ *  - `inherit`   — no override; the subscription/plan decides (the default).
+ *  - `suspended` — an explicit administrative block, outranking even a paid plan.
+ */
+export type FeatureAdminState = 'granted' | 'inherit' | 'suspended';
+
 export interface ResolvedFeature {
   featureKey: string;
   name: string;
@@ -59,11 +75,24 @@ export interface ResolvedFeature {
   visibility: string;
   isBeta: boolean;
   isDeprecated: boolean;
+  /**
+   * Effective on/off = `override ?? default_enabled`. Describes what applies
+   * once the tenant HAS access — never whether it has been granted any. Use
+   * {@link adminState} for the administrative question.
+   */
   enabled: boolean;
   override: boolean | null;
   /** Who recorded the override, when there is one. */
   overrideSource: string | null;
   suspended: boolean;
+  /** The super-admin's three-way control. See {@link FeatureAdminState}. */
+  adminState: FeatureAdminState;
+  /**
+   * Never gatable (billing, support, the workspace shell), so it has no
+   * administrative state to set — the policy admits it regardless and
+   * `setTenantFeatureSuspension` refuses it.
+   */
+  alwaysOn: boolean;
   allowedPlanIds: string[];
   planIncluded: boolean;
   dependencies: string[];
@@ -172,9 +201,24 @@ export class FeatureResolverService {
       const override = authoritative ? flag.is_enabled : null;
       const suspended = flag?.is_suspended === true;
 
+      // The administrative state, in the order the policy applies it: a
+      // suspension outranks a grant, and anything that is not an authoritative
+      // grant is "inherit" — including an authoritative row set to `false`,
+      // which means "not granted", never "denied" (that is `is_suspended`).
+      const adminState: FeatureAdminState = suspended
+        ? 'suspended'
+        : override === true
+          ? 'granted'
+          : 'inherit';
+
       const decision = isFeatureKey(d.feature_key)
         ? decisions.get(d.feature_key)
         : undefined;
+      // A legacy row the registry no longer owns is not always-on — fail closed,
+      // matching how `available` treats the same case.
+      const alwaysOn =
+        isFeatureKey(d.feature_key) &&
+        FEATURE_REGISTRY[d.feature_key].alwaysOn === true;
 
       const allowedPlanIds = planMap.get(d.feature_key) ?? [];
       const planIncluded =
@@ -204,6 +248,8 @@ export class FeatureResolverService {
         override,
         overrideSource: flag?.source ?? null,
         suspended,
+        adminState,
+        alwaysOn,
         allowedPlanIds,
         planIncluded,
         dependencies: directDeps,

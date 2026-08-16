@@ -38,6 +38,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { AppError, ErrorCode } from '../../common/errors';
 import { VerificationAuditService } from '../verification-audit/verification-audit.service';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /** Minimal shape of a multer in-memory file (avoids a hard @types/multer dep). */
 export interface UploadedFileLike {
@@ -67,7 +68,7 @@ const UPLOAD_LIMITS: MulterLimitsWithNestingDepth = {
  * action is recorded in the verification audit trail with actor IP + user agent.
  */
 @ApiTags('Uploads')
-@NoEntitlementRequired()
+@NoEntitlementRequired(FeatureKey.CORE_WORKSPACE)
 @Controller('uploads')
 @UseGuards(RolesGuard)
 @ApiBearerAuth('JWT-auth')

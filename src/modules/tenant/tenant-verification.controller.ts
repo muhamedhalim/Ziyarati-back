@@ -93,7 +93,10 @@ const S_DOCUMENT_DETAIL = {
  *  - admin routes: super-admin oversight & review.
  */
 @ApiTags('Verification Documents')
-@NoEntitlementRequired()
+// PRE_ENTITLEMENT, not an always-on capability: these routes are how a tenant
+// that has not been approved yet gets approved, so they are reached before there
+// is any entitlement — or any tenant state — to resolve a decision against.
+@NoEntitlementRequired('PRE_ENTITLEMENT')
 @Controller('verification-documents')
 @UseGuards(RolesGuard)
 @ApiBearerAuth('JWT-auth')

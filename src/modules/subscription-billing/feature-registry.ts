@@ -26,7 +26,7 @@ import {
  * String values are deliberately the ones already in the database — adding a
  * capability here is additive, and no existing `feature_flags` row changes
  * meaning. The one exception is `ai` → `ai.assistant`, which needs a data
- * migration (see `1730030000000-FeatureFlagSourceAndSuspension`).
+ * migration (see `1730037000000-FeatureFlagProvenanceAndSuspension`).
  *
  * GRANULARITY RULE: one key per capability a super-admin would sell or switch
  * off, and enabling it must make that capability work END TO END. WhatsApp

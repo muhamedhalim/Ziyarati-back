@@ -258,4 +258,265 @@ describe('FeatureCatalogService — tenant feature suspension', () => {
     ).rejects.toMatchObject({ code: ErrorCode.TENANT_NOT_FOUND });
     expect(featureFlags.setSuspension).not.toHaveBeenCalled();
   });
+
+  /**
+   * The three-way control the console drives.
+   *
+   * It composes the two boolean primitives rather than reimplementing either,
+   * and it exists so a transition BETWEEN states is atomic: run as two
+   * requests, `suspended → granted` leaves a window in which the capability is
+   * neither suspended nor granted, and every route for it answers
+   * NO_ACTIVE_SUBSCRIPTION to a clinic the operator is mid-way through enabling.
+   */
+  describe('setTenantFeatureState', () => {
+    it('writes an authoritative grant for `granted`', async () => {
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.BRANCHES,
+        'granted',
+        undefined,
+        ACTOR,
+      );
+
+      expect(featureFlags.set).toHaveBeenCalledWith(
+        TENANT,
+        FeatureKey.BRANCHES,
+        true,
+        expect.objectContaining({
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+          actorId: ACTOR.id,
+        }),
+      );
+      expect(featureFlags.setSuspension).not.toHaveBeenCalled();
+    });
+
+    it('clears the grant for `inherit` without suspending anything', async () => {
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.BRANCHES,
+        'inherit',
+        undefined,
+        ACTOR,
+      );
+
+      // `is_enabled: false` means "not granted" — the subscription decides. It
+      // is NOT a denial; that is `is_suspended`, and conflating the two is what
+      // let a stray toggle de-provision a paying clinic.
+      expect(featureFlags.set).toHaveBeenCalledWith(
+        TENANT,
+        FeatureKey.BRANCHES,
+        false,
+        expect.anything(),
+      );
+      expect(featureFlags.setSuspension).not.toHaveBeenCalled();
+    });
+
+    it('lifts an existing suspension and grants in ONE transaction', async () => {
+      flags.findOne.mockResolvedValueOnce({
+        is_suspended: true,
+        is_enabled: false,
+        source: FeatureFlagSource.PLATFORM_ADMIN,
+      });
+
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.BRANCHES,
+        'granted',
+        undefined,
+        ACTOR,
+      );
+
+      expect(featureFlags.setSuspension).toHaveBeenCalledWith(
+        TENANT,
+        FeatureKey.BRANCHES,
+        false,
+        expect.objectContaining({ manager: expect.anything() }),
+      );
+      expect(featureFlags.set).toHaveBeenCalledWith(
+        TENANT,
+        FeatureKey.BRANCHES,
+        true,
+        expect.objectContaining({ manager: expect.anything() }),
+      );
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not touch the suspension when there is none to lift', async () => {
+      flags.findOne.mockResolvedValueOnce({
+        is_suspended: false,
+        is_enabled: false,
+        source: FeatureFlagSource.PLATFORM_ADMIN,
+      });
+
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.BRANCHES,
+        'granted',
+        undefined,
+        ACTOR,
+      );
+      // A needless write would churn `updated_at` on a row nothing changed
+      // about, making the row-level audit trail lie about when it last moved.
+      expect(featureFlags.setSuspension).not.toHaveBeenCalled();
+    });
+
+    it('requires a reason for `suspended` and keeps any existing grant', async () => {
+      await expect(
+        service.setTenantFeatureState(
+          TENANT,
+          FeatureKey.BRANCHES,
+          'suspended',
+          '  ',
+          ACTOR,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.BRANCHES,
+        'suspended',
+        'Abuse report #4821',
+        ACTOR,
+      );
+      expect(featureFlags.setSuspension).toHaveBeenCalledWith(
+        TENANT,
+        FeatureKey.BRANCHES,
+        true,
+        expect.objectContaining({ reason: 'Abuse report #4821' }),
+      );
+      // The grant is deliberately left alone: the two columns say different
+      // things, and clearing it would destroy the state to return to.
+      expect(featureFlags.set).not.toHaveBeenCalled();
+    });
+
+    it.each([FeatureKey.BILLING, FeatureKey.SUPPORT, FeatureKey.CORE_WORKSPACE])(
+      'refuses to suspend the always-on capability "%s"',
+      async (key) => {
+        await expect(
+          service.setTenantFeatureState(TENANT, key, 'suspended', 'x', ACTOR),
+        ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      },
+    );
+
+    it('refuses a key that is not a real capability', async () => {
+      await expect(
+        service.setTenantFeatureState(
+          TENANT,
+          'not.a.feature',
+          'granted',
+          undefined,
+          ACTOR,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(featureFlags.set).not.toHaveBeenCalled();
+    });
+
+    it('records the transition, with what the grant opens', async () => {
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.WHATSAPP,
+        'granted',
+        undefined,
+        ACTOR,
+      );
+
+      expect(auditRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'FEATURE_FLAG_STATE_SET',
+          entity_id: TENANT,
+          old_values: expect.objectContaining({ state: 'inherit' }),
+          new_values: expect.objectContaining({
+            state: 'granted',
+            // The declared dependency closure, so the audit answers "what did
+            // this change?" without re-deriving it later.
+            grants: expect.arrayContaining([
+              FeatureKey.WHATSAPP,
+              FeatureKey.CONVERSATIONS,
+              FeatureKey.CRM,
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it('rolls the whole transition back if the audit write fails', async () => {
+      auditRepo.save.mockRejectedValueOnce(new Error('audit table down'));
+      await expect(
+        service.setTenantFeatureState(
+          TENANT,
+          FeatureKey.BRANCHES,
+          'granted',
+          undefined,
+          ACTOR,
+        ),
+      ).rejects.toThrow('audit table down');
+    });
+
+    it('busts the tenant cache after the commit', async () => {
+      await service.setTenantFeatureState(
+        TENANT,
+        FeatureKey.BRANCHES,
+        'granted',
+        undefined,
+        ACTOR,
+      );
+      expect(accessCache.invalidate).toHaveBeenCalledWith(TENANT);
+    });
+  });
+
+  describe('bulkSetTenantFeatureState', () => {
+    it('applies the state to every key in one transaction', async () => {
+      const res = await service.bulkSetTenantFeatureState(
+        TENANT,
+        [FeatureKey.BRANCHES, FeatureKey.CRM, FeatureKey.STAFF],
+        'granted',
+        undefined,
+        ACTOR,
+      );
+
+      expect(res).toEqual({ updated: 3 });
+      expect(featureFlags.set).toHaveBeenCalledTimes(3);
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('de-duplicates repeated keys', async () => {
+      const res = await service.bulkSetTenantFeatureState(
+        TENANT,
+        [FeatureKey.BRANCHES, FeatureKey.BRANCHES],
+        'granted',
+        undefined,
+        ACTOR,
+      );
+      expect(res).toEqual({ updated: 1 });
+    });
+
+    it('validates the WHOLE batch before writing any of it', async () => {
+      // A partial apply leaves the tenant in a state neither the operator nor
+      // the audit record describes.
+      await expect(
+        service.bulkSetTenantFeatureState(
+          TENANT,
+          [FeatureKey.BRANCHES, 'not.a.feature'],
+          'granted',
+          undefined,
+          ACTOR,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(featureFlags.set).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses the batch when it would suspend an always-on capability', async () => {
+      await expect(
+        service.bulkSetTenantFeatureState(
+          TENANT,
+          [FeatureKey.BRANCHES, FeatureKey.BILLING],
+          'suspended',
+          'incident',
+          ACTOR,
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(featureFlags.setSuspension).not.toHaveBeenCalled();
+    });
+  });
 });

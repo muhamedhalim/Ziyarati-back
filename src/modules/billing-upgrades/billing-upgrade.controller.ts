@@ -23,6 +23,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 /**
  * Owner-facing billing upgrade requests. Tenant is always
@@ -30,7 +31,7 @@ import { NoEntitlementRequired } from '../subscription-billing/decorators/no-ent
  */
 @ApiTags('Billing Upgrade Requests')
 @ApiBearerAuth('JWT-auth')
-@NoEntitlementRequired()
+@NoEntitlementRequired(FeatureKey.BILLING)
 @Controller('billing-upgrade-requests')
 @UseGuards(PermissionsGuard)
 export class BillingUpgradeController {

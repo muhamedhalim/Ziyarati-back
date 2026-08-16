@@ -40,6 +40,7 @@ import {
   PermissionSlug,
   ROLE,
   RoleSlug,
+  isSynthesizedCustomRoleName,
 } from '../../rbac/rbac.constants';
 
 /** Staff-facing view of a held role — enough for the Add/Edit role selector. */
@@ -481,40 +482,49 @@ export class StaffService {
     // StaffAccessService.sendInvitation). The admin-facing UI already shows
     // this same password once, so email delivery failing here degrades the
     // flow, it doesn't block it.
-    await Promise.all([
-      sendCredentialsByEmail
-        ? this.sendCredentialsEmail({
-            tenantId,
-            userId,
-            email,
-            fullName: dto.fullName,
-            temporaryPassword,
-            // A synthesized custom role is named "Custom — {fullName}" for
-            // the admin's role list (see RolesService.resolveCustomRole) —
-            // that's the recipient's OWN name, so it's omitted here rather
-            // than quoted back at them; the template reads fine without one.
-            roleName: isCustom ? undefined : assignedRole.name,
-          })
-        : Promise.resolve(),
-      actorUserId
-        ? this.auditRoleChange({
-            tenantId,
-            actorUserId,
-            targetUserId: userId,
-            staffId: profileId,
-            action: 'staff.role.assigned',
-            previousRole: null,
-            newRole: isCustom
-              ? {
-                  slug: assignedRole.slug,
-                  name: assignedRole.name,
-                  isCustom: true,
-                  permissionSlugs: customPerms!.map((p) => p.slug),
-                }
-              : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
-          })
-        : Promise.resolve(),
-    ]);
+    const postCommit: Promise<unknown>[] = [];
+    if (sendCredentialsByEmail) {
+      postCommit.push(
+        this.sendCredentialsEmail({
+          tenantId,
+          userId,
+          email,
+          fullName: dto.fullName,
+          temporaryPassword,
+          // A synthesized custom role's `name` may embed a DIFFERENT staff
+          // member's full name (see RolesService.resolveCustomRole) — it's
+          // an admin-facing label, persisted and reusable, so checking
+          // `isCustom` (was THIS request the "other" synthesis path) isn't
+          // enough: role B created later via `roleSlug: "custom-abc"` reuses
+          // the SAME persisted row and would otherwise quote role A's
+          // holder's name back at role B's holder. Check the name itself.
+          roleName: isSynthesizedCustomRoleName(assignedRole.name)
+            ? undefined
+            : assignedRole.name,
+        }),
+      );
+    }
+    if (actorUserId) {
+      postCommit.push(
+        this.auditRoleChange({
+          tenantId,
+          actorUserId,
+          targetUserId: userId,
+          staffId: profileId,
+          action: 'staff.role.assigned',
+          previousRole: null,
+          newRole: isCustom
+            ? {
+                slug: assignedRole.slug,
+                name: assignedRole.name,
+                isCustom: true,
+                permissionSlugs: customPerms!.map((p) => p.slug),
+              }
+            : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
+        }),
+      );
+    }
+    await Promise.all(postCommit);
 
     return {
       profile: await this.findOne(tenantId, profileId),

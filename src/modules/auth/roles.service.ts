@@ -16,6 +16,8 @@ import { UpdateRoleDto } from './dto/update-role.dto';
 import { AppError, ErrorCode } from '../../common/errors';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import {
+  CUSTOM_ROLE_NAME_FALLBACK,
+  CUSTOM_ROLE_NAME_PREFIX,
   CUSTOM_ROLE_SENTINEL,
   NON_STAFF_ROLE_SLUGS,
   PERMISSION,
@@ -449,7 +451,9 @@ export class RolesService {
     }
 
     const role = roleRepo.create({
-      name: displayNameHint ? `Custom — ${displayNameHint}` : 'Custom role',
+      name: displayNameHint
+        ? `${CUSTOM_ROLE_NAME_PREFIX}${displayNameHint}`
+        : CUSTOM_ROLE_NAME_FALLBACK,
       slug: `custom-${randomUUID()}`,
       is_system: false,
       tenant: { id: tenantId } as Role['tenant'],
