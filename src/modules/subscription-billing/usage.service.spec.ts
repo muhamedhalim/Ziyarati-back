@@ -62,10 +62,17 @@ describe('UsageService', () => {
       expect(usageRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
 
-    it('is unmetered when enforcement is off (free mode / override)', async () => {
+    it('RECORDS usage even when enforcement is off (free mode / override)', async () => {
+      // "No plan cap applies" is not "do not count". This used to return early,
+      // so the platform recorded nothing for exactly the tenants nobody was
+      // billing — the operator's usage view read zero for every clinic running
+      // on a super-admin grant. `incrementIfWithinLimit` already recorded on
+      // this branch; the two now agree.
       access.isEnforced.mockResolvedValueOnce(false);
+      subscriptions.findOne.mockResolvedValueOnce(null);
       await service.increment('t1', USAGE_METRIC.APPOINTMENTS, 1);
-      expect(usageRepo.createQueryBuilder).not.toHaveBeenCalled();
+      // insert(orIgnore) + update => two query builders
+      expect(usageRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
     });
 
     it('still records usage when the tenant has no subscription', async () => {

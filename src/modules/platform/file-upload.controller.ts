@@ -33,6 +33,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -51,7 +52,9 @@ const S_ERROR = {
  */
 @ApiTags('Platform File Uploads')
 @ApiBearerAuth('JWT-auth')
-@NoEntitlementRequired()
+// Storage and file counts are capped under CORE_WORKSPACE
+// (`RESOURCE_LIMIT_FEATURE.storageBytes` / `.uploadedFiles`), which is always-on.
+@NoEntitlementRequired(FeatureKey.CORE_WORKSPACE)
 @Controller('platform/files')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class FileUploadController {

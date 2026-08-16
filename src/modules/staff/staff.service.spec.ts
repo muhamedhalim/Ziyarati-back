@@ -569,6 +569,31 @@ describe('StaffService', () => {
       expect(rolesService.resolveCustomRole).not.toHaveBeenCalled();
     });
 
+    // A custom role synthesized for one staff member is a normal, PERSISTED,
+    // reusable Role row — a later hire can be assigned that SAME row by slug
+    // (the ordinary catalogue path, not "other"). Its `name` still embeds the
+    // FIRST person's full name ("Custom — Alice Smith"), so this must not
+    // leak into the second hire's credentials email either, even though
+    // `roleSlug !== CUSTOM_ROLE_SENTINEL` for this request.
+    it('omits the role from the credentials email when a REUSED persisted custom role is assigned via the normal catalogue path', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      rolesService.findAssignableRoleBySlug.mockResolvedValueOnce({
+        id: 'role-custom-1',
+        slug: 'custom-abc',
+        name: 'Custom — Alice Smith',
+      });
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-11' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-11' });
+
+      await service.createWithNewUser(TENANT, { ...dto, roleSlug: 'custom-abc' } as any);
+
+      expect(rolesService.resolveCustomRole).not.toHaveBeenCalled();
+      expect(email.sendStaffCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({ role: undefined }),
+      );
+    });
+
     it('"other": validates permissions up front, then synthesizes the custom role INSIDE the transaction', async () => {
       users.findOne.mockResolvedValueOnce(null);
       users.count.mockResolvedValueOnce(0);

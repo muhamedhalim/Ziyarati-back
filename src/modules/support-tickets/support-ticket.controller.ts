@@ -35,6 +35,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 const S_ERROR = {
   type: 'object',
@@ -55,7 +56,7 @@ const S_ERROR = {
  */
 @ApiTags('Support Tickets')
 @ApiBearerAuth('JWT-auth')
-@NoEntitlementRequired()
+@NoEntitlementRequired(FeatureKey.SUPPORT)
 @Controller('support-tickets')
 @UseGuards(PermissionsGuard, ActiveTenantGuard)
 export class SupportTicketController {

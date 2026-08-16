@@ -421,8 +421,10 @@ is created. Replaces the old two-step "create a user via another screen, copy
 its UUID, paste it here" flow.
 
 No password field: a temporary password is generated server-side and
-returned **once** in the response (\`temporaryPassword\`) — share it with the
-new staff member out of band. It cannot be retrieved again.
+returned **once** in the response (\`temporaryPassword\`) — it cannot be
+retrieved again. The same password is also emailed to the new staff member
+(best-effort; a delivery failure never fails this request), so sharing it out
+of band is a fallback, not the only channel.
 
 **Business rules**
 - Email must be unique within the clinic.

@@ -40,6 +40,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
+import { FeatureKey } from '../subscription-billing/feature-registry';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -163,7 +164,7 @@ const S_TENANT_LIST = {
  * `/me*` routes are declared before `/:id` so they are matched literally.
  */
 @ApiTags('Tenants')
-@NoEntitlementRequired()
+@NoEntitlementRequired(FeatureKey.CORE_WORKSPACE)
 @Controller('tenants')
 @UseGuards(RolesGuard)
 @ApiBearerAuth('JWT-auth')

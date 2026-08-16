@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { FEATURE_KEYS, FEATURE_REGISTRY, FeatureKey } from './feature-registry';
+
 const MODULES_DIR = path.join(__dirname, '..');
 
 /**
@@ -84,6 +86,37 @@ function controllerFiles(dir: string, out: string[] = []): string[] {
 const relative = (file: string) =>
   path.relative(MODULES_DIR, file).split(path.sep).join('/');
 
+/** `FeatureKey.BRANCHES` → `'branches'`; anything unrecognised → null. */
+function resolveMember(expression: string): FeatureKey | null {
+  const member = expression.trim().replace(/^FeatureKey\./, '');
+  const value = (FeatureKey as Record<string, string>)[member];
+  return value !== undefined ? (value as FeatureKey) : null;
+}
+
+/** Every `@RequireFeature(...)` argument in the tree, with its file. */
+function requireFeatureArgs(files: string[]): { file: string; arg: string }[] {
+  const out: { file: string; arg: string }[] = [];
+  for (const file of files) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const [, arg] of src.matchAll(/@RequireFeature\(([^)]*)\)/g)) {
+      out.push({ file: relative(file), arg: arg.trim() });
+    }
+  }
+  return out;
+}
+
+/** Every `@NoEntitlementRequired(...)` rationale in the tree, with its file. */
+function ungatedRationales(files: string[]): { file: string; arg: string }[] {
+  const out: { file: string; arg: string }[] = [];
+  for (const file of files) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const [, arg] of src.matchAll(/@NoEntitlementRequired\(([^)]*)\)/g)) {
+      out.push({ file: relative(file), arg: arg.trim() });
+    }
+  }
+  return out;
+}
+
 describe('every controller has an explicit entitlement policy', () => {
   const files = controllerFiles(MODULES_DIR);
 
@@ -96,7 +129,7 @@ describe('every controller has an explicit entitlement policy', () => {
       const src = fs.readFileSync(file, 'utf8');
       const annotated =
         src.includes('@RequireFeature(') ||
-        src.includes('@NoEntitlementRequired()');
+        src.includes('@NoEntitlementRequired(');
       return !annotated && !PLATFORM_AND_PUBLIC_SURFACES.has(relative(file));
     });
 
@@ -112,7 +145,7 @@ describe('every controller has an explicit entitlement policy', () => {
       const src = fs.readFileSync(path.join(MODULES_DIR, rel), 'utf8');
       return (
         src.includes('@RequireFeature(') ||
-        src.includes('@NoEntitlementRequired()')
+        src.includes('@NoEntitlementRequired(')
       );
     });
 
@@ -121,16 +154,66 @@ describe('every controller has an explicit entitlement policy', () => {
 
   it('only ever names real registry keys in @RequireFeature', () => {
     // The typed decorator already makes this a compile error; this catches a
-    // key smuggled in via a cast or a string literal.
-    const offenders: string[] = [];
-    for (const file of files) {
-      const src = fs.readFileSync(file, 'utf8');
-      for (const [, arg] of src.matchAll(/@RequireFeature\(([^)]*)\)/g)) {
-        if (!arg.trim().startsWith('FeatureKey.')) {
-          offenders.push(`${relative(file)}: ${arg.trim()}`);
-        }
-      }
-    }
+    // key smuggled in via a cast or a string literal, AND a member name that
+    // compiles but no longer exists in the registry.
+    const offenders = requireFeatureArgs(files)
+      .filter(
+        ({ arg }) => !arg.startsWith('FeatureKey.') || !resolveMember(arg),
+      )
+      .map(({ file, arg }) => `${file}: ${arg}`);
+
     expect(offenders).toEqual([]);
+  });
+
+  it('records WHY every ungated clinic-facing controller is ungated', () => {
+    // A bare `@NoEntitlementRequired()` said a decision had been made but not
+    // which one, so "belongs to an always-on capability" and "reached before
+    // entitlement exists" were indistinguishable from each other — and from a
+    // capability nobody had added to the registry. The rationale must name a
+    // real always-on key or the PRE_ENTITLEMENT literal.
+    const offenders = ungatedRationales(files)
+      .filter(({ arg }) => {
+        if (arg === `'PRE_ENTITLEMENT'` || arg === `"PRE_ENTITLEMENT"`) {
+          return false;
+        }
+        const key = arg.startsWith('FeatureKey.') ? resolveMember(arg) : null;
+        // Naming a GATEABLE key here would be a contradiction: if the capability
+        // can be gated, the controller should carry `@RequireFeature` instead.
+        return !key || FEATURE_REGISTRY[key].alwaysOn !== true;
+      })
+      .map(({ file, arg }) => `${file}: ${arg || '(no rationale)'}`);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('leaves no registry capability without a surface that uses it', () => {
+    // The other direction of the same guarantee. Every key a super-admin can
+    // toggle in `/platform/feature-flags` must correspond to something real:
+    // either routes gate on it, or it is always-on and named as the rationale
+    // for the controllers it covers. A key matching neither is a toggle that
+    // does nothing — which is exactly how `@RequireFeature('ai')` came to gate
+    // 10 controllers while the catalog only ever published `ai.assistant`.
+    const gated = new Set(
+      requireFeatureArgs(files)
+        .map(({ arg }) => resolveMember(arg))
+        .filter((k): k is FeatureKey => k !== null),
+    );
+    const documentedAlwaysOn = new Set(
+      ungatedRationales(files)
+        .map(({ arg }) => resolveMember(arg))
+        .filter((k): k is FeatureKey => k !== null),
+    );
+
+    const orphans = FEATURE_KEYS.filter((key) => {
+      const spec = FEATURE_REGISTRY[key];
+      // A deprecated key is retained only so pre-existing rows still resolve;
+      // it is not expected to gate anything.
+      if (spec.isDeprecated) return false;
+      return spec.alwaysOn
+        ? !documentedAlwaysOn.has(key)
+        : !gated.has(key);
+    });
+
+    expect(orphans).toEqual([]);
   });
 });

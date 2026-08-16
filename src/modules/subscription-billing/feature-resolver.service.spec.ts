@@ -178,6 +178,95 @@ describe('FeatureResolverService.resolveTenant', () => {
     expect((await featureFor(FeatureKey.CAMPAIGNS)).override).toBe(true);
   });
 
+  describe('adminState — the Super Admin three-way control', () => {
+    /**
+     * `enabled` is `override ?? default_enabled`, so it reports `true` for a
+     * default-on capability nobody has granted. The console bound its toggle to
+     * that field, which is how a clinic could be shown "Branches: on" while
+     * `feature_flags` held no row and every branch route answered
+     * NO_ACTIVE_SUBSCRIPTION. `adminState` is the field that can tell the two
+     * apart, and it is what the console binds to now.
+     */
+    it('reports `inherit` for a DEFAULT-ON capability with no grant', async () => {
+      definitions.find.mockResolvedValue([
+        def(FeatureKey.WHATSAPP, { default_enabled: true }),
+      ]);
+      access.resolveAll.mockResolvedValue(
+        new Map([[FeatureKey.WHATSAPP, refused(FeatureKey.WHATSAPP)]]),
+      );
+
+      const row = await featureFor(FeatureKey.WHATSAPP);
+      expect(row.enabled).toBe(true); // the misleading value…
+      expect(row.adminState).toBe('inherit'); // …and the honest one
+      expect(row.available).toBe(false);
+    });
+
+    it('reports `granted` only for an authoritative enabled row', async () => {
+      flags.find.mockResolvedValue([
+        {
+          feature_key: FeatureKey.WHATSAPP,
+          is_enabled: true,
+          is_suspended: false,
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+        },
+        {
+          // Same shape, tenant-written — records a preference, grants nothing.
+          feature_key: FeatureKey.CAMPAIGNS,
+          is_enabled: true,
+          is_suspended: false,
+          source: FeatureFlagSource.TENANT,
+        },
+      ]);
+      access.resolveAll.mockResolvedValue(
+        new Map([[FeatureKey.WHATSAPP, allowed(FeatureKey.WHATSAPP)]]),
+      );
+
+      expect((await featureFor(FeatureKey.WHATSAPP)).adminState).toBe(
+        'granted',
+      );
+      expect((await featureFor(FeatureKey.CAMPAIGNS)).adminState).toBe(
+        'inherit',
+      );
+    });
+
+    it('reports `suspended` even when a grant is also stored', async () => {
+      // Suspending leaves the grant in place so the prior state survives the
+      // block; the reported state must be the one the policy will act on.
+      flags.find.mockResolvedValue([
+        {
+          feature_key: FeatureKey.WHATSAPP,
+          is_enabled: true,
+          is_suspended: true,
+          source: FeatureFlagSource.PLATFORM_ADMIN,
+        },
+      ]);
+      access.resolveAll.mockResolvedValue(
+        new Map([[FeatureKey.WHATSAPP, refused(FeatureKey.WHATSAPP)]]),
+      );
+      expect((await featureFor(FeatureKey.WHATSAPP)).adminState).toBe(
+        'suspended',
+      );
+    });
+
+    it('flags always-on capabilities so the console can disable the control', async () => {
+      definitions.find.mockResolvedValue([
+        def(FeatureKey.BILLING),
+        def(FeatureKey.WHATSAPP),
+      ]);
+      expect((await featureFor(FeatureKey.BILLING)).alwaysOn).toBe(true);
+      expect((await featureFor(FeatureKey.WHATSAPP)).alwaysOn).toBe(false);
+    });
+
+    it('does not treat an unknown legacy row as always-on', async () => {
+      definitions.find.mockResolvedValue([
+        { ...def(FeatureKey.WHATSAPP), feature_key: 'legacy.removed' },
+      ]);
+      const { features } = await resolver.resolveTenant('t1');
+      expect(features[0].alwaysOn).toBe(false);
+      expect(features[0].adminState).toBe('inherit');
+    });
+  });
+
   it('labels a suspension as such, not as a generic subscription problem', async () => {
     flags.find.mockResolvedValue([
       {

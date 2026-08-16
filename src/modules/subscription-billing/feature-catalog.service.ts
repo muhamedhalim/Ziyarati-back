@@ -1,9 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, ILike, Repository } from 'typeorm';
+import { DataSource, EntityManager, ILike, Repository } from 'typeorm';
 
 import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
-import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
+import {
+  AUTHORITATIVE_FLAG_SOURCES,
+  FeatureFlag,
+} from '../../entities/SaaS-Core/FeatureFlag';
 import { FeaturePlan } from '../../entities/SaaS-Core/FeaturePlan';
 import { FeatureDependency } from '../../entities/SaaS-Core/FeatureDependency';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -12,7 +15,10 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { FeatureFlagService } from './feature-flag.service';
-import { FeatureResolverService } from './feature-resolver.service';
+import {
+  FeatureAdminState,
+  FeatureResolverService,
+} from './feature-resolver.service';
 import {
   FEATURE_KEYS,
   FEATURE_REGISTRY,
@@ -27,6 +33,10 @@ import {
   QueryFeatureDefinitionsDto,
   UpsertFeatureDefinitionDto,
 } from './dto/feature-catalog.dto';
+
+// Re-exported so the audit record, the console payload and this service all
+// name the same three states from one definition.
+export type { FeatureAdminState };
 
 export interface CatalogActor {
   id?: string;
@@ -250,22 +260,7 @@ export class FeatureCatalogService {
   ): Promise<FeatureFlag> {
     await this.assertTenant(tenantId);
     const key = this.toFeatureKey(featureKey);
-
-    if (FEATURE_REGISTRY[key].alwaysOn) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message:
-          `"${key}" is an always-on capability and cannot be suspended — a tenant blocked from ` +
-          'everything must still be able to reach billing and support. Suspend the specific ' +
-          'capability you mean to block instead.',
-        publicContext: { featureKey: key },
-      });
-    }
-    if (suspended && !reason?.trim()) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: 'A reason is required when suspending a capability',
-        publicContext: { featureKey: key },
-      });
-    }
+    this.assertSuspendable(key, suspended, reason);
 
     const before = await this.flags.findOne({
       where: { tenant: { id: tenantId }, feature_key: key },
@@ -308,6 +303,148 @@ export class FeatureCatalogService {
     // window between the two.
     this.cache.invalidate(tenantId);
     return saved;
+  }
+
+  // ── The three-way administrative control ─────────────────────────────────
+
+  /**
+   * Move one capability to one of the three states a super-admin controls.
+   *
+   * Exists because the console has to move a tenant BETWEEN states, and the two
+   * boolean endpoints cannot do that atomically. `suspended → granted` is a
+   * lift plus a grant; run as two requests there is a window in which the
+   * capability is neither suspended nor granted, and every route for it answers
+   * NO_ACTIVE_SUBSCRIPTION to a clinic the operator is in the middle of
+   * enabling. Both writes commit together here, or neither does.
+   *
+   * Composes {@link FeatureFlagService.set} and
+   * {@link FeatureFlagService.setSuspension} — it does not reimplement either,
+   * and it makes no access decision of its own. `AccessControlService` remains
+   * the only thing that reads these rows and decides what they mean.
+   *
+   * A suspension deliberately LEAVES any existing grant in place: the two
+   * columns say different things (`is_enabled` = "was this given?",
+   * `is_suspended` = "is this blocked?"), and clearing the grant on suspend
+   * would silently destroy the state to return to when the block is lifted.
+   */
+  async setTenantFeatureState(
+    tenantId: string,
+    featureKey: string,
+    state: FeatureAdminState,
+    reason: string | undefined,
+    actor: CatalogActor,
+  ): Promise<FeatureFlag> {
+    await this.assertTenant(tenantId);
+    const key = this.toFeatureKey(featureKey);
+    this.assertSuspendable(key, state === 'suspended', reason);
+
+    const before = await this.flags.findOne({
+      where: { tenant: { id: tenantId }, feature_key: key },
+    });
+    const previous = this.adminStateOf(before);
+
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const flag = await this.applyState(
+        tenantId,
+        key,
+        state,
+        reason,
+        actor,
+        before,
+        manager,
+      );
+      // STRICT, like `setTenantFeatureSuspension`: this endpoint can set a
+      // suspension, and an entitlement kill-switch with no record of who threw
+      // it is worse than no kill-switch. A failed audit rolls the change back.
+      await manager.getRepository(AuditLog).save(
+        manager.getRepository(AuditLog).create({
+          user: actor.id ? ({ id: actor.id } as User) : undefined,
+          action: 'FEATURE_FLAG_STATE_SET',
+          entity_type: 'feature_flag',
+          entity_id: tenantId,
+          old_values: { featureKey: key, state: previous },
+          new_values: {
+            featureKey: key,
+            state,
+            reason: state === 'suspended' ? (reason?.trim() ?? null) : null,
+            // What a grant actually opens, recorded so the audit answers
+            // "what did this change?" without re-deriving the closure later.
+            grants: state === 'granted' ? [key, ...dependencyClosure(key)] : [],
+          },
+          ip_address: actor.ip,
+        }),
+      );
+      return flag;
+    });
+
+    // Again after COMMIT — the bust inside the transaction cannot stop another
+    // replica repopulating its cache from pre-commit state in between.
+    this.cache.invalidate(tenantId);
+    return saved;
+  }
+
+  /**
+   * Apply one state to many capabilities.
+   *
+   * Validates the WHOLE batch before writing any of it (same reason as
+   * {@link bulkSetTenantFeatures}: a partial apply leaves the tenant in a state
+   * neither the operator nor the audit record describes), then applies every
+   * key inside ONE transaction so the batch is all-or-nothing.
+   */
+  async bulkSetTenantFeatureState(
+    tenantId: string,
+    featureKeys: string[],
+    state: FeatureAdminState,
+    reason: string | undefined,
+    actor: CatalogActor,
+  ): Promise<{ updated: number }> {
+    await this.assertTenant(tenantId);
+    const keys = [...new Set(featureKeys)].map((k) => this.toFeatureKey(k));
+    for (const key of keys) {
+      this.assertSuspendable(key, state === 'suspended', reason);
+    }
+
+    const before = await this.flags.find({
+      where: { tenant: { id: tenantId } },
+    });
+    const byKey = new Map(before.map((f) => [f.feature_key, f]));
+
+    await this.dataSource.transaction(async (manager) => {
+      for (const key of keys) {
+        await this.applyState(
+          tenantId,
+          key,
+          state,
+          reason,
+          actor,
+          byKey.get(key) ?? null,
+          manager,
+        );
+      }
+      await manager.getRepository(AuditLog).save(
+        manager.getRepository(AuditLog).create({
+          user: actor.id ? ({ id: actor.id } as User) : undefined,
+          action: 'FEATURE_FLAG_STATE_BULK',
+          entity_type: 'feature_flag',
+          entity_id: tenantId,
+          old_values: {
+            states: keys.map((k) => ({
+              featureKey: k,
+              state: this.adminStateOf(byKey.get(k) ?? null),
+            })),
+          },
+          new_values: {
+            state,
+            featureKeys: keys,
+            reason: state === 'suspended' ? (reason?.trim() ?? null) : null,
+          },
+          ip_address: actor.ip,
+        }),
+      );
+    });
+
+    this.cache.invalidate(tenantId);
+    return { updated: keys.length };
   }
 
   async bulkSetTenantFeatures(
@@ -444,6 +581,93 @@ export class FeatureCatalogService {
   private async assertTenant(tenantId: string): Promise<void> {
     const exists = await this.tenants.exists({ where: { id: tenantId } });
     if (!exists) throw new AppError(ErrorCode.TENANT_NOT_FOUND);
+  }
+
+  /**
+   * The two rules a suspension must satisfy, shared by both endpoints that can
+   * set one so they cannot drift apart.
+   *
+   * Always-on capabilities are refused rather than silently ignored: the policy
+   * admits them unconditionally, so accepting a suspension there would hand the
+   * operator a control that does nothing. A reason is required to suspend, and
+   * never to lift — an operator restoring service should not have to explain
+   * themselves first.
+   */
+  private assertSuspendable(
+    key: FeatureKey,
+    suspending: boolean,
+    reason: string | undefined,
+  ): void {
+    if (FEATURE_REGISTRY[key].alwaysOn) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message:
+          `"${key}" is an always-on capability and cannot be suspended — a tenant blocked from ` +
+          'everything must still be able to reach billing and support. Suspend the specific ' +
+          'capability you mean to block instead.',
+        publicContext: { featureKey: key },
+      });
+    }
+    if (suspending && !reason?.trim()) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'A reason is required when suspending a capability',
+        publicContext: { featureKey: key },
+      });
+    }
+  }
+
+  /**
+   * The administrative state a stored row represents — the same derivation
+   * `FeatureResolverService` reports to the console, so the audit record and
+   * the screen the operator was looking at agree.
+   *
+   * A row from a non-authoritative source (the tenant's own `/feature-flags`)
+   * is `inherit`: it is recorded, but it grants nothing.
+   */
+  private adminStateOf(flag: FeatureFlag | null): FeatureAdminState {
+    if (!flag) return 'inherit';
+    if (flag.is_suspended) return 'suspended';
+    const authoritative = AUTHORITATIVE_FLAG_SOURCES.includes(flag.source);
+    return authoritative && flag.is_enabled ? 'granted' : 'inherit';
+  }
+
+  /**
+   * The state transition itself, inside a caller's transaction.
+   *
+   * Suspension is cleared only when one is actually set — a needless write
+   * would stamp `updated_by` and churn `updated_at` on a row nothing changed
+   * about, which makes the row-level audit trail lie about when it last moved.
+   */
+  private async applyState(
+    tenantId: string,
+    key: FeatureKey,
+    state: FeatureAdminState,
+    reason: string | undefined,
+    actor: CatalogActor,
+    before: FeatureFlag | null,
+    manager: EntityManager,
+  ): Promise<FeatureFlag> {
+    if (state === 'suspended') {
+      return this.featureFlags.setSuspension(tenantId, key, true, {
+        actorId: actor.id,
+        reason: reason?.trim(),
+        manager,
+      });
+    }
+
+    if (before?.is_suspended) {
+      await this.featureFlags.setSuspension(tenantId, key, false, {
+        actorId: actor.id,
+        manager,
+      });
+    }
+    // `granted` writes the authoritative override the policy acts on;
+    // `inherit` writes `is_enabled: false`, which means "not granted" and
+    // hands the decision back to the subscription — it is NOT a denial.
+    return this.featureFlags.set(tenantId, key, state === 'granted', {
+      source: FeatureFlagSource.PLATFORM_ADMIN,
+      actorId: actor.id,
+      manager,
+    });
   }
 
   /**

@@ -20,11 +20,13 @@ import {
 
 import { FeatureCatalogService } from './feature-catalog.service';
 import {
+  BulkSetTenantFeatureStateDto,
   BulkSetTenantFeaturesDto,
   QueryFeatureDefinitionsDto,
   SetFeatureDependenciesDto,
   SetFeaturePlansDto,
   SetTenantFeatureDto,
+  SetTenantFeatureStateDto,
   SetTenantFeatureSuspensionDto,
   UpsertFeatureDefinitionDto,
 } from './dto/feature-catalog.dto';
@@ -141,6 +143,59 @@ export class PlatformFeatureFlagController {
         id: userId,
         ip,
       },
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Set the administrative state of a tenant capability (super-admin)',
+    description:
+      'The unified three-way control, and the one the console uses. ' +
+      '`granted` records a super-admin override: the clinic may use the capability (and its declared ' +
+      'dependency closure) with NO subscription, unmetered by any plan. ' +
+      '`inherit` clears the override and hands the decision back to the subscription — it is NOT a denial. ' +
+      '`suspended` blocks the capability outright, outranking FREE mode, a paid plan and any override; ' +
+      'a reason is required, and always-on capabilities (billing, support, workspace) are refused. ' +
+      'Both writes of a transition commit together, so a tenant is never briefly in neither state.',
+  })
+  @ApiParam({ name: 'tenantId', format: 'uuid' })
+  @ApiOkResponse({ description: 'The updated flag row.' })
+  @Put('tenants/:tenantId/features/state')
+  setTenantFeatureState(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @Body() dto: SetTenantFeatureStateDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.catalog.setTenantFeatureState(
+      tenantId,
+      dto.featureKey,
+      dto.state,
+      dto.reason,
+      { id: userId, ip },
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Apply one administrative state to many capabilities (super-admin)',
+    description:
+      'All-or-nothing: the whole batch is validated before anything is written, and every key is ' +
+      'applied in one transaction.',
+  })
+  @ApiParam({ name: 'tenantId', format: 'uuid' })
+  @ApiOkResponse({ description: '{ updated } count.' })
+  @Put('tenants/:tenantId/features/state/bulk')
+  bulkSetTenantFeatureState(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @Body() dto: BulkSetTenantFeatureStateDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.catalog.bulkSetTenantFeatureState(
+      tenantId,
+      dto.featureKeys,
+      dto.state,
+      dto.reason,
+      { id: userId, ip },
     );
   }
 

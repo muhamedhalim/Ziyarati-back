@@ -57,16 +57,15 @@ export class UsageService {
     amount = 1,
   ): Promise<void> {
     if (amount <= 0) return;
-    // Free mode / free-access override / per-feature override → unmetered.
-    if (
-      !(await this.access.isEnforced(
-        tenantId,
-        undefined,
-        featuresForMetric(metric),
-      ))
-    ) {
-      return;
-    }
+    // Deliberately NOT gated on `isEnforced`. Free mode, a free-access override
+    // and a per-feature grant all mean "no PLAN CAP applies" — they never mean
+    // "do not record". This used to return early on that branch, so a clinic
+    // running on a super-admin grant consumed AI tokens the platform had no
+    // record of, and the operator's usage view read zero for exactly the
+    // tenants whose consumption nobody was being billed for. `applyDelta`
+    // already writes against a subscription-less row when there is no plan, and
+    // `incrementIfWithinLimit` already records on this same branch — this makes
+    // the two agree.
     await this.applyDelta(this.usage, tenantId, metric, amount, 'add');
   }
 
