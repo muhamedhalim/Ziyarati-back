@@ -906,6 +906,15 @@ describe('AuthService', () => {
   // environment. This block intentionally INVERTS the pre-fix assertion
   // that used to require `result.resetToken` to be a string — that was the
   // vulnerability itself, encoded as a passing test (Feature 003, TR-003).
+  describe('loginUrl', () => {
+    it('builds the sign-in URL from the configured app base URL', () => {
+      (config.get as jest.Mock).mockImplementation((key: string) =>
+        key === 'APP_URL' ? 'https://clinic.example.com' : undefined,
+      );
+      expect(service.loginUrl()).toBe('https://clinic.example.com/auth/login');
+    });
+  });
+
   describe('forgotPassword', () => {
     it('never includes a reset credential in the response when the email exists', async () => {
       users.find.mockResolvedValueOnce([{ id: 'user-1' }]);

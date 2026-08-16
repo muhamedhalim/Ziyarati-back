@@ -260,6 +260,34 @@ export class EmailService {
     });
   }
 
+  /**
+   * Delivers a system-generated temporary password directly (as opposed to
+   * `sendInvitation`'s set-password link) — used right after
+   * `StaffService.createWithNewUser` provisions an account whose temporary
+   * password is also shown once in the admin UI. Keyed on the new user's own
+   * row id (mirrors `sendWelcome`) so a recreated account can be re-notified.
+   */
+  sendStaffCredentials(p: {
+    to: string;
+    name?: string;
+    role?: string;
+    clinicName?: string;
+    temporaryPassword: string;
+    loginUrl: string;
+    tenantId?: string;
+    userId: string;
+    locale?: string;
+  }) {
+    return this.send({
+      to: p.to,
+      template: 'staff_credentials',
+      variables: p,
+      tenantId: p.tenantId,
+      locale: p.locale,
+      idempotencyKey: `staff-credentials:${p.userId}`,
+    });
+  }
+
   sendSubscriptionNotification(p: {
     to: string;
     name?: string;

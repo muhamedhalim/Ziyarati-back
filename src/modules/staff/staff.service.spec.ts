@@ -1,8 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { DataSource, QueryFailedError } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { StaffService } from './staff.service';
+import { EmailService } from '../email/email.service';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { StaffService as StaffServiceEntity } from '../../entities/Staff/StaffService';
 import { BranchUser } from '../../entities/Multi Branch/BranchUser';
@@ -39,7 +41,12 @@ describe('StaffService', () => {
   let auditLogs: MockRepository;
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
-  let authService: { createUserWithRole: jest.Mock; revokeAllForUser: jest.Mock };
+  let authService: {
+    createUserWithRole: jest.Mock;
+    revokeAllForUser: jest.Mock;
+    loginUrl: jest.Mock;
+  };
+  let email: { sendStaffCredentials: jest.Mock };
   let rolesService: {
     findAssignableForStaff: jest.Mock;
     findAssignableRoleBySlug: jest.Mock;
@@ -71,7 +78,9 @@ describe('StaffService', () => {
     authService = {
       createUserWithRole: jest.fn(),
       revokeAllForUser: jest.fn().mockResolvedValue(undefined),
+      loginUrl: jest.fn().mockReturnValue('https://app.test/auth/login'),
     };
+    email = { sendStaffCredentials: jest.fn().mockResolvedValue(undefined) };
     rolesService = {
       findAssignableForStaff: jest.fn().mockResolvedValue([]),
       findAssignableRoleBySlug: jest
@@ -116,6 +125,7 @@ describe('StaffService', () => {
         { provide: StaffAccessService, useValue: staffAccess },
         { provide: StorageService, useValue: storage },
         { provide: UsageService, useValue: usage },
+        { provide: EmailService, useValue: email },
       ],
     }).compile();
     service = moduleRef.get(StaffService);
@@ -435,6 +445,8 @@ describe('StaffService', () => {
         code: ErrorCode.EMAIL_ALREADY_EXISTS,
       });
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      // Account creation never committed — no credentials to email.
+      expect(email.sendStaffCredentials).not.toHaveBeenCalled();
     });
 
     // FND-007: the seat-cap check now runs atomically INSIDE the transaction
@@ -451,6 +463,7 @@ describe('StaffService', () => {
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
       expect(authService.createUserWithRole).not.toHaveBeenCalled();
+      expect(email.sendStaffCredentials).not.toHaveBeenCalled();
     });
 
     it('creates the user, role and profile atomically and returns a one-time temporary password', async () => {
@@ -474,6 +487,46 @@ describe('StaffService', () => {
       expect(result.profile).toEqual({ id: 'staff-1' });
       expect(typeof result.temporaryPassword).toBe('string');
       expect(result.temporaryPassword.length).toBeGreaterThanOrEqual(8);
+    });
+
+    it('emails the temporary password and login link after the transaction commits', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-8' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-8' });
+
+      const result = await service.createWithNewUser(TENANT, dto);
+
+      expect(email.sendStaffCredentials).toHaveBeenCalledTimes(1);
+      expect(email.sendStaffCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'new.staff@clinic.com',
+          name: 'New Staff',
+          role: 'Receptionist',
+          temporaryPassword: result.temporaryPassword,
+          loginUrl: 'https://app.test/auth/login',
+          tenantId: TENANT,
+          userId: 'new-user-8',
+        }),
+      );
+    });
+
+    it('logs and swallows a credentials-email delivery failure without leaking the password (best-effort, matches the UI which already showed it once)', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-9' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-9' });
+      email.sendStaffCredentials.mockRejectedValueOnce(new Error('provider unreachable'));
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      const result = await service.createWithNewUser(TENANT, dto);
+
+      expect(result.profile).toEqual({ id: 'staff-9' });
+      expect(typeof result.temporaryPassword).toBe('string');
+      const loggedMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(loggedMessages.some((m) => m.includes('new-user-9'))).toBe(true);
+      expect(loggedMessages.some((m) => m.includes(result.temporaryPassword))).toBe(false);
+      warnSpy.mockRestore();
     });
 
     it('validates and assigns branches within the same transaction', async () => {
@@ -554,6 +607,26 @@ describe('StaffService', () => {
         { id: 'role-custom-1', slug: 'custom-abc', name: 'Custom — New Staff' },
         TENANT,
       );
+      // The synthesized custom-role name embeds the recipient's OWN full
+      // name ("Custom — New Staff") — it must never be quoted back at them
+      // as their "role" in the credentials email.
+      expect(email.sendStaffCredentials).toHaveBeenCalledWith(
+        expect.objectContaining({ role: undefined }),
+      );
+    });
+
+    it('does not email credentials when sendCredentialsByEmail is false (IntegrationStaffProvisioningService opts out — it sends its own set-password invitation instead)', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      users.count.mockResolvedValueOnce(0);
+      authService.createUserWithRole.mockResolvedValueOnce({ id: 'new-user-10' });
+      staff.findOne.mockResolvedValueOnce({ id: 'staff-10' });
+
+      const result = await service.createWithNewUser(TENANT, dto, [], undefined, {
+        sendCredentialsByEmail: false,
+      });
+
+      expect(result.profile).toEqual({ id: 'staff-10' });
+      expect(email.sendStaffCredentials).not.toHaveBeenCalled();
     });
 
     it('"other": propagates the privilege-escalation rejection from RolesService WITHOUT opening a transaction', async () => {

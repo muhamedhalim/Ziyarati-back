@@ -119,3 +119,60 @@ describe('WhatsappBotActorService — cache TTL and invalidation (H4)', () => {
     expect(auth.buildAuthenticatedUser).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * AI-001 (T021/T021a) — `users.email` is unique GLOBALLY
+ * (`uq_user_email_global`), not per tenant, so the bot actor's address must
+ * be tenant-qualified (RFC 5233 sub-addressing, R10) at BOTH the lookup and
+ * the insert, or the two diverge and a legitimately-created row becomes
+ * unfindable on the next call.
+ */
+describe('WhatsappBotActorService — tenant-qualified bot email (AI-001)', () => {
+  it('looks up an existing bot row by the TENANT-QUALIFIED address, not the bare legacy literal', async () => {
+    const users = usersMock();
+    const roles = rolesMock();
+    const auth = authMock();
+    const svc = build(users, roles, auth);
+
+    await svc.ensureBotActor('tenant-a');
+
+    expect(users.findOne).toHaveBeenCalledWith({
+      where: { tenant: { id: 'tenant-a' }, email: 'ai-bot+tenant-a@bot.internal' },
+    });
+    const [[arg]] = users.findOne.mock.calls;
+    expect(arg.where.email).not.toBe('ai-bot@bot.internal');
+  });
+
+  it('creates a new bot row with the SAME tenant-qualified address the lookup used', async () => {
+    const users = usersMock({ findOne: jest.fn().mockResolvedValue(undefined) });
+    const roles = rolesMock();
+    const auth = authMock();
+    const svc = build(users, roles, auth);
+
+    await svc.ensureBotActor('tenant-a');
+
+    expect(users.create).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'ai-bot+tenant-a@bot.internal' }),
+    );
+    const [lookupArg] = users.findOne.mock.calls[0];
+    const [createArg] = users.create.mock.calls[0];
+    expect(createArg.email).toBe(lookupArg.where.email); // lookup and insert never diverge
+  });
+
+  it('two distinct tenants receive two distinct, deterministic addresses', async () => {
+    const users = usersMock({ findOne: jest.fn().mockResolvedValue(undefined) });
+    const roles = rolesMock();
+    const auth = authMock();
+    const svc = build(users, roles, auth);
+
+    await svc.ensureBotActor('tenant-a');
+    await svc.ensureBotActor('tenant-b');
+
+    const emails = users.create.mock.calls.map((c: [{ email: string }]) => c[0].email);
+    expect(emails).toEqual([
+      'ai-bot+tenant-a@bot.internal',
+      'ai-bot+tenant-b@bot.internal',
+    ]);
+    expect(new Set(emails).size).toBe(2); // distinct — this is exactly what AI-001's fix must guarantee
+  });
+});

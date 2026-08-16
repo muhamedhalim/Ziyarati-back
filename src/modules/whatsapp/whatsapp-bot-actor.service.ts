@@ -11,9 +11,26 @@ import { AuthService } from '../auth/auth.service';
 import { RolesService } from '../auth/roles.service';
 import { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
-/** Fixed, per-tenant-unique identity for the bot (users.email is unique PER TENANT). */
-const BOT_EMAIL = 'ai-bot@bot.internal';
+/**
+ * `users.email` is unique GLOBALLY (`uq_user_email_global`, migration
+ * `1730035000000`), not per tenant — see the docblock on `botEmailFor` below.
+ * RFC 5233 sub-addressing derives a distinct, deterministic address per
+ * tenant from this fixed local-part/domain, so every tenant gets its own bot
+ * user row without a global collision and without any schema change.
+ */
+const BOT_EMAIL_BASE = 'ai-bot';
+const BOT_EMAIL_DOMAIN = 'bot.internal';
 const BOT_ROLE_SLUG = ROLE.AI_BOT;
+
+/**
+ * The tenant-qualified bot address (RFC 5233 sub-addressing, R10):
+ * `ai-bot+<tenantId>@bot.internal`. Derived from the tenant id at every call
+ * site — the lookup and the insert must always agree, or a legitimate bot
+ * user becomes unfindable.
+ */
+function botEmailFor(tenantId: string): string {
+  return `${BOT_EMAIL_BASE}+${tenantId}@${BOT_EMAIL_DOMAIN}`;
+}
 
 /**
  * How long a cached principal is trusted before being re-read from the DB
@@ -81,14 +98,14 @@ export class WhatsappBotActorService {
 
   private async ensureBotUser(tenantId: string): Promise<string> {
     const existing = await this.users.findOne({
-      where: { tenant: { id: tenantId }, email: BOT_EMAIL },
+      where: { tenant: { id: tenantId }, email: botEmailFor(tenantId) },
     });
     if (existing) return existing.id;
 
     const created = await this.users.save(
       this.users.create({
         tenant: { id: tenantId } as Tenant,
-        email: BOT_EMAIL,
+        email: botEmailFor(tenantId),
         full_name: 'AI Assistant',
         is_active: true,
         // No password — the bot never logs in via credentials, only ever

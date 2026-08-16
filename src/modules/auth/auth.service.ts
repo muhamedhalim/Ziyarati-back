@@ -775,6 +775,11 @@ export class AuthService {
     return `${this.appUrl()}/auth/reset-password?token=${rawToken}`;
   }
 
+  /** Absolute URL of the sign-in screen — the CTA for a delivered temporary password. */
+  loginUrl(): string {
+    return `${this.appUrl()}/auth/login`;
+  }
+
   /** Consumes a reset token, sets the new password and kills all sessions. */
   async resetPassword(dto: ResetPasswordDto): Promise<void> {
     // 009-auth-abuse-resistance (ZT-006) — coarse failure-only ceiling,

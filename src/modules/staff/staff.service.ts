@@ -32,6 +32,7 @@ import {
 } from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
+import { EmailService } from '../email/email.service';
 import {
   CUSTOM_ROLE_SENTINEL,
   OWNERSHIP_SCOPED_PERMISSIONS,
@@ -124,6 +125,7 @@ export class StaffService {
     private readonly access: StaffAccessService,
     private readonly storage: StorageService,
     private readonly usage: UsageService,
+    private readonly email: EmailService,
   ) {}
 
   /**
@@ -330,14 +332,27 @@ export class StaffService {
    * The temporary password is generated server-side and returned ONCE in the
    * response; it is never stored in plaintext and can't be retrieved again
    * (mirrors how every other credential in this codebase is handled — see
-   * AuthService.validateCredentials).
+   * AuthService.validateCredentials). The same password is also emailed to
+   * the new hire (see `sendCredentialsEmail`) once the transaction commits —
+   * best-effort, so a mail outage never blocks account creation.
+   *
+   * `options.sendCredentialsByEmail` (default `true`) lets a caller that has
+   * its OWN onboarding email opt out — e.g. `IntegrationStaffProvisioningService
+   * .approve()` deliberately discards this same temporary password and sends
+   * a set-password invitation instead (see that file's class doc); it must
+   * pass `false` or its externally-sourced, unverified email address would
+   * receive a live plaintext credential the platform's normal flow never
+   * exposes. Named (not positional) specifically so a future parameter added
+   * before it can never silently shift into this security-sensitive flag.
    */
   async createWithNewUser(
     tenantId: string,
     dto: CreateStaffWithNewUserDto,
     callerPermissions: string[] = [],
     actorUserId?: string,
+    options: { sendCredentialsByEmail?: boolean } = {},
   ): Promise<{ profile: StaffProfile; temporaryPassword: string }> {
+    const { sendCredentialsByEmail = true } = options;
     const isCustom = dto.roleSlug === CUSTOM_ROLE_SENTINEL;
 
     // Resolve/validate the role BEFORE opening any transaction — pure reads,
@@ -458,29 +473,84 @@ export class StaffService {
       },
     );
 
-    if (actorUserId) {
-      await this.auditRoleChange({
-        tenantId,
-        actorUserId,
-        targetUserId: userId,
-        staffId: profileId,
-        action: 'staff.role.assigned',
-        previousRole: null,
-        newRole: isCustom
-          ? {
-              slug: assignedRole.slug,
-              name: assignedRole.name,
-              isCustom: true,
-              permissionSlugs: customPerms!.map((p) => p.slug),
-            }
-          : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
-      });
-    }
+    // Both of these are independent, best-effort, self-contained side effects
+    // of the commit above (neither's outcome affects the other, and each
+    // swallows its own errors) — run concurrently rather than one after the
+    // other. Mail outage or audit-write failure must not roll back an
+    // account creation that already committed (mirrors
+    // StaffAccessService.sendInvitation). The admin-facing UI already shows
+    // this same password once, so email delivery failing here degrades the
+    // flow, it doesn't block it.
+    await Promise.all([
+      sendCredentialsByEmail
+        ? this.sendCredentialsEmail({
+            tenantId,
+            userId,
+            email,
+            fullName: dto.fullName,
+            temporaryPassword,
+            // A synthesized custom role is named "Custom — {fullName}" for
+            // the admin's role list (see RolesService.resolveCustomRole) —
+            // that's the recipient's OWN name, so it's omitted here rather
+            // than quoted back at them; the template reads fine without one.
+            roleName: isCustom ? undefined : assignedRole.name,
+          })
+        : Promise.resolve(),
+      actorUserId
+        ? this.auditRoleChange({
+            tenantId,
+            actorUserId,
+            targetUserId: userId,
+            staffId: profileId,
+            action: 'staff.role.assigned',
+            previousRole: null,
+            newRole: isCustom
+              ? {
+                  slug: assignedRole.slug,
+                  name: assignedRole.name,
+                  isCustom: true,
+                  permissionSlugs: customPerms!.map((p) => p.slug),
+                }
+              : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
+          })
+        : Promise.resolve(),
+    ]);
 
     return {
       profile: await this.findOne(tenantId, profileId),
       temporaryPassword,
     };
+  }
+
+  /**
+   * Emails the same temporary password already shown once in the admin UI,
+   * so the new hire can sign in without the admin manually relaying it.
+   * Never throws — a delivery failure is logged (without the password) and
+   * swallowed, exactly like StaffAccessService.sendInvitation.
+   */
+  private async sendCredentialsEmail(p: {
+    tenantId: string;
+    userId: string;
+    email: string;
+    fullName: string;
+    temporaryPassword: string;
+    roleName?: string;
+  }): Promise<void> {
+    try {
+      await this.email.sendStaffCredentials({
+        to: p.email,
+        name: p.fullName,
+        role: p.roleName,
+        temporaryPassword: p.temporaryPassword,
+        loginUrl: this.authService.loginUrl(),
+        tenantId: p.tenantId,
+        userId: p.userId,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to deliver staff credentials email to user ${p.userId}: ${(err as Error)?.message}`,
+      );
+    }
   }
 
   async findAll(tenantId: string, query: QueryStaffDto) {

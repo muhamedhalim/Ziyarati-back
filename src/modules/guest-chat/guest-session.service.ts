@@ -190,7 +190,7 @@ export class GuestSessionService {
       .update(AiConversation)
       .set({ status: AI_CONVERSATION_STATUS.CONVERTED })
       .where('id = :id', { id: guestConversationId })
-      .andWhere('tenant_id = :tenantId', { tenantId: discoveryTenantId })
+      .andWhere('"tenantId" = :tenantId', { tenantId: discoveryTenantId })
       .andWhere('status = :active', { active: AI_CONVERSATION_STATUS.ACTIVE })
       .execute();
     if ((claimed.affected ?? 0) === 0) throw this.notFound();

@@ -299,6 +299,21 @@ describe('GuestSessionService.convert — FND-001', () => {
       ).toBeUndefined();
     });
 
+    it('AI-002 — the claim predicate references the column that actually exists ("tenantId", not "tenant_id")', async () => {
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+      await service.convert(CONV_A, TENANT_A, token, undefined);
+
+      const builder = conversationRepo.createQueryBuilder.mock.results[0]
+        .value as { andWhere: jest.Mock };
+      const tenantPredicateCall = builder.andWhere.mock.calls.find(
+        (call: unknown[]) => (call[0] as string).includes('tenantId'),
+      );
+      expect(tenantPredicateCall).toBeDefined();
+      expect(tenantPredicateCall![0]).toBe('"tenantId" = :tenantId');
+      expect(tenantPredicateCall![0]).not.toContain('tenant_id'); // the column TypeORM's default naming strategy actually produced for an unqualified relation
+      expect(tenantPredicateCall![1]).toEqual({ tenantId: DISCOVERY_TENANT });
+    });
+
     it('writes at most one memory record when two conversions race', async () => {
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
       let claims = 0;

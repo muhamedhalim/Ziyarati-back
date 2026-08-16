@@ -195,17 +195,25 @@ export class IntegrationStaffProvisioningService {
 
     let created: { profile: StaffProfile };
     try {
-      created = await this.staff.createWithNewUser(tenantId, {
-        email,
-        fullName,
-        roleSlug: dto.roleSlug,
-        title: asString(profile.title),
-        bio: asString(profile.bio),
-        bookingBufferMinutes: asNumber(profile.bookingBufferMinutes),
-        isAvailableForBooking: asBoolean(profile.isAvailableForBooking),
-        branchIds: dto.branchIds,
-        primaryBranchId: dto.primaryBranchId,
-      } as CreateStaffWithNewUserDto);
+      created = await this.staff.createWithNewUser(
+        tenantId,
+        {
+          email,
+          fullName,
+          roleSlug: dto.roleSlug,
+          title: asString(profile.title),
+          bio: asString(profile.bio),
+          bookingBufferMinutes: asNumber(profile.bookingBufferMinutes),
+          isAvailableForBooking: asBoolean(profile.isAvailableForBooking),
+          branchIds: dto.branchIds,
+          primaryBranchId: dto.primaryBranchId,
+        } as CreateStaffWithNewUserDto,
+        [],
+        undefined,
+        // This flow never exposes the temporary password (see class doc
+        // above) — the member gets a set-password invitation instead, below.
+        { sendCredentialsByEmail: false },
+      );
       // The temporary password returned above is intentionally NOT destructured,
       // stored, logged, or returned — the member sets their own via invitation.
     } catch (err) {
