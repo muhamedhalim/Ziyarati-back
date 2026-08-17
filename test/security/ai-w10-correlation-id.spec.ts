@@ -12,10 +12,13 @@
  *   3. queued QUEUE.AI job — a real BullMQ job enqueued via `QueueService.enqueueAiExecute`
  *   4. realtime emission — the payload `AiRealtimeGateway.runMessage` would `client.emit(...)`
  *
- * This is not assumed to succeed at every hop — T155 already found no
- * correlation/request-id column on any AI ledger table. This file's job is to
- * show PRECISELY where the SAME id does and does not survive, hop by hop, with
- * the record (or its absence) for each.
+ * This is not assumed to succeed at every hop. T155 originally found no
+ * correlation/request-id column on any AI ledger table; [PROMOTED, RTP row
+ * 12, AI-016/T072] `ai_tool_calls` and `ai_execution_metrics` both gained one
+ * (M1/M2), populated from `TenantContextService.getCorrelationId()` at write
+ * time — hop 2 now succeeds, on both the REST and realtime transports. This
+ * file's job is to show PRECISELY where the SAME id does and does not
+ * survive, hop by hop, with the record (or its absence) for each.
  */
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
@@ -113,7 +116,7 @@ describe('W10 — correlation id across 4 hops: orchestrator → tool dispatch �
     await harness.close();
   }, 60_000);
 
-  it('the SAME planted id: found at hop 1 (echoed by the orchestrator route), absent at hop 2 (ai_tool_calls / ai_execution_metrics), found at hop 3 (the queued QUEUE.AI job\'s own Redis-durable data), absent at hop 4 (the realtime-emission payload)', async () => {
+  it('the SAME planted id: found at hop 1 (echoed by the orchestrator route), [PROMOTED, RTP row 12] now found at hop 2 too (ai_tool_calls / ai_execution_metrics, both transports), found at hop 3 (the queued QUEUE.AI job\'s own Redis-durable data), absent from the hop-4 emission PAYLOAD CONTRACT specifically (but present in that same WS-driven turn\'s own ai_execution_metrics row)', async () => {
     const marker = `w10-cid-${randomUUID()}`;
 
     // ── Hop 1: orchestrator (REST) ─────────────────────────────────────────
@@ -160,12 +163,18 @@ describe('W10 — correlation id across 4 hops: orchestrator → tool dispatch �
     const hop2Blob = JSON.stringify([toolCallRow, metricRow]);
     const hop2Found = hop2Blob.includes(marker);
     expect(toolCallRow).toBeDefined(); // the call itself DID happen and DID get ledgered (ALLOWED case)
-    expect(hop2Found).toBe(false); // but the marker itself is nowhere in either row
+    // [PROMOTED, RTP row 12, AI-016/T072] both tables now carry a
+    // correlation_id column, populated from TenantContextService at the
+    // exact moment each row is written — the SAME id planted at hop 1
+    // survives all the way to hop 2's durable ledger.
+    expect(hop2Found).toBe(true);
+    expect(toolCallRow.correlation_id).toBe(marker);
+    expect(metricRow.correlation_id).toBe(marker);
     hops.push({
       hop: '2. tool dispatch',
       durableRecord: 'ai_tool_calls row + ai_execution_metrics row',
       idFound: hop2Found,
-      detail: 'neither table has a correlation_id/request_id column; confirmed absent by full-row string search, not just column-name inspection',
+      detail: '[PROMOTED, row 12] both tables carry a dedicated correlation_id column (M1/M2), populated from TenantContextService.getCorrelationId() at write time — confirmed by full-row string search, not just column-name inspection',
     });
 
     // ── Hop 3: queued QUEUE.AI job ──────────────────────────────────────────
@@ -235,13 +244,32 @@ describe('W10 — correlation id across 4 hops: orchestrator → tool dispatch �
       hop: '4. realtime emission',
       durableRecord: 'the exact object AiRealtimeGateway.runMessage() would client.emit(AI_EVENT.DONE, …) — inherently ephemeral, never itself persisted',
       idFound: hop4Found,
-      detail: 'field set is {aiConversationId, agentRole, reply, usage, streamed, handedOver} only — no correlation/request id field exists on the emission contract at all',
+      detail: 'field set is {aiConversationId, agentRole, reply, usage, streamed, handedOver} only — no correlation/request id field exists on the emission contract at all; unaffected by T072, which only touches durable ledger tables, never the emission payload shape',
     });
+
+    // [PROMOTED, RTP row 12] "both transports": this SAME WS-driven turn's
+    // own ai_execution_metrics row (a per-turn record, written regardless of
+    // whether the turn called a tool) is now checked independently of the
+    // emission payload above — the marker was set via
+    // tenantContext.setCorrelationId(marker) BEFORE handleStream() ran,
+    // exactly as T071's resolveCorrelationId() does inside the real gateway
+    // before it calls runMessage(). This is the realtime-transport half of
+    // row 12; hop 2 above already proved the REST half.
+    const [wsMetricRow] = await harness.dataSource.query(
+      `SELECT correlation_id FROM ai_execution_metrics WHERE ai_conversation_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [(streamResult as { aiConversationId: string }).aiConversationId],
+    );
+    expect(wsMetricRow).toBeDefined();
+    expect(wsMetricRow.correlation_id).toBe(marker);
 
     process.stdout.write('\n===W10-CORRELATION-ID-HOPS-START===\n');
     process.stdout.write(JSON.stringify({ marker, hops }, null, 2));
     process.stdout.write('\n===W10-CORRELATION-ID-HOPS-END===\n');
 
-    expect(hops.map((h) => h.idFound)).toEqual([true, false, true, false]);
+    // [PROMOTED, RTP row 12] hop 2 flips from absent to found; hop 4's
+    // EMISSION-PAYLOAD-CONTRACT result is unchanged (correctly still absent
+    // — checked separately above via ai_execution_metrics for the "both
+    // transports" requirement).
+    expect(hops.map((h) => h.idFound)).toEqual([true, true, true, false]);
   }, 60_000);
 });

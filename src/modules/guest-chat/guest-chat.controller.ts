@@ -72,6 +72,7 @@ export class GuestChatController {
       targetTenantId,
       guestToken,
       dto.customerId,
+      this.tenantContext.getUser()?.id,
     );
   }
 

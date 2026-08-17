@@ -64,4 +64,39 @@ describe('ScheduleRegistrarService', () => {
     queue.addRepeatable.mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
   });
+
+  /**
+   * AI-008 (FR-029c, T077/T078): the ai_tool_calls attempt-row retention purge
+   * must be a real repeatable sweep, and its cron slot must not collide with
+   * the two other daily-ish sweeps it was deliberately offset from.
+   */
+  it('registers the AI tool-call retention purge, offset from the AI memory cleanup and analytics cleanup sweeps', async () => {
+    await service.onApplicationBootstrap();
+
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.AI,
+      JOB.AI_MEMORY_CLEANUP,
+      { tenantId: null },
+      '0 4 * * *',
+    );
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.AI,
+      JOB.AI_TOOL_CALL_RETENTION,
+      { tenantId: null },
+      '30 4 * * *',
+    );
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.ANALYTICS,
+      JOB.ANALYTICS_CLEANUP,
+      { tenantId: null },
+      '15 3 * * *',
+    );
+
+    const crons = [
+      '15 3 * * *', // ANALYTICS_CLEANUP
+      '0 4 * * *', // AI_MEMORY_CLEANUP
+      '30 4 * * *', // AI_TOOL_CALL_RETENTION
+    ];
+    expect(new Set(crons).size).toBe(crons.length);
+  });
 });

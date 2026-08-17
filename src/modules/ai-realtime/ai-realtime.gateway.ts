@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import {
   ConnectedSocket,
   MessageBody,
@@ -33,6 +34,36 @@ interface MessagePayload {
   language?: string;
   useMemory?: boolean;
   autoRoute?: boolean;
+  /**
+   * AI-016/C2 (FR-031, FR-082): an OPTIONAL client-supplied correlation
+   * hint for this turn — never an authorization, tenancy, or identity
+   * input. Adopted only if well-formed (see `resolveCorrelationId`);
+   * otherwise the gateway generates one, exactly as REST's
+   * `request-context.middleware.ts` does for `X-Request-Id`.
+   */
+  correlationId?: string;
+}
+
+/**
+ * AI-016/C2 (FR-031, FR-082, R4, inspection I-3): `TenantContextService
+ * .setCorrelationId` has exactly one production caller today — the Express
+ * middleware in `main.ts` — which Socket.IO frames never traverse. Without
+ * this, the ledger's correlation column is null for every realtime turn.
+ *
+ * Bounded charset/length (not merely "non-empty", unlike the REST
+ * middleware's own looser check) because this value, unlike an HTTP header
+ * set by trusted infrastructure, arrives directly from the browser: it is
+ * a correlation HINT only, never trusted for authorization, tenancy, or
+ * identity (FR-082) — bounding it keeps a malformed or oversized value from
+ * ever reaching a log line or a durable column.
+ */
+const CORRELATION_ID_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
+
+function resolveCorrelationId(clientSupplied: string | undefined): string {
+  if (clientSupplied && CORRELATION_ID_PATTERN.test(clientSupplied)) {
+    return clientSupplied;
+  }
+  return randomUUID();
 }
 
 /**
@@ -380,11 +411,40 @@ export class AiRealtimeGateway
     // reached the orchestrator with no entitlement evaluation at all.
     if (!(await this.mayUseAi(client, AI_EVENT.MESSAGE))) return;
     const user = client.data.user as AuthenticatedUser | undefined;
+    // AI-007: REST's equivalent STAFF route requires `ai.conversations.manage`
+    // (`@RequirePermissions`, ai-conversation.controller.ts); this transport
+    // never checked it. Same hand-written pattern this gateway already uses
+    // at onAgentReply (`:338-341`) — not a new mechanism (FR-015). An
+    // `ai:error`, never a throw across the socket (FR-016). Access is
+    // restored only by granting the role this permission through the
+    // existing role-and-permission mechanism — never by weakening or
+    // special-casing this check for a STAFF principal (FR-016c).
+    //
+    // Guests are exempt, not special-cased around FR-016c: `WsAuthService`
+    // mints them with `permissions: []` and `guest: true` (never a `users`
+    // row, never a role) — REST has no equivalent gate for them at all, this
+    // transport is the ONLY way `PublicAiWidget` reaches an AI turn, and the
+    // guest's own tenant/entitlement checks above already ran. Applying this
+    // staff permission to a principal that structurally can never hold any
+    // permission would silently break public AI-guided booking, not restore
+    // parity with anything REST does for guests.
+    if (
+      !user?.guest &&
+      !user?.permissions?.includes(PERMISSION.AI_CONVERSATIONS_MANAGE)
+    ) {
+      client.emit(AI_EVENT.ERROR, { message: 'Forbidden' });
+      return;
+    }
     // Restore the authenticated principal for this turn — every downstream
     // service (booking tools, admin tools, usage metering) reads it via
     // TenantContextService exactly as it would under an HTTP request.
     return this.ctx.run(() => {
       if (user) this.ctx.setPrincipal(user);
+      // AI-016/C2: Socket.IO frames never traverse the REST correlation
+      // middleware (I-3) — without this, every realtime turn's ledger rows
+      // carry a null correlation_id. Adopt a well-formed client hint or
+      // generate one, same posture as REST's own request-id handling.
+      this.ctx.setCorrelationId(resolveCorrelationId(body?.correlationId));
       return this.runMessage(client, body, tenantId);
     });
   }

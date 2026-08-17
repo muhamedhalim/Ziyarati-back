@@ -2538,3 +2538,141 @@ INSERT INTO "role_permissions" ("roleId", "permissionId")
         AND r.slug IN ('platform_support', 'super_admin')
         AND p.slug IN (${PlatformSupportDiagnosticPermissions1730036000000.slugList()})
       ON CONFLICT DO NOTHING;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730037000000-FeatureFlagProvenanceAndSuspension.ts  (13 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "feature_flags"
+        ADD COLUMN IF NOT EXISTS "source" character varying(24) NOT NULL DEFAULT 'TENANT',
+        ADD COLUMN IF NOT EXISTS "is_suspended" boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "suspended_reason" text,
+        ADD COLUMN IF NOT EXISTS "suspended_by" uuid,
+        ADD COLUMN IF NOT EXISTS "suspended_at" TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS "updated_by" uuid,
+        ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now();
+UPDATE "feature_flags" SET "source" = 'PLATFORM_ADMIN' WHERE "source" = 'TENANT';
+UPDATE "feature_flags" target
+         SET "is_enabled" = true
+        FROM "feature_flags" legacy
+       WHERE target."feature_key" = 'ai.assistant'
+         AND legacy."feature_key" = 'ai'
+         AND target."tenantId" = legacy."tenantId"
+         AND legacy."is_enabled" = true;
+DELETE FROM "feature_flags" legacy
+       USING "feature_flags" target
+       WHERE legacy."feature_key" = 'ai'
+         AND target."feature_key" = 'ai.assistant'
+         AND legacy."tenantId" = target."tenantId";
+UPDATE "feature_flags" SET "feature_key" = 'ai.assistant' WHERE "feature_key" = 'ai';
+DELETE FROM "feature_plans" legacy
+       USING "feature_plans" target
+       WHERE legacy."feature_key" = 'ai'
+         AND target."feature_key" = 'ai.assistant'
+         AND legacy."plan_id" = target."plan_id";
+UPDATE "feature_plans" SET "feature_key" = 'ai.assistant' WHERE "feature_key" = 'ai';
+DELETE FROM "feature_dependencies" legacy
+       USING "feature_dependencies" target
+       WHERE legacy."feature_key" = 'ai'
+         AND target."feature_key" = 'ai.assistant'
+         AND legacy."requires_key" = target."requires_key";
+UPDATE "feature_dependencies" SET "feature_key" = 'ai.assistant' WHERE "feature_key" = 'ai';
+UPDATE "feature_dependencies" SET "requires_key" = 'ai.assistant' WHERE "requires_key" = 'ai';
+DELETE FROM "feature_definitions" WHERE "feature_key" = 'ai';
+UPDATE "feature_definitions"
+         SET "default_enabled" = true
+       WHERE "feature_key" IN ('reviews', 'payments')
+         AND "default_enabled" = false;
+CREATE INDEX IF NOT EXISTS "IDX_feature_flags_tenant_source" ON "feature_flags" ("tenantId", "source");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730038000000-SubscriptionUsageWithoutSubscription.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscription_usage" ALTER COLUMN "subscription_id" DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_subscription_usage_tenant_period_unsubscribed"
+        ON "subscription_usage" ("tenant_id", "period_month")
+        WHERE "subscription_id" IS NULL;
+CREATE INDEX IF NOT EXISTS "IDX_subscription_usage_tenant_period" ON "subscription_usage" ("tenant_id", "period_month");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730039000000-FreeAccessOverridesTable.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "free_access_overrides" (
+        "id"         uuid PRIMARY KEY,
+        "tenant_id"  uuid NOT NULL,
+        "granted_by" uuid,
+        "reason"     text,
+        "starts_at"  timestamptz NOT NULL DEFAULT now(),
+        "ends_at"    timestamptz,
+        "status"     varchar(20) NOT NULL DEFAULT 'ACTIVE',
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz
+      );
+CREATE INDEX IF NOT EXISTS "idx_free_override_tenant_status"
+        ON "free_access_overrides" ("tenant_id", "status");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730040000000-PlatformDashboardIndexes.ts  (8 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS "IX_tenants_approval_status" ON "tenants" ("approval_status");
+CREATE INDEX IF NOT EXISTS "IX_tenants_created_at" ON "tenants" ("created_at");
+CREATE INDEX IF NOT EXISTS "IX_subscriptions_ends_at" ON "subscriptions" ("ends_at");
+CREATE INDEX IF NOT EXISTS "IX_subscriptions_status_ends_at" ON "subscriptions" ("status", "ends_at");
+CREATE INDEX IF NOT EXISTS "IX_whatsapp_accounts_connection_status"
+         ON "whatsapp_accounts" ("connection_status")
+       WHERE "deleted_at" IS NULL;
+CREATE INDEX IF NOT EXISTS "IX_verification_docs_pending"
+         ON "tenant_verification_documents" ("tenantId")
+       WHERE "status" = 'PENDING' AND "deleted_at" IS NULL;
+CREATE INDEX IF NOT EXISTS "IX_tenant_approval_events_created_at"
+         ON "tenant_approval_events" ("created_at");
+CREATE INDEX IF NOT EXISTS "IX_audit_logs_created_at" ON "audit_logs" ("created_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730041000000-AiToolCallAuditColumns.ts  (8 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE ai_tool_calls ADD COLUMN IF NOT EXISTS correlation_id varchar;
+ALTER TABLE ai_tool_calls ADD COLUMN IF NOT EXISTS actor_user_id uuid;
+ALTER TABLE ai_tool_calls ADD COLUMN IF NOT EXISTS resource_tenant_id uuid;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ai_tool_calls_correlation
+         ON ai_tool_calls (correlation_id)
+       WHERE correlation_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ai_tool_calls_actor
+         ON ai_tool_calls (tenant_id, actor_user_id, created_at)
+       WHERE actor_user_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ai_tool_calls_resource_tenant
+         ON ai_tool_calls (resource_tenant_id)
+       WHERE resource_tenant_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ai_tool_calls_retention
+         ON ai_tool_calls (created_at)
+       WHERE status IN ('DENIED', 'REFUSED');
+SELECT c.relname AS indexname
+         FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indexrelid
+        WHERE c.relname IN (
+          'idx_ai_tool_calls_correlation',
+          'idx_ai_tool_calls_actor',
+          'idx_ai_tool_calls_resource_tenant',
+          'idx_ai_tool_calls_retention'
+        )
+          AND NOT i.indisvalid;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730041100000-AiExecutionMetricAuditColumns.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "correlation_id" character varying;
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "actor_user_id" uuid;
+CREATE INDEX IF NOT EXISTS "IDX_aiexec_correlation" ON "ai_execution_metrics" ("correlation_id") WHERE "correlation_id" IS NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730041200000-BotActorTenantQualifiedEmail.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+SELECT "id", "tenantId" FROM "users" WHERE "email" = $1;
+SELECT "id" FROM "users" WHERE "email" = $1 AND "id" != $2;
+UPDATE "users" SET "email" = $1 WHERE "id" = $2;

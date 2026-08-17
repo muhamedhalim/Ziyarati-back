@@ -115,6 +115,7 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   },
   [JOB.AI_EXECUTE]: { tier: 'tenant', featureKey: FeatureKey.AI_ASSISTANT },
   [JOB.AI_MEMORY_CLEANUP]: SYSTEM,
+  [JOB.AI_TOOL_CALL_RETENTION]: SYSTEM,
   [JOB.AI_BATCH_POLL]: SYSTEM,
   // Fans a null-tenantId sweep out into real-tenantId jobs of the SAME name.
   [JOB.ANALYTICS_AGGREGATE]: SYSTEM_OR_TENANT,

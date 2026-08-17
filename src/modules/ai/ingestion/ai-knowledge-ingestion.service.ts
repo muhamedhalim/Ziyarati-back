@@ -321,7 +321,11 @@ export class AiKnowledgeIngestionService {
     if (!this.canEmbed()) return;
     try {
       const { hash, version } = this.hashContent(content);
-      await this.kb.update({ id: kbId, tenant: { id: tenantId } }, { content_hash: hash, embedding_version: version });
+      const updateResult = await this.kb.update({ id: kbId, tenant: { id: tenantId } }, { content_hash: hash, embedding_version: version });
+      // AI-004: a foreign kbId matches zero rows under this tenant-scoped
+      // update — stop here, or the unconditional upsert below would
+      // overwrite another tenant's ai_kb_embeddings sidecar row.
+      if (!updateResult.affected) return;
       const { vectors } = await this.embedder.embed(tenantId, [content], {
         kind: 'CONTENT', feature: 'knowledge_reindex', route: 'ai.knowledge.update',
         idempotencyKey: `kb:${tenantId}:${agentId}:${hash}`,
@@ -359,14 +363,21 @@ export class AiKnowledgeIngestionService {
     manager = this.dataSource.manager,
   ): Promise<void> {
     if (!vector) return;
+    // AI-004 (R14 layer 2, defense in depth): the conflict clause updates
+    // ONLY `embedding`. `tenant_id`/`agent_id` are ownership columns set
+    // once at first insert and never rewritten on conflict — first-insert
+    // is unaffected (the clause never fires), and legitimate re-embedding
+    // by the rightful owner is a true no-op on these columns (their values
+    // already match). A caller that reaches this with someone else's kbId
+    // therefore can no longer repoint an existing row's ownership, even if
+    // it lacks its own tenant-scoped guard (T039 is the primary guard for
+    // `reembedChunk` specifically; this constrains the shared SQL itself).
     await manager.query(
       `
       INSERT INTO ${AI_KB_EMBEDDINGS_TABLE} (kb_id, tenant_id, agent_id, embedding)
       VALUES ($1, $2, $3, $4::vector)
       ON CONFLICT (kb_id) DO UPDATE
-        SET embedding = EXCLUDED.embedding,
-            tenant_id = EXCLUDED.tenant_id,
-            agent_id  = EXCLUDED.agent_id
+        SET embedding = EXCLUDED.embedding
       `,
       [kbId, tenantId, agentId, toSqlVector(vector)],
     );

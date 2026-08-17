@@ -104,6 +104,14 @@ export const validate = (config: Record<string, unknown>) => {
     // sweep. Floored at 1 day so a 0/negative value can't purge the whole table.
     ANALYTICS_EVENT_RETENTION_DAYS: Joi.number().min(1).default(90),
 
+    // AI-008 (FR-029a-e): attempt-only ai_tool_calls rows (denials, refusals,
+    // and the 7 session-state public-booking tool records) older than this
+    // are purged by the AI-tool-call retention sweep. Executed business-action
+    // rows are NEVER subject to this window (FR-029a) — unaffected by this
+    // key entirely. Same default as ANALYTICS_EVENT_RETENTION_DAYS so the two
+    // do not drift for no reason (R5); floored at 1 day for the same reason.
+    AI_TOOL_CALL_RETENTION_DAYS: Joi.number().min(1).default(90),
+
     // FND-031: how long a PAST_DUE ("expired-in-grace") subscription keeps its
     // full, unchanged capabilities before becoming GRACE_EXPIRED (new billable/
     // usage-increasing actions refused; reads stay available regardless).

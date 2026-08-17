@@ -19,11 +19,14 @@
  * not an omission of them.
  *
  * Every gated-tool case additionally checks the `ai_tool_calls` ledger for a
- * row belonging to this denied call — `w3-declared-vs-enforced.md` finding 3
- * and `w3-tools-admin.md` both flag (from source reading) that a denial
- * returns before `this.run(...)` ever claims a ledger row, contradicting the
- * class doc comment's "every call (success or failure) is recorded" claim.
- * This file confirms that by execution rather than repeating the claim.
+ * row belonging to this denied call. `w3-declared-vs-enforced.md` finding 3
+ * and `w3-tools-admin.md` originally flagged (from source reading) that a
+ * denial returned before `this.run(...)` ever claimed a ledger row,
+ * contradicting the class doc comment's "every call (success or failure) is
+ * recorded" claim. AI-008/T067 (RTP row 11) fixed this: every permission
+ * denial now writes a terminal ATTEMPT row (`attempt:<tool>:<uuid>` key,
+ * never a real claim key) via `recordAttempt()`. This file confirms the
+ * FIXED behavior by execution rather than repeating the claim.
  */
 import { buildAiAuditHarness, type AiAuditHarness } from './fixtures/ai-audit-harness';
 import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/ai-audit-seed';
@@ -89,18 +92,19 @@ describe('W3 — every tool executed as a principal missing the required permiss
 
         // 3. Ledger state, recorded as OBSERVED (not assumed): per the class doc
         // comment (`ai-tool-dispatch.service.ts:83,187-188`) a denied call
-        // should still be recorded in `ai_tool_calls`. Static reading of the
-        // source (`w3-declared-vs-enforced.md` finding 3) found the code path
-        // for all 11 of these tools returns BEFORE `this.run(...)` ever claims
-        // a ledger row on a permission denial. Confirm which is actually true
-        // at runtime rather than asserting either without checking.
+        // should still be recorded in `ai_tool_calls`. [PROMOTED, RTP row 11,
+        // AI-008/T067] every denial now writes exactly one ATTEMPT row via
+        // `recordAttempt()` — a namespaced `attempt:<tool>:<uuid>` key,
+        // never a real claim key, terminal on insert (never replayed).
         const rows = await harness.dataSource.query(
-          `SELECT status FROM ai_tool_calls WHERE tenant_id = $1 AND ai_conversation_id = $2 AND tool_name = $3`,
+          `SELECT status, idempotency_key FROM ai_tool_calls WHERE tenant_id = $1 AND ai_conversation_id = $2 AND tool_name = $3`,
           [seed.tenantA.id, conv.id, tool.name],
         );
-        // eslint-disable-next-line no-console
-        console.log(`[T088 ledger-on-denial] ${tool.name}: ${rows.length} row(s)${rows[0] ? ` status=${rows[0].status}` : ''}`);
-        expect(rows).toHaveLength(0); // observed: denial is NOT ledgered (confirms the static finding by execution)
+        expect(rows).toHaveLength(1);
+        expect(rows[0].status).toBe('DENIED');
+        expect(rows[0].idempotency_key).toMatch(
+          new RegExp(`^attempt:${tool.name}:[0-9a-f-]{36}$`),
+        );
 
         await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
       });

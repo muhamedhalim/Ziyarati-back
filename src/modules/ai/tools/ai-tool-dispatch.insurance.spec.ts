@@ -83,6 +83,11 @@ function buildService(overrides: BuildOverrides = {}) {
       }),
   };
   const dataSource = buildDataSourceMock();
+  // AI-016/AI-017 (T072/T073): writeAttemptRow/run() now call
+  // this.tenantContext.getCorrelationId(), so this can no longer be `{}`.
+  const tenantContext = {
+    getCorrelationId: jest.fn().mockReturnValue(null),
+  };
 
   const service = new AiToolDispatchService(
     appointments as any,
@@ -100,7 +105,7 @@ function buildService(overrides: BuildOverrides = {}) {
     paymentLinks as any,
     {} as any,
     {} as any,
-    {} as any,
+    tenantContext as any,
   );
 
   return {
@@ -318,5 +323,42 @@ describe('AiToolDispatchService — get_customer_insurance_status', () => {
         known: false,
       }),
     );
+  });
+
+  // AI-003: an id the model supplies (not server-bound) needs a real
+  // customers.read permission, or one call per known id enumerates the
+  // tenant's whole insurance-status roster.
+  it('refuses an unbound customerId supplied only in args when the principal lacks customers.read', async () => {
+    const { service, customers } = buildService();
+    const unboundCtx = { ...ctx, customerId: undefined, permissions: ['dashboard.access'] };
+
+    const result: any = await service.execute(unboundCtx as any, {
+      id: 'call-1',
+      name: 'get_customer_insurance_status',
+      arguments: JSON.stringify({ customerId: 'cust-2' }),
+    });
+
+    expect(result).toEqual(expect.objectContaining({ success: false }));
+    expect(customers.findOneOrThrow).not.toHaveBeenCalled();
+  });
+
+  it('allows an unbound customerId supplied in args when the principal HAS customers.read', async () => {
+    const { service, customers } = buildService({
+      customerFindOneOrThrow: jest
+        .fn()
+        .mockResolvedValue({ id: 'cust-2', has_health_insurance: true }),
+    });
+    const unboundCtx = { ...ctx, customerId: undefined, permissions: ['customers.read'] };
+
+    const result: any = await service.execute(unboundCtx as any, {
+      id: 'call-1',
+      name: 'get_customer_insurance_status',
+      arguments: JSON.stringify({ customerId: 'cust-2' }),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ success: true, hasInsurance: true, known: true }),
+    );
+    expect(customers.findOneOrThrow).toHaveBeenCalledWith(TENANT, 'cust-2');
   });
 });

@@ -3,7 +3,10 @@ import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
 import { AiConversationAccessService } from '../ai/ai-conversation-access.service';
-import { ConversationSessionService } from '../ai-orchestrator/conversation-session.service';
+import {
+  ConversationSessionService,
+  SessionPatch,
+} from '../ai-orchestrator/conversation-session.service';
 import { AiSession } from '../ai-orchestrator/ai-channel.constants';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
@@ -117,12 +120,18 @@ export class PublicBookingContextService {
    * The ONLY writer of the `selected*` keys. Callers (the `select_*` tools)
    * must have validated the ids against live data first — this method records
    * a decision, it does not vet one.
+   *
+   * AI-006: the patch type is `Pick<SessionPatch, ...>`, not
+   * `Pick<AiSession, ...>` — a thin pass-through widening so a caller (e.g.
+   * `selectClinic`'s reset) may set a field to `SESSION_UNSET` as well as its
+   * normal value. No merge logic is duplicated here (FR-104); `clean()`'s
+   * sentinel handling in `ConversationSessionService.patch()` does the work.
    */
   async patchSelection(
     conversationTenantId: string,
     aiConversationId: string,
     patch: Pick<
-      AiSession,
+      SessionPatch,
       | 'selectedClinicId'
       | 'selectedBranchId'
       | 'selectedDoctorId'

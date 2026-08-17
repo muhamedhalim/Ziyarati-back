@@ -18,19 +18,19 @@
  * asserting the tool call is refused against the now-current (permission-less)
  * principal, not any state cached from turn 1.
  *
- * GENUINE GAP FOUND (reported, not hidden): the task's Verify column asks for
- * "the refusal recorded in ai_tool_calls". `executeAdminTool`
+ * [PROMOTED, RTP row 11, AI-008/T067] The task's Verify column asks for "the
+ * refusal recorded in ai_tool_calls". `executeAdminTool`
  * (`ai-tool-dispatch.service.ts:190-201`) — and every other permission-gated
  * tool in this dispatcher (`bookAppointment`, `rescheduleAppointment`,
- * `cancelAppointment`) — returns the Forbidden result BEFORE calling
- * `this.run()`, which is the only place that claims an idempotency key and
- * inserts into `ai_tool_calls`. A permission denial therefore leaves NO row in
- * `ai_tool_calls` at all — the ledger only records attempts that passed the
- * permission gate (successes and later, post-gate failures). This spec proves
- * the refusal is real and correctly re-evaluated (the security property that
- * matters), and separately proves — rather than assumes — that it leaves no
- * `ai_tool_calls` row, which is a real audit-completeness gap distinct from
- * the (correctly enforced) authorization decision itself.
+ * `cancelAppointment`) — still returns the Forbidden result BEFORE calling
+ * `this.run()`, the claim-side inserter. What changed: each of those gates now
+ * also calls `recordAttempt()` on the way out, writing a terminal ATTEMPT row
+ * (`attempt:<tool>:<uuid>` key — never the real claim key) before returning.
+ * A permission denial therefore now leaves exactly one row in `ai_tool_calls`,
+ * closing the audit-completeness gap this file originally found and proved by
+ * execution. This spec proves the refusal is real and correctly re-evaluated
+ * (the security property that matters), and separately proves — rather than
+ * assumes — that it now IS ledgered.
  */
 import { buildAiAuditHarness, type AiAuditHarness } from './fixtures/ai-audit-harness';
 import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/ai-audit-seed';
@@ -189,16 +189,18 @@ describe('AI stale authorization — re-evaluated per turn against the current p
     expect(toolResultSeenByModel).toMatch(/forbidden/i);
     expect(toolResultSeenByModel).toContain(REQUIRED_PERMISSION);
 
-    // [GENUINE GAP] confirmed, not assumed: the permission-denied attempt on
-    // turn 2 left NO row in ai_tool_calls at all — the dispatcher's
-    // permission gate returns before ever calling run() (the ONLY inserter).
-    // This is exactly the audit-completeness gap documented in this file's
-    // header comment.
+    // [PROMOTED, RTP row 11, AI-008/T067] confirmed, not assumed: the
+    // permission-denied attempt on turn 2 now writes exactly one ATTEMPT row
+    // via recordAttempt() — the dispatcher's permission gate still returns
+    // before ever calling run() (the claim-side inserter), but no longer
+    // leaves the denial unledgered.
     const rows = await harness.dataSource.query(
-      `SELECT status FROM ai_tool_calls WHERE tenant_id = $1 AND ai_conversation_id = $2 AND tool_name = $3`,
+      `SELECT status, idempotency_key FROM ai_tool_calls WHERE tenant_id = $1 AND ai_conversation_id = $2 AND tool_name = $3`,
       [seed.tenantA.id, sharedConvId, TOOL],
     );
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('DENIED');
+    expect(rows[0].idempotency_key).toMatch(new RegExp(`^attempt:${TOOL}:[0-9a-f-]{36}$`));
 
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [sharedConvId]);
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [sharedConvId]);

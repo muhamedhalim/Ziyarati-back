@@ -98,7 +98,7 @@ describe('W3 — tool chaining, cumulative effect of low-risk calls (T096)', () 
   }
 
   describe('A. insurance-status ENUMERATION via repeated low-risk calls', () => {
-    it('AI-003 — a principal with DASHBOARD_ACCESS only (no customers.read) can enumerate BOTH seeded customers\' insurance flags by chaining get_customer_insurance_status with each customerId — no single call is blocked, the CHAIN discloses the whole tenant\'s roster', async () => {
+    it('AI-003 — REMEDIATED (RTP row 6): a principal with DASHBOARD_ACCESS only (no customers.read) is refused for every customerId not bound to the conversation — get_customer_insurance_status now requires customers.read for a model-supplied id, so the enumeration chain is blocked at every call, not just the first', async () => {
       const conv = await conversations.start(seed.tenantA.id, {});
       const ctx: ToolContext = {
         tenantId: seed.tenantA.id,
@@ -107,26 +107,25 @@ describe('W3 — tool chaining, cumulative effect of low-risk calls (T096)', () 
         permissions: [PERMISSION.DASHBOARD_ACCESS], // deliberately NOT customers.read
       };
 
-      const disclosed: Array<{ customerId: string; known: boolean }> = [];
+      const refused: string[] = [];
       for (const customerId of seed.tenantA.customerIds) {
         const result = await dispatch.execute(ctx, scriptedToolCall(AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS, { customerId }));
-        expect(result.success).not.toBe(false); // no permission gate — each individual call is "allowed"
-        disclosed.push({ customerId, known: result.known as boolean });
+        expect(result.success).toBe(false); // AI-003 fix: unbound customerId requires customers.read
+        refused.push(customerId);
       }
 
-      // The cumulative effect: EVERY customer in the tenant was enumerable
-      // in this one chain, by a principal who could not have listed them via
-      // customers.read (get_patient_overview/list would refuse this principal).
-      expect(disclosed).toHaveLength(seed.tenantA.customerIds.length);
+      // The cumulative effect is gone: no customer in the tenant is
+      // enumerable via this chain by a principal lacking customers.read.
+      expect(refused).toHaveLength(seed.tenantA.customerIds.length);
       // eslint-disable-next-line no-console
-      console.log('[T096-A] enumerated via chained low-risk calls:', JSON.stringify(disclosed));
+      console.log('[T096-A] enumeration chain refused for every customerId — AI-003 fixed:', JSON.stringify(refused));
 
       await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
     });
   });
 
-  describe('B. public-booking session reset-on-reselect — CONFIRMED FINDING: the reset silently no-ops', () => {
-    it('re-selecting a DIFFERENT clinic mid-conversation does NOT clear selectedServiceIds/selectedDoctorId/selectedStartAt from the PRIOR clinic — the source comment\'s claim ("a new clinic invalidates every downstream choice") does not hold; a SEPARATE tenant-scoped check inside AppointmentsService.create is what actually stops the resulting stale cross-tenant booking attempt', async () => {
+  describe('B. public-booking session reset-on-reselect — AI-006 REMEDIATED: the reset now works', () => {
+    it('AI-006 — REMEDIATED (RTP row 10): re-selecting a DIFFERENT clinic mid-conversation now DOES clear selectedServiceIds/selectedDoctorId/selectedStartAt from the PRIOR clinic — the source comment\'s claim ("a new clinic invalidates every downstream choice") now holds; the compensating tenant-scoped check inside AppointmentsService.create remains as defense in depth, independently exercised below', async () => {
       const bookingContext = harness.app.get(PublicBookingContextService);
       const conv = await conversations.start(seed.discoveryTenantId, {});
       await sessions.patch(seed.discoveryTenantId, conv.id, { guestSubject: seed.guestA.id });
@@ -157,27 +156,28 @@ describe('W3 — tool chaining, cumulative effect of low-risk calls (T096)', () 
       expect(session.selectedClinicId).toBe(seed.tenantB.id);
       expect(session.selectedBranchId).toBe(seed.tenantB.branchId); // this DOES reset correctly — a concrete overwrite, not "undefined"
 
-      // ROOT CAUSE, confirmed by execution: `selectClinic` patches
-      // `selectedDoctorId/selectedServiceIds/selectedStartAt: undefined`
-      // (ai-tool-dispatch.service.ts:672-675) intending to clear them, but
+      // FIX, confirmed by execution (AI-006): `selectClinic` now patches
+      // `selectedDoctorId/selectedServiceIds/selectedStartAt: SESSION_UNSET`
+      // (ai-tool-dispatch.service.ts:666-705) instead of `undefined`.
       // `ConversationSessionService.patch` → `clean()`
-      // (conversation-session.service.ts:166-171) "drops undefined keys so a
-      // patch never overwrites state with undefined" — a rule written for
-      // ordinary partial patches that unintentionally defeats THIS caller's
-      // explicit reset intent. The stale tenant-A values survive verbatim.
-      expect(session.selectedServiceIds).toEqual([serviceId]); // STALE tenant-A service id — did NOT reset
-      expect(session.selectedStartAt).toBe('2027-06-01T10:00:00Z'); // STALE — did NOT reset
-      expect(session.selectedDoctorId).toBe(seed.tenantA.staffProfileId); // STALE tenant-A staff id — did NOT reset
+      // (conversation-session.service.ts:166-171) still "drops undefined
+      // keys so a patch never overwrites state with undefined" for every
+      // OTHER caller — but the sentinel is not `undefined`, so it is not
+      // dropped, and genuinely clears the key. The tenant-A values no
+      // longer survive the clinic switch.
+      expect(session.selectedServiceIds).toBeNull(); // FIXED — cleared on clinic switch
+      expect(session.selectedStartAt).toBeNull(); // FIXED — cleared
+      expect(session.selectedDoctorId).toBeNull(); // FIXED — cleared
 
-      // COMPENSATING CONTROL, confirmed by execution: the stale cross-tenant
-      // ids are NOT silently trusted at booking time. `book_public_appointment`
-      // reads them straight from this (buggy) session, but
-      // `AppointmentsService.create`'s OWN tenant-scoped lookups
-      // (`assertStaffAtBranch` against tenant B, `loadServices` against
-      // tenant B) independently re-verify every referenced entity belongs to
-      // the booking's OWN tenant (B) — the stale tenant-A staff id resolves
-      // to nothing under tenant B, so the booking is refused, and no
-      // cross-tenant appointment is ever created.
+      // COMPENSATING CONTROL, still independently exercised: even though the
+      // primary fix now clears the stale selection, `book_public_appointment`
+      // would still hit `AppointmentsService.create`'s OWN tenant-scoped
+      // lookups (`assertStaffAtBranch` against tenant B, `loadServices`
+      // against tenant B) if it were ever reached with a foreign id by some
+      // other path — this defense-in-depth layer is not replaced by the
+      // primary fix (FR-021). The booking below is refused for the ORDINARY
+      // reason now (no doctor/service/slot selected after the switch), which
+      // is itself proof nothing stale survived to be silently accepted.
       const beforeB = await harness.dataSource.query(`SELECT COUNT(*)::int AS n FROM appointments WHERE "tenantId" = $1`, [seed.tenantB.id]);
       const bookResult = await dispatch.execute(ctx, scriptedToolCall(AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT, { fullName: 'Chain Probe', phone: '+15557770000' }));
       expect(bookResult.success).toBe(false);

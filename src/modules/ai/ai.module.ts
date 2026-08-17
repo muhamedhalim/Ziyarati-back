@@ -53,6 +53,7 @@ import { PgVectorBootstrapService } from './rag/pgvector-bootstrap.service';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
 import { AiToolDispatchService } from './tools/ai-tool-dispatch.service';
 import { AiToolCallsBootstrap } from './tools/ai-tool-calls.bootstrap';
+import { AiToolCallRetentionService } from './tools/ai-tool-call-retention.service';
 import { AiSessionModule } from '../ai-session/ai-session.module';
 import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
 import { PublicBookingModule } from '../public-booking/public-booking.module';
@@ -174,6 +175,7 @@ import { AiBatchService } from './batch/ai-batch.service';
     HandoverRequestService,
     AiToolDispatchService,
     AiToolCallsBootstrap,
+    AiToolCallRetentionService,
     AiProviderFactory,
     NoopAiProvider,
     OpenAiChatProvider,
@@ -224,6 +226,8 @@ import { AiBatchService } from './batch/ai-batch.service';
     // Single seam for provider-agnostic completions — reused by the billing
     // upgrade domain's advisory AI cost-estimation service.
     AiProviderFactory,
+    // Resolved by AiProcessor (WorkerModule) for the retention sweep job branch.
+    AiToolCallRetentionService,
   ],
 })
 export class AiModule {}

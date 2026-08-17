@@ -112,6 +112,8 @@ export const JOB = {
   CAMPAIGNS_DLQ: 'campaigns.dlq',
   AI_EXECUTE: 'ai.execute',
   AI_MEMORY_CLEANUP: 'ai.memoryCleanup',
+  /** AI-008 (FR-029c): repeatable sweep purging attempt-only ai_tool_calls rows past the retention window. */
+  AI_TOOL_CALL_RETENTION: 'ai.toolCallRetention',
   /** Repeatable sweep: poll live OpenAI batches + process terminal ones. */
   AI_BATCH_POLL: 'ai.batchPoll',
   ANALYTICS_AGGREGATE: 'analytics.aggregate',

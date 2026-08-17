@@ -79,7 +79,7 @@ describe('W3 — REST vs WS authorization parity, same principal (T098)', () => 
     expect(res.status).toBe(403);
   });
 
-  it('WS: the SAME principal, the SAME operation (ai:message) — the orchestrator IS reached; no permission gate blocks it', async () => {
+  it('WS: the SAME principal, the SAME operation (ai:message) — REMEDIATED (RTP row 8): the orchestrator is NOT reached; WS refuses identically to REST', async () => {
     const orchestrator = harness.app.get(AiOrchestratorService);
     const spy = jest.spyOn(orchestrator, 'handleStream').mockResolvedValue({
       aiConversationId: 'stub-conv',
@@ -90,12 +90,15 @@ describe('W3 — REST vs WS authorization parity, same principal (T098)', () => 
     } as never);
 
     const client = fakeSocket(seed.tenantA.id, doctorPrincipal);
-    await gateway.onMessage(client, { content: 'this reaches the AI engine over WS', channel: 'WEBSITE' });
+    await expect(
+      gateway.onMessage(client, { content: 'this must never reach the AI engine over WS either', channel: 'WEBSITE' }),
+    ).resolves.not.toThrow();
 
-    // THE PARITY GAP, confirmed by execution: the same principal that REST
-    // refused with 403 reaches the real orchestrator call over WS.
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(client.emit).not.toHaveBeenCalledWith(AI_EVENT.ERROR, expect.anything());
+    // PARITY RESTORED, confirmed by execution: the same principal REST
+    // refuses with 403 is now ALSO refused over WS — an ai:error, never a
+    // throw across the socket (FR-016).
+    expect(spy).not.toHaveBeenCalled();
+    expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, { message: 'Forbidden' });
 
     spy.mockRestore();
   });
@@ -109,8 +112,8 @@ describe('W3 — REST vs WS authorization parity, same principal (T098)', () => 
             operation: 'send AI message (ai.conversations.manage-gated on REST)',
             principal: 'doctor role (DASHBOARD_ACCESS + APPOINTMENTS_READ_OWN only)',
             rest: { route: 'POST /api/v1/ai/orchestrator/message', control: 'PermissionsGuard + @RequirePermissions(ai.conversations.manage)', observed: '403 Forbidden' },
-            ws: { event: 'ai:message (AiRealtimeGateway.onMessage)', control: 'NONE — only mayUseAi() feature-entitlement check', observed: 'orchestrator.handleStream() invoked — turn proceeds' },
-            divergence: true,
+            ws: { event: 'ai:message (AiRealtimeGateway.onMessage)', control: 'AI-007 fix: hand-written ai.conversations.manage check (mirrors REST) + mayUseAi() feature-entitlement check', observed: 'ai:error {message: "Forbidden"} — orchestrator.handleStream() never invoked' },
+            divergence: false,
           },
           null,
           2,
