@@ -408,18 +408,22 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       expect(rec.usageLogRow).toBeDefined();
       expect(rec.usageLogRow!.agentId).toBe(seed.tenantA.agentId);
 
-      // user (the acting principal): NOT present as a dedicated column on ANY
-      // of the 4 tables, AND the owner's user id does not appear as a VALUE
-      // anywhere in any of the 4 rows either — the strongest form of the
-      // negative assertion (not just "no column named user_id", but "the
-      // identifier itself is not recoverable from these rows by any means").
-      expect(rec.toolCallRow && 'actor_user_id' in rec.toolCallRow).toBe(false);
-      expect(appearsAnywhere(ownerPrincipal.id, rec)).toBe(false);
+      // [PROMOTED, RTP row 13, AI-017/T073] user (the acting principal): now a
+      // dedicated `actor_user_id` column on `ai_tool_calls` (and, collaterally
+      // via the SAME landed fix, on `ai_execution_metrics` — M2/T072-T073),
+      // and the owner's id is directly recoverable as a column value.
+      expect(rec.toolCallRow && 'actor_user_id' in rec.toolCallRow).toBe(true);
+      expect(rec.toolCallRow!.actor_user_id).toBe(ownerPrincipal.id);
+      expect(appearsAnywhere(ownerPrincipal.id, rec)).toBe(true);
 
-      // request/correlation id: the marker set on TenantContextService before
-      // the turn ran does not appear anywhere in any of the 4 tables either —
-      // there is no correlation/request id column on any of them.
-      expect(appearsAnywhere(marker, rec)).toBe(false);
+      // [Collateral, same landed fix as row 12/AI-016/T072] request/correlation
+      // id: the marker set on TenantContextService before the turn ran is now
+      // stamped on `ai_tool_calls.correlation_id` (claim inserts) — this file
+      // exercises the SAME `run()`/metrics code T072 changed, so the assertion
+      // that nothing recovers it is no longer true (RTP row 12 itself is owned
+      // by ai-w10-correlation-id.spec.ts/T089; this is the collateral half here).
+      expect(rec.toolCallRow!.correlation_id).toBe(marker);
+      expect(appearsAnywhere(marker, rec)).toBe(true);
 
       // authorization decision + reason: for an ALLOWED call there is no
       // explicit "why allowed" text anywhere — status=SUCCEEDED is the closest
@@ -431,9 +435,9 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
         outcome: 'ALLOWED',
         tool: AI_TOOL.BOOK_APPOINTMENT,
         fields: {
-          user: { verdict: 'MISSING', note: 'no actor/user column on any of the 4 tables; owner id not present as a value anywhere' },
+          user: { verdict: 'RECOVERED', note: '[PROMOTED, row 13] ai_tool_calls.actor_user_id (and ai_execution_metrics.actor_user_id, collaterally)' },
           tenant: { verdict: 'RECOVERED', note: 'ai_tool_calls.tenant_id' },
-          'request/correlation id': { verdict: 'MISSING', note: 'no column on any of the 4 tables; planted marker not found anywhere' },
+          'request/correlation id': { verdict: 'RECOVERED', note: '[Collateral, same fix as row 12] ai_tool_calls.correlation_id' },
           conversation: { verdict: 'RECOVERED', note: 'ai_tool_calls.ai_conversation_id' },
           agent: { verdict: 'PARTIAL', note: 'only at monthly-aggregate granularity via ai_usage_logs.agentId, not per-call' },
           channel: { verdict: 'PARTIAL', note: 'ai_execution_metrics.channel is per-TURN, joined to this call only because the turn had exactly 1 tool call' },
@@ -450,7 +454,7 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       });
     }, 30_000);
 
-    it('REFUSED: a doctor (no appointments.create) is denied — NO ai_tool_calls row exists at all; only the turn-level aggregate shows a failure occurred, with zero identifying detail', async () => {
+    it('REFUSED: a doctor (no appointments.create) is denied — [PROMOTED, RTP row 11] now writes exactly one ai_tool_calls ATTEMPT row (DENIED), recovering user/tenant/tool/reason/correlation directly', async () => {
       const conv = await conversations.start(seed.tenantA.id, { agentId: seed.tenantA.agentId });
       convIds.push(conv.id);
       const args = {
@@ -462,43 +466,52 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       const marker = await driveTurn(seed.tenantA.id, conv.id, doctorPrincipal, AI_TOOL.BOOK_APPOINTMENT, args);
       const rec = await fetchRecords(seed.tenantA.id, conv.id, AI_TOOL.BOOK_APPOINTMENT);
 
-      // The central negative-space assertion: the permission check in
-      // bookAppointment() returns BEFORE this.run() is ever called
-      // (ai-tool-dispatch.service.ts:459-464), so no ledger row is claimed.
-      expect(rec.toolCallRow).toBeUndefined();
+      // [PROMOTED, RTP row 11, AI-008/T067] The permission check in
+      // bookAppointment() still returns BEFORE this.run() is ever called
+      // (ai-tool-dispatch.service.ts:459-464) — but it now ALSO calls
+      // recordAttempt() on the way out, writing a terminal ATTEMPT row
+      // (never a claim key) before returning.
+      expect(rec.toolCallRow).toBeDefined();
+      expect(rec.toolCallRow!.status).toBe('DENIED');
+      expect(rec.toolCallRow!.idempotency_key).toMatch(
+        new RegExp(`^attempt:${AI_TOOL.BOOK_APPOINTMENT}:[0-9a-f-]{36}$`),
+      );
+      expect(rec.toolCallRow!.error).toMatch(/Forbidden.*appointments\.create/);
+      expect(rec.toolCallRow!.tool_name).toBe(AI_TOOL.BOOK_APPOINTMENT);
+      expect(rec.toolCallRow!.tenant_id).toBe(seed.tenantA.id);
+      expect(rec.toolCallRow!.appointment_id).toBeNull(); // no booking was ever created
 
-      // The turn itself still completed and IS recorded — but only as an
-      // undifferentiated failure count, with no tool name, no arguments, no
-      // reason, and no resource anywhere in it.
+      // The turn itself still completed and is ALSO recorded, as before —
+      // parity now holds at both the per-call ledger AND the turn aggregate.
       expect(rec.metricRow).toBeDefined();
       expect(rec.metricRow!.tool_calls_count).toBe(1);
       expect(rec.metricRow!.tool_failure_count).toBe(1);
       expect(rec.metricRow!.success).toBe(true); // the TURN succeeded; only the tool call inside it was refused
 
-      expect(appearsAnywhere(doctorPrincipal.id, rec)).toBe(false);
-      expect(appearsAnywhere(marker, rec)).toBe(false);
-      expect(appearsAnywhere(seed.tenantA.customerIds[0], rec)).toBe(false); // the refused args never reached durable storage at all
+      expect(appearsAnywhere(doctorPrincipal.id, rec)).toBe(true);
+      expect(appearsAnywhere(marker, rec)).toBe(true);
+      expect(appearsAnywhere(seed.tenantA.customerIds[0], rec)).toBe(true); // the refused args now DO reach durable storage, verbatim
 
       record({
         catalog: 'core',
         outcome: 'REFUSED',
         tool: AI_TOOL.BOOK_APPOINTMENT,
         fields: {
-          user: { verdict: 'MISSING', note: 'no ai_tool_calls row; not present in ai_execution_metrics either' },
-          tenant: { verdict: 'PARTIAL', note: 'only via ai_execution_metrics.tenantId (the turn), never per-call' },
-          'request/correlation id': { verdict: 'MISSING', note: 'not present anywhere' },
-          conversation: { verdict: 'PARTIAL', note: 'via ai_execution_metrics.ai_conversation_id (the turn), not a per-call record' },
-          agent: { verdict: 'MISSING', note: 'not distinguishable for the failed call specifically' },
-          channel: { verdict: 'PARTIAL', note: 'per-turn only' },
-          tool: { verdict: 'MISSING', note: 'no row names which tool was refused' },
-          'sanitized arguments': { verdict: 'MISSING', note: 'the refused call\'s arguments never reach any durable table' },
-          resource: { verdict: 'MISSING', note: 'n/a — no row' },
-          'authorization decision + reason': { verdict: 'MISSING', note: 'the Forbidden reason returned to the model is never persisted anywhere' },
-          action: { verdict: 'MISSING', note: 'n/a — no row' },
-          outcome: { verdict: 'PARTIAL', note: 'ai_execution_metrics.tool_failure_count=1 proves SOMETHING failed, not what or why' },
+          user: { verdict: 'RECOVERED', note: '[PROMOTED, row 13] ai_tool_calls.actor_user_id on the ATTEMPT row' },
+          tenant: { verdict: 'RECOVERED', note: 'ai_tool_calls.tenant_id on the ATTEMPT row, not just via the turn' },
+          'request/correlation id': { verdict: 'RECOVERED', note: '[Collateral, same fix as row 12] ai_tool_calls.correlation_id on the ATTEMPT row' },
+          conversation: { verdict: 'RECOVERED', note: 'ai_tool_calls.ai_conversation_id on the ATTEMPT row' },
+          agent: { verdict: 'MISSING', note: 'still no agent_id column on ai_tool_calls at all' },
+          channel: { verdict: 'PARTIAL', note: 'per-turn only — still no channel column on ai_tool_calls' },
+          tool: { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.tool_name names exactly which tool was refused' },
+          'sanitized arguments': { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.arguments — the refused args now persist, verbatim/unredacted' },
+          resource: { verdict: 'MISSING', note: 'n/a for a refusal — no appointment was ever created to name' },
+          'authorization decision + reason': { verdict: 'RECOVERED', note: '[PROMOTED, row 11] status=DENIED + ai_tool_calls.error carries the exact Forbidden reason text' },
+          action: { verdict: 'RECOVERED', note: 'same as tool (ai_tool_calls.tool_name)' },
+          outcome: { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.status=DENIED is call-specific, not just an aggregate count' },
           'model + token usage': { verdict: 'PARTIAL', note: 'per-turn only' },
           cost: { verdict: 'PARTIAL', note: 'per-turn/monthly only' },
-          timestamp: { verdict: 'PARTIAL', note: 'ai_execution_metrics.created_at is the TURN timestamp, not the specific refused call' },
+          timestamp: { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.created_at is now specific to the refused call' },
         },
       });
     }, 30_000);
@@ -519,17 +532,19 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       // Read-only admin tools have no dedicated "resource" column — the target
       // (this tenant's own dashboard) is implicit in tenant_id, not a separate id.
       expect(rec.toolCallRow!.appointment_id).toBeNull();
-      expect(appearsAnywhere(ownerPrincipal.id, rec)).toBe(false);
-      expect(appearsAnywhere(marker, rec)).toBe(false);
+      expect(rec.toolCallRow!.actor_user_id).toBe(ownerPrincipal.id);
+      expect(appearsAnywhere(ownerPrincipal.id, rec)).toBe(true);
+      expect(rec.toolCallRow!.correlation_id).toBe(marker);
+      expect(appearsAnywhere(marker, rec)).toBe(true);
 
       record({
         catalog: 'admin',
         outcome: 'ALLOWED',
         tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS,
         fields: {
-          user: { verdict: 'MISSING', note: 'same as core: no actor column anywhere, owner id not present as a value' },
+          user: { verdict: 'RECOVERED', note: '[PROMOTED, row 13] same as core: ai_tool_calls.actor_user_id' },
           tenant: { verdict: 'RECOVERED', note: 'ai_tool_calls.tenant_id' },
-          'request/correlation id': { verdict: 'MISSING', note: 'not present anywhere' },
+          'request/correlation id': { verdict: 'RECOVERED', note: '[Collateral, same fix as row 12] ai_tool_calls.correlation_id' },
           conversation: { verdict: 'RECOVERED', note: 'ai_tool_calls.ai_conversation_id' },
           agent: { verdict: 'PARTIAL', note: 'monthly-aggregate only, via ai_usage_logs' },
           channel: { verdict: 'PARTIAL', note: 'per-turn only, via ai_execution_metrics' },
@@ -546,38 +561,43 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       });
     }, 30_000);
 
-    it('REFUSED: a doctor (no analytics.dashboard.read) is denied — NO ai_tool_calls row exists (same denial-before-ledger pattern already flagged statically in w3-tools-admin.md, now confirmed at runtime)', async () => {
+    it('REFUSED: a doctor (no analytics.dashboard.read) is denied — [PROMOTED, RTP row 11] the previously-statically-flagged denial-before-ledger gap (w3-tools-admin.md) is closed: one ATTEMPT row, DENIED, naming the exact permission slug', async () => {
       const conv = await conversations.start(seed.tenantA.id, { agentId: seed.tenantA.agentId });
       convIds.push(conv.id);
       const marker = await driveTurn(seed.tenantA.id, conv.id, doctorPrincipal, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, {});
       const rec = await fetchRecords(seed.tenantA.id, conv.id, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS);
 
-      expect(rec.toolCallRow).toBeUndefined();
+      expect(rec.toolCallRow).toBeDefined();
+      expect(rec.toolCallRow!.status).toBe('DENIED');
+      expect(rec.toolCallRow!.idempotency_key).toMatch(
+        new RegExp(`^attempt:${AI_ADMIN_TOOL.GET_DASHBOARD_KPIS}:[0-9a-f-]{36}$`),
+      );
+      expect(rec.toolCallRow!.tool_name).toBe(AI_ADMIN_TOOL.GET_DASHBOARD_KPIS);
       expect(rec.metricRow!.tool_failure_count).toBe(1);
-      expect(appearsAnywhere(doctorPrincipal.id, rec)).toBe(false);
-      expect(appearsAnywhere(marker, rec)).toBe(false);
-      expect(appearsAnywhere(PERMISSION.ANALYTICS_DASHBOARD_READ, rec)).toBe(false); // even the permission slug that caused the refusal is not persisted
+      expect(appearsAnywhere(doctorPrincipal.id, rec)).toBe(true);
+      expect(appearsAnywhere(marker, rec)).toBe(true);
+      expect(appearsAnywhere(PERMISSION.ANALYTICS_DASHBOARD_READ, rec)).toBe(true); // the permission slug that caused the refusal is now persisted, in ai_tool_calls.error
 
       record({
         catalog: 'admin',
         outcome: 'REFUSED',
         tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS,
         fields: {
-          user: { verdict: 'MISSING', note: 'no row' },
-          tenant: { verdict: 'PARTIAL', note: 'per-turn only' },
-          'request/correlation id': { verdict: 'MISSING', note: 'not present anywhere' },
-          conversation: { verdict: 'PARTIAL', note: 'per-turn only' },
-          agent: { verdict: 'MISSING', note: 'not distinguishable for this call' },
+          user: { verdict: 'RECOVERED', note: '[PROMOTED, row 13] ai_tool_calls.actor_user_id on the ATTEMPT row' },
+          tenant: { verdict: 'RECOVERED', note: 'ai_tool_calls.tenant_id on the ATTEMPT row' },
+          'request/correlation id': { verdict: 'RECOVERED', note: '[Collateral, same fix as row 12] ai_tool_calls.correlation_id' },
+          conversation: { verdict: 'RECOVERED', note: 'ai_tool_calls.ai_conversation_id on the ATTEMPT row' },
+          agent: { verdict: 'MISSING', note: 'still no agent_id column on ai_tool_calls' },
           channel: { verdict: 'PARTIAL', note: 'per-turn only' },
-          tool: { verdict: 'MISSING', note: 'no row names which admin tool was refused' },
-          'sanitized arguments': { verdict: 'MISSING', note: 'n/a — no row' },
-          resource: { verdict: 'MISSING', note: 'n/a — no row' },
-          'authorization decision + reason': { verdict: 'MISSING', note: 'the required-permission slug in the Forbidden message is never persisted' },
-          action: { verdict: 'MISSING', note: 'n/a — no row' },
-          outcome: { verdict: 'PARTIAL', note: 'aggregate failure count only' },
+          tool: { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.tool_name names exactly which admin tool was refused' },
+          'sanitized arguments': { verdict: 'RECOVERED', note: 'empty object — nothing to sanitize for this tool, but the row itself now exists' },
+          resource: { verdict: 'MISSING', note: 'read-only aggregate tool has no dedicated resource id, refused or not' },
+          'authorization decision + reason': { verdict: 'RECOVERED', note: '[PROMOTED, row 11] status=DENIED + ai_tool_calls.error names the exact required-permission slug' },
+          action: { verdict: 'RECOVERED', note: 'same as tool' },
+          outcome: { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.status=DENIED is call-specific' },
           'model + token usage': { verdict: 'PARTIAL', note: 'per-turn only' },
           cost: { verdict: 'PARTIAL', note: 'per-turn/monthly only' },
-          timestamp: { verdict: 'PARTIAL', note: 'turn timestamp only' },
+          timestamp: { verdict: 'RECOVERED', note: '[PROMOTED, row 11] ai_tool_calls.created_at is call-specific now' },
         },
       });
     }, 30_000);
@@ -616,9 +636,13 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       // actually owns the resulting appointment. Confirmed live here, not assumed.
       expect(rec.toolCallRow!.tenant_id).toBe(seed.discoveryTenantId);
       expect(rec.toolCallRow!.tenant_id).not.toBe(seed.tenantA.id);
-      // The real clinic tenant IS recoverable, but only by parsing the free-form
-      // `result` JSONB blob (this tool happens to embed it in `resultJson.tenantId`
-      // — ai-tool-dispatch.service.ts:926 — not every tool does).
+      // [PROMOTED, RTP row 14, AI-024/T074] The real clinic tenant is now
+      // ALSO directly recoverable via a dedicated `resource_tenant_id` column
+      // — no JSONB parsing required (the free-form `result.tenantId` blob
+      // this tool happens to embed, ai-tool-dispatch.service.ts:926, still
+      // works too and is checked below for continuity, but is no longer the
+      // ONLY way to recover it).
+      expect(rec.toolCallRow!.resource_tenant_id).toBe(seed.tenantA.id);
       const resultBlob = rec.toolCallRow!.result as Record<string, unknown>;
       expect(resultBlob.tenantId).toBe(seed.tenantA.id);
       // Verify the real appointment actually landed in the clinic tenant, confirming the blob is accurate and not coincidental.
@@ -627,20 +651,41 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       ]);
       expect(apptRows[0].tenantId).toBe(seed.tenantA.id);
 
+      // [PROMOTED, RTP row 14] the exact clinic-scoped query the finding asks
+      // for: a query that names ONLY the clinic tenant now returns the public
+      // booking it received, even though `tenant_id` itself is the discovery
+      // tenant, not the clinic.
+      const clinicScoped = await harness.dataSource.query(
+        `SELECT id FROM ai_tool_calls WHERE tool_name = $1 AND ai_conversation_id = $2 AND (tenant_id = $3 OR resource_tenant_id = $3)`,
+        [AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT, conv.id, seed.tenantA.id],
+      );
+      expect(clinicScoped).toHaveLength(1);
+      expect(clinicScoped[0].id).toBe(rec.toolCallRow!.id);
+
       // PII (fullName/phone) is stored verbatim in `arguments`, with no redaction.
       expect(rec.toolCallRow!.arguments).toMatchObject(args);
 
+      // [PROMOTED, RTP row 13] guest exclusion (AI-017/T073) holds: the ATTEMPT/
+      // claim actor column is explicit null for a guest-driven booking (the
+      // real acting party is the selected clinic's bot actor, resolved
+      // server-side — never the guest's own id) — this assertion is
+      // UNCHANGED, and its continued truth is itself the proof the guest
+      // privacy fix is doing its job here, not an oversight.
+      expect(rec.toolCallRow!.actor_user_id).toBeNull();
       expect(appearsAnywhere(guestAPrincipal.id, rec)).toBe(false);
-      expect(appearsAnywhere(marker, rec)).toBe(false);
+      // [Collateral, same fix as row 12] correlation id is stamped regardless
+      // of the acting principal being a guest.
+      expect(rec.toolCallRow!.correlation_id).toBe(marker);
+      expect(appearsAnywhere(marker, rec)).toBe(true);
 
       record({
         catalog: 'public',
         outcome: 'ALLOWED',
         tool: AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT,
         fields: {
-          user: { verdict: 'MISSING', note: 'guest principal id not present as a value anywhere; guests have no "user" row to begin with' },
-          tenant: { verdict: 'PARTIAL', note: 'ai_tool_calls.tenant_id is the GUEST/CONVERSATION tenant, not the clinic; the real clinic tenant is only recoverable via the free-form result JSONB, not a dedicated column' },
-          'request/correlation id': { verdict: 'MISSING', note: 'not present anywhere' },
+          user: { verdict: 'MISSING', note: 'guest principal id not present as a value anywhere — BY DESIGN (AI-017/T073 guest exclusion): actor_user_id is explicit null for a guest turn, never the guest\'s own id' },
+          tenant: { verdict: 'RECOVERED', note: '[PROMOTED, row 14] ai_tool_calls.tenant_id is still the GUEST/CONVERSATION tenant, but ai_tool_calls.resource_tenant_id now directly names the real clinic tenant — a clinic-scoped query (tenant_id = X OR resource_tenant_id = X) returns this booking' },
+          'request/correlation id': { verdict: 'RECOVERED', note: '[Collateral, same fix as row 12] ai_tool_calls.correlation_id' },
           conversation: { verdict: 'RECOVERED', note: 'ai_tool_calls.ai_conversation_id' },
           agent: { verdict: 'MISSING', note: 'the discovery-tenant conversation has no ai_agent at all; ai_usage_logs never gets a row for this turn (only written when an agent is present, ai-execution.service.ts:460-461)' },
           channel: { verdict: 'PARTIAL', note: 'per-turn only, stamped under the GUEST tenant' },
@@ -675,11 +720,20 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
       );
       const rec = await fetchRecords(seed.discoveryTenantId, conv.id, AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT);
 
+      // UNCHANGED by T067: this precondition failure ("no branch selected",
+      // requirePublicContext) throws BEFORE bookPublicAppointment() ever
+      // calls run() — it is NOT one of T067's 5 recordAttempt sites (those
+      // are the 3 core write tools' permission gates + the 8 admin tools'
+      // shared gate; book_public_appointment's SESSION-PRECONDITION failure
+      // is neither). So this specific case is genuinely still unledgered.
       expect(rec.toolCallRow).toBeUndefined();
       expect(rec.metricRow).toBeDefined();
       expect(rec.metricRow!.tool_failure_count).toBe(1);
-      expect(appearsAnywhere(guestBPrincipal.id, rec)).toBe(false);
-      expect(appearsAnywhere(marker, rec)).toBe(false);
+      expect(appearsAnywhere(guestBPrincipal.id, rec)).toBe(false); // guest exclusion (AI-017/T073) — unchanged, still correctly absent
+      // [Collateral, same fix as row 12] ai_execution_metrics now ALSO carries
+      // correlation_id (M2/T072) — the marker is recoverable via the TURN
+      // record even though no ai_tool_calls row exists for this refusal.
+      expect(appearsAnywhere(marker, rec)).toBe(true);
       expect(appearsAnywhere('Nobody', rec)).toBe(false); // the refused call's PII args never reach durable storage either
 
       record({
@@ -689,7 +743,7 @@ describe('W10 — record-based reconstruction, one allowed + one refused call pe
         fields: {
           user: { verdict: 'MISSING', note: 'no row' },
           tenant: { verdict: 'PARTIAL', note: 'per-turn only, under the guest tenant' },
-          'request/correlation id': { verdict: 'MISSING', note: 'not present anywhere' },
+          'request/correlation id': { verdict: 'PARTIAL', note: '[Collateral, same fix as row 12] recoverable via ai_execution_metrics.correlation_id (the turn), no per-call ai_tool_calls row exists for this precondition failure' },
           conversation: { verdict: 'PARTIAL', note: 'per-turn only' },
           agent: { verdict: 'MISSING', note: 'n/a — no agent, no row' },
           channel: { verdict: 'PARTIAL', note: 'per-turn only' },

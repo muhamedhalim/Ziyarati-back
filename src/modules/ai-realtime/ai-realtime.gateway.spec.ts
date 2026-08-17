@@ -65,6 +65,30 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       rooms: new Set<string>(),
     }) as unknown as Socket;
 
+  // Mirrors WsAuthService's real guest principal: permissions: [], guest:
+  // true, never a `users` row or role — structurally can never satisfy a
+  // permission check.
+  const guestSocket = (): Socket =>
+    ({
+      data: {
+        tenantId: TENANT,
+        userId: 'guest-1',
+        user: {
+          id: 'guest-1',
+          tenantId: TENANT,
+          roles: [],
+          permissions: [],
+          guest: true,
+        },
+      },
+      emit: jest.fn(),
+      join: jest.fn(),
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      rooms: new Set<string>(),
+    }) as unknown as Socket;
+
+  let tenantContext: TenantContextService;
+
   beforeEach(() => {
     orchestrator = {
       handleStream: jest.fn().mockResolvedValue({
@@ -85,11 +109,12 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       resolve: jest.fn().mockResolvedValue(allowed),
       shouldBlock: jest.fn().mockReturnValue(true),
     };
+    tenantContext = new TenantContextService();
 
     gateway = new AiRealtimeGateway(
       {} as unknown as WsAuthService,
       orchestrator as unknown as AiOrchestratorService,
-      new TenantContextService(),
+      tenantContext,
       handovers as unknown as HandoverRequestService,
       handoverChat as unknown as HandoverChatService,
       {} as unknown as AgentPresenceService,
@@ -101,8 +126,13 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
   afterEach(() => jest.clearAllMocks());
 
   describe('ai:message', () => {
+    // AI-007: onMessage now also requires ai.conversations.manage
+    // (`:42`-adjacent gate, added alongside the pre-existing entitlement
+    // check). Every case below that exercises the ENTITLEMENT gate must
+    // hold this permission too, or it would trip the (different) permission
+    // gate instead and stop proving what it's meant to prove.
     it('runs the turn when the clinic holds the AI capability', async () => {
-      const client = socket();
+      const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
       await gateway.onMessage(client, { content: 'hello' });
 
       expect(entitlements.resolve).toHaveBeenCalledWith(
@@ -114,7 +144,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
     it('never reaches the orchestrator when AI is denied', async () => {
       entitlements.resolve.mockResolvedValueOnce(denied);
-      const client = socket();
+      const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
       await gateway.onMessage(client, { content: 'hello' });
 
@@ -131,7 +161,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
      */
     it('does not leak the internal reason over the wire', async () => {
       entitlements.resolve.mockResolvedValueOnce(denied);
-      const client = socket();
+      const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
       await gateway.onMessage(client, { content: 'hello' });
 
@@ -143,7 +173,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
     it('fails CLOSED when the decision cannot be resolved', async () => {
       entitlements.resolve.mockRejectedValueOnce(new Error('db down'));
-      const client = socket();
+      const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
       await gateway.onMessage(client, { content: 'hello' });
 
@@ -155,13 +185,115 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       entitlements.resolve.mockResolvedValueOnce(denied);
       entitlements.shouldBlock.mockReturnValueOnce(false);
 
-      await gateway.onMessage(socket(), { content: 'hello' });
+      await gateway.onMessage(socket([PERMISSION.AI_CONVERSATIONS_MANAGE]), {
+        content: 'hello',
+      });
 
       expect(orchestrator.handleStream).toHaveBeenCalled();
       expect(entitlements.shouldBlock).toHaveBeenCalledWith(
         expect.objectContaining({ allowed: false }),
         { surface: 'websocket', detail: AI_EVENT.MESSAGE },
       );
+    });
+
+    it('AI-007 — refuses ai:message without ai.conversations.manage: never reaches the orchestrator, and the refusal is an ai:error, not a throw', async () => {
+      const client = socket(); // no permissions — an entitled clinic, unpermitted principal
+      await expect(
+        gateway.onMessage(client, { content: 'hello' }),
+      ).resolves.not.toThrow();
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        message: 'Forbidden',
+      });
+      // The entitlement check runs BEFORE the permission check (unchanged
+      // ordering) — reached regardless of which gate ultimately refuses.
+      expect(entitlements.resolve).toHaveBeenCalled();
+    });
+
+    it('AI-007 — a GUEST principal (permissions: [], guest: true) is exempt from the staff permission gate and still reaches the orchestrator', async () => {
+      const client = guestSocket();
+      await gateway.onMessage(client, { content: 'hello' });
+
+      expect(orchestrator.handleStream).toHaveBeenCalled();
+      expect(client.emit).not.toHaveBeenCalledWith(
+        AI_EVENT.ERROR,
+        expect.objectContaining({ message: 'Forbidden' }),
+      );
+    });
+
+    describe('AI-016/C2 — correlation id (FR-031, FR-082)', () => {
+      it('adopts a well-formed client-supplied correlation hint', async () => {
+        const spy = jest.spyOn(tenantContext, 'setCorrelationId');
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, {
+          content: 'hello',
+          correlationId: 'trace-abc.123_XYZ',
+        });
+
+        expect(spy).toHaveBeenCalledWith('trace-abc.123_XYZ');
+      });
+
+      it('rejects a malformed hint (disallowed characters) in favour of a server-generated id', async () => {
+        const spy = jest.spyOn(tenantContext, 'setCorrelationId');
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, {
+          content: 'hello',
+          correlationId: 'has spaces/and;punct',
+        });
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        const [used] = spy.mock.calls[0];
+        expect(used).not.toBe('has spaces/and;punct');
+        expect(used).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+        ); // server-generated UUID fallback
+      });
+
+      it('rejects an over-long hint (>100 chars) in favour of a server-generated id', async () => {
+        const spy = jest.spyOn(tenantContext, 'setCorrelationId');
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        const tooLong = 'a'.repeat(101);
+
+        await gateway.onMessage(client, { content: 'hello', correlationId: tooLong });
+
+        const [used] = spy.mock.calls[0];
+        expect(used).not.toBe(tooLong);
+        expect((used as string).length).toBeLessThan(101);
+      });
+
+      it('generates a server-side id when no hint is supplied', async () => {
+        const spy = jest.spyOn(tenantContext, 'setCorrelationId');
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(typeof spy.mock.calls[0][0]).toBe('string');
+      });
+
+      // FR-082: the hint is a correlation label only — never consulted by
+      // any authorization or tenancy decision. The entitlement/permission
+      // gates above already ran and passed before setCorrelationId is even
+      // called (see onMessage's own ordering), so a hint can structurally
+      // never influence them; this pins that a malicious-looking hint
+      // specifically does not change the outcome either.
+      it('a hint that looks like an injection attempt does not affect authorization or tenancy', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, {
+          content: 'hello',
+          correlationId: "'; DROP TABLE ai_tool_calls; --",
+        });
+
+        expect(orchestrator.handleStream).toHaveBeenCalled();
+        expect(client.emit).not.toHaveBeenCalledWith(
+          AI_EVENT.ERROR,
+          expect.anything(),
+        );
+      });
     });
   });
 

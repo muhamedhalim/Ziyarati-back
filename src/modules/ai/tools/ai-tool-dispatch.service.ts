@@ -22,6 +22,7 @@ import { HandoverRequestService } from '../handover-request.service';
 import { AI_TOOL } from './ai-tools.constants';
 import { AI_PUBLIC_TOOL } from './ai-public-booking-tools.constants';
 import { PublicBookingContextService } from '../../public-booking/public-booking-context.service';
+import { SESSION_UNSET } from '../../ai-orchestrator/conversation-session.service';
 import { WhatsappBotActorService } from '../../whatsapp/whatsapp-bot-actor.service';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
@@ -80,7 +81,16 @@ type ToolResult = Record<string, unknown>;
  *  - Every write tool is idempotent: a deterministic idempotency key + the
  *    `uq_ai_tool_call_idem` unique index means a retried or repeated booking
  *    executes at most once; a prior SUCCEEDED call replays its result.
- *  - Every call (success or failure) is recorded in `ai_tool_calls` for audit.
+ *  - AI-008/C1: for every one of the 26 tools, an attempted call — allowed,
+ *    denied, or refused — produces exactly one queryable `ai_tool_calls`
+ *    row (`contracts/ai-tool-call-ledger.md` §Guarantee). Two mechanisms,
+ *    by design, not one: a business-action WRITE claims a real idempotency
+ *    key via `run()` (PENDING → EXECUTING → SUCCEEDED/FAILED, replayable);
+ *    a denial, a refusal, or one of the 7 session-state public tools
+ *    records under the non-claiming `attempt:<tool>:<uuid>` namespace via
+ *    `recordAttempt`/`recordSessionAttempt` (terminal on insert, never
+ *    replayed). Claiming and recording are separable concerns (FR-023) —
+ *    recording never depends on reaching the claim.
  */
 @Injectable()
 export class AiToolDispatchService {
@@ -145,20 +155,37 @@ export class AiToolDispatchService {
         // ── Public booking (anonymous visitors) ────────────────────────────
         case AI_PUBLIC_TOOL.LIST_CITIES:
           return await this.listCities();
+        // AI-008/C1 (FR-026): these 7 session-state tools never call
+        // run() — recordSessionAttempt records one attempt-only row per
+        // call, on the same terms as a denial, regardless of outcome.
         case AI_PUBLIC_TOOL.SELECT_CLINIC:
-          return await this.selectClinic(ctx, args);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.selectClinic(ctx, args),
+          );
         case AI_PUBLIC_TOOL.SELECT_BRANCH:
-          return await this.selectBranch(ctx, args);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.selectBranch(ctx, args),
+          );
         case AI_PUBLIC_TOOL.LIST_BRANCH_SERVICES:
-          return await this.listBranchServices(ctx);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.listBranchServices(ctx),
+          );
         case AI_PUBLIC_TOOL.LIST_BRANCH_DOCTORS:
-          return await this.listBranchDoctors(ctx);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.listBranchDoctors(ctx),
+          );
         case AI_PUBLIC_TOOL.SELECT_SERVICE:
-          return await this.selectService(ctx, args);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.selectService(ctx, args),
+          );
         case AI_PUBLIC_TOOL.SELECT_DOCTOR:
-          return await this.selectDoctor(ctx, args);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.selectDoctor(ctx, args),
+          );
         case AI_PUBLIC_TOOL.SELECT_SLOT:
-          return await this.selectSlot(ctx, args);
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.selectSlot(ctx, args),
+          );
         case AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT:
           return await this.bookPublicAppointment(ctx, args);
         case AI_ADMIN_TOOL.GET_DASHBOARD_KPIS:
@@ -183,9 +210,10 @@ export class AiToolDispatchService {
 
   /**
    * Permission-gated dispatch for the read-only admin toolset. Every branch
-   * delegates to an EXISTING tenant-scoped service — no new queries. Denied
-   * calls are still recorded in `ai_tool_calls` (idempotency key includes the
-   * denial reason so a retried denial does not race a legitimate later grant).
+   * delegates to an EXISTING tenant-scoped service — no new queries. A
+   * denied call is recorded as its own terminal `DENIED` row via
+   * `recordAttempt` (AI-008, T067) — a namespaced attempt key, never a
+   * claim, so a retried denial can never race a legitimate later grant.
    */
   private async executeAdminTool(
     ctx: ToolContext,
@@ -194,10 +222,9 @@ export class AiToolDispatchService {
   ): Promise<ToolResult> {
     const required = AI_ADMIN_TOOL_PERMISSION[name];
     if (!(ctx.permissions ?? []).includes(required)) {
-      return {
-        success: false,
-        error: `Forbidden: this question requires the "${required}" permission.`,
-      };
+      const reason = `Forbidden: this question requires the "${required}" permission.`;
+      await this.recordAttempt(ctx, name, args, 'DENIED', reason);
+      return { success: false, error: reason };
     }
 
     return this.run(
@@ -404,9 +431,11 @@ export class AiToolDispatchService {
   /**
    * Read-only lookup of the patient's on-file insurance answer, so the model
    * can confirm a returning patient's answer instead of asking cold every
-   * time. Not permission-gated (same posture as `checkAvailability`): the
-   * customer is either the one already bound to this conversation, or an
-   * explicit id that gets the same tenant-scoped existence check booking does.
+   * time. Gated (AI-003): the server-bound customer for this conversation
+   * needs no extra permission, but an id the model merely supplied in
+   * `args` — not already bound — requires a real `customers.read`
+   * permission, or one call per known id enumerates the whole tenant's
+   * insurance-status roster.
    */
   private async getCustomerInsuranceStatus(
     ctx: ToolContext,
@@ -416,12 +445,34 @@ export class AiToolDispatchService {
     // is NOT permission-gated, and `resolveInsurance` WRITES through
     // `setInsuranceStatus`. With the model's id winning, a prompt injection
     // could read and then overwrite a stranger's health-insurance flag.
-    const customerId = ctx.customerId ?? this.str(args.customerId);
+    const boundCustomerId = ctx.customerId;
+    const customerId = boundCustomerId ?? this.str(args.customerId);
     if (!customerId) {
       return {
         success: false,
         error: 'No customer is bound to this conversation yet.',
       };
+    }
+    // AI-003: an id the model supplied (not the server-bound identity) needs
+    // a real customer-read permission — checked here, before any lookup, so
+    // the refusal never doubles as an existence oracle (FR-011, FR-083).
+    if (
+      !boundCustomerId &&
+      !(ctx.permissions ?? []).includes(PERMISSION.CUSTOMERS_READ)
+    ) {
+      const reason = `Forbidden: reading another customer's insurance status requires the "${PERMISSION.CUSTOMERS_READ}" permission.`;
+      // AI-008/T067: this permission gate was added by this same feature
+      // (T038) — recorded on the same terms as the finding's original 11
+      // gated tools, so it does not reintroduce the exact gap AI-008 exists
+      // to close.
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+        args,
+        'DENIED',
+        reason,
+      );
+      return { success: false, error: reason };
     }
     return this.run(
       ctx,
@@ -457,10 +508,15 @@ export class AiToolDispatchService {
       };
     }
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CREATE)) {
-      return {
-        success: false,
-        error: `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.`,
-      };
+      const reason = `Forbidden: booking requires the "${PERMISSION.APPOINTMENTS_CREATE}" permission.`;
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.BOOK_APPOINTMENT,
+        args,
+        'DENIED',
+        reason,
+      );
+      return { success: false, error: reason };
     }
     const branchId = this.str(args.branchId);
     // F-8: the SERVER-bound customer wins. This used to be the other way round
@@ -662,17 +718,34 @@ export class AiToolDispatchService {
     const detail = await this.discovery.clinicDetail(clinicId);
     const branches = detail.branches;
 
+    // FR-022: only a genuine re-selection (something was already chosen)
+    // needs guidance — a visitor's very first clinic pick has nothing to
+    // "re-select".
+    const prior = await this.bookingContext.getSelection(
+      ctx.tenantId,
+      ctx.aiConversationId,
+      ctx.principal,
+    );
+    const hadPriorSelection = Boolean(
+      prior.selectedDoctorId ||
+        prior.selectedServiceIds?.length ||
+        prior.selectedStartAt,
+    );
+
     const only = branches.length === 1 ? branches[0] : undefined;
-    await this.bookingContext.patchSelection(
+    const session = await this.bookingContext.patchSelection(
       ctx.tenantId,
       ctx.aiConversationId,
       {
         selectedClinicId: clinicId,
         selectedBranchId: only?.id,
-        // A new clinic invalidates every downstream choice.
-        selectedDoctorId: undefined,
-        selectedServiceIds: undefined,
-        selectedStartAt: undefined,
+        // AI-006: a new clinic invalidates every downstream choice.
+        // SESSION_UNSET, not `undefined` — `clean()` drops `undefined` to
+        // PRESERVE the existing value, which is exactly why this reset
+        // silently never worked before. SESSION_UNSET genuinely clears it.
+        selectedDoctorId: SESSION_UNSET,
+        selectedServiceIds: SESSION_UNSET,
+        selectedStartAt: SESSION_UNSET,
       },
     );
 
@@ -682,7 +755,27 @@ export class AiToolDispatchService {
       branches,
       branchAutoSelected: !!only,
       selectedBranch: only ?? null,
+      ...(hadPriorSelection
+        ? { reselectionGuidance: this.reselectionGuidance(session.language) }
+        : {}),
     };
+  }
+
+  /**
+   * FR-022: reaches the visitor through the assistant's reply, so it is
+   * produced in the conversation's OWN language — never a fixed English
+   * literal injected into an Arabic conversation. "Actionable" is asserted
+   * on structure (resolves analysis finding G11): names exactly which
+   * selections were cleared (service, doctor, time slot) and that they need
+   * choosing again — an opaque failure or a bare "please try again" both
+   * fail this. Contrast with T106/T114's machine-consumed codes: this text
+   * is read by a person, not parsed by a client, so it carries no code.
+   */
+  private reselectionGuidance(language?: string): string {
+    if (language === 'ar') {
+      return 'بما أنك اخترت عيادة جديدة، تم إلغاء اختيارك السابق للخدمة والطبيب والموعد. الرجاء اختيار الخدمة والطبيب والموعد مرة أخرى لهذه العيادة.';
+    }
+    return 'Since you switched clinics, your previous service, doctor, and time-slot selections were cleared. Please choose the service, doctor, and time slot again for this clinic.';
   }
 
   private async selectBranch(
@@ -943,6 +1036,10 @@ export class AiToolDispatchService {
           },
         };
       },
+      // AI-024: the resolved clinic tenant — set only where it differs
+      // from ctx.tenantId (the conversation/discovery tenant), which for
+      // every public booking it does.
+      booking.tenantId,
     );
   }
 
@@ -970,10 +1067,15 @@ export class AiToolDispatchService {
       };
     }
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_RESCHEDULE)) {
-      return {
-        success: false,
-        error: `Forbidden: rescheduling requires the "${PERMISSION.APPOINTMENTS_RESCHEDULE}" permission.`,
-      };
+      const reason = `Forbidden: rescheduling requires the "${PERMISSION.APPOINTMENTS_RESCHEDULE}" permission.`;
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.RESCHEDULE_APPOINTMENT,
+        args,
+        'DENIED',
+        reason,
+      );
+      return { success: false, error: reason };
     }
     const appointmentId = this.str(args.appointmentId);
     const newStartAt = this.str(args.newStartAt);
@@ -1030,10 +1132,15 @@ export class AiToolDispatchService {
       };
     }
     if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_CANCEL)) {
-      return {
-        success: false,
-        error: `Forbidden: cancellation requires the "${PERMISSION.APPOINTMENTS_CANCEL}" permission.`,
-      };
+      const reason = `Forbidden: cancellation requires the "${PERMISSION.APPOINTMENTS_CANCEL}" permission.`;
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.CANCEL_APPOINTMENT,
+        args,
+        'DENIED',
+        reason,
+      );
+      return { success: false, error: reason };
     }
     const appointmentId = this.str(args.appointmentId);
     if (!appointmentId) {
@@ -1105,9 +1212,124 @@ export class AiToolDispatchService {
   // ───────────────── Idempotent execution + audit ledger ──────────────────── //
 
   /**
+   * AI-008/C1 (FR-023): recording that a call was ATTEMPTED and claiming an
+   * idempotency key for a business-action WRITE are separable concerns —
+   * this is the record step. Used for a `DENIED` or `REFUSED` outcome,
+   * which never reaches `run()`'s claim step below (the permission check
+   * that produces them runs and returns before `run()` is ever called).
+   *
+   * Never claims anything — always inserts under the non-claiming
+   * `attempt:` key namespace (T066), so it can never pre-claim, block, or
+   * collide with a real business-action claim (FR-027). Never replays —
+   * every denial is its own fresh attempt, by design (FR-024: "a denial
+   * followed by a retry is two attempts and therefore two records").
+   * Best-effort: a ledger write failure here degrades to a logged warning
+   * and never fails the attempt itself (FR-028, matching the turn-metric
+   * record's existing posture).
+   */
+  private async recordAttempt(
+    ctx: ToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+    status: 'DENIED' | 'REFUSED',
+    reason: string,
+  ): Promise<void> {
+    await this.writeAttemptRow(ctx, toolName, args, status, reason);
+  }
+
+  /**
+   * AI-008/C1 (FR-026): the seven public-booking session-state tools
+   * (`selectClinic`…`selectSlot`) never call `run()` at all, on success or
+   * failure — they record on the SAME `attempt:` terms as a denial, one row
+   * per call, regardless of outcome. Deliberately NOT idempotency-claimed
+   * (no `PENDING`/`EXECUTING`, no replay) — these are session-state writes,
+   * not business-action writes, and MUST NOT acquire semantics they do not
+   * need (FR-026): there is no side effect here to dedupe, and a real claim
+   * key would misrepresent the record kind.
+   */
+  private async recordSessionAttempt(
+    ctx: ToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+    fn: () => Promise<ToolResult>,
+  ): Promise<ToolResult> {
+    try {
+      const result = await fn();
+      const status = result.success === false ? 'REFUSED' : 'SUCCEEDED';
+      const reason =
+        result.success === false && typeof result.error === 'string'
+          ? result.error
+          : null;
+      await this.writeAttemptRow(ctx, toolName, args, status, reason);
+      return result;
+    } catch (err) {
+      await this.writeAttemptRow(
+        ctx,
+        toolName,
+        args,
+        'REFUSED',
+        this.msg(err),
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * AI-017 (FR-033, FR-034): the acting STAFF principal, explicit null for
+   * guests — never a guest's own principal id. `ctx.actorUserId` alone is
+   * not sufficient (a guest turn's `ToolContext` can carry `actorUserId`
+   * too, from `this.ctx.getUser()?.id` upstream in `ai-execution.service.ts`
+   * without a guest check — that field means something different there:
+   * "is a real user bound to this conversation," which is separately true
+   * or false for guests). `ctx.principal?.guest` is the authoritative
+   * signal.
+   */
+  private actorUserId(ctx: ToolContext): string | null {
+    if (ctx.principal?.guest) return null;
+    return ctx.actorUserId ?? null;
+  }
+
+  /** Shared by `recordAttempt` and `recordSessionAttempt` — one INSERT, never a claim. */
+  private async writeAttemptRow(
+    ctx: ToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+    status: 'DENIED' | 'REFUSED' | 'SUCCEEDED',
+    reason: string | null,
+  ): Promise<void> {
+    const key = `attempt:${toolName}:${randomUUID()}`;
+    try {
+      await this.dataSource.query(
+        `INSERT INTO ai_tool_calls (tenant_id, ai_conversation_id, conversation_id, tool_name, arguments, status, error, idempotency_key, correlation_id, actor_user_id)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)`,
+        [
+          ctx.tenantId,
+          ctx.aiConversationId,
+          ctx.conversationId ?? null,
+          toolName,
+          JSON.stringify(args),
+          status,
+          reason,
+          key,
+          // AI-016 (FR-030, FR-032): written as explicit null when none can
+          // be established, never omitted, so an operator can tell "not
+          // recorded" from "not applicable."
+          this.tenantContext.getCorrelationId(),
+          this.actorUserId(ctx),
+        ],
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to record ${status} attempt for ${toolName}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
    * Claim the idempotency key, run `executor`, and record the outcome. Replays a
    * prior SUCCEEDED call and reports in-flight or terminal/unknown outcomes
-   * without replaying a potentially completed side effect.
+   * without replaying a potentially completed side effect. The claim step
+   * (FR-023) — byte-for-byte unchanged by the record/claim split above.
    */
   private async run(
     ctx: ToolContext,
@@ -1119,6 +1341,16 @@ export class AiToolDispatchService {
       resultJson: unknown;
       appointmentId?: string;
     }>,
+    /**
+     * AI-024 (FR-035, FR-036, C4): the tenant OWNING the resource acted
+     * upon, when it differs from `ctx.tenantId` (the conversation tenant —
+     * today, only `bookPublicAppointment`'s resolved clinic tenant).
+     * Additive: `tenant_id` on the claim row is never repurposed or
+     * overwritten — it stays the conversation tenant, byte-identical to
+     * before this parameter existed. Omitted (`undefined`) for every other
+     * caller, which is exactly "same as tenant_id" (null).
+     */
+    resourceTenantId?: string,
   ): Promise<ToolResult> {
     const existing = await this.findByKey(ctx.tenantId, key);
     if (existing) {
@@ -1140,9 +1372,13 @@ export class AiToolDispatchService {
     }
 
     // Claim atomically; on a concurrent race the conflicting row already owns it.
+    // AI-016/AI-017/AI-024 (FR-030, FR-032, FR-033, FR-034, FR-035, FR-036):
+    // correlation_id, actor_user_id, and resource_tenant_id are additive to
+    // this claim insert — the ON CONFLICT/idempotency semantics, and
+    // tenant_id itself, are unchanged (FR-027, FR-036).
     const claimed = await this.dataSource.query(
-      `INSERT INTO ai_tool_calls (tenant_id, ai_conversation_id, conversation_id, tool_name, arguments, status, idempotency_key)
-       VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', $6)
+      `INSERT INTO ai_tool_calls (tenant_id, ai_conversation_id, conversation_id, tool_name, arguments, status, idempotency_key, correlation_id, actor_user_id, resource_tenant_id)
+       VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', $6, $7, $8, $9)
        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
        RETURNING id`,
       [
@@ -1152,6 +1388,13 @@ export class AiToolDispatchService {
         toolName,
         JSON.stringify(args),
         key,
+        this.tenantContext.getCorrelationId(),
+        this.actorUserId(ctx),
+        // Null means "same as tenant_id" — only set when it genuinely
+        // differs (today: bookPublicAppointment's resolved clinic tenant).
+        resourceTenantId && resourceTenantId !== ctx.tenantId
+          ? resourceTenantId
+          : null,
       ],
     );
     const id: string | undefined = claimed[0]?.id;

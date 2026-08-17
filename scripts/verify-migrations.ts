@@ -109,6 +109,72 @@ async function main() {
   await ds.runMigrations(); // second up — already applied, TypeORM skips it; still must not throw
   check('M3 second up run does not throw', true);
 
+  // ── M1/M2 (AI-008/AI-016/AI-017/AI-024, AiToolCallAuditColumns /
+  // AiExecutionMetricAuditColumns) — G6 round trip ───────────────────────────
+  // M1 < M2 < M3 chronologically — M3 (just re-applied above) must come off
+  // first to re-expose M2 as the true tail, then M2, then M1 — the same
+  // reverse-chronological cascade pattern used further down this script for
+  // M-10/M-09/M-08/FND-020/M-03/M-02/M-04, with a single reapply at the end.
+  await ds.undoLastMigration(); // BotActorTenantQualifiedEmail (M3) down — re-expose M2 as tail
+  await ds.undoLastMigration(); // AiExecutionMetricAuditColumns (M2) down
+  check(
+    'M2 down drops ai_execution_metrics.correlation_id',
+    !(await colExists('ai_execution_metrics', 'correlation_id')),
+  );
+  check(
+    'M2 down drops ai_execution_metrics.actor_user_id',
+    !(await colExists('ai_execution_metrics', 'actor_user_id')),
+  );
+  check(
+    'M2 down drops IDX_aiexec_correlation',
+    !(await idxExists('IDX_aiexec_correlation')),
+  );
+  await ds.undoLastMigration(); // AiToolCallAuditColumns (M1) down
+  check(
+    'M1 down drops ai_tool_calls.correlation_id',
+    !(await colExists('ai_tool_calls', 'correlation_id')),
+  );
+  check(
+    'M1 down drops ai_tool_calls.actor_user_id',
+    !(await colExists('ai_tool_calls', 'actor_user_id')),
+  );
+  check(
+    'M1 down drops ai_tool_calls.resource_tenant_id',
+    !(await colExists('ai_tool_calls', 'resource_tenant_id')),
+  );
+  check(
+    'M1 down drops idx_ai_tool_calls_correlation',
+    !(await idxExists('idx_ai_tool_calls_correlation')),
+  );
+  check(
+    'M1 down drops idx_ai_tool_calls_actor',
+    !(await idxExists('idx_ai_tool_calls_actor')),
+  );
+  check(
+    'M1 down drops idx_ai_tool_calls_resource_tenant',
+    !(await idxExists('idx_ai_tool_calls_resource_tenant')),
+  );
+  check(
+    'M1 down drops idx_ai_tool_calls_retention',
+    !(await idxExists('idx_ai_tool_calls_retention')),
+  );
+  await ds.runMigrations(); // re-applies M1, M2, M3 in order
+  check(
+    're-applied M1/M2/M3 (idempotent)',
+    (await colExists('ai_tool_calls', 'correlation_id')) &&
+      (await colExists('ai_tool_calls', 'actor_user_id')) &&
+      (await colExists('ai_tool_calls', 'resource_tenant_id')) &&
+      (await colExists('ai_execution_metrics', 'correlation_id')) &&
+      (await colExists('ai_execution_metrics', 'actor_user_id')) &&
+      (await idxExists('idx_ai_tool_calls_correlation')) &&
+      (await idxExists('idx_ai_tool_calls_actor')) &&
+      (await idxExists('idx_ai_tool_calls_resource_tenant')) &&
+      (await idxExists('idx_ai_tool_calls_retention')) &&
+      (await idxExists('IDX_aiexec_correlation')),
+  );
+  await ds.runMigrations(); // second up — already applied, TypeORM skips it; still must not throw
+  check('M1/M2 second up run does not throw', true);
+
   // ── Tables ────────────────────────────────────────────────────────────────
   check('ai_batch_jobs table', await tableExists('ai_batch_jobs'));
   check('ai_batch_items table', await tableExists('ai_batch_items'));

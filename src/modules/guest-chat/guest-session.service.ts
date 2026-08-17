@@ -7,6 +7,8 @@ import { randomUUID } from 'node:crypto';
 
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { User } from '../../entities/Auth&RBAC/User';
 import { TenantApprovalStatus } from '../../entities/enums';
 import { FreeAccessOverrideService } from '../subscription-billing/free-access-override.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
@@ -65,6 +67,8 @@ export class GuestSessionService {
     private readonly memory: AiMemoryService,
     @InjectRepository(AiConversation)
     private readonly conversations: Repository<AiConversation>,
+    @InjectRepository(AuditLog)
+    private readonly auditLogs: Repository<AuditLog>,
   ) {}
 
   /** Find-or-create the guest discovery tenant + ensure it is unmetered. Cached. */
@@ -147,6 +151,7 @@ export class GuestSessionService {
     targetTenantId: string,
     guestToken: string | undefined,
     customerId?: string,
+    actorUserId?: string,
   ) {
     // (2) A guest token must be presented.
     if (!guestToken) throw this.notFound();
@@ -202,7 +207,51 @@ export class GuestSessionService {
       customerId,
       discoveryTenantId,
     );
+
+    // (10) AI-018 (FR-037-039): exactly one audit entry per successful
+    // conversion. Best-effort — a write failure must never fail or roll
+    // back the conversion itself (FR-039), so it runs after the claim and
+    // the summarization are already committed, guarded by its own
+    // try/catch (same pattern as auth.service.ts's protection-event audit).
+    await this.auditConversion(
+      targetTenantId,
+      actorUserId,
+      guestConversationId,
+      summary?.id,
+    );
+
     return { converted: true, memoryId: summary?.id ?? null };
+  }
+
+  /**
+   * AI-018: writes the guest→patient conversion's audit entry.
+   * `entity_type`/`entity_id` name whichever record resulted — the created
+   * memory when summarization produced one, otherwise the converted
+   * conversation itself (data-model.md §Entity 4). Never carries message
+   * content (FR-088) — identifiers and the outcome only.
+   */
+  private async auditConversion(
+    targetTenantId: string,
+    actorUserId: string | undefined,
+    guestConversationId: string,
+    memoryId: string | undefined,
+  ): Promise<void> {
+    try {
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          tenant: { id: targetTenantId } as Tenant,
+          user: actorUserId ? ({ id: actorUserId } as User) : undefined,
+          action: 'guest.conversion.converted',
+          entity_type: memoryId ? 'ai_memory' : 'ai_conversation',
+          entity_id: memoryId ?? guestConversationId,
+          new_values: { guestConversationId, memoryId: memoryId ?? null },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Guest-conversion audit write failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**

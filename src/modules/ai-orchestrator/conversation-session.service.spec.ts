@@ -1,7 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import { ConversationSessionService } from './conversation-session.service';
+import {
+  ConversationSessionService,
+  SESSION_UNSET,
+} from './conversation-session.service';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import {
   createMockRepository,
@@ -179,6 +182,49 @@ describe('ConversationSessionService', () => {
       await service.patch(TENANT, CONV, { language: undefined });
 
       expect(persisted()).toMatchObject({ language: 'ar' });
+    });
+
+    // AI-006: unlike `undefined` (preserves the value, above), SESSION_UNSET
+    // genuinely clears it — this is the fix `selectClinic`'s reset needs.
+    it('SESSION_UNSET genuinely clears an existing value (unlike undefined)', async () => {
+      conversations.findOne.mockResolvedValueOnce({
+        id: CONV,
+        session: {
+          selectedDoctorId: 'doc-1',
+          selectedServiceIds: ['svc-1'],
+          selectedStartAt: '2027-06-01T10:00:00Z',
+        },
+      });
+
+      await service.patch(TENANT, CONV, {
+        selectedDoctorId: SESSION_UNSET,
+        selectedServiceIds: SESSION_UNSET,
+        selectedStartAt: SESSION_UNSET,
+      });
+
+      const session = persisted();
+      expect(session.selectedDoctorId).toBeNull();
+      expect(session.selectedServiceIds).toBeNull();
+      expect(session.selectedStartAt).toBeNull();
+    });
+
+    // R11 rollback constraint: the sentinel must be a value a PRE-CHANGE
+    // reader already tolerates. It is stored as a plain JSON `null` — not a
+    // symbol or a wrapper object — which is exactly what makes it safe: any
+    // existing or future reader doing a truthy/nullish check on this field
+    // treats it identically to "absent", with no sentinel-awareness required.
+    it('R11 — the stored sentinel is a plain null, not a special marker type', async () => {
+      conversations.findOne.mockResolvedValueOnce({
+        id: CONV,
+        session: { selectedDoctorId: 'doc-1' },
+      });
+
+      await service.patch(TENANT, CONV, { selectedDoctorId: SESSION_UNSET });
+
+      const stored = persisted().selectedDoctorId;
+      expect(stored).toBe(null);
+      expect(typeof stored).toBe('object'); // typeof null — confirms it is JSON `null`, not undefined/a symbol
+      expect(stored).toBeFalsy(); // any `if (session.selectedDoctorId)` reader already treats this as unset
     });
   });
 });

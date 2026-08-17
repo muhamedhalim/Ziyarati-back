@@ -14,6 +14,35 @@ import {
 } from './ai-channel.constants';
 
 /**
+ * AI-006: sentinel a trusted server caller passes to `patch()` to explicitly
+ * UNSET a key — distinct from `undefined`, which `clean()` drops precisely
+ * to PRESERVE the key's existing value. `selectClinic`'s reset intent
+ * ("a new clinic invalidates every downstream choice") used `undefined` for
+ * this and silently never worked, because that is what `undefined` means to
+ * `clean()` for every other caller.
+ *
+ * `null`, not a unique symbol (R11 rollback constraint): it round-trips
+ * through the `session` jsonb column, and `clean()`'s filter — `v !==
+ * undefined` — already lets `null` pass through unfiltered today, before
+ * this change. So a rollback of the CALLING code back to writing
+ * `SESSION_UNSET` still stores exactly what it intended, and every existing
+ * reader of `selected*` fields already treats a `null`/absent value as "not
+ * selected" via a plain truthy check — nothing downstream needs to change
+ * for the sentinel to be tolerated by pre-change code.
+ */
+export const SESSION_UNSET = null;
+
+/**
+ * `patch()`'s input shape: every `AiSession` key may be set to its normal
+ * value, left absent (preserves the current value), or explicitly
+ * `SESSION_UNSET` (clears it). `Partial<AiSession>` remains assignable here,
+ * so every existing caller (including `patchFromClient`) is unaffected.
+ */
+export type SessionPatch = {
+  [K in keyof AiSession]?: AiSession[K] | typeof SESSION_UNSET;
+};
+
+/**
  * Conversation Session Manager (Phase 5).
  *
  * Owns the ACTIVE state of an AI conversation (selected clinic/branch/doctor,
@@ -41,18 +70,18 @@ export class ConversationSessionService {
   async patch(
     tenantId: string,
     aiConversationId: string,
-    partial: Partial<AiSession>,
+    partial: SessionPatch,
   ): Promise<AiSession> {
     const conv = await this.load(tenantId, aiConversationId);
     const current = (conv.session as AiSession) ?? {};
     const cleaned = this.clean(partial);
-    const merged: AiSession = {
+    const merged = {
       ...current,
       ...cleaned,
       ...(cleaned.context
         ? { context: { ...(current.context ?? {}), ...cleaned.context } }
         : {}),
-    };
+    } as AiSession;
     conv.session = merged as Record<string, unknown>;
     await this.conversations.save(conv);
     return merged;
@@ -163,11 +192,18 @@ export class ConversationSessionService {
     return conv;
   }
 
-  /** Drop undefined keys so a patch never overwrites state with `undefined`. */
-  private clean(partial: Partial<AiSession>): Partial<AiSession> {
+  /**
+   * Drop undefined keys so a patch never overwrites state with `undefined` —
+   * unchanged for every caller (FR-020). A key set to the `SESSION_UNSET`
+   * sentinel is NOT dropped (`null !== undefined`): it passes through and
+   * overwrites the key's stored value, genuinely clearing it — which is
+   * exactly what `undefined` was meant to do here and silently never did
+   * (AI-006).
+   */
+  private clean(partial: SessionPatch): SessionPatch {
     return Object.fromEntries(
       Object.entries(partial).filter(([, v]) => v !== undefined),
-    ) as Partial<AiSession>;
+    ) as SessionPatch;
   }
 
   /**

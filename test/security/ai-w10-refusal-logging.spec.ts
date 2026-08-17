@@ -12,16 +12,22 @@
  * for real).
  *
  * Three outcome classes are compared, not two, because W3's static analysis
- * (`w3-tools-admin.md`, `w3-declared-vs-enforced.md`) already flagged a
- * specific asymmetry that needs runtime confirmation, not a blanket claim:
+ * (`w3-tools-admin.md`, `w3-declared-vs-enforced.md`) originally flagged a
+ * specific asymmetry that needed runtime confirmation, not a blanket claim:
  *   - ALLOWED   — the call succeeds.                                    → ai_tool_calls: +1 row (SUCCEEDED)
- *   - REFUSED   — a permission check returns BEFORE `this.run()` claims  → ai_tool_calls: +0 rows (no trace at all)
- *                 the idempotency ledger row (a pre-ledger authorization refusal).
+ *   - REFUSED   — a permission check returns BEFORE `this.run()` claims  → ai_tool_calls: +1 row (DENIED, ATTEMPT-keyed)
+ *                 the idempotency ledger row (a pre-ledger authorization
+ *                 refusal) — [PROMOTED, RTP row 11, AI-008/T067] the gate
+ *                 now ALSO calls `recordAttempt()` on the way out.
  *   - FAILED    — the call passes authorization, `this.run()` DOES claim → ai_tool_calls: +1 row (FAILED_PERMANENT)
  *                 a row, and the business logic inside the executor throws.
  *
- * If REFUSED behaved like FAILED (both ledgered), refusal recording would be
- * "as reliable as" success recording, per FR-081. It does not.
+ * REFUSED now behaves like FAILED for ledger presence (both produce exactly
+ * one row) — refusal recording is "as reliable as" success recording, per
+ * FR-081. The two remain distinguishable by KEY SHAPE, not presence: FAILED
+ * claims the real idempotency key (replayable, unbounded lifetime); REFUSED
+ * writes a namespaced `attempt:<tool>:<uuid>` key (terminal, bounded
+ * retention) — this file's per-case assertions check both.
  */
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
@@ -48,7 +54,7 @@ import { AI_ADMIN_TOOL } from '../../src/modules/ai/tools/ai-admin-tools.constan
 import { AI_TOOL } from '../../src/modules/ai/tools/ai-tools.constants';
 import type { AuthenticatedUser } from '../../src/modules/auth/interfaces/authenticated-user.interface';
 
-describe('W10 — refusal/failure recorded as reliably as success? (T156)', () => {
+describe('W10 — refusal/failure recorded as reliably as success (T156, closed by AI-008/T067)', () => {
   let harness: AiAuditHarness;
   let seed: AiAuditSeed;
   let conversations: AiConversationService;
@@ -220,15 +226,17 @@ describe('W10 — refusal/failure recorded as reliably as success? (T156)', () =
       results.push({ entryPoint: 'dispatcher', outcome: 'ALLOWED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: true, toolCallStatus: 'SUCCEEDED', turnRecorded: 'n/a' });
     });
 
-    it('REFUSED (limited principal, get_dashboard_kpis, no analytics.dashboard.read) → 0 ai_tool_calls rows', async () => {
+    it('REFUSED (limited principal, get_dashboard_kpis, no analytics.dashboard.read) → 1 ai_tool_calls row, DENIED (ATTEMPT-keyed)', async () => {
       const conv = await conversations.start(seed.tenantA.id, {});
       convIds.push(conv.id);
       const ctx: ToolContext = { tenantId: seed.tenantA.id, aiConversationId: conv.id, actorUserId: limitedPrincipal.id, permissions: limitedPrincipal.permissions };
       const result = await dispatch.execute(ctx, { id: randomUUID(), name: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, arguments: '{}' });
       expect(result.success).toBe(false);
       const count = await toolCallCount(conv.id, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS);
-      expect(count).toBe(0); // the central asymmetry — confirmed at the lowest possible level
-      results.push({ entryPoint: 'dispatcher', outcome: 'REFUSED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: false, toolCallStatus: null, turnRecorded: 'n/a' });
+      expect(count).toBe(1); // [PROMOTED, RTP row 11] the asymmetry is closed — confirmed at the lowest possible level
+      const status = await toolCallStatus(conv.id, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS);
+      expect(status).toBe('DENIED');
+      results.push({ entryPoint: 'dispatcher', outcome: 'REFUSED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: true, toolCallStatus: status, turnRecorded: 'n/a' });
     });
 
     it('FAILED (owner, get_clinic_details, unknown clinicId) → 1 ai_tool_calls row, FAILED_PERMANENT — the ledger DOES work once run() claims the row', async () => {
@@ -277,17 +285,19 @@ describe('W10 — refusal/failure recorded as reliably as success? (T156)', () =
       results.push({ entryPoint: 'REST', outcome: 'ALLOWED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: true, toolCallStatus: 'SUCCEEDED', turnRecorded: true });
     });
 
-    it('REFUSED (limited principal, get_dashboard_kpis) → the ROUTE is reached (route guard passes) but 0 ai_tool_calls rows; the TURN is still recorded (ai_execution_metrics +1)', async () => {
+    it('REFUSED (limited principal, get_dashboard_kpis) → the ROUTE is reached (route guard passes), 1 ai_tool_calls row (DENIED); the TURN is also recorded (ai_execution_metrics +1)', async () => {
       const convId = await driveRest(limitedPrincipal, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, {});
-      expect(await toolCallCount(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS)).toBe(0);
-      expect(await metricsExists(convId)).toBe(true); // parity holds at the TURN level...
+      expect(await toolCallCount(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS)).toBe(1); // [PROMOTED, RTP row 11] closed
+      const status = await toolCallStatus(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS);
+      expect(status).toBe('DENIED');
+      expect(await metricsExists(convId)).toBe(true); // parity holds at the TURN level too
       const [metric] = await harness.dataSource.query(
         `SELECT tool_calls_count, tool_failure_count, success FROM ai_execution_metrics WHERE ai_conversation_id = $1`,
         [convId],
       );
       expect(metric.tool_calls_count).toBe(1);
-      expect(metric.tool_failure_count).toBe(1); // ...but it is an undifferentiated count, not a record
-      results.push({ entryPoint: 'REST', outcome: 'REFUSED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: false, toolCallStatus: null, turnRecorded: true });
+      expect(metric.tool_failure_count).toBe(1); // still an undifferentiated count at the metrics level — unaffected by T067
+      results.push({ entryPoint: 'REST', outcome: 'REFUSED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: true, toolCallStatus: status, turnRecorded: true });
     });
 
     it('ALLOWED (owner, book_appointment) → 1 ai_tool_calls row', async () => {
@@ -302,7 +312,7 @@ describe('W10 — refusal/failure recorded as reliably as success? (T156)', () =
       results.push({ entryPoint: 'REST', outcome: 'ALLOWED', tool: AI_TOOL.BOOK_APPOINTMENT, toolCallRowExists: true, toolCallStatus: await toolCallStatus(convId, AI_TOOL.BOOK_APPOINTMENT), turnRecorded: true });
     });
 
-    it('REFUSED (limited principal, book_appointment, no appointments.create) → 0 ai_tool_calls rows', async () => {
+    it('REFUSED (limited principal, book_appointment, no appointments.create) → 1 ai_tool_calls row, DENIED', async () => {
       const convId = await driveRest(limitedPrincipal, AI_TOOL.BOOK_APPOINTMENT, {
         branchId: seed.tenantA.branchId,
         customerId: seed.tenantA.customerIds[0],
@@ -310,8 +320,10 @@ describe('W10 — refusal/failure recorded as reliably as success? (T156)', () =
         startAt: '2027-05-01T11:00:00Z',
         endAt: '2027-05-01T11:30:00Z',
       });
-      expect(await toolCallCount(convId, AI_TOOL.BOOK_APPOINTMENT)).toBe(0);
-      results.push({ entryPoint: 'REST', outcome: 'REFUSED', tool: AI_TOOL.BOOK_APPOINTMENT, toolCallRowExists: false, toolCallStatus: null, turnRecorded: true });
+      expect(await toolCallCount(convId, AI_TOOL.BOOK_APPOINTMENT)).toBe(1); // [PROMOTED, RTP row 11] closed
+      const status = await toolCallStatus(convId, AI_TOOL.BOOK_APPOINTMENT);
+      expect(status).toBe('DENIED');
+      results.push({ entryPoint: 'REST', outcome: 'REFUSED', tool: AI_TOOL.BOOK_APPOINTMENT, toolCallRowExists: true, toolCallStatus: status, turnRecorded: true });
     });
   });
 
@@ -347,11 +359,13 @@ describe('W10 — refusal/failure recorded as reliably as success? (T156)', () =
       results.push({ entryPoint: 'WEBSOCKET', outcome: 'ALLOWED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: true, toolCallStatus: await toolCallStatus(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS), turnRecorded: true });
     });
 
-    it('REFUSED (limited principal, get_dashboard_kpis) → 0 ai_tool_calls rows — the SAME asymmetry, on the WS path too, not just REST', async () => {
+    it('REFUSED (limited principal, get_dashboard_kpis) → 1 ai_tool_calls row, DENIED — the SAME fix, on the WS path too, not just REST', async () => {
       const convId = await driveWs(limitedPrincipal, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, {});
-      expect(await toolCallCount(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS)).toBe(0);
+      expect(await toolCallCount(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS)).toBe(1); // [PROMOTED, RTP row 11] closed
+      const status = await toolCallStatus(convId, AI_ADMIN_TOOL.GET_DASHBOARD_KPIS);
+      expect(status).toBe('DENIED');
       expect(await metricsExists(convId)).toBe(true);
-      results.push({ entryPoint: 'WEBSOCKET', outcome: 'REFUSED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: false, toolCallStatus: null, turnRecorded: true });
+      results.push({ entryPoint: 'WEBSOCKET', outcome: 'REFUSED', tool: AI_ADMIN_TOOL.GET_DASHBOARD_KPIS, toolCallRowExists: true, toolCallStatus: status, turnRecorded: true });
     });
   });
 
@@ -408,14 +422,15 @@ describe('W10 — refusal/failure recorded as reliably as success? (T156)', () =
     });
   });
 
-  it('summary: refusal recording is asymmetric with success recording at EVERY entry point (dispatcher, REST, WS) — turn-level metrics are the only reliably-symmetric record', () => {
+  it('summary: [PROMOTED, RTP row 11] refusal recording is now SYMMETRIC with success recording at EVERY entry point (dispatcher, REST, WS) — both produce exactly one ai_tool_calls row, distinguished by key shape and status rather than by presence', () => {
     const refused = results.filter((r) => r.outcome === 'REFUSED');
     const allowed = results.filter((r) => r.outcome === 'ALLOWED');
-    expect(refused.every((r) => r.toolCallRowExists === false)).toBe(true);
+    expect(refused.every((r) => r.toolCallRowExists === true)).toBe(true);
+    expect(refused.every((r) => r.toolCallStatus === 'DENIED')).toBe(true);
     expect(allowed.every((r) => r.toolCallRowExists === true)).toBe(true);
     // Every REFUSED case that went through a full turn (REST/WS) still shows
-    // turn-level recording — the asymmetry is specifically at the PER-CALL
-    // ledger, not the existence of a durable record at all.
+    // turn-level recording too — parity now holds at both the per-call ledger
+    // AND the turn-level metrics record.
     expect(refused.filter((r) => r.entryPoint !== 'dispatcher').every((r) => r.turnRecorded === true)).toBe(true);
 
     process.stdout.write('\n===W10-REFUSAL-LOGGING-SUMMARY-START===\n');

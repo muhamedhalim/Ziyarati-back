@@ -139,10 +139,10 @@ describe('AI-w5-rag-metadata-tamper - foreign KB/document ids + agent mismatch (
     // or row-level security policy that would refuse this query independently.
   });
 
-  it('AI-004 — reembedChunk() with a foreign kbId hijacks the OTHER tenant\'s ai_kb_embeddings row (tenant_id/agent_id/embedding overwritten) even though the ai_knowledge_bases row content is correctly left untouched', async () => {
+  it('AI-004 — REMEDIATED (RTP row 7): reembedChunk() with a foreign kbId is now a no-op on the OTHER tenant\'s ai_kb_embeddings row — ownership, embedding, and the ai_knowledge_bases content are all left untouched', async () => {
     const before = await kbService.findOne(seed.tenantB.id, tenantBEntryId);
     const beforeEmbeddingRow = await harness.dataSource.query(
-      `SELECT tenant_id, agent_id FROM ai_kb_embeddings WHERE kb_id = $1`,
+      `SELECT tenant_id, agent_id, embedding FROM ai_kb_embeddings WHERE kb_id = $1`,
       [tenantBEntryId],
     );
     expect(beforeEmbeddingRow[0].tenant_id).toBe(seed.tenantB.id); // starts correctly owned by tenant B
@@ -155,37 +155,32 @@ describe('AI-w5-rag-metadata-tamper - foreign KB/document ids + agent mismatch (
     await ingestion.reembedChunk(seed.tenantA.id, seed.tenantA.agentId, tenantBEntryId, 'attacker-controlled replacement text asserting a false loyalty discount code');
 
     // The knowledge-base CONTENT row is correctly protected (kb.update()'s own
-    // tenant-scoped WHERE matched zero rows for a foreign kbId):
+    // tenant-scoped WHERE matched zero rows for a foreign kbId), exactly as
+    // before this fix:
     const after = await kbService.findOne(seed.tenantB.id, tenantBEntryId);
     expect(after.content).toBe(TENANT_B_CONTENT);
     expect(after.content_hash).toBe(before.content_hash);
 
-    // But the EMBEDDING SIDECAR row was silently reassigned to the CALLER's
-    // (tenant A's) tenant/agent — a real cross-tenant row-ownership hijack,
-    // confirmed by direct database inspection, not by an application-level read:
+    // FIXED: the zero-affected-row check (T039) makes reembedChunk return
+    // BEFORE calling upsertEmbedding at all, so the EMBEDDING SIDECAR row is
+    // untouched — no hijack, confirmed by direct database inspection:
     const afterEmbeddingRow = await harness.dataSource.query(
-      `SELECT tenant_id, agent_id FROM ai_kb_embeddings WHERE kb_id = $1`,
+      `SELECT tenant_id, agent_id, embedding FROM ai_kb_embeddings WHERE kb_id = $1`,
       [tenantBEntryId],
     );
-    expect(afterEmbeddingRow[0].tenant_id).toBe(seed.tenantA.id); // HIJACKED — was tenant B
-    expect(afterEmbeddingRow[0].agent_id).toBe(seed.tenantA.agentId); // HIJACKED — was tenant B's agent
+    expect(afterEmbeddingRow[0].tenant_id).toBe(seed.tenantB.id); // unchanged — still tenant B
+    expect(afterEmbeddingRow[0].agent_id).toBe(beforeEmbeddingRow[0].agent_id); // unchanged
+    expect(afterEmbeddingRow[0].embedding).toBe(beforeEmbeddingRow[0].embedding); // no attacker vector written
 
-    // Consequence 1: tenant B's OWN retrieve() can no longer find its own,
-    // never-actually-deleted content via the vector path (the sidecar row that
-    // pointed at it now belongs to a different tenant).
+    // Consequence 1: tenant B's OWN retrieve() still finds its own content —
+    // the sidecar row was never reassigned.
     const tenantBRetrieve = await rag.retrieve(seed.tenantB.id, seed.tenantB.agentId, 'escalation contact', 5);
-    expect(tenantBRetrieve.some((c) => c.id === tenantBEntryId)).toBe(false);
+    expect(tenantBRetrieve.some((c) => c.id === tenantBEntryId)).toBe(true);
 
-    // Consequence 2 (the confidentiality-relevant half): tenant A's OWN
-    // retrieve() now surfaces the hijacked row — and because the vector
-    // SELECT JOINs back to ai_knowledge_bases on kb_id (ai-rag.service.ts:126),
-    // the CONTENT returned is tenant B's ORIGINAL, UNCHANGED, still-confidential
-    // text, not the attacker's replacement text (the kb row was never actually
-    // updated). Tenant A can therefore make tenant B's private knowledge-base
-    // content appear inside tenant A's own retrieval results.
+    // Consequence 2: tenant A's OWN retrieve() does NOT surface tenant B's
+    // row — it was never reassigned to tenant A's ownership, so tenant A's
+    // own tenant-scoped retrieval can never match it.
     const tenantARetrieve = await rag.retrieve(seed.tenantA.id, seed.tenantA.agentId, 'internal escalation contact tamper target', 5);
-    const leaked = tenantARetrieve.find((c) => c.id === tenantBEntryId);
-    expect(leaked).toBeDefined();
-    expect(leaked!.content).toBe(TENANT_B_CONTENT); // tenant B's real, private content — now visible to tenant A
+    expect(tenantARetrieve.some((c) => c.id === tenantBEntryId)).toBe(false);
   });
 });

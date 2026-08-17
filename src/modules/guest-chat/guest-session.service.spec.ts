@@ -50,6 +50,7 @@ describe('GuestSessionService.convert — FND-001', () => {
     findOne: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
+  let auditLogs: { create: jest.Mock; save: jest.Mock };
   let updateResult: { affected: number };
 
   /** Builds a conversation row as the repository would return it. */
@@ -98,6 +99,10 @@ describe('GuestSessionService.convert — FND-001', () => {
         execute: jest.fn().mockImplementation(async () => updateResult),
       }),
     };
+    auditLogs = {
+      create: jest.fn().mockImplementation((entry) => entry),
+      save: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new GuestSessionService(
       tenants as never,
@@ -106,6 +111,7 @@ describe('GuestSessionService.convert — FND-001', () => {
       overrides as never,
       memory as never,
       conversationRepo as never,
+      auditLogs as never,
     );
   });
 
@@ -212,6 +218,7 @@ describe('GuestSessionService.convert — FND-001', () => {
         overrides as never,
         memory as never,
         conversationRepo as never,
+        auditLogs as never,
       );
       await expect(svc.createSession()).rejects.toThrow(/JWT_ACCESS_SECRET/);
     });
@@ -224,6 +231,7 @@ describe('GuestSessionService.convert — FND-001', () => {
         overrides as never,
         memory as never,
         conversationRepo as never,
+        auditLogs as never,
       );
       const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
       await expect(
@@ -391,6 +399,100 @@ describe('GuestSessionService.convert — FND-001', () => {
       // Every failure mode must be indistinguishable to the caller.
       expect(new Set(codes).size).toBe(1);
       expect(new Set(messages).size).toBe(1);
+    });
+  });
+
+  // AI-018 (FR-037-039, RTP row 15): exactly one audit entry per successful
+  // conversion, and a failing audit write must never fail or roll back the
+  // conversion itself.
+  describe('conversion audit entry (FR-037-039)', () => {
+    it('writes exactly one audit_logs entry, naming the created memory', async () => {
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+      const result = await service.convert(
+        CONV_A,
+        TENANT_A,
+        token,
+        undefined,
+        'user-1',
+      );
+
+      expect(auditLogs.save).toHaveBeenCalledTimes(1);
+      const entry = auditLogs.create.mock.calls[0][0];
+      expect(entry).toMatchObject({
+        tenant: { id: TENANT_A },
+        user: { id: 'user-1' },
+        action: 'guest.conversion.converted',
+        entity_type: 'ai_memory',
+        entity_id: 'memory-1',
+      });
+      expect(result).toEqual({ converted: true, memoryId: 'memory-1' });
+    });
+
+    it('names the converted conversation when summarization produced no memory', async () => {
+      memory.summarizeConversation.mockResolvedValueOnce(null);
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+      await service.convert(CONV_A, TENANT_A, token, undefined, 'user-1');
+
+      const entry = auditLogs.create.mock.calls[0][0];
+      expect(entry).toMatchObject({
+        entity_type: 'ai_conversation',
+        entity_id: CONV_A,
+      });
+    });
+
+    it('omits the user relation when no actorUserId is supplied', async () => {
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+      await service.convert(CONV_A, TENANT_A, token, undefined);
+
+      const entry = auditLogs.create.mock.calls[0][0];
+      expect(entry.user).toBeUndefined();
+    });
+
+    it('never carries message content in the audit entry (FR-088)', async () => {
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+      await service.convert(CONV_A, TENANT_A, token, undefined, 'user-1');
+
+      const entry = auditLogs.create.mock.calls[0][0];
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain('content');
+    });
+
+    it('does not fail or roll back the conversion when the audit write throws (FR-039)', async () => {
+      auditLogs.save.mockRejectedValueOnce(new Error('db unavailable'));
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+
+      const result = await service.convert(
+        CONV_A,
+        TENANT_A,
+        token,
+        undefined,
+        'user-1',
+      );
+
+      expect(result).toEqual({ converted: true, memoryId: 'memory-1' });
+    });
+
+    it('does not fail or roll back the conversion when the audit repository is entirely unavailable', async () => {
+      const svc = new GuestSessionService(
+        tenants as never,
+        jwt,
+        config as never,
+        overrides as never,
+        memory as never,
+        conversationRepo as never,
+        undefined as never,
+      );
+      const token = await guestToken(jwt, GUEST_A, DISCOVERY_TENANT);
+
+      const result = await svc.convert(
+        CONV_A,
+        TENANT_A,
+        token,
+        undefined,
+        'user-1',
+      );
+
+      expect(result).toEqual({ converted: true, memoryId: 'memory-1' });
     });
   });
 });

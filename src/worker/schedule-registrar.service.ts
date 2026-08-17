@@ -53,6 +53,10 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_TICK, { tenantId: null }, '5 * * * *');
       // Long-term AI memory expiry purge — 04:00 UTC daily.
       await this.queue.addRepeatable(QUEUE.AI, JOB.AI_MEMORY_CLEANUP, { tenantId: null }, '0 4 * * *');
+      // AI-008 (FR-029c): attempt-only ai_tool_calls retention purge — 04:30
+      // UTC daily, offset from AI_MEMORY_CLEANUP (04:00) and
+      // ANALYTICS_CLEANUP (03:15) so the three sweeps do not contend.
+      await this.queue.addRepeatable(QUEUE.AI, JOB.AI_TOOL_CALL_RETENTION, { tenantId: null }, '30 4 * * *');
       // AI batch poll sweep — polls live OpenAI batches and processes terminal
       // ones. Cheap no-op when batch is unconfigured. Cadence is env-tunable.
       await this.queue.addRepeatable(

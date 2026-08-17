@@ -38,6 +38,10 @@ export interface RecordMetricInput {
   firstTokenMs?: number;
   streamingDurationMs?: number;
   totalLatencyMs: number;
+  /** AI-016 (M2, FR-030): same id as the ai_tool_calls rows for this turn. */
+  correlationId?: string | null;
+  /** AI-017 (M2, FR-033, FR-034): acting staff principal; null for guests. */
+  actorUserId?: string | null;
 }
 
 const n = (v: unknown): number => {
@@ -101,6 +105,8 @@ export class AiMetricsService {
           first_token_ms: input.firstTokenMs,
           streaming_duration_ms: input.streamingDurationMs,
           total_latency_ms: input.totalLatencyMs,
+          correlation_id: input.correlationId ?? null,
+          actor_user_id: input.actorUserId ?? null,
         }),
       );
     } catch (err) {

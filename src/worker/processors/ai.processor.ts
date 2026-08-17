@@ -17,6 +17,7 @@ import { AiExecutionService } from '../../modules/ai/ai-execution.service';
 import { AiBatchService } from '../../modules/ai/batch/ai-batch.service';
 import { AiTrainingFileService } from '../../modules/ai/ai-training-file.service';
 import { AiMemoryService } from '../../modules/ai-memory/ai-memory.service';
+import { AiToolCallRetentionService } from '../../modules/ai/tools/ai-tool-call-retention.service';
 
 /**
  * Consumes the `ai` queue (`ai.execute`). Reuses AiExecutionService.sendMessage —
@@ -38,6 +39,7 @@ export class AiProcessor extends WorkerHost {
     private readonly batch: AiBatchService,
     private readonly trainingFiles: AiTrainingFileService,
     private readonly authz: WorkerAuthorizationService,
+    private readonly retention: AiToolCallRetentionService,
   ) {
     super();
   }
@@ -48,6 +50,16 @@ export class AiProcessor extends WorkerHost {
       const { deleted } = await this.memory.cleanupExpired();
       this.logger.log(`ai.memoryCleanup purged ${deleted} expired memories`);
       return { deleted };
+    }
+
+    // AI-008 (FR-029c): attempt-only ai_tool_calls retention purge (platform-
+    // wide sweep, tenantId null).
+    if (job.name === JOB.AI_TOOL_CALL_RETENTION) {
+      const { deleted, cutoff } = await this.retention.purgeExpiredAttempts();
+      this.logger.log(
+        `ai.toolCallRetention purged ${deleted} attempt-only rows older than ${cutoff}`,
+      );
+      return { deleted, cutoff };
     }
 
     // Batch poll sweep (platform-wide): poll live OpenAI batches and process any

@@ -128,4 +128,13 @@ export class AiExecutionMetric {
 
   @CreateDateColumn()
   created_at!: Date;
+
+  /** M2 (AI-016): same id as the `ai_tool_calls` rows for the same turn (FR-030). */
+  @Index()
+  @Column({ type: 'varchar', nullable: true })
+  correlation_id?: string | null;
+
+  /** M2 (AI-017): acting staff principal; null for guests, never omitted (FR-034). */
+  @Column({ type: 'uuid', nullable: true })
+  actor_user_id?: string | null;
 }

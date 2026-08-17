@@ -32,11 +32,18 @@
  * accident of the crash, not by a validated guard — recorded precisely as
  * such, not overclaimed as a working security control).
  */
+import request from 'supertest';
+import type { Socket } from 'socket.io';
+
 import { buildAiAuditHarness, type AiAuditHarness } from './fixtures/ai-audit-harness';
 import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/ai-audit-seed';
 import { AiConversationService } from '../../src/modules/ai/ai-conversation.service';
 import { AiMemoryService } from '../../src/modules/ai-memory/ai-memory.service';
 import { AI_MESSAGE_ROLE } from '../../src/modules/ai/ai.constants';
+import { WsAuthService } from '../../src/modules/ai-realtime/ws-auth.service';
+
+const CONVERT_ROUTE = '/api/v1/public/guest/convert';
+const SESSION_ROUTE = '/api/v1/public/guest/session';
 
 describe('AI memory — cross-tenant summarization path (T081)', () => {
   let harness: AiAuditHarness;
@@ -72,6 +79,25 @@ describe('AI memory — cross-tenant summarization path (T081)', () => {
       [tenantId, conversationId],
     );
     return rows[0]?.c ?? 0;
+  }
+
+  /** Mints a real guest session, mirroring ai-w6-guest-convert.spec.ts's own helper (T090). */
+  async function mintGuestRaw(): Promise<{ guestTokenCookie: string; sub: string }> {
+    const res = await request(harness.app.getHttpServer()).post(SESSION_ROUTE).send({}).expect(200);
+    const cookies = res.headers['set-cookie'] as unknown as string[];
+    const raw = cookies.find((c) => c.startsWith('guest_token='));
+    if (!raw) throw new Error('guest_token cookie was not issued');
+    const cookieValue = raw.split(';')[0];
+    const wsAuth = harness.app.get(WsAuthService);
+    const principal = await wsAuth.authenticate({
+      handshake: { auth: {}, headers: { cookie: cookieValue }, query: {} },
+    } as unknown as Socket);
+    return { guestTokenCookie: cookieValue, sub: principal.id };
+  }
+
+  async function accessTokenFor(userId: string, tenantId: string): Promise<string> {
+    const accessSecret = harness.config.getOrThrow<string>('JWT_ACCESS_SECRET');
+    return harness.jwt.signAsync({ sub: userId, tenantId, type: 'access' }, { secret: accessSecret, expiresIn: '15m' });
   }
 
   it('[REMEDIATED, RTP row 5] the raw SQL predicate now references the column that actually exists on ai_messages — the CORRECT-argument call returns a populated AiMemory row', async () => {
@@ -156,31 +182,66 @@ describe('AI memory — cross-tenant summarization path (T081)', () => {
     expect(await memoryCount(seed.tenantB.id, convA)).toBe(0);
   });
 
-  it('[GENUINE GAP] a generic audit_logs table EXISTS and is used by other cross-tenant-sensitive flows (auth, roles, staff-access) — but ai-memory/guest-chat never write to it, for this operation or any other', async () => {
+  it('[PROMOTED, RTP row 15, AI-018/T082] a generic audit_logs table EXISTS and is used by other cross-tenant-sensitive flows (auth, roles, staff-access) — guest-chat now ALSO writes to it, on a successful conversion', async () => {
     // Corrected from an earlier assumption: this codebase DOES have a generic
     // audit trail (`entities/Auth&RBAC/AuditLog.ts`, table `audit_logs`,
     // columns action/entity_type/entity_id/old_values/new_values/tenant/user),
     // actively written by src/modules/auth/auth.service.ts,
     // src/modules/staff/staff-access.service.ts, src/modules/auth/roles.service.ts,
-    // and others (source grep). Neither ai-memory.service.ts nor
-    // guest-chat/guest-session.service.ts imports or writes AuditLog anywhere
-    // (confirmed by source grep — zero matches for "AuditLog"/"audit_log" in
-    // either module directory). So the cross-tenant summarization path this
-    // spec exercises — read source-tenant messages, write a memory into a
-    // DIFFERENT target tenant, exactly the shape of operation `audit_logs`
-    // exists to record for other flows — leaves no entry in the one audit
-    // mechanism the rest of the codebase uses for comparable operations.
-    // The closest thing to an "audit record" for a legitimate call is the
-    // resulting ai_memories row itself, which — per the bug proven above — is
-    // currently never created at all, legitimate call or not.
+    // and others (source grep). `guest-session.service.ts`'s `convert()` now
+    // writes to it too (AI-018/T082, `auditConversion()`), on the SAME
+    // success path this file's other cases prove works (RTP row 5, T030).
+    // This case drives a REAL conversion through the full HTTP stack — not
+    // just `summarizeConversation()` in isolation, since the audit write
+    // lives in `GuestSessionService.convert()`, one layer up from what the
+    // rest of this file exercises — then reads back the resulting row.
     const auditTables: { table_name: string }[] = await harness.dataSource.query(
       `SELECT table_name FROM information_schema.tables WHERE table_name = 'audit_logs'`,
     );
     expect(auditTables.map((t) => t.table_name)).toContain('audit_logs');
 
-    const rows = await harness.dataSource.query(
-      `SELECT COUNT(*)::int AS c FROM audit_logs WHERE entity_type = 'ai_memory' OR entity_type = 'ai_conversation'`,
+    const guestA = await mintGuestRaw();
+    const convForAudit = await conversations.start(seed.discoveryTenantId, {});
+    await harness.dataSource.query(
+      `UPDATE ai_conversations SET session = jsonb_set(COALESCE(session, '{}'::jsonb), '{guestSubject}', to_jsonb($2::text)) WHERE id = $1`,
+      [convForAudit.id, guestA.sub],
     );
-    expect(rows[0].c).toBe(0);
+    await harness.dataSource.query(
+      `INSERT INTO ai_messages (ai_conversation_id, "tenantId", role, content) VALUES ($1, $2, $3, $4)`,
+      [convForAudit.id, seed.discoveryTenantId, AI_MESSAGE_ROLE.USER, 'RTP row 15 guest transcript line.'],
+    );
+    const accessToken = await accessTokenFor(seed.tenantA.staffUserId, seed.tenantA.id);
+
+    const before = await harness.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM audit_logs WHERE entity_type IN ('ai_memory', 'ai_conversation')`,
+    );
+
+    const res = await request(harness.app.getHttpServer())
+      .post(CONVERT_ROUTE)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .set('Cookie', guestA.guestTokenCookie)
+      .send({ guestConversationId: convForAudit.id });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ converted: true });
+
+    const after = await harness.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM audit_logs WHERE entity_type IN ('ai_memory', 'ai_conversation')`,
+    );
+    expect(after[0].c).toBe(before[0].c + 1); // exactly one new entry
+
+    const [entry] = await harness.dataSource.query(
+      `SELECT action, entity_type, entity_id, "tenantId" FROM audit_logs WHERE entity_type IN ('ai_memory', 'ai_conversation') ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect(entry).toMatchObject({
+      action: 'guest.conversion.converted',
+      entity_type: 'ai_memory', // a memory WAS created (real seeded content above)
+      entity_id: res.body.memoryId,
+      tenantId: seed.tenantA.id, // the TARGET tenant, not the discovery tenant
+    });
+
+    await harness.dataSource.query(`DELETE FROM audit_logs WHERE entity_id = $1`, [res.body.memoryId]).catch(() => undefined);
+    await harness.dataSource.query(`DELETE FROM ai_memories WHERE id = $1`, [res.body.memoryId]).catch(() => undefined);
+    await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [convForAudit.id]);
+    await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [convForAudit.id]);
   });
 });

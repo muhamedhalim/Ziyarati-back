@@ -513,6 +513,17 @@ export class AiExecutionService {
         toolFailureCount,
         toolExecMs,
         totalLatencyMs: Date.now() - turnStart,
+        // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the
+        // ai_tool_calls rows for this turn; acting STAFF principal only —
+        // explicit null for guests (never their own principal id), a
+        // value, not an omission. `getUser()` returns the guest's own
+        // synthesized principal during a guest turn (it is set via the
+        // same `setPrincipal` staff turns use), so `.guest` must be
+        // checked — matching the realtime gateway's identical guard.
+        correlationId: this.ctx.getCorrelationId(),
+        actorUserId: this.ctx.getUser()?.guest
+          ? null
+          : (this.ctx.getUser()?.id ?? null),
       });
 
       const response = {
@@ -592,6 +603,17 @@ export class AiExecutionService {
         toolFailureCount: 0,
         toolExecMs: 0,
         totalLatencyMs: Date.now() - turnStart,
+        // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the
+        // ai_tool_calls rows for this turn; acting STAFF principal only —
+        // explicit null for guests (never their own principal id), a
+        // value, not an omission. `getUser()` returns the guest's own
+        // synthesized principal during a guest turn (it is set via the
+        // same `setPrincipal` staff turns use), so `.guest` must be
+        // checked — matching the realtime gateway's identical guard.
+        correlationId: this.ctx.getCorrelationId(),
+        actorUserId: this.ctx.getUser()?.guest
+          ? null
+          : (this.ctx.getUser()?.id ?? null),
       });
       throw err instanceof AppError
         ? err
@@ -1170,6 +1192,17 @@ export class AiExecutionService {
         firstTokenMs,
         streamingDurationMs,
         totalLatencyMs: Date.now() - turnStart,
+        // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the
+        // ai_tool_calls rows for this turn; acting STAFF principal only —
+        // explicit null for guests (never their own principal id), a
+        // value, not an omission. `getUser()` returns the guest's own
+        // synthesized principal during a guest turn (it is set via the
+        // same `setPrincipal` staff turns use), so `.guest` must be
+        // checked — matching the realtime gateway's identical guard.
+        correlationId: this.ctx.getCorrelationId(),
+        actorUserId: this.ctx.getUser()?.guest
+          ? null
+          : (this.ctx.getUser()?.id ?? null),
       });
 
       const response = {
@@ -1254,6 +1287,17 @@ export class AiExecutionService {
         toolFailureCount: 0,
         toolExecMs: 0,
         totalLatencyMs: Date.now() - turnStart,
+        // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the
+        // ai_tool_calls rows for this turn; acting STAFF principal only —
+        // explicit null for guests (never their own principal id), a
+        // value, not an omission. `getUser()` returns the guest's own
+        // synthesized principal during a guest turn (it is set via the
+        // same `setPrincipal` staff turns use), so `.guest` must be
+        // checked — matching the realtime gateway's identical guard.
+        correlationId: this.ctx.getCorrelationId(),
+        actorUserId: this.ctx.getUser()?.guest
+          ? null
+          : (this.ctx.getUser()?.id ?? null),
       });
       throw err instanceof AppError
         ? err
