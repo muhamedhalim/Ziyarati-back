@@ -44,6 +44,7 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'support-tickets/platform-support-ticket.controller.ts',
   'subscription-billing/platform-billing-admin.controller.ts',
   'subscription-billing/platform-feature-flag.controller.ts',
+  'resource-pricing/platform-resource-catalog.controller.ts',
 
   // Authentication and RBAC administration — reached before, or independently
   // of, any entitlement.

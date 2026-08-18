@@ -4,8 +4,12 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { UsageService } from './usage.service';
 import { AccessControlService } from './access-control.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
+import { TenantEntitlementLedgerService } from './tenant-entitlement-ledger.service';
+import { TenantMetricCreditsService } from './tenant-metric-credits.service';
+import { SystemSettingService } from '../platform/system-setting.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
+import { User } from '../../entities/Auth&RBAC/User';
 import { USAGE_METRIC, COUNT_LIMIT } from './usage-metric';
 import { ErrorCode } from '../../common/errors';
 import {
@@ -21,6 +25,9 @@ describe('UsageService', () => {
   let usageRepo: MockRepository;
   let access: { isEnforced: jest.Mock; assertAccess: jest.Mock };
   let limitOverrides: { getActive: jest.Mock; getActiveMap: jest.Mock };
+  let ledger: { capacityMap: jest.Mock };
+  let credits: { tryDebit: jest.Mock; balanceMap: jest.Mock };
+  let platformSettings: { getTyped: jest.Mock };
 
   /** The platform's standard access-denied error, as `assertAccess` raises it. */
   const denied = () =>
@@ -41,6 +48,15 @@ describe('UsageService', () => {
       getActive: jest.fn().mockResolvedValue(null),
       getActiveMap: jest.fn().mockResolvedValue(new Map()),
     };
+    // No purchased capacity/credits in any existing scenario — Phase 1.4's
+    // additive terms default to their pre-Phase-1 no-op state (empty map =>
+    // `?? 0`), so every pre-existing test's expected numbers are unchanged.
+    ledger = { capacityMap: jest.fn().mockResolvedValue(new Map()) };
+    credits = {
+      tryDebit: jest.fn().mockResolvedValue(false),
+      balanceMap: jest.fn().mockResolvedValue(new Map()),
+    };
+    platformSettings = { getTyped: jest.fn().mockResolvedValue(5) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -49,6 +65,9 @@ describe('UsageService', () => {
         { provide: getRepositoryToken(SubscriptionUsage), useValue: usageRepo },
         { provide: AccessControlService, useValue: access },
         { provide: TenantUsageLimitOverrideService, useValue: limitOverrides },
+        { provide: TenantEntitlementLedgerService, useValue: ledger },
+        { provide: TenantMetricCreditsService, useValue: credits },
+        { provide: SystemSettingService, useValue: platformSettings },
       ],
     }).compile();
     service = moduleRef.get(UsageService);
@@ -160,6 +179,46 @@ describe('UsageService', () => {
         service.assertCountWithinLimit('t1', COUNT_LIMIT.USERS, 999),
       ).resolves.toBeUndefined();
     });
+
+    // Phase 1.4 (closes G2) — this method used to read ONLY the bare plan
+    // column, so a paid "+1 branch" add-on displayed correctly in the usage
+    // view but still 422'd here.
+    it('honors purchased CAPACITY on top of the plan limit', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_branches: 5 },
+      });
+      ledger.capacityMap.mockResolvedValue(new Map([['branches', 2]]));
+      // effective limit = 5 (plan) + 2 (capacity) = 7. At 6 existing, +1 more fits.
+      await expect(
+        service.assertCountWithinLimit('t1', COUNT_LIMIT.BRANCHES, 6),
+      ).resolves.toBeUndefined();
+      // At 7 existing, +1 more would be the 8th — over the effective limit.
+      await expect(
+        service.assertCountWithinLimit('t1', COUNT_LIMIT.BRANCHES, 7),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    });
+
+    it('honors an active OVERRIDE on top of the plan limit', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_branches: 5 },
+      });
+      limitOverrides.getActive.mockResolvedValue({ override_limit: '10' });
+      await expect(
+        service.assertCountWithinLimit('t1', COUNT_LIMIT.BRANCHES, 9),
+      ).resolves.toBeUndefined();
+    });
+
+    it('asks the ledger for the correct capacity METRIC derived from the column', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_branches: 5 },
+      });
+      await service.assertCountWithinLimit('t1', COUNT_LIMIT.BRANCHES, 1);
+      expect(limitOverrides.getActive).toHaveBeenCalledWith('t1', 'branches');
+      expect(ledger.capacityMap).toHaveBeenCalledWith('t1');
+    });
   });
 
   describe('getUsage / getBreakdown', () => {
@@ -198,6 +257,145 @@ describe('UsageService', () => {
       });
       expect(b.metrics.aiTokens.limit).toBeNull();
       expect(b.metrics.whatsappMessages.remaining).toBe(0);
+    });
+
+    // Phase 1.4 — a metered metric's true remaining capacity includes any
+    // prepaid credit balance, so reporting agrees with what
+    // incrementIfWithinLimit would actually admit.
+    it('extends the limit by the prepaid CREDIT balance once the plan allowance is exhausted', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_appointments: 100 },
+      });
+      usageRepo.findOne.mockResolvedValue({ appointments_used: 100 });
+      credits.balanceMap.mockResolvedValue(
+        new Map([['APPOINTMENTS', { balanceUnits: 30 }]]),
+      );
+
+      const b = await service.getBreakdown('t1');
+
+      expect(b.metrics.appointments).toMatchObject({
+        used: 100,
+        limit: 130, // 100 (plan) + 30 (credit)
+        remaining: 30,
+        exceeded: false,
+        creditBalance: 30,
+      });
+    });
+
+    it('exposes creditBalance as 0 (not undefined) when the tenant has never bought credit for a metric', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_appointments: 100 },
+      });
+      usageRepo.findOne.mockResolvedValue({ appointments_used: 10 });
+      credits.balanceMap.mockResolvedValue(new Map());
+
+      const b = await service.getBreakdown('t1');
+
+      expect(b.metrics.appointments.creditBalance).toBe(0);
+    });
+  });
+
+  describe('getUnifiedBreakdown', () => {
+    it('extends a metered metric line by the credit balance', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_ai_tokens: '1000' },
+      });
+      usageRepo.findOne.mockResolvedValue({ ai_tokens_used: '1000' });
+      credits.balanceMap.mockResolvedValue(
+        new Map([['AI_TOKENS', { balanceUnits: 5000 }]]),
+      );
+
+      const out = await service.getUnifiedBreakdown('t1');
+
+      expect(out.aiTokens).toMatchObject({
+        used: 1000,
+        limit: 6000, // 1000 (plan) + 5000 (credit)
+        exceeded: false,
+      });
+    });
+
+    it('extends a count-based resource line by purchased capacity', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_customers: 50 },
+      });
+      usageRepo.findOne.mockResolvedValue(null);
+      ledger.capacityMap.mockResolvedValue(new Map([['customers', 25]]));
+
+      const out = await service.getUnifiedBreakdown('t1', { customers: 60 });
+
+      expect(out.customers).toMatchObject({
+        used: 60,
+        limit: 75, // 50 (plan) + 25 (capacity)
+        exceeded: false, // 60 <= 75
+      });
+    });
+
+    it('with no credits/capacity purchased, behaves exactly as before Phase 1.4 (backward compatibility)', async () => {
+      subscriptions.findOne.mockResolvedValue({
+        id: 'sub-1',
+        plan: { max_ai_tokens: '1000', max_customers: 50 },
+      });
+      usageRepo.findOne.mockResolvedValue({ ai_tokens_used: '400' });
+
+      const out = await service.getUnifiedBreakdown('t1', { customers: 10 });
+
+      expect(out.aiTokens.limit).toBe(1000);
+      expect(out.customers.limit).toBe(50);
+    });
+  });
+
+  // Plan §11 — the unified storage formula. Not yet wired into
+  // FileUploadService (deliberately deferred — see the method's docblock);
+  // tested standalone here.
+  describe('effectiveStorageLimit', () => {
+    it('is the plan bytes when it is lower than the platform ceiling', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_storage_bytes: '1000000' }, // 1 MB, well under the 5 GB default ceiling
+      });
+      const limit = await service.effectiveStorageLimit('t1');
+      expect(limit).toBe(1_000_000);
+    });
+
+    it('is the platform ceiling when the plan bytes (+ addon) would exceed it', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_storage_bytes: String(100 * 1024 * 1024 * 1024) }, // 100 GB plan
+      });
+      platformSettings.getTyped.mockResolvedValueOnce(5); // 5 GB ceiling
+      const limit = await service.effectiveStorageLimit('t1');
+      expect(limit).toBe(5 * 1024 * 1024 * 1024);
+    });
+
+    it('adds purchased storageBytes capacity to the plan bytes before comparing to the ceiling', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_storage_bytes: '1000000' },
+      });
+      ledger.capacityMap.mockResolvedValueOnce(new Map([['storageBytes', 500_000]]));
+      const limit = await service.effectiveStorageLimit('t1');
+      expect(limit).toBe(1_500_000);
+    });
+
+    it('is unlimited-commercial (platform ceiling binds alone) when the plan column is null', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_storage_bytes: null },
+      });
+      platformSettings.getTyped.mockResolvedValueOnce(5);
+      const limit = await service.effectiveStorageLimit('t1');
+      expect(limit).toBe(5 * 1024 * 1024 * 1024);
+    });
+
+    it('falls back to the platform ceiling alone when the tenant has no subscription', async () => {
+      subscriptions.findOne.mockResolvedValueOnce(null);
+      platformSettings.getTyped.mockResolvedValueOnce(5);
+      const limit = await service.effectiveStorageLimit('t1');
+      expect(limit).toBe(5 * 1024 * 1024 * 1024);
     });
   });
 
@@ -282,7 +480,7 @@ describe('UsageService', () => {
 
       expect(managerSubscriptions.findOne).toHaveBeenCalledTimes(1);
       expect(subscriptions.findOne).not.toHaveBeenCalled();
-      expect(result).toEqual({ applied: true, used: 0, limit: 100 });
+      expect(result).toEqual({ applied: true, used: 0, limit: 100, fundedBy: 'plan' });
     });
 
     it('performs the atomic insert+update against manager.getRepository(SubscriptionUsage), never the injected repo', async () => {
@@ -357,7 +555,7 @@ describe('UsageService', () => {
       );
 
       expect(subscriptions.findOne).not.toHaveBeenCalled();
-      expect(result).toEqual({ applied: true, used: 0, limit: null });
+      expect(result).toEqual({ applied: true, used: 0, limit: null, fundedBy: 'plan' });
     });
 
     it('omits the manager for standalone callers (AI/WhatsApp execution — unchanged)', async () => {
@@ -389,24 +587,52 @@ describe('UsageService', () => {
 
       const result = await service.incrementIfWithinLimit('t1', metric, 1);
 
-      expect(result).toEqual({ applied: true, used: 0, limit: 100 });
+      expect(result).toEqual({ applied: true, used: 0, limit: 100, fundedBy: 'plan' });
       expect(updateQb.where).toHaveBeenCalledWith(
         expect.stringContaining('<= :limit'),
         expect.objectContaining({ amount: 1, limit: 100 }),
       );
     });
 
-    it('refuses (applied: false) when the atomic UPDATE affects zero rows (already exhausted)', async () => {
+    it('refuses (applied: false, fundedBy: none) when the atomic UPDATE affects zero rows and no credit covers it', async () => {
       subscriptions.findOne.mockResolvedValueOnce({
         id: 'sub-1',
         plan: { max_campaigns: 100 },
       });
       primeAdmission({ affected: 0 });
       usageRepo.findOne.mockResolvedValueOnce({ campaigns_used: 100 });
+      // credits.tryDebit defaults to false in this suite's beforeEach.
 
       const result = await service.incrementIfWithinLimit('t1', metric, 1);
 
-      expect(result).toEqual({ applied: false, used: 100, limit: 100 });
+      expect(result).toEqual({ applied: false, used: 100, limit: 100, fundedBy: 'none' });
+    });
+
+    it('falls back to a prepaid credit when the plan allowance is exhausted (plan §9 spillover)', async () => {
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_campaigns: 100 },
+      });
+      const insertQb = createMockQueryBuilder();
+      const updateQb = createMockQueryBuilder();
+      updateQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] }); // plan UPDATE misses
+      const rawIncrementInsertQb = createMockQueryBuilder();
+      const rawIncrementUpdateQb = createMockQueryBuilder(); // rawIncrement's own insert+update
+      usageRepo.createQueryBuilder
+        .mockImplementationOnce(() => insertQb) // incrementIfWithinLimit's upsert
+        .mockImplementationOnce(() => updateQb) // incrementIfWithinLimit's guarded UPDATE (misses)
+        .mockImplementationOnce(() => rawIncrementInsertQb) // rawIncrement's upsert
+        .mockImplementationOnce(() => rawIncrementUpdateQb); // rawIncrement's add
+      credits.tryDebit.mockResolvedValueOnce(true);
+
+      const result = await service.incrementIfWithinLimit('t1', metric, 1);
+
+      expect(credits.tryDebit).toHaveBeenCalledWith('t1', metric, 1, undefined);
+      expect(result).toEqual({ applied: true, used: 0, limit: 100, fundedBy: 'credit' });
+      // rawIncrement's own two query builders (upsert + add) actually ran —
+      // proving the credit-funded unit is genuinely recorded, not just
+      // reported as applied.
+      expect(rawIncrementUpdateQb.execute).toHaveBeenCalled();
     });
 
     it('a tenant-specific override raises the effective limit used in the atomic UPDATE', async () => {
@@ -447,7 +673,7 @@ describe('UsageService', () => {
         1,
       );
 
-      expect(result).toEqual({ applied: true, used: 0, limit: null });
+      expect(result).toEqual({ applied: true, used: 0, limit: null, fundedBy: 'plan' });
     });
 
     /**
@@ -490,7 +716,7 @@ describe('UsageService', () => {
 
       await expect(
         service.incrementIfWithinLimit('t1', USAGE_METRIC.WHATSAPP_MESSAGES, 1),
-      ).resolves.toEqual({ applied: true, used: 0, limit: null });
+      ).resolves.toEqual({ applied: true, used: 0, limit: null, fundedBy: 'plan' });
     });
 
     it('asks about the feature the metric belongs to — scoped, never a blanket bypass', async () => {
@@ -573,6 +799,36 @@ describe('UsageService', () => {
       ).resolves.toBeUndefined();
     });
 
+    // Phase 1.4 (closes G2) — same fix as the other two count-based asserts.
+    it('honors purchased CAPACITY on top of the seat cap', async () => {
+      const managerSubscriptions = createMockRepository();
+      const managerUsers = createMockRepository();
+      managerSubscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_users: 5 },
+      });
+      managerUsers.count.mockResolvedValueOnce(6); // 6 existing seats
+      const manager = createMockEntityManager(
+        new Map<unknown, MockRepository>([
+          [Subscription, managerSubscriptions],
+          [User, managerUsers],
+        ]),
+      );
+      access.isEnforced.mockResolvedValueOnce(true);
+      ledger.capacityMap.mockResolvedValueOnce(new Map([['employees', 2]]));
+
+      // effective = 5 (plan) + 2 (capacity) = 7; 6 existing + 1 fits.
+      await expect(
+        service.assertUserSeatWithinLimit('t1', manager as never),
+      ).resolves.toBeUndefined();
+      expect(ledger.capacityMap).toHaveBeenCalledWith('t1', manager);
+      expect(limitOverrides.getActive).toHaveBeenCalledWith(
+        't1',
+        'employees',
+        manager,
+      );
+    });
+
     it('reports an all-unlimited breakdown instead of throwing NOT_FOUND', async () => {
       subscriptions.findOne.mockResolvedValue(null);
       usageRepo.findOne.mockResolvedValue({
@@ -644,6 +900,47 @@ describe('UsageService', () => {
       await expect(
         service.assertResourceWithinLimit('t1', 'knowledgeBaseFiles', 10_000),
       ).resolves.toBeUndefined();
+    });
+
+    // Phase 1.4 (closes G2) — same fix as assertCountWithinLimit, generalized
+    // to every ENFORCED_RESOURCE_LIMITS metric.
+    it('honors purchased CAPACITY on top of the plan limit', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_customers: 100 },
+      });
+      ledger.capacityMap.mockResolvedValueOnce(new Map([['customers', 20]]));
+      // effective = 100 + 20 = 120; at 119 existing, +1 fits.
+      await expect(
+        service.assertResourceWithinLimit('t1', 'customers', 119),
+      ).resolves.toBeUndefined();
+    });
+
+    it('honors an active OVERRIDE on top of the plan limit', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_customers: 100 },
+      });
+      limitOverrides.getActive.mockResolvedValueOnce({ override_limit: '200' });
+      await expect(
+        service.assertResourceWithinLimit('t1', 'customers', 199),
+      ).resolves.toBeUndefined();
+    });
+
+    it('still refuses once override + capacity are exhausted too', async () => {
+      access.isEnforced.mockResolvedValueOnce(true);
+      subscriptions.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        plan: { max_customers: 100 },
+      });
+      limitOverrides.getActive.mockResolvedValueOnce({ override_limit: '110' });
+      ledger.capacityMap.mockResolvedValueOnce(new Map([['customers', 5]]));
+      // effective = max(100, 110) + 5 = 115; at 115 existing, +1 exceeds it.
+      await expect(
+        service.assertResourceWithinLimit('t1', 'customers', 115),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
 
     /**

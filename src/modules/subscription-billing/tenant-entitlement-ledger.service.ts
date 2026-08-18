@@ -81,6 +81,12 @@ interface RevokeParams {
   amountUnits: number;
   reason: LedgerReason;
   sourceRefundId?: string;
+  /** The purchase this revoke reverses — NOT unique (unlike a grant's
+   *  `sourcePurchaseId`), since repeated partial refunds on the same
+   *  purchase each append their own revoke row. Callers computing the
+   *  plan §14 proportional-refund formula need this to sum "already
+   *  revoked for THIS purchase" across multiple refund events. */
+  sourcePurchaseId?: string;
   /** Portion of `amountUnits` that could not actually be clawed back because
    *  it was already consumed (plan §14 — "partly used" / "fully used"). */
   unrecoverableUnits?: number;
@@ -182,8 +188,8 @@ export class TenantEntitlementLedgerService {
     const exec = params.manager ?? this.dataSource;
     const rows: LedgerRow[] = await exec.query(
       `INSERT INTO "tenant_entitlement_ledger"
-         ("tenantId","metric","kind","direction","amount_units","unrecoverable_units","reason","sourceRefundId","actorId","note")
-       VALUES ($1,$2,$3,'revoke',$4,$5,$6,$7,$8,$9)
+         ("tenantId","metric","kind","direction","amount_units","unrecoverable_units","reason","sourcePurchaseId","sourceRefundId","actorId","note")
+       VALUES ($1,$2,$3,'revoke',$4,$5,$6,$7,$8,$9,$10)
        RETURNING id,"tenantId",metric,kind,direction,amount_units,unrecoverable_units,reason,"sourcePurchaseId","sourceRefundId","actorId",note,created_at`,
       [
         params.tenantId,
@@ -192,6 +198,7 @@ export class TenantEntitlementLedgerService {
         params.amountUnits,
         unrecoverable,
         params.reason,
+        params.sourcePurchaseId ?? null,
         params.sourceRefundId ?? null,
         params.actorId ?? null,
         params.note ?? null,
@@ -220,5 +227,27 @@ export class TenantEntitlementLedgerService {
       [tenantId],
     );
     return new Map(rows.map((r) => [r.metric, Number(r.capacity)]));
+  }
+
+  /**
+   * Σ `amount_units` already revoked for ONE purchase, across every refund
+   * event recorded against it so far (plan §14's proportional formula:
+   * `newRevoke = targetRevoked − alreadyRevokedForThisPurchase`). Unlike a
+   * grant's `sourcePurchaseId` (unique — one grant per purchase), a
+   * purchase can accumulate MANY revoke rows as repeated partial refunds
+   * land, so this sums rather than looks up a single row.
+   */
+  async sumRevokedForPurchase(
+    purchaseId: string,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const exec = manager ?? this.dataSource;
+    const rows: Array<{ sum: string }> = await exec.query(
+      `SELECT COALESCE(SUM(amount_units), 0) AS sum
+         FROM "tenant_entitlement_ledger"
+        WHERE "sourcePurchaseId" = $1 AND direction = 'revoke'`,
+      [purchaseId],
+    );
+    return Number(rows[0]?.sum ?? 0);
   }
 }

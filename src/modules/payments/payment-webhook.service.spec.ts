@@ -198,6 +198,78 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     expect(res.status).toBe(PaymentStatus.REFUNDED);
   });
 
+  // Phase 1.6 (plan §14) — RefundRecordedEvent, alongside PaymentRefundedEvent.
+  describe('RefundRecordedEvent (Phase 1.6 — plan §14)', () => {
+    it('emits when the webhook reconciles a genuinely NEW gateway-side refund', async () => {
+      payments.findOne.mockResolvedValueOnce(ownerPayment());
+      const payment = lockedPayment();
+      paymentRepo().findOne.mockResolvedValueOnce(payment);
+      (manager.getRepository(Refund) as unknown as MockRepository).save.mockResolvedValueOnce({
+        id: 'recon-1',
+      });
+
+      const refundQb = createMockQueryBuilder();
+      refundQb.getRawOne
+        .mockResolvedValueOnce({ sum: '0' }) // baseline (SUCCEEDED+PENDING)
+        .mockResolvedValueOnce({ sum: '100' }); // succeeded total = 10000 cents = full
+      manager.createQueryBuilder.mockReturnValue(refundQb);
+
+      await service.handleMoyasar({
+        id: 'e1',
+        type: 'payment_refunded',
+        created_at: freshCreatedAt(),
+        data: { id: 'gw1', refunded: 10000 },
+      } as any);
+
+      expect(emitter.emit).toHaveBeenCalledWith(
+        'refund.recorded',
+        expect.objectContaining({
+          tenantId: 't1',
+          paymentId: 'pay-1',
+          refundId: 'recon-1',
+          refundedCumulativeMinor: 10000,
+          paymentTotalMinor: 10000,
+        }),
+      );
+    });
+
+    it('does NOT emit on a redelivery where the gateway total already matches the ledger (no new refund created)', async () => {
+      payments.findOne.mockResolvedValueOnce(ownerPayment());
+      paymentRepo().findOne.mockResolvedValueOnce({ ...lockedPayment(), status: PaymentStatus.REFUNDED });
+
+      const refundQb = createMockQueryBuilder();
+      refundQb.getRawOne
+        .mockResolvedValueOnce({ sum: '100' }) // baseline already full
+        .mockResolvedValueOnce({ sum: '100' });
+      manager.createQueryBuilder.mockReturnValue(refundQb);
+
+      await service.handleMoyasar({
+        id: 'e1',
+        type: 'payment_refunded',
+        created_at: freshCreatedAt(),
+        data: { id: 'gw1', refunded: 10000 },
+      } as any);
+
+      expect(emitter.emit).not.toHaveBeenCalledWith('refund.recorded', expect.anything());
+    });
+
+    it('does NOT emit for a de-duplicated (replayed) webhook event', async () => {
+      transactions.recordWebhookOnce.mockResolvedValueOnce({ created: false });
+      payments.findOne.mockResolvedValueOnce(ownerPayment());
+      paymentRepo().findOne.mockResolvedValueOnce(lockedPayment());
+
+      const res = await service.handleMoyasar({
+        id: 'e1',
+        type: 'payment_refunded',
+        created_at: freshCreatedAt(),
+        data: { id: 'gw1', refunded: 10000 },
+      } as any);
+
+      expect(res.deduplicated).toBe(true);
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+  });
+
   it('does not append a refund when the gateway total already matches the ledger (no delta)', async () => {
     payments.findOne.mockResolvedValueOnce(ownerPayment());
     paymentRepo().findOne.mockResolvedValueOnce({ ...lockedPayment(), status: PaymentStatus.REFUNDED });

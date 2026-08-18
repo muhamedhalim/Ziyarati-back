@@ -17,6 +17,9 @@ import { BillingModeService } from '../subscription-billing/billing-mode.service
 import { FreeAccessOverrideService } from '../subscription-billing/free-access-override.service';
 import { FeatureFlagService } from '../subscription-billing/feature-flag.service';
 import { TenantUsageLimitOverrideService } from '../subscription-billing/tenant-usage-limit-override.service';
+import { TenantEntitlementLedgerService } from '../subscription-billing/tenant-entitlement-ledger.service';
+import { TenantMetricCreditsService } from '../subscription-billing/tenant-metric-credits.service';
+import { SystemSettingService } from '../platform/system-setting.service';
 import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { WhatsappTemplateService } from './whatsapp-template.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
@@ -713,6 +716,21 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
             getActive: jest.fn().mockResolvedValue(null),
             getActiveMap: jest.fn().mockResolvedValue(new Map()),
           },
+        },
+        {
+          provide: TenantEntitlementLedgerService,
+          useValue: { capacityMap: jest.fn().mockResolvedValue(new Map()) },
+        },
+        {
+          provide: TenantMetricCreditsService,
+          useValue: {
+            tryDebit: jest.fn().mockResolvedValue(false),
+            balanceMap: jest.fn().mockResolvedValue(new Map()),
+          },
+        },
+        {
+          provide: SystemSettingService,
+          useValue: { getTyped: jest.fn().mockResolvedValue(5) },
         },
         {
           provide: ConfigService,

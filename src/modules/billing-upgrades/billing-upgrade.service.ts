@@ -298,12 +298,22 @@ export class BillingUpgradeService {
     }
 
     // action === 'charge': create the payment OUTSIDE any lock (network call).
-    const { payment, redirectUrl } = await this.payments.create(tenantId, {
-      amount: this.minorToMajor(Number(phase.request.final_price_minor)),
-      currency: phase.request.currency,
-      description: this.paymentDescription(phase.request),
-      idempotencyKey: randomUUID(),
-    });
+    // `platformRevenue: true` (Phase 1.5, plan §12) — this charge is the
+    // clinic paying the PLATFORM for a plan/feature upgrade, not a
+    // patient/customer payment, so it must never require the clinic's own
+    // merchant-onboarding approval and must never carry a marketplace split
+    // (which would incorrectly route platform revenue back to the clinic's
+    // own gateway recipient).
+    const { payment, redirectUrl } = await this.payments.create(
+      tenantId,
+      {
+        amount: this.minorToMajor(Number(phase.request.final_price_minor)),
+        currency: phase.request.currency,
+        description: this.paymentDescription(phase.request),
+        idempotencyKey: randomUUID(),
+      },
+      { platformRevenue: true },
+    );
 
     // Race-safe link: only the first concurrent "charge" attempt (e.g. a
     // client retry after a crash before linking) wins — mirrors

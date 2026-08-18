@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
@@ -38,6 +39,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
   let gateway: { name: string; refundPayment: jest.Mock };
   let transactions: { record: jest.Mock };
   let adjustments: { recordClawbackIfSettled: jest.Mock };
+  let emitter: { emit: jest.Mock };
   /** Every createQueryBuilder() call, in invocation order, for inspecting `andWhere`/`getRawOne`. */
   let queryBuilders: MockQueryBuilder[];
   /** Queue of `{sum}` rows `getRawOne()` resolves to, consumed one per createQueryBuilder() call. */
@@ -82,6 +84,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     };
     transactions = { record: jest.fn().mockResolvedValue(undefined) };
     adjustments = { recordClawbackIfSettled: jest.fn().mockResolvedValue(undefined) };
+    emitter = { emit: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -92,6 +95,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
         { provide: PaymentGatewayFactory, useValue: { resolve: jest.fn().mockReturnValue(gateway) } },
         { provide: TransactionService, useValue: transactions },
         { provide: SettlementAdjustmentService, useValue: adjustments },
+        { provide: EventEmitter2, useValue: emitter },
       ],
     }).compile();
     service = moduleRef.get(RefundService);
@@ -110,6 +114,56 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
 
     expect(result.status).toBe('SUCCEEDED');
     expect(gateway.refundPayment).toHaveBeenCalled();
+  });
+
+  // Phase 1.6 (plan §14) — RefundRecordedEvent, emitted post-commit only.
+  describe('RefundRecordedEvent (Phase 1.6 — plan §14)', () => {
+    it('emits AFTER the transaction commits, with the cumulative SUCCEEDED total and payment total in MINOR units', async () => {
+      payments.findOne.mockResolvedValue(paidPayment());
+      refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
+      refunds.save.mockImplementation(async (r: any) => r);
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      // admission=0, completion re-clamp=0, final cumulative-succeeded=60.
+      sumQueue = ['0.00', '0.00', '60.00'];
+
+      await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
+
+      expect(emitter.emit).toHaveBeenCalledWith(
+        'refund.recorded',
+        expect.objectContaining({
+          tenantId: TENANT,
+          paymentId: 'pay-1',
+          refundId: 'rf-1',
+          refundedCumulativeMinor: 6000,
+          paymentTotalMinor: 10000,
+        }),
+      );
+    });
+
+    it('does NOT emit when the refund is declined by the gateway (create() rejects, nothing committed)', async () => {
+      payments.findOne.mockResolvedValue(paidPayment());
+      refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
+      refunds.save.mockImplementation(async (r: any) => r);
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      sumQueue = ['0.00'];
+      gateway.refundPayment.mockResolvedValueOnce({ success: false, failureReason: 'declined', raw: {} });
+
+      await expect(
+        service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('does NOT re-emit on an idempotency-key replay (the event already fired on the original create)', async () => {
+      const existing = { id: 'rf-1', status: 'SUCCEEDED' };
+      refunds.findOne.mockResolvedValueOnce(existing);
+
+      const result = await service.create(TENANT, { paymentId: 'pay-1', amount: 60, idempotencyKey: 'k1' } as any);
+
+      expect(result).toBe(existing);
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
   });
 
   it('REJECTS a refund that would push admitted total past the payment amount (a PENDING refund already reserved the rest)', async () => {

@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, LessThanOrEqual, Repository } from 'typeorm';
 
 import { Refund } from '../../entities/Payments/Refund';
 import { Payment } from '../../entities/Payments/Payment';
 import { PaymentStatus } from '../../entities/enums';
+import { RefundRecordedEvent } from '../../events/refund.events';
 
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
@@ -55,6 +57,7 @@ export class RefundRecoveryService {
     private readonly transactions: TransactionService,
     private readonly adjustments: SettlementAdjustmentService,
     private readonly config: ConfigService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   private staleMs(): number {
@@ -135,7 +138,8 @@ export class RefundRecoveryService {
     }
 
     // Phase C: decide + apply under the payment row lock.
-    return this.dataSource.transaction(async (m) => {
+    let recordedEvent: RefundRecordedEvent | undefined;
+    const outcome = await this.dataSource.transaction(async (m) => {
       const locked = await m.getRepository(Payment).findOne({
         where: { id: payment.id },
         lock: { mode: 'pessimistic_write' },
@@ -208,6 +212,15 @@ export class RefundRecoveryService {
             ? PaymentStatus.REFUNDED
             : PaymentStatus.PARTIALLY_REFUNDED;
         await m.getRepository(Payment).save(locked);
+
+        // Phase 1.6 (plan §14) — captured for POST-commit emission below.
+        recordedEvent = new RefundRecordedEvent(
+          tenantId,
+          payment.id,
+          fresh.id,
+          newSucceeded,
+          toCents(locked.amount),
+        );
         return 'succeeded';
       }
 
@@ -227,6 +240,11 @@ export class RefundRecoveryService {
       );
       return 'failed';
     });
+
+    if (recordedEvent) {
+      this.emitter.emit(RefundRecordedEvent.eventName, recordedEvent);
+    }
+    return outcome;
   }
 
   private async sumSucceededCents(m: import('typeorm').EntityManager, paymentId: string): Promise<number> {
