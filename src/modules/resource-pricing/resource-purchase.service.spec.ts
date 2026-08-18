@@ -98,6 +98,74 @@ describe('ResourcePurchaseService (Phase 2.2 — plan §16/§17/§20)', () => {
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
 
+    it('AI_TOKENS: accepts the minimum purchase of 50,000 tokens (50 lots × 1,000 unit_size)', async () => {
+      catalogService.getActiveByKey.mockResolvedValueOnce(
+        catalogItem({
+          item_key: 'AI_TOKENS',
+          kind: 'credit',
+          unit_label: 'tokens_1k',
+          unit_size: '1000',
+          unit_price_minor: '500',
+          min_quantity: 50,
+          max_quantity: 1000,
+        }),
+      );
+      const result = await service.preview(TENANT, { itemKey: 'AI_TOKENS', quantity: 50 });
+      expect(result.deltaUnits).toBe(50000);
+      expect(result.totalMinor).toBe(25000);
+    });
+
+    it('AI_TOKENS: refuses anything below the 50,000-token minimum (quantity=49 → 49,000 tokens, one lot short of min_quantity=50)', async () => {
+      catalogService.getActiveByKey.mockResolvedValueOnce(
+        catalogItem({
+          item_key: 'AI_TOKENS',
+          kind: 'credit',
+          unit_label: 'tokens_1k',
+          unit_size: '1000',
+          unit_price_minor: '500',
+          min_quantity: 50,
+          max_quantity: 1000,
+        }),
+      );
+      await expect(
+        service.preview(TENANT, { itemKey: 'AI_TOKENS', quantity: 49 }),
+      ).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+        message: expect.stringContaining('Minimum purchase quantity for "AI_TOKENS" is 50'),
+      });
+    });
+
+    it('AI_TOKENS: accepts the new million-token cap (1,000 lots) and refuses one lot beyond it', async () => {
+      catalogService.getActiveByKey.mockResolvedValueOnce(
+        catalogItem({
+          item_key: 'AI_TOKENS',
+          kind: 'credit',
+          unit_label: 'tokens_1k',
+          unit_size: '1000',
+          unit_price_minor: '500',
+          min_quantity: 50,
+          max_quantity: 1000,
+        }),
+      );
+      const result = await service.preview(TENANT, { itemKey: 'AI_TOKENS', quantity: 1000 });
+      expect(result.deltaUnits).toBe(1000000);
+
+      catalogService.getActiveByKey.mockResolvedValueOnce(
+        catalogItem({
+          item_key: 'AI_TOKENS',
+          kind: 'credit',
+          unit_label: 'tokens_1k',
+          unit_size: '1000',
+          unit_price_minor: '500',
+          min_quantity: 50,
+          max_quantity: 1000,
+        }),
+      );
+      await expect(
+        service.preview(TENANT, { itemKey: 'AI_TOKENS', quantity: 1001 }),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    });
+
     it("refuses when the TENANT'S OWN plan already has this limit set to unlimited", async () => {
       limitStatus.resolve.mockReturnValueOnce('unlimited');
       await expect(
