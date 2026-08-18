@@ -28,6 +28,7 @@ describe('AiToolDispatchService side-effect idempotency', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     const executor = jest.fn();
     const result = await (service as any).run(
@@ -69,6 +70,7 @@ describe('AiToolDispatchService side-effect idempotency', () => {
       {} as any,
       {} as any,
       tenantContext as any,
+      {} as any,
     );
 
     await (service as any).recordAttempt(

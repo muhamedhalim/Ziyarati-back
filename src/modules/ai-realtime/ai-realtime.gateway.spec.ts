@@ -16,6 +16,10 @@ import {
   QuotaPolicy,
 } from '../subscription-billing/tenant-access-decision';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
+import { ErrorCode } from '../../common/errors/error-code';
+import { AppError } from '../../common/errors/app-error';
+import { QueryFailedError } from 'typeorm';
 
 const TENANT = 't1';
 
@@ -35,6 +39,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
   let handoverChat: { sendAgentReply: jest.Mock };
   let conversationAccess: { canAccess: jest.Mock };
   let entitlements: { resolve: jest.Mock; shouldBlock: jest.Mock };
+  let wsRateLimit: { checkAndRecord: jest.Mock };
 
   const allowed = {
     allowed: true,
@@ -109,6 +114,11 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       resolve: jest.fn().mockResolvedValue(allowed),
       shouldBlock: jest.fn().mockReturnValue(true),
     };
+    // Default: never refuses — cases below that specifically exercise the
+    // rate limiter override this per-test.
+    wsRateLimit = {
+      checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }),
+    };
     tenantContext = new TenantContextService();
 
     gateway = new AiRealtimeGateway(
@@ -120,6 +130,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       {} as unknown as AgentPresenceService,
       conversationAccess as unknown as AiConversationAccessService,
       entitlements as unknown as AccessControlService,
+      wsRateLimit as unknown as AiWsRateLimitService,
     );
   });
 
@@ -150,6 +161,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
 
       expect(orchestrator.handleStream).not.toHaveBeenCalled();
       expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: 'FORBIDDEN',
         message: 'The AI assistant is not available for this clinic',
       });
     });
@@ -292,6 +304,153 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         expect(client.emit).not.toHaveBeenCalledWith(
           AI_EVENT.ERROR,
           expect.anything(),
+        );
+      });
+    });
+
+    describe('AI-022 — channel length (FR-046, FR-047)', () => {
+      it('rejects an over-length channel with a clean VALIDATION_ERROR, before persistence', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        const overLong = 'A'.repeat(21); // AiConversation.channel is varchar(20)
+
+        await gateway.onMessage(client, {
+          content: 'hello',
+          channel: overLong as never,
+        });
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(client.emit).toHaveBeenCalledWith(
+          AI_EVENT.ERROR,
+          expect.objectContaining({ code: ErrorCode.VALIDATION_ERROR }),
+        );
+      });
+
+      it('accepts a channel at exactly the 20-character bound', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        const exactlyTwenty = 'A'.repeat(20);
+
+        await gateway.onMessage(client, {
+          content: 'hello',
+          channel: exactlyTwenty as never,
+        });
+
+        expect(orchestrator.handleStream).toHaveBeenCalled();
+      });
+    });
+
+    describe('AI-015/AI-028 — realtime rate limiting (FR-051, FR-053, D5)', () => {
+      it('checks the rate limiter with the authenticated user id and tier, after entitlement + permission, before the turn runs', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(wsRateLimit.checkAndRecord).toHaveBeenCalledWith(
+          'u1',
+          'authenticated',
+        );
+        expect(orchestrator.handleStream).toHaveBeenCalled();
+      });
+
+      it('checks the rate limiter with the guest tier for a guest principal', async () => {
+        const client = guestSocket();
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(wsRateLimit.checkAndRecord).toHaveBeenCalledWith(
+          'guest-1',
+          'guest',
+        );
+      });
+
+      it('never consults the rate limiter for a call already refused on permission grounds — refused calls must not consume budget', async () => {
+        const client = socket(); // no permissions
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(wsRateLimit.checkAndRecord).not.toHaveBeenCalled();
+      });
+
+      it('refuses the turn with RATE_LIMITED when the healthy-path limiter trips', async () => {
+        wsRateLimit.checkAndRecord.mockResolvedValueOnce({
+          allowed: false,
+          code: ErrorCode.RATE_LIMITED,
+        });
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(client.emit).toHaveBeenCalledWith(
+          AI_EVENT.ERROR,
+          expect.objectContaining({ code: ErrorCode.RATE_LIMITED }),
+        );
+      });
+
+      it('refuses the turn with SERVICE_UNAVAILABLE on the fail-closed degraded path — distinct from the normal RATE_LIMITED refusal', async () => {
+        wsRateLimit.checkAndRecord.mockResolvedValueOnce({
+          allowed: false,
+          code: ErrorCode.SERVICE_UNAVAILABLE,
+        });
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        const [, payload] = (client.emit as jest.Mock).mock.calls.find(
+          ([event]) => event === AI_EVENT.ERROR,
+        )!;
+        expect(payload.code).toBe(ErrorCode.SERVICE_UNAVAILABLE);
+        expect(payload.code).not.toBe(ErrorCode.RATE_LIMITED);
+      });
+
+      it('runs the turn normally when the limiter allows it', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(orchestrator.handleStream).toHaveBeenCalled();
+        expect(client.emit).not.toHaveBeenCalledWith(
+          AI_EVENT.ERROR,
+          expect.anything(),
+        );
+      });
+    });
+
+    describe('AI-010 — shared error normalization on a failed turn (FR-040, FR-041, FR-042)', () => {
+      it('sanitizes a raw driver error instead of echoing it to the client', async () => {
+        orchestrator.handleStream.mockRejectedValueOnce(
+          Object.assign(
+            new QueryFailedError('SELECT 1', [], new Error('dup')),
+            { code: '23505', detail: 'Key (email)=(x@y.com) already exists.' },
+          ),
+        );
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, { content: 'hello' });
+
+        const [, payload] = (client.emit as jest.Mock).mock.calls.find(
+          ([event]) => event === AI_EVENT.ERROR,
+        )!;
+        expect(payload.code).toBeDefined();
+        expect(JSON.stringify(payload)).not.toContain('x@y.com');
+        expect(JSON.stringify(payload)).not.toContain('SELECT 1');
+      });
+
+      // FR-042: normalization must not flatten every error into one opaque
+      // string — a deliberate, safe AppError message the application code
+      // itself chose to throw still reaches the client UNCHANGED.
+      it('a deliberate, safe AppError message still reaches the client unchanged', async () => {
+        orchestrator.handleStream.mockRejectedValueOnce(
+          new AppError(ErrorCode.CONFLICT, {
+            message: 'This appointment slot was just booked by someone else.',
+          }),
+        );
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(client.emit).toHaveBeenCalledWith(
+          AI_EVENT.ERROR,
+          expect.objectContaining({
+            code: ErrorCode.CONFLICT,
+            message: 'This appointment slot was just booked by someone else.',
+          }),
         );
       });
     });

@@ -227,6 +227,8 @@ export class TenantService {
       default_language: dto.defaultLanguage ?? settings.default_language,
       currency: dto.currency ?? settings.currency,
       bot_enabled: dto.botEnabled ?? settings.bot_enabled,
+      enforce_staff_working_hours:
+        dto.enforceStaffWorkingHours ?? settings.enforce_staff_working_hours,
       updated_at: new Date(),
     });
     return this.settings.save(settings);

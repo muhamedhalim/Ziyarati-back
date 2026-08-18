@@ -65,6 +65,27 @@ export enum ErrorCode {
   // ── Services (FND-012) ─────────────────────────────────────────────────
   /** A VARIABLE-priced service was selected for booking — no booking-time pricing mechanism exists yet (AD-11: blocked, not built); a zero price is never snapshotted. */
   VARIABLE_PRICING_UNSUPPORTED = 'VARIABLE_PRICING_UNSUPPORTED',
+
+  // ── Scheduling / booking ──────────────────────────────────────────────
+  /**
+   * The availability engine refused the requested window for the selected
+   * staff member — outside working hours, on time off, a holiday, inside a
+   * blocked period, the staff member is not bookable, or they already have an
+   * appointment that overlaps. `context.reasonCodes` (a `BookabilityReason[]`)
+   * says which, so a client can render a specific, localized message instead of
+   * branching on prose.
+   *
+   * Distinct from {@link SLOT_ALREADY_BOOKED}: this is the PRE-CHECK refusing a
+   * window that was never bookable, not a lost race.
+   */
+  STAFF_NOT_AVAILABLE = 'STAFF_NOT_AVAILABLE',
+  /**
+   * The window WAS bookable when checked, but a concurrent request committed
+   * first — the `appointments_no_overlap` exclusion constraint rejected this
+   * insert (SQLSTATE 23P01). Always retryable against a different time: the
+   * client should refresh the available slots and re-pick.
+   */
+  SLOT_ALREADY_BOOKED = 'SLOT_ALREADY_BOOKED',
 }
 
 export interface ErrorCodeMeta {
@@ -233,5 +254,15 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.VARIABLE_PRICING_UNSUPPORTED]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     message: 'This service uses variable pricing, which cannot be booked online yet. Please arrange this booking directly with the clinic.',
+  },
+
+  [ErrorCode.STAFF_NOT_AVAILABLE]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Staff member is not available at this time.',
+  },
+  [ErrorCode.SLOT_ALREADY_BOOKED]: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'This time slot was just booked for the selected staff member. Please choose another time.',
   },
 };

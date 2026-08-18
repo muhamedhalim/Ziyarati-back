@@ -56,12 +56,19 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
+// The field is `code`, not `errorCode` — this schema documented a name the
+// AllExceptionsFilter has never emitted, so clients coded against the docs
+// looked for a key that was never there. `context` carries the per-throw
+// `AppError.publicContext` (e.g. `reasonCodes` on a booking conflict).
 const S_ERROR = {
   type: 'object',
   properties: {
     statusCode: { type: 'number' },
-    errorCode: { type: 'string', example: 'CONFLICT' },
+    error: { type: 'string' },
+    code: { type: 'string', example: 'STAFF_NOT_AVAILABLE' },
     message: { type: 'string' },
+    context: { type: 'object', additionalProperties: true },
+    path: { type: 'string' },
     requestId: { type: 'string', format: 'uuid' },
     timestamp: { type: 'string', format: 'date-time' },
   },
@@ -272,8 +279,16 @@ holding \`appointments.create\`). The WhatsApp bot uses the same path with
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description:
-      'The staff member already has an appointment overlapping this time window.',
+    description: `
+The staff member cannot take this window. Two distinct codes:
+
+- \`STAFF_NOT_AVAILABLE\` — the availability engine refused it. \`context.reasonCodes\`
+  is a subset of \`STAFF_INACTIVE\`, \`HOLIDAY\`, \`TIME_OFF\`, \`BLOCKED\`, \`OCCUPIED\`,
+  \`OUTSIDE_WORKING_HOURS\`, so a client can show the specific reason.
+- \`SLOT_ALREADY_BOOKED\` — the window was free when checked, but a concurrent
+  request committed first (the \`appointments_no_overlap\` exclusion constraint).
+  Retryable: refresh the available slots and pick again.
+    `.trim(),
     schema: S_ERROR,
   })
   @Post()

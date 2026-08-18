@@ -31,6 +31,33 @@ function overlaps(aS: number, aE: number, bS: number, bE: number): boolean {
 }
 
 /**
+ * Weekday (0=Sun … 6=Sat) of a 'YYYY-MM-DD' calendar date, computed from the
+ * date parts alone.
+ *
+ * This used to be `new Date(\`${dateStr}T00:00:00Z\`).getUTCDay()`. `dateStr` is
+ * already a LOCAL calendar date for the branch, so round-tripping it through an
+ * instant re-introduces a timezone the value never had: for a branch in a
+ * negative-offset zone the midnight instant can land on the previous UTC day and
+ * the schedule lookup picks the wrong weekday. Sakamoto's algorithm answers the
+ * question the caller is actually asking — "what weekday is this date?" — with
+ * no instant, and therefore no zone, involved.
+ */
+function weekdayOf(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const shift = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+  const year = m < 3 ? y - 1 : y;
+  return (
+    (year +
+      Math.floor(year / 4) -
+      Math.floor(year / 100) +
+      Math.floor(year / 400) +
+      shift[m - 1] +
+      d) %
+    7
+  );
+}
+
+/**
  * Staff weekly schedules (per-staff availability), branch working hours
  * (clinic open/close), and the availability lookup that combines them.
  *
@@ -236,8 +263,8 @@ export class StaffScheduleService {
   async getAvailability(tenantId: string, branchId: string, dateStr: string) {
     await this.assertBranch(tenantId, branchId);
 
-    const date = new Date(`${dateStr}T00:00:00Z`);
-    const dayOfWeek = date.getUTCDay(); // 0=Sun … 6=Sat
+    // `dateStr` is the branch's LOCAL calendar date — see `weekdayOf`.
+    const dayOfWeek = weekdayOf(dateStr); // 0=Sun … 6=Sat
 
     // 1) Is the branch open that day?
     const branchHours = await this.workingHours.find({

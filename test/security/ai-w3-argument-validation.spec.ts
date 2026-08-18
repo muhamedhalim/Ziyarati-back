@@ -173,7 +173,7 @@ describe('W3 — tool-argument validation (T095)', () => {
       await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
     });
 
-    it('book_appointment: a startAt far in the PAST — OBSERVED, not assumed: `assertChronological` (appointment.service.ts:1298-1307) only rejects NaN dates or end<=start, with no "must be in the future" rule anywhere in the booking path; a well-formed past date is NOT refused for being in the past', async () => {
+    it('book_appointment: a startAt far in the PAST is refused — PD-6 (AI-027): `assertChronological` (appointment.service.ts:1298-1329) now rejects a past `startAt` specifically on the assistant\'s own booking sources (`WHATSAPP_BOT`/`PUBLIC_AI`), closing the gap this file previously recorded as observed-but-unguarded behavior', async () => {
       const { conv, ctx } = await bookCtx();
       const result = await dispatch.execute(
         ctx,
@@ -185,15 +185,11 @@ describe('W3 — tool-argument validation (T095)', () => {
           startAt: '2000-01-01T10:00:00Z',
         }),
       );
-      // This is the OBSERVED, executed truth — not the outcome originally
-      // hypothesized. Recorded verbatim per the audit's evidence discipline
-      // rather than adjusted to fit an assumption. Flagged as a candidate in
-      // evidence/raw/candidates-w3.md (T104): no application-level guard
-      // prevents booking an appointment with a start time in the past.
-      expect(result.success).not.toBe(false);
-      if (result.success !== false) {
-        await deleteAppointment(result.appointmentId as string);
-      }
+      // Inverted per PD-6 (2026-08-17): the assistant's booking path now
+      // rejects a well-formed past date deterministically, rather than
+      // silently booking it. Staff/admin backdating on other, non-assistant
+      // paths is unaffected by this change (out of scope for AI-027).
+      expect(result.success).toBe(false);
       await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
     });
   });

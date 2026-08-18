@@ -6,7 +6,9 @@
  * (`MAX_TOOL_ITERATIONS = 4`, `ai-execution.service.ts:63`) and the total
  * number of provider calls issued per turn. Also probes the ceiling's OTHER
  * axis, per-iteration fan-out (how many tool calls one scripted turn may
- * request), which `MAX_TOOL_ITERATIONS` does not bound at all.
+ * request) — [PROMOTED, RTP row 19, AI-023/T108-T111] now independently
+ * bounded by `AI_MAX_TOOL_CALLS_PER_ITERATION`, never by
+ * `MAX_TOOL_ITERATIONS` (which still bounds ROUNDS, unchanged).
  */
 import { buildAiAuditHarness, type AiAuditHarness } from './fixtures/ai-audit-harness';
 import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/ai-audit-seed';
@@ -108,10 +110,11 @@ describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
   }, 30_000);
 
-  it('FINDING: the per-ITERATION tool-call fan-out is NOT bounded — a single scripted turn requesting 50 tool calls at once has all 50 dispatched within that one (of MAX_TOOL_ITERATIONS) iterations', async () => {
+  it('[PROMOTED, RTP row 19, AI-023/T108-T111] the per-ITERATION tool-call fan-out is now bounded — a single scripted turn requesting 50 tool calls at once has only the first MAX_TOOL_CALLS_PER_ITERATION dispatched, the rest deterministically refused, none silently dropped', async () => {
     const conv = await conversations.start(seed.tenantA.id, {});
     harness.provider.reset();
     const FAN_OUT = 50;
+    const CAP = 10; // AI_MAX_TOOL_CALLS_PER_ITERATION's default (env.validation.ts)
     harness.provider.script([
       {
         toolCalls: Array.from({ length: FAN_OUT }, (_, i) =>
@@ -121,24 +124,38 @@ describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
       { content: 'Final answer after the fan-out iteration.' },
     ]);
 
-    await execution.sendMessage(
+    const result = await execution.sendMessage(
       seed.tenantA.id,
       conv.id,
       { content: 'Trigger a single massive tool-call fan-out.' },
       'REST',
     );
 
-    // Only 2 provider calls (the fan-out turn + the follow-up) — MAX_TOOL_ITERATIONS
-    // bounds LOOP ITERATIONS, never how many tool calls one iteration's
-    // scripted/model turn may request.
+    // Still only 2 provider calls (the fan-out turn + the follow-up) —
+    // MAX_TOOL_ITERATIONS (rounds) is unaffected; the NEW cap bounds
+    // execution WITHIN one round, not how many rounds occur.
     expect(harness.provider.callCount).toBe(2);
-    // All 50 were individually dispatched and fed back as 50 distinct 'tool'
-    // role messages on the follow-up call — no independent fan-out cap exists.
-    // (`get_clinic_details` is a read tool, so `ai_tool_calls` — the write
-    // ledger — is not the right signal here either; see the previous test's
-    // comment for why.)
+    // [PROMOTED] all 50 still produce a tool-role message on the follow-up
+    // call — FR-049 requires refused calls to be recorded, never silently
+    // dropped from the transcript — but now only CAP of them carry a REAL
+    // dispatched result; the rest carry the deterministic refusal.
     const toolMsgs = harness.provider.capturedMessages(1).filter((m) => m.role === 'tool');
     expect(toolMsgs.length).toBe(FAN_OUT);
+    const refused = toolMsgs.filter((m) =>
+      typeof m.content === 'string' && m.content.includes('Too many tool calls requested in one turn'),
+    );
+    const executed = toolMsgs.filter((m) => !refused.includes(m));
+    expect(executed.length).toBe(CAP);
+    expect(refused.length).toBe(FAN_OUT - CAP);
+
+    // T111: the truncation is visible on the turn's own recorded outcome,
+    // never a silent failure.
+    const [metric] = await harness.dataSource.query(
+      `SELECT tool_calls_truncated FROM ai_execution_metrics WHERE ai_conversation_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [conv.id],
+    );
+    expect(metric.tool_calls_truncated).toBe(FAN_OUT - CAP);
+    expect(result.message.content).toBe('Final answer after the fan-out iteration.');
 
     await harness.dataSource.query(`DELETE FROM ai_tool_calls WHERE ai_conversation_id = $1`, [conv.id]).catch(() => undefined);
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);

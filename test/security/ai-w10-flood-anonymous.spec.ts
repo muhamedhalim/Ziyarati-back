@@ -92,7 +92,7 @@ describe('AI abuse — anonymous session minting + sustained guest turns (T146)'
     expect(firstRefusalAt).toBeNull(); // same NODE_ENV=test relaxation as T145 (app.module.ts:113)
   }, 60_000);
 
-  it(`sustains ${TURN_COUNT} real WS turns as ONE guest over ONE socket.io connection and records the first refusal, if any (no REST equivalent exists — guest tokens are REST-rejected)`, async () => {
+  it(`[PROMOTED, RTP row 20, AI-015/AI-028/T112-T114] sustains ${TURN_COUNT} real WS turns as ONE guest over ONE socket.io connection — a refusal now appears at the configured guest threshold, not zero refusals across all 30`, async () => {
     const guestCookie = await mintGuestCookie();
     const guestTokenValue = decodeURIComponent(guestCookie.split('=').slice(1).join('='));
 
@@ -145,13 +145,17 @@ describe('AI abuse — anonymous session minting + sustained guest turns (T146)'
       );
       process.stdout.write('\n===T146-WS-TURN-RESULT-END===\n');
 
-      // Every turn completed with a real assistant reply (ai:done) — the
-      // scripted provider's default fallback content, since nothing was
-      // explicitly `.script()`-ed. No `ai:error` at any point means neither
-      // the (absent) rate limit, nor the (unmetered) quota admission, nor any
-      // other control interrupted a single one of these 30 sequential turns.
-      expect(outcomes.every((o) => o === 'done')).toBe(true);
-      expect(firstRefusalAt).toBeNull();
+      // [PROMOTED, RTP row 20] a refusal now appears at the configured guest
+      // threshold (AI_WS_RATE_LIMIT_GUEST_MAX_TURNS, default 15) — the
+      // (previously absent) rate limit is real, keyed to this one guest
+      // identity, PD-5's own mechanism-not-blocked requirement. The guest's
+      // unmetered subscription-quota admission (FR-078, untouched) is a
+      // SEPARATE control from this connection/time-window one — both can be
+      // true at once, which is exactly the point (FR-054).
+      const GUEST_MAX_TURNS = 15; // AI_WS_RATE_LIMIT_GUEST_MAX_TURNS's default
+      expect(firstRefusalAt).toBe(GUEST_MAX_TURNS);
+      expect(outcomes.filter((o) => o === 'done').length).toBe(GUEST_MAX_TURNS);
+      expect(outcomes.filter((o) => o === 'error').length).toBe(TURN_COUNT - GUEST_MAX_TURNS);
     } finally {
       if (client.connected) client.disconnect();
     }

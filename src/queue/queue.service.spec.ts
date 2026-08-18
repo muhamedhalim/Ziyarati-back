@@ -1,3 +1,4 @@
+import type { ConfigService } from '@nestjs/config';
 import { QueueService } from './queue.service';
 import { ProducerQueues } from './producer-queues';
 import { TenantContextService } from '../core/tenant-context/tenant-context.service';
@@ -29,6 +30,7 @@ describe('QueueService (producer facade)', () => {
       mget: jest.Mock;
     };
   };
+  let config: { get: jest.Mock };
 
   const makeQueue = (): MockBullQueue => ({
     add: jest.fn(async () => ({ id: 'job-1' })),
@@ -58,11 +60,18 @@ describe('QueueService (producer facade)', () => {
         mget: jest.fn().mockResolvedValue(['v1', null, 'v3']),
       },
     };
+    config = {
+      // Defaults tests don't otherwise override — matches env.validation's
+      // AI_QUEUE_ENQUEUE_TIMEOUT_MS default (8000ms) so tests unrelated to
+      // T127 are unaffected by the bound existing at all.
+      get: jest.fn((_key: string, def?: unknown) => def),
+    };
     const producers = { record: () => record } as unknown as ProducerQueues;
     service = new QueueService(
       producers,
       ctx as unknown as TenantContextService,
       appRedis as unknown as AppRedisService,
+      config as unknown as ConfigService,
     );
   });
 
@@ -127,6 +136,56 @@ describe('QueueService (producer facade)', () => {
     );
     expect(second[2].jobId).toBe(first[2].jobId);
     expect(first[2].jobId).not.toContain(':');
+  });
+
+  // AI-014 (T127, FR-059-FR-061, I-9): the bounded application-level timeout
+  // on enqueueAiExecute — the shared BullMQ producer profile's own deliberate
+  // absence of a commandTimeout (redis.config.ts, unchanged) is NOT
+  // exercised here; this is a unit-level pin of QueueService's OWN wrapper.
+  describe('enqueueAiExecute bounded timeout (T127)', () => {
+    const data = {
+      tenantId: 't1',
+      aiConversationId: 'c1',
+      content: 'hello',
+      idempotencyKey: 'bound-test-key',
+    };
+
+    it('rejects once the configured bound elapses, without the underlying enqueue ever settling', async () => {
+      config.get.mockImplementation((key: string, def?: unknown) =>
+        key === 'AI_QUEUE_ENQUEUE_TIMEOUT_MS' ? 30 : def,
+      );
+      record[QUEUE.AI].add.mockImplementation(
+        () => new Promise(() => undefined), // never settles — simulates a sustained outage
+      );
+
+      await expect(service.enqueueAiExecute(data as never)).rejects.toThrow(
+        /timed out/i,
+      );
+    });
+
+    it('still resolves when the underlying enqueue settles BEFORE the bound — a brief blip is still buffered, exactly as today (FR-061)', async () => {
+      config.get.mockImplementation((key: string, def?: unknown) =>
+        key === 'AI_QUEUE_ENQUEUE_TIMEOUT_MS' ? 200 : def,
+      );
+      record[QUEUE.AI].add.mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ id: 'recovered-job' }), 20),
+          ),
+      );
+
+      await expect(
+        service.enqueueAiExecute(data as never),
+      ).resolves.toEqual(expect.objectContaining({ id: 'recovered-job' }));
+    });
+
+    it('uses the configured default (8000ms) when AI_QUEUE_ENQUEUE_TIMEOUT_MS is unset', async () => {
+      await service.enqueueAiExecute(data as never);
+      expect(config.get).toHaveBeenCalledWith(
+        'AI_QUEUE_ENQUEUE_TIMEOUT_MS',
+        8000,
+      );
+    });
   });
 
   // Regression: every EmailService idempotency key (`invite:<token>`,

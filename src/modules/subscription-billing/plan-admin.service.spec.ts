@@ -215,6 +215,122 @@ describe('PlanAdminService', () => {
     });
   });
 
+  // Phase 0.2 — limitDeclarations (plan §8)
+  describe('limitDeclarations (Phase 0.2)', () => {
+    it('create() translates a camelCase DTO key to its snake_case column', async () => {
+      plans.save.mockImplementationOnce(async (p: any) => p);
+
+      await service.create({
+        name: 'Starter',
+        price: 99,
+        billingCycle: 'MONTHLY',
+        limitDeclarations: { maxBranches: 'unlimited' },
+      } as any);
+
+      expect(plans.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          limit_declarations: { max_branches: 'unlimited' },
+        }),
+      );
+    });
+
+    it('create() rejects an unknown limitDeclarations key', async () => {
+      await expect(
+        service.create({
+          name: 'Starter',
+          price: 99,
+          billingCycle: 'MONTHLY',
+          limitDeclarations: { notARealField: 'unlimited' },
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(plans.save).not.toHaveBeenCalled();
+    });
+
+    it('create() rejects a value other than the literal "unlimited"', async () => {
+      await expect(
+        service.create({
+          name: 'Starter',
+          price: 99,
+          billingCycle: 'MONTHLY',
+          limitDeclarations: { maxBranches: 'infinite' },
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    });
+
+    it('update() sets limitDeclarations on an IN-USE plan WITHOUT checking isInUse — not a frozen term', async () => {
+      plans.findOne.mockResolvedValueOnce(plan());
+      plans.save.mockImplementationOnce(async (p: any) => p);
+
+      await service.update('plan-1', {
+        limitDeclarations: { maxBranches: 'unlimited' },
+      } as any);
+
+      expect(subscriptions.count).not.toHaveBeenCalled();
+      expect(plans.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          limit_declarations: { max_branches: 'unlimited' },
+        }),
+      );
+    });
+
+    it('update() bundling limitDeclarations WITH an actual term change on an in-use plan is still rejected as a whole', async () => {
+      plans.findOne.mockResolvedValueOnce(plan());
+      subscriptions.count.mockResolvedValueOnce(3); // in use
+
+      await expect(
+        service.update('plan-1', {
+          price: 199,
+          limitDeclarations: { maxBranches: 'unlimited' },
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(plans.save).not.toHaveBeenCalled();
+    });
+
+    it('update() replaces the full declaration set rather than merging', async () => {
+      plans.findOne.mockResolvedValueOnce(
+        plan({ limit_declarations: { max_branches: 'unlimited', max_users: 'unlimited' } }),
+      );
+      plans.save.mockImplementationOnce(async (p: any) => p);
+
+      const result = await service.update('plan-1', {
+        limitDeclarations: { maxUsers: 'unlimited' },
+      } as any);
+
+      expect(result.limit_declarations).toEqual({ max_users: 'unlimited' });
+    });
+
+    it('update() with limitDeclarations: undefined leaves the existing declarations untouched', async () => {
+      plans.findOne.mockResolvedValueOnce(
+        plan({ limit_declarations: { max_branches: 'unlimited' } }),
+      );
+      plans.save.mockImplementationOnce(async (p: any) => p);
+
+      const result = await service.update('plan-1', { name: 'Renamed' } as any);
+
+      expect(result.limit_declarations).toEqual({ max_branches: 'unlimited' });
+    });
+
+    it('snapshot (audit) includes limitDeclarations', async () => {
+      plans.save.mockResolvedValueOnce(
+        plan({ limit_declarations: { max_branches: 'unlimited' } }),
+      );
+      await service.create({
+        name: 'Starter',
+        price: 99,
+        billingCycle: 'MONTHLY',
+        limitDeclarations: { maxBranches: 'unlimited' },
+      } as any);
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          after: expect.objectContaining({
+            limitDeclarations: { max_branches: 'unlimited' },
+          }),
+        }),
+      );
+    });
+  });
+
   // VER-015 (REQ-PLAN-011) — deactivate must hide the plan from the catalogue
   // WITHOUT affecting existing subscribers (the class's own documented
   // guarantee) — proven here, not assumed.

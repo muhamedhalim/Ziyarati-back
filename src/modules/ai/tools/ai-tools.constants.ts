@@ -203,6 +203,17 @@ export const AI_TOOLS: AiToolDefinition[] = [
           type: 'string',
           description: 'Optional reason (stored in the audit trail).',
         },
+        // AI-019/PD-1/F1: irreversible — the FIRST call (no token, or an
+        // invalid/expired one) is refused and returns a fresh
+        // application-issued confirmationToken instead of executing; the
+        // model relays it back to confirm. The application independently
+        // verifies this token server-side — it is never trusted merely
+        // because the model supplied it (FR-073).
+        confirmationToken: {
+          type: 'string',
+          description:
+            'Application-issued confirmation token from a prior refused call to this same tool for this same appointment. Omit on the first attempt.',
+        },
       },
       required: ['appointmentId', 'newStartAt'],
     },
@@ -219,6 +230,12 @@ export const AI_TOOLS: AiToolDefinition[] = [
           type: 'string',
           description:
             'Optional cancellation reason (stored in the audit trail).',
+        },
+        // AI-019/PD-1/F1 — see reschedule_appointment's identical property.
+        confirmationToken: {
+          type: 'string',
+          description:
+            'Application-issued confirmation token from a prior refused call to this same tool for this same appointment. Omit on the first attempt.',
         },
       },
       required: ['appointmentId'],

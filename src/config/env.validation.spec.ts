@@ -929,4 +929,141 @@ describe('env.validation', () => {
       });
     });
   });
+
+  // AI-011 (FR-056-FR-058): query-logging production fail-fast. Mirrors the
+  // AUTH_EXPOSE_RESET_TOKEN describe block above (same reference pattern).
+  describe('query-logging fail-fast (production, AI-011)', () => {
+    it('FAILS the boot in production when TYPEORM_LOGGING=true', () => {
+      expect(() =>
+        validate({
+          ...prodBase,
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          TYPEORM_LOGGING: 'true',
+        }),
+      ).toThrow(/TYPEORM_LOGGING/);
+    });
+
+    it('names ONLY the variable, never a value', () => {
+      try {
+        validate({
+          ...prodBase,
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          TYPEORM_LOGGING: 'true',
+        });
+        fail('expected validation to throw');
+      } catch (err) {
+        expect((err as Error).message).toContain('TYPEORM_LOGGING');
+      }
+    });
+
+    it('boots in production when TYPEORM_LOGGING is false (default)', () => {
+      const value = validate({
+        ...prodBase,
+        PAYMENT_PROVIDER: 'noop',
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      });
+      expect(value.TYPEORM_LOGGING).toBe('false');
+    });
+
+    it('boots outside production even when TYPEORM_LOGGING=true — including this repository\'s own current development value', () => {
+      const value = validate({ ...base, TYPEORM_LOGGING: 'true' });
+      expect(value.TYPEORM_LOGGING).toBe('true');
+    });
+
+    it('rejects a non-boolean-string value for TYPEORM_LOGGING', () => {
+      expect(() =>
+        validate({ ...base, TYPEORM_LOGGING: 'verbose' }),
+      ).toThrow(/Env validation error/);
+    });
+  });
+
+  // T125a — schema coverage for the six configuration keys this feature
+  // added with no prior test coverage at all: default applies when unset, an
+  // out-of-range value is rejected, and (Principle XXIX) the error names the
+  // variable and never echoes its value. Additive only; no existing block
+  // above changes.
+  describe('AI configuration keys added by this feature (T125a)', () => {
+    describe('AI_TOOL_CALL_RETENTION_DAYS (FR-029b)', () => {
+      it('defaults to 90 when unset', () => {
+        expect(validate({ ...base }).AI_TOOL_CALL_RETENTION_DAYS).toBe(90);
+      });
+      it('rejects a value below 1', () => {
+        expect(() => validate({ ...base, AI_TOOL_CALL_RETENTION_DAYS: 0 })).toThrow(
+          /Env validation error/,
+        );
+      });
+      it('names only the variable on rejection', () => {
+        try {
+          validate({ ...base, AI_TOOL_CALL_RETENTION_DAYS: -5 });
+          fail('expected validation to throw');
+        } catch (err) {
+          expect((err as Error).message).toContain('AI_TOOL_CALL_RETENTION_DAYS');
+          expect((err as Error).message).not.toContain('-5');
+        }
+      });
+    });
+
+    describe('AI_MAX_TOOL_CALLS_PER_ITERATION (FR-048)', () => {
+      it('defaults to 10 when unset', () => {
+        expect(validate({ ...base }).AI_MAX_TOOL_CALLS_PER_ITERATION).toBe(10);
+      });
+      it('rejects a value below 1', () => {
+        expect(() =>
+          validate({ ...base, AI_MAX_TOOL_CALLS_PER_ITERATION: 0 }),
+        ).toThrow(/Env validation error/);
+      });
+    });
+
+    describe('AI_WS_RATE_LIMIT_* (FR-053, FR-055 — mechanism only; values PD-4/PD-5-provisional)', () => {
+      it('defaults: authenticated 30/60s, guest 15/60s', () => {
+        const value = validate({ ...base });
+        expect(value.AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS).toBe(30);
+        expect(value.AI_WS_RATE_LIMIT_AUTHENTICATED_WINDOW_SECONDS).toBe(60);
+        expect(value.AI_WS_RATE_LIMIT_GUEST_MAX_TURNS).toBe(15);
+        expect(value.AI_WS_RATE_LIMIT_GUEST_WINDOW_SECONDS).toBe(60);
+      });
+      it('rejects a below-minimum value for each key', () => {
+        expect(() =>
+          validate({ ...base, AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS: 0 }),
+        ).toThrow(/Env validation error/);
+        expect(() =>
+          validate({ ...base, AI_WS_RATE_LIMIT_GUEST_MAX_TURNS: 0 }),
+        ).toThrow(/Env validation error/);
+      });
+    });
+
+    describe('AI_PROMPT_SIMILARITY_THRESHOLD / AI_PROMPT_SIMILARITY_SHINGLE_SPAN (FR-044)', () => {
+      it('defaults to threshold 0.6, shingle span 8', () => {
+        const value = validate({ ...base });
+        expect(value.AI_PROMPT_SIMILARITY_THRESHOLD).toBe(0.6);
+        expect(value.AI_PROMPT_SIMILARITY_SHINGLE_SPAN).toBe(8);
+      });
+      it('rejects a threshold outside [0,1]', () => {
+        expect(() =>
+          validate({ ...base, AI_PROMPT_SIMILARITY_THRESHOLD: 1.5 }),
+        ).toThrow(/Env validation error/);
+        expect(() =>
+          validate({ ...base, AI_PROMPT_SIMILARITY_THRESHOLD: -0.1 }),
+        ).toThrow(/Env validation error/);
+      });
+      it('rejects a shingle span below 3 — SD-1\'s hold-back window derives from it, so it cannot be degenerately small', () => {
+        expect(() =>
+          validate({ ...base, AI_PROMPT_SIMILARITY_SHINGLE_SPAN: 2 }),
+        ).toThrow(/Env validation error/);
+      });
+    });
+
+    describe('AI_QUEUE_ENQUEUE_TIMEOUT_MS (FR-059)', () => {
+      it('defaults to 8000ms when unset', () => {
+        expect(validate({ ...base }).AI_QUEUE_ENQUEUE_TIMEOUT_MS).toBe(8000);
+      });
+      it('rejects a value below 100ms — too small to ever buffer a brief blip (FR-061)', () => {
+        expect(() =>
+          validate({ ...base, AI_QUEUE_ENQUEUE_TIMEOUT_MS: 50 }),
+        ).toThrow(/Env validation error/);
+      });
+    });
+  });
 });

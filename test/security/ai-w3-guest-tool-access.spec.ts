@@ -113,11 +113,27 @@ describe('W3 — every tool executed as a GUEST principal, reachable-set enumera
       expect(observed[name].reason).toBe('permission');
     }
 
-    // 2. None of the 15 ungated tools is ever authorization-blocked — they
-    // either succeed or fail for an unrelated (business/session) reason.
+    // 2. Of the 15 ungated tools (no DECLARED permission requirement), 13
+    // are never authorization-blocked for a guest — they either succeed or
+    // fail for an unrelated (business/session) reason. The remaining 2
+    // (AI-020/PD-2, 2026-08-17) now hit the SAME "no acting user"
+    // precondition as the core write tools above, despite carrying no
+    // declared permission: `check_availability` and
+    // `get_customer_insurance_status` were dispatcher-reachable by a guest
+    // despite never being part of the advertised guest catalog — narrowed
+    // rather than widened, closing the gap without advertising either tool.
+    const guestNarrowedUngatedTools: string[] = [
+      AI_TOOL.CHECK_AVAILABILITY,
+      AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+    ];
     for (const tool of ALL_TOOLS) {
       if (tool.declaredPermission === null) {
-        expect(observed[tool.name].bucket).not.toBe('auth_blocked');
+        if (guestNarrowedUngatedTools.includes(tool.name)) {
+          expect(observed[tool.name].bucket).toBe('auth_blocked');
+          expect(observed[tool.name].reason).toBe('no_acting_user');
+        } else {
+          expect(observed[tool.name].bucket).not.toBe('auth_blocked');
+        }
       }
     }
   }, 30_000);
@@ -147,13 +163,13 @@ describe('W3 — every tool executed as a GUEST principal, reachable-set enumera
     // then blocks for the same principal).
     expect(advertisedButNotReachable).toEqual([]);
 
-    // The dispatcher-reachable set is NOT confined to the advertised catalog:
-    // `check_availability` and `get_customer_insurance_status` are tenant-bound
-    // but carry no permission gate, so a raw tool_call naming either one
-    // (bypassing the model/advertisement layer entirely) reaches real business
-    // logic for a guest — confirming, by execution, the static finding flagged
-    // in w3-declared-vs-enforced.md. This is recorded as an observed fact, not
-    // silently treated as a pass — see evidence/raw/candidates-w3.md (T104).
-    expect(extraBeyondAdvertised.sort()).toEqual([AI_TOOL.CHECK_AVAILABILITY, AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS].sort());
+    // AI-020/PD-2 (2026-08-17): the dispatcher-reachable set is now CONFINED
+    // to the advertised catalog for guests. `check_availability` and
+    // `get_customer_insurance_status` — previously reachable for a guest
+    // despite carrying no permission gate — now refuse any principal with no
+    // acting user, the same "no acting user" precondition the core write
+    // tools already used. Inverted per RTP row 9 (guest-access half): no
+    // extra tools beyond the advertised catalog remain reachable.
+    expect(extraBeyondAdvertised).toEqual([]);
   });
 });

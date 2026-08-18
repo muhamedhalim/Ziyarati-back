@@ -10,7 +10,12 @@ import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AccessControlService } from './access-control.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
+import { TenantEntitlementLedgerService } from './tenant-entitlement-ledger.service';
+import { TenantMetricCreditsService } from './tenant-metric-credits.service';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 import {
+  COUNT_LIMIT,
   COUNT_LIMIT_FEATURE,
   ENFORCED_RESOURCE_LIMITS,
   RESOURCE_LIMIT_FEATURE,
@@ -25,6 +30,19 @@ import {
   UsageMetric,
   currentPeriodMonth,
 } from './usage-metric';
+
+/**
+ * Which mechanism admitted an `incrementIfWithinLimit` call (Phase 1.4,
+ * plan §9) — `'plan'` covers every "admitted without touching credits" case
+ * (unmetered/free-mode, no plan, unlimited, or genuinely under the plan's
+ * allowance); `'credit'` means the plan allowance was exhausted and a
+ * prepaid credit funded this unit instead; `'none'` means refused. The
+ * caller (ai-execution.service.ts et al.) checks only `=== 'credit'` to
+ * decide whether settlement/release must also touch
+ * `TenantMetricCreditsService` — the other two values are interchangeable
+ * from that call site's perspective.
+ */
+export type UsageFundedBy = 'plan' | 'credit' | 'none';
 
 /**
  * Usage tracking per tenant per billing month.
@@ -43,6 +61,12 @@ export class UsageService {
     private readonly usage: Repository<SubscriptionUsage>,
     private readonly access: AccessControlService,
     private readonly limitOverrides: TenantUsageLimitOverrideService,
+    // Phase 1.3/1.4 (Pricing Catalog plan) — capacity ledger (count-based
+    // add-ons) and prepaid credits (metered add-ons). Both already live in
+    // this module, so no forwardRef is needed for these two.
+    private readonly ledger: TenantEntitlementLedgerService,
+    private readonly credits: TenantMetricCreditsService,
+    private readonly platformSettings: SystemSettingService,
   ) {}
 
   /**

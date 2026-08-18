@@ -112,6 +112,14 @@ export class AiExecutionMetric {
   @Column({ type: 'int', default: 0 })
   tool_failure_count!: number;
 
+  /** AI-023 (FR-048, FR-049, FR-087): tool calls refused by the per-round fan-out cap. */
+  @Column({ type: 'int', default: 0 })
+  tool_calls_truncated!: number;
+
+  /** AI-009 (FR-087, SD-1 point 6): the disclosure check redacted this turn's reply. */
+  @Column({ default: false })
+  prompt_disclosure_blocked!: boolean;
+
   @Column({ type: 'int', default: 0 })
   tool_exec_ms!: number;
 
@@ -137,4 +145,15 @@ export class AiExecutionMetric {
   /** M2 (AI-017): acting staff principal; null for guests, never omitted (FR-034). */
   @Column({ type: 'uuid', nullable: true })
   actor_user_id?: string | null;
+
+  /**
+   * AI-013 (FR-065–FR-067, R9): which retrieval path produced this turn's
+   * RAG context — `'vector'` on a successful vector search, `'keyword'` on
+   * pure keyword search OR when vector was attempted and fell back after an
+   * error, `null` for a turn that never called RAG. Distinct from
+   * `fallback` above, which reports PROVIDER fallback, not retrieval-path
+   * fallback — see evidence/metric-field-assessment.md (T130).
+   */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  retrieval_mode?: 'vector' | 'keyword' | null;
 }

@@ -52,7 +52,7 @@ import { GuestSessionService } from '../../src/modules/guest-chat/guest-session.
 import { Role } from '../../src/entities/Auth&RBAC/Role';
 import { User } from '../../src/entities/Auth&RBAC/User';
 import { UserRole } from '../../src/entities/Auth&RBAC/UserRole';
-import { ROLE } from '../../src/rbac/rbac.constants';
+import { ROLE, PERMISSION } from '../../src/rbac/rbac.constants';
 import type { AuthenticatedUser } from '../../src/modules/auth/interfaces/authenticated-user.interface';
 
 const NOOP_MARKER = 'AI provider is not configured in this environment.';
@@ -172,7 +172,12 @@ describe('AI degradation — REAL NoopAiProvider across every reachable entry po
       id: seed.tenantA.staffUserId,
       tenantId: seed.tenantA.id,
       roles: [],
-      permissions: [],
+      // AI-007/T042: `onMessage` requires `ai.conversations.manage` for any
+      // non-guest principal — this suite exercises provider *degradation*,
+      // not authorization, so the principal needs this permission just to
+      // reach the code path under test (the WS entitlement gate itself is
+      // covered separately, in ai-w3-rest-ws-parity.spec.ts).
+      permissions: [PERMISSION.AI_CONVERSATIONS_MANAGE],
     };
     const socket = fakeSocket(seed.tenantA.id, principal);
 

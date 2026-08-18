@@ -76,6 +76,15 @@ export class SubscriptionPlan {
   @Column({ nullable: true })
   max_training_files?: number;
 
+  /**
+   * Declares a NULL limit column as intentionally unlimited (Phase 0.2,
+   * plan §8) — e.g. `{ "max_customers": "unlimited" }`. Absence of a key
+   * (with the column still NULL) means "not configured", not "unlimited".
+   * See `PlanLimitStatusService`.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  limit_declarations?: Record<string, 'unlimited'> | null;
+
   @Column({ default: true })
   is_active!: boolean;
 

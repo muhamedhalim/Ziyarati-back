@@ -10,6 +10,10 @@ export const validate = (config: Record<string, unknown>) => {
 
     TYPEORM_SYNCHRONIZE: Joi.string().valid('true', 'false').default('false'),
 
+    // AI-011: raw SQL logging (parameter values included) writes tenant data
+    // and secrets to console output. The production fail-fast below (mirroring
+    // the AUTH_EXPOSE_RESET_TOKEN pattern) makes enabling this in production a
+    // boot-time error, not a runtime risk. Unchanged outside production.
     TYPEORM_LOGGING: Joi.string().valid('true', 'false').default('false'),
 
     // Default 15 (raised from 10 — Phase 0 correction, measured; see
@@ -111,6 +115,52 @@ export const validate = (config: Record<string, unknown>) => {
     // key entirely. Same default as ANALYTICS_EVENT_RETENTION_DAYS so the two
     // do not drift for no reason (R5); floored at 1 day for the same reason.
     AI_TOOL_CALL_RETENTION_DAYS: Joi.number().min(1).default(90),
+
+    // AI-023 (FR-048, R7): the maximum number of tool calls one provider
+    // round-trip may fan out to, independent of MAX_TOOL_ITERATIONS
+    // (ai-execution.service.ts — the outer bound on how many ROUNDS a turn
+    // may take; unchanged, not replaced). A single round with an unbounded
+    // toolCalls array let one provider response drive an arbitrarily large
+    // amount of work (booking/reschedule/cancel calls, DB writes) before the
+    // outer round bound ever had a chance to matter. Calls beyond this cap
+    // are refused deterministically (FR-049), never silently dropped.
+    AI_MAX_TOOL_CALLS_PER_ITERATION: Joi.number().min(1).default(10),
+
+    // AI-014 (FR-059, R8): application-level bound on QueueService's AI-
+    // specific enqueue producer (queue.service.ts:263) — the shared BullMQ
+    // producer profile deliberately has NO commandTimeout (Phase 0
+    // correction, redis.config.ts:54-65, left unchanged by this key). Long
+    // enough that a brief Redis blip is still buffered (FR-061); short
+    // enough that a sustained outage fails fast rather than hanging on
+    // ioredis's own uncapped retryStrategy.
+    AI_QUEUE_ENQUEUE_TIMEOUT_MS: Joi.number().min(100).default(8000),
+
+    // AI-015/AI-028 (FR-051-FR-055, D5): the realtime (`ai:message`) turn
+    // rate limit. Separate threshold + window per identity class — the
+    // mechanism (this key pair existing and being enforced) is NOT blocked;
+    // only the specific numeric values are, pending PD-4 (authenticated) and
+    // PD-5 (guest, FR-055/FR-077). The defaults below are conservative
+    // interim values, stated here and in the re-verification record as
+    // PROVISIONAL — not a decided threshold — until PD-4/PD-5 land.
+    AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS: Joi.number().min(1).default(30),
+    AI_WS_RATE_LIMIT_AUTHENTICATED_WINDOW_SECONDS: Joi.number()
+      .min(1)
+      .default(60),
+    AI_WS_RATE_LIMIT_GUEST_MAX_TURNS: Joi.number().min(1).default(15),
+    AI_WS_RATE_LIMIT_GUEST_WINDOW_SECONDS: Joi.number().min(1).default(60),
+
+    // AI-009 (FR-044, FR-091, SD-1): output-side system-prompt/tool-schema
+    // disclosure check — a local, dependency-free token-shingle overlap
+    // ratio (never an embedding call or LLM judge — FR-092, FR-093,
+    // Principle XXXIV). THRESHOLD is the overlap ratio (0-1) at or above
+    // which a reply is treated as reproducing the source; justified by
+    // T104's false-positive test (a compliant reproduction trips it, an
+    // ordinary answer sharing incidental wording does not). SHINGLE_SPAN is
+    // the ONLY window-size key — SD-1's streaming hold-back window `W` is
+    // DERIVED from it in code (never a separate configured value, per this
+    // task's own "do not add a third key where one derives from another").
+    AI_PROMPT_SIMILARITY_THRESHOLD: Joi.number().min(0).max(1).default(0.6),
+    AI_PROMPT_SIMILARITY_SHINGLE_SPAN: Joi.number().min(3).default(8),
 
     // FND-031: how long a PAST_DUE ("expired-in-grace") subscription keeps its
     // full, unchanged capabilities before becoming GRACE_EXPIRED (new billable/
@@ -756,6 +806,27 @@ export const validate = (config: Record<string, unknown>) => {
         `"production". This local-development-only reset-token exposure channel ` +
         `must never be enabled in production. Set AUTH_EXPOSE_RESET_TOKEN=false, ` +
         `or unset it entirely.`,
+    );
+  }
+
+  // ── Query-logging fail-fast (production only, AI-011) ─────────────────────
+  // Mirrors the reset-token fail-fast immediately above (the same reference
+  // pattern for refusing to boot on an insecure production configuration).
+  // TYPEORM_LOGGING is a pre-existing key (no new key here) — this is a
+  // production GATE on it, not a new setting. With it enabled, every SQL
+  // statement (parameter values included) is written to raw console output,
+  // which the audit demonstrated leaking planted secret-shaped values.
+  // Outside production the setting works exactly as today, including this
+  // repository's own current development value.
+  if (
+    value.NODE_ENV === 'production' &&
+    value.TYPEORM_LOGGING === 'true'
+  ) {
+    throw new Error(
+      `❌ Env validation error: TYPEORM_LOGGING is "true" but NODE_ENV is ` +
+        `"production". Raw SQL logging (parameter values included) must never ` +
+        `run in production — it writes tenant data and secrets to console ` +
+        `output. Set TYPEORM_LOGGING=false, or unset it entirely.`,
     );
   }
 

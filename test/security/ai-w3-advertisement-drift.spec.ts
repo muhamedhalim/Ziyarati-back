@@ -151,17 +151,15 @@ describe('W3 — advertisement-vs-enforcement drift, all 8 principal types (T093
     }
   });
 
-  it('the ENFORCED set can be a SUPERSET of the ADVERTISED set (dispatcher-reachable-but-unadvertised tools exist) — reports exactly which, per principal, as the drift finding', () => {
-    // Confirms w3-advertisement.md's prediction: no live PERMISSION-map drift,
-    // but the dispatcher's own lack of a permission gate on `check_availability`
-    // / `get_customer_insurance_status` means they are reachable (not
-    // auth-blocked) for EVERY authenticated principal type, whether or not
-    // those two tools were ever advertised to that principal.
-    for (const type of ALL_PRINCIPAL_TYPES) {
-      if (type === 'guest') {
-        // Already proven exhaustively in T089 — re-assert the same two names here for cross-file consistency.
-        expect(drift.guest.enforcedNotAdvertised.sort()).toEqual(['check_availability', 'get_customer_insurance_status'].sort());
-      }
-    }
+  it('the guest ENFORCED set no longer exceeds the guest ADVERTISED set — AI-020/PD-2 narrowed the dispatcher, closing the gap this file previously recorded as a drift finding', () => {
+    // AI-020/PD-2 (2026-08-17): the dispatcher now refuses `check_availability`
+    // and `get_customer_insurance_status` for any principal with no acting
+    // user (guests) — both sets, computed from the SAME running system as
+    // before (no hand-maintained list on either side), are now identical for
+    // the guest principal type. Non-guest principal types are unaffected —
+    // both tools remain legitimately reachable by staff regardless of
+    // whether they happen to be advertised to a given staff role, which is
+    // not the gap AI-020 was about.
+    expect(drift.guest.enforcedNotAdvertised).toEqual([]);
   });
 });

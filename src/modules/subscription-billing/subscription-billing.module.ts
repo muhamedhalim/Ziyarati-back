@@ -31,6 +31,9 @@ import { AccessControlService } from './access-control.service';
 import { AccessCacheService } from './access-cache.service';
 import { AccessPolicyModeService } from './access-policy-mode.service';
 import { PlanAdminService } from './plan-admin.service';
+import { PlanLimitStatusService } from './plan-limit-status.service';
+import { TenantEntitlementLedgerService } from './tenant-entitlement-ledger.service';
+import { TenantMetricCreditsService } from './tenant-metric-credits.service';
 
 import { SubscriptionController } from './subscription.controller';
 import { BillingController } from './billing.controller';
@@ -105,6 +108,14 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     AccessPolicyModeService,
     AccessControlService,
     PlanAdminService,
+    PlanLimitStatusService,
+    // Phase 1.3 (Pricing Catalog plan) — standalone raw-SQL primitives over
+    // tenant_entitlement_ledger / tenant_metric_credits. No entity, no
+    // TypeOrmModule.forFeature() registration needed (same reasoning as
+    // SettlementAdjustmentService); Phase 1.4 wires these into
+    // UsageService's credit-spillover branch.
+    TenantEntitlementLedgerService,
+    TenantMetricCreditsService,
     FeatureGuard,
     SubscriptionAccessGuard,
     PlatformBillingBootstrap,
@@ -148,6 +159,12 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     // without reaching for a second cache of their own.
     AccessCacheService,
     AccessPolicyModeService,
+    // Phase 2.3's ResourceEntitlementListener (resource-pricing module) will
+    // inject these to apply purchase grants / refund revokes.
+    TenantEntitlementLedgerService,
+    TenantMetricCreditsService,
+    // Phase 2.1's catalog publish gate needs plan-limit coverage.
+    PlanLimitStatusService,
   ],
 })
 export class SubscriptionBillingModule {}

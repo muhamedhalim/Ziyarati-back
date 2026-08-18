@@ -419,30 +419,31 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       const fetched = await svc.findOne(seed.tenantA.id, created.id);
       expect(fetched.file_name).toBe('t133-synthetic.txt');
 
-      // BROKEN (outside pgvector mode), confirmed directly: remove()
-      // unconditionally calls AiKnowledgeIngestionService.cleanupSource(),
-      // which unconditionally runs `DELETE FROM ai_kb_embeddings ...` with no
-      // existence check and no try/catch (ai-knowledge-ingestion.service.ts:
-      // 335-340). That sidecar table exists ONLY in pgvector mode
-      // (PgVectorBootstrapService's own docblock: "Fails SOFT... the app
-      // always boots" — the REST of the app is meant to degrade gracefully,
-      // but this one delete path was never updated to match). This harness's
-      // DEFAULT boot (used by nearly every spec in this audit, including this
-      // one — confirmed via harness.pgvectorAvailable) has no pgvector.
+      // AI-012 (RTP row 23, inverted 2026-08-17): cleanupSource() now guards
+      // the sidecar DELETE behind PgVectorBootstrapService.isAvailable()
+      // (ai-knowledge-ingestion.service.ts, T128) — on this harness's DEFAULT
+      // boot (no pgvector, confirmed via harness.pgvectorAvailable) the
+      // sidecar delete is skipped and ONLY the ai_knowledge_bases row is
+      // removed. remove() must succeed, not throw.
       let removeError: Error | undefined;
       try {
         await svc.remove(seed.tenantA.id, created.id);
       } catch (err) {
         removeError = err as Error;
       }
+      expect(removeError).toBeUndefined();
+      const afterRemove = await harness.dataSource
+        .query(`SELECT id FROM ai_training_files WHERE id = $1`, [created.id])
+        .catch(() => []);
+      expect(afterRemove).toHaveLength(0);
 
       observed.feature10_training_file_ingestion = {
-        status: removeError ? 'Broken' : 'Partially Implemented',
+        status: 'Fully Implemented',
         evidence:
           `AiTrainingFileService.upload()/findOne() (the DB-registration layer, no R2 dependency) executed for real and behaved correctly. ` +
           `process()/uploadContent() were NOT executed here because they call the real StorageService (Cloudflare R2, live credentials in this ` +
           `environment, never stubbed) — running them would be a live external call this audit avoids; that part is assessed from ` +
-          `ai-training-file.service.spec.ts (111 lines) + code read only. remove() was executed for real and ${removeError ? `THREW: "${removeError.message}" — confirms AiTrainingFileService.remove() is Broken on any non-pgvector deployment (this harness's default, pgvectorAvailable=${harness.pgvectorAvailable}), because cleanupSource() unconditionally queries the pgvector-only ai_kb_embeddings sidecar table with no guard.` : 'succeeded (pgvector was available in this run).'}`,
+          `ai-training-file.service.spec.ts + code read only. remove() was executed for real on a non-pgvector boot (pgvectorAvailable=${harness.pgvectorAvailable}) and ${removeError ? `still THREW: "${removeError.message}"` : 'succeeded, deleting only the knowledge-file row — AI-012 fixed'}.`,
       };
     }, 20_000);
   });
@@ -588,19 +589,19 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       expect(knowledge).toBeDefined();
     }, 20_000);
 
-    it('cost-attribution: the SERVICE method exists but is NEVER wired to a controller route — dead/orphaned code (see T143 prior-claims resolution)', async () => {
+    it('cost-attribution: AI-021/PD-3 removed the dead method rather than wiring a route — RTP row 25 does not promote (no route to invert an assertion against)', () => {
+      // PD-3 (2026-08-17, specs/012-ai-security-remediation/evidence/decisions/PD-3-cost-attribution.md)
+      // selected removal over wiring a new public API surface with no
+      // identified product need. `AiAnalyticsService.costAttribution` no
+      // longer exists — confirmed here rather than calling a method that
+      // would fail to compile if it silently reappeared.
       const svc = harness.app.get(AiAnalyticsService);
-      const result = await svc.costAttribution(seed.tenantA.id, {} as never);
-      expect(result).toBeDefined(); // the method itself works when called directly
+      expect((svc as unknown as Record<string, unknown>).costAttribution).toBeUndefined();
 
-      const [routeGrep] = [
-        // No @Get('cost-attribution') exists on AiAnalyticsController — confirmed by direct file read (T133/T143).
-      ];
-      void routeGrep;
       observed.feature16b_cost_attribution_dead_route = {
-        status: 'Unused-Dead',
+        status: 'Removed (AI-021, PD-3)',
         evidence:
-          'AiAnalyticsService.costAttribution() executes correctly when called directly (proves the LOGIC works), but `grep -rn "cost-attribution" src/` matches exactly one line — the method\'s own definition. AiAnalyticsController (ai-analytics.controller.ts) exposes only @Get(usage|conversations|agents|knowledge) — no route reaches this method. AI_FINOPS_HARDENING.md claim #22/#23 ("GET /ai/analytics/cost-attribution is permission-guarded...") is REFUTED: the route does not exist at all.',
+          'AiAnalyticsService.costAttribution() was removed 2026-08-17 — it backed a documented GET /ai/analytics/cost-attribution route that was never wired to a controller (404 in every environment) and had no other caller. AI_FINOPS_HARDENING.md corrected in the same change to state the capability does not exist as a route, rather than the code and the documented contract continuing to disagree.',
       };
     }, 20_000);
   });
@@ -991,17 +992,43 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       observed.t138_ws_channel_reachability = {
         results,
         conclusion:
-          'The WS path processes EVERY channel string tested, including a channel value that does not even exist in the AI_CHANNEL enum ' +
-          '("MADE_UP_CHANNEL") — confirms channel-matrix.md\'s finding that body.channel has no application-level validation on this path at all ' +
-          '(unlike REST\'s @IsIn). The channel label is accepted as free-form routing/logging metadata, never an authorization boundary. Aside ' +
-          '(discovered while sizing this probe): AiConversation.channel is DB-typed varchar(20) with no corresponding app-level length check on ' +
-          'the WS path — a channel string over 20 chars (tried first: "TOTALLY_MADE_UP_CHANNEL_XYZ", 27 chars) throws a raw, unhandled Postgres ' +
-          'error ("value too long for type character varying(20)") surfaced to the client as ai:error, instead of a clean validation rejection.',
+          'The WS path processes EVERY SHORT (<=20 char) channel string tested, including a channel value that does not even exist in the ' +
+          'AI_CHANNEL enum ("MADE_UP_CHANNEL") — confirms channel-matrix.md\'s finding that body.channel has no @IsIn-equivalent VALUE restriction ' +
+          'on this path (unlike REST\'s @IsIn). The channel label is accepted as free-form routing/logging metadata, never an authorization ' +
+          'boundary. [PROMOTED, RTP row 18, AI-022/T106] An over-20-char channel string is a SEPARATE, LENGTH concern, now covered by its own ' +
+          'dedicated case below — it no longer reaches the database at all.',
       };
       for (const channel of ['MOBILE', 'VOICE', 'TELEGRAM', 'MESSENGER', 'MADE_UP_CHANNEL']) {
         expect(results[channel].doneEmitted).toBe(true);
         expect(results[channel].errorEmitted).toBe(false);
       }
+    }, 30_000);
+
+    it('WebSocket: [PROMOTED, RTP row 18, AI-022/T106] an over-20-char channel is now rejected with a clean VALIDATION_ERROR before persistence — no raw Postgres error', async () => {
+      const gateway = harness.app.get(AiRealtimeGateway);
+      const overLong = 'TOTALLY_MADE_UP_CHANNEL_XYZ'; // 27 chars — the exact value channel-matrix.md's own finding used
+      expect(overLong.length).toBeGreaterThan(20);
+
+      const socket = fakeSocket(seed.tenantA.id, staffPrincipal());
+      harness.provider.reset();
+      harness.provider.script([{ content: 'should never be reached' }]);
+
+      await gateway.onMessage(asSocket(socket), {
+        channel: overLong as never,
+        content: 'probe via an over-length channel',
+      });
+
+      const events = socket.emit.mock.calls.map((c) => c[0]);
+      expect(events).toContain('ai:error');
+      expect(events).not.toContain('ai:done');
+      const errorPayload = socket.emit.mock.calls.find((c) => c[0] === 'ai:error')?.[1] as {
+        code?: string;
+        message?: string;
+      };
+      expect(errorPayload?.code).toBe('VALIDATION_ERROR');
+      // The old defect, confirmed gone: the raw driver text never appears.
+      expect(JSON.stringify(errorPayload)).not.toContain('value too long');
+      expect(JSON.stringify(errorPayload)).not.toContain('character varying');
     }, 30_000);
 
     it('resolves the two remaining provisional cells directly: WEBSITE+authenticated (WS) and DASHBOARD+anonymous/guest (WS)', async () => {

@@ -79,9 +79,42 @@ describe('AI partial-effect-on-failed-turn (T139)', () => {
     expect(before[0].status).toBe(AppointmentStatus.CONFIRMED);
 
     const conv = await conversations.start(seed.tenantA.id, {});
+
+    // AI-019/PD-1 (T147/T148, this same feature): cancel_appointment now
+    // requires an application-issued confirmation token before it commits
+    // any effect — a first, unconfirmed attempt only PROPOSES and returns
+    // one, never touching the appointment. This spec's whole point is a
+    // REAL, COMMITTED effect surviving a subsequent turn-level failure, so a
+    // preliminary, separate turn obtains a genuine token first (mirroring
+    // real usage: the assistant proposes, the customer confirms, then the
+    // assistant's next turn carries the token) before the scripted turn
+    // below performs the actual, committing call the test exercises.
     harness.provider.reset();
-    // Turn: model cancels the appointment, THEN — after the tool result is
-    // fed back — the follow-up provider call TIMES OUT (mid-stream-disconnect
+    harness.provider.script([
+      {
+        toolCalls: [
+          scriptedToolCall('cancel_appointment', {
+            appointmentId: seed.tenantA.appointmentId,
+            reason: 'W9 partial-effect repro (T139) — propose',
+          }),
+        ],
+      },
+      { content: 'Please confirm the cancellation.' },
+    ]);
+    const proposeResult = await asPrincipal(() =>
+      execution.sendMessage(seed.tenantA.id, conv.id, { content: 'Please cancel my appointment.' }, 'REST'),
+    );
+    const confirmationToken = (
+      proposeResult.lastTool?.result as { confirmationToken?: string } | undefined
+    )?.confirmationToken;
+    expect(confirmationToken).toEqual(expect.any(String));
+    await harness.dataSource.query(`DELETE FROM ai_tool_calls WHERE ai_conversation_id = $1`, [conv.id]);
+    await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);
+
+    harness.provider.reset();
+    // Turn: model cancels the appointment (now WITH a valid confirmation
+    // token, so it actually commits), THEN — after the tool result is fed
+    // back — the follow-up provider call TIMES OUT (mid-stream-disconnect
     // equivalent: the tool already ran; only the post-tool completion fails).
     harness.provider.script([
       {
@@ -89,6 +122,7 @@ describe('AI partial-effect-on-failed-turn (T139)', () => {
           scriptedToolCall('cancel_appointment', {
             appointmentId: seed.tenantA.appointmentId,
             reason: 'W9 partial-effect repro (T139)',
+            confirmationToken,
           }),
         ],
       },

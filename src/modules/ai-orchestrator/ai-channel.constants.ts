@@ -94,6 +94,22 @@ export interface AiSession {
   // ── Multi-agent routing (Feature 7) ─────────────────────────────────────
   /** Role of the agent currently handling the conversation. */
   currentAgentRole?: string;
+
+  /**
+   * AI-019 (FR-072-FR-074, F1, PD-1): outstanding application-issued
+   * confirmation tokens for irreversible appointment actions, keyed by
+   * `<action>:<appointmentId>` (e.g. `cancel:<uuid>`). SERVER-WRITE-ONLY
+   * (absent from SESSION_CLIENT_PATCHABLE_KEYS) — a client-writable value
+   * would let a caller forge its own "confirmed" state, which is exactly
+   * what FR-073 forbids. Written and consumed only by
+   * `AiToolDispatchService`'s confirmation gate on `cancel_appointment` /
+   * `reschedule_appointment`. Single-use: deleted from this map the moment
+   * it is successfully verified, so a captured token cannot be replayed.
+   */
+  pendingConfirmations?: Record<
+    string,
+    { token: string; expiresAt: string }
+  >;
 }
 
 /** How many channel-switch entries to retain in session history. */

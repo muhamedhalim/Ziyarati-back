@@ -323,7 +323,12 @@ export class AppointmentsService {
         services,
         dto.endAt,
       );
-      this.assertChronological(startAt, endAt);
+      // PD-6 (AI-027): the assistant's own booking sources reject a past
+      // startAt; every other source (MANUAL, PLATFORM) is unaffected.
+      const isAssistantSource =
+        dto.source === AppointmentSource.WHATSAPP_BOT ||
+        dto.source === AppointmentSource.PUBLIC_AI;
+      this.assertChronological(startAt, endAt, isAssistantSource);
 
       // Single source of truth — validate REAL availability (working hours,
       // calendar slots, blocked periods, holidays, staff time off / active flag,
@@ -580,6 +585,27 @@ export class AppointmentsService {
         services,
       );
       this.assertChronological(appointment.start_at, endAt);
+
+      // Replacing the service set CHANGES THE WINDOW — a longer service pushes
+      // `end_at` out, which can run the appointment into the doctor's next
+      // booking, past the end of their shift, or into a blocked period. This
+      // was the one write path that moved an appointment's window without
+      // re-validating it: overlaps were caught only by the database's exclusion
+      // constraint (with a generic message), and working-hours / blocked /
+      // holiday violations were not caught at all.
+      //
+      // Only re-checked when the window actually moved, so a pure re-pricing
+      // (same total duration) stays a cheap write.
+      if (endAt.getTime() !== appointment.end_at.getTime()) {
+        await this.availability.assertBookable(
+          tenantId,
+          appointment.branch!.id,
+          appointment.staff!.id,
+          appointment.start_at,
+          endAt,
+          { excludeAppointmentId: appointment.id, manager },
+        );
+      }
 
       appointment.end_at = endAt;
       appointment.total_amount = totalAmount;
@@ -1295,7 +1321,19 @@ export class AppointmentsService {
     return rows[0]?.payment_required ?? true;
   }
 
-  private assertChronological(startAt: Date, endAt: Date): void {
+  /**
+   * `enforceNotPast` (PD-6, AI-027): the assistant's own booking path
+   * (`AppointmentSource.WHATSAPP_BOT` / `PUBLIC_AI`) additionally rejects a
+   * well-formed but past `startAt` — a conversational agent producing a
+   * past-dated appointment is plausible only as a defect, unlike deliberate
+   * staff/admin backdating on every other path, which stays permitted
+   * (`enforceNotPast` defaults to `false` for every other caller).
+   */
+  private assertChronological(
+    startAt: Date,
+    endAt: Date,
+    enforceNotPast = false,
+  ): void {
     if (
       Number.isNaN(startAt.getTime()) ||
       Number.isNaN(endAt.getTime()) ||
@@ -1303,6 +1341,11 @@ export class AppointmentsService {
     ) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: 'Appointment end time must be after the start time',
+      });
+    }
+    if (enforceNotPast && startAt.getTime() < Date.now()) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Appointment start time must not be in the past',
       });
     }
   }

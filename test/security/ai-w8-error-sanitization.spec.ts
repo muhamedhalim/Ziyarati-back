@@ -50,7 +50,7 @@ import { TenantContextService } from '../../src/core/tenant-context/tenant-conte
 import type { AuthenticatedUser } from '../../src/modules/auth/interfaces/authenticated-user.interface';
 import { AllExceptionsFilter } from '../../src/common/filters/all-exceptions.filter';
 import type { ArgumentsHost } from '@nestjs/common';
-import { ROLE } from '../../src/rbac/rbac.constants';
+import { ROLE, PERMISSION } from '../../src/rbac/rbac.constants';
 
 /**
  * Denylist of substrings that must never appear in a client-visible payload.
@@ -218,24 +218,41 @@ describe('W8 — error-path disclosure across every layer, REST + WebSocket (T12
       expect(JSON.stringify(res.body)).toContain('must be a UUID');
     }, 30_000);
 
-    it('WS: NO equivalent mapping exists on the gateway catch — records the observed payload for the finding (FLAGGED, not hidden)', async () => {
+    it('WS: [PROMOTED, RTP row 16, AI-010/T096] the gateway catch now applies the SAME shared normalization the REST filter uses — no raw Postgres text reaches the client', async () => {
       const gateway = harness.app.get(AiRealtimeGateway);
-      const socket = fakeSocket(staffPrincipal);
+      // AI-007 (T042, this same feature, an EARLIER phase) added a
+      // permission gate to onMessage that did not exist when this test's
+      // shared `staffPrincipal` (permissions: []) was written — reusing it
+      // here would refuse at that gate before ever reaching the database
+      // layer this case exists to exercise, testing the wrong thing
+      // entirely. A dedicated, appropriately-permissioned principal, scoped
+      // to only this test, reaches the intended code path without touching
+      // `staffPrincipal` or any other case in this file.
+      const dbLayerPrincipal: AuthenticatedUser = {
+        ...staffPrincipal,
+        permissions: [PERMISSION.AI_CONVERSATIONS_MANAGE],
+      };
+      const socket = fakeSocket(dbLayerPrincipal);
       await ctx.run(async () => {
-        ctx.setPrincipal(staffPrincipal);
+        ctx.setPrincipal(dbLayerPrincipal);
         return gateway.onMessage(socket, { content: 'hi', aiConversationId: MALFORMED_ID, channel: 'DASHBOARD' });
       });
       const errorCalls = (socket.emit as jest.Mock).mock.calls.filter((c) => c[0] === 'ai:error');
       expect(errorCalls.length).toBeGreaterThan(0);
       const payload = errorCalls[0][1];
       const { found, scanHits } = assertNoInternalLeak(payload, 'ws-db-malformed-uuid');
-      // This assertion is the recorded OBSERVATION for the finding, not a
-      // pre-judged pass/fail — see the file header. Whatever this evaluates
-      // to is exactly what evidence/raw/candidates-w8.md cites.
       process.stdout.write(
         `\n===T122-WS-DB-OBSERVED payload=${JSON.stringify(payload)} forbiddenHit=${JSON.stringify(found)} scanHits=${JSON.stringify(scanHits)}===\n`,
       );
+      // [PROMOTED, RTP row 16] the captured defect was
+      // {"message":"invalid input syntax for type uuid: \"not-a-uuid'; --\""}
+      // — the raw driver message echoed verbatim. `normalizeException()`
+      // (the SAME function AllExceptionsFilter uses for REST) now maps this
+      // through `EntityNotFoundError`/`QueryFailedError` handling, so the
+      // client-visible message is safe and fixed, carrying a `code`.
+      expect(found).toEqual([]); // no forbidden snippet — including "invalid input syntax" — reaches the client
       expect(scanHits).toEqual([]); // no CREDENTIAL ever leaks here regardless
+      expect((payload as { code?: string }).code).toBeDefined();
     }, 30_000);
   });
 

@@ -25,6 +25,7 @@
  * file interference entirely; see HARNESS_GUIDE.md.
  */
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { ConfigService } from '@nestjs/config';
 
 import { buildAiAuditHarness, type AiAuditHarness } from './fixtures/ai-audit-harness';
 import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/ai-audit-seed';
@@ -221,8 +222,10 @@ describe('AI-relevant subsystems under Redis-unavailable (T137)', () => {
       await waitForRedisReady();
     });
 
-    it('does NOT fail fast and does NOT silently drop the job: the producer connection BUFFERS the enqueue call, which hangs from the caller\'s perspective until Redis returns', async () => {
+    it('AI-014 (RTP row 22, inverted 2026-08-17): a sustained outage now REJECTS within the configured bound instead of hanging indefinitely — the wrapper QueueService.enqueueAiExecute added around producerConnectionOptions()\'s deliberately-unbounded buffering', async () => {
       const queue = harness.app.get(QueueService);
+      const config = harness.app.get(ConfigService);
+      const boundMs = config.get<number>('AI_QUEUE_ENQUEUE_TIMEOUT_MS', 8000);
       dockerStop();
       await sleep(300);
 
@@ -235,43 +238,45 @@ describe('AI-relevant subsystems under Redis-unavailable (T137)', () => {
 
       const started = Date.now();
       const attempt = queue.enqueueAiExecute(jobData as never);
-      const race = await withTimeout(attempt, 5_000, 'enqueueAiExecute');
+      // Observed for longer than the configured bound so the REJECTION
+      // (not merely "still pending") is what gets recorded.
+      const race = await withTimeout(attempt, boundMs + 5_000, 'enqueueAiExecute');
       const hungForMs = Date.now() - started;
 
-      // Now restore Redis and see whether the SAME buffered call eventually
-      // resolves once connectivity returns (proving it was BUFFERED, not lost)
-      // — only meaningful if it was still pending at the 5s mark.
-      let resolvedAfterRecovery: { settled: string; totalWaitMs: number } | null = null;
-      if (race.settled === 'timeout') {
-        dockerStart();
-        const recoveryStart = Date.now();
-        const after = await withTimeout(attempt, 15_000, 'enqueueAiExecute-post-recovery');
-        resolvedAfterRecovery = { settled: after.settled, totalWaitMs: Date.now() - recoveryStart };
-      }
+      observed.queueAdmission = { initialRaceOutcome: race.settled, hungForMs, boundMs };
+      safely(() => dockerStart());
+      await waitForRedisReady();
 
-      observed.queueAdmission = {
-        initialRaceOutcome: race.settled,
-        hungForMs,
-        resolvedAfterRecovery,
+      // Inverted: rejects, doesn't hang past the bound — with generous slack
+      // for scheduler jitter under load, never anywhere near ioredis's own
+      // uncapped retryStrategy (which is what produced the prior 'timeout'
+      // outcome at the 5s observation mark).
+      expect(race.settled).toBe('rejected');
+      expect(hungForMs).toBeLessThan(boundMs + 4_000);
+      expect(String((race.error as Error)?.message ?? race.error)).toMatch(/timed out/i);
+    }, 45_000);
+
+    it('AI-014: a BRIEF blip (recovers well within the bound) is still buffered and the enqueue still succeeds — FR-061, both halves of the fix proven, not just the first', async () => {
+      const queue = harness.app.get(QueueService);
+      const config = harness.app.get(ConfigService);
+      const boundMs = config.get<number>('AI_QUEUE_ENQUEUE_TIMEOUT_MS', 8000);
+      dockerStop();
+
+      const jobData = {
+        tenantId: seed.tenantA.id,
+        aiConversationId: 'w9-redis-degradation-blip-probe',
+        content: 'synthetic probe content — never processed',
+        idempotencyKey: `t137-queue-admission-blip-${Date.now()}`,
       };
 
-      // The finding: admission neither fails fast (fail-closed, clear error to
-      // the caller so it can degrade/retry deliberately) nor fails open
-      // (silently accepted and dropped) — it HANGS the calling request/turn
-      // until Redis recovers, bounded only by ioredis's own retryStrategy
-      // (capped backoff, retries indefinitely). For any code path that awaits
-      // enqueueAiExecute() synchronously (none currently reachable in
-      // production, per w1-async.md — but the mechanism itself is what this
-      // task asks to characterize), a Redis outage would hang that request
-      // rather than returning a clean error or degrading. This is worth a
-      // candidate finding even though the specific `ai.execute` job is dead
-      // code today, because `producerConnectionOptions()`'s `enableOfflineQueue:
-      // true` is the SHARED profile every BullMQ producer enqueue in this
-      // codebase uses, AI or not.
-      expect(race.settled).toBe('timeout');
-      if (resolvedAfterRecovery) {
-        expect(resolvedAfterRecovery.settled).toBe('resolved');
-      }
-    }, 30_000);
+      const attempt = queue.enqueueAiExecute(jobData as never);
+      // Recover well before the bound trips — a "blip", not a sustained outage.
+      await sleep(Math.min(1_500, Math.floor(boundMs / 4)));
+      dockerStart();
+      await waitForRedisReady();
+
+      const race = await withTimeout(attempt, boundMs + 5_000, 'enqueueAiExecute-blip');
+      expect(race.settled).toBe('resolved');
+    }, 45_000);
   });
 });

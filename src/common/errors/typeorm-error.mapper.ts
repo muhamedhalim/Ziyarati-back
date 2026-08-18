@@ -25,6 +25,15 @@ const PG = {
 } as const;
 
 /**
+ * The `EXCLUDE USING gist` constraint that physically forbids two active
+ * appointments for the same staff member from overlapping (see the
+ * `AppointmentNoOverlap` migration). Named here because it is the one
+ * exclusion constraint that maps to a dedicated error code rather than the
+ * generic CONFLICT.
+ */
+const APPOINTMENT_OVERLAP_CONSTRAINT = 'appointments_no_overlap';
+
+/**
  * Friendly, client-safe messages keyed by DB constraint name. This is the ONLY
  * place a constraint name maps to a public message — the constraint name itself
  * is never sent to the client. Add entries as new constraints appear.
@@ -39,7 +48,7 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   uq_user_email_global: 'This email is already in use',
   UQ_7346b08032078107fce81e014f6: 'This email is already in use', // pre-migration shape
   uq_role_tenant_slug: 'A role with this slug already exists',
-  appointments_no_overlap:
+  [APPOINTMENT_OVERLAP_CONSTRAINT]:
     'This time slot was just booked for the selected staff member. Please choose another time.',
   // FND-040/M-01: both mapped to the SAME tenant-scoped message so the
   // client-visible error is identical regardless of which shape fires during
@@ -101,6 +110,20 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
     case PG.EXCLUSION_VIOLATION:
       // Overlapping appointment caught by `appointments_no_overlap` (the race
       // backstop). Surface a clean 409 so the client can re-pick a time.
+      //
+      // The appointment constraint gets its OWN code: losing a booking race is
+      // a specific, retryable outcome a client should handle differently from a
+      // generic conflict (refresh the slots, re-pick a time) — and differently
+      // again from STAFF_NOT_AVAILABLE, which means the window was never
+      // bookable. Any future exclusion constraint keeps the generic CONFLICT
+      // until it is deliberately given a code of its own.
+      if (driver.constraint === APPOINTMENT_OVERLAP_CONSTRAINT) {
+        return new AppError(ErrorCode.SLOT_ALREADY_BOOKED, {
+          message: CONSTRAINT_MESSAGES[driver.constraint],
+          internalContext: internalContext(),
+          cause: error,
+        });
+      }
       return new AppError(ErrorCode.CONFLICT, {
         message: driver.constraint
           ? CONSTRAINT_MESSAGES[driver.constraint] ?? 'The selected time is no longer available'

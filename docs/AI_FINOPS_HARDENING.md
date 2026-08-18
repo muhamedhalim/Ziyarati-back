@@ -44,7 +44,7 @@ PDF/DOCX remain accepted as legacy metadata types but fail with `UNSUPPORTED_EXT
 
 ## Analytics
 
-`GET /ai/analytics/cost-attribution` is permission-guarded and always binds the authenticated tenant. It aggregates exact ledger data by feature, route, transport channel, request kind, provider, and model, including failed/unpriced requests, retries, cached requests, and separate token classes. The optional `conversationId` query parameter scopes the aggregate to one tenant-owned conversation without fetching prompt or response content.
+**Cost-attribution route does not exist.** `GET /ai/analytics/cost-attribution` was documented here but never wired to a controller — no route ever returned this data; requesting it 404s. The underlying aggregation method (`AiAnalyticsService.costAttribution`, by feature/route/transport channel/request kind/provider/model, including failed/unpriced requests, retries, cached requests, and separate token classes) was removed 2026-08-17 (AI-021 remediation, PD-3: no product need identified for exposing this as a new public API surface — see `specs/012-ai-security-remediation/evidence/decisions/PD-3-cost-attribution.md`). Tenant-level total/monthly spend remains available through `AiAnalyticsService.cost()`, itself not currently exposed via a controller route either — see `usage`/`conversations`/`agents`/`knowledge` in `AiAnalyticsController` for the endpoints that are actually live.
 
 ## Deployment
 
@@ -52,7 +52,7 @@ PDF/DOCX remain accepted as legacy metadata types but fail with `UNSUPPORTED_EXT
 2. Deploy/run migration `1730003800000-AiFinopsHardening` before API/worker code.
 3. Deploy API instances, then workers.
 4. Leave `AI_MODEL_ROUTING_ENABLED=false` and rollout `0` initially.
-5. Verify `/ai/analytics/cost-attribution`, unpriced alerts, prompt truncation, queue failures, and training-file states.
+5. Verify unpriced alerts, prompt truncation, queue failures, and training-file states (the `cost-attribution` route named here previously does not exist — see §Analytics).
 6. Run the mocked evaluation suite. After API credits are added, run an approved live Arabic/English quality benchmark before increasing rollout.
 7. Enable a small routing rollout, observe quality/cost/error metrics, then increase gradually.
 
@@ -100,4 +100,4 @@ Additional prompt-budget defaults are: system 2000, history 5000, RAG 2500, memo
 - Backend and worker TypeScript build: enabled (the worker is compiled by the Nest build).
 - Live OpenAI Arabic/English benchmark: **pending account credits**.
 - Migration SQL: compiled and covered by structural migration tests; execute against a backed-up staging clone before production. No database migration was run automatically against an unknown local/remote database.
-- Repository lint: currently blocked because the committed `eslint.config.mjs` contains only commented code, so ESLint ignores every TypeScript file. This is a pre-existing repository tooling issue, not bypassed by this change.
+- Repository lint: not blocked. `eslint.config.mjs` is active and enforces rules (including `prettier/prettier`) against the TypeScript source — confirmed 2026-08-17 by direct `npx eslint` execution. Any reported findings are the pre-existing CRLF/LF environment mismatch already on record, unrelated to this change (AI-026 remediation, `specs/012-ai-security-remediation/evidence/ai-026-lint-check.md`).

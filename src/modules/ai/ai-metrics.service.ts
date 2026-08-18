@@ -31,9 +31,15 @@ export interface RecordMetricInput {
   truncatedPromptTokens?: number;
   ragRetrievalMs?: number;
   embeddingMs?: number;
+  /** AI-013 (FR-065-FR-067): which retrieval path produced this turn's RAG context, or unset for a turn that never called RAG. */
+  retrievalMode?: 'vector' | 'keyword';
   toolCallsCount: number;
   toolSuccessCount: number;
   toolFailureCount: number;
+  /** AI-023 (FR-048, FR-049, FR-087): tool calls refused by the per-round fan-out cap, never silent. */
+  toolCallsTruncated: number;
+  /** AI-009 (FR-087, SD-1 point 6): the disclosure check redacted this turn's reply, never silent. */
+  promptDisclosureBlocked: boolean;
   toolExecMs: number;
   firstTokenMs?: number;
   streamingDurationMs?: number;
@@ -98,9 +104,12 @@ export class AiMetricsService {
           truncated_prompt_tokens: input.truncatedPromptTokens ?? 0,
           rag_retrieval_ms: input.ragRetrievalMs,
           embedding_ms: input.embeddingMs,
+          retrieval_mode: input.retrievalMode ?? null,
           tool_calls_count: input.toolCallsCount,
           tool_success_count: input.toolSuccessCount,
           tool_failure_count: input.toolFailureCount,
+          tool_calls_truncated: input.toolCallsTruncated,
+          prompt_disclosure_blocked: input.promptDisclosureBlocked,
           tool_exec_ms: input.toolExecMs,
           first_token_ms: input.firstTokenMs,
           streaming_duration_ms: input.streamingDurationMs,

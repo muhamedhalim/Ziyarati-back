@@ -24,6 +24,9 @@ import { WsAuthService } from './ws-auth.service';
 import { AI_EVENT, room } from './ai-events.constants';
 import { AccessControlService } from '../subscription-billing/access-control.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
+import { normalizeException } from '../../common/errors/error-normalizer';
+import { ErrorCode } from '../../common/errors/error-code';
+import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
 
 interface MessagePayload {
   content: string;
@@ -59,6 +62,15 @@ interface MessagePayload {
  */
 const CORRELATION_ID_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 
+/**
+ * AI-022 (FR-047): kept consistent with `AiConversation.channel`'s own
+ * `@Column({ length: 20 })` (`AiConversation.ts:35-36`) — a bare number, not
+ * a shared import, since the entity is a persistence concern and this is a
+ * fast-fail wire check that must run before any DB write is attempted. If
+ * the column's length ever changes, this constant must change with it.
+ */
+const MAX_CHANNEL_LENGTH = 20;
+
 function resolveCorrelationId(clientSupplied: string | undefined): string {
   if (clientSupplied && CORRELATION_ID_PATTERN.test(clientSupplied)) {
     return clientSupplied;
@@ -90,6 +102,7 @@ export class AiRealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
   private readonly logger = new Logger('AiRealtimeGateway');
+  private readonly isProduction = process.env.NODE_ENV === 'production';
 
   @WebSocketServer()
   server!: Server;
@@ -103,6 +116,7 @@ export class AiRealtimeGateway
     private readonly presence: AgentPresenceService,
     private readonly access: AiConversationAccessService,
     private readonly entitlements: AccessControlService,
+    private readonly wsRateLimit: AiWsRateLimitService,
   ) {}
 
   /**
@@ -149,6 +163,7 @@ export class AiRealtimeGateway
       );
     }
     client.emit(AI_EVENT.ERROR, {
+      code: ErrorCode.FORBIDDEN,
       message: 'The AI assistant is not available for this clinic',
     });
     return false;
@@ -200,8 +215,10 @@ export class AiRealtimeGateway
         client.to(room.tenant(user.tenantId!)).emit(AI_EVENT.PRESENCE, p);
       }
     } catch (err) {
+      const normalized = normalizeException(err, this.isProduction);
       client.emit(AI_EVENT.ERROR, {
-        message: (err as Error)?.message ?? 'Unauthorized',
+        code: normalized.code,
+        message: normalized.message,
       });
       client.disconnect(true);
     }
@@ -341,8 +358,10 @@ export class AiRealtimeGateway
       return { ok: true, handoverId: handover.id };
     } catch (err) {
       this.logger.warn(`onHandover failed: ${(err as Error)?.message}`);
+      const normalized = normalizeException(err, this.isProduction);
       client.emit(AI_EVENT.ERROR, {
-        message: (err as Error)?.message ?? 'Handover request failed',
+        code: normalized.code,
+        message: normalized.message,
       });
       return { ok: false };
     }
@@ -387,8 +406,10 @@ export class AiRealtimeGateway
       return { ok: true, dispatchedToWhatsapp: result.dispatchedToWhatsapp };
     } catch (err) {
       this.logger.warn(`onAgentReply failed: ${(err as Error)?.message}`);
+      const normalized = normalizeException(err, this.isProduction);
       client.emit(AI_EVENT.ERROR, {
-        message: (err as Error)?.message ?? 'Reply failed',
+        code: normalized.code,
+        message: normalized.message,
       });
       return { ok: false };
     }
@@ -404,6 +425,19 @@ export class AiRealtimeGateway
     if (!tenantId || !body?.content?.trim()) {
       client.emit(AI_EVENT.ERROR, {
         message: 'Empty message or unauthenticated socket',
+      });
+      return;
+    }
+    // AI-022 (FR-046, FR-047): validated BEFORE persistence — the un-bounded
+    // `channel` used to reach the DB write as a raw, unhandled Postgres
+    // "value too long for type character varying(20)" error. `code` is
+    // VALIDATION_ERROR — distinguishable from RATE_LIMITED/FORBIDDEN without
+    // parsing message text (FR-102c); `message` is a fixed, non-localized
+    // developer string the client localizes itself (FR-102a).
+    if (body.channel && body.channel.length > MAX_CHANNEL_LENGTH) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.VALIDATION_ERROR,
+        message: `channel must be at most ${MAX_CHANNEL_LENGTH} characters`,
       });
       return;
     }
@@ -433,6 +467,27 @@ export class AiRealtimeGateway
       !user?.permissions?.includes(PERMISSION.AI_CONVERSATIONS_MANAGE)
     ) {
       client.emit(AI_EVENT.ERROR, { message: 'Forbidden' });
+      return;
+    }
+    // AI-015/AI-028 (FR-051, FR-053, D5): after entitlement + permission,
+    // before the turn runs — so a permission-refused call never consumes
+    // rate-limit budget. Identity is never client-supplied (FR-052): the
+    // authenticated user id, or the guest subject (WsAuthService mints a
+    // guest's `id` AS the token subject — the same value), or, only absent
+    // both, the Socket.IO connection id.
+    const identity = user?.id ?? client.id;
+    const rateLimit = await this.wsRateLimit.checkAndRecord(
+      identity,
+      user?.guest ? 'guest' : 'authenticated',
+    );
+    if (!rateLimit.allowed) {
+      client.emit(AI_EVENT.ERROR, {
+        code: rateLimit.code,
+        message:
+          rateLimit.code === ErrorCode.SERVICE_UNAVAILABLE
+            ? 'The AI assistant is temporarily unavailable. Please try again shortly.'
+            : 'Too many messages sent too quickly. Please slow down.',
+      });
       return;
     }
     // Restore the authenticated principal for this turn — every downstream
@@ -504,8 +559,10 @@ export class AiRealtimeGateway
       });
     } catch (err) {
       this.logger.warn(`onMessage failed: ${(err as Error)?.message}`);
+      const normalized = normalizeException(err, this.isProduction);
       client.emit(AI_EVENT.ERROR, {
-        message: (err as Error)?.message ?? 'AI turn failed',
+        code: normalized.code,
+        message: normalized.message,
       });
     }
   }

@@ -85,4 +85,13 @@ export class UpdateTenantSettingsDto {
   @IsOptional()
   @IsBoolean()
   botEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether a staff member must have a configured working window (staff schedule ∩ branch working hours, or a calendar slot) before they can be booked at a given time. When false (the default), a staff member with nothing configured for that day has no working-hours constraint — holidays, time off, blocked periods and double-booking are still enforced. Turn this on once the clinic maintains its schedules.',
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  enforceStaffWorkingHours?: boolean;
 }

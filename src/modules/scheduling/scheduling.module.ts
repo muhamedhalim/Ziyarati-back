@@ -9,6 +9,7 @@ import { Holiday } from '../../entities/Calendar&Appointments/Holiday';
 // Read-only references used by the availability engine / validators
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { StaffSchedule } from '../../entities/Staff/StaffSchedule';
 
@@ -19,6 +20,7 @@ import { CalendarSlotService } from './calendar-slot.service';
 import { BlockedSlotService } from './blocked-slot.service';
 import { HolidayService } from './holiday.service';
 import { AvailabilityService } from './availability.service';
+import { SchedulingIntegrityService } from './scheduling-integrity.service';
 
 import { CalendarSlotController } from './calendar-slot.controller';
 import { BlockedSlotController } from './blocked-slot.controller';
@@ -53,6 +55,10 @@ import { AvailabilityController } from './availability.controller';
       Holiday,
       Appointment,
       Branch,
+      // Read-only: `tenant_settings.enforce_staff_working_hours`, the per-clinic
+      // decision on whether an unconfigured day means "unrestricted" or
+      // "unavailable". The Tenant domain owns writes.
+      TenantSetting,
       StaffProfile,
       // Read-only: the branch⇄doctor link (`assertStaffAtBranch`). This module
       // never writes schedules — the Staff domain owns them.
@@ -74,6 +80,9 @@ import { AvailabilityController } from './availability.controller';
     BlockedSlotService,
     HolidayService,
     AvailabilityService,
+    // Boot-time assertion that the DB-level double-booking guard is actually
+    // installed — the app-level check alone cannot survive a race.
+    SchedulingIntegrityService,
   ],
   exports: [AvailabilityService],
 })

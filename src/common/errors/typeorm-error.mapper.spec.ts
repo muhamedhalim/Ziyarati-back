@@ -15,13 +15,22 @@ describe('mapTypeOrmError', () => {
     expect(err.message).toBe('This email is already in use');
   });
 
-  it('maps an exclusion violation (double-booking) to a clean CONFLICT', () => {
+  // Losing a booking race is its own outcome: the client should refresh the
+  // available slots and re-pick, which is a different action from every other
+  // 409 — hence a dedicated code rather than the generic CONFLICT.
+  it('maps the appointment overlap violation to SLOT_ALREADY_BOOKED', () => {
     const err = mapTypeOrmError(pgError({ code: '23P01', constraint: 'appointments_no_overlap' }));
-    expect(err.code).toBe(ErrorCode.CONFLICT);
+    expect(err.code).toBe(ErrorCode.SLOT_ALREADY_BOOKED);
     expect(err.message).toMatch(/just booked/i);
   });
 
-  it('falls back to a generic message for an unknown exclusion constraint', () => {
+  it('never leaks the constraint name to the client', () => {
+    const err = mapTypeOrmError(pgError({ code: '23P01', constraint: 'appointments_no_overlap' }));
+    expect(err.message).not.toContain('appointments_no_overlap');
+    expect(err.publicContext).toBeUndefined();
+  });
+
+  it('falls back to a generic CONFLICT for any other exclusion constraint', () => {
     const err = mapTypeOrmError(pgError({ code: '23P01', constraint: 'something_else' }));
     expect(err.code).toBe(ErrorCode.CONFLICT);
     expect(err.message).toMatch(/no longer available/i);

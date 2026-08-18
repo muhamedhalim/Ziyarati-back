@@ -338,7 +338,18 @@ export class AiKnowledgeIngestionService {
 
   async cleanupSource(tenantId: string, sourceId: string): Promise<void> {
     await this.dataSource.transaction(async (m) => {
-      await m.query(`DELETE FROM ai_kb_embeddings WHERE kb_id IN (SELECT id FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2)`, [tenantId, sourceId]);
+      // AI-012: the sidecar table only exists when pgvector is available —
+      // on a non-vector deployment this DELETE hit a table that was never
+      // created, failing the whole transaction and leaving the knowledge
+      // rows undeleted too. Guarded at the site that knows about the
+      // optional table (this.pgvector.isAvailable(), the codebase's existing
+      // answer — AiRagService consults the same check), not at callers:
+      // cleanupSource has other callers that would each need the same guard.
+      // On a deployment that DOES have pgvector, sidecar cleanup still runs
+      // exactly as today — nothing here changes that path.
+      if (this.pgvector.isAvailable()) {
+        await m.query(`DELETE FROM ai_kb_embeddings WHERE kb_id IN (SELECT id FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2)`, [tenantId, sourceId]);
+      }
       await m.query(`DELETE FROM ai_knowledge_bases WHERE "tenantId"=$1 AND source_id=$2`, [tenantId, sourceId]);
     });
   }
