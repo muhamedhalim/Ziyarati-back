@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { SchedulingRefService } from './scheduling-ref.service';
@@ -21,6 +22,7 @@ import { StaffScheduleService } from '../staff/staff-schedule.service';
 import { StaffTimeOffService } from '../staff/staff-time-off.service';
 import { AvailabilityQueryDto } from './dto/availability-query.dto';
 import {
+  BookabilityReason,
   ENFORCE_AVAILABILITY_WHEN_UNDEFINED,
   Interval,
   OCCUPYING_APPOINTMENT_STATUSES,
@@ -49,7 +51,10 @@ export interface BookabilityConflicts {
 
 export interface BookabilityResult {
   available: boolean;
+  /** Human-readable prose — for logs and for the AI assistant to relay. */
   reasons: string[];
+  /** Stable machine codes — what a client (and a translation) branches on. */
+  reasonCodes: BookabilityReason[];
   conflicts: BookabilityConflicts;
   occupyingAppointmentIds: string[];
 }
@@ -87,20 +92,29 @@ interface OccupancyOptions {
  *   (the window is covered by the POSITIVE availability set — recurring windows
  *   ∪ calendar slots — when that set is defined).
  *
- * Positive-availability gating is conditional (see ENFORCE_AVAILABILITY_WHEN_UNDEFINED):
- * if a staff member has no schedule and no calendar slot for the day, the
- * "within working hours" gate is skipped (migration-safe) while every HARD
- * exclusion above is still enforced.
+ * Positive-availability gating is conditional and PER-TENANT
+ * (`tenant_settings.enforce_staff_working_hours`, default false — see
+ * `enforceWorkingHours`): if a staff member has no schedule and no calendar slot
+ * for the day, the "within working hours" gate is skipped unless the clinic has
+ * opted into strict enforcement. Every HARD exclusion above is always enforced.
  *
  * Tenant isolation: branch + staff are tenant-validated; every composed query is
- * tenant-scoped. The occupancy check is transaction-aware so the booking write
- * path is race-safe against concurrent double-bookings.
+ * tenant-scoped.
+ *
+ * Concurrency: the occupancy check is transaction-aware, but a SELECT-then-INSERT
+ * can never be race-safe under READ COMMITTED. The real guarantee is the
+ * `appointments_no_overlap` EXCLUSION constraint — two concurrent bookings that
+ * both pass this check collide at INSERT and exactly one survives; the loser's
+ * 23P01 becomes `SLOT_ALREADY_BOOKED`.
  */
 @Injectable()
 export class AvailabilityService {
   constructor(
     @InjectRepository(Appointment)
     private readonly appointments: Repository<Appointment>,
+    /** Read-only: the per-clinic working-hours enforcement decision. */
+    @InjectRepository(TenantSetting)
+    private readonly tenantSettings: Repository<TenantSetting>,
     private readonly refs: SchedulingRefService,
     private readonly slotService: CalendarSlotService,
     private readonly blockedService: BlockedSlotService,
@@ -112,10 +126,15 @@ export class AvailabilityService {
   // ───────────────── Booking gate (called by the Appointment module) ─────── //
 
   /**
-   * Throws `AppError(CONFLICT)` unless [start,end) is truly bookable for
-   * (branch, staff). Designed to be called from inside the Appointment booking
-   * transaction: pass `manager` so the occupancy check is race-safe, and
-   * `excludeAppointmentId` when re-validating an existing appointment.
+   * Throws `AppError(STAFF_NOT_AVAILABLE)` unless [start,end) is truly bookable
+   * for (branch, staff). Designed to be called from inside the Appointment
+   * booking transaction: pass `manager` so every check reads the transaction's
+   * snapshot, and `excludeAppointmentId` when re-validating an existing
+   * appointment so it never conflicts with itself.
+   *
+   * This is the gate EVERY booking source passes through — reception, admin,
+   * the WhatsApp bot, the public AI assistant, the integration platform — so a
+   * new booking path gets the rule for free by calling `AppointmentsService`.
    */
   async assertBookable(
     tenantId: string,
@@ -133,9 +152,20 @@ export class AvailabilityService {
 
     const result = await this.evaluate(tenantId, branchId, staffId, start, end, opts);
     if (!result.available) {
-      throw new AppError(ErrorCode.CONFLICT, {
+      // A DEDICATED code, not the generic CONFLICT: a client has to be able to
+      // tell "this staff member cannot take this window" apart from every other
+      // 409, and `reasonCodes` tells it exactly which rule refused. The prose
+      // message stays in `message` for logs and for the AI assistant to relay.
+      //
+      // `occupyingAppointmentIds` is deliberately NOT surfaced — the caller has
+      // no need for other appointments' ids to re-pick a time.
+      throw new AppError(ErrorCode.STAFF_NOT_AVAILABLE, {
         message: `The selected time is not available (${result.reasons.join('; ')})`,
-        publicContext: { conflicts: result.conflicts, reasons: result.reasons },
+        publicContext: {
+          conflicts: result.conflicts,
+          reasons: result.reasons,
+          reasonCodes: result.reasonCodes,
+        },
       });
     }
   }
@@ -160,6 +190,7 @@ export class AvailabilityService {
       valid: result.available,
       window: { startTime: start.toISOString(), endTime: end.toISOString() },
       reasons: result.reasons,
+      reasonCodes: result.reasonCodes,
       conflicts: result.conflicts,
     };
   }
@@ -183,7 +214,11 @@ export class AvailabilityService {
         branchId: q.branchId,
         staffId: q.staffId,
         available: false,
+        // `reason` is the pre-existing lowercase string, kept for back-compat;
+        // `reasonCode` is the stable enum a client should branch on.
         reason: holidays.length > 0 ? 'holiday' : 'time_off',
+        reasonCode:
+          holidays.length > 0 ? BookabilityReason.HOLIDAY : BookabilityReason.TIME_OFF,
         windows: [],
       };
     }
@@ -287,17 +322,19 @@ export class AvailabilityService {
     const dateStr = zonedYmd(start, zone);
     const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
-    const [holidays, blocked, timeOff, occupying, positive] = await Promise.all([
-      this.holidayService.findForDate(tenantId, branchId, dateStr),
-      this.blockedService.findOverlapping(tenantId, branchId, start, end, staffId),
-      this.staffTimeOff.isOffOn(tenantId, staffId, dateStr),
-      this.findOccupying(tenantId, branchId, start, end, {
-        staffId,
-        excludeAppointmentId: opts.excludeAppointmentId,
-        manager: opts.manager,
-      }),
-      this.computePositiveWindows(tenantId, branchId, staffId, dateStr, dayStart, dayEnd, zone),
-    ]);
+    const [holidays, blocked, timeOff, occupying, positive, enforceWhenUndefined] =
+      await Promise.all([
+        this.holidayService.findForDate(tenantId, branchId, dateStr),
+        this.blockedService.findOverlapping(tenantId, branchId, start, end, staffId),
+        this.staffTimeOff.isOffOn(tenantId, staffId, dateStr),
+        this.findOccupying(tenantId, branchId, start, end, {
+          staffId,
+          excludeAppointmentId: opts.excludeAppointmentId,
+          manager: opts.manager,
+        }),
+        this.computePositiveWindows(tenantId, branchId, staffId, dateStr, dayStart, dayEnd, zone),
+        this.enforceWorkingHours(tenantId, opts.manager),
+      ]);
 
     const holiday = holidays.length > 0;
     const isBlocked = blocked.length > 0;
@@ -306,24 +343,77 @@ export class AvailabilityService {
     let outsideAvailability = false;
     if (positive.length > 0) {
       outsideAvailability = subtractIntervals({ start, end }, positive).length > 0;
-    } else if (ENFORCE_AVAILABILITY_WHEN_UNDEFINED) {
+    } else if (enforceWhenUndefined) {
+      // Nothing configured for this staff member on this day. Whether that
+      // means "unrestricted" or "unavailable" is the clinic's own decision —
+      // see `enforceWorkingHours`.
       outsideAvailability = true;
     }
 
+    // Prose and codes are built together so they can never drift apart: the
+    // prose is what a human (or the AI assistant) reads, the code is what a
+    // client branches on and translates.
     const reasons: string[] = [];
-    if (staffInactive) reasons.push('staff member is not available for booking');
-    if (holiday) reasons.push('the date is a holiday');
-    if (timeOff) reasons.push('the staff member is on time off');
-    if (isBlocked) reasons.push('the window overlaps a blocked period');
-    if (occupied) reasons.push('the staff member already has an appointment in this window');
-    if (outsideAvailability) reasons.push("the window is outside the staff member's working availability");
+    const reasonCodes: BookabilityReason[] = [];
+    const add = (code: BookabilityReason, prose: string): void => {
+      reasonCodes.push(code);
+      reasons.push(prose);
+    };
+
+    if (staffInactive) {
+      add(BookabilityReason.STAFF_INACTIVE, 'staff member is not available for booking');
+    }
+    if (holiday) add(BookabilityReason.HOLIDAY, 'the date is a holiday');
+    if (timeOff) add(BookabilityReason.TIME_OFF, 'the staff member is on time off');
+    if (isBlocked) add(BookabilityReason.BLOCKED, 'the window overlaps a blocked period');
+    if (occupied) {
+      add(
+        BookabilityReason.OCCUPIED,
+        'the staff member already has an appointment in this window',
+      );
+    }
+    if (outsideAvailability) {
+      add(
+        BookabilityReason.OUTSIDE_WORKING_HOURS,
+        "the window is outside the staff member's working availability",
+      );
+    }
 
     return {
       available: reasons.length === 0,
       reasons,
+      reasonCodes,
       conflicts: { staffInactive, holiday, timeOff, blocked: isBlocked, occupied, outsideAvailability },
       occupyingAppointmentIds: occupying.map((a) => a.id),
     };
+  }
+
+  /**
+   * Does THIS clinic require an explicitly configured working window before a
+   * staff member can be booked?
+   *
+   * `tenant_settings.enforce_staff_working_hours` — default `false`, so every
+   * existing clinic keeps booking exactly as it did. A clinic that maintains
+   * `StaffSchedule` / `WorkingHour` rows turns it on and "no schedule that day"
+   * starts meaning "not bookable that day" instead of "no constraint".
+   *
+   * Read through the caller's `manager` when there is one, so the booking
+   * transaction decides on the same snapshot as the rest of its validation. A
+   * missing settings row falls back to ENFORCE_AVAILABILITY_WHEN_UNDEFINED
+   * rather than inventing an answer.
+   */
+  private async enforceWorkingHours(
+    tenantId: string,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    const repo = manager
+      ? manager.getRepository(TenantSetting)
+      : this.tenantSettings;
+    const row = await repo.findOne({
+      where: { tenant: { id: tenantId } },
+      select: { id: true, enforce_staff_working_hours: true },
+    });
+    return row?.enforce_staff_working_hours ?? ENFORCE_AVAILABILITY_WHEN_UNDEFINED;
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -391,10 +481,25 @@ export class AvailabilityService {
   }
 
   /**
-   * Occupying appointments overlapping [start,end) for branch (+staff). Excludes
-   * CANCELLED/NO_SHOW + soft-deleted (via OCCUPYING_APPOINTMENT_STATUSES + default
-   * soft-delete filter), matching the Appointment module's conflict rule exactly.
-   * Runs inside the caller's transaction when a `manager` is supplied (race-safe).
+   * Occupying appointments overlapping [start,end). Excludes CANCELLED/NO_SHOW +
+   * soft-deleted (via OCCUPYING_APPOINTMENT_STATUSES + the default soft-delete
+   * filter), matching the Appointment module's conflict rule exactly.
+   *
+   * SCOPE — deliberately asymmetric, and it matters:
+   *  - with a `staffId`, the query is NOT branch-filtered. A person cannot be in
+   *    two places at once, so "busy at branch A" must also mean "busy at branch
+   *    B". This is exactly what the `appointments_no_overlap` exclusion
+   *    constraint enforces (`"staffId" WITH =`, no branch in the key). Filtering
+   *    by branch here made the app-level check LOOSER than the database, so a
+   *    cross-branch double-booking got past this check and was then rejected by
+   *    the constraint with a generic message instead of a specific reason.
+   *  - without a `staffId` (the branch-level `summary()` facet), the branch
+   *    filter is the whole point — it answers "how busy is this branch today?".
+   *
+   * Runs inside the caller's transaction when a `manager` is supplied. Note that
+   * this alone is NOT race-safe under READ COMMITTED (no gap locks): the actual
+   * guarantee against concurrent double-booking is the exclusion constraint,
+   * which turns the loser of a race into SQLSTATE 23P01 → SLOT_ALREADY_BOOKED.
    */
   private findOccupying(
     tenantId: string,
@@ -406,12 +511,12 @@ export class AvailabilityService {
     const repo = opts.manager ? opts.manager.getRepository(Appointment) : this.appointments;
     const where: FindOptionsWhere<Appointment> = {
       tenant: { id: tenantId },
-      branch: { id: branchId },
       status: In(OCCUPYING_APPOINTMENT_STATUSES),
       start_at: LessThan(end),
       end_at: MoreThan(start),
     };
     if (opts.staffId) where.staff = { id: opts.staffId };
+    else where.branch = { id: branchId };
     if (opts.excludeAppointmentId) where.id = Not(opts.excludeAppointmentId);
     return repo.find({ where });
   }

@@ -139,10 +139,23 @@ describe('W3 — mutating-tool idempotency (T094)', () => {
       permissions: [PERMISSION.APPOINTMENTS_CANCEL],
     };
 
-    const first = await dispatch.execute(ctx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
+    // AI-019/F1 (PD-1, 2026-08-17): cancel_appointment is now confirmation-
+    // gated — the FIRST call with no confirmationToken is refused and mints
+    // one; the SECOND call, carrying it, is the actual first execution this
+    // test's idempotency assertions are about.
+    const propose = await dispatch.execute(ctx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
+    expect(propose.success).toBe(false);
+    expect(propose.confirmationRequired).toBe(true);
+    const confirmationToken = propose.confirmationToken as string;
+
+    const first = await dispatch.execute(ctx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId, confirmationToken }));
     expect(first.success).not.toBe(false);
     expect(first.idempotentReplay).toBeUndefined();
 
+    // A retry carrying NO token (or a stale one) still replays the SUCCEEDED
+    // result rather than re-asking for confirmation — the confirmation gate
+    // is skipped once a ledger claim already exists for this key (FR-027:
+    // idempotency semantics are not disturbed by the confirmation gate).
     const second = await dispatch.execute(ctx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
     expect(second.success).not.toBe(false);
     expect(second.idempotentReplay).toBe(true);

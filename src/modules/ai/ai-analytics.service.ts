@@ -104,52 +104,15 @@ export class AiAnalyticsService {
     };
   }
 
-  /** Exact tenant-scoped ledger aggregation by feature/channel/model/kind. */
-  async costAttribution(tenantId: string, filter: AiAnalyticsFilterDto) {
-    const params: unknown[] = [tenantId];
-    let where = 'WHERE tenant_id=$1';
-    if (filter.from) {
-      params.push(filter.from);
-      where += ` AND created_at >= $${params.length}`;
-    }
-    if (filter.to) {
-      params.push(filter.to);
-      where += ` AND created_at < $${params.length}`;
-    }
-    if (filter.conversationId) {
-      params.push(filter.conversationId);
-      where += ` AND ai_conversation_id = $${params.length}`;
-    }
-    const rows = await this.dataSource.query(
-      `SELECT feature, route, channel, request_kind, provider, model,
-              count(*)::int requests,
-              count(*) FILTER (WHERE success=false)::int failed_requests,
-              count(*) FILTER (WHERE cache_hit=true)::int cache_hits,
-              count(*) FILTER (WHERE pricing_status='UNPRICED')::int unpriced_requests,
-              COALESCE(sum(input_tokens),0)::bigint input_tokens,
-              COALESCE(sum(cached_input_tokens),0)::bigint cached_input_tokens,
-              COALESCE(sum(output_tokens),0)::bigint output_tokens,
-              COALESCE(sum(embedding_tokens),0)::bigint embedding_tokens,
-              COALESCE(sum(provider_attempts-1),0)::bigint provider_retries,
-              COALESCE(sum(cost_microusd),0)::bigint cost_microusd
-         FROM ai_cost_entries ${where}
-        GROUP BY feature,route,channel,request_kind,provider,model
-        ORDER BY cost_microusd DESC`,
-      params,
-    );
-    return {
-      tenantId,
-      items: rows.map((r: Record<string, unknown>) => ({
-        ...r,
-        requests: Number(r.requests), failedRequests: Number(r.failed_requests),
-        cacheHits: Number(r.cache_hits), unpricedRequests: Number(r.unpriced_requests),
-        inputTokens: Number(r.input_tokens), cachedInputTokens: Number(r.cached_input_tokens),
-        outputTokens: Number(r.output_tokens), embeddingTokens: Number(r.embedding_tokens),
-        providerRetries: Number(r.provider_retries), costMicrousd: String(r.cost_microusd),
-        costUsd: +(Number(r.cost_microusd) / 1_000_000).toFixed(6),
-      })),
-    };
-  }
+  // `costAttribution()` (AI-021, PD-3) was removed 2026-08-17 — it backed a
+  // documented `GET /ai/analytics/cost-attribution` route that was never
+  // wired to a controller (404 in every environment) and had no other
+  // caller. Per the recorded product decision
+  // (specs/012-ai-security-remediation/evidence/decisions/PD-3-cost-attribution.md),
+  // the dead method was removed and the documentation corrected rather than
+  // wiring a new public API surface with no identified product need. See
+  // ai-analytics.cost-isolation.spec.ts's removal in the same change (I-7,
+  // FR-070) — it existed solely to exercise this method.
 
   /** Conversation metrics: totals, status mix, handover & resolution rates. */
   async conversations(tenantId: string, filter: AiAnalyticsFilterDto) {

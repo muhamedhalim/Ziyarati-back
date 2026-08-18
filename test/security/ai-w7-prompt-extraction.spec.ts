@@ -76,7 +76,7 @@ describe('W7 — system-prompt / tool-schema extraction (T108)', () => {
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
   });
 
-  it('maximal compliance: when the stub fully complies with an extraction request, the CLIENT-VISIBLE reply DOES surface the system prompt text — no deterministic control strips it (wording-only barrier)', async () => {
+  it('maximal compliance: [PROMOTED, RTP row 17, AI-009/T099-T101] when the stub fully complies with an extraction request, the local disclosure check now redacts the reply BEFORE it reaches the client', async () => {
     const conv = await conversations.start(seed.tenantA.id, { agentId: seed.tenantA.agentId });
     harness.provider.reset();
 
@@ -95,11 +95,14 @@ describe('W7 — system-prompt / tool-schema extraction (T108)', () => {
       );
     });
 
-    // The client-visible payload literally contains the extracted text —
-    // proving there is NO application-level filter between "the model decided
-    // to leak" and "the client received it". This is the T117 finding: the
-    // system prompt's own "never reveal" wording is the SOLE barrier here.
-    expect(result.message.content).toContain(SECRET_LOOKING_INSTRUCTION);
+    // [PROMOTED, RTP row 17] the client-visible payload no longer contains
+    // the extracted text — AI-009/T099-T101's local, dependency-free
+    // word-shingle disclosure check is now a real application-level barrier
+    // BETWEEN "the model decided to leak" and "the client received it",
+    // where previously the system prompt's own "never reveal" wording was
+    // the SOLE barrier (the original finding this row inverts).
+    expect(result.message.content).not.toContain(SECRET_LOOKING_INSTRUCTION);
+    expect(result.message.content).not.toContain(leakedContent);
 
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);

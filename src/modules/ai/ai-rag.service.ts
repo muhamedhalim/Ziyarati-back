@@ -54,20 +54,32 @@ export class AiRagService {
     agentId: string,
     query: string,
     limit?: number,
-    timing?: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number },
+    timing?: {
+      embeddingMs?: number;
+      embeddingTokens?: number;
+      embeddingCacheHits?: number;
+      /** AI-013 (FR-065-FR-067): which path actually produced the result — set on every return, including the attempted-then-fell-back case. */
+      retrievalMode?: 'vector' | 'keyword';
+    },
     attribution?: { channel?: string; aiConversationId?: string; idempotencyKey?: string },
   ): Promise<RetrievedChunk[]> {
     const topK = Math.max(1, Math.min(20, limit ?? Number(this.config.get<number>('RAG_TOP_K', 5))));
 
     if (this.embedder.isConfigured() && this.pgvector.isAvailable()) {
       try {
-        return await this.vectorSearch(tenantId, agentId, query, topK, timing, attribution);
+        const chunks = await this.vectorSearch(tenantId, agentId, query, topK, timing, attribution);
+        if (timing) timing.retrievalMode = 'vector';
+        return chunks;
       } catch (err) {
         this.logger.warn(
           `Vector search failed (${(err as Error).message}) — using keyword fallback`,
         );
       }
     }
+    // Reached both on a pure keyword-only deployment AND when the vector
+    // path above was attempted and threw — the recorded value matches the
+    // path actually taken, never the path merely attempted (FR-067).
+    if (timing) timing.retrievalMode = 'keyword';
     return this.keywordSearch(tenantId, agentId, query, topK);
   }
 

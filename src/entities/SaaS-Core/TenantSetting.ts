@@ -50,6 +50,25 @@ export class TenantSetting {
   @Column({ default: false })
   public_booking_enabled!: boolean;
 
+  /**
+   * Whether a staff member must have an explicitly configured working window
+   * (a `StaffSchedule` intersected with the branch's `WorkingHour`, or a
+   * `CalendarSlot`) before they can be booked at a given time.
+   *
+   * Defaults to `false`: a clinic that has never populated schedules would
+   * otherwise become unable to book anyone at all the moment this shipped. With
+   * it off, "no schedule configured that day" means "no working-hours
+   * constraint" — every HARD exclusion (holiday, time off, blocked period,
+   * inactive staff, double-booking) is still enforced. With it on, "nothing
+   * configured" means "not bookable".
+   *
+   * Read in exactly one place — `AvailabilityService.enforceWorkingHours` — so
+   * every booking source (reception, admin, WhatsApp bot, public AI assistant,
+   * integration platform) obeys it identically.
+   */
+  @Column({ default: false })
+  enforce_staff_working_hours!: boolean;
+
   @Column({ type: 'timestamptz', nullable: true })
   updated_at?: Date;
 }

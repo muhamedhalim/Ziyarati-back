@@ -14,6 +14,7 @@ import { AgentPresenceService } from './agent-presence.service';
 import { HandoverChatService } from './handover-chat.service';
 import { HandoverRealtimeListener } from './handover-realtime.listener';
 import { HandoverChatController } from './handover-chat.controller';
+import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
 
 /**
  * Realtime AI gateway module (Feature 1 + 2, extended for Live Agent Handover).
@@ -61,6 +62,7 @@ import { HandoverChatController } from './handover-chat.controller';
     AgentPresenceService,
     HandoverChatService,
     HandoverRealtimeListener,
+    AiWsRateLimitService,
   ],
   exports: [AgentPresenceService],
 })

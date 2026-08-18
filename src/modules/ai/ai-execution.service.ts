@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -107,6 +108,8 @@ export type AiMemoryContextLoader = () => Promise<
 @Injectable()
 export class AiExecutionService {
   private readonly logger = new Logger('AiExecutionService');
+  /** AI-023 (FR-048): the per-round-trip tool-call fan-out cap, read from config. */
+  private readonly maxToolCallsPerIteration: number;
 
   constructor(
     @InjectRepository(AiConversation)
@@ -128,7 +131,16 @@ export class AiExecutionService {
     private readonly modelRouter: AiModelRouterService,
     private readonly subscriptions: SubscriptionService,
     private readonly access: AccessControlService,
-  ) {}
+    private readonly config: ConfigService,
+  ) {
+    // AI-023 (FR-048, R7): read once at construction — same posture as
+    // MAX_TOOL_ITERATIONS being a fixed module constant; this bound is
+    // config-driven (env-tunable) rather than a hardcoded constant, but is
+    // not expected to change at runtime within one process's lifetime.
+    this.maxToolCallsPerIteration = Number(
+      this.config.get('AI_MAX_TOOL_CALLS_PER_ITERATION', 10),
+    );
+  }
 
   /**
    * THE entitlement gate for an AI turn, on every transport.
@@ -290,6 +302,7 @@ export class AiExecutionService {
         embeddingMs?: number;
         embeddingTokens?: number;
         embeddingCacheHits?: number;
+        retrievalMode?: 'vector' | 'keyword';
       } = {};
       const chunks = agent
         ? await this.rag.retrieve(
@@ -360,6 +373,9 @@ export class AiExecutionService {
       let toolCallsCount = 0;
       let toolSuccessCount = 0;
       let toolFailureCount = 0;
+      let toolCallsTruncated = 0;
+      /** AI-009 (FR-087, SD-1 point 6): the disclosure check tripped and redacted this turn's reply. */
+      let promptDisclosureBlocked = false;
       let toolExecMs = 0;
       let lastTool:
         | { name: string; result: Record<string, unknown> }
@@ -411,7 +427,16 @@ export class AiExecutionService {
 
         const calls = completion.toolCalls ?? [];
         if (calls.length === 0) {
-          finalContent = completion.content;
+          // AI-009 (FR-043, FR-045): checked before persistence and before
+          // return, so both the persisted message and the client-visible
+          // reply carry the redacted form when this trips.
+          const checked = this.applyPromptDisclosureCheck(
+            completion.content,
+            agent?.system_prompt,
+            tools,
+          );
+          finalContent = checked.content;
+          promptDisclosureBlocked = checked.blocked;
           break;
         }
         accounting.toolLoops += 1;
@@ -422,7 +447,19 @@ export class AiExecutionService {
           content: completion.content || null,
           tool_calls: calls,
         });
-        for (const call of calls) {
+        // AI-023 (FR-048, FR-049): calls beyond the fan-out cap are refused
+        // deterministically below, never silently dropped from the transcript.
+        const { accepted, refused } = this.capToolCalls(calls);
+        toolCallsTruncated += refused.length;
+        for (const call of refused) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            name: call.name,
+            content: this.fanOutRefusalMessage(),
+          });
+        }
+        for (const call of accepted) {
           const [result, ms] = await this.timedToolCall(toolCtx, call);
           toolCallsCount += 1;
           toolExecMs += ms;
@@ -439,7 +476,13 @@ export class AiExecutionService {
           });
         }
         if (i === MAX_TOOL_ITERATIONS - 1) {
-          finalContent = completion.content || 'I have processed your request.';
+          const checked = this.applyPromptDisclosureCheck(
+            completion.content || 'I have processed your request.',
+            agent?.system_prompt,
+            tools,
+          );
+          finalContent = checked.content;
+          promptDisclosureBlocked = promptDisclosureBlocked || checked.blocked;
         }
       }
       modelForMetric = lastModel;
@@ -508,9 +551,12 @@ export class AiExecutionService {
         truncatedPromptTokens,
         ragRetrievalMs,
         embeddingMs: embedTiming.embeddingMs,
+        retrievalMode: embedTiming.retrievalMode,
         toolCallsCount,
         toolSuccessCount,
         toolFailureCount,
+        toolCallsTruncated,
+        promptDisclosureBlocked,
         toolExecMs,
         totalLatencyMs: Date.now() - turnStart,
         // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the
@@ -601,6 +647,8 @@ export class AiExecutionService {
         toolCallsCount: 0,
         toolSuccessCount: 0,
         toolFailureCount: 0,
+        toolCallsTruncated: 0,
+        promptDisclosureBlocked: false,
         toolExecMs: 0,
         totalLatencyMs: Date.now() - turnStart,
         // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the
@@ -690,6 +738,233 @@ export class AiExecutionService {
     const start = Date.now();
     const result = await this.dispatch.execute(toolCtx, call);
     return [result, Date.now() - start];
+  }
+
+  /**
+   * AI-009 (FR-043, FR-044, FR-091-FR-093, SD-1): local, dependency-free
+   * check for a reply reproducing the assembled system prompt or the
+   * caller's permission-filtered tool-schema text for THIS turn — both
+   * already in memory, so cost is bounded by reply length alone, never by
+   * knowledge-base or conversation size (FR-091). Deliberately NOT an
+   * embedding call (FR-093) or an LLM-judge call (FR-092, Principle XXXIV —
+   * a model must not be the control that decides whether a model leaked).
+   *
+   * Method: normalized word-shingle overlap (a bounded, cheap "does the
+   * reply contain chunks of the source" measure) — the fraction of the
+   * reply's own shingles that also appear in the source's shingle set. A
+   * short reply that is mostly copied source text scores high even against
+   * a much larger source; an ordinary answer sharing a few incidental words
+   * (e.g. clinic hours) does not, because it has few or no matching
+   * `AI_PROMPT_SIMILARITY_SHINGLE_SPAN`-word runs in common.
+   */
+  private checkPromptDisclosure(
+    reply: string,
+    systemPrompt: string | undefined,
+    tools: AiToolDefinition[],
+  ): { blocked: boolean; overlapRatio: number } {
+    const shingleSpan = Number(
+      this.config.get('AI_PROMPT_SIMILARITY_SHINGLE_SPAN', 8),
+    );
+    const threshold = Number(
+      this.config.get('AI_PROMPT_SIMILARITY_THRESHOLD', 0.6),
+    );
+    const sourceText = `${systemPrompt ?? ''}\n${JSON.stringify(tools)}`;
+    const sourceShingles = this.shingleSet(sourceText, shingleSpan);
+    const replyShingles = this.shingles(reply, shingleSpan);
+    if (sourceShingles.size === 0 || replyShingles.length === 0) {
+      return { blocked: false, overlapRatio: 0 };
+    }
+    let hits = 0;
+    for (const shingle of replyShingles) {
+      if (sourceShingles.has(shingle)) hits += 1;
+    }
+    const overlapRatio = hits / replyShingles.length;
+    return { blocked: overlapRatio >= threshold, overlapRatio };
+  }
+
+  /** Lowercased, punctuation-stripped word list — the shingle unit is a word, not a character. */
+  private normalizeForShingles(text: string): string[] {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  /** Sliding-window word n-grams. A text shorter than `span` still yields one shingle (itself). */
+  private shingles(text: string, span: number): string[] {
+    const words = this.normalizeForShingles(text);
+    if (words.length === 0) return [];
+    if (words.length < span) return [words.join(' ')];
+    const result: string[] = [];
+    for (let i = 0; i <= words.length - span; i += 1) {
+      result.push(words.slice(i, i + span).join(' '));
+    }
+    return result;
+  }
+
+  private shingleSet(text: string, span: number): Set<string> {
+    return new Set(this.shingles(text, span));
+  }
+
+  /** The redacted stand-in for a reply the disclosure check blocks — never the raw leaked content. */
+  private readonly PROMPT_DISCLOSURE_REDACTED_MESSAGE =
+    "I can't share my internal instructions or configuration. Is there something else I can help you with?";
+
+  /**
+   * Applies the check to a fully-assembled (non-streaming) reply and
+   * records whether it blocked, for T103's turn-metric visibility. Callers
+   * on the non-streaming paths (sendMessage, the Noop-provider fallback
+   * branch) call this once, synchronously, before persisting or returning.
+   */
+  private applyPromptDisclosureCheck(
+    content: string,
+    systemPrompt: string | undefined,
+    tools: AiToolDefinition[],
+  ): { content: string; blocked: boolean } {
+    const { blocked } = this.checkPromptDisclosure(
+      content,
+      systemPrompt,
+      tools,
+    );
+    return {
+      content: blocked ? this.PROMPT_DISCLOSURE_REDACTED_MESSAGE : content,
+      blocked,
+    };
+  }
+
+  /**
+   * SD-1 (`evidence/decisions/SD-1-streaming-disclosure-gate.md`) — the
+   * incremental gate for the ONE path where content reaches the client
+   * before persistence: the streaming branch. Implements the resolution's 7
+   * points exactly:
+   *
+   *  1. Accumulation is the caller's concern (unchanged) — this gate only
+   *     intercepts what gets released to the real `onToken`.
+   *  2. Release lags by a hold-back window `W` (characters), derived from
+   *     the configured shingle span — never a separate configured value.
+   *  3. The check runs at most once per `W` newly-accumulated characters.
+   *  4. On a trip, emission stops permanently for this gate's turn/iteration
+   *     — the held-back tail is simply never released.
+   *  5/6. Handled by the caller: `finalize()` returns the redacted-or-not
+   *     final content for the existing `ai:done`/persistence path, and its
+   *     `blocked` flag is what the caller records on the turn metric.
+   *
+   * One gate instance per STREAMING ITERATION (not per whole turn) — an
+   * iteration's `turnContent` is exactly what this gate's `buffer` tracks,
+   * so `finalize(turnContent)` at the end of an iteration checks precisely
+   * the content that iteration is responsible for, matching the existing
+   * per-iteration `full = turnContent` assignment this replaces.
+   */
+  private createStreamingDisclosureGate(
+    onToken: (delta: string) => void,
+    systemPrompt: string | undefined,
+    tools: AiToolDefinition[],
+  ): {
+    feed: (delta: string) => void;
+    finalize: (fullContent: string) => { content: string; blocked: boolean };
+  } {
+    const shingleSpan = Number(
+      this.config.get('AI_PROMPT_SIMILARITY_SHINGLE_SPAN', 8),
+    );
+    // W (SD-1 point 2, "W >= the similarity check's shingle span"): derived
+    // from the shingle span via a fixed average-chars-per-word estimate —
+    // not a separately configured value (T098's own instruction).
+    const AVG_CHARS_PER_WORD = 6;
+    const holdBackWindow = shingleSpan * AVG_CHARS_PER_WORD;
+
+    let buffer = '';
+    let released = 0;
+    let checkedUpTo = 0;
+    let tripped = false;
+
+    const feed = (delta: string): void => {
+      if (tripped) return; // point 4: nothing further is ever released
+      buffer += delta;
+      if (buffer.length - checkedUpTo >= holdBackWindow) {
+        checkedUpTo = buffer.length;
+        const { blocked } = this.checkPromptDisclosure(
+          buffer,
+          systemPrompt,
+          tools,
+        );
+        if (blocked) {
+          tripped = true;
+          return;
+        }
+      }
+      const releasable = buffer.length - holdBackWindow;
+      if (releasable > released) {
+        const chunk = buffer.slice(released, releasable);
+        released = releasable;
+        if (chunk) onToken(chunk);
+      }
+    };
+
+    const finalize = (
+      fullContent: string,
+    ): { content: string; blocked: boolean } => {
+      if (tripped) {
+        return { content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE, blocked: true };
+      }
+      // Final check on the complete content — the trailing <W tail was
+      // accumulated but never individually re-checked past its own
+      // cadence tick, so a disclosure completed only in that tail must
+      // still be caught here, before persistence/completion (point 4).
+      const { blocked } = this.checkPromptDisclosure(
+        fullContent,
+        systemPrompt,
+        tools,
+      );
+      if (blocked) {
+        return { content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE, blocked: true };
+      }
+      // The full content passed — safe to flush whatever the hold-back
+      // window was still sitting on (including a reply SHORTER than the
+      // window, which would otherwise never emit a single onToken delta at
+      // all — a real streaming regression the buffer must not cause; SD-1
+      // explicitly rejects "removes streaming from a working feature").
+      const remaining = buffer.slice(released);
+      released = buffer.length;
+      if (remaining) onToken(remaining);
+      return { content: fullContent, blocked: false };
+    };
+
+    return { feed, finalize };
+  }
+
+  /**
+   * AI-023 (FR-048, FR-049, inspection I-4): bounds how many tool calls ONE
+   * provider round-trip may fan out to — independent of MAX_TOOL_ITERATIONS,
+   * which bounds how many ROUNDS a turn may take. Without this, a single
+   * response's `toolCalls` array (fully provider-controlled) could drive an
+   * unbounded amount of work — real bookings, reschedules, cancellations —
+   * before the outer round bound ever mattered.
+   *
+   * Calls beyond the cap are REFUSED, never silently dropped (FR-049): each
+   * gets its own deterministic tool-result message fed back, so the model
+   * (and the persisted transcript) can see exactly which calls ran and which
+   * did not, rather than the excess calls simply vanishing from history.
+   */
+  private capToolCalls(calls: AiToolCall[]): {
+    accepted: AiToolCall[];
+    refused: AiToolCall[];
+  } {
+    if (calls.length <= this.maxToolCallsPerIteration) {
+      return { accepted: calls, refused: [] };
+    }
+    return {
+      accepted: calls.slice(0, this.maxToolCallsPerIteration),
+      refused: calls.slice(this.maxToolCallsPerIteration),
+    };
+  }
+
+  /** The deterministic tool-result content fed back for a fan-out-refused call. */
+  private fanOutRefusalMessage(): string {
+    return JSON.stringify({
+      success: false,
+      error: `Too many tool calls requested in one turn; only the first ${this.maxToolCallsPerIteration} were executed.`,
+    });
   }
 
   /**
@@ -787,6 +1062,14 @@ export class AiExecutionService {
           mirroredMessageId?: string | null;
         }>(tenantId, requestKey);
         if (replay) {
+          // AI-009 (SD-1 §Paths not needing the buffer): this content was
+          // already checked by the disclosure gate at WRITE time (the
+          // original streaming turn that produced `replay.message.content`
+          // — a blocked turn's persisted content is already the redacted
+          // form, so replaying it can never re-surface the original
+          // disclosure). Deliberately NOT re-checked here — paying the
+          // check's cost twice for content that already passed (or was
+          // already redacted) is pure waste with no security benefit.
           if (replay.message?.content) onToken(replay.message.content);
           return replay;
         }
@@ -858,6 +1141,7 @@ export class AiExecutionService {
         embeddingMs?: number;
         embeddingTokens?: number;
         embeddingCacheHits?: number;
+        retrievalMode?: 'vector' | 'keyword';
       } = {};
       const chunks = agent
         ? await this.rag.retrieve(
@@ -930,6 +1214,9 @@ export class AiExecutionService {
       let toolCallsCount = 0;
       let toolSuccessCount = 0;
       let toolFailureCount = 0;
+      let toolCallsTruncated = 0;
+      /** AI-009 (FR-087, SD-1 point 6): the disclosure check tripped and redacted this turn's reply. */
+      let promptDisclosureBlocked = false;
       let toolExecMs = 0;
       let lastTool:
         | { name: string; result: Record<string, unknown> }
@@ -960,6 +1247,14 @@ export class AiExecutionService {
                 providerAttempts?: number;
               }
             | undefined;
+          // SD-1: one gate per streaming iteration — its buffer tracks
+          // exactly this iteration's turnContent (see the gate's own
+          // docblock for why per-iteration, not per-turn).
+          const disclosureGate = this.createStreamingDisclosureGate(
+            onToken,
+            agent?.system_prompt,
+            tools,
+          );
           for await (const chunk of provider.stream({
             tenantId,
             model,
@@ -976,7 +1271,10 @@ export class AiExecutionService {
               if (firstTokenMs === undefined)
                 firstTokenMs = Date.now() - turnStart;
               turnContent += chunk.delta;
-              onToken(chunk.delta);
+              // AI-009 (SD-1): no delta reaches the real onToken directly —
+              // the gate holds back the trailing window and checks at a
+              // bounded cadence before releasing anything.
+              disclosureGate.feed(chunk.delta);
             }
             if (chunk.done) {
               if (chunk.toolCalls?.length) sawToolCalls = chunk.toolCalls;
@@ -1013,7 +1311,13 @@ export class AiExecutionService {
             );
           }
           if (sawToolCalls.length === 0) {
-            full = turnContent;
+            // AI-009 (SD-1 points 4-6): final check on the complete
+            // iteration content, before persistence and before the
+            // completion reply (ai:done). On a trip the redacted form
+            // replaces `full` here; no further deltas were ever released.
+            const checked = disclosureGate.finalize(turnContent);
+            full = checked.content;
+            promptDisclosureBlocked = checked.blocked;
             break;
           }
           accounting.toolLoops += 1;
@@ -1022,7 +1326,19 @@ export class AiExecutionService {
             content: turnContent || null,
             tool_calls: sawToolCalls,
           });
-          for (const call of sawToolCalls) {
+          // AI-023 (FR-048, FR-049): same fan-out cap as sendMessage's loop.
+          const { accepted: acceptedStream, refused: refusedStream } =
+            this.capToolCalls(sawToolCalls);
+          toolCallsTruncated += refusedStream.length;
+          for (const call of refusedStream) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              name: call.name,
+              content: this.fanOutRefusalMessage(),
+            });
+          }
+          for (const call of acceptedStream) {
             const [result, ms] = await this.timedToolCall(toolCtx, call);
             toolCallsCount += 1;
             toolExecMs += ms;
@@ -1038,8 +1354,13 @@ export class AiExecutionService {
               content: toolOutput.content,
             });
           }
-          if (i === MAX_TOOL_ITERATIONS - 1)
-            full = turnContent || 'I have processed your request.';
+          if (i === MAX_TOOL_ITERATIONS - 1) {
+            const checked = disclosureGate.finalize(
+              turnContent || 'I have processed your request.',
+            );
+            full = checked.content;
+            promptDisclosureBlocked = promptDisclosureBlocked || checked.blocked;
+          }
         }
         streamingDurationMs = Date.now() - streamStart;
       } else {
@@ -1083,7 +1404,15 @@ export class AiExecutionService {
 
           const calls = completion.toolCalls ?? [];
           if (calls.length === 0) {
-            full = completion.content;
+            // AI-009 (FR-043, FR-045): checked before this branch's single
+            // onToken(full) emission below and before persistence.
+            const checked = this.applyPromptDisclosureCheck(
+              completion.content,
+              agent?.system_prompt,
+              tools,
+            );
+            full = checked.content;
+            promptDisclosureBlocked = checked.blocked;
             break;
           }
           accounting.toolLoops += 1;
@@ -1092,7 +1421,22 @@ export class AiExecutionService {
             content: completion.content || null,
             tool_calls: calls,
           });
-          for (const call of calls) {
+          // AI-023 (FR-048, FR-049, inspection I-4): the third fan-out-cap
+          // site — the Noop-provider (no-streaming-support) fallback branch,
+          // easy to miss because it is not exercised by a streaming-focused
+          // reproduction. Same cap as the other two sites.
+          const { accepted: acceptedFallback, refused: refusedFallback } =
+            this.capToolCalls(calls);
+          toolCallsTruncated += refusedFallback.length;
+          for (const call of refusedFallback) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              name: call.name,
+              content: this.fanOutRefusalMessage(),
+            });
+          }
+          for (const call of acceptedFallback) {
             const [result, ms] = await this.timedToolCall(toolCtx, call);
             toolCallsCount += 1;
             toolExecMs += ms;
@@ -1108,8 +1452,15 @@ export class AiExecutionService {
               content: toolOutput.content,
             });
           }
-          if (i === MAX_TOOL_ITERATIONS - 1)
-            full = completion.content || 'I have processed your request.';
+          if (i === MAX_TOOL_ITERATIONS - 1) {
+            const checked = this.applyPromptDisclosureCheck(
+              completion.content || 'I have processed your request.',
+              agent?.system_prompt,
+              tools,
+            );
+            full = checked.content;
+            promptDisclosureBlocked = promptDisclosureBlocked || checked.blocked;
+          }
         }
         if (full) onToken(full);
       }
@@ -1185,9 +1536,12 @@ export class AiExecutionService {
         truncatedPromptTokens,
         ragRetrievalMs,
         embeddingMs: embedTiming.embeddingMs,
+        retrievalMode: embedTiming.retrievalMode,
         toolCallsCount,
         toolSuccessCount,
         toolFailureCount,
+        toolCallsTruncated,
+        promptDisclosureBlocked,
         toolExecMs,
         firstTokenMs,
         streamingDurationMs,
@@ -1285,6 +1639,8 @@ export class AiExecutionService {
         toolCallsCount: 0,
         toolSuccessCount: 0,
         toolFailureCount: 0,
+        toolCallsTruncated: 0,
+        promptDisclosureBlocked: false,
         toolExecMs: 0,
         totalLatencyMs: Date.now() - turnStart,
         // AI-016/AI-017 (M2, FR-030, FR-033, FR-034): same id as the

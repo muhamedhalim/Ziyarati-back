@@ -15,6 +15,99 @@ import { AccessCacheService } from './access-cache.service';
 
 import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
 
+/** DTO keys carrying a plain numeric limit — the only keys the map below may name. */
+type NumericPlanDtoKey = {
+  [K in keyof CreatePlanDto]-?: CreatePlanDto[K] extends number | undefined
+    ? K
+    : never;
+}[keyof CreatePlanDto];
+
+/**
+ * Every plan limit column, paired with its DTO key. ONE list, four consumers
+ * (`create`, `update`, `snapshot`, `toTermPatch`).
+ *
+ * This replaces the four hand-maintained copies that used to live in this file
+ * — plus a fifth, `TERM_FIELDS`, which was declared, never read, and had
+ * already drifted from `toTermPatch` (the copy that actually ran). Adding the
+ * 13 count-based caps to four separate lists by hand is precisely how that
+ * drift happens, so they are derived from here instead.
+ *
+ * `bigint: true` marks the columns Postgres returns as strings, which must be
+ * stringified on the way in so the immutability comparison in `update()` (which
+ * compares with `String(...)`) matches what came out of the database.
+ */
+export const PLAN_LIMIT_FIELDS = [
+  { dto: 'maxBranches', column: 'max_branches' },
+  { dto: 'maxUsers', column: 'max_users' },
+  { dto: 'maxAiTokens', column: 'max_ai_tokens', bigint: true },
+  { dto: 'maxWhatsappMessages', column: 'max_whatsapp_messages' },
+  { dto: 'maxAppointments', column: 'max_appointments' },
+  { dto: 'maxCampaigns', column: 'max_campaigns' },
+  { dto: 'maxAiRequests', column: 'max_ai_requests' },
+  { dto: 'maxCustomers', column: 'max_customers' },
+  { dto: 'maxCrmContacts', column: 'max_crm_contacts' },
+  { dto: 'maxConversations', column: 'max_conversations' },
+  { dto: 'maxStorageBytes', column: 'max_storage_bytes', bigint: true },
+  { dto: 'maxUploadedFiles', column: 'max_uploaded_files' },
+  { dto: 'maxApiCalls', column: 'max_api_calls', bigint: true },
+  { dto: 'maxEmails', column: 'max_emails' },
+  { dto: 'maxInvoices', column: 'max_invoices' },
+  { dto: 'maxPayments', column: 'max_payments' },
+  { dto: 'maxTransactions', column: 'max_transactions' },
+  { dto: 'maxKnowledgeBaseFiles', column: 'max_knowledge_base_files' },
+  { dto: 'maxTrainingFiles', column: 'max_training_files' },
+] as const satisfies ReadonlyArray<{
+  dto: NumericPlanDtoKey;
+  column: keyof SubscriptionPlan;
+  bigint?: boolean;
+}>;
+
+/** A limit value as it must be written to the entity (bigint columns are strings). */
+function limitValue(
+  isBigInt: boolean,
+  raw: number | undefined,
+): string | number | undefined {
+  if (raw == null) return undefined;
+  return isBigInt ? String(raw) : raw;
+}
+
+/** `bigint` is absent on most entries, so read it through a widened view. */
+function isBigIntColumn(field: (typeof PLAN_LIMIT_FIELDS)[number]): boolean {
+  return (field as { bigint?: boolean }).bigint === true;
+}
+
+/**
+ * Translates the DTO's camelCase `limitDeclarations` keys (matching the
+ * other limit fields' own naming) to the entity's snake_case column keys
+ * (matching `subscription_plans.limit_declarations`'s actual stored shape,
+ * and every one of the ~20 call sites that already read a plan limit by
+ * column name). Reuses {@link PLAN_LIMIT_FIELDS} rather than a second
+ * key list, so an unknown/misspelled key is refused here — before it ever
+ * reaches storage — instead of silently sitting in the JSONB blob as a
+ * declaration nothing will ever consult.
+ */
+function toColumnDeclarations(
+  dtoDeclarations: Record<string, string> | undefined,
+): Record<string, 'unlimited'> | undefined {
+  if (dtoDeclarations === undefined) return undefined;
+  const out: Record<string, 'unlimited'> = {};
+  for (const [dtoKey, value] of Object.entries(dtoDeclarations)) {
+    const field = PLAN_LIMIT_FIELDS.find((f) => f.dto === dtoKey);
+    if (!field) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Unknown limit field "${dtoKey}" in limitDeclarations.`,
+      });
+    }
+    if (value !== 'unlimited') {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `limitDeclarations.${dtoKey} must be "unlimited" (got "${value}").`,
+      });
+    }
+    out[field.column] = 'unlimited';
+  }
+  return out;
+}
+
 /**
  * SUPER-ADMIN plan administration (`subscription_plans`).
  *
@@ -34,19 +127,6 @@ import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
  */
 @Injectable()
 export class PlanAdminService {
-  /** Fields that define the economic terms of a plan — frozen once in use. */
-  private static readonly TERM_FIELDS: ReadonlyArray<keyof SubscriptionPlan> = [
-    'price',
-    'billing_cycle',
-    'max_branches',
-    'max_users',
-    'max_ai_tokens',
-    'max_whatsapp_messages',
-    'max_appointments',
-    'max_campaigns',
-    'is_custom',
-  ];
-
   constructor(
     @InjectRepository(SubscriptionPlan)
     private readonly plans: Repository<SubscriptionPlan>,
@@ -71,18 +151,17 @@ export class PlanAdminService {
   }
 
   async create(dto: CreatePlanDto): Promise<SubscriptionPlan> {
+    const limits: Record<string, string | number | undefined> = {};
+    for (const field of PLAN_LIMIT_FIELDS) {
+      limits[field.column] = limitValue(isBigIntColumn(field), dto[field.dto]);
+    }
     const result = await this.plans.save(
       this.plans.create({
         name: dto.name,
         price: dto.price.toFixed(2),
         billing_cycle: dto.billingCycle,
-        max_branches: dto.maxBranches ?? undefined,
-        max_users: dto.maxUsers ?? undefined,
-        max_ai_tokens:
-          dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined,
-        max_whatsapp_messages: dto.maxWhatsappMessages ?? undefined,
-        max_appointments: dto.maxAppointments ?? undefined,
-        max_campaigns: dto.maxCampaigns ?? undefined,
+        ...limits,
+        limit_declarations: toColumnDeclarations(dto.limitDeclarations) ?? null,
         is_active: dto.isActive ?? true,
         is_custom: dto.isCustom ?? false,
       }),
@@ -136,21 +215,25 @@ export class PlanAdminService {
 
     if (dto.name !== undefined) plan.name = dto.name;
     if (dto.isActive !== undefined) plan.is_active = dto.isActive;
+    // Declaring a NULL limit "unlimited" documents existing behaviour — no
+    // subscriber's effective limit moves — so, like name/is_active, it is
+    // NOT a frozen economic term (absent from toTermPatch) and stays
+    // editable on an in-use plan. Full-object replace, not a merge: the
+    // admin form always submits the complete desired declaration set.
+    if (dto.limitDeclarations !== undefined) {
+      plan.limit_declarations = toColumnDeclarations(dto.limitDeclarations) ?? null;
+    }
     // Term edits are only reachable here when the plan is NOT in use.
     if (dto.price !== undefined) plan.price = dto.price.toFixed(2);
     if (dto.billingCycle !== undefined) plan.billing_cycle = dto.billingCycle;
-    if (dto.maxBranches !== undefined)
-      plan.max_branches = dto.maxBranches ?? undefined;
-    if (dto.maxUsers !== undefined) plan.max_users = dto.maxUsers ?? undefined;
-    if (dto.maxAiTokens !== undefined)
-      plan.max_ai_tokens =
-        dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined;
-    if (dto.maxWhatsappMessages !== undefined)
-      plan.max_whatsapp_messages = dto.maxWhatsappMessages ?? undefined;
-    if (dto.maxAppointments !== undefined)
-      plan.max_appointments = dto.maxAppointments ?? undefined;
-    if (dto.maxCampaigns !== undefined)
-      plan.max_campaigns = dto.maxCampaigns ?? undefined;
+    for (const field of PLAN_LIMIT_FIELDS) {
+      const raw = dto[field.dto];
+      if (raw === undefined) continue;
+      (plan as unknown as Record<string, unknown>)[field.column] = limitValue(
+        isBigIntColumn(field),
+        raw,
+      );
+    }
     if (dto.isCustom !== undefined) plan.is_custom = dto.isCustom;
 
     const result = await this.plans.save(plan);
@@ -204,36 +287,47 @@ export class PlanAdminService {
     return this.tenantContext.getUser()?.id;
   }
 
-  /** Compact, audit-safe snapshot of a plan's economically-relevant fields. */
+  /**
+   * Compact, audit-safe snapshot of a plan's economically-relevant fields.
+   * Covers all 19 limit columns — the 13 count-based caps used to be absent
+   * here, so a change to one was invisible in the audit trail.
+   */
   private snapshot(plan: SubscriptionPlan): Record<string, unknown> {
+    const limits: Record<string, unknown> = {};
+    for (const field of PLAN_LIMIT_FIELDS) {
+      limits[field.dto] = (plan as unknown as Record<string, unknown>)[
+        field.column
+      ];
+    }
     return {
       name: plan.name,
       price: plan.price,
       billingCycle: plan.billing_cycle,
-      maxBranches: plan.max_branches,
-      maxUsers: plan.max_users,
-      maxAiTokens: plan.max_ai_tokens,
-      maxWhatsappMessages: plan.max_whatsapp_messages,
-      maxAppointments: plan.max_appointments,
-      maxCampaigns: plan.max_campaigns,
+      ...limits,
+      limitDeclarations: plan.limit_declarations ?? null,
       isActive: plan.is_active,
       isCustom: plan.is_custom,
     };
   }
 
+  /**
+   * The economic terms, frozen once the plan has a non-cancelled subscriber.
+   * Every limit column counts: raising a cap on an in-use plan would silently
+   * rewrite live customers' entitlements, which is exactly what the freeze
+   * exists to prevent. Tenant-specific raises go through paid add-ons or a
+   * super-admin override instead — neither of which touches the plan row.
+   */
   private toTermPatch(
     dto: UpdatePlanDto,
   ): Partial<Record<keyof SubscriptionPlan, unknown>> {
+    const limits: Partial<Record<keyof SubscriptionPlan, unknown>> = {};
+    for (const field of PLAN_LIMIT_FIELDS) {
+      limits[field.column] = limitValue(isBigIntColumn(field), dto[field.dto]);
+    }
     return {
       price: dto.price != null ? dto.price.toFixed(2) : undefined,
       billing_cycle: dto.billingCycle,
-      max_branches: dto.maxBranches,
-      max_users: dto.maxUsers,
-      max_ai_tokens:
-        dto.maxAiTokens != null ? String(dto.maxAiTokens) : undefined,
-      max_whatsapp_messages: dto.maxWhatsappMessages,
-      max_appointments: dto.maxAppointments,
-      max_campaigns: dto.maxCampaigns,
+      ...limits,
       is_custom: dto.isCustom,
     };
   }

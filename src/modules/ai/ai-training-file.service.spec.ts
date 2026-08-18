@@ -108,4 +108,36 @@ describe('AiTrainingFileService physical indexing', () => {
     expect(ingestion.ingestDocument).not.toHaveBeenCalled();
     expect(file.status).toBe(TRAINING_FILE_STATUS.FAILED);
   });
+
+  // AI-012 (T129, T132a, R13): the caller stays pgvector-unaware — it is the
+  // ONE thing this test pins, so a regression that pushes vector-availability
+  // knowledge up into the caller is caught here rather than only by manual
+  // inspection.
+  describe('remove() stays unaware of any pgvector dependency (T129)', () => {
+    it('unconditionally delegates cleanup to ingestion.cleanupSource — never checks vector availability itself', async () => {
+      const { service, file, files, ingestion, storage } = setup();
+      (storage as { deleteObject?: jest.Mock }).deleteObject = jest
+        .fn()
+        .mockResolvedValue(undefined);
+
+      await service.remove('tenant-1', 'file-1');
+
+      expect(ingestion.cleanupSource).toHaveBeenCalledWith('tenant-1', 'file-1');
+      expect(files.remove).toHaveBeenCalledWith(file);
+    });
+
+    it('still removes the knowledge-file row even though cleanupSource is a black box to this caller (may or may not touch a vector sidecar internally)', async () => {
+      const { service, files, ingestion, storage } = setup();
+      (storage as { deleteObject?: jest.Mock }).deleteObject = jest
+        .fn()
+        .mockResolvedValue(undefined);
+      // Simulates a non-vector deployment where cleanupSource's OWN guard
+      // (T128) skips the sidecar delete — remove() neither knows nor cares.
+      ingestion.cleanupSource.mockResolvedValueOnce(undefined);
+
+      await service.remove('tenant-1', 'file-1');
+
+      expect(files.remove).toHaveBeenCalled();
+    });
+  });
 });

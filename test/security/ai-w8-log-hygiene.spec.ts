@@ -27,6 +27,7 @@ import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/a
 import { scanValue, scanText } from './fixtures/secret-scan';
 import { AiConversationService } from '../../src/modules/ai/ai-conversation.service';
 import { AiExecutionService } from '../../src/modules/ai/ai-execution.service';
+import { validate } from '../../src/config/env.validation';
 
 function captureConsole() {
   const lines: string[] = [];
@@ -155,6 +156,13 @@ describe('W8 — log, metric, and analytics hygiene (T125)', () => {
     // and the finding above is drafted separately rather than silently
     // asserted away here.
     expect(looksLikeVectorDump(logText)).toBe(false);
+    // AI-011 (T124/T125, RTP row 21, inverted 2026-08-17): this DEV/TEST
+    // harness legitimately runs with TYPEORM_LOGGING=true, so a within-this-
+    // file canary-in-console-output CANNOT be made to disappear here without
+    // rewriting an unrelated dev-time debug convenience — that was never the
+    // fix. The fix is that PRODUCTION can no longer boot with this
+    // combination at all, checked directly below against the real
+    // `env.validation.ts` boot gate rather than merely asserted in prose.
 
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
@@ -186,5 +194,28 @@ describe('W8 — log, metric, and analytics hygiene (T125)', () => {
       [seed.tenantA.id],
     );
     expect(scanValue(rows)).toEqual([]);
+  });
+
+  it('AI-011 (RTP row 21, inverted): a production boot with TYPEORM_LOGGING=true — the exact combination this file\'s canary reproduction depends on — now refuses to start, naming the offending setting', () => {
+    const base = {
+      DATABASE_URL: 'postgres://x',
+      JWT_ACCESS_SECRET: 'secret',
+      JWT_REFRESH_SECRET: 'refresh-secret',
+      REDIS_URL: 'redis://localhost:6379',
+      FRONTEND_ORIGIN: 'https://app.example.com',
+      DB_SSL_CA: '/etc/ssl/certs/db-ca.pem',
+      AUTH_REGISTER_OWNER_ENDPOINT_CEILING: 1000,
+      PAYMENT_PROVIDER: 'noop',
+      CREDENTIALS_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+    };
+    expect(() =>
+      validate({ ...base, NODE_ENV: 'production', TYPEORM_LOGGING: 'true' }),
+    ).toThrow(/TYPEORM_LOGGING/);
+    // Non-production — this environment's own actual configuration — is
+    // deliberately unaffected; that is what let this file's canary
+    // reproduction above observe the raw console leak in the first place.
+    expect(() =>
+      validate({ ...base, NODE_ENV: 'development', TYPEORM_LOGGING: 'true' }),
+    ).not.toThrow();
   });
 });

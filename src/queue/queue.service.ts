@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Job, JobsOptions, Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
 
@@ -63,6 +64,7 @@ export class QueueService {
     private readonly producers: ProducerQueues,
     private readonly ctx: TenantContextService,
     private readonly appRedis: AppRedisService,
+    private readonly config: ConfigService,
   ) {
     // All enqueues go through the dedicated PRODUCER-profile Queue instances.
     this.queues = producers.record();
@@ -260,8 +262,20 @@ export class QueueService {
     );
   }
 
-  enqueueAiExecute(data: AiExecuteJob, opts?: JobsOptions) {
-    return this.add(QUEUE.AI, JOB.AI_EXECUTE, data, {
+  /**
+   * AI-014 (FR-059-FR-061, R8, I-9): the shared BullMQ producer profile
+   * (`redis.config.ts:54-65`, reference-only, NOT modified here) deliberately
+   * has NO `commandTimeout` — a Phase 0 decision preserved for every other
+   * producer (FR-060, FR-061). Wrapping only THIS AI-specific method confines
+   * the bound to the AI surface (FR-103) rather than changing that shared
+   * profile platform-wide. Below the bound a brief Redis blip is still
+   * buffered exactly as today; at/after the bound the caller gets a clear
+   * rejection instead of an indefinite hang on ioredis's own uncapped
+   * `retryStrategy`. The underlying enqueue is never cancelled — it may still
+   * land once Redis recovers, matching a real BullMQ enqueue's semantics.
+   */
+  enqueueAiExecute(data: AiExecuteJob, opts?: JobsOptions): Promise<Job> {
+    const enqueued = this.add(QUEUE.AI, JOB.AI_EXECUTE, data, {
       jobId: `ai-${createHash('sha256').update(`${data.tenantId}:${data.idempotencyKey}`).digest('hex')}`,
       // Provider retries are owned by the provider adapter. BullMQ must never
       // replay a possibly-paid request or a completed tool side effect.
@@ -270,6 +284,37 @@ export class QueueService {
       // retention than the 7-day default.
       removeOnFail: { age: PII_REMOVE_ON_FAIL_SECONDS, count: 10_000 },
       ...opts,
+    });
+    const timeoutMs = this.config.get<number>(
+      'AI_QUEUE_ENQUEUE_TIMEOUT_MS',
+      8000,
+    );
+    return this.withEnqueueTimeout(enqueued, timeoutMs);
+  }
+
+  /** Races an in-flight enqueue against a bounded timer without cancelling it. */
+  private withEnqueueTimeout(
+    pending: Promise<Job>,
+    timeoutMs: number,
+  ): Promise<Job> {
+    return new Promise<Job>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new Error(
+            `AI enqueue timed out after ${timeoutMs}ms — the Redis producer connection did not respond in time`,
+          ),
+        );
+      }, timeoutMs);
+      pending.then(
+        (job) => {
+          clearTimeout(timer);
+          resolve(job);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
     });
   }
 

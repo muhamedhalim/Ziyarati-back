@@ -183,15 +183,26 @@ describe('RAG keyword-only retrieval as a functional degradation (T135)', () => 
           metricRowRetrievalModeColumns: retrievalModeColumns,
           latencyOnlyColumnPresentButNotAModeSignal: hasLatencyOnlyColumn,
           allAiTableColumnsMatchingRetrievalTerms: allAiTableColumns,
+          persistedRetrievalMode: metricRow?.retrieval_mode,
         },
         null,
         2,
       )}\n`,
     );
 
-    // No column anywhere in the AI schema records retrieval mode/degradation.
-    expect(allAiTableColumns).toHaveLength(0);
-    expect(retrievalModeColumns).toHaveLength(0);
+    // AI-013 (RTP row 24, inverted 2026-08-17): a `retrieval_mode` column now
+    // exists on `ai_execution_metrics` (T131/T132, migration
+    // 1730041500000) and carries the signal this spec previously recorded
+    // as entirely absent.
+    expect(allAiTableColumns.length).toBeGreaterThan(0);
+    expect(retrievalModeColumns).toEqual(['retrieval_mode']);
+    // The recorded value matches the path ACTUALLY taken — this harness has
+    // no pgvector, so every retrieval here is keyword-only (never merely
+    // "attempted"); the attempted-then-fell-back case (FR-067's second half)
+    // is the SAME code path (ai-rag.service.ts sets 'keyword' in both the
+    // catch branch and the final fallback line, never only one), so proving
+    // this reachable case exercises the identical assignment.
+    expect(metricRow.retrieval_mode).toBe('keyword');
 
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);

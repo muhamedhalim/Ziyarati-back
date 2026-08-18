@@ -26,8 +26,36 @@ export const OCCUPYING_APPOINTMENT_STATUSES: AppointmentStatus[] = [
 ];
 
 /**
- * Behavior when a staff member has NO positive availability defined for a day
- * (no recurring StaffSchedule slot AND no CalendarSlot).
+ * Machine-readable reason a window is not bookable — the stable contract a
+ * client branches on. The prose `reasons` that sit beside these in
+ * `BookabilityResult` are for humans and for the AI assistant to relay; only
+ * these codes are safe to key a UI (or a translation) off.
+ *
+ * Never rename a member — add a new one, exactly as for `ErrorCode`.
+ */
+export enum BookabilityReason {
+  /** `StaffProfile.is_available_for_booking` is false. */
+  STAFF_INACTIVE = 'STAFF_INACTIVE',
+  /** A `Holiday` covers the branch-local date. */
+  HOLIDAY = 'HOLIDAY',
+  /** A `StaffTimeOff` period covers the branch-local date. */
+  TIME_OFF = 'TIME_OFF',
+  /** A `BlockedSlot` overlaps the window. */
+  BLOCKED = 'BLOCKED',
+  /** Another active appointment for this staff member overlaps the window. */
+  OCCUPIED = 'OCCUPIED',
+  /** The window falls outside the staff member's working availability. */
+  OUTSIDE_WORKING_HOURS = 'OUTSIDE_WORKING_HOURS',
+}
+
+/**
+ * FALLBACK behavior when a staff member has NO positive availability defined
+ * for a day (no recurring StaffSchedule slot AND no CalendarSlot) AND the
+ * tenant has no settings row to read the real answer from.
+ *
+ * The live answer is per-tenant: `tenant_settings.enforce_staff_working_hours`
+ * (see `AvailabilityService.enforceWorkingHours`). This constant only decides
+ * what happens for a tenant whose settings row does not exist yet.
  *
  *  - false (default, migration-safe): the positive "within working hours" gate
  *    is skipped — the clinic simply hasn't configured availability yet, so we do
@@ -35,9 +63,6 @@ export const OCCUPYING_APPOINTMENT_STATUSES: AppointmentStatus[] = [
  *    staff, double-booking) are still enforced.
  *  - true (strict): "nothing defined" means "nothing available" — every booking
  *    requires an explicit schedule or calendar slot.
- *
- * Flipping this to `true` is the opt-in path to fully strict availability once a
- * tenant has populated its schedules; it needs no schema change.
  */
 export const ENFORCE_AVAILABILITY_WHEN_UNDEFINED = false;
 

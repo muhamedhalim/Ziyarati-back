@@ -4,6 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError } from '../../../common/errors';
+import { constantTimeEqual } from '../../../common/utils/constant-time.util';
 import { Appointment } from '../../../entities/Calendar&Appointments/Appointment';
 import { AppointmentSource } from '../../../entities/enums';
 import { AppointmentsService } from '../../appointment/appointment.service';
@@ -22,7 +23,10 @@ import { HandoverRequestService } from '../handover-request.service';
 import { AI_TOOL } from './ai-tools.constants';
 import { AI_PUBLIC_TOOL } from './ai-public-booking-tools.constants';
 import { PublicBookingContextService } from '../../public-booking/public-booking-context.service';
-import { SESSION_UNSET } from '../../ai-orchestrator/conversation-session.service';
+import {
+  ConversationSessionService,
+  SESSION_UNSET,
+} from '../../ai-orchestrator/conversation-session.service';
 import { WhatsappBotActorService } from '../../whatsapp/whatsapp-bot-actor.service';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import type { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
@@ -118,6 +122,8 @@ export class AiToolDispatchService {
     private readonly botActor: WhatsappBotActorService,
     /** Used to run a public booking under that principal (never the guest's). */
     private readonly tenantContext: TenantContextService,
+    /** AI-019/F1: backs the application-issued confirmation gate on irreversible actions. */
+    private readonly sessions: ConversationSessionService,
   ) {}
 
   /** Parse + route one tool call. Never throws — returns a result for the model. */
@@ -401,6 +407,20 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
+    // AI-020/PD-2: this staff-facing tool carries no permission requirement
+    // of its own (any authenticated staff turn may check availability), but
+    // it was reachable by an unauthenticated guest turn too, despite never
+    // being part of the advertised guest catalog — closing the gap
+    // narrowly, on the same "no acting user" precondition already used by
+    // the core write tools (bookAppointment et al.), rather than widening
+    // what guests are advertised.
+    if (!ctx.actorUserId) {
+      return {
+        success: false,
+        error:
+          'This tool is not available in this context (no acting user).',
+      };
+    }
     const branchId = this.str(args.branchId);
     const staffId = this.str(args.staffId);
     const date = this.str(args.date);
@@ -441,6 +461,28 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
+    // AI-020/PD-2: same "no acting user" narrowing as checkAvailability
+    // above — this staff-facing tool was reachable by an unauthenticated
+    // guest turn despite never being advertised to guests. The AI-003 gate
+    // below still applies for authenticated staff supplying an unbound
+    // customerId; this precondition additionally closes the guest gap the
+    // AI-003 gate alone did not cover (a guest with no acting user at all
+    // never reaches that check). Recorded on the same DENIED terms the
+    // AI-003 gate below already uses (AI-008/T055) — a guest hitting this
+    // tool at all is itself a foreign-id/no-context probe worth auditing,
+    // not a silent drop.
+    if (!ctx.actorUserId) {
+      const reason =
+        'This tool is not available in this context (no acting user).';
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+        args,
+        'DENIED',
+        reason,
+      );
+      return { success: false, error: reason };
+    }
     // F-8 (second site): same inversion, and it matters more here — this tool
     // is NOT permission-gated, and `resolveInsurance` WRITES through
     // `setInsuranceStatus`. With the model's id winning, a prompt injection
@@ -1086,6 +1128,45 @@ export class AiToolDispatchService {
       };
     }
     const key = `reschedule:${appointmentId}:${newStartAt}`;
+    // AI-019/F1/PD-1: irreversible action — a valid, application-issued
+    // confirmation is required and NEVER substitutes for the permission
+    // check above (already run) or the ownership/business checks inside
+    // AppointmentsService.reschedule (still run, below, unconditionally).
+    // Skipped only when this EXACT (appointment, newStartAt) pair already
+    // has a ledger row — a retried/replayed call must reach `run()`'s own
+    // idempotent-replay/in-flight handling below, not be asked to
+    // re-confirm an action already decided (FR-027: idempotency semantics
+    // are not disturbed by this gate).
+    if (
+      !(await this.findByKey(ctx.tenantId, key)) &&
+      !(await this.verifyConfirmation(
+        ctx,
+        'reschedule',
+        appointmentId,
+        this.str(args.confirmationToken),
+      ))
+    ) {
+      const confirmationToken = await this.issueConfirmation(
+        ctx,
+        'reschedule',
+        appointmentId,
+      );
+      const reason = 'Reschedule requires confirmation (no valid confirmationToken supplied).';
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.RESCHEDULE_APPOINTMENT,
+        args,
+        'REFUSED',
+        reason,
+      );
+      return {
+        success: false,
+        confirmationRequired: true,
+        confirmationToken,
+        error:
+          'This reschedule requires confirmation. Confirm the change with the customer, then call this tool again with the same appointmentId/newStartAt and this confirmationToken.',
+      };
+    }
 
     return this.run(
       ctx,
@@ -1147,6 +1228,42 @@ export class AiToolDispatchService {
       return { success: false, error: 'appointmentId is required.' };
     }
     const key = `cancel:${appointmentId}`;
+    // AI-019/F1/PD-1: irreversible action — see rescheduleAppointment's
+    // identical gate immediately above for the full rationale. A valid
+    // confirmation never substitutes for the permission check above
+    // (already run) or the ownership check inside AppointmentsService.cancel
+    // (still run, below, unconditionally). Skipped only when this EXACT
+    // appointmentId already has a ledger row (FR-027 idempotency).
+    if (
+      !(await this.findByKey(ctx.tenantId, key)) &&
+      !(await this.verifyConfirmation(
+        ctx,
+        'cancel',
+        appointmentId,
+        this.str(args.confirmationToken),
+      ))
+    ) {
+      const confirmationToken = await this.issueConfirmation(
+        ctx,
+        'cancel',
+        appointmentId,
+      );
+      const reason = 'Cancellation requires confirmation (no valid confirmationToken supplied).';
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.CANCEL_APPOINTMENT,
+        args,
+        'REFUSED',
+        reason,
+      );
+      return {
+        success: false,
+        confirmationRequired: true,
+        confirmationToken,
+        error:
+          'This cancellation requires confirmation. Confirm with the customer, then call this tool again with the same appointmentId and this confirmationToken.',
+      };
+    }
 
     return this.run(ctx, AI_TOOL.CANCEL_APPOINTMENT, key, args, async () => {
       const appt = await this.appointments.cancel(
@@ -1458,6 +1575,69 @@ export class AiToolDispatchService {
       [tenantId, key],
     );
     return rows[0] ?? null;
+  }
+
+  // ──────────── AI-019/F1/PD-1: application-issued confirmation gate ─────── //
+
+  private static readonly CONFIRMATION_TTL_MS = 5 * 60 * 1000;
+
+  /**
+   * Verifies a model-supplied `confirmationToken` against the one the
+   * application itself issued for this exact (conversation, action,
+   * appointment) triple. Never trusts the model's claim (FR-073) — only a
+   * byte-exact match against server-held state, not expired, counts.
+   * Single-use: consumes (deletes) the pending entry on a successful match,
+   * so a captured token cannot be replayed for a second execution.
+   */
+  private async verifyConfirmation(
+    ctx: ToolContext,
+    action: 'cancel' | 'reschedule',
+    appointmentId: string,
+    suppliedToken: string | undefined,
+  ): Promise<boolean> {
+    if (!suppliedToken) return false;
+    const key = `${action}:${appointmentId}`;
+    const session = await this.sessions.get(ctx.tenantId, ctx.aiConversationId);
+    const pending = session.pendingConfirmations?.[key];
+    if (!pending) return false;
+    const valid =
+      constantTimeEqual(pending.token, suppliedToken) &&
+      new Date(pending.expiresAt).getTime() > Date.now();
+    // Consumed either way once found — a stale/mismatched attempt should not
+    // leave a stale entry a later, unrelated call could stumble into.
+    const remaining = { ...(session.pendingConfirmations ?? {}) };
+    delete remaining[key];
+    await this.sessions.patch(ctx.tenantId, ctx.aiConversationId, {
+      pendingConfirmations: remaining,
+    });
+    return valid;
+  }
+
+  /**
+   * Mints a fresh confirmation token for this (conversation, action,
+   * appointment) triple and persists it server-side, so a subsequent call
+   * to the same tool carrying it back can be independently verified.
+   */
+  private async issueConfirmation(
+    ctx: ToolContext,
+    action: 'cancel' | 'reschedule',
+    appointmentId: string,
+  ): Promise<string> {
+    const key = `${action}:${appointmentId}`;
+    const token = randomUUID();
+    const session = await this.sessions.get(ctx.tenantId, ctx.aiConversationId);
+    await this.sessions.patch(ctx.tenantId, ctx.aiConversationId, {
+      pendingConfirmations: {
+        ...(session.pendingConfirmations ?? {}),
+        [key]: {
+          token,
+          expiresAt: new Date(
+            Date.now() + AiToolDispatchService.CONFIRMATION_TTL_MS,
+          ).toISOString(),
+        },
+      },
+    });
+    return token;
   }
 
   // ──────────────────────────── small helpers ────────────────────────────── //

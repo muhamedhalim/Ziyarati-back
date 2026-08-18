@@ -686,7 +686,8 @@ describe('AppointmentsService', () => {
   });
 
   describe('setServices', () => {
-    it('replaces services and recomputes the window/total', async () => {
+    /** An existing 10:00–10:45 appointment (45 min of services attached). */
+    const existing = (endMinutes = 45) =>
       repo(Appointment).findOne.mockResolvedValueOnce({
         id: 'appt-1',
         tenant: { id: TENANT },
@@ -694,7 +695,13 @@ describe('AppointmentsService', () => {
         branch: { id: 'b1' },
         staff: { id: 's1' },
         start_at: new Date('2026-07-01T10:00:00Z'),
+        end_at: new Date(
+          new Date('2026-07-01T10:00:00Z').getTime() + endMinutes * 60_000,
+        ),
       });
+
+    it('replaces services and recomputes the window/total', async () => {
+      existing();
       repo(Service).find.mockResolvedValue([
         { id: 'svc1', duration_minutes: 45, base_price: 150, is_active: true },
       ]);
@@ -706,6 +713,55 @@ describe('AppointmentsService', () => {
       });
       const saved = repo(Appointment).save.mock.calls[0][0];
       expect(saved.total_amount).toBe(150);
+    });
+
+    // Swapping in a longer service MOVES the appointment's end — it can run into
+    // the doctor's next booking, past the end of their shift, or into a blocked
+    // period. This was the one write path that changed the window without
+    // re-validating it.
+    it('re-validates the NEW window when a longer service extends it', async () => {
+      existing(45);
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc2', duration_minutes: 90, base_price: 300, is_active: true },
+      ]);
+
+      await service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc2'] } as any);
+
+      expect(availability.assertBookable).toHaveBeenCalledWith(
+        TENANT,
+        'b1',
+        's1',
+        new Date('2026-07-01T10:00:00Z'),
+        new Date('2026-07-01T11:30:00Z'),
+        expect.objectContaining({ excludeAppointmentId: 'appt-1' }),
+      );
+    });
+
+    it('rejects the change when the extended window is not available', async () => {
+      existing(45);
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc2', duration_minutes: 90, base_price: 300, is_active: true },
+      ]);
+      availability.assertBookable.mockRejectedValueOnce(
+        Object.assign(new Error('conflict'), { code: ErrorCode.STAFF_NOT_AVAILABLE }),
+      );
+
+      await expect(
+        service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc2'] } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.STAFF_NOT_AVAILABLE });
+      expect(repo(Appointment).save).not.toHaveBeenCalled();
+    });
+
+    // A pure re-pricing (same total duration) must stay a cheap write.
+    it('skips the availability check when the window is unchanged', async () => {
+      existing(45);
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc3', duration_minutes: 45, base_price: 999, is_active: true },
+      ]);
+
+      await service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc3'] } as any);
+
+      expect(availability.assertBookable).not.toHaveBeenCalled();
     });
   });
 

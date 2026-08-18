@@ -141,15 +141,20 @@ describe('W7 — direct prompt injection (T105)', () => {
       expect(result.lastTool?.result.success).toBe(false);
       expect(String(result.lastTool?.result.error)).toMatch(/Forbidden/i);
 
-      // Known W3 gap (w3-declared-vs-enforced.md finding 3): a denial short-circuits
-      // BEFORE `run()`, so no ledger row is written for the denied admin-tool call —
-      // asserted here as the actual, current behavior, not a bug this test tries to fix.
+      // AI-008/T067 (this same feature, an earlier phase): `executeAdminTool`
+      // now records every denied admin-tool call as its own terminal DENIED
+      // row via `recordAttempt`, closing the "known W3 gap" this test used to
+      // pin (w3-declared-vs-enforced.md finding 3 — a denial no longer
+      // short-circuits before any ledger write). Updated to assert the
+      // fixed, current behavior rather than the pre-fix gap.
       const ledger = await harness.dataSource.query(
-        `SELECT id FROM ai_tool_calls WHERE ai_conversation_id = $1 AND tool_name = 'get_dashboard_kpis'`,
+        `SELECT id, status FROM ai_tool_calls WHERE ai_conversation_id = $1 AND tool_name = 'get_dashboard_kpis'`,
         [conv.id],
       );
-      expect(ledger.length).toBe(0);
+      expect(ledger.length).toBe(1);
+      expect(ledger[0].status).toBe('DENIED');
 
+      await harness.dataSource.query(`DELETE FROM ai_tool_calls WHERE ai_conversation_id = $1`, [conv.id]);
       await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);
       await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [conv.id]);
     });
