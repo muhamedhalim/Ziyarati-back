@@ -1,13 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, Repository, EntityManager } from 'typeorm';
 
 import { BillingUpgradeRequest } from '../../entities/BillingUpgrades/BillingUpgradeRequest';
 import { User } from '../../entities/Auth&RBAC/User';
+import { ResourcePriceCatalog } from '../../entities/ResourcePricing/ResourcePriceCatalog';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { UsageService } from '../subscription-billing/usage.service';
 import { UsageMetric } from '../subscription-billing/usage-metric';
+import { computeTotalMinor, toBigInt } from '../resource-pricing/money';
 
 import { BillingUpgradeEventService } from './billing-upgrade-event.service';
 import { BillingUpgradeAiEstimateService } from './billing-upgrade-ai-estimate.service';
@@ -48,6 +50,63 @@ export class BillingUpgradeAdminService {
     private readonly aiEstimate: BillingUpgradeAiEstimateService,
     private readonly history: BillingUpgradeEventService,
   ) {}
+
+  /**
+   * If `usage_metric` has an active, priced Pricing Catalog entry (plan §21 —
+   * `resource_price_catalog`, the SAME table the self-serve `resource-pricing`
+   * module sells from) AND the request has a finite `current_limit`, the quote
+   * price is derived ENTIRELY server-side from `unit_price_minor × lots` —
+   * `dto.finalPriceMinor` is never trusted for this path, only ever recomputed
+   * (requirement: "do not rely solely on the frontend price"). Returns `null`
+   * when no catalog price applies, so the caller falls back to the pre-existing
+   * fully-manual admin price — unpriced/inactive items and `type: 'feature'`
+   * requests are unaffected by this change.
+   *
+   * `approvedQuantity` remains a NEW ABSOLUTE LIMIT (unchanged contract); the
+   * billable quantity is the DELTA above `current_limit`, which must land
+   * exactly on a catalog `unit_size` multiple — the frontend slider always
+   * produces one, but this also closes the gap for any direct API caller.
+   */
+  private async computeCatalogPriceMinor(
+    manager: EntityManager,
+    usageMetric: string,
+    currentLimitRaw: string | undefined,
+    approvedQuantity: number,
+  ): Promise<number | null> {
+    const catalogItem = await manager
+      .getRepository(ResourcePriceCatalog)
+      .findOne({ where: { item_key: usageMetric } });
+    if (!catalogItem || !catalogItem.is_active || Number(catalogItem.unit_price_minor) <= 0) {
+      return null;
+    }
+    if (currentLimitRaw === undefined || currentLimitRaw === null) {
+      // No finite current limit to measure a delta against — fall back to manual pricing.
+      return null;
+    }
+
+    const currentLimit = Number(currentLimitRaw);
+    const unitSize = Number(catalogItem.unit_size);
+    const delta = approvedQuantity - currentLimit;
+
+    if (delta <= 0 || delta % unitSize !== 0) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `approvedQuantity must exceed the current limit by a whole multiple of ${unitSize} (the catalog unit size for "${usageMetric}")`,
+        publicContext: { currentLimit, unitSize },
+      });
+    }
+
+    const quantityLots = delta / unitSize;
+    const maxQuantity = catalogItem.max_quantity;
+    if (quantityLots < catalogItem.min_quantity || (maxQuantity != null && quantityLots > maxQuantity)) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `Quantity is outside the catalog's allowed range (${catalogItem.min_quantity}–${maxQuantity ?? '∞'} × ${unitSize} for "${usageMetric}")`,
+        publicContext: { minQuantity: catalogItem.min_quantity, maxQuantity, unitSize },
+      });
+    }
+
+    const totalMinor = computeTotalMinor(toBigInt(catalogItem.unit_price_minor), BigInt(quantityLots));
+    return Number(totalMinor);
+  }
 
   async list(query: QueryPlatformBillingUpgradeRequestsDto) {
     const where: FindOptionsWhere<BillingUpgradeRequest> = {};
@@ -154,6 +213,8 @@ export class BillingUpgradeAdminService {
         });
       }
 
+      let finalPriceMinor = dto.finalPriceMinor;
+
       if (request.type === BILLING_UPGRADE_TYPE.USAGE_LIMIT) {
         if (dto.approvedQuantity == null) {
           throw new AppError(ErrorCode.VALIDATION_ERROR, {
@@ -168,10 +229,22 @@ export class BillingUpgradeAdminService {
           });
         }
         request.approved_quantity = String(dto.approvedQuantity);
+
+        if (request.usage_metric) {
+          const catalogPriceMinor = await this.computeCatalogPriceMinor(
+            manager,
+            request.usage_metric,
+            request.current_limit,
+            dto.approvedQuantity,
+          );
+          if (catalogPriceMinor !== null) {
+            finalPriceMinor = catalogPriceMinor;
+          }
+        }
       }
 
       const fromStatus = request.status;
-      request.final_price_minor = String(dto.finalPriceMinor);
+      request.final_price_minor = String(finalPriceMinor);
       request.billing_period = dto.billingPeriod;
       request.quote_expires_at = expiresAt;
       request.reviewer = { id: actor.id } as User;
@@ -188,7 +261,7 @@ export class BillingUpgradeAdminService {
           note: dto.notes,
           metadata: {
             approvedQuantity: dto.approvedQuantity ?? null,
-            finalPriceMinor: dto.finalPriceMinor,
+            finalPriceMinor,
             billingPeriod: dto.billingPeriod,
             quoteExpiresAt: dto.quoteExpiresAt,
           },

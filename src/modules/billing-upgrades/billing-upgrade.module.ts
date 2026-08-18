@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BillingUpgradeRequest } from '../../entities/BillingUpgrades/BillingUpgradeRequest';
 import { BillingUpgradeRequestEvent } from '../../entities/BillingUpgrades/BillingUpgradeRequestEvent';
 import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
+import { ResourcePriceCatalog } from '../../entities/ResourcePricing/ResourcePriceCatalog';
 
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -33,7 +34,12 @@ import { PlatformBillingUpgradeController } from './platform-billing-upgrade.con
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([BillingUpgradeRequest, BillingUpgradeRequestEvent, FeatureDefinition]),
+    TypeOrmModule.forFeature([
+      BillingUpgradeRequest,
+      BillingUpgradeRequestEvent,
+      FeatureDefinition,
+      ResourcePriceCatalog,
+    ]),
     SubscriptionBillingModule,
     PaymentsModule,
     AiModule,
