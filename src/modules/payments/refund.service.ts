@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager, FindOptionsWhere, Repository } from 'typeorm';
 
 import { Refund } from '../../entities/Payments/Refund';
@@ -8,6 +9,7 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
 import { PaymentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
+import { RefundRecordedEvent } from '../../events/refund.events';
 
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
@@ -57,6 +59,7 @@ export class RefundService {
     private readonly gateways: PaymentGatewayFactory,
     private readonly transactions: TransactionService,
     private readonly adjustments: SettlementAdjustmentService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   async create(
@@ -109,7 +112,8 @@ export class RefundService {
     }
 
     // ── Phase 3: short tx — finalize refund + payment status from SQL sum ──
-    return this.dataSource.transaction(async (m) => {
+    let recordedEvent: RefundRecordedEvent | undefined;
+    const refund = await this.dataSource.transaction(async (m) => {
       const payment = await m.getRepository(Payment).findOne({
         where: { id: intent.paymentId },
         lock: { mode: 'pessimistic_write' },
@@ -184,10 +188,26 @@ export class RefundService {
         payment.refund_status = fullyRefunded ? 'FULL' : 'PARTIAL';
         payment.refunded_at = new Date();
         await m.getRepository(Payment).save(payment);
+
+        // Phase 1.6 (plan §14) — captured for POST-commit emission below;
+        // never emitted from inside the transaction (mirrors
+        // payment-reconciliation.service.ts's own pattern).
+        recordedEvent = new RefundRecordedEvent(
+          tenantId,
+          payment.id,
+          refund.id,
+          refundedC,
+          toCents(payment.amount),
+        );
       }
 
       return refund;
     });
+
+    if (recordedEvent) {
+      this.emitter.emit(RefundRecordedEvent.eventName, recordedEvent);
+    }
+    return refund;
   }
 
   async list(tenantId: string, query: QueryRefundsDto) {

@@ -15,13 +15,13 @@ import { TenantMetricCreditsService } from './tenant-metric-credits.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import {
-  COUNT_LIMIT,
   COUNT_LIMIT_FEATURE,
   ENFORCED_RESOURCE_LIMITS,
   RESOURCE_LIMIT_FEATURE,
   featuresForMetric,
 } from './feature-registry';
 import {
+  COUNT_LIMIT,
   CountLimitColumn,
   RESOURCE_LIMIT_MAP,
   ResourceMetric,
@@ -43,6 +43,21 @@ import {
  * from that call site's perspective.
  */
 export type UsageFundedBy = 'plan' | 'credit' | 'none';
+
+/**
+ * `CountLimitColumn` (`assertCountWithinLimit`'s column-keyed vocabulary)
+ * has exactly the same two members as `RESOURCE_LIMIT_MAP`'s
+ * `branches`/`employees` entries — this is that reverse mapping, needed to
+ * ask the capacity ledger and override table their METRIC-keyed question
+ * from a COLUMN-keyed call site. Not derived programmatically: with only 2
+ * entries, a reverse-search over `RESOURCE_LIMIT_MAP` would be more code
+ * than the map itself, and the literal values here are still checked
+ * against `ResourceMetric` at compile time.
+ */
+const COLUMN_TO_RESOURCE_METRIC: Record<CountLimitColumn, ResourceMetric> = {
+  [COUNT_LIMIT.BRANCHES]: 'branches',
+  [COUNT_LIMIT.USERS]: 'employees',
+};
 
 /**
  * Usage tracking per tenant per billing month.
@@ -141,7 +156,12 @@ export class UsageService {
     metric: UsageMetric,
     amount = 1,
     manager?: EntityManager,
-  ): Promise<{ applied: boolean; used: number; limit: number | null }> {
+  ): Promise<{
+    applied: boolean;
+    used: number;
+    limit: number | null;
+    fundedBy: UsageFundedBy;
+  }> {
     const repo = manager
       ? manager.getRepository(SubscriptionUsage)
       : this.usage;
@@ -154,7 +174,7 @@ export class UsageService {
       ))
     ) {
       await this.rawIncrement(repo, tenantId, metric, amount, manager);
-      return { applied: true, used: 0, limit: null };
+      return { applied: true, used: 0, limit: null, fundedBy: 'plan' };
     }
 
     const subscription = await this.requirePlanOrDeny(
@@ -167,7 +187,7 @@ export class UsageService {
       // (shadow mode, or a grant that landed between the two reads). Record
       // and admit — never invent a cap out of a missing subscription.
       await this.rawIncrement(repo, tenantId, metric, amount, manager);
-      return { applied: true, used: 0, limit: null };
+      return { applied: true, used: 0, limit: null, fundedBy: 'plan' };
     }
     const { usageColumn, limitColumn } = USAGE_METRIC_MAP[metric];
     const limitRaw = (subscription.plan as unknown as Record<string, unknown>)[
@@ -175,7 +195,7 @@ export class UsageService {
     ];
     if (limitRaw === null || limitRaw === undefined) {
       await this.rawIncrement(repo, tenantId, metric, amount, manager);
-      return { applied: true, used: 0, limit: null }; // unlimited
+      return { applied: true, used: 0, limit: null, fundedBy: 'plan' }; // unlimited
     }
 
     const override = await this.limitOverrides.getActive(
@@ -221,7 +241,15 @@ export class UsageService {
       .execute();
 
     const applied = (result.affected ?? 0) > 0;
-    if (applied) return { applied: true, used: 0, limit };
+    if (applied) return { applied: true, used: 0, limit, fundedBy: 'plan' };
+
+    // Plan allowance exhausted — try a prepaid credit before refusing
+    // (plan §9). Same guarded-single-statement discipline as the UPDATE
+    // above: `tryDebit` is one atomic UPDATE, no separate read-then-act.
+    if (await this.credits.tryDebit(tenantId, metric, amount, manager)) {
+      await this.rawIncrement(repo, tenantId, metric, amount, manager);
+      return { applied: true, used: 0, limit, fundedBy: 'credit' };
+    }
 
     // Not applied — a fresh read purely to report the current value; no
     // decision is made from it (the UPDATE above already made the decision
@@ -234,7 +262,7 @@ export class UsageService {
     const used = row
       ? Number((row as unknown as Record<string, unknown>)[usageColumn])
       : 0;
-    return { applied: false, used, limit };
+    return { applied: false, used, limit, fundedBy: 'none' };
   }
 
   /** Shared increment body, repo-parametrized so `incrementIfWithinLimit` can target a caller's manager. */
@@ -394,11 +422,17 @@ export class UsageService {
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
     // A paid, tenant-specific raise (billing-upgrade workflow) never LOWERS the
-    // plan limit — the effective limit is the higher of the two.
+    // plan limit — the effective limit is the higher of the two. This is a
+    // preview-only assertion (no mutation, no manager) — it deliberately does
+    // NOT add prepaid-credit balance the way `incrementIfWithinLimit`'s
+    // admission path does, matching the plan's own site-by-site formula table.
     const override = await this.limitOverrides.getActive(tenantId, metric);
-    const limit = override
-      ? Math.max(Number(limitRaw), Number(override.override_limit))
-      : Number(limitRaw);
+    const limit = Number(
+      this.mergeLimit(
+        limitRaw,
+        override ? Number(override.override_limit) : undefined,
+      ),
+    );
     const row = await this.usage.findOne({
       where: {
         subscription_id: subscription.id,
@@ -423,6 +457,11 @@ export class UsageService {
    * passes the CURRENT count from the resource's own repository; a null/absent
    * plan limit means unlimited. No-op under free mode / active override, matching
    * `assertWithinLimit` — so count limits behave identically to usage quotas.
+   *
+   * Phase 1.4 (closes G2): now also reads the override table and the
+   * capacity ledger, same as {@link assertResourceWithinLimit}. Before this,
+   * a paid "+1 branch" add-on would display correctly in the usage view but
+   * still 422 here, because this method only ever read the bare plan column.
    */
   async assertCountWithinLimit(
     tenantId: string,
@@ -450,7 +489,18 @@ export class UsageService {
     ];
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
-    const limit = Number(limitRaw);
+    const metric = COLUMN_TO_RESOURCE_METRIC[limitColumn];
+    const [override, capacityMap] = await Promise.all([
+      this.limitOverrides.getActive(tenantId, metric),
+      this.ledger.capacityMap(tenantId),
+    ]);
+    const limit = Number(
+      this.mergeLimit(
+        limitRaw,
+        override ? Number(override.override_limit) : undefined,
+        capacityMap.get(metric) ?? 0,
+      ),
+    );
     if (currentCount + amount > limit) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
@@ -519,7 +569,19 @@ export class UsageService {
     ];
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
-    const limit = Number(limitRaw);
+    // Phase 1.4 (closes G2): override + purchased capacity, same formula
+    // {@link assertCountWithinLimit} now uses.
+    const [override, capacityMap] = await Promise.all([
+      this.limitOverrides.getActive(tenantId, metric, manager),
+      this.ledger.capacityMap(tenantId, manager),
+    ]);
+    const limit = Number(
+      this.mergeLimit(
+        limitRaw,
+        override ? Number(override.override_limit) : undefined,
+        capacityMap.get(metric) ?? 0,
+      ),
+    );
     if (currentCount + amount > limit) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: `Plan limit reached for ${limitColumn} (${currentCount}/${limit})`,
@@ -587,7 +649,21 @@ export class UsageService {
       .max_users;
     if (limitRaw === null || limitRaw === undefined) return; // unlimited
 
-    const limit = Number(limitRaw);
+    // Phase 1.4 (closes G2): override + purchased capacity, same formula
+    // the other two count-based asserts use. Reads inside the already-open
+    // `manager` transaction — no new lock, just two more SELECTs guarded by
+    // the tenant-row lock already taken above.
+    const [override, capacityMap] = await Promise.all([
+      this.limitOverrides.getActive(tenantId, 'employees', manager),
+      this.ledger.capacityMap(tenantId, manager),
+    ]);
+    const limit = Number(
+      this.mergeLimit(
+        limitRaw,
+        override ? Number(override.override_limit) : undefined,
+        capacityMap.get('employees') ?? 0,
+      ),
+    );
     const currentUsers = await manager
       .getRepository(User)
       .count({ where: { tenant: { id: tenantId } as Tenant } });
@@ -671,13 +747,26 @@ export class UsageService {
       unknown
     >;
     const overrides = await this.limitOverrides.getActiveMap(tenantId);
+    // Phase 1.4: a metered metric's TRUE remaining capacity includes any
+    // prepaid credit balance — without this, a tenant who bought AI-token
+    // credits would see `remaining: 0` here once the plan allowance is
+    // exhausted, even though `incrementIfWithinLimit` would still admit
+    // their next turn. This is exactly the "reporting and enforcement agree"
+    // requirement the plan's testing strategy calls for.
+    const creditBalances = await this.credits.balanceMap(tenantId);
 
-    // Public shape is unchanged — the historical 5 fields, derived from the same
-    // single line formula used everywhere (buildLine).
+    // Public shape is additive-only from here — the historical 5 fields,
+    // derived from the same single line formula used everywhere (buildLine),
+    // plus `creditBalance` (Pricing Catalog plan §19's AI-credits card needs
+    // the RAW purchased-credit portion split out from the merged `limit`,
+    // e.g. to render "plan allowance remaining" vs "credit balance" as two
+    // separate numbers — `limit` already equals
+    // `max(plan, override) + creditBalance` when finite, per `mergeLimit`).
     const line = (used: number, limitRaw: unknown, metric: string) => {
+      const creditBalance = creditBalances.get(metric)?.balanceUnits ?? 0;
       const l = this.buildLine(
         used,
-        this.mergeLimit(limitRaw, overrides.get(metric)),
+        this.mergeLimit(limitRaw, overrides.get(metric), creditBalance),
       );
       return {
         used: l.used,
@@ -685,6 +774,7 @@ export class UsageService {
         remaining: l.remaining,
         percentUsed: l.percentUsed,
         exceeded: l.exceeded,
+        creditBalance,
       };
     };
 
@@ -740,6 +830,14 @@ export class UsageService {
       where: this.rowFilter(tenantId, subscription?.id ?? null, period),
     });
     const overrides = await this.limitOverrides.getActiveMap(tenantId);
+    // Phase 1.4: the two additive sources — prepaid credit balance for the
+    // 4 metered metrics, purchased capacity for the 15 count-based ones.
+    // Fetched once each, same "resolve everything once" discipline this
+    // method's own docblock already commits to.
+    const [creditBalances, capacityMap] = await Promise.all([
+      this.credits.balanceMap(tenantId),
+      this.ledger.capacityMap(tenantId),
+    ]);
     const uv = (col: string): number =>
       usageRow
         ? Number((usageRow as unknown as Record<string, unknown>)[col])
@@ -748,7 +846,11 @@ export class UsageService {
     const out: Record<string, UnifiedUsageLine> = {
       aiTokens: this.buildLine(
         uv('ai_tokens_used'),
-        this.mergeLimit(plan?.max_ai_tokens, overrides.get('AI_TOKENS')),
+        this.mergeLimit(
+          plan?.max_ai_tokens,
+          overrides.get('AI_TOKENS'),
+          creditBalances.get('AI_TOKENS')?.balanceUnits ?? 0,
+        ),
         enforced,
       ),
       whatsappMessages: this.buildLine(
@@ -756,24 +858,37 @@ export class UsageService {
         this.mergeLimit(
           plan?.max_whatsapp_messages,
           overrides.get('WHATSAPP_MESSAGES'),
+          creditBalances.get('WHATSAPP_MESSAGES')?.balanceUnits ?? 0,
         ),
         enforced,
       ),
       appointments: this.buildLine(
         uv('appointments_used'),
-        this.mergeLimit(plan?.max_appointments, overrides.get('APPOINTMENTS')),
+        this.mergeLimit(
+          plan?.max_appointments,
+          overrides.get('APPOINTMENTS'),
+          creditBalances.get('APPOINTMENTS')?.balanceUnits ?? 0,
+        ),
         enforced,
       ),
       campaigns: this.buildLine(
         uv('campaigns_used'),
-        this.mergeLimit(plan?.max_campaigns, overrides.get('CAMPAIGNS')),
+        this.mergeLimit(
+          plan?.max_campaigns,
+          overrides.get('CAMPAIGNS'),
+          creditBalances.get('CAMPAIGNS')?.balanceUnits ?? 0,
+        ),
         enforced,
       ),
     };
     for (const [metric, col] of Object.entries(RESOURCE_LIMIT_MAP)) {
       out[metric] = this.buildLine(
         counts[metric as ResourceMetric] ?? 0,
-        this.mergeLimit(plan?.[col], overrides.get(metric)),
+        this.mergeLimit(
+          plan?.[col],
+          overrides.get(metric),
+          capacityMap.get(metric) ?? 0,
+        ),
         enforced,
       );
     }
@@ -781,17 +896,76 @@ export class UsageService {
   }
 
   /**
-   * Raises `planRaw` to an active tenant override's limit, never below it and
-   * never disturbing an unlimited (null) plan limit. A no-op when no override
-   * exists for the metric — existing callers/tests are unaffected.
+   * The unified storage-limit formula (plan §11) — `min(commercial,
+   * platformCeil)`, computed ONCE so the enforcement seam
+   * (`FileUploadService.register`) and the reporting path
+   * (`getUnifiedBreakdown`'s `storageBytes` line, via `RESOURCE_LIMIT_MAP`)
+   * can never diverge:
+   *
+   *   commercial   = planBytes === null ? +∞ : planBytes + addonBytes
+   *   platformCeil = uploads.tenant_quota_gb × 1024³   (hard safety cap)
+   *   result       = min(commercial, platformCeil)
+   *
+   * Storage remains `eligibility: 'blocked'` in the sellable-resource
+   * registry (Phase 1.1) — `file_uploads.file_size` is client-claimed and
+   * the real object store is unmetered, so nothing sells `storageBytes`
+   * yet and `addonBytes` is always 0 in practice today. This method exists
+   * now so the day it unblocks, both call sites read the same number
+   * without either one needing to change.
+   *
+   * NOT YET WIRED into `FileUploadService.register()` — that file's two
+   * existing sequential checks (the platform-ceiling comparison at
+   * `file-upload.service.ts:64-70` and the plan-cap call to
+   * `assertResourceWithinLimit('storageBytes', ...)` at `:78-83`, which
+   * itself already closed G2 above) already enforce the correct numbers
+   * today; replacing them with this single formula is a refactor of a
+   * security-relevant upload path with no user-facing behaviour change
+   * while storage stays unsellable, deliberately left for the change that
+   * actually unblocks storage rather than bundled in here.
+   */
+  async effectiveStorageLimit(
+    tenantId: string,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const [subscription, capacityMap, tenantQuotaGb] = await Promise.all([
+      this.findCurrentSubscriptionWithPlan(tenantId, manager),
+      this.ledger.capacityMap(tenantId, manager),
+      this.platformSettings.getTyped<number>(SettingKey.TENANT_QUOTA_GB),
+    ]);
+    const planBytesRaw = (
+      subscription?.plan as unknown as Record<string, unknown> | undefined
+    )?.max_storage_bytes;
+    const addonBytes = capacityMap.get('storageBytes') ?? 0;
+    const commercial =
+      planBytesRaw === null || planBytesRaw === undefined
+        ? Infinity
+        : Number(planBytesRaw) + addonBytes;
+    const platformCeil = tenantQuotaGb * 1024 * 1024 * 1024;
+    return Math.min(commercial, platformCeil);
+  }
+
+  /**
+   * The one effective-limit formula (Phase 1.4, plan §18): raises `planRaw`
+   * to an active tenant override's limit (never below it), then adds
+   * `additiveDelta` on top — purchased CAPACITY for count-based metrics
+   * (from {@link TenantEntitlementLedgerService.capacityMap}) or available
+   * CREDIT balance for metered metrics (from
+   * {@link TenantMetricCreditsService.balanceMap}), depending on the
+   * caller. Never disturbs an unlimited (null) plan limit — unlimited stays
+   * unlimited regardless of override/delta. A no-op (`planRaw` unchanged
+   * except for the `Number()` coercion `buildLine` already applied
+   * downstream) when neither an override nor a delta applies — with no
+   * override rows and no ledger/credit rows, this is byte-identical to the
+   * pre-Phase-1 `max(plan, override)` formula, which is what backward
+   * compatibility on deploy requires.
    */
   private mergeLimit(
     planRaw: unknown,
     overrideLimit: number | undefined,
+    additiveDelta = 0,
   ): unknown {
     if (planRaw === null || planRaw === undefined) return planRaw;
-    if (overrideLimit === undefined) return planRaw;
-    return Math.max(Number(planRaw), overrideLimit);
+    return Math.max(Number(planRaw), overrideLimit ?? 0) + additiveDelta;
   }
 
   /** The one line formula — used by getBreakdown and getUnifiedBreakdown. */

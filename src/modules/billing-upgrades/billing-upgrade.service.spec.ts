@@ -219,6 +219,10 @@ describe('BillingUpgradeService', () => {
       expect(payments.create).toHaveBeenCalledWith(
         't1',
         expect.objectContaining({ amount: 150.5, currency: 'SAR' }),
+        // Phase 1.5 (plan §12) — this charge is the clinic paying the
+        // platform, not a patient payment: must bypass the merchant gate
+        // and never carry a marketplace split.
+        { platformRevenue: true },
       );
       expect(result.redirectUrl).toBe('https://pay.example/checkout/1');
     });

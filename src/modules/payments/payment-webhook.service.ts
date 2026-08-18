@@ -20,6 +20,7 @@ import {
   PaymentRefundedEvent,
   PaymentSucceededEvent,
 } from '../../events/payment.events';
+import { RefundRecordedEvent } from '../../events/refund.events';
 import { verifyTimestamp } from '../integration-platform/inbound/inbound-signature';
 import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-platform.constants';
 
@@ -144,6 +145,11 @@ export class PaymentWebhookService {
     // Tracks which domain event (and its name) to emit after the transaction commits.
     let pendingEventName: string | null = null;
     let pendingEvent: PaymentSucceededEvent | PaymentRefundedEvent | PaymentFailedEvent | null = null;
+    // Phase 1.6 (plan §14) — a SEPARATE slot: a refund webhook that reconciles
+    // a genuinely new gateway-side refund fires this ALONGSIDE
+    // PaymentRefundedEvent above (two different events, two different
+    // consumer sets), so it cannot share the single pendingEvent slot.
+    let pendingRefundRecordedEvent: RefundRecordedEvent | null = null;
 
     // 4. Apply state idempotently under a row lock.
     const result = await this.dataSource.transaction(async (manager) => {
@@ -189,7 +195,7 @@ export class PaymentWebhookService {
 
       // H2: refunds are NEVER flipped directly — reconcile against Refund rows.
       if (target === 'refunded') {
-        const status = await this.reconcileRefund(
+        const { status, recordedEvent } = await this.reconcileRefund(
           manager,
           tenantId,
           payment,
@@ -211,6 +217,7 @@ export class PaymentWebhookService {
             appointmentId,
           );
         }
+        pendingRefundRecordedEvent = recordedEvent ?? null;
         return { status, deduplicated: false };
       }
 
@@ -271,6 +278,9 @@ export class PaymentWebhookService {
     if (pendingEventName && pendingEvent && !result.deduplicated) {
       this.emitter.emit(pendingEventName, pendingEvent);
     }
+    if (pendingRefundRecordedEvent && !result.deduplicated) {
+      this.emitter.emit(RefundRecordedEvent.eventName, pendingRefundRecordedEvent);
+    }
 
     return {
       accepted: true,
@@ -298,7 +308,7 @@ export class PaymentWebhookService {
     payment: Payment,
     event: MoyasarWebhookEvent,
     eventId?: string,
-  ): Promise<PaymentStatus> {
+  ): Promise<{ status: PaymentStatus; recordedEvent?: RefundRecordedEvent }> {
     const paymentCents = Math.round(Number(payment.amount) * 100);
 
     // Moyasar reports `refunded` in halalas (== our cents). Absent on a refund
@@ -315,6 +325,12 @@ export class PaymentWebhookService {
     ]);
     const deltaCents = gatewayCents - recordedCents;
 
+    // Phase 1.6 (plan §14) — the id of the SUCCEEDED refund row this webhook
+    // itself created, if any. Only a genuinely NEW reconciled refund gets a
+    // RefundRecordedEvent; a redelivery where deltaCents <= 0 recorded
+    // nothing new and must not re-fire the entitlement reversal.
+    let newRefundId: string | undefined;
+
     if (deltaCents > 0) {
       const reconRefund = await manager.getRepository(Refund).save(
         manager.getRepository(Refund).create({
@@ -326,6 +342,7 @@ export class PaymentWebhookService {
           gateway_refund_id: eventId ? `recon:${eventId}` : undefined,
         }),
       );
+      newRefundId = reconRefund.id;
       // R1 clawback: a reconciled refund on an already-settled payment nets out
       // of the next settlement.
       await this.adjustments.recordClawbackIfSettled(
@@ -376,7 +393,17 @@ export class PaymentWebhookService {
       payment.refunded_at = new Date();
       await manager.getRepository(Payment).save(payment);
     }
-    return newStatus;
+
+    const recordedEvent = newRefundId
+      ? new RefundRecordedEvent(
+          tenantId,
+          payment.id,
+          newRefundId,
+          succeededCents,
+          paymentCents,
+        )
+      : undefined;
+    return { status: newStatus, recordedEvent };
   }
 
   /** Exact SUM (SQL `numeric`) of refunds in the given statuses, in integer cents. */

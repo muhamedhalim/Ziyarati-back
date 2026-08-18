@@ -34,6 +34,27 @@ import {
 } from './payments.constants';
 
 /**
+ * Options for {@link PaymentService.create} that are NEVER reachable from an
+ * HTTP request body — deliberately a separate parameter, not a `CreatePaymentDto`
+ * field. `payment.controller.ts` calls `create(tenantId, dto)` with exactly two
+ * arguments; the global pipe's `whitelist: true, forbidNonWhitelisted: true`
+ * would strip an extra DTO field anyway, but the real protection is that this
+ * type does not exist on the wire at all. See plan §12.
+ */
+export interface CreatePaymentOptions {
+  /**
+   * True when the PAYER is the platform's own tenant paying the platform
+   * directly (a resource add-on purchase, or the legacy billing-upgrade
+   * flow) — never a clinic's patient/customer. Skips the merchant-onboarding
+   * gate (the clinic's OWN onboarding status is irrelevant when it is the
+   * payer, not the recipient) and forces the marketplace split to `null`, so
+   * the whole charge settles to the platform account with no split leg.
+   * Defaults to `false` — every existing caller is unaffected.
+   */
+  platformRevenue?: boolean;
+}
+
+/**
  * Payment lifecycle: PENDING → PAID / FAILED → (REFUNDED via RefundService).
  *
  * Tenant isolation: `payments` is tenant-scoped via the `tenant` relation, so
@@ -59,7 +80,11 @@ export class PaymentService {
     private readonly emitter: EventEmitter2,
   ) {}
 
-  async create(tenantId: string, dto: CreatePaymentDto) {
+  async create(
+    tenantId: string,
+    dto: CreatePaymentDto,
+    opts: CreatePaymentOptions = {},
+  ) {
     // FND-027 / AD-02: a manual (no-appointment) payment carries neither the
     // appointment-based PENDING floor nor, usually, a client-supplied key —
     // the "New payment" UI never sends one. When the client supplies none on
@@ -85,8 +110,12 @@ export class PaymentService {
     }
 
     // Marketplace gate: a clinic whose merchant account is not APPROVED cannot
-    // collect live money (no-op in the dev/test Noop flow).
-    await this.merchants.assertChargeable(tenantId);
+    // collect live money (no-op in the dev/test Noop flow). Skipped for
+    // platform-revenue charges — the clinic is the PAYER here, not the
+    // recipient, so its own merchant-onboarding status is irrelevant.
+    if (!opts.platformRevenue) {
+      await this.merchants.assertChargeable(tenantId);
+    }
 
     // Server-authoritative pricing: a payment that settles a booking takes its
     // amount/currency from the appointment row — NEVER from the client. A
@@ -113,7 +142,11 @@ export class PaymentService {
 
     // Marketplace split context (null unless the feature is contractually
     // enabled AND the clinic is approved with a gateway recipient id).
-    const split = await this.merchants.splitContext(tenantId);
+    // Forced null for platform-revenue charges — never split money back to
+    // the payer when the payer IS the platform's own beneficiary.
+    const split = opts.platformRevenue
+      ? null
+      : await this.merchants.splitContext(tenantId);
 
     let payment: Payment;
     try {

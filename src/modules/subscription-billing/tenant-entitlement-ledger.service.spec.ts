@@ -139,10 +139,30 @@ describe('TenantEntitlementLedgerService', () => {
 
       const [sql, params] = query.mock.calls[0];
       expect(sql).toMatch(/'revoke'/);
-      expect(params).toEqual([TENANT, 'branches', 'capacity', 3, 1, 'refund', 'refund-1', null, null]);
+      expect(params).toEqual([TENANT, 'branches', 'capacity', 3, 1, 'refund', null, 'refund-1', null, null]);
       expect(result.direction).toBe('revoke');
       expect(result.unrecoverableUnits).toBe(1);
       expect(result.sourceRefundId).toBe('refund-1');
+    });
+
+    it('passes sourcePurchaseId through (plan §14 — linking a revoke back to the purchase it reverses)', async () => {
+      query.mockResolvedValueOnce([
+        ledgerRow({ direction: 'revoke', sourcePurchaseId: 'purchase-1', sourceRefundId: 'refund-1' }),
+      ]);
+
+      await service.revoke({
+        tenantId: TENANT,
+        metric: 'branches',
+        kind: SELLABLE_KIND.CAPACITY,
+        amountUnits: 3,
+        reason: LEDGER_REASON.REFUND,
+        sourcePurchaseId: 'purchase-1',
+        sourceRefundId: 'refund-1',
+      });
+
+      const [, params] = query.mock.calls[0];
+      expect(params[6]).toBe('purchase-1'); // sourcePurchaseId param
+      expect(params[7]).toBe('refund-1'); // sourceRefundId param
     });
 
     it('defaults unrecoverableUnits to 0 when omitted', async () => {
@@ -239,6 +259,24 @@ describe('TenantEntitlementLedgerService', () => {
       query.mockResolvedValueOnce([]);
       const map = await service.capacityMap(TENANT);
       expect(map.size).toBe(0);
+    });
+  });
+
+  describe('sumRevokedForPurchase (plan §14 proportional-refund formula)', () => {
+    it('sums amount_units across every revoke row for the purchase', async () => {
+      query.mockResolvedValueOnce([{ sum: '450' }]);
+      const sum = await service.sumRevokedForPurchase('purchase-1');
+      expect(sum).toBe(450);
+      const [sql, params] = query.mock.calls[0];
+      expect(sql).toMatch(/direction = 'revoke'/);
+      expect(sql).toMatch(/"sourcePurchaseId" = \$1/);
+      expect(params).toEqual(['purchase-1']);
+    });
+
+    it('returns 0 when the purchase has never been revoked', async () => {
+      query.mockResolvedValueOnce([{ sum: '0' }]);
+      const sum = await service.sumRevokedForPurchase('purchase-1');
+      expect(sum).toBe(0);
     });
   });
 });

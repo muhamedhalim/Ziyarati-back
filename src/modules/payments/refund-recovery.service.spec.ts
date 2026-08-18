@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
@@ -30,6 +31,7 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
   let gateways: { resolve: jest.Mock };
   let transactions: { record: jest.Mock };
   let adjustments: { recordClawbackIfSettled: jest.Mock };
+  let emitter: { emit: jest.Mock };
   /** `succeededCents` the completion phase reads via raw SQL `m.query(...)`. */
   let succeededCentsRow: Array<{ sum: string }>;
 
@@ -66,6 +68,7 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
     gateways = { resolve: jest.fn() };
     transactions = { record: jest.fn().mockResolvedValue(undefined) };
     adjustments = { recordClawbackIfSettled: jest.fn().mockResolvedValue(undefined) };
+    emitter = { emit: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -76,6 +79,7 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
         { provide: TransactionService, useValue: transactions },
         { provide: SettlementAdjustmentService, useValue: adjustments },
         { provide: ConfigService, useValue: createMockConfigService() },
+        { provide: EventEmitter2, useValue: emitter },
       ],
     }).compile();
     service = moduleRef.get(RefundRecoveryService);
@@ -94,6 +98,62 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
 
     expect(summary.succeeded).toBe(1);
     expect(refunds.save).toHaveBeenCalledWith(expect.objectContaining({ status: REFUND_STATUS.SUCCEEDED }));
+  });
+
+  // Phase 1.6 (plan §14) — RefundRecordedEvent, emitted post-commit only.
+  describe('RefundRecordedEvent (Phase 1.6 — plan §14)', () => {
+    it('emits when the reaper finalizes a refund SUCCEEDED, with the cumulative total in MINOR units', async () => {
+      // succeededCentsRow is a fixed (non-queued) mock — the SAME value backs
+      // both the pre-finalize re-clamp check and the post-finalize cumulative
+      // read, so it must stay low enough to pass the re-clamp
+      // (succeededCents + thisCents(60) <= payment amount(100)).
+      const refund = pendingRefund();
+      refunds.find.mockResolvedValueOnce([refund]);
+      paymentsRepo.findOne.mockResolvedValueOnce({ id: 'pay-1', amount: 100, settlement_status: 'UNSETTLED' });
+      refunds.findOneBy.mockResolvedValueOnce({ ...refund, status: REFUND_STATUS.PENDING });
+      succeededCentsRow = [{ sum: '0.00' }];
+
+      const summary = await service.reapStalePending();
+
+      expect(summary.succeeded).toBe(1);
+      expect(emitter.emit).toHaveBeenCalledWith(
+        'refund.recorded',
+        expect.objectContaining({
+          tenantId: 't1',
+          paymentId: 'pay-1',
+          refundId: 'rf-1',
+          refundedCumulativeMinor: 0,
+          paymentTotalMinor: 10000,
+        }),
+      );
+    });
+
+    it('does NOT emit when the refund cannot be finalized yet (still PENDING)', async () => {
+      const refund = pendingRefund({
+        payment: { id: 'pay-1', amount: 100, gateway_payment_id: 'gw-1', settlement_status: 'UNSETTLED' },
+      });
+      refunds.find.mockResolvedValueOnce([refund]);
+      gateways.resolve.mockReturnValueOnce({
+        verifyPayment: jest.fn().mockResolvedValue({ refundedMinorUnits: null, refundExplicitlyFailed: false }),
+      });
+
+      const summary = await service.reapStalePending();
+
+      expect(summary.stillPending).toBe(1);
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('does NOT emit when the reaper finalizes a refund FAILED', async () => {
+      const refund = pendingRefund({ amount: 60 });
+      refunds.find.mockResolvedValueOnce([refund]);
+      paymentsRepo.findOne.mockResolvedValueOnce({ id: 'pay-1', amount: 100, settlement_status: 'UNSETTLED' });
+      refunds.findOneBy.mockResolvedValueOnce({ ...refund, status: REFUND_STATUS.PENDING });
+      succeededCentsRow = [{ sum: '60.00' }]; // already 60 succeeded elsewhere — this 60 would exceed 100
+
+      await service.reapStalePending();
+
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
   });
 
   it('re-clamps: refuses to finalize an internal refund past the payment amount even with succeed=true', async () => {

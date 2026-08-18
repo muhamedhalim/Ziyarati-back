@@ -190,6 +190,56 @@ describe('PaymentService.create (booking payments)', () => {
     );
   });
 
+  // Phase 1.5 (plan §12) — `platformRevenue` is a service-only option, never
+  // a DTO field: `payment.controller.ts` calls `create(tenantId, dto)` with
+  // exactly two arguments, so nothing over HTTP can ever reach this branch.
+  describe('platformRevenue option (Phase 1.5 — plan §12)', () => {
+    it('platformRevenue: true bypasses the marketplace entirely — no merchant gate, no split', async () => {
+      // Splits ARE contractually enabled — proves the bypass is deliberate,
+      // not just "nothing to split anyway".
+      merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
+
+      const res = await service.create(
+        TENANT,
+        { amount: 50 } as any,
+        { platformRevenue: true },
+      );
+
+      expect(merchants.assertChargeable).not.toHaveBeenCalled();
+      expect(merchants.splitContext).not.toHaveBeenCalled();
+      expect(gateway.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ splits: undefined }),
+      );
+      expect(res.payment.sub_merchant_id).toBeUndefined();
+    });
+
+    it('WITHOUT the flag (default), the merchant gate runs and splits ARE populated when enabled — the negative case', async () => {
+      merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
+
+      const res = await service.create(TENANT, { amount: 50 } as any);
+
+      expect(merchants.assertChargeable).toHaveBeenCalledWith(TENANT);
+      expect(merchants.splitContext).toHaveBeenCalledWith(TENANT);
+      expect(gateway.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          splits: [expect.objectContaining({ recipientId: 'rcp_1' })],
+        }),
+      );
+      expect(res.payment.sub_merchant_id).toBe('rcp_1');
+    });
+
+    it('platformRevenue: true still proceeds even when the clinic\'s OWN merchant account would fail the gate', async () => {
+      merchants.assertChargeable.mockRejectedValueOnce(
+        Object.assign(new Error('not eligible'), { code: ErrorCode.UNPROCESSABLE_ENTITY }),
+      );
+
+      await expect(
+        service.create(TENANT, { amount: 50 } as any, { platformRevenue: true }),
+      ).resolves.toMatchObject({ status: expect.any(String) });
+      expect(gateway.createPayment).toHaveBeenCalled();
+    });
+  });
+
   it('lost one-PENDING-per-appointment race → returns the winner, no second charge', async () => {
     appointments.findOne.mockResolvedValueOnce(bookedAppointment());
     // pre-check saw nothing (find → [] default); the unique index fires on save

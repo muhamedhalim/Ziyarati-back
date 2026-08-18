@@ -25,6 +25,7 @@ import { TenantModule } from './modules/tenant/tenant.module';
 import { AppointmentModule } from './modules/appointment/appointment.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { SubscriptionBillingModule } from './modules/subscription-billing/subscription-billing.module';
+import { ResourcePricingModule } from './modules/resource-pricing/resource-pricing.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
@@ -141,6 +142,7 @@ import { validate } from './config/env.validation';
     AppointmentModule,
     StaffModule,
     SubscriptionBillingModule,
+    ResourcePricingModule,
     NotificationsModule,
     CampaignsModule,
     WhatsappModule,

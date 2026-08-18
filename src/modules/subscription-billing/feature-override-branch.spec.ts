@@ -10,6 +10,9 @@ import { FreeAccessOverrideService } from './free-access-override.service';
 import { FeatureFlagService, FlagState } from './feature-flag.service';
 import { UsageService } from './usage.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
+import { TenantEntitlementLedgerService } from './tenant-entitlement-ledger.service';
+import { TenantMetricCreditsService } from './tenant-metric-credits.service';
+import { SystemSettingService } from '../platform/system-setting.service';
 import { FeatureGuard } from './guards/feature.guard';
 import { FeatureKey } from './feature-registry';
 import { COUNT_LIMIT } from './usage-metric';
@@ -144,6 +147,15 @@ describe('Super-admin feature override — branch creation', () => {
       {
         getActive: jest.fn().mockResolvedValue(null),
       } as unknown as TenantUsageLimitOverrideService,
+      {
+        capacityMap: jest.fn().mockResolvedValue(new Map()),
+      } as unknown as TenantEntitlementLedgerService,
+      {
+        balanceMap: jest.fn().mockResolvedValue(new Map()),
+      } as unknown as TenantMetricCreditsService,
+      {
+        getTyped: jest.fn().mockResolvedValue(5),
+      } as unknown as SystemSettingService,
     );
 
     guard = new FeatureGuard(reflector as unknown as Reflector, access);
