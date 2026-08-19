@@ -83,6 +83,33 @@ export const FEATURE_EXECUTION_MODE: Readonly<
 } as const;
 
 /**
+ * The logical feature for an interactive chat turn arriving on a given
+ * conversation channel.
+ *
+ * Lives here, next to `AI_FEATURE` and `FEATURE_EXECUTION_MODE`, because it is
+ * the join between the two: the channel is what an inbound turn actually
+ * carries, and the feature is what every policy keys on. Callers pass the
+ * conversation's own persisted `channel`, never a request-body value, so a
+ * client cannot influence which policy its turn is evaluated under.
+ *
+ * Every branch — including the default — maps to a STANDARD-mode feature, so an
+ * interactive turn can never be classified into the async BATCH route from here.
+ * `AiProcessingPolicyService` enforces that independently as well.
+ */
+export function featureForChannel(channel: string): AiFeature {
+  switch (channel.toUpperCase()) {
+    case 'WHATSAPP':
+      return AI_FEATURE.WHATSAPP_CHAT;
+    // The public widget's whole purpose is discovery and booking, and it is the
+    // only surface an unauthenticated visitor reaches.
+    case 'WEBSITE':
+      return AI_FEATURE.BOOKING_CHAT;
+    default:
+      return AI_FEATURE.CHAT;
+  }
+}
+
+/**
  * What to do with a BATCH feature when the batch mode is disabled. Chosen so a
  * disabled flag can NEVER silently fan a large workload out as thousands of
  * synchronous requests or cause unexpected spend.

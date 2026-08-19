@@ -47,3 +47,168 @@ describe('AiCostLedgerService', () => {
     );
   });
 });
+
+/**
+ * Processing-mode accounting. `ai_cost_entries` has carried `execution_mode` and
+ * `region` since the batch migration, but the CHAT path never populated them —
+ * so a turn served through an enforced regional deployment was indistinguishable
+ * after the fact from one served globally, which makes a residency claim
+ * unauditable. These assert the columns are actually written, for every
+ * combination of the two independent dimensions.
+ */
+describe('AiCostLedgerService — processing-mode accounting', () => {
+  const TENANT = '11111111-1111-1111-1111-111111111111';
+
+  function ledgerWithCapture() {
+    const query = jest.fn()
+      .mockResolvedValue([])
+      .mockResolvedValueOnce([{ id: 'entry-1' }]);
+    const dataSource = {
+      transaction: (fn: (m: { query: jest.Mock }) => unknown) => fn({ query }),
+    } as never;
+    const prices = { quoteChat: jest.fn(), quoteEmbedding: jest.fn() } as never;
+    return { ledger: new AiCostLedgerService(dataSource, prices), query };
+  }
+
+  const quote = (executionMode: 'STANDARD' | 'BATCH') =>
+    ({
+      status: 'PRICED' as const,
+      provider: 'openai',
+      requestedModel: 'gpt-4.1-mini',
+      executionMode,
+      pricedModel: 'gpt-4.1-mini',
+      catalogVersion: 'catalog-v1',
+      source: 'approved-source',
+      effectiveAt: '2026-08-19',
+      inputMicrousdPerMillion: '400000',
+      outputMicrousdPerMillion: '1600000',
+      costMicrousd: 1_000n,
+    }) as never;
+
+  it.each([
+    ['STANDARD', null],
+    ['STANDARD', 'eu'],
+    ['BATCH', null],
+    ['BATCH', 'eu'],
+  ] as const)(
+    'writes execution_mode=%s and region=%s onto the cost entry',
+    async (executionMode, region) => {
+      const { ledger, query } = ledgerWithCapture();
+      await ledger.record({
+        tenantId: TENANT,
+        idempotencyKey: `turn-${executionMode}-${region}`,
+        requestKind: 'CHAT',
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        feature: 'chat',
+        route: 'ai.chat.api',
+        channel: 'API',
+        executionMode,
+        region,
+        inputTokens: 1000,
+        outputTokens: 200,
+        success: true,
+        quote: quote(executionMode),
+      });
+
+      const params = query.mock.calls[0][1] as unknown[];
+      expect(params).toContain(executionMode);
+      // `region` is a VALUE, not an omission — null for non-residency requests.
+      expect(params).toContain(region);
+    },
+  );
+
+  it('defaults to STANDARD + no region when a caller omits both — never "unknown"', async () => {
+    const { ledger, query } = ledgerWithCapture();
+    await ledger.record({
+      tenantId: TENANT,
+      idempotencyKey: 'turn-default',
+      requestKind: 'CHAT',
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
+      feature: 'chat',
+      route: 'ai.chat.api',
+      channel: 'API',
+      success: true,
+      quote: quote('STANDARD'),
+    });
+    const params = query.mock.calls[0][1] as unknown[];
+    expect(params).toContain('STANDARD');
+    expect(params).toContain(null);
+  });
+
+  it('keeps BATCH spend out of the standard aggregate columns', async () => {
+    const { ledger, query } = ledgerWithCapture();
+    await ledger.record({
+      tenantId: TENANT,
+      idempotencyKey: 'batch-embedding',
+      requestKind: 'EMBEDDING',
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      feature: 'bulk_embedding',
+      route: 'ai.batch.bulk_embedding',
+      channel: 'BATCH',
+      executionMode: 'BATCH',
+      embeddingTokens: 5_000,
+      success: true,
+      quote: quote('BATCH'),
+    });
+    // The aggregate upsert carries the batch-specific contributions separately
+    // so a dashboard can show standard vs batch spend without rescanning entries.
+    const aggregateParams = query.mock.calls[1][1] as unknown[];
+    expect(aggregateParams).toContain(5_000);
+  });
+
+  it('records an UNPRICED entry rather than skipping it — unknown cost is never free', async () => {
+    const { ledger, query } = ledgerWithCapture();
+    const result = await ledger.record({
+      tenantId: TENANT,
+      idempotencyKey: 'residency-unpriced',
+      requestKind: 'CHAT',
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      feature: 'chat',
+      route: 'ai.chat.api',
+      channel: 'API',
+      executionMode: 'STANDARD',
+      region: 'eu',
+      success: true,
+      quote: {
+        status: 'UNPRICED',
+        provider: 'openai',
+        requestedModel: 'gpt-4o-mini',
+        executionMode: 'STANDARD',
+        costMicrousd: null,
+      } as never,
+    });
+    expect(result.costMicrousd).toBeNull();
+    const params = query.mock.calls[0][1] as unknown[];
+    expect(params).toContain('UNPRICED');
+    expect(params).toContain('eu');
+  });
+
+  it('routes both quote helpers through the residency-aware catalog signature', () => {
+    const prices = {
+      quoteChat: jest.fn().mockReturnValue({ status: 'PRICED' }),
+      quoteEmbedding: jest.fn().mockReturnValue({ status: 'PRICED' }),
+    };
+    const ledger = new AiCostLedgerService({} as never, prices as never);
+
+    ledger.quoteChat('gpt-4.1-mini', 10, 5, 0, 'openai', 'BATCH', true);
+    expect(prices.quoteChat).toHaveBeenCalledWith(
+      'openai', 'gpt-4.1-mini', 10, 5, 0, 'BATCH', true,
+    );
+
+    ledger.quoteEmbedding('text-embedding-3-small', 10, 'BATCH', 'openai', true);
+    expect(prices.quoteEmbedding).toHaveBeenCalledWith(
+      'openai', 'text-embedding-3-small', 10, 'BATCH', true,
+    );
+  });
+
+  it('defaults the new residency parameter to false, so existing callers are unchanged', () => {
+    const prices = { quoteChat: jest.fn(), quoteEmbedding: jest.fn() };
+    const ledger = new AiCostLedgerService({} as never, prices as never);
+    ledger.quoteChat('gpt-4o', 10, 5);
+    expect(prices.quoteChat).toHaveBeenCalledWith('openai', 'gpt-4o', 10, 5, 0, 'STANDARD', false);
+  });
+});
