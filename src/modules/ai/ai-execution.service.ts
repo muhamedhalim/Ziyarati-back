@@ -50,7 +50,11 @@ import {
   AI_MESSAGE_ROLE,
   currentPeriodMonth,
 } from './ai.constants';
-import { AI_FEATURE, AiFeature } from './execution/ai-execution.constants';
+import {
+  AI_FEATURE,
+  AiFeature,
+  featureForChannel,
+} from './execution/ai-execution.constants';
 import {
   AiProcessingPolicyService,
   DEFAULT_PROCESSING_DESCRIPTOR,
@@ -1878,29 +1882,12 @@ export class AiExecutionService {
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   /**
-   * The logical AI_FEATURE for a turn, derived from the conversation's own
-   * persisted channel — never from a request body, so a client cannot influence
-   * which policy (model tier, execution mode) its turn is evaluated under.
-   *
-   * Deliberately coarse: `route` (`ai.chat.<channel>`) remains the per-channel
-   * key for routing overrides and dashboards. This value is what the
-   * feature-keyed policies consume, which is why WEBSITE maps to BOOKING_CHAT —
-   * the public widget's whole purpose is discovery and booking, and it is the
-   * only surface an unauthenticated visitor reaches.
-   *
-   * Every branch maps to a STANDARD-mode feature in FEATURE_EXECUTION_MODE; an
-   * unknown channel falls back to CHAT, which is also STANDARD. An interactive
-   * turn can therefore never be classified into the async BATCH route from here.
+   * Delegates to the shared channel→feature map. `route`
+   * (`ai.chat.<channel>`) remains the finer per-channel key; this coarse value
+   * is what the feature-keyed policies consume.
    */
   private featureForChannel(channel: string): AiFeature {
-    switch (channel.toUpperCase()) {
-      case 'WHATSAPP':
-        return AI_FEATURE.WHATSAPP_CHAT;
-      case 'WEBSITE':
-        return AI_FEATURE.BOOKING_CHAT;
-      default:
-        return AI_FEATURE.CHAT;
-    }
+    return featureForChannel(channel);
   }
 
   private mapRole(role: string): 'system' | 'user' | 'assistant' {

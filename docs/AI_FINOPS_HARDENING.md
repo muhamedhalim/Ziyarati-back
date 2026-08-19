@@ -99,6 +99,32 @@ AI_TRAINING_FILE_MAX_BYTES=10485760
 
 Additional prompt-budget defaults are: system 2000, history 5000, RAG 2500, memory 800, tool output 1200, tool schema 6000, maximum input 12000, maximum output 800, and context window 16384 tokens. All are validated environment variables documented in `.env.example`.
 
+## Live verification (opt-in)
+
+Two suites exercise the real provider. Both live in `src/**` so plain `jest` discovers
+them, and both SKIP unless `OPENAI_LIVE_TESTS=true` and `OPENAI_API_KEY` are set — so CI
+runs them as skips and never spends money.
+
+```bash
+# Provider compatibility for every model in AI_MODEL_REGISTRY:
+# non-streaming, streaming, temperature acceptance, and a tool-call round trip.
+OPENAI_LIVE_TESTS=true npm run test:ai:live
+
+# Arabic/English benchmark: candidate vs incumbent, side by side.
+OPENAI_LIVE_TESTS=true \
+AI_BENCHMARK_BASELINE=gpt-4o AI_BENCHMARK_CANDIDATE=gpt-4.1-mini \
+npm run test:ai:benchmark
+```
+
+The compatibility suite is the gate before ANY routing rollout rung: a model can be
+correctly priced, correctly gated, and still reject the exact request shape this codebase
+sends (the GPT-5 family rejects the `temperature` the provider always sends).
+
+The benchmark ASSERTS capability parity mechanically — same-language replies, and no
+tool-calling regression against the incumbent — and PRINTS the actual Arabic and English
+answers with per-case latency and cost. Reading that output is the approval step; answer
+quality is deliberately not scored by another model.
+
 ## Verification status
 
 - Mocked/unit/integration regression suite: enabled; it performs no network request.
