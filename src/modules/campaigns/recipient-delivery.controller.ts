@@ -20,7 +20,7 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 /**
  * Delivery-receipt ingestion seam.
  *
- * Real channel providers (WhatsApp Cloud API, SMS DLRs, …) translate their
+ * Real channel providers (WhatsApp Cloud API, …) translate their
  * native callback into a {@link RecordDeliveryDto} and POST it here (or call
  * `RecipientDeliveryService.recordDelivery` directly from the provider adapter
  * — see `WhatsappWebhookService.applyDeliveryStatuses`, which resolves its own

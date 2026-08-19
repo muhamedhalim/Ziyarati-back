@@ -714,7 +714,7 @@ export class AiExecutionService {
         content,
       );
       // Requirement #10 (notifications): let the assigned agent's channels
-      // (WhatsApp/SMS/email, per their NotificationRule) know the customer
+      // (WhatsApp/email, per their NotificationRule) know the customer
       // replied — the realtime WS push only reaches an already-online agent.
       this.emitter.emit(
         HandoverCustomerRepliedEvent.eventName,

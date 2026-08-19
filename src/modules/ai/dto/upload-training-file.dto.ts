@@ -1,4 +1,5 @@
-import { IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Min, MaxLength, MinLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { SUPPORTED_FILE_TYPES } from '../ai.constants';
 
@@ -27,4 +28,11 @@ export class UploadTrainingFileDto {
   @IsOptional()
   @IsUUID()
   agentId?: string;
+
+  @ApiPropertyOptional({ description: 'File size in bytes.', example: 248000 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  fileSize?: number;
 }

@@ -34,7 +34,6 @@ describe('WhatsappCampaignDeliveryProvider', () => {
     });
 
     it('leaves other channels to their own providers (or the noop)', () => {
-      expect(provider.supports(CAMPAIGN_CHANNEL.SMS)).toBe(false);
       expect(provider.supports(CAMPAIGN_CHANNEL.EMAIL)).toBe(false);
       expect(provider.supports(undefined)).toBe(false);
     });

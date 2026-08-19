@@ -10,7 +10,7 @@ import { isoOrNull, maskEmail, sanitizeFailureReason } from './support-privacy.u
  *
  * Two histories, both read-only, both paginated and date-bounded:
  *   - EMAIL         from `email_logs`
- *   - NOTIFICATIONS from `notification_logs` (WhatsApp / SMS / push / in-app)
+ *   - NOTIFICATIONS from `notification_logs` (WhatsApp / push / in-app)
  *
  * NO MESSAGE CONTENT IS EVER RETURNED. `email_logs` stores no body by design
  * (see the entity docstring) and `notification_logs` stores none either — but

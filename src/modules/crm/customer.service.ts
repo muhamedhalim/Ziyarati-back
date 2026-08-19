@@ -52,6 +52,9 @@ export class CustomerService {
       await this.customers.count({ where: { tenant: { id: tenantId } } }),
     );
     await this.assertPhoneUnique(tenantId, dto.phone);
+    if (dto.national_id) {
+      await this.assertNationalIdUnique(tenantId, dto.national_id);
+    }
     const customer = this.customers.create({
       tenant: { id: tenantId } as Tenant,
       full_name: dto.full_name,
@@ -63,6 +66,7 @@ export class CustomerService {
       date_of_birth: dto.date_of_birth
         ? new Date(dto.date_of_birth)
         : undefined,
+      national_id: dto.national_id,
       source: dto.source,
       marketing_opt_in: dto.marketing_opt_in ?? false,
       is_active: dto.is_active ?? true,
@@ -134,6 +138,9 @@ export class CustomerService {
 
     if (dto.phone && dto.phone !== customer.phone) {
       await this.assertPhoneUnique(tenantId, dto.phone, id);
+    }
+    if (dto.national_id && dto.national_id !== customer.national_id) {
+      await this.assertNationalIdUnique(tenantId, dto.national_id, id);
     }
 
     const { date_of_birth, ...rest } = dto;
@@ -291,6 +298,28 @@ export class CustomerService {
     if (existing && existing.id !== excludeId) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: 'A customer with this phone already exists',
+      });
+    }
+  }
+
+  /**
+   * Pre-check mirroring {@link assertPhoneUnique} — `national_id` is
+   * optional, so this is only ever called when a value is actually given.
+   * The partial unique index (`UQ_customers_tenant_national_id`) is the real
+   * backstop against a concurrent-insert race; this just gives the common
+   * case a friendly 409 instead of a raw constraint violation.
+   */
+  private async assertNationalIdUnique(
+    tenantId: string,
+    nationalId: string,
+    excludeId?: string,
+  ): Promise<void> {
+    const existing = await this.customers.findOne({
+      where: { tenant: { id: tenantId }, national_id: nationalId },
+    });
+    if (existing && existing.id !== excludeId) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'A customer with this ID number already exists',
       });
     }
   }

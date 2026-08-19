@@ -100,11 +100,10 @@ export const DELIVERED_DELIVERY_STATES: RecipientDelivery[] = [
 /**
  * Logical delivery channels a campaign can target. The Campaign entity carries
  * a WhatsApp template, so WHATSAPP is the default; the abstraction stays open so
- * SMS/Email/Push/In-App providers can be added without business changes.
+ * Email/Push/In-App providers can be added without business changes.
  */
 export const CAMPAIGN_CHANNEL = {
   WHATSAPP: 'WHATSAPP',
-  SMS: 'SMS',
   EMAIL: 'EMAIL',
   PUSH: 'PUSH',
   IN_APP: 'IN_APP',

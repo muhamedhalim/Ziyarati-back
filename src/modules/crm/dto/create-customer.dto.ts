@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   ValidateIf,
 } from 'class-validator';
@@ -25,12 +26,18 @@ export class CreateCustomerDto {
   @MaxLength(255)
   full_name?: string;
 
-  @ApiProperty({ description: 'Phone number (unique per tenant).', example: '+966500000000' })
+  @ApiProperty({
+    description: 'Phone number (unique per tenant).',
+    example: '+966500000000',
+  })
   @IsString()
   @MaxLength(20)
   phone!: string;
 
-  @ApiProperty({ description: 'Email (unique within this tenant).', example: 'sara@example.com' })
+  @ApiProperty({
+    description: 'Email (unique within this tenant).',
+    example: 'sara@example.com',
+  })
   @IsEmail()
   @MaxLength(255)
   email!: string;
@@ -53,23 +60,50 @@ export class CreateCustomerDto {
   @MaxLength(20)
   gender?: string;
 
-  @ApiPropertyOptional({ description: 'Date of birth (ISO-8601 date).', example: '1990-05-20' })
+  @ApiPropertyOptional({
+    description: 'Date of birth (ISO-8601 date).',
+    example: '1990-05-20',
+  })
   @IsOptional()
   @IsISO8601()
   date_of_birth?: string;
 
-  @ApiPropertyOptional({ description: 'Acquisition source.', example: 'walk_in' })
+  @ApiPropertyOptional({
+    description:
+      'Client ID/identity number (unique within this tenant when provided). Letters, digits and dashes only.',
+    example: '1234567890',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  @Matches(/^[A-Za-z0-9-]+$/, {
+    message: 'national_id may only contain letters, digits and dashes',
+  })
+  national_id?: string;
+
+  @ApiPropertyOptional({
+    description: 'Acquisition source.',
+    example: 'walk_in',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(100)
   source?: string;
 
-  @ApiPropertyOptional({ description: 'Marketing opt-in.', example: false, default: false })
+  @ApiPropertyOptional({
+    description: 'Marketing opt-in.',
+    example: false,
+    default: false,
+  })
   @IsOptional()
   @IsBoolean()
   marketing_opt_in?: boolean;
 
-  @ApiPropertyOptional({ description: 'Whether the customer is active.', example: true, default: true })
+  @ApiPropertyOptional({
+    description: 'Whether the customer is active.',
+    example: true,
+    default: true,
+  })
   @IsOptional()
   @IsBoolean()
   is_active?: boolean;
@@ -106,7 +140,7 @@ export class CreateCustomerDto {
 
   @ApiPropertyOptional({
     description:
-      'Whether the patient has health insurance. Tri-state: omitted/unset means never asked. Drives the AI booking flow\'s payment-link decision.',
+      "Whether the patient has health insurance. Tri-state: omitted/unset means never asked. Drives the AI booking flow's payment-link decision.",
     example: false,
   })
   @IsOptional()

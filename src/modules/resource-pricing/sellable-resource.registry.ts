@@ -75,10 +75,8 @@ export type UnitLabel =
   | 'branch'
   | 'seat'
   | 'customer'
-  | 'uploaded_file'
   | 'knowledge_base_file'
-  | 'training_file'
-  | 'storage_byte';
+  | 'megabyte';
 
 /**
  * A human-readable `file.ts:Class.method` pointer at the seam that actually
@@ -146,7 +144,13 @@ function capacityItem(
   metric: ResourceMetric,
   unitLabel: UnitLabel,
   enforcement: EnforcementSeam,
-  opts: { isBigInt?: boolean; eligibility?: 'sellable' | 'blocked'; blockedReason?: string } = {},
+  opts: {
+    isBigInt?: boolean;
+    eligibility?: 'sellable' | 'blocked';
+    blockedReason?: string;
+    /** Raw plan-column units per one purchasable unit — see AI_TOKENS' own doc comment. Defaults to 1 (count caps). */
+    unitSize?: number;
+  } = {},
 ): SellableResourceSpec {
   return {
     itemKey: metric,
@@ -156,12 +160,15 @@ function capacityItem(
     isBigInt: opts.isBigInt ?? false,
     feature: RESOURCE_LIMIT_FEATURE[metric],
     unitLabel,
-    unitSize: 1,
+    unitSize: opts.unitSize ?? 1,
     enforcement,
     eligibility: opts.eligibility ?? 'sellable',
     ...(opts.blockedReason ? { blockedReason: opts.blockedReason } : {}),
   };
 }
+
+/** Bytes per MB — the purchasable "lot" size for the three byte-denominated capacity items below. */
+const BYTES_PER_MB = 1_048_576;
 
 export const SELLABLE_RESOURCE_REGISTRY: readonly SellableResourceSpec[] = [
   // ── Credits — prepaid, non-expiring; spent only after the plan's monthly
@@ -214,8 +221,9 @@ export const SELLABLE_RESOURCE_REGISTRY: readonly SellableResourceSpec[] = [
   ),
   capacityItem(
     'uploadedFiles',
-    'uploaded_file',
+    'megabyte',
     'platform/file-upload.service.ts:78 (via UsageService.assertResourceWithinLimit)',
+    { isBigInt: true, unitSize: BYTES_PER_MB },
   ),
   capacityItem(
     'knowledgeBaseFiles',
@@ -224,15 +232,17 @@ export const SELLABLE_RESOURCE_REGISTRY: readonly SellableResourceSpec[] = [
   ),
   capacityItem(
     'trainingFiles',
-    'training_file',
+    'megabyte',
     'ai/ai-training-file.service.ts:64 (via UsageService.assertResourceWithinLimit)',
+    { isBigInt: true, unitSize: BYTES_PER_MB },
   ),
   capacityItem(
     'storageBytes',
-    'storage_byte',
+    'megabyte',
     'platform/file-upload.service.ts:84 (via UsageService.assertResourceWithinLimit)',
     {
       isBigInt: true,
+      unitSize: BYTES_PER_MB,
       eligibility: 'blocked',
       blockedReason:
         'file_uploads.file_size is client-claimed and the real object store (R2) is unmetered — billing against it would charge for a number the buyer supplies (plan §11). Unblock requires server-measured byte accounting on the R2 upload path.',

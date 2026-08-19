@@ -24,6 +24,13 @@ import { CustomerTagRelation } from '../CRM/CustomerTagRelation';
 // FND-040/M-01: tenant-scoped, matching the sibling phone index above — was
 // UNIQUE (email) globally (migration CustomerTenantScopedEmail1730019000000).
 @Index(['tenant', 'email'], { unique: true })
+// `national_id` is OPTIONAL (not every clinic collects it), so this is a
+// partial unique index — only enforced once a value is actually set. See
+// migration CustomerNationalId1730053000000.
+@Index(['tenant', 'national_id'], {
+  unique: true,
+  where: '"national_id" IS NOT NULL',
+})
 export class Customer {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -56,6 +63,15 @@ export class Customer {
 
   @Column({ type: 'date', nullable: true })
   date_of_birth?: Date;
+
+  /**
+   * Client ID/identity number, captured directly in the New/Edit Customer
+   * form. Optional (nullable), unique per tenant when provided — see the
+   * partial index above. Age is deliberately NOT stored anywhere: it is
+   * always derived from `date_of_birth` at read time, so it never drifts.
+   */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  national_id?: string | null;
 
   @Column({ nullable: true })
   source?: string;

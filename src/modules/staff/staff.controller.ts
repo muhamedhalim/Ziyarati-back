@@ -684,7 +684,9 @@ about what gets granted.
 **Protected — requires \`staff.read\`. Clinic must be active.**
 
 Returns the clinic's staff. Optional filters: \`search\` (title),
-\`isAvailable\`, and \`branchId\` (resolved via branch assignments).
+\`isAvailable\`, \`branchId\` (resolved via branch assignments), and \`role\`
+(the linked account's currently held role slug, e.g. \`doctor\` — backs a
+doctor-only staff picker).
 
 **Who can call this:** Owner, Manager, Receptionist (\`staff.read\`).
 

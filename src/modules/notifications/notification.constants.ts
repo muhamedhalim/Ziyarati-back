@@ -89,13 +89,12 @@ export const TERMINAL_STATUSES: NotificationStatus[] = [
 ];
 
 /**
- * Delivery channels. Abstraction only — concrete providers (WhatsApp/SMS/Email/
+ * Delivery channels. Abstraction only — concrete providers (WhatsApp/Email/
  * Push/In-App) are bound later via the NOTIFICATION_CHANNELS token without
  * touching business logic.
  */
 export const NOTIFICATION_CHANNEL = {
   WHATSAPP: 'WHATSAPP',
-  SMS: 'SMS',
   EMAIL: 'EMAIL',
   PUSH: 'PUSH',
   IN_APP: 'IN_APP',

@@ -10,9 +10,10 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
-import { BillingCycle } from '../../../entities/enums';
+import { BillingCycle, CustomCycleUnit } from '../../../entities/enums';
 
 /**
  * Create a subscription plan (super-admin only).
@@ -38,6 +39,31 @@ export class CreatePlanDto {
   @ApiProperty({ enum: BillingCycle, example: BillingCycle.MONTHLY })
   @IsEnum(BillingCycle)
   billingCycle!: BillingCycle;
+
+  @ApiPropertyOptional({
+    description:
+      'Cycle length when billingCycle is CUSTOM, e.g. 3 + MONTH = "every 3 months". Required when billingCycle is CUSTOM.',
+    example: 3,
+  })
+  @ValidateIf(
+    (o: CreatePlanDto) =>
+      o.billingCycle === BillingCycle.CUSTOM || o.customCycleValue !== undefined,
+  )
+  @IsInt()
+  @IsPositive()
+  customCycleValue?: number;
+
+  @ApiPropertyOptional({
+    enum: CustomCycleUnit,
+    description: 'Unit for customCycleValue. Required when billingCycle is CUSTOM.',
+    example: CustomCycleUnit.MONTH,
+  })
+  @ValidateIf(
+    (o: CreatePlanDto) =>
+      o.billingCycle === BillingCycle.CUSTOM || o.customCycleUnit !== undefined,
+  )
+  @IsEnum(CustomCycleUnit)
+  customCycleUnit?: CustomCycleUnit;
 
   @ApiPropertyOptional({ description: 'Max branches (null = unlimited).' })
   @IsOptional()
@@ -127,7 +153,7 @@ export class CreatePlanDto {
   @IsPositive()
   maxStorageBytes?: number;
 
-  @ApiPropertyOptional({ description: 'Max uploaded files (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max uploaded-files storage in BYTES (null = unlimited).' })
   @IsOptional()
   @IsInt()
   @IsPositive()
@@ -169,7 +195,7 @@ export class CreatePlanDto {
   @IsPositive()
   maxKnowledgeBaseFiles?: number;
 
-  @ApiPropertyOptional({ description: 'Max AI training files (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max AI training files storage in BYTES (null = unlimited).' })
   @IsOptional()
   @IsInt()
   @IsPositive()

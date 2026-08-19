@@ -29,6 +29,10 @@ export class AiTrainingFile {
   @Column({ length: 20, nullable: true })
   file_type?: string;
 
+  /** Bytes — client-supplied on metadata registration, real multer-reported length on direct upload. */
+  @Column({ type: 'bigint', nullable: true })
+  file_size?: number;
+
   @Column({ length: 20, default: 'PENDING' })
   status!: string;
 
