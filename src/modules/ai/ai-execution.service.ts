@@ -169,6 +169,65 @@ export class AiExecutionService {
     });
   }
 
+  /**
+   * Maps a failed turn to the error the caller sees WITHOUT losing the real
+   * cause. Both turn paths (`sendMessage`, `streamMessage`) used to collapse
+   * any non-`AppError` into a bare INTERNAL_ERROR and drop the original
+   * exception on the floor, which made every infrastructure failure — a
+   * missing table, a driver error, a provider outage — indistinguishable in
+   * the server logs from any other failure. That is what hid a plain
+   * `relation "ai_request_executions" does not exist` behind "The AI request
+   * could not be completed." for every AI turn.
+   *
+   * The CLIENT-facing message is deliberately unchanged: no internal detail is
+   * ever disclosed. The cause travels two server-only channels instead —
+   * `AppError.cause` + `internalContext` (both contractually never serialized
+   * into a response; see `AppError`'s docblock and
+   * `AllExceptionsFilter.writeLog`), and an explicit `logger.error` here.
+   *
+   * The explicit log is NOT redundant with the filter: `AllExceptionsFilter`
+   * is an HTTP filter, and the transport that carries most AI turns is
+   * Socket.IO — `AiRealtimeGateway.runMessage` catches the throw itself and
+   * only ever logs the (already generic) message, so nothing upstream of this
+   * point would otherwise record what actually failed on a realtime turn.
+   */
+  private failedTurn(
+    err: unknown,
+    diagnostics: {
+      method: 'sendMessage' | 'streamMessage';
+      tenantId: string;
+      aiConversationId: string;
+      channel: string;
+      /** Whether the provider call had already been dispatched when this threw. */
+      providerStarted: boolean;
+      model: string;
+      provider: string;
+    },
+  ): AppError {
+    if (err instanceof AppError) return err;
+
+    const cause = err instanceof Error ? err : new Error(String(err));
+    const phase = diagnostics.providerStarted
+      ? 'PROVIDER_OR_POST_PROVIDER'
+      : 'PRE_PROVIDER';
+    // Identifiers and phase only — never prompt content, never credentials.
+    const internalContext = { ...diagnostics, phase, cause: cause.name };
+
+    this.logger.error(
+      `AI turn failed (${diagnostics.method}, phase=${phase}, ` +
+        `tenant=${diagnostics.tenantId}, conversation=${diagnostics.aiConversationId}, ` +
+        `channel=${diagnostics.channel}, provider=${diagnostics.provider}, ` +
+        `model=${diagnostics.model}): ${cause.name}: ${cause.message}`,
+      cause.stack,
+    );
+
+    return new AppError(ErrorCode.INTERNAL_ERROR, {
+      message: 'The AI request could not be completed.',
+      internalContext,
+      cause,
+    });
+  }
+
   async sendMessage(
     tenantId: string,
     aiConversationId: string,
@@ -663,11 +722,15 @@ export class AiExecutionService {
           ? null
           : (this.ctx.getUser()?.id ?? null),
       });
-      throw err instanceof AppError
-        ? err
-        : new AppError(ErrorCode.INTERNAL_ERROR, {
-            message: 'The AI request could not be completed.',
-          });
+      throw this.failedTurn(err, {
+        method: 'sendMessage',
+        tenantId,
+        aiConversationId,
+        channel,
+        providerStarted,
+        model: modelForMetric,
+        provider: providerForMetric,
+      });
     }
   }
 
@@ -1655,11 +1718,15 @@ export class AiExecutionService {
           ? null
           : (this.ctx.getUser()?.id ?? null),
       });
-      throw err instanceof AppError
-        ? err
-        : new AppError(ErrorCode.INTERNAL_ERROR, {
-            message: 'The AI request could not be completed.',
-          });
+      throw this.failedTurn(err, {
+        method: 'streamMessage',
+        tenantId,
+        aiConversationId,
+        channel,
+        providerStarted,
+        model: modelForMetric,
+        provider: providerForMetric,
+      });
     }
   }
 
