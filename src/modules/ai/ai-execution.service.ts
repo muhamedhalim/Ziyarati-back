@@ -50,6 +50,12 @@ import {
   AI_MESSAGE_ROLE,
   currentPeriodMonth,
 } from './ai.constants';
+import { AI_FEATURE, AiFeature } from './execution/ai-execution.constants';
+import {
+  AiProcessingPolicyService,
+  DEFAULT_PROCESSING_DESCRIPTOR,
+  ProcessingDescriptor,
+} from './execution/ai-processing-policy.service';
 import { HandoverCustomerRepliedEvent } from '../../events/handover.events';
 import {
   AiPromptBudgetService,
@@ -59,6 +65,7 @@ import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
 import { AiModelRouterService } from './routing/ai-model-router.service';
+import { findModel } from './routing/ai-model-registry';
 
 /** Bounds the tool-calling loop so a misbehaving model can't spin indefinitely. */
 const MAX_TOOL_ITERATIONS = 4;
@@ -129,6 +136,10 @@ export class AiExecutionService {
     private readonly costs: AiCostLedgerService,
     private readonly requests: AiRequestExecutionService,
     private readonly modelRouter: AiModelRouterService,
+    // WHICH model (modelRouter) and HOW it is processed (processingPolicy) are
+    // two independent decisions — a model can change without changing a
+    // workload's processing policy, and vice versa.
+    private readonly processingPolicy: AiProcessingPolicyService,
     private readonly subscriptions: SubscriptionService,
     private readonly access: AccessControlService,
     private readonly config: ConfigService,
@@ -243,6 +254,13 @@ export class AiExecutionService {
     const channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
+    // The logical AI_FEATURE for this turn. Every call site used to pass the
+    // literal 'chat', which made AI_POWERFUL_FEATURES an all-or-nothing switch
+    // (it can only match one value) and left the cost ledger unable to tell a
+    // guest booking turn from a staff dashboard turn. `route` stays the finer
+    // key; this is the coarse, policy-facing one.
+    let featureForMetric: AiFeature = AI_FEATURE.CHAT;
+    let processing: ProcessingDescriptor = DEFAULT_PROCESSING_DESCRIPTOR;
     let modelForMetric = 'noop';
     let providerForMetric = 'unknown';
     try {
@@ -262,6 +280,7 @@ export class AiExecutionService {
       }
       logicalChannel = aiConv.channel ?? 'API';
       routeForMetric = `ai.chat.${logicalChannel.toLowerCase()}`;
+      featureForMetric = this.featureForChannel(logicalChannel);
       const claim = await this.requests.claim(
         tenantId,
         requestKey,
@@ -304,6 +323,24 @@ export class AiExecutionService {
       // for the HTTP path) — repeated here so a QUEUED/worker-triggered call
       // into this same seam is covered too.
       await this.subscriptions.assertBillableActionAllowed(tenantId);
+
+      // HOW this turn is processed — resolved here, BEFORE the quota
+      // reservation and before a single token is spent, so a residency refusal
+      // (required region unavailable, or the tenant not entitled to it) costs
+      // nothing and lands as a clean PRE_PROVIDER failure. Residency used to be
+      // applied invisibly inside the provider's client resolution, which meant
+      // it threw only after the user message had been persisted and a RAG
+      // embedding bought.
+      //
+      // `IMMEDIATE`: a human is waiting on this reply, so it can never be
+      // routed to the asynchronous batch route regardless of feature mapping.
+      processing = await this.processingPolicy.resolve({
+        tenantId,
+        feature: featureForMetric,
+        route: routeForMetric,
+        latencyRequirement: 'IMMEDIATE',
+        dataSensitivity: 'SENSITIVE',
+      });
 
       // Quota pre-check (blocks a tenant already over its monthly token cap).
       // FND-034: reserves 1 token's worth of headroom ATOMICALLY (closing the
@@ -385,6 +422,31 @@ export class AiExecutionService {
         take: 50,
       });
       const memories = memoryLoader ? await memoryLoader() : [];
+
+      // 4) WHICH model. Resolved BEFORE the prompt is assembled so the budget
+      //    can bound the prompt against the chosen model's real context window
+      //    instead of one global AI_MODEL_CONTEXT_WINDOW_TOKENS figure. The
+      //    processing descriptor is passed as a CONSTRAINT: a model that cannot
+      //    satisfy the required mode/region is substituted or refused — the
+      //    processing decision is never weakened to accommodate a model.
+      const route = routeForMetric;
+      const routed = this.modelRouter.resolve({
+        tenantId,
+        conversationId: aiConversationId,
+        legacyModel: agent?.model,
+        feature: featureForMetric,
+        route,
+        processing: {
+          executionMode: processing.executionMode,
+          residencyRequired: processing.residencyRequired,
+          region: processing.region,
+        },
+      });
+      // `definition` is present only when routing is active; on the flag-off
+      // path the registry is consulted directly so per-model budgeting applies
+      // either way. Undefined for an unregistered model → global fallback.
+      const modelDefinition = routed.definition ?? findModel(routed.model);
+
       const built = this.budgets.build({
         systemPrompt: agent?.system_prompt,
         ragChunks: chunks,
@@ -393,21 +455,14 @@ export class AiExecutionService {
           .reverse()
           .map((m) => ({ role: this.mapRole(m.role), content: m.content })),
         tools: this.availableTools(),
+        model: modelDefinition,
       });
       let messages: AiChatMessage[] = built.messages;
       const tools = built.tools;
       let truncatedPromptTokens = this.totalTruncated(built.telemetry);
 
-      // 4) tool-calling loop: complete → execute tool calls → feed results → repeat
+      // 5) tool-calling loop: complete → execute tool calls → feed results → repeat
       //    until the model returns a plain answer (or the iteration cap is hit).
-      const route = routeForMetric;
-      const routed = this.modelRouter.resolve({
-        tenantId,
-        conversationId: aiConversationId,
-        legacyModel: agent?.model,
-        feature: 'chat',
-        route,
-      });
       const provider = this.providers.resolve(routed.model);
       providerForMetric = provider.name;
       modelForMetric = routed.model ?? provider.name;
@@ -449,7 +504,7 @@ export class AiExecutionService {
       };
 
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-        const fitted = this.budgets.fitRuntime(messages, tools);
+        const fitted = this.budgets.fitRuntime(messages, tools, modelDefinition);
         messages = fitted.messages;
         truncatedPromptTokens += fitted.truncatedTokens;
         const completion = await provider.complete({
@@ -460,7 +515,7 @@ export class AiExecutionService {
           tools,
           maxOutputTokens: this.budgets.maxOutputTokens,
           idempotencyKey: `${requestKey}:loop:${i}`,
-          feature: 'chat',
+          feature: featureForMetric,
           route,
           channel,
         });
@@ -472,17 +527,19 @@ export class AiExecutionService {
         if ((completion.cachedPromptTokens ?? 0) > 0)
           accounting.cachedRequestCount += 1;
         accounting.providerAttempts += completion.providerAttempts ?? 1;
-        await this.recordCompletionCost(
+        await this.recordCompletionCost({
           tenantId,
           aiConversationId,
           requestKey,
           channel,
           route,
-          i,
-          provider.name,
+          feature: featureForMetric,
+          loop: i,
+          provider: provider.name,
           completion,
           accounting,
-        );
+          processing,
+        });
 
         const calls = completion.toolCalls ?? [];
         if (calls.length === 0) {
@@ -590,7 +647,7 @@ export class AiExecutionService {
         aiConversationId,
         channel,
         model: lastModel,
-        feature: 'chat',
+        feature: featureForMetric,
         route,
         idempotencyKey: requestKey,
         streamed: false,
@@ -629,6 +686,7 @@ export class AiExecutionService {
         actorUserId: this.ctx.getUser()?.guest
           ? null
           : (this.ctx.getUser()?.id ?? null),
+        processing,
       });
 
       const response = {
@@ -657,9 +715,11 @@ export class AiExecutionService {
           requestKind: 'CHAT',
           provider: providerForMetric,
           model: modelForMetric,
-          feature: 'chat',
+          feature: featureForMetric,
           route: routeForMetric,
           channel,
+          executionMode: processing.executionMode,
+          region: processing.region,
           success: false,
           errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
           quote: {
@@ -721,6 +781,7 @@ export class AiExecutionService {
         actorUserId: this.ctx.getUser()?.guest
           ? null
           : (this.ctx.getUser()?.id ?? null),
+        processing,
       });
       throw this.failedTurn(err, {
         method: 'sendMessage',
@@ -1084,6 +1145,13 @@ export class AiExecutionService {
     const channel = transport;
     let logicalChannel = 'API';
     let routeForMetric = 'ai.chat.api';
+    // The logical AI_FEATURE for this turn. Every call site used to pass the
+    // literal 'chat', which made AI_POWERFUL_FEATURES an all-or-nothing switch
+    // (it can only match one value) and left the cost ledger unable to tell a
+    // guest booking turn from a staff dashboard turn. `route` stays the finer
+    // key; this is the coarse, policy-facing one.
+    let featureForMetric: AiFeature = AI_FEATURE.CHAT;
+    let processing: ProcessingDescriptor = DEFAULT_PROCESSING_DESCRIPTOR;
     let modelForMetric = 'noop';
     let providerForMetric = 'unknown';
     try {
@@ -1102,6 +1170,7 @@ export class AiExecutionService {
       }
       logicalChannel = aiConv.channel ?? 'API';
       routeForMetric = `ai.chat.${logicalChannel.toLowerCase()}`;
+      featureForMetric = this.featureForChannel(logicalChannel);
       const claim = await this.requests.claim(
         tenantId,
         requestKey,
@@ -1157,6 +1226,17 @@ export class AiExecutionService {
       // FND-031: same route-level-plus-worker-path enforcement as the
       // non-streaming path above.
       await this.subscriptions.assertBillableActionAllowed(tenantId);
+
+      // Same pre-spend processing decision as the non-streaming path above —
+      // see its comment for the full rationale. Streaming turns are `IMMEDIATE`
+      // by definition: a batch route cannot stream.
+      processing = await this.processingPolicy.resolve({
+        tenantId,
+        feature: featureForMetric,
+        route: routeForMetric,
+        latencyRequirement: 'IMMEDIATE',
+        dataSensitivity: 'SENSITIVE',
+      });
 
       // FND-034: same atomic reservation as the non-streaming path above —
       // see its comment for the full rationale.
@@ -1226,6 +1306,25 @@ export class AiExecutionService {
         take: 50,
       });
       const memories = memoryLoader ? await memoryLoader() : [];
+
+      // Same order as the non-streaming path: model first, so the prompt budget
+      // is bounded by the chosen model's own context window, and the processing
+      // descriptor is applied as a capability constraint on that choice.
+      const route = routeForMetric;
+      const routed = this.modelRouter.resolve({
+        tenantId,
+        conversationId: aiConversationId,
+        legacyModel: agent?.model,
+        feature: featureForMetric,
+        route,
+        processing: {
+          executionMode: processing.executionMode,
+          residencyRequired: processing.residencyRequired,
+          region: processing.region,
+        },
+      });
+      const modelDefinition = routed.definition ?? findModel(routed.model);
+
       const built = this.budgets.build({
         systemPrompt: agent?.system_prompt,
         ragChunks: chunks,
@@ -1234,19 +1333,12 @@ export class AiExecutionService {
           .reverse()
           .map((m) => ({ role: this.mapRole(m.role), content: m.content })),
         tools: this.availableTools(),
+        model: modelDefinition,
       });
       let messages: AiChatMessage[] = built.messages;
       const tools = built.tools;
       let truncatedPromptTokens = this.totalTruncated(built.telemetry);
 
-      const route = routeForMetric;
-      const routed = this.modelRouter.resolve({
-        tenantId,
-        conversationId: aiConversationId,
-        legacyModel: agent?.model,
-        feature: 'chat',
-        route,
-      });
       const provider = this.providers.resolve(routed.model);
       providerForMetric = provider.name;
       const model = routed.model;
@@ -1297,7 +1389,7 @@ export class AiExecutionService {
         streamed = true;
         const streamStart = Date.now();
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-          const fitted = this.budgets.fitRuntime(messages, tools);
+          const fitted = this.budgets.fitRuntime(messages, tools, modelDefinition);
           messages = fitted.messages;
           truncatedPromptTokens += fitted.truncatedTokens;
           let turnContent = '';
@@ -1326,7 +1418,7 @@ export class AiExecutionService {
             tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
             idempotencyKey: `${requestKey}:loop:${i}`,
-            feature: 'chat',
+            feature: featureForMetric,
             route,
             channel,
           })) {
@@ -1355,15 +1447,16 @@ export class AiExecutionService {
             if ((turnUsage.cachedPromptTokens ?? 0) > 0)
               accounting.cachedRequestCount += 1;
             accounting.providerAttempts += turnUsage.providerAttempts ?? 1;
-            await this.recordCompletionCost(
+            await this.recordCompletionCost({
               tenantId,
               aiConversationId,
               requestKey,
               channel,
               route,
-              i,
-              provider.name,
-              {
+              feature: featureForMetric,
+              loop: i,
+              provider: provider.name,
+              completion: {
                 model: lastModel,
                 promptTokens: turnUsage.promptTokens,
                 completionTokens: turnUsage.completionTokens,
@@ -1371,7 +1464,8 @@ export class AiExecutionService {
                 providerAttempts: turnUsage.providerAttempts,
               },
               accounting,
-            );
+              processing,
+            });
           }
           if (sawToolCalls.length === 0) {
             // AI-009 (SD-1 points 4-6): final check on the complete
@@ -1429,7 +1523,7 @@ export class AiExecutionService {
       } else {
         // No streaming support (Noop fallback) — SAME complete()-based tool loop as sendMessage.
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-          const fitted = this.budgets.fitRuntime(messages, tools);
+          const fitted = this.budgets.fitRuntime(messages, tools, modelDefinition);
           messages = fitted.messages;
           truncatedPromptTokens += fitted.truncatedTokens;
           const completion = await provider.complete({
@@ -1440,7 +1534,7 @@ export class AiExecutionService {
             tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
             idempotencyKey: `${requestKey}:loop:${i}`,
-            feature: 'chat',
+            feature: featureForMetric,
             route,
             channel,
           });
@@ -1453,17 +1547,19 @@ export class AiExecutionService {
           if ((completion.cachedPromptTokens ?? 0) > 0)
             accounting.cachedRequestCount += 1;
           accounting.providerAttempts += completion.providerAttempts ?? 1;
-          await this.recordCompletionCost(
+          await this.recordCompletionCost({
             tenantId,
             aiConversationId,
             requestKey,
             channel,
             route,
-            i,
-            provider.name,
+            feature: featureForMetric,
+            loop: i,
+            provider: provider.name,
             completion,
             accounting,
-          );
+            processing,
+          });
 
           const calls = completion.toolCalls ?? [];
           if (calls.length === 0) {
@@ -1528,11 +1624,15 @@ export class AiExecutionService {
         if (full) onToken(full);
       }
 
-      // Streaming APIs don't always return real usage — fall back to char-based
-      // estimates (~4 chars/token) only when the provider didn't report usage.
+      // Streaming APIs don't always return real usage. When none is reported the
+      // turn stays UNPRICED (below) — these numbers are telemetry only, never a
+      // billing basis. Estimated with the SAME mixed-script estimator the prompt
+      // budget uses (~1 token per 2 UTF-8 bytes for non-ASCII) rather than a flat
+      // 4-chars-per-token rule, which undercounted every Arabic turn by roughly
+      // half and made AR/EN token dashboards non-comparable.
       if (!usageFromProvider) {
-        completionTokens = full ? Math.max(1, Math.ceil(full.length / 4)) : 0;
-        promptTokens = Math.ceil(JSON.stringify(messages).length / 4);
+        completionTokens = full ? Math.max(1, this.budgets.estimate(full)) : 0;
+        promptTokens = this.budgets.estimateMessages(messages);
       }
       const totalTokens = promptTokens + completionTokens;
       modelForMetric = lastModel;
@@ -1579,7 +1679,7 @@ export class AiExecutionService {
         aiConversationId,
         channel,
         model: lastModel,
-        feature: 'chat',
+        feature: featureForMetric,
         route,
         idempotencyKey: requestKey,
         streamed,
@@ -1620,6 +1720,7 @@ export class AiExecutionService {
         actorUserId: this.ctx.getUser()?.guest
           ? null
           : (this.ctx.getUser()?.id ?? null),
+        processing,
       });
 
       const response = {
@@ -1653,9 +1754,11 @@ export class AiExecutionService {
           requestKind: 'CHAT',
           provider: providerForMetric,
           model: modelForMetric,
-          feature: 'chat',
+          feature: featureForMetric,
           route: routeForMetric,
           channel,
+          executionMode: processing.executionMode,
+          region: processing.region,
           success: false,
           errorCode: 'UNKNOWN_PROVIDER_OUTCOME',
           quote: {
@@ -1717,6 +1820,7 @@ export class AiExecutionService {
         actorUserId: this.ctx.getUser()?.guest
           ? null
           : (this.ctx.getUser()?.id ?? null),
+        processing,
       });
       throw this.failedTurn(err, {
         method: 'streamMessage',
@@ -1772,6 +1876,32 @@ export class AiExecutionService {
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
+
+  /**
+   * The logical AI_FEATURE for a turn, derived from the conversation's own
+   * persisted channel — never from a request body, so a client cannot influence
+   * which policy (model tier, execution mode) its turn is evaluated under.
+   *
+   * Deliberately coarse: `route` (`ai.chat.<channel>`) remains the per-channel
+   * key for routing overrides and dashboards. This value is what the
+   * feature-keyed policies consume, which is why WEBSITE maps to BOOKING_CHAT —
+   * the public widget's whole purpose is discovery and booking, and it is the
+   * only surface an unauthenticated visitor reaches.
+   *
+   * Every branch maps to a STANDARD-mode feature in FEATURE_EXECUTION_MODE; an
+   * unknown channel falls back to CHAT, which is also STANDARD. An interactive
+   * turn can therefore never be classified into the async BATCH route from here.
+   */
+  private featureForChannel(channel: string): AiFeature {
+    switch (channel.toUpperCase()) {
+      case 'WHATSAPP':
+        return AI_FEATURE.WHATSAPP_CHAT;
+      case 'WEBSITE':
+        return AI_FEATURE.BOOKING_CHAT;
+      default:
+        return AI_FEATURE.CHAT;
+    }
+  }
 
   private mapRole(role: string): 'system' | 'user' | 'assistant' {
     if (role === AI_MESSAGE_ROLE.ASSISTANT) return 'assistant';
@@ -1841,15 +1971,24 @@ export class AiExecutionService {
     );
   }
 
-  /** Single pricing formula — shared by `recordCost` and the metrics recorder. */
-  private async recordCompletionCost(
-    tenantId: string,
-    aiConversationId: string,
-    requestKey: string,
-    channel: string,
-    route: string,
-    loop: number,
-    provider: string,
+  /**
+   * Single pricing formula — shared by `recordCost` and the metrics recorder.
+   *
+   * Takes one options object rather than a positional list: this call carries
+   * the turn's identity (tenant/conversation/key), its attribution (feature,
+   * route, channel) AND its processing descriptor (execution mode + residency
+   * region), and a nine-plus-argument positional signature made every added
+   * dimension a silent mis-ordering risk at three call sites.
+   */
+  private async recordCompletionCost(input: {
+    tenantId: string;
+    aiConversationId: string;
+    requestKey: string;
+    channel: string;
+    route: string;
+    feature: AiFeature;
+    loop: number;
+    provider: string;
     completion: Pick<
       AiCompletionResult,
       | 'model'
@@ -1857,15 +1996,34 @@ export class AiExecutionService {
       | 'completionTokens'
       | 'cachedPromptTokens'
       | 'providerAttempts'
-    >,
-    accounting: TurnAccounting,
-  ): Promise<void> {
+    >;
+    accounting: TurnAccounting;
+    processing: ProcessingDescriptor;
+  }): Promise<void> {
+    const {
+      tenantId,
+      aiConversationId,
+      requestKey,
+      channel,
+      route,
+      feature,
+      loop,
+      provider,
+      completion,
+      accounting,
+      processing,
+    } = input;
+    // Priced at the rate set for THIS turn's processing dimensions. A residency
+    // turn against a model with no residency rates comes back UNPRICED rather
+    // than billed at the global rate — the same guarantee batch already had.
     const quote = this.costs.quoteChat(
       completion.model,
       completion.promptTokens,
       completion.completionTokens,
       completion.cachedPromptTokens ?? 0,
       provider,
+      processing.executionMode,
+      processing.residencyRequired,
     );
     await this.costs.record({
       tenantId,
@@ -1874,9 +2032,14 @@ export class AiExecutionService {
       requestKind: 'CHAT',
       provider,
       model: completion.model,
-      feature: 'chat',
+      feature,
       route,
       channel,
+      // G11: `ai_cost_entries` has carried these two columns since the batch
+      // migration, but the chat path never populated them — so a turn processed
+      // under an enforced regional deployment was still recorded as global.
+      executionMode: processing.executionMode,
+      region: processing.region,
       inputTokens: completion.promptTokens,
       cachedInputTokens: completion.cachedPromptTokens ?? 0,
       outputTokens: completion.completionTokens,
@@ -1894,9 +2057,11 @@ export class AiExecutionService {
         requestKind: 'CHAT',
         provider,
         model: completion.model,
-        feature: 'chat',
+        feature,
         route,
         channel,
+        executionMode: processing.executionMode,
+        region: processing.region,
         success: false,
         errorCode: 'RETRY_USAGE_UNKNOWN',
         quote: {

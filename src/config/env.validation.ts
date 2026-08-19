@@ -1,5 +1,7 @@
 import * as Joi from 'joi';
 
+import { AI_MODEL_IDS } from '../modules/ai/routing/ai-model-registry';
+
 export const validate = (config: Record<string, unknown>) => {
   const schema = Joi.object({
     NODE_ENV: Joi.string()
@@ -457,8 +459,23 @@ export const validate = (config: Record<string, unknown>) => {
       .min(0)
       .max(100)
       .default(0),
-    AI_ECONOMY_MODEL: Joi.string().default('gpt-4.1-mini'),
-    AI_POWERFUL_MODEL: Joi.string().allow('', null),
+    // Both are constrained to AI_MODEL_REGISTRY ids: a typo or an unregistered
+    // model here used to sail through boot and surface only as an UNPRICED cost
+    // row (or a provider 400) on the first routed turn.
+    AI_ECONOMY_MODEL: Joi.string()
+      .valid(...AI_MODEL_IDS)
+      .default('gpt-4.1-mini'),
+    AI_POWERFUL_MODEL: Joi.string()
+      .valid(...AI_MODEL_IDS)
+      .allow('', null),
+    // How a model string PERSISTED on an agent row (ai_agents.model) is treated
+    // when it is not in the registry. 'true' (default) → ignore it and fall back
+    // to the tier default, logging once; 'false' → pass it through unchanged
+    // (legacy behaviour, for an operator mid-migration). The agent DTO blocks new
+    // unregistered writes either way.
+    AI_MODEL_ROUTING_STRICT: Joi.string()
+      .valid('true', 'false')
+      .default('true'),
     AI_POWERFUL_FEATURES: Joi.string().allow('').default(''),
     AI_POWERFUL_ROUTES: Joi.string().allow('').default(''),
     AI_TRAINING_FILE_MAX_BYTES: Joi.number()
@@ -524,6 +541,12 @@ export const validate = (config: Record<string, unknown>) => {
     AI_DATA_RESIDENCY_ENABLED: Joi.string()
       .valid('true', 'false')
       .default('false'),
+    // Platform policy: comma-separated AI_FEATURE names that MUST be processed
+    // regionally regardless of the tenant's own configuration. A listed feature
+    // whose tenant has no usable regional deployment is REFUSED, never processed
+    // globally. Empty (default) ⇒ residency is driven purely by the tenant's own
+    // deployment row.
+    AI_RESIDENCY_REQUIRED_FEATURES: Joi.string().allow('').default(''),
 
     RAG_TOP_K: Joi.number().default(5),
     // HNSW query-time recall/latency knob (higher = better recall, slower).

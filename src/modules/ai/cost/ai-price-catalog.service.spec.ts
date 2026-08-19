@@ -60,3 +60,97 @@ describe('AiPriceCatalogService', () => {
     expect(newQuote.costMicrousd).toBe(9_999_999n);
   });
 });
+
+/**
+ * Pricing is a function of (model x execution mode x residency x token class).
+ * The two processing dimensions are independent, so there are FOUR rate sets,
+ * and a missing one must never be substituted with another.
+ */
+describe('AiPriceCatalogService — processing-mode pricing', () => {
+  const catalog = () => new AiPriceCatalogService(new ConfigService());
+  const MILLION = 1_000_000;
+
+  it('prices STANDARD + global at the list rate', () => {
+    const quote = catalog().quoteChat('openai', 'gpt-4.1-mini', MILLION, 0);
+    expect(quote.costMicrousd).toBe(400_000n);
+  });
+
+  it('prices BATCH at the published batch rate, not a derived percentage', () => {
+    const quote = catalog().quoteChat(
+      'openai', 'gpt-4.1-mini', MILLION, 0, 0, AI_EXECUTION_MODE.BATCH,
+    );
+    // The stored batch rate happens to be half here, but it is READ, not computed.
+    expect(quote.costMicrousd).toBe(200_000n);
+    expect(quote.inputMicrousdPerMillion).toBe('200000');
+  });
+
+  it('prices residency from its own rate set — no uplift for a pre-2026-03-05 model', () => {
+    const standard = catalog().quoteChat('openai', 'gpt-4.1-mini', MILLION, 0);
+    const residency = catalog().quoteChat(
+      'openai', 'gpt-4.1-mini', MILLION, 0, 0, AI_EXECUTION_MODE.STANDARD, true,
+    );
+    expect(residency.status).toBe(PRICING_STATUS.PRICED);
+    // gpt-4.1-mini is residency-eligible but predates the 10% uplift cutoff, so
+    // a blanket x1.10 would have over-billed it.
+    expect(residency.costMicrousd).toBe(standard.costMicrousd);
+  });
+
+  it('prices BATCH + residency together — the dimensions are not mutually exclusive', () => {
+    const quote = catalog().quoteChat(
+      'openai', 'gpt-4.1-mini', MILLION, 0, 0, AI_EXECUTION_MODE.BATCH, true,
+    );
+    expect(quote.status).toBe(PRICING_STATUS.PRICED);
+    expect(quote.costMicrousd).toBe(200_000n);
+  });
+
+  it('returns UNPRICED for a residency request against a model with no residency rates', () => {
+    // gpt-4o-mini is not on the published regional-processing list.
+    const quote = catalog().quoteChat(
+      'openai', 'gpt-4o-mini', MILLION, 0, 0, AI_EXECUTION_MODE.STANDARD, true,
+    );
+    expect(quote.status).toBe(PRICING_STATUS.UNPRICED);
+    expect(quote.costMicrousd).toBeNull();
+  });
+
+  it('never silently falls back to the global rate for an unpriced residency request', () => {
+    const global = catalog().quoteChat('openai', 'gpt-4o-mini', MILLION, 0);
+    const residency = catalog().quoteChat(
+      'openai', 'gpt-4o-mini', MILLION, 0, 0, AI_EXECUTION_MODE.STANDARD, true,
+    );
+    expect(global.costMicrousd).toBe(150_000n);
+    expect(residency.costMicrousd).not.toBe(global.costMicrousd);
+  });
+
+  it('prices the newly registered models', () => {
+    expect(catalog().quoteChat('openai', 'gpt-4o-mini', MILLION, 0).costMicrousd).toBe(150_000n);
+    expect(catalog().quoteChat('openai', 'gpt-4.1', MILLION, 0).costMicrousd).toBe(2_000_000n);
+  });
+
+  it('keeps every cost in exact integer micro-USD (bigint), never a float', () => {
+    const modes = [AI_EXECUTION_MODE.STANDARD, AI_EXECUTION_MODE.BATCH];
+    for (const mode of modes) {
+      for (const residency of [false, true]) {
+        const quote = catalog().quoteChat(
+          'openai', 'gpt-4.1-mini', 333_333, 77_777, 11_111, mode, residency,
+        );
+        expect(typeof quote.costMicrousd).toBe('bigint');
+        // A float-derived value would not survive an exact bigint comparison
+        // against itself recomputed — this asserts the type contract holds on
+        // deliberately non-round token counts.
+        expect(quote.costMicrousd).toBe(
+          catalog().quoteChat(
+            'openai', 'gpt-4.1-mini', 333_333, 77_777, 11_111, mode, residency,
+          ).costMicrousd,
+        );
+      }
+    }
+  });
+
+  it('defaults to STANDARD + global when the new parameters are omitted (back-compat)', () => {
+    const explicit = catalog().quoteChat(
+      'openai', 'gpt-4o', 1_000, 500, 400, AI_EXECUTION_MODE.STANDARD, false,
+    );
+    const implicit = catalog().quoteChat('openai', 'gpt-4o', 1_000, 500, 400);
+    expect(implicit.costMicrousd).toBe(explicit.costMicrousd);
+  });
+});

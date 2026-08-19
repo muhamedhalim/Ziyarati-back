@@ -48,6 +48,19 @@ export interface RecordMetricInput {
   correlationId?: string | null;
   /** AI-017 (M2, FR-033, FR-034): acting staff principal; null for guests. */
   actorUserId?: string | null;
+  /**
+   * How the turn was processed (execution mode × data residency). Optional on
+   * the input so the two failure paths — which may fail before the policy is
+   * resolved — can omit it; `record()` then persists the safe default label
+   * rather than inventing a residency claim.
+   */
+  processing?: {
+    label: string;
+    executionMode: string;
+    residencyRequired: boolean;
+    region: string | null;
+    reason: string;
+  };
 }
 
 const n = (v: unknown): number => {
@@ -116,6 +129,12 @@ export class AiMetricsService {
           total_latency_ms: input.totalLatencyMs,
           correlation_id: input.correlationId ?? null,
           actor_user_id: input.actorUserId ?? null,
+          // Absent input ⇒ the safe combination (synchronous, global region),
+          // never a null that reads as "unknown, possibly regional".
+          processing_mode: input.processing?.label ?? 'STANDARD',
+          data_residency_required: input.processing?.residencyRequired ?? false,
+          data_residency_region: input.processing?.region ?? null,
+          data_residency_reason: input.processing?.reason ?? null,
         }),
       );
     } catch (err) {

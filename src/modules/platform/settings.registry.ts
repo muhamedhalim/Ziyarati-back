@@ -10,6 +10,8 @@
  * no type validation (the legacy free-form path stays available).
  */
 
+import { AI_MODEL_IDS } from '../ai/routing/ai-model-registry';
+
 export enum SettingKey {
   MAINTENANCE_MODE    = 'platform.maintenance_mode',
   ALLOW_REGISTRATION  = 'platform.allow_tenant_registration',
@@ -112,11 +114,16 @@ export const SETTINGS_REGISTRY: Readonly<Record<SettingKey, SettingDefinition>> 
   },
   [SettingKey.AI_DEFAULT_MODEL]: {
     key: SettingKey.AI_DEFAULT_MODEL,
-    type: 'string',
+    // 'enum' (not 'string') so SystemSettingService.validateValue rejects an
+    // unregistered model at write time, reusing the existing enum validator
+    // rather than adding a bespoke check. Was free text, which let a super admin
+    // set a model no provider supports and no price catalog can price.
+    type: 'enum',
     category: 'ai',
     label: 'Default AI Model',
     description: 'Default AI model for new agents that do not specify a model explicitly.',
     default: 'gpt-4o',
+    allowedValues: AI_MODEL_IDS,
   },
   [SettingKey.AI_DEFAULT_TEMP]: {
     key: SettingKey.AI_DEFAULT_TEMP,

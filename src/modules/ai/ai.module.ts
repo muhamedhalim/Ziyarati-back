@@ -76,6 +76,7 @@ import { AiRequestExecutionService } from './idempotency/ai-request-execution.se
 import { AiModelRouterService } from './routing/ai-model-router.service';
 import { AiExecutionPolicyService } from './execution/ai-execution-policy.service';
 import { AiDataResidencyService } from './execution/ai-data-residency.service';
+import { AiProcessingPolicyService } from './execution/ai-processing-policy.service';
 import { OpenAiClientProvider } from './providers/openai-client.provider';
 import { OpenAiBatchProvider } from './providers/openai-batch.provider';
 import { AI_BATCH_PROVIDER } from './providers/ai-batch-provider.interface';
@@ -190,6 +191,8 @@ import { AiBatchService } from './batch/ai-batch.service';
     // Batch orchestrator. All gated by feature flags (default OFF).
     AiExecutionPolicyService,
     AiDataResidencyService,
+    // Composes the two above into one per-request decision. Owns no rules.
+    AiProcessingPolicyService,
     OpenAiClientProvider,
     OpenAiBatchProvider,
     AiBatchService,
@@ -221,6 +224,7 @@ import { AiBatchService } from './batch/ai-batch.service';
     AiModelRouterService,
     AiExecutionPolicyService,
     AiDataResidencyService,
+    AiProcessingPolicyService,
     AiBatchService,
     AiTrainingFileService,
     // Single seam for provider-agnostic completions — reused by the billing

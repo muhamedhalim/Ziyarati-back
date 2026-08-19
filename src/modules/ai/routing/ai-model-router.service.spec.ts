@@ -32,3 +32,138 @@ describe('AiModelRouterService', () => {
     expect(router.resolve(input)).toEqual(router.resolve(input));
   });
 });
+
+/**
+ * Registry-backed behaviour. Kept in its own block so the three cases above —
+ * which encode the pre-registry contract and the rollback guarantee — stay
+ * untouched: with the flag off, `resolve()` must still return exactly
+ * `{ model, routed, reason }` and nothing more.
+ */
+describe('AiModelRouterService — registry and capability validation', () => {
+  const base = {
+    tenantId: 'tenant-1',
+    conversationId: 'conv-1',
+    feature: 'chat',
+    route: 'ai.chat.api',
+  };
+
+  function router(overrides: Record<string, unknown> = {}) {
+    return new AiModelRouterService(
+      new ConfigService({
+        AI_MODEL_ROUTING_ENABLED: 'true',
+        AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
+        AI_ECONOMY_MODEL: 'gpt-4.1-mini',
+        AI_POWERFUL_MODEL: 'gpt-4o',
+        ...overrides,
+      }),
+    );
+  }
+
+  it('returns the chosen model’s definition when routing is active', () => {
+    const decision = router().resolve({ ...base, legacyModel: 'gpt-4o' });
+    expect(decision.model).toBe('gpt-4.1-mini');
+    expect(decision.definition?.id).toBe('gpt-4.1-mini');
+    expect(decision.definition?.contextWindowTokens).toBeGreaterThan(0);
+  });
+
+  it('returns NO definition on the flag-off path, so disabling the flag is a true no-op', () => {
+    const off = new AiModelRouterService(
+      new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
+    );
+    expect(off.resolve({ ...base, legacyModel: 'gpt-4o' }).definition).toBeUndefined();
+  });
+
+  it('ignores an unregistered model stored on an agent row under strict mode', () => {
+    const decision = router().resolve({ ...base, legacyModel: 'totally-made-up-model' });
+    expect(decision.model).toBe('gpt-4.1-mini');
+    expect(decision.routed).toBe(true);
+  });
+
+  it('resolves a dated snapshot alias stored on an agent row to its canonical model', () => {
+    // Powerful route so the stored model is the one under test, not the tier default.
+    const decision = router({ AI_POWERFUL_ROUTES: 'ai.chat.api', AI_POWERFUL_MODEL: '' })
+      .resolve({ ...base, legacyModel: 'gpt-4o-2024-08-06' });
+    expect(decision.model).toBe('gpt-4o');
+  });
+
+  it('escalates to the powerful model for a configured route', () => {
+    const decision = router({ AI_POWERFUL_ROUTES: 'ai.chat.api' }).resolve(base);
+    expect(decision.model).toBe('gpt-4o');
+    expect(decision.reason).toContain('powerful_route');
+  });
+
+  describe('processing-mode capability validation', () => {
+    const standardGlobal = {
+      executionMode: 'STANDARD' as const,
+      residencyRequired: false,
+      region: null,
+    };
+
+    it('passes a model straight through when it satisfies the constraints', () => {
+      const decision = router().resolve({ ...base, processing: standardGlobal });
+      expect(decision.model).toBe('gpt-4.1-mini');
+      expect(decision.reason).not.toContain('substituted');
+    });
+
+    it('substitutes a residency-capable model rather than dropping the residency requirement', () => {
+      // gpt-4o-mini is registered but is NOT residency-eligible.
+      const decision = router({ AI_ECONOMY_MODEL: 'gpt-4o-mini' }).resolve({
+        ...base,
+        processing: { executionMode: 'STANDARD', residencyRequired: true, region: 'eu' },
+      });
+      expect(decision.model).not.toBe('gpt-4o-mini');
+      expect(decision.definition?.supportedResidencyRegions).toContain('eu');
+      expect(decision.reason).toContain('capability_substituted');
+    });
+
+    it('refuses when no registered model supports the required region', () => {
+      expect(() =>
+        router().resolve({
+          ...base,
+          processing: {
+            executionMode: 'STANDARD',
+            residencyRequired: true,
+            region: 'antarctica',
+          },
+        }),
+      ).toThrow(/data residency/i);
+    });
+
+    it('refuses a residency requirement that names no region — never guesses one', () => {
+      expect(() =>
+        router().resolve({
+          ...base,
+          processing: { executionMode: 'STANDARD', residencyRequired: true, region: null },
+        }),
+      ).toThrow(/data residency/i);
+    });
+
+    it('accepts BATCH combined with residency when a model supports both', () => {
+      const decision = router().resolve({
+        ...base,
+        processing: { executionMode: 'BATCH', residencyRequired: true, region: 'eu' },
+      });
+      expect(decision.definition?.supportedExecutionModes).toContain('BATCH');
+      expect(decision.definition?.supportedResidencyRegions).toContain('eu');
+    });
+
+    it('never applies capability validation on the flag-off path', () => {
+      const off = new AiModelRouterService(
+        new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
+      );
+      // An impossible constraint must not throw when routing is disabled —
+      // rollback has to be total.
+      expect(() =>
+        off.resolve({
+          ...base,
+          legacyModel: 'gpt-4o',
+          processing: {
+            executionMode: 'STANDARD',
+            residencyRequired: true,
+            region: 'antarctica',
+          },
+        }),
+      ).not.toThrow();
+    });
+  });
+});

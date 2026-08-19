@@ -33,6 +33,28 @@ export interface AiPriceCatalogEntry {
   batchCachedInputMicrousdPerMillion?: string;
   batchOutputMicrousdPerMillion?: string;
   batchEmbeddingMicrousdPerMillion?: string;
+  /**
+   * Regional-processing (data residency) rates. Present ONLY for models that
+   * are residency-eligible; absent ⇒ a residency-required request against this
+   * model is UNPRICED, never silently billed at the global rate.
+   *
+   * These are stored explicitly rather than derived from a multiplier, for the
+   * same reason the batch rates are: the published uplift is not uniform. OpenAI
+   * applies a 10% uplift only to models released on or after 2026-03-05, so a
+   * residency-eligible older model (gpt-4o, gpt-4.1, gpt-4.1-mini) carries rates
+   * IDENTICAL to its standard ones. A blanket x1.10 would over-bill every one of
+   * them. Where an uplift does apply it is computed once, in integer arithmetic,
+   * when the entry is authored — never at quote time.
+   */
+  residencyInputMicrousdPerMillion?: string;
+  residencyCachedInputMicrousdPerMillion?: string;
+  residencyOutputMicrousdPerMillion?: string;
+  residencyEmbeddingMicrousdPerMillion?: string;
+  /** BATCH *and* residency: the two dimensions are independent and may combine. */
+  batchResidencyInputMicrousdPerMillion?: string;
+  batchResidencyCachedInputMicrousdPerMillion?: string;
+  batchResidencyOutputMicrousdPerMillion?: string;
+  batchResidencyEmbeddingMicrousdPerMillion?: string;
 }
 
 export interface AiPriceQuote {
@@ -83,9 +105,12 @@ export class AiPriceCatalogService {
     outputTokens: number,
     cachedTokens = 0,
     executionMode: AiExecutionMode = AI_EXECUTION_MODE.STANDARD,
+    residencyRequired = false,
   ): AiPriceQuote {
     const entry = this.find(provider, model);
-    const rates = entry ? this.ratesFor(entry, executionMode) : undefined;
+    const rates = entry
+      ? this.ratesFor(entry, executionMode, residencyRequired)
+      : undefined;
     if (!rates?.input || !rates.output) {
       return this.unpriced(provider, model, executionMode);
     }
@@ -103,21 +128,53 @@ export class AiPriceCatalogService {
     model: string,
     tokens: number,
     executionMode: AiExecutionMode = AI_EXECUTION_MODE.STANDARD,
+    residencyRequired = false,
   ): AiPriceQuote {
     const entry = this.find(provider, model);
-    const rates = entry ? this.ratesFor(entry, executionMode) : undefined;
+    const rates = entry
+      ? this.ratesFor(entry, executionMode, residencyRequired)
+      : undefined;
     if (!rates?.embedding) return this.unpriced(provider, model, executionMode);
     return this.priced(entry!, model, executionMode, rates, this.tokenCost(this.safeTokens(tokens), rates.embedding));
   }
 
-  /** Select the standard or batch rate set for an entry. */
-  private ratesFor(entry: AiPriceCatalogEntry, mode: AiExecutionMode): EffectiveRates {
-    if (mode === AI_EXECUTION_MODE.BATCH) {
+  /**
+   * Select one of FOUR rate sets from the two independent processing dimensions:
+   * execution mode (standard | batch) x data residency (global | regional).
+   *
+   * A missing set is NEVER substituted with another one — an absent residency
+   * rate yields UNPRICED, exactly as an absent batch rate always has. That is
+   * the guarantee that stops regional or batch work being quietly billed at the
+   * standard rate (and vice versa).
+   */
+  private ratesFor(
+    entry: AiPriceCatalogEntry,
+    mode: AiExecutionMode,
+    residencyRequired = false,
+  ): EffectiveRates {
+    const batch = mode === AI_EXECUTION_MODE.BATCH;
+    if (batch && residencyRequired) {
+      return {
+        input: entry.batchResidencyInputMicrousdPerMillion,
+        cachedInput: entry.batchResidencyCachedInputMicrousdPerMillion,
+        output: entry.batchResidencyOutputMicrousdPerMillion,
+        embedding: entry.batchResidencyEmbeddingMicrousdPerMillion,
+      };
+    }
+    if (batch) {
       return {
         input: entry.batchInputMicrousdPerMillion,
         cachedInput: entry.batchCachedInputMicrousdPerMillion,
         output: entry.batchOutputMicrousdPerMillion,
         embedding: entry.batchEmbeddingMicrousdPerMillion,
+      };
+    }
+    if (residencyRequired) {
+      return {
+        input: entry.residencyInputMicrousdPerMillion,
+        cachedInput: entry.residencyCachedInputMicrousdPerMillion,
+        output: entry.residencyOutputMicrousdPerMillion,
+        embedding: entry.residencyEmbeddingMicrousdPerMillion,
       };
     }
     return {
@@ -193,6 +250,10 @@ export class AiPriceCatalogService {
           v.outputMicrousdPerMillion, v.embeddingMicrousdPerMillion,
           v.batchInputMicrousdPerMillion, v.batchCachedInputMicrousdPerMillion,
           v.batchOutputMicrousdPerMillion, v.batchEmbeddingMicrousdPerMillion,
+          v.residencyInputMicrousdPerMillion, v.residencyCachedInputMicrousdPerMillion,
+          v.residencyOutputMicrousdPerMillion, v.residencyEmbeddingMicrousdPerMillion,
+          v.batchResidencyInputMicrousdPerMillion, v.batchResidencyCachedInputMicrousdPerMillion,
+          v.batchResidencyOutputMicrousdPerMillion, v.batchResidencyEmbeddingMicrousdPerMillion,
         ].filter((rate): rate is string => rate !== undefined);
         if (!v.provider || !v.model || !v.catalogVersion || !v.source || !v.effectiveAt
           || rates.length === 0 || rates.some((rate) => !/^\d+$/.test(rate))) {
@@ -207,17 +268,49 @@ export class AiPriceCatalogService {
 
   private defaultEntries(): AiPriceCatalogEntry[] {
     const common = { provider: 'openai', catalogVersion: 'openai-public-2026-07-19', source: OPENAI_SOURCE, effectiveAt: '2026-07-19' };
+    // Entries added when model routing gained a registry. Rates read from the
+    // same published source on the date below; existing entries keep their own
+    // snapshot, and every already-written ledger row keeps the snapshot it was
+    // priced with.
+    const added = { provider: 'openai', catalogVersion: 'openai-public-2026-08-19', source: OPENAI_SOURCE, effectiveAt: '2026-08-19' };
     // Batch rates are the published OpenAI Batch API discount (50% of list).
+    //
+    // Residency rates: OpenAI applies its 10% regional-processing uplift only to
+    // models released on or after 2026-03-05. Every model below predates that,
+    // so each residency-eligible one carries rates EQUAL to its standard rates.
+    // They are still written out explicitly rather than defaulted, so that a
+    // model with no residency set (gpt-4o-mini, which is not on the published
+    // regional-processing list) is UNPRICED for residency instead of silently
+    // inheriting the global rate.
     return [
       {
-        ...common, model: 'gpt-4o', aliases: ['gpt-4o-latest', 'gpt-4o-2024-08-06'],
+        ...common, model: 'gpt-4o', aliases: ['gpt-4o-latest', 'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20'],
         inputMicrousdPerMillion: '2500000', cachedInputMicrousdPerMillion: '1250000', outputMicrousdPerMillion: '10000000',
         batchInputMicrousdPerMillion: '1250000', batchCachedInputMicrousdPerMillion: '625000', batchOutputMicrousdPerMillion: '5000000',
+        residencyInputMicrousdPerMillion: '2500000', residencyCachedInputMicrousdPerMillion: '1250000', residencyOutputMicrousdPerMillion: '10000000',
+        batchResidencyInputMicrousdPerMillion: '1250000', batchResidencyCachedInputMicrousdPerMillion: '625000', batchResidencyOutputMicrousdPerMillion: '5000000',
       },
       {
         ...common, model: 'gpt-4.1-mini', aliases: ['gpt-4.1-mini-2025-04-14'],
         inputMicrousdPerMillion: '400000', cachedInputMicrousdPerMillion: '100000', outputMicrousdPerMillion: '1600000',
         batchInputMicrousdPerMillion: '200000', batchCachedInputMicrousdPerMillion: '50000', batchOutputMicrousdPerMillion: '800000',
+        residencyInputMicrousdPerMillion: '400000', residencyCachedInputMicrousdPerMillion: '100000', residencyOutputMicrousdPerMillion: '1600000',
+        batchResidencyInputMicrousdPerMillion: '200000', batchResidencyCachedInputMicrousdPerMillion: '50000', batchResidencyOutputMicrousdPerMillion: '800000',
+      },
+      {
+        ...added, model: 'gpt-4.1', aliases: ['gpt-4.1-2025-04-14'],
+        inputMicrousdPerMillion: '2000000', cachedInputMicrousdPerMillion: '500000', outputMicrousdPerMillion: '8000000',
+        batchInputMicrousdPerMillion: '1000000', batchCachedInputMicrousdPerMillion: '250000', batchOutputMicrousdPerMillion: '4000000',
+        residencyInputMicrousdPerMillion: '2000000', residencyCachedInputMicrousdPerMillion: '500000', residencyOutputMicrousdPerMillion: '8000000',
+        batchResidencyInputMicrousdPerMillion: '1000000', batchResidencyCachedInputMicrousdPerMillion: '250000', batchResidencyOutputMicrousdPerMillion: '4000000',
+      },
+      {
+        // Deliberately NO residency rates — not on the published regional-
+        // processing model list, so the router will not select it for a
+        // residency-required turn and a quote for one is UNPRICED.
+        ...added, model: 'gpt-4o-mini', aliases: ['gpt-4o-mini-2024-07-18'],
+        inputMicrousdPerMillion: '150000', cachedInputMicrousdPerMillion: '75000', outputMicrousdPerMillion: '600000',
+        batchInputMicrousdPerMillion: '75000', batchCachedInputMicrousdPerMillion: '37500', batchOutputMicrousdPerMillion: '300000',
       },
       {
         ...common, model: 'gpt-5-mini', aliases: ['gpt-5-mini-2025-08-07'],
@@ -227,10 +320,12 @@ export class AiPriceCatalogService {
       {
         ...common, model: 'text-embedding-3-small',
         embeddingMicrousdPerMillion: '20000', batchEmbeddingMicrousdPerMillion: '10000',
+        residencyEmbeddingMicrousdPerMillion: '20000', batchResidencyEmbeddingMicrousdPerMillion: '10000',
       },
       {
         ...common, model: 'text-embedding-3-large',
         embeddingMicrousdPerMillion: '130000', batchEmbeddingMicrousdPerMillion: '65000',
+        residencyEmbeddingMicrousdPerMillion: '130000', batchResidencyEmbeddingMicrousdPerMillion: '65000',
       },
     ];
   }

@@ -156,4 +156,33 @@ export class AiExecutionMetric {
    */
   @Column({ type: 'varchar', length: 20, nullable: true })
   retrieval_mode?: 'vector' | 'keyword' | null;
+
+  /**
+   * How this turn was processed, as ONE composed label —
+   * `STANDARD` | `BATCH` | `STANDARD+RESIDENCY` | `BATCH+RESIDENCY` — so a
+   * single column answers "how was this processed" without a join, while the
+   * two source dimensions below stay separately queryable.
+   *
+   * Nullable only for rows written before this column existed; every new row
+   * carries a value (the resolver always returns one).
+   */
+  @Index()
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  processing_mode?: string | null;
+
+  /** Whether regional processing was REQUIRED for this turn (not merely available). */
+  @Column({ type: 'boolean', nullable: true })
+  data_residency_required?: boolean | null;
+
+  /**
+   * The region this turn was processed in. Null for every non-residency
+   * request — Standard and Batch requests have no region — so this being null
+   * is a value, not a gap. Descriptive metadata only; see TenantAiDeployment.
+   */
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  data_residency_region?: string | null;
+
+  /** Why the processing mode was chosen. Configuration facts only, never prompt content. */
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  data_residency_reason?: string | null;
 }

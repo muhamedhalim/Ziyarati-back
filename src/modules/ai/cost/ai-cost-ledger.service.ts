@@ -57,8 +57,17 @@ export class AiCostLedgerService {
     cached = 0,
     provider = 'openai',
     executionMode: AiExecutionMode = AI_EXECUTION_MODE.STANDARD,
+    residencyRequired = false,
   ) {
-    return this.prices.quoteChat(provider, model, input, output, cached, executionMode);
+    return this.prices.quoteChat(
+      provider,
+      model,
+      input,
+      output,
+      cached,
+      executionMode,
+      residencyRequired,
+    );
   }
 
   quoteEmbedding(
@@ -66,8 +75,15 @@ export class AiCostLedgerService {
     tokens: number,
     executionMode: AiExecutionMode = AI_EXECUTION_MODE.STANDARD,
     provider = 'openai',
+    residencyRequired = false,
   ) {
-    return this.prices.quoteEmbedding(provider, model, tokens, executionMode);
+    return this.prices.quoteEmbedding(
+      provider,
+      model,
+      tokens,
+      executionMode,
+      residencyRequired,
+    );
   }
 
   /** Idempotent append + monthly aggregate update in one transaction. */

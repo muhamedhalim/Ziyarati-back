@@ -210,6 +210,12 @@ describe('every controller has an explicit entitlement policy', () => {
       // A deprecated key is retained only so pre-existing rows still resolve;
       // it is not expected to gate anything.
       if (spec.isDeprecated) return false;
+      // A service-enforced capability qualifies HOW an already-authorized
+      // request executes rather than guarding a surface a caller reaches, so
+      // there is no route to annotate. The flag is the author's explicit
+      // assertion of where enforcement lives (see FeatureSpec.serviceEnforced)
+      // — an unflagged key with no gating route is still an orphan.
+      if (spec.serviceEnforced) return false;
       return spec.alwaysOn
         ? !documentedAlwaysOn.has(key)
         : !gated.has(key);

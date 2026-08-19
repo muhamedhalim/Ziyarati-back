@@ -151,6 +151,11 @@ export class BillingUpgradeAdminService {
     }
 
     const result = await this.aiEstimate.estimate({
+      // Attribution for the AI cost ledger. The spend belongs to the tenant the
+      // quote is being prepared for; `ai_cost_entries.tenant_id` is a real FK to
+      // `tenants(id)`, so there is no synthetic "platform" tenant to book it to.
+      tenantId: request.tenant.id,
+      requestId: id,
       requestType: request.type as BillingUpgradeType,
       targetKey:
         request.type === BILLING_UPGRADE_TYPE.FEATURE ? request.feature_key! : request.usage_metric!,
