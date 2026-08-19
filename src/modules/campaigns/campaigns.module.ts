@@ -95,7 +95,7 @@ import {
     // REAL provider registered into the strategy token. Previously this was an
     // empty array, which silently routed EVERY campaign send to the no-op
     // provider — runs completed "successfully" having sent nothing. The noop
-    // now only serves channels with no real adapter yet (SMS/EMAIL/PUSH/IN_APP).
+    // now only serves channels with no real adapter yet (EMAIL/PUSH/IN_APP).
     {
       provide: CAMPAIGN_DELIVERY_PROVIDERS,
       useFactory: (

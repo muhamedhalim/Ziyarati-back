@@ -81,10 +81,14 @@ export class FileUploadService {
       used,
       size,
     );
+    // `uploadedFiles` is also a byte-size cap (Pricing Catalog: priced per
+    // GB) — same `used`/`size` bytes as the `storageBytes` check above, just
+    // a separately-configurable plan ceiling.
     await this.usage.assertResourceWithinLimit(
       tenantId,
       'uploadedFiles',
-      await this.files.count({ where: { tenant: { id: tenantId } } }),
+      used,
+      size,
     );
 
     return this.files.save(

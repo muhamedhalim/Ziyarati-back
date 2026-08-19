@@ -313,6 +313,14 @@ describe('ResourcePurchaseService (Phase 2.2 — plan §16/§17/§20)', () => {
       expect(sql).toMatch(/FROM "ai_knowledge_bases"/);
       expect(sql).toMatch(/FROM "ai_training_files"/);
       expect(params).toEqual([TENANT]);
+      // uploadedFiles/trainingFiles are byte-size caps (priced per GB) — sum
+      // file_size, don't count rows. Every other capacity item stays a count.
+      expect(sql).toMatch(/COALESCE\(SUM\(file_size\), 0\)::bigint FROM "file_uploads"/);
+      expect(sql).toMatch(/COALESCE\(SUM\(file_size\), 0\)::bigint FROM "ai_training_files"/);
+      expect(sql).toMatch(/COUNT\(\*\)::int FROM "branches"/);
+      expect(sql).toMatch(/COUNT\(\*\)::int FROM "users"/);
+      expect(sql).toMatch(/COUNT\(\*\)::int FROM "customers"/);
+      expect(sql).toMatch(/COUNT\(\*\)::int FROM "ai_knowledge_bases"/);
       expect(result).toEqual({
         branches: 3,
         employees: 12,

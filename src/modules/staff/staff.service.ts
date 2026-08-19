@@ -89,7 +89,9 @@ function toAssignablePermissionView(p: Permission): AssignablePermissionView {
     module: p.module,
     description: p.description ?? null,
     scope: p.scope,
-    isOwnershipScoped: OWNERSHIP_SCOPED_PERMISSIONS.has(p.slug as PermissionSlug),
+    isOwnershipScoped: OWNERSHIP_SCOPED_PERMISSIONS.has(
+      p.slug as PermissionSlug,
+    ),
   };
 }
 
@@ -174,7 +176,8 @@ export class StaffService {
   async findAssignablePermissions(
     callerPermissions: string[],
   ): Promise<AssignablePermissionView[]> {
-    const perms = await this.rolesService.findGrantableForCaller(callerPermissions);
+    const perms =
+      await this.rolesService.findGrantableForCaller(callerPermissions);
     return perms.map(toAssignablePermissionView);
   }
 
@@ -190,7 +193,10 @@ export class StaffService {
     roleId: string,
     tenantId: string,
   ): Promise<AssignablePermissionView[]> {
-    const perms = await this.rolesService.findAssignableRolePermissions(roleId, tenantId);
+    const perms = await this.rolesService.findAssignableRolePermissions(
+      roleId,
+      tenantId,
+    );
     return perms.map(toAssignablePermissionView);
   }
 
@@ -212,7 +218,10 @@ export class StaffService {
 
     const links = await this.userRoles.find({
       where: { user: { id: In(userIds) } },
-      relations: { user: true, role: { rolePermissions: { permission: true } } },
+      relations: {
+        user: true,
+        role: { rolePermissions: { permission: true } },
+      },
     });
 
     const byUser = new Map<string, UserRole[]>();
@@ -225,7 +234,9 @@ export class StaffService {
 
     return profiles.map((profile) => {
       const decorated = profile as T & { role?: StaffRoleDetail | null };
-      const userLinks = profile.user?.id ? byUser.get(profile.user.id) : undefined;
+      const userLinks = profile.user?.id
+        ? byUser.get(profile.user.id)
+        : undefined;
       decorated.role =
         userLinks?.length === 1 ? this.toRoleDetail(userLinks[0].role) : null;
       return decorated;
@@ -520,7 +531,11 @@ export class StaffService {
                 isCustom: true,
                 permissionSlugs: customPerms!.map((p) => p.slug),
               }
-            : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
+            : {
+                slug: assignedRole.slug,
+                name: assignedRole.name,
+                isCustom: false,
+              },
         }),
       );
     }
@@ -571,17 +586,44 @@ export class StaffService {
       where.is_available_for_booking = query.isAvailable === 'true';
     }
 
+    // Branch and role filters both narrow down to a set of allowed user ids;
+    // when both are given, the staff member must satisfy both (intersection).
+    let allowedUserIds: string[] | null = null;
+
     // Branch filter resolves through the branch_users join.
     if (query.branchId) {
       const links = await this.branchUsers.find({
         where: { branch: { id: query.branchId }, tenant: { id: tenantId } },
         relations: { user: true },
       });
-      const userIds = links.map((l) => l.user.id);
-      if (userIds.length === 0) {
+      allowedUserIds = links.map((l) => l.user.id);
+    }
+
+    // Role filter (e.g. `doctor`) resolves through the user_roles join,
+    // scoped by the LINKED USER'S tenant (UserRole itself carries no tenant
+    // column) — combined with `where.tenant` on staff_profiles below, a role
+    // slug shared by other tenants can never leak a staff member across
+    // tenants.
+    if (query.role) {
+      const roleLinks = await this.userRoles.find({
+        where: {
+          role: { slug: query.role },
+          user: { tenant: { id: tenantId } },
+        },
+        relations: { user: true },
+      });
+      const roleUserIds = roleLinks.map((l) => l.user.id);
+      allowedUserIds =
+        allowedUserIds === null
+          ? roleUserIds
+          : allowedUserIds.filter((id) => roleUserIds.includes(id));
+    }
+
+    if (allowedUserIds !== null) {
+      if (allowedUserIds.length === 0) {
         return { data: [], total: 0, page: query.page, limit: query.limit };
       }
-      where.user = { id: In(userIds) };
+      where.user = { id: In(allowedUserIds) };
     }
 
     const [data, total] = await this.staff.findAndCount({
@@ -592,7 +634,9 @@ export class StaffService {
       take: query.limit,
     });
 
-    await Promise.all(data.map((profile) => this.withResolvedAvatar(profile, tenantId)));
+    await Promise.all(
+      data.map((profile) => this.withResolvedAvatar(profile, tenantId)),
+    );
     return {
       data: await this.withRoleDetail(await this.withAccessState(data)),
       total,
@@ -646,7 +690,10 @@ export class StaffService {
         fullName: user.full_name ?? null,
         email: user.email ?? null,
         role: user.userRoles?.[0]?.role
-          ? { slug: user.userRoles[0].role.slug, name: user.userRoles[0].role.name }
+          ? {
+              slug: user.userRoles[0].role.slug,
+              name: user.userRoles[0].role.name,
+            }
           : null,
       })),
       total,
@@ -791,9 +838,14 @@ export class StaffService {
     }
 
     const userId = profile.user.id;
-    const currentRoles = await this.rolesService.listUserRoles(userId, tenantId);
+    const currentRoles = await this.rolesService.listUserRoles(
+      userId,
+      tenantId,
+    );
     const protectedHeld = currentRoles.find((r) =>
-      ([ROLE.SUPER_ADMIN, ROLE.OWNER] as RoleSlug[]).includes(r.slug as RoleSlug),
+      ([ROLE.SUPER_ADMIN, ROLE.OWNER] as RoleSlug[]).includes(
+        r.slug as RoleSlug,
+      ),
     );
     if (protectedHeld) {
       throw new AppError(ErrorCode.FORBIDDEN, {
@@ -819,7 +871,11 @@ export class StaffService {
     // custom-role path can't take this shortcut: even re-selecting "Other"
     // on the SAME synthesized role may carry a different permission
     // selection that still needs to be written, so it always proceeds.
-    if (!isCustom && currentRoles.length === 1 && currentRoles[0].id === catalogueRole!.id) {
+    if (
+      !isCustom &&
+      currentRoles.length === 1 &&
+      currentRoles[0].id === catalogueRole!.id
+    ) {
       return;
     }
 
@@ -888,7 +944,11 @@ export class StaffService {
               isCustom: true,
               permissionSlugs: customPerms!.map((p) => p.slug),
             }
-          : { slug: assignedRole.slug, name: assignedRole.name, isCustom: false },
+          : {
+              slug: assignedRole.slug,
+              name: assignedRole.name,
+              isCustom: false,
+            },
       });
     }
   }
@@ -1038,14 +1098,13 @@ export class StaffService {
       relations: { user: true },
     });
     if (!profile) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Staff member not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Staff member not found',
+      });
     }
     const userId = profile.user.id;
 
-    if (
-      dto.primaryBranchId &&
-      !dto.branchIds.includes(dto.primaryBranchId)
-    ) {
+    if (dto.primaryBranchId && !dto.branchIds.includes(dto.primaryBranchId)) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: 'primaryBranchId must be one of branchIds',
       });
@@ -1090,7 +1149,9 @@ export class StaffService {
       relations: { user: true },
     });
     if (!profile) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Staff member not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Staff member not found',
+      });
     }
     return this.branchUsers.find({
       where: { user: { id: profile.user.id }, tenant: { id: tenantId } },

@@ -10,7 +10,7 @@ import { NoopCampaignDeliveryProvider } from './noop-campaign-delivery.provider'
  * Real providers are injected via the CAMPAIGN_DELIVERY_PROVIDERS token; if none
  * supports the requested channel, the no-op provider is used. Single seam
  * through which the execution service reaches a provider — keeping delivery
- * loosely coupled and trivially extensible to WhatsApp/SMS/Email/Push/In-App.
+ * loosely coupled and trivially extensible to WhatsApp/Email/Push/In-App.
  */
 @Injectable()
 export class CampaignDeliveryFactory {

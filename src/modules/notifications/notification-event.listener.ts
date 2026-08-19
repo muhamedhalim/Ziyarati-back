@@ -190,7 +190,7 @@ export class NotificationEventListener {
   // dispatch, by design (see `dispatch()` below). The realtime WS push (see
   // HandoverRealtimeListener in ai-realtime module) is the immediate,
   // always-on delivery an online agent actually sees; this is the durable,
-  // configurable, multi-channel (WhatsApp/SMS/Email) notification path for
+  // configurable, multi-channel (WhatsApp/Email) notification path for
   // when they aren't.
 
   @OnEvent(HANDOVER_EVENT.REQUESTED)

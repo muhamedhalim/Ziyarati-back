@@ -18,6 +18,13 @@ export enum BillingCycle {
   CUSTOM = 'CUSTOM',
 }
 
+/** Unit for `SubscriptionPlan.custom_cycle_value` when `billing_cycle` is CUSTOM. */
+export enum CustomCycleUnit {
+  DAY = 'DAY',
+  MONTH = 'MONTH',
+  YEAR = 'YEAR',
+}
+
 export enum SubscriptionStatus {
   TRIAL = 'TRIAL',
   ACTIVE = 'ACTIVE',

@@ -2,7 +2,7 @@
  * Campaign delivery-provider abstraction (strategy pattern).
  *
  * Campaign business logic depends ONLY on this interface — never on WhatsApp/
- * SMS/Email/Push SDKs. Concrete adapters implement `supports()` for their
+ * Email/Push SDKs. Concrete adapters implement `supports()` for their
  * channel and register into the `CAMPAIGN_DELIVERY_PROVIDERS` multi-provider
  * token; the factory resolves the right one at execution time. Adding a real
  * provider later requires NO change to the execution service.

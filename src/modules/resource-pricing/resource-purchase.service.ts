@@ -44,6 +44,9 @@ const CAPACITY_USAGE_TABLE: Record<string, string> = {
   trainingFiles: 'ai_training_files',
 };
 
+/** Capacity items whose "current usage" is a byte sum (`SUM(file_size)`), not a row count. */
+const BYTE_SUM_CAPACITY_KEYS = new Set(['uploadedFiles', 'trainingFiles']);
+
 export interface PurchasePreview {
   itemKey: string;
   kind: string;
@@ -218,9 +221,16 @@ export class ResourcePurchaseService {
    */
   async currentUsage(tenantId: string): Promise<Record<string, number>> {
     const entries = Object.entries(CAPACITY_USAGE_TABLE);
-    const selects = entries.map(
-      ([key, table]) => `(SELECT COUNT(*)::int FROM "${table}" WHERE "tenantId" = $1) AS "${key}"`,
-    );
+    const selects = entries.map(([key, table]) => {
+      // `uploadedFiles`/`trainingFiles` are byte-size caps (Pricing Catalog:
+      // priced per GB), so "current usage" is a sum of bytes, not a row
+      // count — mirrors `storageBytes`'s own (excluded, still-blocked) query
+      // shape.
+      const expr = BYTE_SUM_CAPACITY_KEYS.has(key)
+        ? `(SELECT COALESCE(SUM(file_size), 0)::bigint FROM "${table}" WHERE "tenantId" = $1)`
+        : `(SELECT COUNT(*)::int FROM "${table}" WHERE "tenantId" = $1)`;
+      return `${expr} AS "${key}"`;
+    });
     const [row] = await this.dataSource.query(`SELECT ${selects.join(', ')}`, [tenantId]);
     const out: Record<string, number> = {};
     for (const [key] of entries) out[key] = Number(row?.[key] ?? 0);

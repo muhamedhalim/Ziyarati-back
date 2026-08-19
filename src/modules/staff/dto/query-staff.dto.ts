@@ -40,14 +40,36 @@ export class QueryStaffDto {
   @IsUUID()
   branchId?: string;
 
-  @ApiPropertyOptional({ description: 'Page number (1-based).', example: 1, minimum: 1, default: 1 })
+  @ApiPropertyOptional({
+    description:
+      'Filter to staff whose linked account currently holds this role slug (e.g. `doctor`). Combines with `branchId` as an AND — a staff member must match every filter given.',
+    example: 'doctor',
+    maxLength: 60,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  role?: string;
+
+  @ApiPropertyOptional({
+    description: 'Page number (1-based).',
+    example: 1,
+    minimum: 1,
+    default: 1,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   page: number = 1;
 
-  @ApiPropertyOptional({ description: 'Results per page. Max 100.', example: 20, minimum: 1, maximum: 100, default: 20 })
+  @ApiPropertyOptional({
+    description: 'Results per page. Max 100.',
+    example: 20,
+    minimum: 1,
+    maximum: 100,
+    default: 20,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

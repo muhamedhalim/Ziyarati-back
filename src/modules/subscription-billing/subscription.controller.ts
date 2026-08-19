@@ -56,6 +56,13 @@ const S_PLAN = {
       enum: ['MONTHLY', 'YEARLY', 'CUSTOM'],
       example: 'MONTHLY',
     },
+    custom_cycle_value: { type: 'number', nullable: true, example: null },
+    custom_cycle_unit: {
+      type: 'string',
+      enum: ['DAY', 'MONTH', 'YEAR'],
+      nullable: true,
+      example: null,
+    },
     max_branches: { type: 'number', nullable: true, example: 5 },
     max_users: { type: 'number', nullable: true, example: 25 },
     max_ai_tokens: { type: 'string', nullable: true, example: '1000000' },

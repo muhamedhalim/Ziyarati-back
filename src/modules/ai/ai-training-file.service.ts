@@ -55,24 +55,41 @@ export class AiTrainingFileService {
   ) {}
 
   /**
-   * `max_training_files` — a real plan cap on a deliberate clinic upload.
-   * Shared by both upload entry points (metadata registration and direct
-   * content upload) so neither can bypass it. Scoped to AI_ASSISTANT, so a
-   * tenant on a super-admin AI grant has no plan cap and passes.
+   * `max_training_files` — a real plan cap on a deliberate clinic upload,
+   * denominated in BYTES (Pricing Catalog: "AI training files" is priced per
+   * GB). Shared by both upload entry points (metadata registration and
+   * direct content upload) so neither can bypass it. Scoped to AI_ASSISTANT,
+   * so a tenant on a super-admin AI grant has no plan cap and passes.
    */
-  private async assertTrainingFileQuota(tenantId: string): Promise<void> {
+  private async assertTrainingFileQuota(
+    tenantId: string,
+    incomingSize: number,
+  ): Promise<void> {
     await this.usage.assertResourceWithinLimit(
       tenantId,
       'trainingFiles',
-      await this.files.count({ where: { tenant: { id: tenantId } } }),
+      await this.usedBytes(tenantId),
+      incomingSize,
     );
+  }
+
+  /** Sum of `file_size` across this tenant's training files — mirrors `FileUploadService.usedBytes`. */
+  private async usedBytes(tenantId: string): Promise<number> {
+    const row = await this.files
+      .createQueryBuilder('f')
+      .innerJoin('f.tenant', 't')
+      .where('t.id = :tenantId', { tenantId })
+      .select('COALESCE(SUM(f.file_size), 0)', 'bytes')
+      .getRawOne<{ bytes: string }>();
+    return Number(row?.bytes ?? 0);
   }
 
   async upload(
     tenantId: string,
     dto: UploadTrainingFileDto,
   ): Promise<AiTrainingFile> {
-    await this.assertTrainingFileQuota(tenantId);
+    const size = dto.fileSize ?? 0;
+    await this.assertTrainingFileQuota(tenantId, size);
     if (dto.agentId) await this.assertAgent(tenantId, dto.agentId);
     this.storage.assertKeyBelongsToTenant(dto.fileUrl, tenantId);
     const file = this.files.create({
@@ -81,6 +98,7 @@ export class AiTrainingFileService {
       file_name: dto.fileName,
       file_url: dto.fileUrl,
       file_type: dto.fileType,
+      file_size: size,
       status: TRAINING_FILE_STATUS.PENDING,
     });
     return this.files.save(file);
@@ -98,8 +116,10 @@ export class AiTrainingFileService {
   ): Promise<AiTrainingFile> {
     // Checked here as well as in `upload` below: this path writes the file to
     // private storage FIRST, and a quota refusal after that would leave an
-    // orphaned object nothing references.
-    await this.assertTrainingFileQuota(tenantId);
+    // orphaned object nothing references. `file.size` here is the REAL
+    // multer-reported byte length (unlike `upload()`'s client-supplied
+    // `dto.fileSize` on the metadata-registration path).
+    await this.assertTrainingFileQuota(tenantId, file.size);
     if (agentId) await this.assertAgent(tenantId, agentId);
     const maxBytes = Number(
       this.config.get('AI_TRAINING_FILE_MAX_BYTES', 10 * 1024 * 1024),
@@ -128,6 +148,7 @@ export class AiTrainingFileService {
       fileName: stored.filename,
       fileUrl: stored.storageKey,
       fileType: file.mimetype === 'text/markdown' ? 'MD' : 'TXT',
+      fileSize: file.size,
       agentId,
     });
   }

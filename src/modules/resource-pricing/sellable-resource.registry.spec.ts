@@ -93,9 +93,14 @@ describe('SELLABLE_RESOURCE_REGISTRY', () => {
       }
     });
 
-    it('unitSize is always 1 for capacity items (no bulk unit for count caps)', () => {
+    it('unitSize is 1 for count caps; the three byte-denominated items (storageBytes/uploadedFiles/trainingFiles) are priced per MB (1,048,576 bytes/lot)', () => {
+      const BYTE_DENOMINATED = new Set(['storageBytes', 'uploadedFiles', 'trainingFiles']);
       for (const item of capacity) {
-        expect(item.unitSize).toBe(1);
+        if (BYTE_DENOMINATED.has(item.resourceMetric!)) {
+          expect(item.unitSize).toBe(1_048_576);
+        } else {
+          expect(item.unitSize).toBe(1);
+        }
       }
     });
 
@@ -113,9 +118,11 @@ describe('SELLABLE_RESOURCE_REGISTRY', () => {
       }
     });
 
-    it('storageBytes is the only bigint-backed capacity item', () => {
+    it('the three byte-denominated items are bigint-backed; every count-based item is not', () => {
       const bigintItems = capacity.filter((r) => r.isBigInt);
-      expect(bigintItems.map((r) => r.resourceMetric)).toEqual(['storageBytes']);
+      expect(bigintItems.map((r) => r.resourceMetric).sort()).toEqual(
+        ['storageBytes', 'trainingFiles', 'uploadedFiles'].sort(),
+      );
     });
   });
 

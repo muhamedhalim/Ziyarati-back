@@ -952,7 +952,7 @@ export class PlatformUsageService {
   /**
    * Maps a metric's authoritative line (from `UsageService.getUnifiedBreakdown`)
    * onto a presentation cell. No limit/usage math happens here — it is all
-   * resolved by the Subscription Module. `sms` (no line) renders as unlimited/0.
+   * resolved by the Subscription Module. A metric with no line renders as unlimited/0.
    */
   private buildMetricCell(
     def: UsageMetricDef,
@@ -997,7 +997,7 @@ export class PlatformUsageService {
     growth30: Record<string, number>,
   ): number | null {
     const s = def.source;
-    if (!s) return null; // sms — no source
+    if (!s) return null; // no source
     if (s.periodColumn) {
       // Only monthly granularity available → period-rate (used so far / days elapsed).
       const used = line?.used ?? 0;
@@ -1298,7 +1298,7 @@ export class PlatformUsageService {
     const spec: Record<string, { expr: string; measure?: string }> = {
       apiCalls: { expr: 'status_code' },
       storageBytes: { expr: 'file_type', measure: 'COALESCE(SUM(file_size),0)' },
-      uploadedFiles: { expr: 'file_type' },
+      uploadedFiles: { expr: 'file_type', measure: 'COALESCE(SUM(file_size),0)' },
       payments: { expr: 'status' },
       appointments: { expr: 'status' },
       emails: { expr: 'status' },

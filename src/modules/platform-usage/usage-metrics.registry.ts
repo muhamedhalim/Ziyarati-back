@@ -123,8 +123,8 @@ export const USAGE_METRICS: Record<string, UsageMetricDef> = {
     source: { table: 'file_uploads', tenantColumn: T, measure: 'COALESCE(SUM(file_size),0)', timeColumn: 'created_at' },
   },
   uploadedFiles: {
-    key: 'uploadedFiles', label: 'Uploaded Files', kind: 'count', unit: 'count', drilldown: true, countable: true,
-    source: { table: 'file_uploads', tenantColumn: T, measure: 'COUNT(*)', timeColumn: 'created_at' },
+    key: 'uploadedFiles', label: 'Uploaded Files', kind: 'count', unit: 'bytes', drilldown: true, countable: true,
+    source: { table: 'file_uploads', tenantColumn: T, measure: 'COALESCE(SUM(file_size),0)', timeColumn: 'created_at' },
   },
   apiCalls: {
     key: 'apiCalls', label: 'API Calls', kind: 'count', unit: 'count', drilldown: true, countable: true,
@@ -152,16 +152,8 @@ export const USAGE_METRICS: Record<string, UsageMetricDef> = {
     source: { table: 'ai_knowledge_bases', tenantColumn: T, measure: 'COUNT(*)', timeColumn: 'created_at' },
   },
   trainingFiles: {
-    key: 'trainingFiles', label: 'Training Files', kind: 'count', unit: 'count', drilldown: true, countable: true,
-    source: { table: 'ai_training_files', tenantColumn: T, measure: 'COUNT(*)', timeColumn: 'created_at' },
-  },
-
-  // ── Informational only (no data source / not integrated) ─────────────────
-  // SMS has no provider integrated and no table to count, so it is surfaced as
-  // informational (used = 0) rather than faked. Queue jobs are platform-global
-  // (BullMQ, not per-tenant) and appear in the platform summary, not this grid.
-  sms: {
-    key: 'sms', label: 'SMS', kind: 'activity', unit: 'count', drilldown: false, countable: false,
+    key: 'trainingFiles', label: 'Training Files', kind: 'count', unit: 'bytes', drilldown: true, countable: true,
+    source: { table: 'ai_training_files', tenantColumn: T, measure: 'COALESCE(SUM(file_size),0)', timeColumn: 'created_at' },
   },
 };
 
@@ -184,7 +176,6 @@ export const USAGE_METRIC_ORDER: string[] = [
   'payments',
   'transactions',
   'emails',
-  'sms',
   'knowledgeBaseFiles',
   'trainingFiles',
 ];

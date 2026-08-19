@@ -222,7 +222,7 @@ export class PlatformSupportClinicController {
   @ApiOperation({
     summary: 'Notification delivery history',
     description:
-      'Paginated, date-bounded history from notification_logs across WhatsApp / SMS / push / ' +
+      'Paginated, date-bounded history from notification_logs across WhatsApp / push / ' +
       'in-app. SEND_UNCERTAIN is surfaced verbatim rather than folded into FAILED — it means a ' +
       'worker crashed after the send attempt, so delivery is genuinely unknown. Recipients appear ' +
       'as opaque ids only.',

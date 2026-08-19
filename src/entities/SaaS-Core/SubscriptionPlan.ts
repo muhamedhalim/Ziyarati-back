@@ -1,5 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
-import { BillingCycle } from '../enums';
+import { BillingCycle, CustomCycleUnit } from '../enums';
 
 @Entity('subscription_plans')
 export class SubscriptionPlan {
@@ -14,6 +14,17 @@ export class SubscriptionPlan {
 
   @Column({ type: 'enum', enum: BillingCycle })
   billing_cycle!: BillingCycle;
+
+  /**
+   * Cycle length when `billing_cycle` is CUSTOM, e.g. `3` + MONTH = "every 3
+   * months". Null for MONTHLY/YEARLY plans. Frozen alongside `billing_cycle`
+   * once a plan has active subscribers — see `PlanAdminService.toTermPatch`.
+   */
+  @Column({ type: 'int', nullable: true })
+  custom_cycle_value?: number | null;
+
+  @Column({ type: 'enum', enum: CustomCycleUnit, nullable: true })
+  custom_cycle_unit?: CustomCycleUnit | null;
 
   @Column({ nullable: true })
   max_branches?: number;
@@ -52,8 +63,8 @@ export class SubscriptionPlan {
   @Column({ type: 'bigint', nullable: true })
   max_storage_bytes?: string;
 
-  @Column({ nullable: true })
-  max_uploaded_files?: number;
+  @Column({ type: 'bigint', nullable: true })
+  max_uploaded_files?: string;
 
   @Column({ type: 'bigint', nullable: true })
   max_api_calls?: string;
@@ -73,8 +84,8 @@ export class SubscriptionPlan {
   @Column({ nullable: true })
   max_knowledge_base_files?: number;
 
-  @Column({ nullable: true })
-  max_training_files?: number;
+  @Column({ type: 'bigint', nullable: true })
+  max_training_files?: string;
 
   /**
    * Declares a NULL limit column as intentionally unlimited (Phase 0.2,

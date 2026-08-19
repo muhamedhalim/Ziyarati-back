@@ -301,7 +301,6 @@ export class MonitoringService {
       { name: 'Payment Gateway (Moyasar)', status: has('MOYASAR_SECRET_KEY') ? 'configured' : 'not_configured', detail: 'Card charges + webhooks' },
       { name: 'Object Storage (R2)', status: this.storage.isConfigured() ? 'configured' : 'not_configured', detail: 'Verification documents' },
       { name: 'Email Provider (Resend)', status: has('RESEND_API_KEY') ? 'configured' : 'not_configured', detail: 'Transactional email via EmailService' },
-      { name: 'SMS Provider', status: 'not_configured', detail: 'Not integrated' },
     ];
   }
 

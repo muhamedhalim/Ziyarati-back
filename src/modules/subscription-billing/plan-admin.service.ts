@@ -4,7 +4,7 @@ import { IsNull, Not, Repository } from 'typeorm';
 
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
-import { SubscriptionStatus } from '../../entities/enums';
+import { BillingCycle, SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import {
@@ -48,14 +48,14 @@ export const PLAN_LIMIT_FIELDS = [
   { dto: 'maxCrmContacts', column: 'max_crm_contacts' },
   { dto: 'maxConversations', column: 'max_conversations' },
   { dto: 'maxStorageBytes', column: 'max_storage_bytes', bigint: true },
-  { dto: 'maxUploadedFiles', column: 'max_uploaded_files' },
+  { dto: 'maxUploadedFiles', column: 'max_uploaded_files', bigint: true },
   { dto: 'maxApiCalls', column: 'max_api_calls', bigint: true },
   { dto: 'maxEmails', column: 'max_emails' },
   { dto: 'maxInvoices', column: 'max_invoices' },
   { dto: 'maxPayments', column: 'max_payments' },
   { dto: 'maxTransactions', column: 'max_transactions' },
   { dto: 'maxKnowledgeBaseFiles', column: 'max_knowledge_base_files' },
-  { dto: 'maxTrainingFiles', column: 'max_training_files' },
+  { dto: 'maxTrainingFiles', column: 'max_training_files', bigint: true },
 ] as const satisfies ReadonlyArray<{
   dto: NumericPlanDtoKey;
   column: keyof SubscriptionPlan;
@@ -155,11 +155,14 @@ export class PlanAdminService {
     for (const field of PLAN_LIMIT_FIELDS) {
       limits[field.column] = limitValue(isBigIntColumn(field), dto[field.dto]);
     }
+    const isCustomCycle = dto.billingCycle === BillingCycle.CUSTOM;
     const result = await this.plans.save(
       this.plans.create({
         name: dto.name,
         price: dto.price.toFixed(2),
         billing_cycle: dto.billingCycle,
+        custom_cycle_value: isCustomCycle ? dto.customCycleValue : null,
+        custom_cycle_unit: isCustomCycle ? dto.customCycleUnit : null,
         ...limits,
         limit_declarations: toColumnDeclarations(dto.limitDeclarations) ?? null,
         is_active: dto.isActive ?? true,
@@ -225,7 +228,17 @@ export class PlanAdminService {
     }
     // Term edits are only reachable here when the plan is NOT in use.
     if (dto.price !== undefined) plan.price = dto.price.toFixed(2);
-    if (dto.billingCycle !== undefined) plan.billing_cycle = dto.billingCycle;
+    if (dto.billingCycle !== undefined) {
+      plan.billing_cycle = dto.billingCycle;
+      // Switching away from CUSTOM drops any stale duration — it's only
+      // meaningful for BillingCycle.CUSTOM.
+      if (dto.billingCycle !== BillingCycle.CUSTOM) {
+        plan.custom_cycle_value = null;
+        plan.custom_cycle_unit = null;
+      }
+    }
+    if (dto.customCycleValue !== undefined) plan.custom_cycle_value = dto.customCycleValue;
+    if (dto.customCycleUnit !== undefined) plan.custom_cycle_unit = dto.customCycleUnit;
     for (const field of PLAN_LIMIT_FIELDS) {
       const raw = dto[field.dto];
       if (raw === undefined) continue;
@@ -303,6 +316,8 @@ export class PlanAdminService {
       name: plan.name,
       price: plan.price,
       billingCycle: plan.billing_cycle,
+      customCycleValue: plan.custom_cycle_value ?? null,
+      customCycleUnit: plan.custom_cycle_unit ?? null,
       ...limits,
       limitDeclarations: plan.limit_declarations ?? null,
       isActive: plan.is_active,
@@ -327,6 +342,8 @@ export class PlanAdminService {
     return {
       price: dto.price != null ? dto.price.toFixed(2) : undefined,
       billing_cycle: dto.billingCycle,
+      custom_cycle_value: dto.customCycleValue,
+      custom_cycle_unit: dto.customCycleUnit,
       ...limits,
       is_custom: dto.isCustom,
     };
