@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { AiChatMessage, AiToolDefinition } from '../providers/ai-provider.interface';
 import { RetrievedChunk } from '../ai-rag.service';
+import { AiModelDefinition } from '../routing/ai-model-registry';
 
 export interface PromptBudgetTelemetry {
   estimatedInputTokens: number;
@@ -20,6 +21,13 @@ export interface PromptBuildInput {
   ragChunks: RetrievedChunk[];
   memories?: Array<{ type?: string; content: string; score?: number }>;
   tools?: AiToolDefinition[];
+  /**
+   * The model this prompt will be sent to. Supplies its real context window in
+   * place of the single global `AI_MODEL_CONTEXT_WINDOW_TOKENS` figure. Omitted
+   * (or an unregistered model) ⇒ the configured global fallback, i.e. exactly
+   * the behaviour that existed before per-model budgeting.
+   */
+  model?: AiModelDefinition;
 }
 
 @Injectable()
@@ -82,8 +90,7 @@ export class AiPromptBudgetService {
     telemetry.truncatedHistoryTokens = Math.max(0, this.estimateMessages(input.history) - this.estimateMessages(history));
     messages.push(...history);
 
-    const hardInputLimit = Math.max(1, Math.min(this.maxInputTokens, this.contextWindow - this.maxOutputTokens)
-      - this.estimate(JSON.stringify(tools)));
+    const hardInputLimit = this.inputLimit(tools, input.model);
     while (messages.length > 1 && this.estimateMessages(messages) > hardInputLimit) {
       const removable = messages.findIndex((m) => m.role !== 'system');
       if (removable < 0) break;
@@ -94,9 +101,12 @@ export class AiPromptBudgetService {
     return { messages, tools, telemetry };
   }
 
-  fitRuntime(messages: AiChatMessage[], tools: AiToolDefinition[]): { messages: AiChatMessage[]; truncatedTokens: number } {
-    const limit = Math.max(1, Math.min(this.maxInputTokens, this.contextWindow - this.maxOutputTokens)
-      - this.estimate(JSON.stringify(tools)));
+  fitRuntime(
+    messages: AiChatMessage[],
+    tools: AiToolDefinition[],
+    model?: AiModelDefinition,
+  ): { messages: AiChatMessage[]; truncatedTokens: number } {
+    const limit = this.inputLimit(tools, model);
     if (this.estimateMessages(messages) <= limit) return { messages, truncatedTokens: 0 };
     const system = messages.filter((m) => m.role === 'system');
     const rest = messages.filter((m) => m.role !== 'system');
@@ -176,6 +186,28 @@ export class AiPromptBudgetService {
       used += cost;
     }
     return kept.flat();
+  }
+
+  /**
+   * The hard input-token ceiling for one provider call: whichever is smaller of
+   * the configured per-call cap and what physically fits in the model's context
+   * once the reserved output allowance and the tool schemas are subtracted.
+   *
+   * `AI_PROMPT_MAX_INPUT_TOKENS` deliberately stays BINDING. Routing to a model
+   * with a far larger context window must not enlarge the prompt — a bigger
+   * window buys headroom (fewer truncations), not more spend per turn. The
+   * model's window only ever makes this limit SMALLER, never larger.
+   */
+  private inputLimit(tools: AiToolDefinition[], model?: AiModelDefinition): number {
+    const window = model?.contextWindowTokens ?? this.contextWindow;
+    const output = model
+      ? Math.min(this.maxOutputTokens, model.maxOutputTokens)
+      : this.maxOutputTokens;
+    return Math.max(
+      1,
+      Math.min(this.maxInputTokens, window - output) -
+        this.estimate(JSON.stringify(tools)),
+    );
   }
 
   private positive(value: unknown, fallback: number): number {

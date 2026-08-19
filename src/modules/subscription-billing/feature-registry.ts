@@ -58,6 +58,19 @@ export enum FeatureKey {
   NOTIFICATIONS = 'notifications',
 
   AI_ASSISTANT = 'ai.assistant',
+  /**
+   * Entitlement to run AI work on the asynchronous OpenAI Batch route (cheaper,
+   * up to a 24h completion window). Separate from AI_ASSISTANT because it is a
+   * processing capability, not an AI capability — a tenant can have full AI and
+   * no batch access, and vice versa is meaningless.
+   */
+  AI_BATCH_PROCESSING = 'ai.batch_processing',
+  /**
+   * Entitlement to have this tenant's AI requests processed in a specific
+   * region (Data Residency). Enforced independently of AI_BATCH_PROCESSING —
+   * the two are orthogonal dimensions and may combine.
+   */
+  AI_DATA_RESIDENCY = 'ai.data_residency',
   AUTOMATIONS = 'automations',
 
   PAYMENTS = 'payments',
@@ -86,6 +99,22 @@ export interface FeatureSpec {
    * ask for help, or the product has no recovery path out of a denial.
    */
   alwaysOn?: boolean;
+  /**
+   * Enforced inside a SERVICE rather than by `@RequireFeature` on a route.
+   *
+   * Some capabilities do not correspond to a surface a caller reaches — they
+   * qualify HOW an already-authorized request is executed. Data residency and
+   * batch processing are decided per request by `AiProcessingPolicyService`,
+   * which every AI transport funnels through; there is no "batch controller" to
+   * annotate, and inventing one would put the toggle further from the code it
+   * governs, not closer.
+   *
+   * This flag is deliberately explicit rather than inferred: the coverage test
+   * treats an unflagged key with no gating route as an orphan (a toggle that
+   * does nothing), and setting this is the author asserting where the
+   * enforcement actually lives. Name that place in the key's own docblock.
+   */
+  serviceEnforced?: boolean;
   visibility?: 'public' | 'internal';
   isDeprecated?: boolean;
   /** The metered quota this capability consumes, when it has one. */
@@ -215,6 +244,35 @@ export const FEATURE_REGISTRY: Record<FeatureKey, FeatureSpec> = {
     defaultEnabled: false,
     usageMetric: USAGE_METRIC.AI_TOKENS,
     dependsOn: [FeatureKey.CONVERSATIONS, FeatureKey.CRM],
+  },
+  [FeatureKey.AI_BATCH_PROCESSING]: {
+    name: 'AI Batch Processing',
+    description:
+      'Run eligible asynchronous AI workloads (bulk embeddings, indexing, reports) on the discounted batch route.',
+    category: 'AI',
+    // OFF by default: batch defers a result by up to 24h, so it is opt-in per
+    // tenant rather than something a clinic silently inherits.
+    defaultEnabled: false,
+    // Enforced in AiProcessingPolicyService.resolveExecutionMode — an
+    // un-entitled tenant degrades to STANDARD rather than being refused.
+    serviceEnforced: true,
+    dependsOn: [FeatureKey.AI_ASSISTANT],
+  },
+  [FeatureKey.AI_DATA_RESIDENCY]: {
+    name: 'AI Data Residency',
+    description:
+      'Process this clinic’s AI requests through a configured regional deployment instead of the global one.',
+    category: 'AI',
+    // OFF by default. Granting this alone does not enable residency — the
+    // platform flag AI_DATA_RESIDENCY_ENABLED and a configured
+    // TenantAiDeployment row are both still required, and a required-but-
+    // unavailable deployment fails closed rather than falling back.
+    defaultEnabled: false,
+    // Enforced in AiProcessingPolicyService.resolveResidency — a tenant that
+    // requires a region but lacks this entitlement is REFUSED, never quietly
+    // processed globally.
+    serviceEnforced: true,
+    dependsOn: [FeatureKey.AI_ASSISTANT],
   },
   [FeatureKey.AUTOMATIONS]: {
     name: 'Automations',

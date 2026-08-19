@@ -28,6 +28,7 @@ import {
 } from '@nestjs/swagger';
 
 import { AiAgentService } from './ai-agent.service';
+import { AI_MODEL_IDS } from './routing/ai-model-registry';
 import { CreateAiAgentDto } from './dto/create-ai-agent.dto';
 import { UpdateAiAgentDto } from './dto/update-ai-agent.dto';
 import { AiAgentFilterDto } from './dto/ai-agent-filter.dto';
@@ -139,6 +140,38 @@ export class AiAgentController {
   @RequirePermissions(PERMISSION.AI_AGENTS_READ)
   findAll(@Query() filter: AiAgentFilterDto) {
     return this.agents.findAll(this.ctx.requireTenantId(), filter);
+  }
+
+  @ApiOperation({
+    summary: 'List selectable AI models',
+    description: `**Protected — \`ai.agents.read\`. Clinic active.** The platform-registered model ids accepted by \`model\` on create/update. Exposed so the dashboard renders a select instead of a free-text box — the allow-list stays server-owned (\`AI_MODEL_REGISTRY\`) and is never duplicated client-side.`,
+  })
+  @ApiOkResponse({
+    description: 'Registered model ids.',
+    schema: {
+      type: 'object',
+      properties: {
+        data: {
+          type: 'array',
+          items: { type: 'string', example: 'gpt-4.1-mini' },
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `ai.agents.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  // Declared BEFORE `@Get(':id')` — Nest matches routes in declaration order, so
+  // a later declaration would be swallowed by the `:id` param route.
+  @Get('models')
+  @RequirePermissions(PERMISSION.AI_AGENTS_READ)
+  listModels(): { data: readonly string[] } {
+    return { data: AI_MODEL_IDS };
   }
 
   @ApiOperation({

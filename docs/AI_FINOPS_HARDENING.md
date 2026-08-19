@@ -83,12 +83,17 @@ AI_ECONOMY_MODEL=gpt-4.1-mini
 AI_POWERFUL_MODEL=gpt-4o
 AI_POWERFUL_FEATURES=
 AI_POWERFUL_ROUTES=
+AI_MODEL_ROUTING_STRICT=true
 AI_EMBEDDING_CACHE_ENABLED=true
 AI_EMBEDDING_QUERY_CACHE_TTL_SECONDS=86400
 AI_EMBEDDING_CONTENT_CACHE_TTL_SECONDS=2592000
-AI_EMBEDDING_VERSION=v1
+AI_EMBEDDING_VERSION=v2
 AI_TRAINING_FILE_MAX_BYTES=10485760
 ```
+
+`AI_EMBEDDING_VERSION` defaults to `v2`, not `v1`: the cached VALUE encoding changed from a JSON float array to a base64 Float32 buffer, so a `v1` key must never be read back as `v2`. An operator who explicitly set the variable keeps their value; only the default moved (one-time cache re-warm on upgrade).
+
+`AI_ECONOMY_MODEL`, `AI_POWERFUL_MODEL`, and the platform setting `ai.default_model` are constrained to ids in `src/modules/ai/routing/ai-model-registry.ts`; an unregistered value is a boot-time (or 400) error rather than a first-turn surprise. `AI_MODEL_ROUTING_STRICT=true` additionally makes the router ignore an unregistered model already persisted on an `ai_agents` row, falling back to the tier default and logging once.
 
 `OPENAI_API_KEY` remains the existing project key. No replacement key is needed. Live provider verification and semantic quality evaluation are pending account credits.
 

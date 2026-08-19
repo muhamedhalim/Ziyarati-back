@@ -71,3 +71,70 @@ describe('AiPromptBudgetService', () => {
     expect(result.telemetry.truncatedToolSchemaTokens).toBe(0);
   });
 });
+
+/**
+ * Per-model context budgeting. The point of these is the ASYMMETRY: a model's
+ * context window may only ever make the input ceiling SMALLER. Routing to a
+ * 1M-token model must not enlarge the prompt, because a bigger prompt is a
+ * bigger bill — the larger window buys fewer truncations, not more spend.
+ */
+describe('AiPromptBudgetService — per-model context window', () => {
+  const budget = new AiPromptBudgetService(
+    new ConfigService({
+      AI_PROMPT_MAX_INPUT_TOKENS: 12_000,
+      AI_PROMPT_MAX_OUTPUT_TOKENS: 800,
+      AI_MODEL_CONTEXT_WINDOW_TOKENS: 16_384,
+      AI_PROMPT_HISTORY_TOKENS: 1_000_000,
+    }),
+  );
+
+  const bigModel = {
+    id: 'big', provider: 'openai' as const, tier: 'ECONOMY' as const, aliases: [],
+    contextWindowTokens: 1_047_576, maxOutputTokens: 32_768,
+    supportsTools: true, supportsStreaming: true,
+    supportsStructuredOutputs: true, supportsTemperature: true,
+    supportedExecutionModes: ['STANDARD' as const],
+  };
+  const smallModel = { ...bigModel, id: 'small', contextWindowTokens: 4_096, maxOutputTokens: 1_024 };
+
+  /** A history far larger than any ceiling under test. */
+  const hugeHistory = (): AiChatMessage[] =>
+    Array.from({ length: 400 }, (_, i) => ({
+      role: 'user' as const,
+      content: `turn ${i} ${'x'.repeat(400)}`,
+    }));
+
+  it('does NOT raise the input ceiling for a model with a huge context window', () => {
+    const withBig = budget.fitRuntime(hugeHistory(), [], bigModel);
+    const withoutModel = budget.fitRuntime(hugeHistory(), [], undefined);
+    // AI_PROMPT_MAX_INPUT_TOKENS stays binding in both cases.
+    expect(budget.estimateMessages(withBig.messages)).toBeLessThanOrEqual(12_000);
+    expect(budget.estimateMessages(withBig.messages)).toBe(
+      budget.estimateMessages(withoutModel.messages),
+    );
+  });
+
+  it('DOES lower the input ceiling for a model whose window is smaller than the cap', () => {
+    const fitted = budget.fitRuntime(hugeHistory(), [], smallModel);
+    // 4096 window - 800 reserved output = 3296, well under the 12k config cap.
+    expect(budget.estimateMessages(fitted.messages)).toBeLessThanOrEqual(3_296);
+    expect(fitted.truncatedTokens).toBeGreaterThan(0);
+  });
+
+  it('reserves no more output than the model itself can emit', () => {
+    const tiny = { ...smallModel, contextWindowTokens: 4_096, maxOutputTokens: 128 };
+    const fitted = budget.fitRuntime(hugeHistory(), [], tiny);
+    // min(configured 800, model 128) = 128 reserved ⇒ 3968 available.
+    expect(budget.estimateMessages(fitted.messages)).toBeLessThanOrEqual(3_968);
+  });
+
+  it('build() applies the same per-model ceiling as fitRuntime()', () => {
+    const built = budget.build({ history: hugeHistory(), ragChunks: [], model: smallModel });
+    expect(budget.estimateMessages(built.messages)).toBeLessThanOrEqual(3_296);
+  });
+
+  it('falls back to the configured global window when no model is supplied', () => {
+    const built = budget.build({ history: hugeHistory(), ragChunks: [] });
+    expect(budget.estimateMessages(built.messages)).toBeLessThanOrEqual(12_000);
+  });
+});
