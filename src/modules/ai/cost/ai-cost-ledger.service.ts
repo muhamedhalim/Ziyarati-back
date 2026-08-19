@@ -25,6 +25,13 @@ export interface AiCostRecordInput {
   batchJobId?: string | null;
   inputTokens?: number;
   cachedInputTokens?: number;
+  /**
+   * Prompt tokens WRITTEN into the provider's cache. Distinct from
+   * `cachedInputTokens`, which is the discounted READ. Only models that bill
+   * cache writes above the input rate (GPT-5.6 = 1.25x) report a non-zero value;
+   * stored regardless so a rate change can be reconciled against history.
+   */
+  cacheWriteTokens?: number;
   outputTokens?: number;
   embeddingTokens?: number;
   toolLoopIndex?: number;
@@ -58,6 +65,7 @@ export class AiCostLedgerService {
     provider = 'openai',
     executionMode: AiExecutionMode = AI_EXECUTION_MODE.STANDARD,
     residencyRequired = false,
+    cacheWriteTokens = 0,
   ) {
     return this.prices.quoteChat(
       provider,
@@ -67,6 +75,7 @@ export class AiCostLedgerService {
       cached,
       executionMode,
       residencyRequired,
+      cacheWriteTokens,
     );
   }
 
@@ -139,8 +148,9 @@ export class AiCostLedgerService {
              pricing_status, price_catalog_version, price_source, price_effective_at,
              input_price_microusd_per_million, cached_input_price_microusd_per_million,
              output_price_microusd_per_million, embedding_price_microusd_per_million,
-             cost_microusd, execution_mode, region, batch_job_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+             cost_microusd, execution_mode, region, batch_job_id,
+             cache_write_tokens, cache_write_price_microusd_per_million)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
            ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
            RETURNING id`,
           [
@@ -156,6 +166,8 @@ export class AiCostLedgerService {
             input.quote.outputMicrousdPerMillion ?? null,
             input.quote.embeddingMicrousdPerMillion ?? null,
             cost?.toString() ?? null, mode, input.region ?? null, input.batchJobId ?? null,
+            input.cacheWriteTokens ?? 0,
+            input.quote.cacheWriteMicrousdPerMillion ?? null,
           ],
         );
         if (!rows[0]?.id) return { inserted: false, costMicrousd: cost };

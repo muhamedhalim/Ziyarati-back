@@ -38,6 +38,20 @@ export interface AiCompletionRequest {
   tenantId: string;
   model?: string;
   temperature?: number;
+  /**
+   * Model CAPABILITIES the caller resolved from `AI_MODEL_REGISTRY`, passed as
+   * two plain facts rather than the registry object itself so this port stays
+   * provider-agnostic (an Anthropic or Azure adapter has the same two questions
+   * and no business importing an OpenAI-shaped routing type).
+   *
+   * `supportsTemperature: false` means the provider MUST omit `temperature`
+   * entirely — the GPT-5.x family rejects any non-default value and 400s the
+   * request. Undefined ⇒ assume supported, which is the behaviour every model
+   * had before this field existed.
+   */
+  supportsTemperature?: boolean;
+  /** Sent as `reasoning_effort` when the resolved model is a reasoning model. */
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
   /** Fully-assembled message list (system + retrieved context + history + user). */
   messages: AiChatMessage[];
   /** Tools the model may call. When present the provider enables tool calling. */
@@ -56,6 +70,13 @@ export interface AiCompletionResult {
   promptTokens: number;
   completionTokens: number;
   cachedPromptTokens?: number;
+  /**
+   * Prompt tokens the provider WROTE into its cache this turn, for models that
+   * bill cache writes above the uncached input rate (GPT-5.6 = 1.25x). Zero or
+   * undefined for every model that does not — including all of GPT-4.x — in
+   * which case nothing extra is billed.
+   */
+  cacheWriteTokens?: number;
   providerAttempts?: number;
   providerRequestId?: string;
   /** Tool calls the model requested this turn (empty/undefined → plain answer). */
@@ -76,7 +97,7 @@ export interface AiCompletionChunk {
   /** Present on the terminal chunk when the model requested tool calls. */
   toolCalls?: AiToolCall[];
   /** Present on the terminal chunk when the provider reports real token usage. */
-  usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; providerAttempts?: number };
+  usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; cacheWriteTokens?: number; providerAttempts?: number };
   /** Present on the terminal chunk (the resolved model id). */
   model?: string;
 }

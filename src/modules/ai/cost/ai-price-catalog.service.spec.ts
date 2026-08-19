@@ -124,6 +124,9 @@ describe('AiPriceCatalogService — processing-mode pricing', () => {
   it('prices the newly registered models', () => {
     expect(catalog().quoteChat('openai', 'gpt-4o-mini', MILLION, 0).costMicrousd).toBe(150_000n);
     expect(catalog().quoteChat('openai', 'gpt-4.1', MILLION, 0).costMicrousd).toBe(2_000_000n);
+    // Catalog-only (not in the routing registry): still priced, so a stored or
+    // provider-echoed id lands as PRICED rather than UNPRICED.
+    expect(catalog().quoteChat('openai', 'gpt-4.1-nano', MILLION, 0).costMicrousd).toBe(100_000n);
   });
 
   it('keeps every cost in exact integer micro-USD (bigint), never a float', () => {
@@ -152,5 +155,98 @@ describe('AiPriceCatalogService — processing-mode pricing', () => {
     );
     const implicit = catalog().quoteChat('openai', 'gpt-4o', 1_000, 500, 400);
     expect(implicit.costMicrousd).toBe(explicit.costMicrousd);
+  });
+});
+
+/**
+ * Two things arrive together with the GPT-5.6 family and nothing before it: a
+ * residency uplift that is actually non-zero, and a cache-WRITE rate above the
+ * uncached input rate. Both under-bill silently if unhandled — there is no error
+ * to notice, only a number that is quietly too small.
+ */
+describe('AiPriceCatalogService — cache writes and the residency uplift', () => {
+  const catalog = () => new AiPriceCatalogService(new ConfigService());
+  const MILLION = 1_000_000;
+
+  it('charges nothing extra for cache writes on a model that does not bill them', () => {
+    // Every GPT-4.x model: cache-write tokens are already inside inputTokens at
+    // the uncached rate. Billing them again would double-charge.
+    const without = catalog().quoteChat('openai', 'gpt-4o', MILLION, 0);
+    const with_ = catalog().quoteChat(
+      'openai', 'gpt-4o', MILLION, 0, 0, AI_EXECUTION_MODE.STANDARD, false, MILLION,
+    );
+    expect(with_.costMicrousd).toBe(without.costMicrousd);
+    expect(with_.cacheWriteMicrousdPerMillion).toBeUndefined();
+  });
+
+  it('charges only the DIFFERENCE above the input rate, never the full rate again', () => {
+    // gpt-5.6-luna: input 200,000 µ$/M, cache write 250,000 µ$/M.
+    // 1M input of which 1M is a cache write ⇒ 200,000 + (250,000 − 200,000).
+    const quote = catalog().quoteChat(
+      'openai', 'gpt-5.6-luna', MILLION, 0, 0, AI_EXECUTION_MODE.STANDARD, false, MILLION,
+    );
+    expect(quote.costMicrousd).toBe(250_000n);
+    // Not 200,000 + 250,000 = 450,000: those tokens are counted once already.
+    expect(quote.costMicrousd).not.toBe(450_000n);
+    expect(quote.cacheWriteMicrousdPerMillion).toBe('250000');
+  });
+
+  it('never bills more cache-write tokens than there were uncached tokens', () => {
+    const quote = catalog().quoteChat(
+      'openai', 'gpt-5.6-luna', MILLION, 0, MILLION, AI_EXECUTION_MODE.STANDARD, false, MILLION,
+    );
+    // Everything was a cache READ, so there is nothing left that could have been
+    // a cache WRITE. Charging one anyway would invent spend.
+    expect(quote.costMicrousd).toBe(20_000n);
+  });
+
+  it('applies the cache-write rate of the SELECTED mode, not the standard one', () => {
+    const batch = catalog().quoteChat(
+      'openai', 'gpt-5.6-luna', MILLION, 0, 0, AI_EXECUTION_MODE.BATCH, false, MILLION,
+    );
+    // Batch: input 100,000, cache write 125,000 ⇒ 100,000 + 25,000.
+    expect(batch.costMicrousd).toBe(125_000n);
+    expect(batch.cacheWriteMicrousdPerMillion).toBe('125000');
+  });
+
+  it('is the first family where the residency uplift is genuinely +10%', () => {
+    const global = catalog().quoteChat('openai', 'gpt-5.6-luna', MILLION, MILLION);
+    const regional = catalog().quoteChat(
+      'openai', 'gpt-5.6-luna', MILLION, MILLION, 0, AI_EXECUTION_MODE.STANDARD, true,
+    );
+    // 200,000 + 1,200,000 = 1,400,000 ⇒ +10% = 1,540,000, in exact integers.
+    expect(global.costMicrousd).toBe(1_400_000n);
+    expect(regional.costMicrousd).toBe(1_540_000n);
+    expect((regional.costMicrousd as bigint) * 10n).toBe(
+      (global.costMicrousd as bigint) * 11n,
+    );
+  });
+
+  it('still applies NO uplift to the pre-2026-03-05 models, as published', () => {
+    for (const model of ['gpt-4o', 'gpt-4.1-mini', 'gpt-4.1']) {
+      const global = catalog().quoteChat('openai', model, MILLION, MILLION);
+      const regional = catalog().quoteChat(
+        'openai', model, MILLION, MILLION, 0, AI_EXECUTION_MODE.STANDARD, true,
+      );
+      expect(regional.costMicrousd).toBe(global.costMicrousd);
+    }
+  });
+
+  it('combines batch, residency and cache writes without a single float', () => {
+    const quote = catalog().quoteChat(
+      'openai', 'gpt-5.6-terra', MILLION, MILLION, 0, AI_EXECUTION_MODE.BATCH, true, MILLION,
+    );
+    // batch+residency: input 1,100,000, output 6,600,000, cache write 1,375,000
+    // ⇒ 1,100,000 + 6,600,000 + (1,375,000 − 1,100,000).
+    expect(quote.costMicrousd).toBe(7_975_000n);
+    expect(typeof quote.costMicrousd).toBe('bigint');
+  });
+
+  it('records which cache-write rate was applied, so a row stays self-describing', () => {
+    const regional = catalog().quoteChat(
+      'openai', 'gpt-5.6-luna', 1_000, 1_000, 0, AI_EXECUTION_MODE.STANDARD, true, 500,
+    );
+    expect(regional.cacheWriteMicrousdPerMillion).toBe('275000');
+    expect(regional.inputMicrousdPerMillion).toBe('220000');
   });
 });

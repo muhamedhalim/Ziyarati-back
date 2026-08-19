@@ -49,7 +49,7 @@ PDF/DOCX remain accepted as legacy metadata types but fail with `UNSUPPORTED_EXT
 ## Deployment
 
 1. Back up PostgreSQL.
-2. Deploy/run migration `1730003800000-AiFinopsHardening` before API/worker code.
+2. Deploy/run migrations before API/worker code — `1730003800000-AiFinopsHardening`, then `1730054000000-AiExecutionMetricProcessingMode` (processing-mode/residency telemetry) and `1730055000000-AiCostEntryCacheWrite` (cache-write accounting). Both later ones are additive, nullable and backfill nothing.
 3. Deploy API instances, then workers.
 4. Leave `AI_MODEL_ROUTING_ENABLED=false` and rollout `0` initially.
 5. Verify unpriced alerts, prompt truncation, queue failures, and training-file states (the `cost-attribution` route named here previously does not exist — see §Analytics).
@@ -95,6 +95,32 @@ AI_TRAINING_FILE_MAX_BYTES=10485760
 
 `AI_ECONOMY_MODEL`, `AI_POWERFUL_MODEL`, and the platform setting `ai.default_model` are constrained to ids in `src/modules/ai/routing/ai-model-registry.ts`; an unregistered value is a boot-time (or 400) error rather than a first-turn surprise. `AI_MODEL_ROUTING_STRICT=true` additionally makes the router ignore an unregistered model already persisted on an `ai_agents` row, falling back to the tier default and logging once.
 
+## Model release stages (GA vs PREVIEW)
+
+Every registry entry carries `releaseStage`.
+
+- **GA** — proven against this codebase's exact request shape by the live compatibility suite. Selectable everywhere: the agent DTO, `ai.default_model`, the dashboard model picker (`GET /ai/agents/models`), and the tier env vars.
+- **PREVIEW** — registered, priced and capability-described, but its live compatibility has not been demonstrated here. Excluded from `AI_MODEL_IDS`, so it reaches **none** of the tenant-facing surfaces, and excluded from the router's automatic tier choice and capability substitution.
+
+A PREVIEW model can only be selected by an operator naming it in `AI_ECONOMY_MODEL` / `AI_POWERFUL_MODEL` (validated against `AI_MODEL_IDS_ALL`). That is deliberate: one variable, instantly reversible, and never something a clinic admin can persist onto an agent row.
+
+The GPT-5.6 family (`gpt-5.6-luna`, `gpt-5.6-terra`) ships as PREVIEW. Two facts make it different in kind and both are encoded in the registry rather than discovered at runtime:
+
+1. `supportsTemperature: false`. The family accepts **only** the default temperature and returns 400 for any explicit value. `OpenAiChatProvider` omits the field entirely for such a model — before that, routing here would have failed 100% of requests on the first one.
+2. `cacheWriteMultiplier: 1.25`. Cache **writes** bill above the uncached input rate, and reasoning tokens bill as output. Both are priced; a turn here is not as cheap as its input rate alone suggests.
+
+A third fact was established live and is **not optional**: `/v1/chat/completions` rejects function tools for this family at any `reasoning_effort` except `'none'` — and **omitting the field produces the same 400**, because the model applies a default effort. Since nearly every turn here carries tools, both entries pin `reasoningEffort: 'none'`, and a spec asserts every reasoning-family model does. The plan's Responses-API fallback is therefore not needed for tool calling.
+
+**Promotion procedure.** Run the live compatibility suite against the entry (it exercises PREVIEW models, asserts the temperature omission is load-bearing, and prints the raw `usage` object). Only then flip `releaseStage` to `'GA'` in the same commit that records the evidence. Both GPT-5.6 entries have now passed that gate; they stay PREVIEW because Stage 2 is sequenced after Stage 1 reaches 100%, not because anything is unproven.
+
+## Cache-write accounting
+
+`cached_input_tokens` is the discounted **read** of an already-cached prompt. `cache_write_tokens` is the other half — tokens written **into** the cache — and it is billed above the uncached input rate by models that support it. Only the difference above the input rate is charged, because those tokens are already counted once in `input_tokens`; charging the full 1.25× again would bill 2.25×.
+
+`cache_write_price_microusd_per_million` stores the rate actually applied, exactly as the four existing price columns do, so a later catalog revision cannot retroactively change what a historical turn was billed. When a model declares no cache-write rate the surcharge is zero — every GPT-4.x model bills cache writes at the plain input rate.
+
+The provider reads the token count defensively off the raw `usage` object: the installed SDK's `PromptTokensDetails` type predates cache-write billing, so the field is not reachable through the typed surface. **Confirm the field name from the live compat suite's usage dump before promoting any cache-write-billing model to GA** — a wrong name under-bills silently rather than failing.
+
 `OPENAI_API_KEY` remains the existing project key. No replacement key is needed. Live provider verification and semantic quality evaluation are pending account credits.
 
 Additional prompt-budget defaults are: system 2000, history 5000, RAG 2500, memory 800, tool output 1200, tool schema 6000, maximum input 12000, maximum output 800, and context window 16384 tokens. All are validated environment variables documented in `.env.example`.
@@ -129,6 +155,11 @@ quality is deliberately not scored by another model.
 
 - Mocked/unit/integration regression suite: enabled; it performs no network request.
 - Backend and worker TypeScript build: enabled (the worker is compiled by the Nest build).
-- Live OpenAI Arabic/English benchmark: **pending account credits**.
+- Live OpenAI Arabic/English benchmark: **executed 2026-08-19, 12/12 pass** — `gpt-4.1-mini` measured **−85.2%** vs `gpt-4o` with no language or tool-calling regression. Recorded in `docs/AI_MODEL_LIVE_VERIFICATION.md`. (This line previously read "pending account credits"; the account has credits.)
+- Live provider compatibility suite: **executed 2026-08-19, 38/38 pass** across all six registered models. It found the GPT-5.6 tool-calling constraint and fixed three false alias claims — see the same document. `gpt-5.6-luna` / `gpt-5.6-terra` remain PREVIEW by sequencing, not by lack of evidence.
 - Migration SQL: compiled and covered by structural migration tests; execute against a backed-up staging clone before production. No database migration was run automatically against an unknown local/remote database.
+
+## Reasoning-token watch (GPT-5.x only)
+
+Reasoning tokens bill as **output**. A reasoning model can therefore cost more per turn than its output rate suggests while every rate in the catalog is correct. When first routing traffic to one, compare `completion_tokens` per turn against the incumbent at a small rollout percentage before widening — `ai_execution_metrics` already records it per turn, and `reasoningEffort` is pinned in the registry rather than left implicit precisely so this number does not move on its own.
 - Repository lint: not blocked. `eslint.config.mjs` is active and enforces rules (including `prettier/prettier`) against the TypeScript source — confirmed 2026-08-17 by direct `npx eslint` execution. Any reported findings are the pre-existing CRLF/LF environment mismatch already on record, unrelated to this change (AI-026 remediation, `specs/012-ai-security-remediation/evidence/ai-026-lint-check.md`).
