@@ -57,7 +57,28 @@ export interface AiModelDefinition {
    */
   supportedResidencyRegions?: readonly string[];
 
-  /** Sent as `reasoning_effort` when the model is a reasoning model (Phase 7). */
+  /**
+   * `GA`      — proven against THIS codebase's exact request shape by the live
+   *             compatibility spec. Selectable from every surface.
+   * `PREVIEW` — registered, priced and capability-described, but its live
+   *             compatibility has not been demonstrated here yet.
+   *
+   * A PREVIEW model is deliberately kept out of `AI_MODEL_IDS`, so it never
+   * appears in the clinic model picker, never passes the agent DTO, and is never
+   * chosen as an automatic capability substitute. It can only be selected by an
+   * operator naming it in `AI_ECONOMY_MODEL`/`AI_POWERFUL_MODEL` — a deliberate,
+   * single-variable, instantly reversible act.
+   *
+   * The GPT-5.6 entries below have now PASSED both live gates (compatibility
+   * 38/38 and the AR/EN benchmark; see docs/AI_MODEL_LIVE_VERIFICATION.md). They
+   * stay PREVIEW anyway, because the remaining condition is sequencing, not
+   * evidence: the plan rolls out Stage 2 only after Stage 1 (gpt-4.1-mini)
+   * reaches 100%, and until then no clinic should be able to pick a reasoning
+   * model out of a dropdown. Promotion is this one field.
+   */
+  releaseStage: 'GA' | 'PREVIEW';
+
+  /** Sent as `reasoning_effort` when the model is a reasoning model. */
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
   /**
    * Providers that bill CACHE WRITES above the uncached input rate (GPT-5.6 =
@@ -78,6 +99,8 @@ const BOTH_MODES: readonly AiExecutionMode[] = [
  * TenantAiDeployment's own docblock).
  */
 const US_EU: readonly string[] = ['us', 'eu'];
+/** The GPT-5.6 family's regional-processing list also covers the UAE. */
+const US_EU_AE: readonly string[] = ['us', 'eu', 'ae'];
 
 /**
  * Stage 1 model set: non-reasoning, `temperature`-accepting, Chat Completions
@@ -89,6 +112,7 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   {
     id: 'gpt-4.1-mini',
     provider: 'openai',
+    releaseStage: 'GA',
     tier: 'ECONOMY',
     aliases: ['gpt-4.1-mini-2025-04-14'],
     contextWindowTokens: 1_047_576,
@@ -103,6 +127,7 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   {
     id: 'gpt-4o-mini',
     provider: 'openai',
+    releaseStage: 'GA',
     tier: 'ECONOMY',
     aliases: ['gpt-4o-mini-2024-07-18'],
     contextWindowTokens: 128_000,
@@ -118,6 +143,7 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   {
     id: 'gpt-4.1',
     provider: 'openai',
+    releaseStage: 'GA',
     tier: 'STANDARD',
     aliases: ['gpt-4.1-2025-04-14'],
     contextWindowTokens: 1_047_576,
@@ -132,8 +158,15 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   {
     id: 'gpt-4o',
     provider: 'openai',
+    releaseStage: 'GA',
     tier: 'POWERFUL',
-    aliases: ['gpt-4o-latest', 'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20'],
+    // Verified against GET /v1/models on 2026-08-19. 'gpt-4o-latest' was listed
+    // here and does NOT exist; a snapshot the API can never return is a claim of
+    // coverage this table does not actually have. 'gpt-4o-2024-05-13' is real but
+    // deliberately EXCLUDED — it is priced at $5/$10 per M, double the current
+    // snapshots, so aliasing it here would mis-price it. Absent, it is UNPRICED,
+    // which is the honest outcome.
+    aliases: ['gpt-4o-2024-08-06', 'gpt-4o-2024-11-20'],
     contextWindowTokens: 128_000,
     maxOutputTokens: 16_384,
     supportsTools: true,
@@ -143,10 +176,87 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
     supportedExecutionModes: BOTH_MODES,
     supportedResidencyRegions: US_EU,
   },
+
+  // ── PREVIEW: GPT-5.6 family ────────────────────────────────────────────────
+  // Reasoning models. Two facts make them different in kind from everything
+  // above, and both are encoded here rather than discovered at runtime:
+  //
+  //  1. `supportsTemperature: false` — the family rejects ANY non-default
+  //     temperature. `OpenAiChatProvider` always sent `temperature: 0.2`, so
+  //     before the provider learned to read this flag, routing here would have
+  //     400'd on every single request.
+  //  2. `cacheWriteMultiplier: 1.25` — cache writes bill above the uncached
+  //     input rate, and reasoning tokens bill as output. Both are priced in the
+  //     catalog; a turn here is not cheaper than its `completion_tokens` say.
+  //
+  // `reasoningEffort: 'none'` is NOT a tuning choice — it is mandatory, and it
+  // was established by running the live compat suite (2026-08-19), not assumed:
+  //
+  //     reasoning_effort: 'low'  + tools -> 400 "Function tools with
+  //         reasoning_effort are not supported ... in /v1/chat/completions"
+  //     reasoning_effort OMITTED + tools -> 400, the SAME error (the model
+  //         applies a default effort, so omitting the field does not opt out)
+  //     reasoning_effort: 'none' + tools -> tool call returned, reasoning_tokens 0
+  //
+  // Virtually every turn in this product carries tools, so any other value makes
+  // the model unusable here. The upside is that it also removes the reasoning-
+  // token cost risk entirely: effort 'none' bills zero reasoning tokens.
+  //
+  // The plan's fallback — a Responses-API adapter registered as a second entry
+  // in the existing AI_COMPLETION_PROVIDERS multi-token — is therefore NOT
+  // needed for tool calling. It would only be needed to use a non-zero
+  // reasoning effort, which is a separate, future decision.
+  {
+    id: 'gpt-5.6-luna',
+    provider: 'openai',
+    releaseStage: 'PREVIEW',
+    tier: 'ECONOMY',
+    aliases: [], // verified 2026-08-19: no dated snapshot is published
+    contextWindowTokens: 1_047_576,
+    maxOutputTokens: 32_768,
+    supportsTools: true,
+    supportsStreaming: true,
+    supportsStructuredOutputs: true,
+    supportsTemperature: false,
+    supportedExecutionModes: BOTH_MODES,
+    supportedResidencyRegions: US_EU_AE,
+    reasoningEffort: 'none',
+    cacheWriteMultiplier: 1.25,
+  },
+  {
+    id: 'gpt-5.6-terra',
+    provider: 'openai',
+    releaseStage: 'PREVIEW',
+    tier: 'POWERFUL',
+    aliases: [], // verified 2026-08-19: no dated snapshot is published
+    contextWindowTokens: 1_047_576,
+    maxOutputTokens: 32_768,
+    supportsTools: true,
+    supportsStreaming: true,
+    supportsStructuredOutputs: true,
+    supportsTemperature: false,
+    supportedExecutionModes: BOTH_MODES,
+    supportedResidencyRegions: US_EU_AE,
+    reasoningEffort: 'none',
+    cacheWriteMultiplier: 1.25,
+  },
 ];
 
-/** Canonical ids only — the allow-list enforced by env/DTO/platform-setting validation. */
-export const AI_MODEL_IDS: readonly string[] = AI_MODEL_REGISTRY.map((m) => m.id);
+/** Every registered id, PREVIEW included — the env-variable allow-list. */
+export const AI_MODEL_IDS_ALL: readonly string[] = AI_MODEL_REGISTRY.map((m) => m.id);
+
+/**
+ * GA ids only — the TENANT-facing allow-list: the agent DTO, the platform
+ * `ai.default_model` setting, and the model picker the dashboard renders.
+ *
+ * An operator can still route to a PREVIEW model through `AI_ECONOMY_MODEL` /
+ * `AI_POWERFUL_MODEL` (validated against `AI_MODEL_IDS_ALL`). A clinic admin
+ * cannot pin an agent to one, because a model whose live compatibility has not
+ * been demonstrated must not become a tenant's persisted default.
+ */
+export const AI_MODEL_IDS: readonly string[] = AI_MODEL_REGISTRY.filter(
+  (m) => m.releaseStage === 'GA',
+).map((m) => m.id);
 
 /** Lower-cased id/alias → definition. Built once; the registry is a module constant. */
 const BY_KEY = new Map<string, AiModelDefinition>(
@@ -170,7 +280,18 @@ export function isKnownModel(id?: string | null): boolean {
   return findModel(id) !== undefined;
 }
 
-/** The registered models of a tier, cheapest-first is the registry's own order. */
+/**
+ * GA models only — the pool the router is allowed to pick from AUTOMATICALLY.
+ *
+ * Automatic selection (tier defaults, capability substitution) must never land
+ * on a PREVIEW model: substitution happens precisely when something has already
+ * gone sideways, and answering that by silently promoting an unproven model is
+ * the opposite of the fail-closed behaviour residency exists to guarantee.
+ */
+export const AI_MODEL_REGISTRY_GA: readonly AiModelDefinition[] =
+  AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'GA');
+
+/** The GA models of a tier, cheapest-first is the registry's own order. */
 export function modelsForTier(tier: AiModelDefinition['tier']): AiModelDefinition[] {
-  return AI_MODEL_REGISTRY.filter((m) => m.tier === tier);
+  return AI_MODEL_REGISTRY_GA.filter((m) => m.tier === tier);
 }

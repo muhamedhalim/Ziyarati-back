@@ -515,6 +515,11 @@ export class AiExecutionService {
           tenantId,
           model: routed.model,
           temperature: agent ? Number(agent.temperature) : undefined,
+          // Capabilities travel WITH the request: a reasoning model rejects an
+          // explicit temperature outright, so the agent's configured value must
+          // be dropped by the provider rather than sent and 400'd.
+          supportsTemperature: modelDefinition?.supportsTemperature,
+          reasoningEffort: modelDefinition?.reasoningEffort,
           messages,
           tools,
           maxOutputTokens: this.budgets.maxOutputTokens,
@@ -1403,6 +1408,7 @@ export class AiExecutionService {
                 promptTokens: number;
                 completionTokens: number;
                 cachedPromptTokens?: number;
+                cacheWriteTokens?: number;
                 providerAttempts?: number;
               }
             | undefined;
@@ -1418,6 +1424,8 @@ export class AiExecutionService {
             tenantId,
             model,
             temperature,
+            supportsTemperature: modelDefinition?.supportsTemperature,
+            reasoningEffort: modelDefinition?.reasoningEffort,
             messages,
             tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
@@ -1465,6 +1473,11 @@ export class AiExecutionService {
                 promptTokens: turnUsage.promptTokens,
                 completionTokens: turnUsage.completionTokens,
                 cachedPromptTokens: turnUsage.cachedPromptTokens,
+                // Streaming is the DOMINANT chat path here (dashboard WS,
+                // WhatsApp, guest widget all stream), so omitting this would
+                // under-bill cache writes almost everywhere while the
+                // non-streaming path looked correct.
+                cacheWriteTokens: turnUsage.cacheWriteTokens,
                 providerAttempts: turnUsage.providerAttempts,
               },
               accounting,
@@ -1534,6 +1547,8 @@ export class AiExecutionService {
             tenantId,
             model,
             temperature,
+            supportsTemperature: modelDefinition?.supportsTemperature,
+            reasoningEffort: modelDefinition?.reasoningEffort,
             messages,
             tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
@@ -1982,6 +1997,7 @@ export class AiExecutionService {
       | 'promptTokens'
       | 'completionTokens'
       | 'cachedPromptTokens'
+      | 'cacheWriteTokens'
       | 'providerAttempts'
     >;
     accounting: TurnAccounting;
@@ -2011,6 +2027,9 @@ export class AiExecutionService {
       provider,
       processing.executionMode,
       processing.residencyRequired,
+      // Costs nothing for every model that bills cache writes at the input rate;
+      // charged as a surcharge only where the catalog declares a distinct rate.
+      completion.cacheWriteTokens ?? 0,
     );
     await this.costs.record({
       tenantId,
@@ -2029,6 +2048,7 @@ export class AiExecutionService {
       region: processing.region,
       inputTokens: completion.promptTokens,
       cachedInputTokens: completion.cachedPromptTokens ?? 0,
+      cacheWriteTokens: completion.cacheWriteTokens ?? 0,
       outputTokens: completion.completionTokens,
       cachedRequestCount: (completion.cachedPromptTokens ?? 0) > 0 ? 1 : 0,
       toolLoopIndex: loop,

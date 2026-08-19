@@ -92,6 +92,61 @@ describe('AiModelRouterService — registry and capability validation', () => {
     expect(decision.reason).toContain('powerful_route');
   });
 
+  describe('PREVIEW models', () => {
+    /**
+     * An operator naming a PREVIEW model in env is a deliberate act taken after
+     * running the live compatibility spec. The router honours it — that IS the
+     * Phase 7 rollout mechanism — and carries the capability flags through, so
+     * the provider knows to omit `temperature` rather than 400 every request.
+     */
+    it('honours a PREVIEW model an operator configured explicitly', () => {
+      const decision = router({ AI_ECONOMY_MODEL: 'gpt-5.6-luna' }).resolve(base);
+      expect(decision.model).toBe('gpt-5.6-luna');
+      expect(decision.definition?.releaseStage).toBe('PREVIEW');
+      expect(decision.definition?.supportsTemperature).toBe(false);
+      // 'none' is mandatory, not a preference: /v1/chat/completions rejects
+      // function tools at any other effort — including when the field is
+      // omitted. Established live, see docs/AI_MODEL_LIVE_VERIFICATION.md.
+      expect(decision.definition?.reasoningEffort).toBe('none');
+    });
+
+    /**
+     * The inverse, and the one that actually matters: nothing AUTOMATIC may land
+     * on a PREVIEW model. Substitution fires when a constraint has already gone
+     * unsatisfied — resolving that by promoting an unproven model would turn a
+     * compliance refusal into a total outage.
+     */
+    it('never substitutes into a PREVIEW model to satisfy a residency constraint', () => {
+      const decision = router({ AI_ECONOMY_MODEL: 'gpt-4o-mini' }).resolve({
+        ...base,
+        // gpt-4o-mini is not residency-eligible, so a substitution must happen.
+        processing: {
+          executionMode: 'STANDARD' as const,
+          residencyRequired: true,
+          region: 'eu',
+        },
+      });
+      expect(decision.definition?.releaseStage).toBe('GA');
+      expect(decision.model).toBe('gpt-4.1-mini');
+    });
+
+    it('refuses rather than reaching for a PREVIEW model in a region only it serves', () => {
+      // 'ae' is served by the GPT-5.6 family alone. Refusing is correct: the
+      // alternative is silently running compliance-critical traffic on a model
+      // whose compatibility has never been demonstrated.
+      expect(() =>
+        router().resolve({
+          ...base,
+          processing: {
+            executionMode: 'STANDARD' as const,
+            residencyRequired: true,
+            region: 'ae',
+          },
+        }),
+      ).toThrow(/residency/i);
+    });
+  });
+
   describe('processing-mode capability validation', () => {
     const standardGlobal = {
       executionMode: 'STANDARD' as const,

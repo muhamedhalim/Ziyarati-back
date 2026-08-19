@@ -1,18 +1,18 @@
 import { ConfigService } from '@nestjs/config';
 
 import { AI_MODEL_REGISTRY, AiModelDefinition } from '../routing/ai-model-registry';
-import { AiToolDefinition } from './ai-provider.interface';
+import { AiCompletionRequest, AiToolDefinition } from './ai-provider.interface';
 import { OpenAiChatProvider } from './openai-chat.provider';
 
 /**
  * LIVE provider compatibility smoke — the blocking gate before any routing
- * rollout rung.
+ * rollout rung, and the gate that promotes a PREVIEW registry entry to GA.
  *
  * Every claim in `AI_MODEL_REGISTRY` is an assertion about a remote service that
  * only a real request can settle. A model can be correctly priced, correctly
  * gated and still 400 on the exact request shape this codebase sends — that is
- * precisely how the GPT-5 family behaves today, because
- * `OpenAiChatProvider.requestBody()` always sends `temperature`.
+ * precisely how the GPT-5.x family behaves when `temperature` is sent, which is
+ * why those entries stay PREVIEW until this suite has run against them.
  *
  * OPT-IN. Skipped unless `OPENAI_LIVE_TESTS=true`, because it spends real money
  * and needs network. It is a `.spec.ts` (not a differently-suffixed file) on
@@ -49,6 +49,19 @@ function providerFor(model: AiModelDefinition): OpenAiChatProvider {
 
 const TENANT = 'live-compat';
 
+/**
+ * The capability fields `AiExecutionService` threads onto every real request.
+ * Sending them here is what makes this suite test the SHAPE production sends
+ * rather than a simplified one — without them a reasoning model would 400 on
+ * every case below and the failure would look like a model problem.
+ */
+function caps(model: AiModelDefinition): Partial<AiCompletionRequest> {
+  return {
+    supportsTemperature: model.supportsTemperature,
+    reasoningEffort: model.reasoningEffort,
+  };
+}
+
 describeLive('OpenAI live model compatibility', () => {
   jest.setTimeout(120_000);
 
@@ -57,6 +70,7 @@ describeLive('OpenAI live model compatibility', () => {
       const result = await providerFor(model).complete({
         tenantId: TENANT,
         model: model.id,
+        ...caps(model),
         messages: [{ role: 'user', content: 'Reply with the single word: ready' }],
         maxOutputTokens: 32,
       });
@@ -69,24 +83,60 @@ describeLive('OpenAI live model compatibility', () => {
       // `cachedPromptTokens` must be a number (0 is a valid answer) — an
       // undefined here would silently zero the cached-token accounting.
       expect(typeof result.cachedPromptTokens).toBe('number');
+      expect(typeof result.cacheWriteTokens).toBe('number');
       // The resolved id must be registry-resolvable, or its cost row is UNPRICED.
       expect(result.model).toEqual(expect.any(String));
     });
 
-    it('accepts the temperature this provider always sends', async () => {
-      // The GPT-5 family rejects any non-default temperature. This is the
-      // assertion that must fail loudly before such a model is registered
-      // without the Phase 7 provider change.
-      expect(model.supportsTemperature).toBe(true);
-      const result = await providerFor(model).complete({
-        tenantId: TENANT,
-        model: model.id,
-        temperature: 0.2,
-        messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
-        maxOutputTokens: 32,
+    /**
+     * Temperature is the one capability that FAILS CLOSED at the provider: a
+     * model that rejects it rejects the whole request. So the assertion is
+     * two-sided — the registry's claim must match reality in both directions,
+     * because being wrong either way is a 100% failure rate, not a degradation.
+     */
+    if (model.supportsTemperature) {
+      it('accepts the temperature this provider sends', async () => {
+        const result = await providerFor(model).complete({
+          tenantId: TENANT,
+          model: model.id,
+          ...caps(model),
+          temperature: 0.2,
+          messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
+          maxOutputTokens: 32,
+        });
+        expect(result.content.trim().length).toBeGreaterThan(0);
       });
-      expect(result.content.trim().length).toBeGreaterThan(0);
-    });
+    } else {
+      it('succeeds with temperature OMITTED', async () => {
+        const result = await providerFor(model).complete({
+          tenantId: TENANT,
+          model: model.id,
+          ...caps(model),
+          // A temperature IS supplied by the caller and must be dropped by the
+          // provider — the same thing an agent row's configured value does.
+          temperature: 0.2,
+          messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
+          maxOutputTokens: 32,
+        });
+        expect(result.content.trim().length).toBeGreaterThan(0);
+      });
+
+      it('REJECTS an explicit temperature — proving the omission is load-bearing', async () => {
+        // If this ever starts passing, the model accepts a temperature after all
+        // and the registry entry is wrong in the harmless direction. Better to
+        // learn that here than to keep a special case nobody can justify.
+        await expect(
+          providerFor(model).complete({
+            tenantId: TENANT,
+            model: model.id,
+            supportsTemperature: true,
+            temperature: 0.2,
+            messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
+            maxOutputTokens: 32,
+          }),
+        ).rejects.toThrow();
+      });
+    }
 
     it('streams deltas and reports usage on the terminal chunk', async () => {
       expect(model.supportsStreaming).toBe(true);
@@ -97,6 +147,7 @@ describeLive('OpenAI live model compatibility', () => {
       for await (const chunk of provider.stream({
         tenantId: TENANT,
         model: model.id,
+        ...caps(model),
         messages: [{ role: 'user', content: 'Count from one to five in words.' }],
         maxOutputTokens: 64,
       })) {
@@ -117,6 +168,7 @@ describeLive('OpenAI live model compatibility', () => {
       const first = await provider.complete({
         tenantId: TENANT,
         model: model.id,
+        ...caps(model),
         messages: [
           { role: 'system', content: 'Use the provided tools to answer. Do not guess availability.' },
           { role: 'user', content: 'Is there an appointment free on 2026-09-01?' },
@@ -134,6 +186,7 @@ describeLive('OpenAI live model compatibility', () => {
       const second = await provider.complete({
         tenantId: TENANT,
         model: model.id,
+        ...caps(model),
         messages: [
           { role: 'system', content: 'Use the provided tools to answer.' },
           { role: 'user', content: 'Is there an appointment free on 2026-09-01?' },
@@ -158,6 +211,7 @@ describeLive('OpenAI live model compatibility', () => {
       for await (const chunk of provider.stream({
         tenantId: TENANT,
         model: model.id,
+        ...caps(model),
         messages: [
           { role: 'system', content: 'Use the provided tools to answer. Do not guess availability.' },
           { role: 'user', content: 'Is there an appointment free on 2026-09-01?' },
@@ -172,6 +226,40 @@ describeLive('OpenAI live model compatibility', () => {
       // reassembles them so the streaming path can run the SAME dispatch loop.
       expect(terminalCalls?.length ?? 0).toBeGreaterThan(0);
       expect(() => JSON.parse(terminalCalls![0].arguments)).not.toThrow();
+    });
+
+    /**
+     * PRINTS rather than asserts. The installed SDK's `PromptTokensDetails` type
+     * predates cache-write billing, so `OpenAiChatProvider.cacheWriteTokens()`
+     * reads the field off the raw object by name — and a wrong name under-bills
+     * silently instead of failing. This dump is how that name gets confirmed
+     * against the live API before a cache-write-billing model goes GA.
+     */
+    it('dumps the raw usage object for rate-field confirmation', async () => {
+      const provider = providerFor(model);
+      const raw: unknown[] = [];
+      const client = (provider as unknown as { client: { chat: { completions: { create: Function } } } }).client;
+      const create = client.chat.completions.create.bind(client.chat.completions);
+      client.chat.completions.create = async (...args: unknown[]) => {
+        const res = await create(...args);
+        raw.push((res as { usage?: unknown }).usage);
+        return res;
+      };
+
+      await provider.complete({
+        tenantId: TENANT,
+        model: model.id,
+        ...caps(model),
+        // A long-ish prompt makes a cache write more likely to appear at all.
+        messages: [{ role: 'user', content: `Summarize in one word: ${'context '.repeat(200)}` }],
+        maxOutputTokens: 32,
+      });
+
+      // eslint-disable-next-line no-console
+      console.log(
+        `\n[usage] ${model.id} (${model.releaseStage})\n${JSON.stringify(raw[0], null, 2)}\n`,
+      );
+      expect(raw[0]).toBeDefined();
     });
   });
 });

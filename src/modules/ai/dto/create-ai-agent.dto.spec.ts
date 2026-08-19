@@ -1,7 +1,11 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
-import { AI_MODEL_IDS } from '../routing/ai-model-registry';
+import {
+  AI_MODEL_IDS,
+  AI_MODEL_REGISTRY,
+  isKnownModel,
+} from '../routing/ai-model-registry';
 import { CreateAiAgentDto } from './create-ai-agent.dto';
 import { UpdateAiAgentDto } from './update-ai-agent.dto';
 
@@ -45,6 +49,20 @@ describe('CreateAiAgentDto — model allow-list', () => {
     // pin an agent to a snapshot that silently ages out.
     const errors = propertyErrors(await errorsFor({ model: 'gpt-4o-2024-08-06' }), 'model');
     expect(errors).toHaveLength(1);
+  });
+
+  /**
+   * A PREVIEW model IS in the registry — priced, capability-described, and
+   * resolvable by the router when an operator names it in env. It must still be
+   * refused here: an agent row is persistent tenant configuration, and a model
+   * whose live compatibility has not been demonstrated has no business becoming
+   * a clinic's stored default. The rejection is the release stage, not absence.
+   */
+  it.each(
+    AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'PREVIEW').map((m) => m.id),
+  )('rejects PREVIEW model %s even though it is registered', async (model) => {
+    expect(isKnownModel(model)).toBe(true);
+    expect(propertyErrors(await errorsFor({ model }), 'model')).toHaveLength(1);
   });
 
   it('still allows omitting the model — the platform default then applies', async () => {

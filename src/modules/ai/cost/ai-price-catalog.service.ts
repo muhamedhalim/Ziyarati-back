@@ -55,6 +55,32 @@ export interface AiPriceCatalogEntry {
   batchResidencyCachedInputMicrousdPerMillion?: string;
   batchResidencyOutputMicrousdPerMillion?: string;
   batchResidencyEmbeddingMicrousdPerMillion?: string;
+  /**
+   * CACHE-WRITE rates: what the provider charges to PUT tokens into the prompt
+   * cache, as opposed to `cachedInput*`, which is the discount for reading them
+   * back. Absent for every model that bills cache writes at the plain input rate
+   * (the whole GPT-4 family) — in that case a cache-write token count costs
+   * nothing extra and the field stays undefined.
+   *
+   * The GPT-5.6 family is the reason this exists: it bills cache writes at 1.25x
+   * the uncached input rate. Without a distinct rate a cache-heavy GPT-5.6 turn
+   * is UNDER-billed by 25% of its cache-write tokens, silently, forever.
+   *
+   * One rate per processing dimension, for the same reason as every other rate
+   * here: a batch or regional cache write is never billed from another mode's
+   * number.
+   */
+  cacheWriteMicrousdPerMillion?: string;
+  batchCacheWriteMicrousdPerMillion?: string;
+  residencyCacheWriteMicrousdPerMillion?: string;
+  batchResidencyCacheWriteMicrousdPerMillion?: string;
+  /**
+   * DOCUMENTATION of how the cache-write rates above were derived at authoring
+   * time (e.g. 1.25 for GPT-5.6). Never applied at quote time — the stored
+   * integers are the authority. Recorded so a later catalog author can see
+   * whether a published multiplier changed.
+   */
+  cacheWriteMultiplier?: number;
 }
 
 export interface AiPriceQuote {
@@ -70,6 +96,7 @@ export interface AiPriceQuote {
   cachedInputMicrousdPerMillion?: string;
   outputMicrousdPerMillion?: string;
   embeddingMicrousdPerMillion?: string;
+  cacheWriteMicrousdPerMillion?: string;
   costMicrousd: bigint | null;
 }
 
@@ -79,6 +106,7 @@ interface EffectiveRates {
   cachedInput?: string;
   output?: string;
   embedding?: string;
+  cacheWrite?: string;
 }
 
 const OPENAI_SOURCE = 'https://openai.com/api/pricing/';
@@ -106,6 +134,13 @@ export class AiPriceCatalogService {
     cachedTokens = 0,
     executionMode: AiExecutionMode = AI_EXECUTION_MODE.STANDARD,
     residencyRequired = false,
+    /**
+     * Tokens the provider WROTE into the prompt cache this turn. Priced only
+     * when the entry declares a cache-write rate; for every model that bills
+     * cache writes at the plain input rate this is already inside `inputTokens`
+     * and adding it again would double-charge, so it costs nothing here.
+     */
+    cacheWriteTokens = 0,
   ): AiPriceQuote {
     const entry = this.find(provider, model);
     const rates = entry
@@ -117,9 +152,20 @@ export class AiPriceCatalogService {
     const cached = Math.max(0, Math.min(this.safeTokens(cachedTokens), this.safeTokens(inputTokens)));
     const uncached = this.safeTokens(inputTokens) - cached;
     const cachedRate = rates.cachedInput ?? rates.input;
+    // A model that bills cache writes above the input rate is charged the
+    // DIFFERENCE on those tokens: they are already counted once in `inputTokens`
+    // at the uncached rate, so billing the full 1.25x again would charge 2.25x.
+    const cacheWriteSurcharge =
+      rates.cacheWrite && this.safeTokens(cacheWriteTokens) > 0
+        ? this.tokenCost(
+            Math.min(this.safeTokens(cacheWriteTokens), uncached),
+            this.rateDelta(rates.cacheWrite, rates.input),
+          )
+        : 0n;
     const cost = this.tokenCost(uncached, rates.input)
       + this.tokenCost(cached, cachedRate)
-      + this.tokenCost(this.safeTokens(outputTokens), rates.output);
+      + this.tokenCost(this.safeTokens(outputTokens), rates.output)
+      + cacheWriteSurcharge;
     return this.priced(entry!, model, executionMode, rates, cost);
   }
 
@@ -159,6 +205,7 @@ export class AiPriceCatalogService {
         cachedInput: entry.batchResidencyCachedInputMicrousdPerMillion,
         output: entry.batchResidencyOutputMicrousdPerMillion,
         embedding: entry.batchResidencyEmbeddingMicrousdPerMillion,
+        cacheWrite: entry.batchResidencyCacheWriteMicrousdPerMillion,
       };
     }
     if (batch) {
@@ -167,6 +214,7 @@ export class AiPriceCatalogService {
         cachedInput: entry.batchCachedInputMicrousdPerMillion,
         output: entry.batchOutputMicrousdPerMillion,
         embedding: entry.batchEmbeddingMicrousdPerMillion,
+        cacheWrite: entry.batchCacheWriteMicrousdPerMillion,
       };
     }
     if (residencyRequired) {
@@ -175,6 +223,7 @@ export class AiPriceCatalogService {
         cachedInput: entry.residencyCachedInputMicrousdPerMillion,
         output: entry.residencyOutputMicrousdPerMillion,
         embedding: entry.residencyEmbeddingMicrousdPerMillion,
+        cacheWrite: entry.residencyCacheWriteMicrousdPerMillion,
       };
     }
     return {
@@ -182,6 +231,7 @@ export class AiPriceCatalogService {
       cachedInput: entry.cachedInputMicrousdPerMillion,
       output: entry.outputMicrousdPerMillion,
       embedding: entry.embeddingMicrousdPerMillion,
+      cacheWrite: entry.cacheWriteMicrousdPerMillion,
     };
   }
 
@@ -189,6 +239,17 @@ export class AiPriceCatalogService {
     // Round half-up to the smallest stored unit (one micro-USD).
     const numerator = BigInt(tokens) * BigInt(rate);
     return (numerator + 500_000n) / 1_000_000n;
+  }
+
+  /**
+   * `higher - base`, clamped at zero, as an integer micro-USD rate string. Used
+   * for the cache-write surcharge so the arithmetic stays in BigInt end to end
+   * and a catalog whose cache-write rate is at or below the input rate produces
+   * no charge instead of a negative one.
+   */
+  private rateDelta(higher: string, base: string): string {
+    const delta = BigInt(higher) - BigInt(base);
+    return (delta > 0n ? delta : 0n).toString();
   }
 
   private safeTokens(value: number): number {
@@ -215,6 +276,7 @@ export class AiPriceCatalogService {
       cachedInputMicrousdPerMillion: rates.cachedInput,
       outputMicrousdPerMillion: rates.output,
       embeddingMicrousdPerMillion: rates.embedding,
+      cacheWriteMicrousdPerMillion: rates.cacheWrite,
       costMicrousd,
     };
   }
@@ -254,6 +316,8 @@ export class AiPriceCatalogService {
           v.residencyOutputMicrousdPerMillion, v.residencyEmbeddingMicrousdPerMillion,
           v.batchResidencyInputMicrousdPerMillion, v.batchResidencyCachedInputMicrousdPerMillion,
           v.batchResidencyOutputMicrousdPerMillion, v.batchResidencyEmbeddingMicrousdPerMillion,
+          v.cacheWriteMicrousdPerMillion, v.batchCacheWriteMicrousdPerMillion,
+          v.residencyCacheWriteMicrousdPerMillion, v.batchResidencyCacheWriteMicrousdPerMillion,
         ].filter((rate): rate is string => rate !== undefined);
         if (!v.provider || !v.model || !v.catalogVersion || !v.source || !v.effectiveAt
           || rates.length === 0 || rates.some((rate) => !/^\d+$/.test(rate))) {
@@ -284,7 +348,7 @@ export class AiPriceCatalogService {
     // inheriting the global rate.
     return [
       {
-        ...common, model: 'gpt-4o', aliases: ['gpt-4o-latest', 'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20'],
+        ...common, model: 'gpt-4o', aliases: ['gpt-4o-2024-08-06', 'gpt-4o-2024-11-20'],
         inputMicrousdPerMillion: '2500000', cachedInputMicrousdPerMillion: '1250000', outputMicrousdPerMillion: '10000000',
         batchInputMicrousdPerMillion: '1250000', batchCachedInputMicrousdPerMillion: '625000', batchOutputMicrousdPerMillion: '5000000',
         residencyInputMicrousdPerMillion: '2500000', residencyCachedInputMicrousdPerMillion: '1250000', residencyOutputMicrousdPerMillion: '10000000',
@@ -311,6 +375,45 @@ export class AiPriceCatalogService {
         ...added, model: 'gpt-4o-mini', aliases: ['gpt-4o-mini-2024-07-18'],
         inputMicrousdPerMillion: '150000', cachedInputMicrousdPerMillion: '75000', outputMicrousdPerMillion: '600000',
         batchInputMicrousdPerMillion: '75000', batchCachedInputMicrousdPerMillion: '37500', batchOutputMicrousdPerMillion: '300000',
+      },
+      {
+        // Catalog-only, deliberately NOT in AI_MODEL_REGISTRY: nothing routes to
+        // it, but if a tenant's stored agent model or a provider alias ever
+        // resolves here the turn is priced instead of UNPRICED.
+        // No residency rates — not on the published regional-processing list.
+        ...added, model: 'gpt-4.1-nano', aliases: ['gpt-4.1-nano-2025-04-14'],
+        inputMicrousdPerMillion: '100000', cachedInputMicrousdPerMillion: '25000', outputMicrousdPerMillion: '400000',
+        batchInputMicrousdPerMillion: '50000', batchCachedInputMicrousdPerMillion: '12500', batchOutputMicrousdPerMillion: '200000',
+      },
+      // ── GPT-5.6 family ────────────────────────────────────────────────────
+      // Registered as PREVIEW in AI_MODEL_REGISTRY: priced and capability-
+      // described here so that enabling one is a configuration change, but not
+      // reachable until the live compatibility spec proves the request shape.
+      //
+      // These postdate OpenAI's 2026-03-05 cutoff, so they are the FIRST entries
+      // where the 10% regional-processing uplift actually applies. It is applied
+      // once, here, in integer arithmetic (ceil(rate x 11 / 10)) — never at quote
+      // time. They are also the first entries with a cache-WRITE rate: GPT-5.6
+      // bills cache writes at 1.25x the uncached input rate of the same mode.
+      {
+        ...added, model: 'gpt-5.6-luna',
+        inputMicrousdPerMillion: '200000', cachedInputMicrousdPerMillion: '20000', outputMicrousdPerMillion: '1200000',
+        batchInputMicrousdPerMillion: '100000', batchCachedInputMicrousdPerMillion: '10000', batchOutputMicrousdPerMillion: '600000',
+        residencyInputMicrousdPerMillion: '220000', residencyCachedInputMicrousdPerMillion: '22000', residencyOutputMicrousdPerMillion: '1320000',
+        batchResidencyInputMicrousdPerMillion: '110000', batchResidencyCachedInputMicrousdPerMillion: '11000', batchResidencyOutputMicrousdPerMillion: '660000',
+        cacheWriteMultiplier: 1.25,
+        cacheWriteMicrousdPerMillion: '250000', batchCacheWriteMicrousdPerMillion: '125000',
+        residencyCacheWriteMicrousdPerMillion: '275000', batchResidencyCacheWriteMicrousdPerMillion: '137500',
+      },
+      {
+        ...added, model: 'gpt-5.6-terra',
+        inputMicrousdPerMillion: '2000000', cachedInputMicrousdPerMillion: '200000', outputMicrousdPerMillion: '12000000',
+        batchInputMicrousdPerMillion: '1000000', batchCachedInputMicrousdPerMillion: '100000', batchOutputMicrousdPerMillion: '6000000',
+        residencyInputMicrousdPerMillion: '2200000', residencyCachedInputMicrousdPerMillion: '220000', residencyOutputMicrousdPerMillion: '13200000',
+        batchResidencyInputMicrousdPerMillion: '1100000', batchResidencyCachedInputMicrousdPerMillion: '110000', batchResidencyOutputMicrousdPerMillion: '6600000',
+        cacheWriteMultiplier: 1.25,
+        cacheWriteMicrousdPerMillion: '2500000', batchCacheWriteMicrousdPerMillion: '1250000',
+        residencyCacheWriteMicrousdPerMillion: '2750000', batchResidencyCacheWriteMicrousdPerMillion: '1375000',
       },
       {
         ...common, model: 'gpt-5-mini', aliases: ['gpt-5-mini-2025-08-07'],

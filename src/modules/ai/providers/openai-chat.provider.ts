@@ -88,16 +88,32 @@ export class OpenAiChatProvider implements AiCompletionProvider {
       promptTokens: res.usage?.prompt_tokens ?? 0,
       completionTokens: res.usage?.completion_tokens ?? 0,
       cachedPromptTokens: res.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      cacheWriteTokens: this.cacheWriteTokens(res.usage),
       providerAttempts: attempts,
       providerRequestId: res._request_id ?? undefined,
       toolCalls,
     };
   }
 
+  /**
+   * `temperature` is OMITTED — not defaulted — for a model whose registry entry
+   * says it does not support one. The GPT-5.x family accepts only the default
+   * value and returns 400 for any explicit temperature, so the previous
+   * unconditional `temperature: request.temperature ?? 0.2` would have failed
+   * every single request the moment routing pointed at one.
+   *
+   * `reasoning_effort` is sent only when the registry names one. It is not a
+   * quality dial here so much as a cost dial: reasoning tokens bill as output.
+   */
   private requestBody(request: AiCompletionRequest, model: string): OpenAI.Chat.ChatCompletionCreateParamsNonStreaming {
     return {
       model,
-      temperature: request.temperature ?? 0.2,
+      ...(request.supportsTemperature === false
+        ? {}
+        : { temperature: request.temperature ?? 0.2 }),
+      ...(request.reasoningEffort
+        ? { reasoning_effort: request.reasoningEffort }
+        : {}),
       messages: this.toOpenAiMessages(request.messages),
       ...(request.maxOutputTokens ? { max_completion_tokens: request.maxOutputTokens } : {}),
       ...(request.tools?.length
@@ -110,6 +126,29 @@ export class OpenAiChatProvider implements AiCompletionProvider {
           }
         : {}),
     };
+  }
+
+  /**
+   * Prompt tokens written INTO the cache this turn, read defensively.
+   *
+   * The installed SDK's `PromptTokensDetails` type declares only `audio_tokens`
+   * and `cached_tokens` — it predates cache-write billing — so the field cannot
+   * be read through the typed surface even when the API returns it. It is read
+   * off the raw object instead and defaults to 0, so a model that does not
+   * report one is billed exactly as it was before.
+   *
+   * The field name is VERIFIED, not guessed: the live compat run on 2026-08-19
+   * printed the raw `usage` object for every registered model and
+   * `prompt_tokens_details.cache_write_tokens` is present on gpt-5.6-luna and
+   * gpt-5.6-terra and absent on the whole GPT-4.x family. The suite still dumps
+   * it, because a wrong name here under-bills silently rather than failing —
+   * re-check it when registering any new cache-write-billing model.
+   */
+  private cacheWriteTokens(usage: unknown): number {
+    const details = (usage as { prompt_tokens_details?: Record<string, unknown> } | undefined)
+      ?.prompt_tokens_details;
+    const raw = details?.cache_write_tokens;
+    return typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
   }
 
   private requestOptions(request: AiCompletionRequest): OpenAI.RequestOptions | undefined {
@@ -171,7 +210,7 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     // id/name/arguments across multiple chunks).
     const pending = new Map<number, { id: string; name: string; arguments: string }>();
     let resolvedModel = model;
-    let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; providerAttempts?: number } | undefined;
+    let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; cacheWriteTokens?: number; providerAttempts?: number } | undefined;
 
     for await (const part of stream) {
       resolvedModel = part.model ?? resolvedModel;
@@ -180,6 +219,7 @@ export class OpenAiChatProvider implements AiCompletionProvider {
           promptTokens: part.usage.prompt_tokens ?? 0,
           completionTokens: part.usage.completion_tokens ?? 0,
           cachedPromptTokens: part.usage.prompt_tokens_details?.cached_tokens ?? 0,
+          cacheWriteTokens: this.cacheWriteTokens(part.usage),
           providerAttempts: attempts,
         };
       }

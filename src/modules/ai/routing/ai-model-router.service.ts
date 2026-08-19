@@ -8,7 +8,7 @@ import {
   AiExecutionMode,
 } from '../execution/ai-execution.constants';
 import {
-  AI_MODEL_REGISTRY,
+  AI_MODEL_REGISTRY_GA,
   AiModelDefinition,
   findModel,
   modelsForTier,
@@ -154,9 +154,11 @@ export class AiModelRouterService {
       return { definition: preferred, substituted: false };
     }
 
+    // GA pool only — an automatic substitution must not be the thing that first
+    // puts an unproven PREVIEW model in front of live traffic.
     const candidate =
       modelsForTier(tier).find((m) => this.supportsProcessing(m, constraints)) ??
-      AI_MODEL_REGISTRY.find((m) => this.supportsProcessing(m, constraints));
+      AI_MODEL_REGISTRY_GA.find((m) => this.supportsProcessing(m, constraints));
 
     if (!candidate) {
       this.logger.error(

@@ -1,6 +1,6 @@
 import * as Joi from 'joi';
 
-import { AI_MODEL_IDS } from '../modules/ai/routing/ai-model-registry';
+import { AI_MODEL_IDS_ALL } from '../modules/ai/routing/ai-model-registry';
 
 export const validate = (config: Record<string, unknown>) => {
   const schema = Joi.object({
@@ -462,11 +462,17 @@ export const validate = (config: Record<string, unknown>) => {
     // Both are constrained to AI_MODEL_REGISTRY ids: a typo or an unregistered
     // model here used to sail through boot and surface only as an UNPRICED cost
     // row (or a provider 400) on the first routed turn.
+    //
+    // Validated against AI_MODEL_IDS_ALL, not the GA-only AI_MODEL_IDS: naming a
+    // PREVIEW model here is how an OPERATOR opts into one after running the live
+    // compatibility spec. That is a deliberate, reversible, single-variable act,
+    // unlike the tenant-facing surfaces (agent DTO, ai.default_model), which stay
+    // GA-only.
     AI_ECONOMY_MODEL: Joi.string()
-      .valid(...AI_MODEL_IDS)
+      .valid(...AI_MODEL_IDS_ALL)
       .default('gpt-4.1-mini'),
     AI_POWERFUL_MODEL: Joi.string()
-      .valid(...AI_MODEL_IDS)
+      .valid(...AI_MODEL_IDS_ALL)
       .allow('', null),
     // How a model string PERSISTED on an agent row (ai_agents.model) is treated
     // when it is not in the registry. 'true' (default) → ignore it and fall back

@@ -144,7 +144,7 @@ export class AiAgentController {
 
   @ApiOperation({
     summary: 'List selectable AI models',
-    description: `**Protected — \`ai.agents.read\`. Clinic active.** The platform-registered model ids accepted by \`model\` on create/update. Exposed so the dashboard renders a select instead of a free-text box — the allow-list stays server-owned (\`AI_MODEL_REGISTRY\`) and is never duplicated client-side.`,
+    description: `**Protected — \`ai.agents.read\`. Clinic active.** The platform-registered model ids accepted by \`model\` on create/update. Exposed so the dashboard renders a select instead of a free-text box — the allow-list stays server-owned (\`AI_MODEL_REGISTRY\`) and is never duplicated client-side. Returns GA models only: a PREVIEW entry is not yet proven against this codebase's request shape, so it is operator-selectable by env and never tenant-selectable here.`,
   })
   @ApiOkResponse({
     description: 'Registered model ids.',

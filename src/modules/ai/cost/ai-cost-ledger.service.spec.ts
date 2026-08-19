@@ -118,6 +118,62 @@ describe('AiCostLedgerService — processing-mode accounting', () => {
     },
   );
 
+  it('persists the cache-write token count and the rate that was applied to it', async () => {
+    const { ledger, query } = ledgerWithCapture();
+    await ledger.record({
+      tenantId: TENANT,
+      idempotencyKey: 'turn-cache-write',
+      requestKind: 'CHAT',
+      provider: 'openai',
+      model: 'gpt-5.6-luna',
+      feature: 'chat',
+      route: 'ai.chat.api',
+      channel: 'API',
+      inputTokens: 1000,
+      cachedInputTokens: 100,
+      cacheWriteTokens: 400,
+      outputTokens: 200,
+      success: true,
+      quote: {
+        ...(quote('STANDARD') as Record<string, unknown>),
+        cacheWriteMicrousdPerMillion: '250000',
+      } as never,
+    });
+
+    const sql = query.mock.calls[0][0] as string;
+    const params = query.mock.calls[0][1] as unknown[];
+    expect(sql).toContain('cache_write_tokens');
+    expect(sql).toContain('cache_write_price_microusd_per_million');
+    expect(params).toContain(400);
+    // The RATE is stored alongside the count: a later catalog revision must not
+    // be able to change what a historical turn was billed.
+    expect(params).toContain('250000');
+  });
+
+  it('writes zero cache-write tokens for a model that does not bill them', async () => {
+    const { ledger, query } = ledgerWithCapture();
+    await ledger.record({
+      tenantId: TENANT,
+      idempotencyKey: 'turn-no-cache-write',
+      requestKind: 'CHAT',
+      provider: 'openai',
+      model: 'gpt-4o',
+      feature: 'chat',
+      route: 'ai.chat.api',
+      channel: 'API',
+      inputTokens: 1000,
+      outputTokens: 200,
+      success: true,
+      quote: quote('STANDARD'),
+    });
+
+    const params = query.mock.calls[0][1] as unknown[];
+    // 0 and null, not undefined — an omitted bind parameter is a driver error,
+    // and "no cache writes" must be recorded as a fact rather than a gap.
+    expect(params.at(-2)).toBe(0);
+    expect(params.at(-1)).toBeNull();
+  });
+
   it('defaults to STANDARD + no region when a caller omits both — never "unknown"', async () => {
     const { ledger, query } = ledgerWithCapture();
     await ledger.record({
@@ -196,7 +252,7 @@ describe('AiCostLedgerService — processing-mode accounting', () => {
 
     ledger.quoteChat('gpt-4.1-mini', 10, 5, 0, 'openai', 'BATCH', true);
     expect(prices.quoteChat).toHaveBeenCalledWith(
-      'openai', 'gpt-4.1-mini', 10, 5, 0, 'BATCH', true,
+      'openai', 'gpt-4.1-mini', 10, 5, 0, 'BATCH', true, 0,
     );
 
     ledger.quoteEmbedding('text-embedding-3-small', 10, 'BATCH', 'openai', true);
@@ -209,6 +265,6 @@ describe('AiCostLedgerService — processing-mode accounting', () => {
     const prices = { quoteChat: jest.fn(), quoteEmbedding: jest.fn() };
     const ledger = new AiCostLedgerService({} as never, prices as never);
     ledger.quoteChat('gpt-4o', 10, 5);
-    expect(prices.quoteChat).toHaveBeenCalledWith('openai', 'gpt-4o', 10, 5, 0, 'STANDARD', false);
+    expect(prices.quoteChat).toHaveBeenCalledWith('openai', 'gpt-4o', 10, 5, 0, 'STANDARD', false, 0);
   });
 });

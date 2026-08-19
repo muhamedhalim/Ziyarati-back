@@ -91,42 +91,104 @@ function provider(model: string): OpenAiChatProvider {
 
 const prices = new AiPriceCatalogService(new ConfigService());
 
-/** Runs one fixture's full multi-turn exchange against one model. */
+/**
+ * Canned, language-neutral tool results. Data only — no prose — so feeding them
+ * back cannot itself hint at which language the model should answer in.
+ */
+function toolResult(name: string): string {
+  return name === 'book_appointment'
+    ? JSON.stringify({ success: true, confirmation_id: 'BK-10024', date: '2026-09-01', time: '17:00' })
+    : JSON.stringify({ success: true, date: '2026-09-01', slots: ['09:00', '14:30', '17:00'] });
+}
+
+/** Mirrors AiExecutionService's own cap — a runaway loop is a bug, not a result. */
+const MAX_LOOPS = 3;
+
+/**
+ * Runs one fixture against one model, INCLUDING the tool round trip.
+ *
+ * The loop is not incidental. A booking turn's correct first response is a tool
+ * call with no prose, so a single-shot harness records `reply: ''` and scores it
+ * as an empty answer and a language failure — punishing the model for behaving
+ * correctly. `AiExecutionService` feeds the tool result back and the customer
+ * sees the FINAL sentence; that is what this measures. Tokens, cost and latency
+ * accumulate across every hop, because that is what the turn actually costs.
+ */
 async function runCase(model: string, fixture: AiEvaluationCase): Promise<CaseResult> {
   const started = Date.now();
-  const messages = [
-    { role: 'system' as const, content: SYSTEM_PROMPT },
+  const p = provider(model);
+  const definition = findModel(model);
+  const messages: Parameters<typeof p.complete>[0]['messages'] = [
+    { role: 'system', content: SYSTEM_PROMPT },
     // Every turn as one exchange: this measures the model's handling of the
     // accumulated conversation, which is what a real turn sees.
     ...fixture.turns.map((content) => ({ role: 'user' as const, content })),
   ];
 
-  const result = await provider(model).complete({
-    tenantId: 'benchmark',
-    model,
-    temperature: 0.2,
-    messages,
-    tools: TOOLS,
-    maxOutputTokens: 400,
-  });
+  let reply = '';
+  let toolCalled = false;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let costMicrousd: bigint | null = 0n;
 
-  const quote = prices.quoteChat(
-    'openai',
-    result.model,
-    result.promptTokens,
-    result.completionTokens,
-    result.cachedPromptTokens ?? 0,
-  );
+  for (let loop = 0; loop < MAX_LOOPS; loop += 1) {
+    const result = await p.complete({
+      tenantId: 'benchmark',
+      model,
+      temperature: 0.2,
+      // Same capability threading production uses — without it a reasoning
+      // model 400s and the benchmark measures nothing.
+      supportsTemperature: definition?.supportsTemperature,
+      reasoningEffort: definition?.reasoningEffort,
+      messages,
+      tools: TOOLS,
+      maxOutputTokens: 400,
+    });
+
+    promptTokens += result.promptTokens;
+    completionTokens += result.completionTokens;
+    const quote = prices.quoteChat(
+      'openai',
+      result.model,
+      result.promptTokens,
+      result.completionTokens,
+      result.cachedPromptTokens ?? 0,
+      undefined,
+      undefined,
+      result.cacheWriteTokens ?? 0,
+    );
+    // One UNPRICED hop makes the whole turn's cost unknown — never partially
+    // summed, which would understate it.
+    costMicrousd =
+      costMicrousd === null || quote.costMicrousd === null
+        ? null
+        : costMicrousd + quote.costMicrousd;
+
+    reply = result.content || reply;
+    const calls = result.toolCalls ?? [];
+    if (!calls.length) break;
+    toolCalled = true;
+
+    messages.push({ role: 'assistant', content: result.content || null, tool_calls: calls });
+    for (const call of calls) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        name: call.name,
+        content: toolResult(call.name),
+      });
+    }
+  }
 
   return {
     model,
     caseId: fixture.id,
-    reply: result.content,
-    sameLanguage: repliesInSameLanguage(fixture.language, result.content),
-    toolCalled: (result.toolCalls?.length ?? 0) > 0,
-    promptTokens: result.promptTokens,
-    completionTokens: result.completionTokens,
-    costMicrousd: quote.costMicrousd,
+    reply,
+    sameLanguage: repliesInSameLanguage(fixture.language, reply),
+    toolCalled,
+    promptTokens,
+    completionTokens,
+    costMicrousd,
     latencyMs: Date.now() - started,
   };
 }
