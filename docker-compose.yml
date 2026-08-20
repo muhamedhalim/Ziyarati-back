@@ -20,7 +20,7 @@
 # config hash proof).
 services:
   postgres:
-    image: postgres:18
+    image: pgvector/pgvector:pg18
     container_name: ziyaratech-postgres
     restart: unless-stopped
     environment:

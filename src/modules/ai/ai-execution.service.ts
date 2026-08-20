@@ -526,7 +526,11 @@ export class AiExecutionService {
       };
 
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-        const fitted = this.budgets.fitRuntime(messages, tools, modelDefinition);
+        const fitted = this.budgets.fitRuntime(
+          messages,
+          tools,
+          modelDefinition,
+        );
         messages = fitted.messages;
         truncatedPromptTokens += fitted.truncatedTokens;
         const completion = await provider.complete({
@@ -933,11 +937,20 @@ export class AiExecutionService {
     return { blocked: overlapRatio >= threshold, overlapRatio };
   }
 
-  /** Lowercased, punctuation-stripped word list — the shingle unit is a word, not a character. */
+  /**
+   * Lowercased, punctuation-stripped word list — the shingle unit is a word, not
+   * a character. Unicode-aware (`\p{L}`/`\p{N}`, not `a-z0-9`): the ASCII-only
+   * version silently stripped every Arabic (or other non-Latin) character to
+   * nothing, so a reply that verbatim-reproduced an Arabic system prompt
+   * produced zero shingles and the disclosure gate returned unconditionally
+   * `blocked: false` for it (AIE-A01). `\p{L}`/`\p{N}` match letters/digits in
+   * any script; `.toLowerCase()` is a no-op on scripts with no case (Arabic),
+   * so ASCII/English behavior is unchanged.
+   */
   private normalizeForShingles(text: string): string[] {
     return text
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter(Boolean);
   }
@@ -1056,7 +1069,10 @@ export class AiExecutionService {
       fullContent: string,
     ): { content: string; blocked: boolean } => {
       if (tripped) {
-        return { content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE, blocked: true };
+        return {
+          content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE,
+          blocked: true,
+        };
       }
       // Final check on the complete content — the trailing <W tail was
       // accumulated but never individually re-checked past its own
@@ -1068,7 +1084,10 @@ export class AiExecutionService {
         tools,
       );
       if (blocked) {
-        return { content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE, blocked: true };
+        return {
+          content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE,
+          blocked: true,
+        };
       }
       // The full content passed — safe to flush whatever the hold-back
       // window was still sitting on (including a reply SHORTER than the
@@ -1416,7 +1435,11 @@ export class AiExecutionService {
         streamed = true;
         const streamStart = Date.now();
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-          const fitted = this.budgets.fitRuntime(messages, tools, modelDefinition);
+          const fitted = this.budgets.fitRuntime(
+            messages,
+            tools,
+            modelDefinition,
+          );
           messages = fitted.messages;
           truncatedPromptTokens += fitted.truncatedTokens;
           let turnContent = '';
@@ -1551,14 +1574,19 @@ export class AiExecutionService {
               turnContent || 'I have processed your request.',
             );
             full = checked.content;
-            promptDisclosureBlocked = promptDisclosureBlocked || checked.blocked;
+            promptDisclosureBlocked =
+              promptDisclosureBlocked || checked.blocked;
           }
         }
         streamingDurationMs = Date.now() - streamStart;
       } else {
         // No streaming support (Noop fallback) — SAME complete()-based tool loop as sendMessage.
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
-          const fitted = this.budgets.fitRuntime(messages, tools, modelDefinition);
+          const fitted = this.budgets.fitRuntime(
+            messages,
+            tools,
+            modelDefinition,
+          );
           messages = fitted.messages;
           truncatedPromptTokens += fitted.truncatedTokens;
           const completion = await provider.complete({
@@ -1655,7 +1683,8 @@ export class AiExecutionService {
               tools,
             );
             full = checked.content;
-            promptDisclosureBlocked = promptDisclosureBlocked || checked.blocked;
+            promptDisclosureBlocked =
+              promptDisclosureBlocked || checked.blocked;
           }
         }
         if (full) onToken(full);
