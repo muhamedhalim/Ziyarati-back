@@ -89,8 +89,8 @@ describe('AiPromptBudgetService — per-model context window', () => {
   );
 
   const bigModel = {
-    id: 'big', provider: 'openai' as const, releaseStage: 'GA' as const,
-    tier: 'ECONOMY' as const, aliases: [],
+    id: 'big', displayName: 'Big', provider: 'openai' as const,
+    releaseStage: 'GA' as const, tier: 'ECONOMY' as const, aliases: [],
     contextWindowTokens: 1_047_576, maxOutputTokens: 32_768,
     supportsTools: true, supportsStreaming: true,
     supportsStructuredOutputs: true, supportsTemperature: true,

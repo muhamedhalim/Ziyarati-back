@@ -28,7 +28,10 @@ import {
 } from '@nestjs/swagger';
 
 import { AiAgentService } from './ai-agent.service';
-import { AI_MODEL_IDS } from './routing/ai-model-registry';
+import {
+  AI_SELECTABLE_MODELS,
+  AiSelectableModel,
+} from './routing/ai-model-registry';
 import { CreateAiAgentDto } from './dto/create-ai-agent.dto';
 import { UpdateAiAgentDto } from './dto/update-ai-agent.dto';
 import { AiAgentFilterDto } from './dto/ai-agent-filter.dto';
@@ -144,16 +147,22 @@ export class AiAgentController {
 
   @ApiOperation({
     summary: 'List selectable AI models',
-    description: `**Protected — \`ai.agents.read\`. Clinic active.** The platform-registered model ids accepted by \`model\` on create/update. Exposed so the dashboard renders a select instead of a free-text box — the allow-list stays server-owned (\`AI_MODEL_REGISTRY\`) and is never duplicated client-side. Returns GA models only: a PREVIEW entry is not yet proven against this codebase's request shape, so it is operator-selectable by env and never tenant-selectable here.`,
+    description: `**Protected — \`ai.agents.read\`. Clinic active.** The platform-registered models accepted by \`model\` on create/update, each with the label to render. Exposed so the dashboard renders a select instead of a free-text box — the allow-list *and* its labels stay server-owned (\`AI_MODEL_REGISTRY\`) and are never duplicated client-side. Returns GA models only: a PREVIEW entry is not yet proven against this codebase's request shape, so it is operator-selectable by env and never tenant-selectable here. Listing a model here does **not** make it a routing target — that is \`AI_ECONOMY_MODEL\` / \`AI_POWERFUL_MODEL\`.`,
   })
   @ApiOkResponse({
-    description: 'Registered model ids.',
+    description: 'Selectable models, id plus display label.',
     schema: {
       type: 'object',
       properties: {
         data: {
           type: 'array',
-          items: { type: 'string', example: 'gpt-4.1-mini' },
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', example: 'gpt-5.6-luna' },
+              displayName: { type: 'string', example: 'GPT-5.6 Luna' },
+            },
+          },
         },
       },
     },
@@ -170,8 +179,8 @@ export class AiAgentController {
   // a later declaration would be swallowed by the `:id` param route.
   @Get('models')
   @RequirePermissions(PERMISSION.AI_AGENTS_READ)
-  listModels(): { data: readonly string[] } {
-    return { data: AI_MODEL_IDS };
+  listModels(): { data: readonly AiSelectableModel[] } {
+    return { data: AI_SELECTABLE_MODELS };
   }
 
   @ApiOperation({

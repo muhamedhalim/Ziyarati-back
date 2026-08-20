@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { BadRequestException } from '@nestjs/common';
 
 import { SystemSettingService } from './system-setting.service';
+import { SettingKey } from './settings.registry';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
 import { ErrorCode } from '../../common/errors';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
@@ -131,6 +133,66 @@ describe('SystemSettingService', () => {
           entityId: 'existing',
         }),
       );
+    });
+  });
+
+  // ai.default_temperature is the registry's only 'number' entry with a
+  // `step`, and upsertByKey (PUT /platform/settings/by-key/:key) is the path
+  // the typed-settings UI actually saves through.
+  describe('typed settings — number validation (upsertByKey)', () => {
+    it('accepts a value on the 0.1 step grid', async () => {
+      settings.findOne.mockResolvedValueOnce({ id: 's1', key: SettingKey.AI_DEFAULT_TEMP, value: 0.2 });
+      settings.save.mockImplementationOnce(async (s: any) => s);
+      await expect(
+        service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 0.3),
+      ).resolves.toMatchObject({ value: 0.3 });
+    });
+
+    it('rejects a value off the 0.1 step grid', async () => {
+      await expect(
+        service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 0.25),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a value below the registry minimum', async () => {
+      await expect(
+        service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, -0.1),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a value above the registry maximum (range is 0–1, not 0–2)', async () => {
+      await expect(
+        service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 1.1),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('accepts both range endpoints', async () => {
+      settings.findOne.mockResolvedValue({ id: 's1', key: SettingKey.AI_DEFAULT_TEMP, value: 0.2 });
+      settings.save.mockImplementation(async (s: any) => s);
+      await expect(service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 0)).resolves.toMatchObject({ value: 0 });
+      await expect(service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 1)).resolves.toMatchObject({ value: 1 });
+    });
+
+    it('rejects a non-numeric value for a number setting', async () => {
+      await expect(
+        service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 'high' as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('is not fooled by floating-point step arithmetic (0.1 + 0.2 !== 0.3 in IEEE 754)', async () => {
+      settings.findOne.mockResolvedValueOnce({ id: 's1', key: SettingKey.AI_DEFAULT_TEMP, value: 0.2 });
+      settings.save.mockImplementationOnce(async (s: any) => s);
+      await expect(
+        service.upsertByKey(SettingKey.AI_DEFAULT_TEMP, 0.1 + 0.2),
+      ).resolves.toMatchObject({ value: 0.1 + 0.2 });
+    });
+
+    it('does not enforce a step grid for a number setting that declares none', async () => {
+      settings.findOne.mockResolvedValueOnce({ id: 's1', key: SettingKey.TENANT_QUOTA_GB, value: 5 });
+      settings.save.mockImplementationOnce(async (s: any) => s);
+      await expect(
+        service.upsertByKey(SettingKey.TENANT_QUOTA_GB, 7),
+      ).resolves.toMatchObject({ value: 7 });
     });
   });
 });

@@ -129,11 +129,15 @@ export const SETTINGS_REGISTRY: Readonly<Record<SettingKey, SettingDefinition>> 
     key: SettingKey.AI_DEFAULT_TEMP,
     type: 'number',
     category: 'ai',
-    label: 'Default Temperature',
-    description: 'Default temperature for AI responses. Lower values are deterministic; higher values are creative.',
+    label: 'Default AI Temperature',
+    // Frontend renders the 0.0–1.0 range as four named bands (see
+    // AiTemperatureSettingRow); this text is also what the generic
+    // NumericSettingRow/RawKvEditor show for any surface not aware of them.
+    description:
+      'Controls the variety of AI responses — lower values are more consistent, higher values are more creative. Applied to any agent that has no temperature of its own.',
     default: 0.2,
     min: 0,
-    max: 2,
+    max: 1,
     step: 0.1,
   },
   [SettingKey.WHATSAPP_OPT_OUT_KEYWORDS]: {

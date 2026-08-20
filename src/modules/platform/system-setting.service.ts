@@ -242,6 +242,15 @@ export class SystemSettingService {
           throw new BadRequestException(
             `Setting "${key}" must be ≤ ${def.max}`,
           );
+        if (def.step !== undefined && def.step > 0) {
+          // Tolerance, not exact modulo: (value - min) / step lands on an
+          // integer only up to float error (e.g. 0.3 / 0.1 === 2.9999999999999996).
+          const steps = (value - (def.min ?? 0)) / def.step;
+          if (Math.abs(steps - Math.round(steps)) > 1e-9)
+            throw new BadRequestException(
+              `Setting "${key}" must be a multiple of ${def.step}`,
+            );
+        }
         break;
       }
       case 'enum':

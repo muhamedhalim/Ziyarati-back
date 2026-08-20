@@ -26,6 +26,17 @@ import { AI_EXECUTION_MODE, AiExecutionMode } from '../execution/ai-execution.co
 export interface AiModelDefinition {
   /** Canonical id sent to the provider. */
   id: string;
+  /**
+   * Human-readable label for the tenant-facing model picker.
+   *
+   * Lives here rather than in the dashboard's dictionaries because the id and
+   * its label must not be able to drift: a select whose labels are maintained
+   * client-side eventually offers "GPT-4.1 Mini" for an id the server no longer
+   * registers. It is a proper noun (a vendor product name), so it is NOT
+   * translated — the Arabic dashboard shows the same string, which is also what
+   * every OpenAI-facing document a clinic might compare against shows.
+   */
+  displayName: string;
   provider: 'openai';
   /** Routing tier consumed by AiModelRouterService. */
   tier: 'ECONOMY' | 'STANDARD' | 'POWERFUL';
@@ -69,12 +80,20 @@ export interface AiModelDefinition {
    * operator naming it in `AI_ECONOMY_MODEL`/`AI_POWERFUL_MODEL` — a deliberate,
    * single-variable, instantly reversible act.
    *
-   * The GPT-5.6 entries below have now PASSED both live gates (compatibility
-   * 38/38 and the AR/EN benchmark; see docs/AI_MODEL_LIVE_VERIFICATION.md). They
-   * stay PREVIEW anyway, because the remaining condition is sequencing, not
-   * evidence: the plan rolls out Stage 2 only after Stage 1 (gpt-4.1-mini)
-   * reaches 100%, and until then no clinic should be able to pick a reasoning
-   * model out of a dropdown. Promotion is this one field.
+   * Every entry below is GA. The GPT-5.6 family was promoted once it had passed
+   * both live gates (compatibility 38/38 and the AR/EN benchmark; see
+   * docs/AI_MODEL_LIVE_VERIFICATION.md) AND the provider had learned to read
+   * `supportsTemperature` / `reasoningEffort` from this table — promotion before
+   * that second condition would have made every request 400.
+   *
+   * The stage stays in the type with no current members on purpose: it is the
+   * gate the NEXT model goes through. Adding an entry as PREVIEW keeps it
+   * priced, capability-described and operator-selectable by env while it is
+   * being proven, without it appearing in any clinic's dropdown.
+   *
+   * Being GA makes a model SELECTABLE. It does not make it a routing target —
+   * that is `AI_ECONOMY_MODEL` / `AI_POWERFUL_MODEL`, and it is not implied by
+   * anything here.
    */
   releaseStage: 'GA' | 'PREVIEW';
 
@@ -111,6 +130,7 @@ const US_EU_AE: readonly string[] = ['us', 'eu', 'ae'];
 export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   {
     id: 'gpt-4.1-mini',
+    displayName: 'GPT-4.1 Mini',
     provider: 'openai',
     releaseStage: 'GA',
     tier: 'ECONOMY',
@@ -126,6 +146,7 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   },
   {
     id: 'gpt-4o-mini',
+    displayName: 'GPT-4o Mini',
     provider: 'openai',
     releaseStage: 'GA',
     tier: 'ECONOMY',
@@ -142,6 +163,7 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   },
   {
     id: 'gpt-4.1',
+    displayName: 'GPT-4.1',
     provider: 'openai',
     releaseStage: 'GA',
     tier: 'STANDARD',
@@ -157,6 +179,7 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   },
   {
     id: 'gpt-4o',
+    displayName: 'GPT-4o',
     provider: 'openai',
     releaseStage: 'GA',
     tier: 'POWERFUL',
@@ -177,14 +200,16 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
     supportedResidencyRegions: US_EU,
   },
 
-  // ── PREVIEW: GPT-5.6 family ────────────────────────────────────────────────
-  // Reasoning models. Two facts make them different in kind from everything
-  // above, and both are encoded here rather than discovered at runtime:
+  // ── GPT-5.6 family ─────────────────────────────────────────────────────────
+  // Reasoning models. Three facts make them different in kind from everything
+  // above, and all are encoded here rather than discovered at runtime:
   //
   //  1. `supportsTemperature: false` — the family rejects ANY non-default
   //     temperature. `OpenAiChatProvider` always sent `temperature: 0.2`, so
   //     before the provider learned to read this flag, routing here would have
-  //     400'd on every single request.
+  //     400'd on every single request. Note the agent row still carries a
+  //     `temperature` column; selecting one of these models makes that stored
+  //     value inert rather than fatal, because the provider drops it here.
   //  2. `cacheWriteMultiplier: 1.25` — cache writes bill above the uncached
   //     input rate, and reasoning tokens bill as output. Both are priced in the
   //     catalog; a turn here is not cheaper than its `completion_tokens` say.
@@ -208,8 +233,9 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   // reasoning effort, which is a separate, future decision.
   {
     id: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
     provider: 'openai',
-    releaseStage: 'PREVIEW',
+    releaseStage: 'GA',
     tier: 'ECONOMY',
     aliases: [], // verified 2026-08-19: no dated snapshot is published
     contextWindowTokens: 1_047_576,
@@ -225,8 +251,9 @@ export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
   },
   {
     id: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
     provider: 'openai',
-    releaseStage: 'PREVIEW',
+    releaseStage: 'GA',
     tier: 'POWERFUL',
     aliases: [], // verified 2026-08-19: no dated snapshot is published
     contextWindowTokens: 1_047_576,
@@ -257,6 +284,28 @@ export const AI_MODEL_IDS_ALL: readonly string[] = AI_MODEL_REGISTRY.map((m) => 
 export const AI_MODEL_IDS: readonly string[] = AI_MODEL_REGISTRY.filter(
   (m) => m.releaseStage === 'GA',
 ).map((m) => m.id);
+
+/** One option in the tenant-facing model picker. */
+export interface AiSelectableModel {
+  id: string;
+  displayName: string;
+}
+
+/**
+ * The model picker's payload: the SAME GA set as `AI_MODEL_IDS`, carrying the
+ * label to render beside each id.
+ *
+ * Deliberately only `id` + `displayName`. Everything else in a definition —
+ * reasoning effort, cache-write multiplier, residency regions, execution modes,
+ * context window — is either an internal implementation detail or a cost
+ * mechanic, and a clinic choosing an assistant model has no decision to make
+ * with it. Widening this shape is how a capability table becomes a public API.
+ */
+export const AI_SELECTABLE_MODELS: readonly AiSelectableModel[] =
+  AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'GA').map((m) => ({
+    id: m.id,
+    displayName: m.displayName,
+  }));
 
 /** Lower-cased id/alias → definition. Built once; the registry is a module constant. */
 const BY_KEY = new Map<string, AiModelDefinition>(
