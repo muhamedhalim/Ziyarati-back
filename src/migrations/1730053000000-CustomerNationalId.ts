@@ -17,12 +17,26 @@ export class CustomerNationalId1730053000000 implements MigrationInterface {
   name = 'CustomerNationalId1730053000000';
 
   public async up(q: QueryRunner): Promise<void> {
+    // IF NOT EXISTS guards: a dev environment running with
+    // TYPEORM_SYNCHRONIZE=true can have already created this column/index
+    // from the entity definition before this migration ever ran.
     await q.query(
-      `ALTER TABLE "customers" ADD COLUMN "national_id" character varying(50)`,
+      `ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "national_id" character varying(50)`,
     );
-    await q.query(
-      `CREATE UNIQUE INDEX "UQ_customers_tenant_national_id" ON "customers" ("tenantId", "national_id") WHERE "national_id" IS NOT NULL`,
-    );
+    await q.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes
+          WHERE tablename = 'customers'
+            AND indexdef ILIKE '%UNIQUE%'
+            AND indexdef ILIKE '%"tenantId"%'
+            AND indexdef ILIKE '%national_id%'
+        ) THEN
+          CREATE UNIQUE INDEX "UQ_customers_tenant_national_id" ON "customers" ("tenantId", "national_id") WHERE "national_id" IS NOT NULL;
+        END IF;
+      END $$;
+    `);
   }
 
   public async down(q: QueryRunner): Promise<void> {

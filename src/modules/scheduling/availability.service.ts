@@ -70,6 +70,16 @@ interface OccupancyOptions {
   staffId?: string;
   excludeAppointmentId?: string;
   manager?: EntityManager;
+  /**
+   * Minutes of gap `StaffProfile.booking_buffer_minutes` requires around each
+   * existing occupying appointment (AIE-A04) — expands EACH occupying
+   * appointment's window to `[start_at - buffer, end_at + buffer)` before
+   * testing overlap, so a new booking cannot land closer than `buffer`
+   * minutes to an existing one. Only meaningful with a `staffId` (the buffer
+   * is a per-staff setting); ignored for the branch-level (no `staffId`)
+   * facet, which has no single buffer to apply.
+   */
+  bufferMinutes?: number;
 }
 
 /**
@@ -144,13 +154,24 @@ export class AvailabilityService {
     end: Date,
     opts: AssertBookableOptions = {},
   ): Promise<void> {
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(end.getTime()) ||
+      end <= start
+    ) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'Appointment end time must be after the start time',
       });
     }
 
-    const result = await this.evaluate(tenantId, branchId, staffId, start, end, opts);
+    const result = await this.evaluate(
+      tenantId,
+      branchId,
+      staffId,
+      start,
+      end,
+      opts,
+    );
     if (!result.available) {
       // A DEDICATED code, not the generic CONFLICT: a client has to be able to
       // tell "this staff member cannot take this window" apart from every other
@@ -175,7 +196,13 @@ export class AvailabilityService {
   async check(tenantId: string, q: AvailabilityQueryDto) {
     this.requireFields(q, ['staffId', 'startTime', 'endTime']);
     const { start, end } = this.window(q);
-    const result = await this.evaluate(tenantId, q.branchId, q.staffId!, start, end);
+    const result = await this.evaluate(
+      tenantId,
+      q.branchId,
+      q.staffId!,
+      start,
+      end,
+    );
     return {
       window: { startTime: start.toISOString(), endTime: end.toISOString() },
       ...result,
@@ -185,7 +212,13 @@ export class AvailabilityService {
   async validate(tenantId: string, q: AvailabilityQueryDto) {
     this.requireFields(q, ['staffId', 'startTime', 'endTime']);
     const { start, end } = this.window(q);
-    const result = await this.evaluate(tenantId, q.branchId, q.staffId!, start, end);
+    const result = await this.evaluate(
+      tenantId,
+      q.branchId,
+      q.staffId!,
+      start,
+      end,
+    );
     return {
       valid: result.available,
       window: { startTime: start.toISOString(), endTime: end.toISOString() },
@@ -199,7 +232,7 @@ export class AvailabilityService {
     this.requireFields(q, ['staffId', 'date']);
     const branch = await this.refs.getBranch(tenantId, q.branchId);
     const zone = safeZone(branch.timezone);
-    await this.refs.getStaff(tenantId, q.staffId!);
+    const staff = await this.refs.getStaff(tenantId, q.staffId!);
 
     const dateStr = q.date!; // interpreted as the branch's LOCAL calendar date
     const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
@@ -218,16 +251,35 @@ export class AvailabilityService {
         // `reasonCode` is the stable enum a client should branch on.
         reason: holidays.length > 0 ? 'holiday' : 'time_off',
         reasonCode:
-          holidays.length > 0 ? BookabilityReason.HOLIDAY : BookabilityReason.TIME_OFF,
+          holidays.length > 0
+            ? BookabilityReason.HOLIDAY
+            : BookabilityReason.TIME_OFF,
         windows: [],
       };
     }
 
     const [positive, busy] = await Promise.all([
-      this.computePositiveWindows(tenantId, q.branchId, q.staffId!, dateStr, dayStart, dayEnd, zone),
-      this.busyIntervals(tenantId, q.branchId, q.staffId!, dayStart, dayEnd),
+      this.computePositiveWindows(
+        tenantId,
+        q.branchId,
+        q.staffId!,
+        dateStr,
+        dayStart,
+        dayEnd,
+        zone,
+      ),
+      this.busyIntervals(
+        tenantId,
+        q.branchId,
+        q.staffId!,
+        dayStart,
+        dayEnd,
+        staff.booking_buffer_minutes,
+      ),
     ]);
-    let free = mergeIntervals(positive.flatMap((p) => subtractIntervals(p, busy)));
+    let free = mergeIntervals(
+      positive.flatMap((p) => subtractIntervals(p, busy)),
+    );
     if (q.slotMinutes) free = chunkIntervals(free, q.slotMinutes);
 
     return {
@@ -246,15 +298,26 @@ export class AvailabilityService {
     this.requireFields(q, ['date']);
     const branch = await this.refs.getBranch(tenantId, q.branchId);
     const zone = safeZone(branch.timezone);
-    if (q.staffId) await this.refs.getStaff(tenantId, q.staffId);
+    const staff = q.staffId
+      ? await this.refs.getStaff(tenantId, q.staffId)
+      : undefined;
 
     const dateStr = q.date!; // branch LOCAL calendar date
     const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
     const [holidays, blocked, occupying] = await Promise.all([
       this.holidayService.findForDate(tenantId, q.branchId, dateStr),
-      this.blockedService.findOverlapping(tenantId, q.branchId, dayStart, dayEnd, q.staffId),
-      this.findOccupying(tenantId, q.branchId, dayStart, dayEnd, { staffId: q.staffId }),
+      this.blockedService.findOverlapping(
+        tenantId,
+        q.branchId,
+        dayStart,
+        dayEnd,
+        q.staffId,
+      ),
+      this.findOccupying(tenantId, q.branchId, dayStart, dayEnd, {
+        staffId: q.staffId,
+        bufferMinutes: staff?.booking_buffer_minutes,
+      }),
     ]);
 
     let positive: Interval[] = [];
@@ -263,10 +326,23 @@ export class AvailabilityService {
       timeOff = await this.staffTimeOff.isOffOn(tenantId, q.staffId, dateStr);
       positive = timeOff
         ? []
-        : await this.computePositiveWindows(tenantId, q.branchId, q.staffId, dateStr, dayStart, dayEnd, zone);
+        : await this.computePositiveWindows(
+            tenantId,
+            q.branchId,
+            q.staffId,
+            dateStr,
+            dayStart,
+            dayEnd,
+            zone,
+          );
     } else {
       // Branch-level: recurring availability is per-staff, so use calendar slots.
-      const slots = await this.slotService.findAvailableForDay(tenantId, q.branchId, dayStart, dayEnd);
+      const slots = await this.slotService.findAvailableForDay(
+        tenantId,
+        q.branchId,
+        dayStart,
+        dayEnd,
+      );
       positive = slots.map((s) => ({
         start: maxDate(s.start_time, dayStart),
         end: minDate(s.end_time, dayEnd),
@@ -277,7 +353,10 @@ export class AvailabilityService {
       ...blocked.map((b) => ({ start: b.start_time, end: b.end_time })),
       ...occupying.map((a) => ({ start: a.start_at, end: a.end_at })),
     ];
-    const free = holidays.length > 0 ? [] : mergeIntervals(positive.flatMap((p) => subtractIntervals(p, busy)));
+    const free =
+      holidays.length > 0
+        ? []
+        : mergeIntervals(positive.flatMap((p) => subtractIntervals(p, busy)));
 
     return {
       date: dateStr,
@@ -291,11 +370,15 @@ export class AvailabilityService {
       available: { windows: free.length, minutes: totalMinutes(free) },
       blocked: {
         count: blocked.length,
-        minutes: totalMinutes(blocked.map((b) => ({ start: b.start_time, end: b.end_time }))),
+        minutes: totalMinutes(
+          blocked.map((b) => ({ start: b.start_time, end: b.end_time })),
+        ),
       },
       occupied: {
         count: occupying.length,
-        minutes: totalMinutes(occupying.map((a) => ({ start: a.start_at, end: a.end_at }))),
+        minutes: totalMinutes(
+          occupying.map((a) => ({ start: a.start_at, end: a.end_at })),
+        ),
       },
     };
   }
@@ -322,19 +405,40 @@ export class AvailabilityService {
     const dateStr = zonedYmd(start, zone);
     const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
-    const [holidays, blocked, timeOff, occupying, positive, enforceWhenUndefined] =
-      await Promise.all([
-        this.holidayService.findForDate(tenantId, branchId, dateStr),
-        this.blockedService.findOverlapping(tenantId, branchId, start, end, staffId),
-        this.staffTimeOff.isOffOn(tenantId, staffId, dateStr),
-        this.findOccupying(tenantId, branchId, start, end, {
-          staffId,
-          excludeAppointmentId: opts.excludeAppointmentId,
-          manager: opts.manager,
-        }),
-        this.computePositiveWindows(tenantId, branchId, staffId, dateStr, dayStart, dayEnd, zone),
-        this.enforceWorkingHours(tenantId, opts.manager),
-      ]);
+    const [
+      holidays,
+      blocked,
+      timeOff,
+      occupying,
+      positive,
+      enforceWhenUndefined,
+    ] = await Promise.all([
+      this.holidayService.findForDate(tenantId, branchId, dateStr),
+      this.blockedService.findOverlapping(
+        tenantId,
+        branchId,
+        start,
+        end,
+        staffId,
+      ),
+      this.staffTimeOff.isOffOn(tenantId, staffId, dateStr),
+      this.findOccupying(tenantId, branchId, start, end, {
+        staffId,
+        excludeAppointmentId: opts.excludeAppointmentId,
+        manager: opts.manager,
+        bufferMinutes: staff.booking_buffer_minutes,
+      }),
+      this.computePositiveWindows(
+        tenantId,
+        branchId,
+        staffId,
+        dateStr,
+        dayStart,
+        dayEnd,
+        zone,
+      ),
+      this.enforceWorkingHours(tenantId, opts.manager),
+    ]);
 
     const holiday = holidays.length > 0;
     const isBlocked = blocked.length > 0;
@@ -342,7 +446,8 @@ export class AvailabilityService {
 
     let outsideAvailability = false;
     if (positive.length > 0) {
-      outsideAvailability = subtractIntervals({ start, end }, positive).length > 0;
+      outsideAvailability =
+        subtractIntervals({ start, end }, positive).length > 0;
     } else if (enforceWhenUndefined) {
       // Nothing configured for this staff member on this day. Whether that
       // means "unrestricted" or "unavailable" is the clinic's own decision —
@@ -361,11 +466,16 @@ export class AvailabilityService {
     };
 
     if (staffInactive) {
-      add(BookabilityReason.STAFF_INACTIVE, 'staff member is not available for booking');
+      add(
+        BookabilityReason.STAFF_INACTIVE,
+        'staff member is not available for booking',
+      );
     }
     if (holiday) add(BookabilityReason.HOLIDAY, 'the date is a holiday');
-    if (timeOff) add(BookabilityReason.TIME_OFF, 'the staff member is on time off');
-    if (isBlocked) add(BookabilityReason.BLOCKED, 'the window overlaps a blocked period');
+    if (timeOff)
+      add(BookabilityReason.TIME_OFF, 'the staff member is on time off');
+    if (isBlocked)
+      add(BookabilityReason.BLOCKED, 'the window overlaps a blocked period');
     if (occupied) {
       add(
         BookabilityReason.OCCUPIED,
@@ -383,7 +493,14 @@ export class AvailabilityService {
       available: reasons.length === 0,
       reasons,
       reasonCodes,
-      conflicts: { staffInactive, holiday, timeOff, blocked: isBlocked, occupied, outsideAvailability },
+      conflicts: {
+        staffInactive,
+        holiday,
+        timeOff,
+        blocked: isBlocked,
+        occupied,
+        outsideAvailability,
+      },
       occupyingAppointmentIds: occupying.map((a) => a.id),
     };
   }
@@ -413,7 +530,9 @@ export class AvailabilityService {
       where: { tenant: { id: tenantId } },
       select: { id: true, enforce_staff_working_hours: true },
     });
-    return row?.enforce_staff_working_hours ?? ENFORCE_AVAILABILITY_WHEN_UNDEFINED;
+    return (
+      row?.enforce_staff_working_hours ?? ENFORCE_AVAILABILITY_WHEN_UNDEFINED
+    );
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -430,7 +549,13 @@ export class AvailabilityService {
   ): Promise<Interval[]> {
     const [recurring, slots] = await Promise.all([
       this.recurringWindows(tenantId, branchId, staffId, dateStr, zone),
-      this.slotService.findAvailableForDay(tenantId, branchId, dayStart, dayEnd, staffId),
+      this.slotService.findAvailableForDay(
+        tenantId,
+        branchId,
+        dayStart,
+        dayEnd,
+        staffId,
+      ),
     ]);
     const slotWindows = slots.map((s) => ({
       start: maxDate(s.start_time, dayStart),
@@ -451,7 +576,11 @@ export class AvailabilityService {
     dateStr: string,
     zone: string,
   ): Promise<Interval[]> {
-    const avail: any = await this.staffSchedule.getAvailability(tenantId, branchId, dateStr);
+    const avail: any = await this.staffSchedule.getAvailability(
+      tenantId,
+      branchId,
+      dateStr,
+    );
     if (!avail?.open || !Array.isArray(avail.staff)) return [];
     const mine = avail.staff.find((s: any) => s.staffId === staffId);
     if (!mine) return [];
@@ -469,10 +598,20 @@ export class AvailabilityService {
     staffId: string,
     dayStart: Date,
     dayEnd: Date,
+    bufferMinutes?: number,
   ): Promise<Interval[]> {
     const [blocked, occupying] = await Promise.all([
-      this.blockedService.findOverlapping(tenantId, branchId, dayStart, dayEnd, staffId),
-      this.findOccupying(tenantId, branchId, dayStart, dayEnd, { staffId }),
+      this.blockedService.findOverlapping(
+        tenantId,
+        branchId,
+        dayStart,
+        dayEnd,
+        staffId,
+      ),
+      this.findOccupying(tenantId, branchId, dayStart, dayEnd, {
+        staffId,
+        bufferMinutes,
+      }),
     ]);
     return [
       ...blocked.map((b) => ({ start: b.start_time, end: b.end_time })),
@@ -508,12 +647,21 @@ export class AvailabilityService {
     end: Date,
     opts: OccupancyOptions = {},
   ): Promise<Appointment[]> {
-    const repo = opts.manager ? opts.manager.getRepository(Appointment) : this.appointments;
+    const repo = opts.manager
+      ? opts.manager.getRepository(Appointment)
+      : this.appointments;
+    // AIE-A04: widen each occupying appointment's window by the staff's
+    // buffer on both sides — [start_at - buffer, end_at + buffer) — before
+    // testing overlap against [start, end). Equivalent to testing
+    // start_at < end + buffer AND end_at > start - buffer. A zero (or
+    // absent) buffer reduces to the original unbuffered comparison exactly.
+    const bufferMs =
+      (opts.staffId && opts.bufferMinutes ? opts.bufferMinutes : 0) * 60_000;
     const where: FindOptionsWhere<Appointment> = {
       tenant: { id: tenantId },
       status: In(OCCUPYING_APPOINTMENT_STATUSES),
-      start_at: LessThan(end),
-      end_at: MoreThan(start),
+      start_at: LessThan(new Date(end.getTime() + bufferMs)),
+      end_at: MoreThan(new Date(start.getTime() - bufferMs)),
     };
     if (opts.staffId) where.staff = { id: opts.staffId };
     else where.branch = { id: branchId };
@@ -524,7 +672,11 @@ export class AvailabilityService {
   private window(q: AvailabilityQueryDto): { start: Date; end: Date } {
     const start = new Date(q.startTime!);
     const end = new Date(q.endTime!);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(end.getTime()) ||
+      end <= start
+    ) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'endTime must be after startTime',
       });

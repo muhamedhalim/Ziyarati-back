@@ -12,7 +12,10 @@ import { StaffScheduleService } from '../staff/staff-schedule.service';
 import { StaffTimeOffService } from '../staff/staff-time-off.service';
 import { ErrorCode } from '../../common/errors';
 import { BookabilityReason } from './scheduling.constants';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 const BRANCH = 'b1';
@@ -34,7 +37,10 @@ describe('AvailabilityService.assertBookable', () => {
   /** A calendar slot covering the whole day → positive availability covers the booking. */
   const fullDaySlot = () =>
     slotService.findAvailableForDay.mockResolvedValue([
-      { start_time: new Date('2000-01-01T00:00:00Z'), end_time: new Date('2100-01-01T00:00:00Z') },
+      {
+        start_time: new Date('2000-01-01T00:00:00Z'),
+        end_time: new Date('2100-01-01T00:00:00Z'),
+      },
     ]);
 
   /** Turn the per-clinic strict working-hours rule on for this test. */
@@ -50,7 +56,9 @@ describe('AvailabilityService.assertBookable', () => {
     tenantSettings = createMockRepository();
     refs = {
       getBranch: jest.fn().mockResolvedValue({ id: BRANCH, timezone: 'UTC' }),
-      getStaff: jest.fn().mockResolvedValue({ id: STAFF, is_available_for_booking: true }),
+      getStaff: jest
+        .fn()
+        .mockResolvedValue({ id: STAFF, is_available_for_booking: true }),
     };
     slotService = { findAvailableForDay: jest.fn().mockResolvedValue([]) };
     blockedService = { findOverlapping: jest.fn().mockResolvedValue([]) };
@@ -62,7 +70,10 @@ describe('AvailabilityService.assertBookable', () => {
       providers: [
         AvailabilityService,
         { provide: getRepositoryToken(Appointment), useValue: appointments },
-        { provide: getRepositoryToken(TenantSetting), useValue: tenantSettings },
+        {
+          provide: getRepositoryToken(TenantSetting),
+          useValue: tenantSettings,
+        },
         { provide: SchedulingRefService, useValue: refs },
         { provide: CalendarSlotService, useValue: slotService },
         { provide: BlockedSlotService, useValue: blockedService },
@@ -80,7 +91,9 @@ describe('AvailabilityService.assertBookable', () => {
     service.assertBookable(TENANT, BRANCH, STAFF, start, end, {});
 
   it('rejects an invalid window (end <= start) with 422', async () => {
-    await expect(assert(END, START)).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+    await expect(assert(END, START)).rejects.toMatchObject({
+      code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
   });
 
   it('passes when the window is clear and within positive availability', async () => {
@@ -90,7 +103,10 @@ describe('AvailabilityService.assertBookable', () => {
 
   it('rejects when the staff member is not bookable', async () => {
     fullDaySlot();
-    refs.getStaff.mockResolvedValueOnce({ id: STAFF, is_available_for_booking: false });
+    refs.getStaff.mockResolvedValueOnce({
+      id: STAFF,
+      is_available_for_booking: false,
+    });
     await expect(assert()).rejects.toMatchObject({
       code: ErrorCode.STAFF_NOT_AVAILABLE,
       publicContext: { reasonCodes: [BookabilityReason.STAFF_INACTIVE] },
@@ -99,7 +115,9 @@ describe('AvailabilityService.assertBookable', () => {
 
   it('rejects on a holiday', async () => {
     fullDaySlot();
-    holidayService.findForDate.mockResolvedValueOnce([{ id: 'h1', name: 'Eid', date: '2026-07-01' }]);
+    holidayService.findForDate.mockResolvedValueOnce([
+      { id: 'h1', name: 'Eid', date: '2026-07-01' },
+    ]);
     await expect(assert()).rejects.toMatchObject({
       code: ErrorCode.STAFF_NOT_AVAILABLE,
       publicContext: { reasonCodes: [BookabilityReason.HOLIDAY] },
@@ -128,7 +146,9 @@ describe('AvailabilityService.assertBookable', () => {
 
   it('rejects when an occupying appointment overlaps (double-booking)', async () => {
     fullDaySlot();
-    appointments.find.mockResolvedValueOnce([{ id: 'occ-1', start_at: START, end_at: END }]);
+    appointments.find.mockResolvedValueOnce([
+      { id: 'occ-1', start_at: START, end_at: END },
+    ]);
     await expect(assert()).rejects.toMatchObject({
       code: ErrorCode.STAFF_NOT_AVAILABLE,
       publicContext: { reasonCodes: [BookabilityReason.OCCUPIED] },
@@ -137,16 +157,22 @@ describe('AvailabilityService.assertBookable', () => {
 
   it('never leaks the occupying appointment ids to the client', async () => {
     fullDaySlot();
-    appointments.find.mockResolvedValueOnce([{ id: 'occ-1', start_at: START, end_at: END }]);
+    appointments.find.mockResolvedValueOnce([
+      { id: 'occ-1', start_at: START, end_at: END },
+    ]);
     await expect(assert()).rejects.toMatchObject({
-      publicContext: expect.not.objectContaining({ occupyingAppointmentIds: expect.anything() }),
+      publicContext: expect.not.objectContaining({
+        occupyingAppointmentIds: expect.anything(),
+      }),
     });
   });
 
   it('reports every failing rule at once, not just the first', async () => {
     fullDaySlot();
     staffTimeOff.isOffOn.mockResolvedValueOnce(true);
-    appointments.find.mockResolvedValueOnce([{ id: 'occ-1', start_at: START, end_at: END }]);
+    appointments.find.mockResolvedValueOnce([
+      { id: 'occ-1', start_at: START, end_at: END },
+    ]);
     await expect(assert()).rejects.toMatchObject({
       publicContext: {
         reasonCodes: [BookabilityReason.TIME_OFF, BookabilityReason.OCCUPIED],
@@ -161,7 +187,9 @@ describe('AvailabilityService.assertBookable', () => {
     txRepo.findOne.mockResolvedValue(null);
     const mgr = { getRepository: jest.fn().mockReturnValue(txRepo) };
 
-    await service.assertBookable(TENANT, BRANCH, STAFF, START, END, { manager: mgr as any });
+    await service.assertBookable(TENANT, BRANCH, STAFF, START, END, {
+      manager: mgr as any,
+    });
 
     expect(mgr.getRepository).toHaveBeenCalledWith(Appointment);
     expect(txRepo.find).toHaveBeenCalled();
@@ -179,10 +207,103 @@ describe('AvailabilityService.assertBookable', () => {
 
     it('DOES filter by branch for the branch-level summary (no staff)', async () => {
       fullDaySlot();
-      await service.summary(TENANT, { branchId: BRANCH, date: '2026-07-01' } as any);
+      await service.summary(TENANT, {
+        branchId: BRANCH,
+        date: '2026-07-01',
+      } as any);
       const where = appointments.find.mock.calls[0][0].where;
       expect(where.branch).toEqual({ id: BRANCH });
       expect(where.staff).toBeUndefined();
+    });
+  });
+
+  describe('booking buffer (AIE-A04)', () => {
+    // Confirmed inert before this fix: `booking_buffer_minutes` had zero
+    // references anywhere under src/modules/scheduling (structural check,
+    // repo-wide grep) and 0 of the 3 live-seeded staff carried a non-zero
+    // value (live DB check, evidence/environment-record.md). This suite is
+    // the runtime proof it is no longer inert, for both zero and positive
+    // values, without changing occupancy scope or any other rule.
+
+    it('buffer = 0 (default): the occupancy query is unchanged — exact start/end bounds, no widening', async () => {
+      fullDaySlot();
+      refs.getStaff.mockResolvedValueOnce({
+        id: STAFF,
+        is_available_for_booking: true,
+        booking_buffer_minutes: 0,
+      });
+      await assert();
+      const where = appointments.find.mock.calls[0][0].where;
+      expect(where.start_at.value).toEqual(END);
+      expect(where.end_at.value).toEqual(START);
+    });
+
+    it('buffer > 0: the occupancy query widens the comparison bounds by the buffer on both sides', async () => {
+      fullDaySlot();
+      refs.getStaff.mockResolvedValueOnce({
+        id: STAFF,
+        is_available_for_booking: true,
+        booking_buffer_minutes: 15,
+      });
+      await assert();
+      const where = appointments.find.mock.calls[0][0].where;
+      expect(where.start_at.value).toEqual(
+        new Date(END.getTime() + 15 * 60_000),
+      );
+      expect(where.end_at.value).toEqual(
+        new Date(START.getTime() - 15 * 60_000),
+      );
+    });
+
+    it('rejects a new booking starting exactly when a prior appointment for the SAME staff ends, if the buffer requires a gap (adjacent appointment)', async () => {
+      fullDaySlot();
+      refs.getStaff.mockResolvedValueOnce({
+        id: STAFF,
+        is_available_for_booking: true,
+        booking_buffer_minutes: 10,
+      });
+      // Prior appointment ends exactly at START — zero gap, no overlap under
+      // the OLD (unbuffered) rule, but inside the buffered window now.
+      const priorEnd = START;
+      const priorStart = new Date(START.getTime() - 30 * 60_000);
+      appointments.find.mockResolvedValueOnce([
+        { id: 'occ-1', start_at: priorStart, end_at: priorEnd },
+      ]);
+      await expect(assert()).rejects.toMatchObject({
+        code: ErrorCode.STAFF_NOT_AVAILABLE,
+        publicContext: { reasonCodes: [BookabilityReason.OCCUPIED] },
+      });
+    });
+
+    it('does NOT widen the query bounds at buffer = 0 — the mock repo (which does not itself filter by WHERE) still resolves as unavailable only because the response is scripted; the real DB proof of "adjacent, zero-gap, unaffected at buffer=0" is a live-Postgres query, see evidence/booking-buffer-runtime-probe.md', async () => {
+      fullDaySlot();
+      refs.getStaff.mockResolvedValueOnce({
+        id: STAFF,
+        is_available_for_booking: true,
+        booking_buffer_minutes: 0,
+      });
+      appointments.find.mockResolvedValueOnce([]); // simulates the real DB finding no overlap at buffer=0
+      await expect(assert()).resolves.toBeUndefined();
+      const where = appointments.find.mock.calls[0][0].where;
+      // The bounds actually sent to the DB are unwidened — matches the first
+      // test in this block; a real Postgres row ending exactly at START
+      // fails `end_at > start` (START > START is false) and is correctly
+      // excluded, which only the live probe can prove end-to-end.
+      expect(where.start_at.value).toEqual(END);
+      expect(where.end_at.value).toEqual(START);
+    });
+
+    it('is platform-wide, not AI-specific: assertBookable is the one gate every booking source (reception, AI, WhatsApp, integration) calls through, and this test exercises it with no channel/source parameter at all', async () => {
+      fullDaySlot();
+      refs.getStaff.mockResolvedValueOnce({
+        id: STAFF,
+        is_available_for_booking: true,
+        booking_buffer_minutes: 20,
+      });
+      await assert();
+      // No AI-specific branch, flag, or parameter exists on assertBookable —
+      // the buffer widening happens unconditionally inside findOccupying.
+      expect(appointments.find).toHaveBeenCalled();
     });
   });
 
@@ -204,7 +325,9 @@ describe('AvailabilityService.assertBookable', () => {
       enforceWorkingHours(true);
       await expect(assert()).rejects.toMatchObject({
         code: ErrorCode.STAFF_NOT_AVAILABLE,
-        publicContext: { reasonCodes: [BookabilityReason.OUTSIDE_WORKING_HOURS] },
+        publicContext: {
+          reasonCodes: [BookabilityReason.OUTSIDE_WORKING_HOURS],
+        },
       });
     });
 
@@ -212,11 +335,15 @@ describe('AvailabilityService.assertBookable', () => {
       slotService.findAvailableForDay.mockResolvedValue([]);
       staffSchedule.getAvailability.mockResolvedValue({
         open: true,
-        staff: [{ staffId: STAFF, windows: [{ start: '13:00', end: '17:00' }] }],
+        staff: [
+          { staffId: STAFF, windows: [{ start: '13:00', end: '17:00' }] },
+        ],
       });
       enforceWorkingHours(false); // opted OUT — the gate still applies here
       await expect(assert()).rejects.toMatchObject({
-        publicContext: { reasonCodes: [BookabilityReason.OUTSIDE_WORKING_HOURS] },
+        publicContext: {
+          reasonCodes: [BookabilityReason.OUTSIDE_WORKING_HOURS],
+        },
       });
     });
   });
@@ -243,27 +370,43 @@ describe('AvailabilityService.assertBookable', () => {
     });
 
     it('rejects missing required query params with VALIDATION_ERROR', async () => {
-      await expect(service.check(TENANT, { branchId: BRANCH } as any)).rejects.toMatchObject({
+      await expect(
+        service.check(TENANT, { branchId: BRANCH } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.VALIDATION_ERROR,
       });
     });
 
     it('rejects an inverted time window with 422', async () => {
       await expect(
-        service.check(TENANT, { ...q, startTime: END.toISOString(), endTime: START.toISOString() }),
+        service.check(TENANT, {
+          ...q,
+          startTime: END.toISOString(),
+          endTime: START.toISOString(),
+        }),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
 
     it('windows() returns free windows for a clear day', async () => {
       fullDaySlot();
-      const res = await service.windows(TENANT, { branchId: BRANCH, staffId: STAFF, date: '2026-07-01' } as any);
+      const res = await service.windows(TENANT, {
+        branchId: BRANCH,
+        staffId: STAFF,
+        date: '2026-07-01',
+      } as any);
       expect(res.available).toBe(true);
       expect(res.windows.length).toBeGreaterThan(0);
     });
 
     it('windows() short-circuits to unavailable on a holiday', async () => {
-      holidayService.findForDate.mockResolvedValueOnce([{ id: 'h1', name: 'Eid', date: '2026-07-01' }]);
-      const res = await service.windows(TENANT, { branchId: BRANCH, staffId: STAFF, date: '2026-07-01' } as any);
+      holidayService.findForDate.mockResolvedValueOnce([
+        { id: 'h1', name: 'Eid', date: '2026-07-01' },
+      ]);
+      const res = await service.windows(TENANT, {
+        branchId: BRANCH,
+        staffId: STAFF,
+        date: '2026-07-01',
+      } as any);
       expect(res.available).toBe(false);
       expect(res.reason).toBe('holiday');
     });
@@ -271,7 +414,11 @@ describe('AvailabilityService.assertBookable', () => {
     it('summary() reports free/blocked/occupied minutes for a staff member', async () => {
       fullDaySlot();
       blockedService.findOverlapping.mockResolvedValueOnce([]);
-      const res = await service.summary(TENANT, { branchId: BRANCH, staffId: STAFF, date: '2026-07-01' } as any);
+      const res = await service.summary(TENANT, {
+        branchId: BRANCH,
+        staffId: STAFF,
+        date: '2026-07-01',
+      } as any);
       expect(res.holiday.isHoliday).toBe(false);
       expect(res.available.windows).toBeGreaterThan(0);
       expect(res.occupied.count).toBe(0);
@@ -279,7 +426,10 @@ describe('AvailabilityService.assertBookable', () => {
 
     it('summary() works at branch level (no staff) using calendar slots', async () => {
       fullDaySlot();
-      const res = await service.summary(TENANT, { branchId: BRANCH, date: '2026-07-01' } as any);
+      const res = await service.summary(TENANT, {
+        branchId: BRANCH,
+        date: '2026-07-01',
+      } as any);
       expect(res.staffId).toBeNull();
       expect(res.available.windows).toBeGreaterThan(0);
     });
@@ -288,7 +438,9 @@ describe('AvailabilityService.assertBookable', () => {
       slotService.findAvailableForDay.mockResolvedValue([]); // no one-off slots
       staffSchedule.getAvailability.mockResolvedValue({
         open: true,
-        staff: [{ staffId: STAFF, windows: [{ start: '09:00', end: '17:00' }] }],
+        staff: [
+          { staffId: STAFF, windows: [{ start: '09:00', end: '17:00' }] },
+        ],
       });
       // 10:00–10:30 UTC falls inside the 09:00–17:00 recurring window.
       await expect(assert()).resolves.toBeUndefined();

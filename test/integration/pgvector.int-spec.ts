@@ -64,6 +64,7 @@ async function boot() {
     ],
     migrations: [join(process.cwd(), 'src', 'migrations', '!(*.spec).{ts,js}')],
     synchronize: false,
+    migrationsTransactionMode: 'each', // matches src/config/data-source.ts — some migrations override the per-migration mode, which TypeORM refuses to combine with the default global 'all' mode.
   });
   await ds.initialize();
 
