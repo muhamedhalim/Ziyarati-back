@@ -34,8 +34,11 @@ describe('CreateAiAgentDto — model allow-list', () => {
   it.each([
     'gpt-4-turbo',
     'claude-3-opus',
-    'gpt-5.6-luna',
     'not-a-model',
+    // Casing and whitespace are NOT normalised at the write boundary. `findModel`
+    // is lenient so a value the provider echoes back still prices; a value being
+    // PERSISTED has to be the canonical id exactly, or two rows mean the same
+    // model and only one of them matches on a later exact comparison.
     'GPT-4O',
     'gpt-4o ',
   ])('rejects unregistered model "%s"', async (model) => {
@@ -57,11 +60,49 @@ describe('CreateAiAgentDto — model allow-list', () => {
    * refused here: an agent row is persistent tenant configuration, and a model
    * whose live compatibility has not been demonstrated has no business becoming
    * a clinic's stored default. The rejection is the release stage, not absence.
+   *
+   * There are no PREVIEW entries at present (the GPT-5.6 family was promoted to
+   * GA once it passed the live gate), so this asserts the RULE over whatever the
+   * registry currently holds rather than iterating a set that happens to be
+   * empty — an `it.each([])` would be a hard jest error today and silent
+   * non-coverage the moment someone "fixed" it.
    */
-  it.each(
-    AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'PREVIEW').map((m) => m.id),
-  )('rejects PREVIEW model %s even though it is registered', async (model) => {
-    expect(isKnownModel(model)).toBe(true);
+  it('rejects any PREVIEW model, even though it is registered', async () => {
+    const preview = AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'PREVIEW');
+    for (const model of preview) {
+      expect(isKnownModel(model.id)).toBe(true);
+      expect(
+        propertyErrors(await errorsFor({ model: model.id }), 'model'),
+      ).toHaveLength(1);
+    }
+  });
+
+  /**
+   * The point of the promotion: both GPT-5.6 models are now first-class stored
+   * agent configuration, not just operator-selectable by env.
+   */
+  it.each(['gpt-5.6-luna', 'gpt-5.6-terra'])(
+    'accepts %s as a persisted agent model',
+    async (model) => {
+      expect(propertyErrors(await errorsFor({ model }), 'model')).toHaveLength(0);
+      // Same allow-list on update, inherited via PartialType.
+      expect(
+        propertyErrors(await errorsFor({ model }, UpdateAiAgentDto), 'model'),
+      ).toHaveLength(0);
+    },
+  );
+
+  /**
+   * The fabricated dated snapshots. Two of these were invented outright and one
+   * (`gpt-4o-latest`) was a real-looking guess; all three were disproved against
+   * GET /v1/models. They must fail validation, not resolve to a canonical id.
+   */
+  it.each([
+    'gpt-5.6-luna-2026-06-11',
+    'gpt-5.6-terra-2026-06-11',
+    'gpt-4o-latest',
+  ])('rejects the non-existent id %s', async (model) => {
+    expect(isKnownModel(model)).toBe(false);
     expect(propertyErrors(await errorsFor({ model }), 'model')).toHaveLength(1);
   });
 

@@ -7,6 +7,7 @@ import {
   AI_MODEL_IDS_ALL,
   AI_MODEL_REGISTRY,
   AI_MODEL_REGISTRY_GA,
+  AI_SELECTABLE_MODELS,
   findModel,
   isKnownModel,
   modelsForTier,
@@ -137,32 +138,104 @@ describe('AI_MODEL_REGISTRY', () => {
 });
 
 /**
- * A PREVIEW entry is fully described and fully priced but NOT yet proven against
- * this codebase's request shape by the live compatibility spec. The gate is what
- * keeps "we wrote the entry" from silently becoming "tenants are using it": the
- * GPT-5.x family rejects the `temperature` this provider sends by default, so an
- * unproven promotion is not a quality risk but a 100%-failure risk.
+ * The supported model set, stated once, explicitly.
+ *
+ * Every other allow-list in the codebase is DERIVED from the registry, so this
+ * is the only place the intended set is written down as a literal. If a model
+ * is added or dropped, exactly one test should fail — and it should be this
+ * one, deliberately, rather than something downstream failing obscurely.
  */
-describe('AI_MODEL_REGISTRY — PREVIEW gating', () => {
-  const prices = new AiPriceCatalogService(new ConfigService());
-  const preview = AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'PREVIEW');
+describe('AI_MODEL_REGISTRY — the supported model set', () => {
+  const EXPECTED = [
+    { id: 'gpt-4o', displayName: 'GPT-4o' },
+    { id: 'gpt-4o-mini', displayName: 'GPT-4o Mini' },
+    { id: 'gpt-4.1', displayName: 'GPT-4.1' },
+    { id: 'gpt-4.1-mini', displayName: 'GPT-4.1 Mini' },
+    { id: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna' },
+    { id: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra' },
+  ];
 
-  it('keeps every PREVIEW model out of the tenant-facing allow-list', () => {
-    expect(preview.length).toBeGreaterThan(0);
-    for (const model of preview) {
-      // AI_MODEL_IDS backs the agent DTO, the ai.default_model setting and the
-      // dashboard picker — all three are tenant-reachable.
-      expect(AI_MODEL_IDS).not.toContain(model.id);
-      expect(AI_MODEL_IDS_ALL).toContain(model.id);
+  it('registers exactly the six supported models', () => {
+    expect([...AI_MODEL_IDS_ALL].sort()).toEqual(
+      EXPECTED.map((m) => m.id).sort(),
+    );
+  });
+
+  it('makes all six tenant-selectable', () => {
+    // AI_MODEL_IDS backs the agent DTO, the ai.default_model platform setting
+    // and GET /ai/agents/models. One list, three enforcement points.
+    expect([...AI_MODEL_IDS].sort()).toEqual(EXPECTED.map((m) => m.id).sort());
+  });
+
+  it('labels each one for the picker', () => {
+    for (const { id, displayName } of EXPECTED) {
+      expect(findModel(id)?.displayName).toBe(displayName);
     }
   });
 
-  it('still resolves a PREVIEW model by id and alias — operators may select one by env', () => {
-    for (const model of preview) {
-      expect(findModel(model.id)?.id).toBe(model.id);
-      expect(isKnownModel(model.id)).toBe(true);
-      for (const alias of model.aliases) {
-        expect(findModel(alias)?.id).toBe(model.id);
+  it('exposes id + label to the dashboard and nothing else', () => {
+    // Widening this is how a capability table leaks into a public API: reasoning
+    // effort, cache-write multipliers and residency regions are cost mechanics,
+    // not information a clinic picks an assistant with.
+    for (const option of AI_SELECTABLE_MODELS) {
+      expect(Object.keys(option).sort()).toEqual(['displayName', 'id']);
+    }
+    expect(AI_SELECTABLE_MODELS.map((m) => m.id)).toEqual([...AI_MODEL_IDS]);
+  });
+
+  it('gives every model a distinct, non-empty label', () => {
+    const names = AI_MODEL_REGISTRY.map((m) => m.displayName);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names.every((n) => n.trim().length > 0)).toBe(true);
+  });
+
+  it('rejects the alias claims that were verified NOT to exist', () => {
+    // All three were once written down here as real snapshots. They are not.
+    // Re-adding any of them silently re-prices or mis-resolves a turn.
+    for (const fake of [
+      'gpt-4o-latest',
+      'gpt-5.6-luna-2026-06-11',
+      'gpt-5.6-terra-2026-06-11',
+    ]) {
+      expect(isKnownModel(fake)).toBe(false);
+      expect(AI_MODEL_IDS).not.toContain(fake);
+      expect(AI_MODEL_IDS_ALL).not.toContain(fake);
+    }
+  });
+
+  it('publishes no dated snapshot for the GPT-5.6 family', () => {
+    // Verified against GET /v1/models: the family has no dated snapshots at all.
+    // An empty list is the claim; a populated one would be an invention.
+    for (const model of AI_MODEL_REGISTRY.filter((m) =>
+      m.id.startsWith('gpt-5.6'),
+    )) {
+      expect(model.aliases).toEqual([]);
+    }
+  });
+});
+
+/**
+ * Release-stage gating.
+ *
+ * There are currently NO preview models — the GPT-5.6 family was promoted once
+ * it had passed the live compatibility gate and the provider had learned to
+ * read its capability flags. These tests therefore assert the LAWS of the
+ * mechanism rather than the membership of the set, so they keep guarding the
+ * next model to come through instead of quietly becoming vacuous.
+ */
+describe('AI_MODEL_REGISTRY — release-stage gating', () => {
+  const prices = new AiPriceCatalogService(new ConfigService());
+
+  it('derives the tenant-facing allow-list from GA membership alone', () => {
+    expect([...AI_MODEL_IDS]).toEqual(
+      AI_MODEL_REGISTRY.filter((m) => m.releaseStage === 'GA').map((m) => m.id),
+    );
+    for (const model of AI_MODEL_REGISTRY) {
+      if (model.releaseStage === 'PREVIEW') {
+        // The gate, stated as a law: whatever is PREVIEW is env-selectable by an
+        // operator and never reachable from a tenant surface.
+        expect(AI_MODEL_IDS).not.toContain(model.id);
+        expect(AI_MODEL_IDS_ALL).toContain(model.id);
       }
     }
   });
@@ -176,37 +249,86 @@ describe('AI_MODEL_REGISTRY — PREVIEW gating', () => {
     expect(AI_MODEL_REGISTRY_GA.every((m) => m.releaseStage === 'GA')).toBe(true);
   });
 
-  it('prices every PREVIEW model before it can ever be selected', () => {
+  it('resolves every registered model by id and alias regardless of stage', () => {
+    for (const model of AI_MODEL_REGISTRY) {
+      expect(findModel(model.id)?.id).toBe(model.id);
+      expect(isKnownModel(model.id)).toBe(true);
+      for (const alias of model.aliases) {
+        expect(findModel(alias)?.id).toBe(model.id);
+      }
+    }
+  });
+
+  it('prices every model before it can ever be selected', () => {
     // Ordering matters: a model that became selectable before it was priced
     // would bill as UNPRICED for exactly as long as nobody noticed.
-    for (const model of preview) {
+    for (const model of AI_MODEL_REGISTRY) {
       expect(prices.quoteChat('openai', model.id, 1_000, 1_000).status).toBe(
         'PRICED',
       );
     }
   });
+});
 
-  it('declares the two facts that make the GPT-5.x family different', () => {
-    const gpt5 = preview.filter((m) => m.id.startsWith('gpt-5'));
-    expect(gpt5.length).toBeGreaterThan(0);
-    for (const model of gpt5) {
-      // Without this the provider sends `temperature` and every request 400s.
-      expect(model.supportsTemperature).toBe(false);
-      // Cache writes bill above the uncached input rate.
-      expect(model.cacheWriteMultiplier).toBe(1.25);
-    }
+/**
+ * The GPT-5.6 family's capability contract.
+ *
+ * Asserted against the registry directly rather than through a release-stage
+ * filter, so promoting or demoting the family cannot make this coverage vanish.
+ * Every value here was established by the live compatibility run on 2026-08-19
+ * (docs/AI_MODEL_LIVE_VERIFICATION.md), not inferred.
+ */
+describe('AI_MODEL_REGISTRY — GPT-5.6 capability contract', () => {
+  const prices = new AiPriceCatalogService(new ConfigService());
+  const gpt56 = AI_MODEL_REGISTRY.filter((m) => m.id.startsWith('gpt-5.6'));
+
+  it('registers both GPT-5.6 models', () => {
+    expect(gpt56.map((m) => m.id).sort()).toEqual([
+      'gpt-5.6-luna',
+      'gpt-5.6-terra',
+    ]);
   });
 
-  /**
-   * Established live on 2026-08-19, not assumed: `/v1/chat/completions` rejects
-   * function tools for this family at ANY reasoning effort except 'none' — and
-   * OMITTING the field produces the identical 400, because the model applies a
-   * default effort of its own. Since essentially every turn in this product
-   * carries tools, 'none' is the only usable value, and leaving it unset is the
-   * silent footgun: the registry would look complete and every tool turn would
-   * fail.
-   */
-  it('pins reasoning effort to none on every reasoning-family model', () => {
+  it.each(['gpt-5.6-luna', 'gpt-5.6-terra'])(
+    '%s declares the three facts that make it different in kind',
+    (id) => {
+      const model = findModel(id)!;
+      // 1. Any explicit temperature is a 400 — the provider must omit the field.
+      expect(model.supportsTemperature).toBe(false);
+      // 2. 'none' is mandatory, not a preference: /v1/chat/completions rejects
+      //    function tools at every other effort INCLUDING when the field is
+      //    omitted, because the model then applies a default of its own.
+      expect(model.reasoningEffort).toBe('none');
+      // 3. Cache writes bill above the uncached input rate.
+      expect(model.cacheWriteMultiplier).toBe(1.25);
+    },
+  );
+
+  it.each(['gpt-5.6-luna', 'gpt-5.6-terra'])(
+    '%s carries a cache-write rate, so its cache writes cannot go unbilled',
+    (id) => {
+      const withCacheWrite = prices.quoteChat(
+        'openai',
+        id,
+        10_000,
+        1_000,
+        0,
+        AI_EXECUTION_MODE.STANDARD,
+        false,
+        5_000,
+      );
+      const without = prices.quoteChat('openai', id, 10_000, 1_000);
+      expect(withCacheWrite.status).toBe('PRICED');
+      expect(withCacheWrite.cacheWriteMicrousdPerMillion).toBeDefined();
+      // The surcharge is real money, not a rounding artefact.
+      expect(withCacheWrite.costMicrousd! > without.costMicrousd!).toBe(true);
+    },
+  );
+
+  it('pins reasoning effort on EVERY model that omits temperature', () => {
+    // The generalisation of the fact above: a model the provider will not send a
+    // temperature for is a reasoning model, and a reasoning model with no effort
+    // pinned fails every tool turn while looking perfectly configured.
     const reasoning = AI_MODEL_REGISTRY.filter((m) => !m.supportsTemperature);
     expect(reasoning.length).toBeGreaterThan(0);
     for (const model of reasoning) {
@@ -214,11 +336,15 @@ describe('AI_MODEL_REGISTRY — PREVIEW gating', () => {
     }
   });
 
-  it('has no GA model that would need the temperature omission', () => {
-    // If this ever fails, a GA model was promoted without the provider-side
-    // capability handling being exercised by the live compat run.
-    for (const model of AI_MODEL_REGISTRY_GA) {
+  it('keeps GPT-5.6 out of the GPT-4.x behaviour it must not inherit', () => {
+    for (const model of AI_MODEL_REGISTRY.filter(
+      (m) => !m.id.startsWith('gpt-5.6'),
+    )) {
+      // Every GPT-4.x model still takes a temperature and sends no effort, so
+      // promoting GPT-5.6 changed nothing about how they are dispatched.
       expect(model.supportsTemperature).toBe(true);
+      expect(model.reasoningEffort).toBeUndefined();
+      expect(model.cacheWriteMultiplier).toBeUndefined();
     }
   });
 });

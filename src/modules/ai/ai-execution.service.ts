@@ -70,6 +70,8 @@ import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
 import { AiModelRouterService } from './routing/ai-model-router.service';
 import { findModel } from './routing/ai-model-registry';
+import { SystemSettingService } from '../platform/system-setting.service';
+import { SettingKey } from '../platform/settings.registry';
 
 /** Bounds the tool-calling loop so a misbehaving model can't spin indefinitely. */
 const MAX_TOOL_ITERATIONS = 4;
@@ -147,6 +149,7 @@ export class AiExecutionService {
     private readonly subscriptions: SubscriptionService,
     private readonly access: AccessControlService,
     private readonly config: ConfigService,
+    private readonly platformSettings: SystemSettingService,
   ) {
     // AI-023 (FR-048, R7): read once at construction — same posture as
     // MAX_TOOL_ITERATIONS being a fixed module constant; this bound is
@@ -182,6 +185,20 @@ export class AiExecutionService {
       surface: 'service',
       detail: 'AiExecutionService.turn',
     });
+  }
+
+  /**
+   * A per-agent `temperature` always wins (seeded from `AI_DEFAULT_TEMP` at
+   * agent-creation time, then editable independently). When there is no
+   * agent row at all — the guest/public widget always hits this, since it
+   * runs against the discovery tenant with no `AiAgent` — the platform
+   * setting must still be consulted here rather than left to
+   * `OpenAiChatProvider`'s own `?? 0.2` fallback, or a super admin changing
+   * `ai.default_temperature` would never affect that surface.
+   */
+  private async resolveTemperature(agent?: AiAgent): Promise<number> {
+    if (agent) return Number(agent.temperature);
+    return this.platformSettings.getTyped<number>(SettingKey.AI_DEFAULT_TEMP);
   }
 
   /**
@@ -450,6 +467,7 @@ export class AiExecutionService {
       // path the registry is consulted directly so per-model budgeting applies
       // either way. Undefined for an unregistered model → global fallback.
       const modelDefinition = routed.definition ?? findModel(routed.model);
+      const temperature = await this.resolveTemperature(agent);
 
       const built = this.budgets.build({
         systemPrompt: agent?.system_prompt,
@@ -514,7 +532,7 @@ export class AiExecutionService {
         const completion = await provider.complete({
           tenantId,
           model: routed.model,
-          temperature: agent ? Number(agent.temperature) : undefined,
+          temperature,
           // Capabilities travel WITH the request: a reasoning model rejects an
           // explicit temperature outright, so the agent's configured value must
           // be dropped by the provider rather than sent and 400'd.
@@ -1352,7 +1370,7 @@ export class AiExecutionService {
       providerForMetric = provider.name;
       const model = routed.model;
       modelForMetric = model ?? provider.name;
-      const temperature = agent ? Number(agent.temperature) : undefined;
+      const temperature = await this.resolveTemperature(agent);
       const toolCtx: ToolContext = {
         tenantId,
         actorUserId: this.ctx.getUser()?.id,

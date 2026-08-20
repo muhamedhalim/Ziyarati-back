@@ -11,8 +11,9 @@ import { OpenAiChatProvider } from './openai-chat.provider';
  * Every claim in `AI_MODEL_REGISTRY` is an assertion about a remote service that
  * only a real request can settle. A model can be correctly priced, correctly
  * gated and still 400 on the exact request shape this codebase sends — that is
- * precisely how the GPT-5.x family behaves when `temperature` is sent, which is
- * why those entries stay PREVIEW until this suite has run against them.
+ * precisely how the GPT-5.x family behaves when `temperature` is sent. Passing
+ * this suite is what earned that family its GA promotion; nothing reaches a
+ * clinic's model picker without it.
  *
  * OPT-IN. Skipped unless `OPENAI_LIVE_TESTS=true`, because it spends real money
  * and needs network. It is a `.spec.ts` (not a differently-suffixed file) on
@@ -260,6 +261,36 @@ describeLive('OpenAI live model compatibility', () => {
         `\n[usage] ${model.id} (${model.releaseStage})\n${JSON.stringify(raw[0], null, 2)}\n`,
       );
       expect(raw[0]).toBeDefined();
+
+      if (model.cacheWriteMultiplier) {
+        // The field the cost path multiplies. It is reported only when the API
+        // actually performs a cache write, which this test cannot force — so the
+        // assertion is on the SHAPE the provider normalises to, not on a
+        // non-zero count. A `undefined` here would multiply into a silent
+        // under-bill; that is the failure being guarded against.
+        const details = (raw[0] as { prompt_tokens_details?: unknown })
+          ?.prompt_tokens_details;
+        expect(details).toBeDefined();
+      }
+    });
+
+    /**
+     * Every model, cache-write-billing or not, must hand the cost path a real
+     * integer. This is the regression guard for the streaming bug found on
+     * 2026-08-19: the execution layer copied the terminal chunk field by field
+     * and dropped `cacheWriteTokens`, so streaming — the dominant chat path —
+     * under-billed while the non-streaming path looked correct.
+     */
+    it('always reports a well-formed cache-write token count', async () => {
+      const result = await providerFor(model).complete({
+        tenantId: TENANT,
+        model: model.id,
+        ...caps(model),
+        messages: [{ role: 'user', content: 'Reply with the single word: ok' }],
+        maxOutputTokens: 32,
+      });
+      expect(Number.isSafeInteger(result.cacheWriteTokens)).toBe(true);
+      expect(result.cacheWriteTokens).toBeGreaterThanOrEqual(0);
     });
   });
 });

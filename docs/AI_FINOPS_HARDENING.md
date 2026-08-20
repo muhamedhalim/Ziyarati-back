@@ -104,14 +104,18 @@ Every registry entry carries `releaseStage`.
 
 A PREVIEW model can only be selected by an operator naming it in `AI_ECONOMY_MODEL` / `AI_POWERFUL_MODEL` (validated against `AI_MODEL_IDS_ALL`). That is deliberate: one variable, instantly reversible, and never something a clinic admin can persist onto an agent row.
 
-The GPT-5.6 family (`gpt-5.6-luna`, `gpt-5.6-terra`) ships as PREVIEW. Two facts make it different in kind and both are encoded in the registry rather than discovered at runtime:
+**There are currently no PREVIEW entries** — all six registered models are GA and tenant-selectable. The stage remains in the type as the gate the *next* model goes through; a new entry lands as PREVIEW, gets proven, and is then promoted.
+
+The GPT-5.6 family (`gpt-5.6-luna`, `gpt-5.6-terra`) was promoted to GA on 2026-08-20 after passing the live compatibility suite. Two facts make it different in kind and both are encoded in the registry rather than discovered at runtime:
 
 1. `supportsTemperature: false`. The family accepts **only** the default temperature and returns 400 for any explicit value. `OpenAiChatProvider` omits the field entirely for such a model — before that, routing here would have failed 100% of requests on the first one.
 2. `cacheWriteMultiplier: 1.25`. Cache **writes** bill above the uncached input rate, and reasoning tokens bill as output. Both are priced; a turn here is not as cheap as its input rate alone suggests.
 
 A third fact was established live and is **not optional**: `/v1/chat/completions` rejects function tools for this family at any `reasoning_effort` except `'none'` — and **omitting the field produces the same 400**, because the model applies a default effort. Since nearly every turn here carries tools, both entries pin `reasoningEffort: 'none'`, and a spec asserts every reasoning-family model does. The plan's Responses-API fallback is therefore not needed for tool calling.
 
-**Promotion procedure.** Run the live compatibility suite against the entry (it exercises PREVIEW models, asserts the temperature omission is load-bearing, and prints the raw `usage` object). Only then flip `releaseStage` to `'GA'` in the same commit that records the evidence. Both GPT-5.6 entries have now passed that gate; they stay PREVIEW because Stage 2 is sequenced after Stage 1 reaches 100%, not because anything is unproven.
+**Promotion procedure.** Run the live compatibility suite against the entry (it exercises every registered model, asserts the temperature omission is load-bearing, and prints the raw `usage` object). Only then flip `releaseStage` to `'GA'` in the same commit that records the evidence.
+
+**Selectable ≠ routed to.** Promoting a model to GA makes it *choosable* — it appears in the picker and passes the agent DTO. It does **not** make it a routing target. Which model an unconfigured turn gets is decided solely by `AI_ECONOMY_MODEL` / `AI_POWERFUL_MODEL` (and only when `AI_MODEL_ROUTING_ENABLED=true`); with routing off, a turn uses `agent.model` or falls through to `OPENAI_CHAT_MODEL`. Adding GPT-5.6 to the GA pool therefore changed nothing for any tenant that did not go and pick it. The one behavioural consequence is that residency substitution can now serve the `ae` region, which the GPT-5.6 family alone covers — previously that combination failed closed.
 
 ## Cache-write accounting
 
@@ -156,7 +160,7 @@ quality is deliberately not scored by another model.
 - Mocked/unit/integration regression suite: enabled; it performs no network request.
 - Backend and worker TypeScript build: enabled (the worker is compiled by the Nest build).
 - Live OpenAI Arabic/English benchmark: **executed 2026-08-19, 12/12 pass** — `gpt-4.1-mini` measured **−85.2%** vs `gpt-4o` with no language or tool-calling regression. Recorded in `docs/AI_MODEL_LIVE_VERIFICATION.md`. (This line previously read "pending account credits"; the account has credits.)
-- Live provider compatibility suite: **executed 2026-08-19, 38/38 pass** across all six registered models. It found the GPT-5.6 tool-calling constraint and fixed three false alias claims — see the same document. `gpt-5.6-luna` / `gpt-5.6-terra` remain PREVIEW by sequencing, not by lack of evidence.
+- Live provider compatibility suite: **re-executed 2026-08-20, 44/44 pass** across all six registered models (38/38 on 2026-08-19, plus a per-model cache-write shape assertion added since). It found the GPT-5.6 tool-calling constraint and fixed three false alias claims — see the same document. `gpt-5.6-luna` / `gpt-5.6-terra` are now **GA** and tenant-selectable, verified end-to-end through the real dashboard in both locales.
 - Migration SQL: compiled and covered by structural migration tests; execute against a backed-up staging clone before production. No database migration was run automatically against an unknown local/remote database.
 
 ## Reasoning-token watch (GPT-5.x only)
