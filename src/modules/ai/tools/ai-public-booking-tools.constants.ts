@@ -40,9 +40,11 @@ const PUBLIC_ONLY_TOOLS: AiToolDefinition[] = [
   {
     name: AI_PUBLIC_TOOL.LIST_CITIES,
     description:
-      'List the cities that currently have bookable clinics. This is the FIRST STEP OF A BOOKING — call it only when the visitor wants to book an appointment and has not said which city they are in, then present the cities and ask which one they want. ' +
+      'List the cities that currently have bookable clinics. Call it only when the visitor wants to book, has not said which city they are in, and no city or clinic is already recorded in the ESTABLISHED BOOKING CONTEXT — if one is, that step is done, do not repeat it. ' +
+      'Then present the cities and pass the chosen one to search_clinics as `cityId`. ' +
       'Do NOT call it to answer a question ABOUT a clinic (its address, working hours, services, prices, policies or FAQs): answer those from the <knowledge> block. ' +
-      'An empty result means no clinic has opted in to public booking yet — it is not an answer to an informational question, so never report it as one.',
+      'AN EMPTY `cities` LIST DOES NOT MEAN THERE ARE NO CLINICS. Cities are optional data a clinic may never have filled in, so read `bookableClinics` in the result: if it is above zero, bookable clinics exist and you must call search_clinics with no arguments and offer them. ' +
+      'Only `bookableClinics: 0` means no clinic has opted in to public booking — and even that is never an answer to an informational question.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -199,3 +201,24 @@ export const AI_PUBLIC_BOOKING_TOOLS = PUBLIC_ONLY_TOOLS;
 
 /** Fast membership test for the dispatcher's routing switch. */
 export const PUBLIC_TOOL_NAMES = new Set<string>(Object.values(AI_PUBLIC_TOOL));
+
+/**
+ * The tools that CHANGE the server-side booking context (city, clinic, branch,
+ * service, doctor, slot).
+ *
+ * `AiExecutionService` watches for these inside the tool-calling loop: when one
+ * runs, the ESTABLISHED BOOKING CONTEXT block already in the prompt is out of
+ * date, so it is rebuilt from the database before the model composes its reply.
+ * Without that, a `select_*` result landing mid-loop would sit next to a stale
+ * block still describing the previous state — the model would be reading two
+ * contradictory accounts of the same conversation, which is exactly how an
+ * established clinic gets talked out of existence by a tool result.
+ */
+export const BOOKING_CONTEXT_MUTATING_TOOLS = new Set<string>([
+  AI_TOOL.SEARCH_CLINICS,
+  AI_PUBLIC_TOOL.SELECT_CLINIC,
+  AI_PUBLIC_TOOL.SELECT_BRANCH,
+  AI_PUBLIC_TOOL.SELECT_SERVICE,
+  AI_PUBLIC_TOOL.SELECT_DOCTOR,
+  AI_PUBLIC_TOOL.SELECT_SLOT,
+]);

@@ -94,4 +94,17 @@ export class UpdateTenantSettingsDto {
   @IsOptional()
   @IsBoolean()
   enforceStaffWorkingHours?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether this clinic is listed by the PUBLIC (anonymous) booking assistant on the platform website. ' +
+      'When false — the default — the clinic is invisible to `list_cities`, `search_clinics` and every public booking tool, ' +
+      'and no anonymous visitor can book with it. Turn it on once branches, services and staff schedules are configured.\n\n' +
+      "This flag is the ONLY database proof of public bookability the chatbot accepts. A clinic's Knowledge base may describe " +
+      'its address, hours and services, but it can never make the clinic bookable — that decision lives here and nowhere else.',
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  publicBookingEnabled?: boolean;
 }

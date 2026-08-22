@@ -41,6 +41,16 @@ export interface AiSession {
   // client-writable value would be an indirect `tenantId` injection — the one
   // thing the whole design refuses to accept from outside.
 
+  /**
+   * The city the visitor narrowed the search to, recorded by `search_clinics`
+   * AFTER the id has been checked against the `cities` table. Server-write-only
+   * like every other `selected*` key.
+   *
+   * It exists so the city survives the turn that established it: tool results
+   * are never persisted as messages, so without this the next turn had no idea
+   * a city had ever been chosen and started discovery again from `list_cities`.
+   */
+  selectedCityId?: string;
   /** Currently selected clinic (tenant) once discovery resolves one. */
   selectedClinicId?: string;
   selectedBranchId?: string;

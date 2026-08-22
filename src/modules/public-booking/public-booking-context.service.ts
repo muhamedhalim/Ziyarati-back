@@ -132,6 +132,7 @@ export class PublicBookingContextService {
     aiConversationId: string,
     patch: Pick<
       SessionPatch,
+      | 'selectedCityId'
       | 'selectedClinicId'
       | 'selectedBranchId'
       | 'selectedDoctorId'
@@ -141,6 +142,239 @@ export class PublicBookingContextService {
     >,
   ): Promise<AiSession> {
     return this.sessions.patch(conversationTenantId, aiConversationId, patch);
+  }
+
+  /**
+   * A server-validated, human-readable snapshot of what this conversation has
+   * already established — the block the model is shown at the top of every
+   * public turn.
+   *
+   * WHY THIS EXISTS. Tool results live for exactly one turn: they are fed back
+   * inside the tool-calling loop and then discarded, because only `USER` and
+   * `ASSISTANT` rows are persisted to `ai_messages` and only those are replayed
+   * as history. So on turn N+1 the model had no memory that a city, clinic or
+   * branch had ever been chosen — the ids existed on `ai_conversations.session`
+   * the whole time, but nothing ever put them in the prompt. The model did the
+   * only thing it could and started discovery over from `list_cities`, which is
+   * why "whatever is available with you" after a clinic had been picked came
+   * back as "no clinics available".
+   *
+   * WHAT MAKES IT TRUSTWORTHY. Nothing here is echoed from the session as
+   * recorded. Every id is re-read from the database through the SAME eligibility
+   * predicate the booking itself uses, so:
+   *  - a clinic that opted out, was deactivated or soft-deleted mid-conversation
+   *    drops out of the block on the very next turn rather than lingering;
+   *  - names shown to the visitor are the clinic's real DB names, never a name
+   *    the model or a Knowledge document supplied; and
+   *  - a selection that no longer resolves is reported as CLEARED, so the model
+   *    is told to ask again instead of quietly booking against a stale id.
+   *
+   * Returns `null` when nothing has been established yet — a first turn adds no
+   * block at all, and costs no prompt budget.
+   */
+  async describeSelection(
+    conversationTenantId: string,
+    aiConversationId: string,
+    principal: AuthenticatedUser | null | undefined,
+  ): Promise<string | null> {
+    let session: AiSession;
+    try {
+      session = await this.getSelection(
+        conversationTenantId,
+        aiConversationId,
+        principal,
+      );
+    } catch {
+      // No access / no conversation ⇒ nothing to describe. Never throws into a
+      // turn: an unavailable context block must degrade to "no context", not to
+      // a failed reply.
+      return null;
+    }
+
+    const lines: string[] = [];
+    const stale: string[] = [];
+
+    if (session.selectedCityId) {
+      const city = await this.cityName(session.selectedCityId);
+      if (city) lines.push(`city: ${city} (id ${session.selectedCityId})`);
+      else stale.push('city');
+    }
+
+    // The clinic is resolved from the BRANCH when one is recorded (the branch is
+    // authoritative — it is what the booking tenant is derived from), and from
+    // the recorded clinic id otherwise.
+    const branch = session.selectedBranchId
+      ? await this.branchSnapshot(session.selectedBranchId)
+      : null;
+    if (session.selectedBranchId && !branch) stale.push('branch');
+
+    const clinicId = branch?.tenantId ?? session.selectedClinicId;
+    if (clinicId) {
+      // Cross-check: a recorded clinic that disagrees with the branch's real
+      // owner means something wrote a selection it did not validate. Report
+      // NOTHING rather than a half-trusted pair.
+      if (
+        branch &&
+        session.selectedClinicId &&
+        session.selectedClinicId !== branch.tenantId
+      ) {
+        return null;
+      }
+      const clinic = await this.clinicName(clinicId);
+      if (clinic) {
+        lines.push(`clinic: ${clinic} (id ${clinicId})`);
+        lines.push(
+          'clinic bookability: CONFIRMED by the database (approved, active, public booking enabled).',
+        );
+      } else {
+        stale.push('clinic');
+      }
+    }
+
+    if (branch) {
+      const where = [branch.city, branch.address].filter(Boolean).join(' — ');
+      lines.push(
+        `branch: ${branch.name}${where ? ` (${where})` : ''} (id ${branch.id})`,
+      );
+    }
+
+    if (session.selectedServiceIds?.length && branch) {
+      const names = await this.serviceNames(
+        branch.tenantId,
+        session.selectedServiceIds,
+      );
+      if (names.length) lines.push(`services: ${names.join(', ')}`);
+      else stale.push('service');
+    }
+
+    if (session.selectedDoctorId && branch) {
+      const doctor = await this.doctorName(
+        branch.tenantId,
+        session.selectedDoctorId,
+      );
+      if (doctor)
+        lines.push(`doctor: ${doctor} (id ${session.selectedDoctorId})`);
+      else stale.push('doctor');
+    }
+
+    if (session.selectedStartAt) {
+      lines.push(`slot: ${session.selectedStartAt}`);
+    }
+
+    if (lines.length === 0 && stale.length === 0) return null;
+
+    const next = branch
+      ? 'The branch is already selected — go straight to list_branch_services / list_branch_doctors / search_public_availability. Do NOT call list_cities or search_clinics again.'
+      : clinicId
+        ? 'The clinic is already selected — call select_branch (or get_clinic_details to list its branches). Do NOT call list_cities or search_clinics again.'
+        : 'A city is already chosen — call search_clinics with that cityId. Do NOT call list_cities again.';
+
+    return [
+      'ESTABLISHED BOOKING CONTEXT (server-verified against the database this turn).',
+      'These are facts, not suggestions. Reuse them; never re-derive them and never contradict them.',
+      ...lines.map((l) => `- ${l}`),
+      ...(stale.length
+        ? [
+            `- CLEARED (no longer valid, ask the visitor again): ${stale.join(', ')}`,
+          ]
+        : []),
+      next,
+    ].join('\n');
+  }
+
+  /** Branch + its clinic + city, through the public eligibility predicate. */
+  private async branchSnapshot(branchId: string): Promise<{
+    id: string;
+    name: string;
+    address: string | null;
+    city: string | null;
+    tenantId: string;
+  } | null> {
+    const rows = await this.dataSource.query(
+      `SELECT b.id, b.name, b.address, b."tenantId" AS tenant_id,
+              COALESCE(c.name_ar, c.name_en) AS city
+         FROM branches b
+         JOIN tenants t ON t.id = b."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+         LEFT JOIN cities c ON c.id = b.city_id
+        WHERE b.id = $1::uuid
+          AND b.is_active = true
+          AND b.deleted_at IS NULL
+          AND t.approval_status = 'APPROVED'
+          AND t.is_active = true
+          AND t.deleted_at IS NULL
+          AND COALESCE(ts.public_booking_enabled, false) = true
+        LIMIT 1`,
+      [branchId],
+    );
+    const row = rows[0];
+    return row
+      ? {
+          id: row.id as string,
+          name: row.name as string,
+          address: (row.address as string) ?? null,
+          city: (row.city as string) ?? null,
+          tenantId: row.tenant_id as string,
+        }
+      : null;
+  }
+
+  /** The clinic's REAL name — only if it is still publicly bookable right now. */
+  private async clinicName(clinicId: string): Promise<string | null> {
+    const rows = await this.dataSource.query(
+      `SELECT t.name
+         FROM tenants t
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE t.id = $1::uuid
+          AND t.approval_status = 'APPROVED'
+          AND t.is_active = true
+          AND t.deleted_at IS NULL
+          AND COALESCE(ts.public_booking_enabled, false) = true
+        LIMIT 1`,
+      [clinicId],
+    );
+    return (rows[0]?.name as string) ?? null;
+  }
+
+  private async cityName(cityId: string): Promise<string | null> {
+    const rows = await this.dataSource.query(
+      `SELECT COALESCE(name_ar, name_en) AS name FROM cities WHERE id = $1::uuid LIMIT 1`,
+      [cityId],
+    );
+    return (rows[0]?.name as string) ?? null;
+  }
+
+  private async serviceNames(
+    tenantId: string,
+    serviceIds: string[],
+  ): Promise<string[]> {
+    if (!serviceIds.length) return [];
+    const rows = await this.dataSource.query(
+      `SELECT name FROM services
+        WHERE "tenantId" = $1::uuid AND id = ANY($2::uuid[])
+          AND is_active = true AND deleted_at IS NULL
+        ORDER BY name`,
+      [tenantId, serviceIds],
+    );
+    return rows.map((r: Record<string, unknown>) => r.name as string);
+  }
+
+  private async doctorName(
+    tenantId: string,
+    staffId: string,
+  ): Promise<string | null> {
+    const rows = await this.dataSource.query(
+      `SELECT COALESCE(u.full_name, sp.title, 'Doctor') AS name
+         FROM staff_profiles sp
+         LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
+        WHERE sp.id = $2::uuid
+          AND sp."tenantId" = $1::uuid
+          AND sp.deleted_at IS NULL
+          AND sp.is_available_for_booking = true
+        LIMIT 1`,
+      [tenantId, staffId],
+    );
+    return (rows[0]?.name as string) ?? null;
   }
 
   /**

@@ -94,6 +94,71 @@ export class PublicDiscoveryService {
   }
 
   /**
+   * `listCities()` plus the two counts that stop an empty city list from being
+   * mistaken for an empty PLATFORM.
+   *
+   * The city taxonomy is optional data: `branches.city_id` is nullable, and a
+   * clinic that never picked a city is still perfectly bookable. `listCities()`
+   * INNER JOINs `cities`, so those clinics contribute no city — and a caller
+   * that saw `[]` had no way to tell "nobody has opted in" from "opted-in
+   * clinics exist, none of them recorded a city". The public assistant reported
+   * both as "no clinics are available", which is only true of the first.
+   *
+   * Returning the counts alongside makes the difference explicit and lets the
+   * booking flow fall back to a city-less clinic search instead of dead-ending.
+   */
+  async cityCoverage(): Promise<{
+    cities: { id: string; nameAr: string | null; nameEn: string | null }[];
+    bookableClinics: number;
+    clinicsWithoutCity: number;
+  }> {
+    const [cities, counts] = await Promise.all([
+      this.listCities(),
+      this.dataSource.query(
+        `SELECT
+            COUNT(DISTINCT t.id)::int AS bookable,
+            COUNT(DISTINCT t.id) FILTER (WHERE b.city_id IS NULL)::int AS without_city
+           FROM tenants t
+           LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+           JOIN branches b
+             ON b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+          WHERE ${ELIGIBLE_CLINIC}`,
+      ),
+    ]);
+    return {
+      cities,
+      bookableClinics: n(counts[0]?.bookable),
+      clinicsWithoutCity: n(counts[0]?.without_city),
+    };
+  }
+
+  /**
+   * Resolves a city id to its names, or `null` when it does not exist.
+   *
+   * Used to VALIDATE a model-proposed `cityId` before it is recorded on the
+   * session: the booking context only ever holds ids the database confirmed.
+   */
+  async findCity(cityId: string): Promise<{
+    id: string;
+    nameAr: string | null;
+    nameEn: string | null;
+  } | null> {
+    if (!cityId?.trim()) return null;
+    const rows = await this.dataSource.query(
+      `SELECT id, name_ar, name_en FROM cities WHERE id = $1::uuid LIMIT 1`,
+      [cityId.trim()],
+    );
+    const row = rows[0];
+    return row
+      ? {
+          id: row.id as string,
+          nameAr: (row.name_ar as string) ?? null,
+          nameEn: (row.name_en as string) ?? null,
+        }
+      : null;
+  }
+
+  /**
    * Search public clinics by name/slug or an offered service (e.g. "dentist"),
    * optionally narrowed to a city.
    */

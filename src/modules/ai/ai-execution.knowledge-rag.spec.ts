@@ -14,6 +14,7 @@ import {
   AI_PUBLIC_BOOKING_TOOLS,
   AI_PUBLIC_TOOL,
 } from './tools/ai-public-booking-tools.constants';
+import { AI_TOOL, AI_TOOLS } from './tools/ai-tools.constants';
 import { SESSION_CLIENT_PATCHABLE_KEYS } from '../ai-orchestrator/ai-channel.constants';
 
 /**
@@ -53,6 +54,10 @@ interface Options {
   }>;
   /** What `AiToolDispatchService.execute` returns for each call. */
   toolResult?: Record<string, unknown>;
+  /** Fixed server-verified booking block for every turn/iteration. */
+  bookingContext?: string | null;
+  /** Per-call booking blocks, so a mid-loop refresh can be observed. */
+  bookingContexts?: Array<string | null>;
 }
 
 function build(opts: Options = {}) {
@@ -122,6 +127,18 @@ function build(opts: Options = {}) {
   const principal = opts.guest
     ? { id: 'guest-sub', guest: true, permissions: [] }
     : { id: 'staff-1', guest: false, permissions: [] };
+  /**
+   * The server-verified booking block. Scripted per call so a test can make a
+   * `select_*` inside the tool loop change what the next iteration is told,
+   * which is the whole point of the mid-loop refresh.
+   */
+  const describeSelection = jest.fn().mockImplementation(async () => {
+    const next = (opts.bookingContexts ?? [])[
+      Math.min(describeSelection.mock.calls.length - 1, (opts.bookingContexts?.length ?? 1) - 1)
+    ];
+    return next ?? opts.bookingContext ?? null;
+  });
+  const bookingContext = { describeSelection };
 
   const service = new AiExecutionService(
     aiConversations as never,
@@ -174,6 +191,7 @@ function build(opts: Options = {}) {
     { assertAccess: jest.fn().mockResolvedValue(undefined) } as never,
     config,
     { getTyped: jest.fn().mockResolvedValue(0.2) } as never,
+    bookingContext as never,
   );
 
   const turn = () =>
@@ -205,6 +223,16 @@ function build(opts: Options = {}) {
       (t: { name: string }) => t.name,
     );
 
+  /**
+   * Every `system` message handed to the provider on iteration `call`. The
+   * booking block is pinned as a SECOND system message, so a test asserting it
+   * survived truncation has to look past the first one.
+   */
+  const systemMessages = (call = 0): string[] =>
+    sentMessages(call)
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content ?? '');
+
   return {
     service,
     turn,
@@ -213,8 +241,10 @@ function build(opts: Options = {}) {
     dispatch,
     dataSource,
     manager,
+    describeSelection,
     sentMessages,
     systemMessage,
+    systemMessages,
     knowledgeMessage,
     toolNames,
   };
@@ -426,8 +456,13 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
     expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
       /do NOT call list_cities/,
     );
+    // Same rule as before, now stated in both directions: an empty tool result
+    // never erases <knowledge>, and <knowledge> never establishes bookability.
     expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
-      /It does not\s+override <knowledge>/,
+      /empty or failed tool result never erases what <knowledge> states/,
+    );
+    expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
+      /is NOT evidence that it can be booked/,
     );
     // Booking is still explicitly a tool job — the prompt must not talk the
     // model out of the booking flow it is there to run.
@@ -564,9 +599,42 @@ describe('Tool routing — a tool result never displaces the Knowledge', () => {
     expect(description).not.toMatch(/Call this FIRST/);
     // It is now explicitly scoped to a booking, and explicitly deferred to
     // <knowledge> for anything informational.
-    expect(description).toMatch(/FIRST STEP OF A BOOKING/);
+    expect(description).toMatch(/only when the visitor wants to book/i);
     expect(description).toMatch(/<knowledge>/);
-    expect(description).toMatch(/empty result/i);
+    // And it must not be called again once the context already holds a city or
+    // clinic — the repeat call is what restarted discovery every turn.
+    expect(description).toMatch(/ESTABLISHED BOOKING CONTEXT/);
+  });
+
+  it('the list_cities description forbids reading an empty city list as "no clinics"', () => {
+    // The reported failure in one sentence: `cities: []` was reported to the
+    // visitor as "there are no clinics available for booking", a claim the tool
+    // cannot support because `branches.city_id` is nullable — a bookable clinic
+    // that never recorded a city contributes no city here.
+    const description = AI_PUBLIC_BOOKING_TOOLS.find(
+      (t) => t.name === AI_PUBLIC_TOOL.LIST_CITIES,
+    )!.description;
+
+    expect(description).toMatch(/EMPTY `cities` LIST DOES NOT MEAN/i);
+    expect(description).toMatch(/bookableClinics/);
+    // And it must name the recovery, not just forbid the mistake.
+    expect(description).toMatch(/search_clinics with no arguments/i);
+  });
+
+  it('search_clinics takes a cityId, so a chosen city is a filter and not a dead end', () => {
+    // `PublicDiscoveryService.searchClinics` has always accepted a city (the
+    // REST endpoint passes one), but the TOOL schema exposed only `query`,
+    // which matches clinic/slug/service names. So after "which city?" the model
+    // had nowhere to put the answer except `query`, where a city name matches
+    // nothing — and an empty result became "no clinics available".
+    const searchClinics = AI_TOOLS.find(
+      (t) => t.name === AI_TOOL.SEARCH_CLINICS,
+    )!;
+
+    expect(searchClinics.parameters.properties).toHaveProperty('cityId');
+    expect(searchClinics.description).toMatch(/NEVER put a city name in `query`/);
+    // Calling it bare is the documented answer to "whatever you have".
+    expect(searchClinics.description).toMatch(/NO arguments/);
   });
 
   it('still advertises the full booking toolset to a visitor, unchanged', async () => {
@@ -634,6 +702,129 @@ describe('Model and agent selection remain platform-controlled', () => {
     );
     expect(dtoSource).not.toMatch(/\bmodel\s*[?!]?\s*:/);
     expect(dtoSource).not.toMatch(/\btemperature\s*[?!]?\s*:/);
+  });
+
+  // ─────────────── Booking context survives across turns ──────────────────
+
+  it('pins the server-verified booking context into a public turn', async () => {
+    // THE REGRESSION. Only USER and ASSISTANT rows are persisted to
+    // `ai_messages` and only those are replayed as history, so a tool result
+    // that established a clinic vanished the moment the turn ended. The ids
+    // were on `ai_conversations.session` the whole time — nothing ever put them
+    // in the prompt, so the model restarted discovery from `list_cities`.
+    const f = build({
+      tenantId: DISCOVERY_TENANT,
+      guest: true,
+      session: { guestSubject: 'guest-sub', selectedClinicId: CLINIC_TENANT },
+      eligibleClinics: [CLINIC_TENANT],
+      bookingContext:
+        'ESTABLISHED BOOKING CONTEXT (server-verified against the database this turn).\n- clinic: Al Noor Medical (id clinic-a-tenant)',
+    });
+
+    await f.turn();
+
+    const systems = f.systemMessages(0);
+    expect(systems[0]).toBe(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT);
+    expect(systems[1]).toContain('ESTABLISHED BOOKING CONTEXT');
+    expect(systems[1]).toContain('clinic-a-tenant');
+  });
+
+  it('does not build a booking context for an authenticated staff turn', async () => {
+    // The block is public-surface state. A staff turn has no anonymous booking
+    // session, and asking for one would be a pointless query on every turn.
+    const f = build({ session: { selectedClinicId: CLINIC_TENANT } });
+
+    await f.turn();
+
+    expect(f.describeSelection).not.toHaveBeenCalled();
+    expect(f.systemMessages(0)).toHaveLength(1);
+  });
+
+  it('refreshes the pinned context after a select_* runs inside the tool loop', async () => {
+    // "Do not let the tool result erase the established clinic information."
+    // A `select_branch` landing mid-loop moves the server-side selection on; if
+    // the pinned block still described the previous state, the model would be
+    // reading two contradictory accounts of the same booking.
+    const f = build({
+      tenantId: DISCOVERY_TENANT,
+      guest: true,
+      session: { guestSubject: 'guest-sub', selectedClinicId: CLINIC_TENANT },
+      eligibleClinics: [CLINIC_TENANT],
+      bookingContexts: [
+        'ESTABLISHED BOOKING CONTEXT\n- clinic: Al Noor Medical (id clinic-a-tenant)',
+        'ESTABLISHED BOOKING CONTEXT\n- clinic: Al Noor Medical (id clinic-a-tenant)\n- branch: Olaya (id branch-1)',
+      ],
+      script: [
+        {
+          content: '',
+          toolCalls: [
+            {
+              id: 'c1',
+              name: AI_PUBLIC_TOOL.SELECT_BRANCH,
+              arguments: '{"branchId":"branch-1"}',
+            },
+          ],
+        },
+        { content: 'تم اختيار فرع العليا.' },
+      ],
+      toolResult: { success: true, branchId: 'branch-1' },
+    });
+
+    await f.turn();
+
+    // Iteration 0 saw the pre-selection block; iteration 1 — the one that
+    // composes the reply — sees the branch that was just recorded.
+    expect(f.systemMessages(0)[1]).not.toContain('branch-1');
+    expect(f.systemMessages(1)[1]).toContain('branch-1');
+  });
+
+  it('leaves the pinned context alone for a tool that does not change the selection', async () => {
+    // A read-only lookup must not cost a rebuild — the refresh is keyed on the
+    // tools that actually write the selection.
+    const f = build({
+      tenantId: DISCOVERY_TENANT,
+      guest: true,
+      session: { guestSubject: 'guest-sub', selectedClinicId: CLINIC_TENANT },
+      eligibleClinics: [CLINIC_TENANT],
+      bookingContext: 'ESTABLISHED BOOKING CONTEXT\n- clinic: Al Noor Medical',
+      script: [
+        {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: AI_PUBLIC_TOOL.LIST_CITIES, arguments: '{}' },
+          ],
+        },
+        { content: 'ok' },
+      ],
+      toolResult: { success: true, cities: [], bookableClinics: 3 },
+    });
+
+    await f.turn();
+
+    // One build for the prompt, and no rebuild for the read-only call.
+    expect(f.describeSelection).toHaveBeenCalledTimes(1);
+    expect(f.systemMessages(1)[1]).toContain('Al Noor Medical');
+  });
+
+  it('answers a turn normally when the booking context cannot be produced', async () => {
+    // Degrades to "no block", never to "no reply": a context lookup failure
+    // must not cost the visitor their answer.
+    const f = build({
+      tenantId: DISCOVERY_TENANT,
+      guest: true,
+      session: { guestSubject: 'guest-sub' },
+    });
+    f.describeSelection.mockRejectedValue(new Error('db down'));
+
+    await expect(f.turn()).resolves.toBeDefined();
+    expect(f.systemMessages(0)).toHaveLength(1);
+  });
+
+  it('keeps selectedCityId out of the client-patchable session keys', () => {
+    // The city is server-write-only for the same reason every other `selected*`
+    // key is: it steers which clinics a visitor is shown, and the booking
+    // tenant is derived from that chain.
+    expect(SESSION_CLIENT_PATCHABLE_KEYS).not.toContain('selectedCityId');
   });
 
   it('never creates an agent as a side effect of a turn', async () => {

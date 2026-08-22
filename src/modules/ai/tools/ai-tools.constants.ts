@@ -49,7 +49,10 @@ export const AI_TOOLS: AiToolDefinition[] = [
   {
     name: AI_TOOL.SEARCH_CLINICS,
     description:
-      'Search public clinics by name or by an offered service (e.g. "dentist", "tooth pain", "physiotherapy"). Call this when the visitor describes a need or asks to find a clinic. Returns clinic cards (id, name, branch count, sample services) to present to the user.',
+      'Search the DATABASE of publicly bookable clinics by name or by an offered service (e.g. "dentist", "tooth pain", "physiotherapy"). Call this when the visitor describes a need or asks to find a clinic. Returns clinic cards (id, name, branch count, sample services) to present to the user. ' +
+      'This tool — not the <knowledge> block — is what decides whether a clinic can be booked: a clinic returned here IS bookable, and a clinic described in <knowledge> but absent here is NOT. ' +
+      'To narrow to a city pass `cityId`; NEVER put a city name in `query`, which matches clinic and service names only and will find nothing. ' +
+      'Call it with NO arguments at all to list every bookable clinic — that is the right call for "whatever you have available" and whenever `list_cities` came back empty.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -57,7 +60,12 @@ export const AI_TOOLS: AiToolDefinition[] = [
         query: {
           type: 'string',
           description:
-            'Free-text need or clinic/service name. Omit to list clinics.',
+            'Free-text need or clinic/service name. Omit to list clinics. Never a city name.',
+        },
+        cityId: {
+          type: 'string',
+          description:
+            'Optional city UUID from list_cities. Narrows to clinics with an active branch in that city. Once supplied and accepted it is remembered for the rest of the conversation.',
         },
         limit: {
           type: 'integer',

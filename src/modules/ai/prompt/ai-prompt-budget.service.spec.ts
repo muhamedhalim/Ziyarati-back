@@ -139,3 +139,76 @@ describe('AiPromptBudgetService — per-model context window', () => {
     expect(budget.estimateMessages(built.messages)).toBeLessThanOrEqual(12_000);
   });
 });
+
+/**
+ * The ESTABLISHED BOOKING CONTEXT block.
+ *
+ * It carries the only copy of the conversation's booking state that the model
+ * ever sees — tool results are not persisted as messages — so the one property
+ * that matters is that it CANNOT be evicted. A block that survives short
+ * conversations and disappears from long ones would fail exactly where the
+ * booking flow needs it most.
+ */
+describe('AiPromptBudgetService — pinned booking context', () => {
+  const budget = new AiPromptBudgetService(
+    new ConfigService({
+      AI_PROMPT_MAX_INPUT_TOKENS: 200,
+      AI_PROMPT_MAX_OUTPUT_TOKENS: 40,
+      AI_MODEL_CONTEXT_WINDOW_TOKENS: 260,
+      AI_PROMPT_HISTORY_TOKENS: 5_000,
+    }),
+  );
+
+  const BOOKING = 'ESTABLISHED BOOKING CONTEXT\n- clinic: Al Noor (id clinic-a)';
+  const floodedHistory = (): AiChatMessage[] =>
+    Array.from(
+      { length: 40 },
+      (_, i) =>
+        ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} `.repeat(30) }) as AiChatMessage,
+    );
+
+  it('emits the block as a system message, after the system prompt', () => {
+    const built = budget.build({
+      systemPrompt: 'instructions',
+      bookingContext: BOOKING,
+      history: [{ role: 'user', content: 'hi' }],
+      ragChunks: [],
+    });
+    const systems = built.messages.filter((m) => m.role === 'system');
+    expect(systems).toHaveLength(2);
+    expect(systems[0].content).toBe('instructions');
+    expect(systems[1].content).toBe(BOOKING);
+  });
+
+  it('survives a history flood that evicts everything evictable', () => {
+    const built = budget.build({
+      systemPrompt: 'instructions',
+      bookingContext: BOOKING,
+      history: floodedHistory(),
+      ragChunks: [],
+    });
+    expect(built.telemetry.truncatedHistoryTokens).toBeGreaterThan(0);
+    expect(built.messages.map((m) => m.content)).toContain(BOOKING);
+  });
+
+  it('survives fitRuntime, which re-fits the prompt on every tool-loop iteration', () => {
+    const built = budget.build({
+      systemPrompt: 'instructions',
+      bookingContext: BOOKING,
+      history: [{ role: 'user', content: 'hi' }],
+      ragChunks: [],
+    });
+    const fitted = budget.fitRuntime([...built.messages, ...floodedHistory()], []);
+    expect(fitted.truncatedTokens).toBeGreaterThan(0);
+    expect(fitted.messages.map((m) => m.content)).toContain(BOOKING);
+  });
+
+  it('adds no message at all when there is no booking context', () => {
+    const built = budget.build({
+      systemPrompt: 'instructions',
+      history: [{ role: 'user', content: 'hi' }],
+      ragChunks: [],
+    });
+    expect(built.messages.filter((m) => m.role === 'system')).toHaveLength(1);
+  });
+});
