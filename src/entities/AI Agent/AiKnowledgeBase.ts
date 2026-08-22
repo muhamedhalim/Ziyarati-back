@@ -22,8 +22,13 @@ export class AiKnowledgeBase {
   @ManyToOne(() => Tenant)
   tenant!: Tenant;
 
-  @ManyToOne(() => AiAgent, { onDelete: 'CASCADE' })
-  agent!: AiAgent;
+  /**
+   * Agents are Admin-managed platform config; a chunk added before the tenant
+   * has one (or added directly by a super-admin AI grant) stays unbound.
+   * `AiRagService` retrieves tenant-owned chunks regardless of this being set.
+   */
+  @ManyToOne(() => AiAgent, { nullable: true, onDelete: 'CASCADE' })
+  agent?: AiAgent;
 
   @Column({ type: 'text' })
   content!: string;

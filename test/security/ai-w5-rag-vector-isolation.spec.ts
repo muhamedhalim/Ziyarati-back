@@ -114,7 +114,15 @@ describe('AI-w5-rag-vector — cross-tenant vector-path isolation (T068)', () =>
     // The executed SQL against the vector sidecar table, captured verbatim.
     const vectorQuery = capturedQueries.find((q) => q.sql.includes('ai_kb_embeddings'));
     expect(vectorQuery).toBeDefined();
-    expect(vectorQuery!.sql).toMatch(/WHERE\s+e\.tenant_id\s*=\s*\$2\s+AND\s+e\.agent_id\s*=\s*\$3/);
+    // Agents/models are Admin-managed platform config — Knowledge may exist
+    // before an agent is provisioned, so the predicate now ALSO matches the
+    // tenant's own unbound (agent_id IS NULL) chunks. This still isolates by
+    // tenant: the OR only ever widens which of TENANT A's OWN rows match
+    // (bound-to-this-agent vs unbound), never crosses into another tenant —
+    // `tenant_id = $2` remains a separate, unconditional AND'd predicate.
+    expect(vectorQuery!.sql).toMatch(
+      /WHERE\s+e\.tenant_id\s*=\s*\$2\s+AND\s+\(e\.agent_id\s*=\s*\$3\s+OR\s+e\.agent_id\s+IS\s+NULL\)/,
+    );
     // The predicate is bound to tenant A, never tenant B — this IS the isolation
     // boundary (a direct WHERE clause on the query itself), not a filter applied
     // to results after the fact.

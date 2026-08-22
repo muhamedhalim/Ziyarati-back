@@ -49,10 +49,16 @@ export class PgVectorBootstrapService implements OnApplicationBootstrap {
         CREATE TABLE IF NOT EXISTS ${AI_KB_EMBEDDINGS_TABLE} (
           kb_id      uuid PRIMARY KEY REFERENCES ai_knowledge_bases(id) ON DELETE CASCADE,
           tenant_id  uuid NOT NULL,
-          agent_id   uuid NOT NULL,
+          agent_id   uuid,
           embedding  vector(${dim}) NOT NULL,
           created_at timestamptz NOT NULL DEFAULT now()
         )
+      `);
+      // Defensive: a table created before agent_id became optional (agents are
+      // Admin-managed platform config, so a chunk may have none) still has the
+      // old NOT NULL — `CREATE TABLE IF NOT EXISTS` above is a no-op for it.
+      await this.dataSource.query(`
+        ALTER TABLE ${AI_KB_EMBEDDINGS_TABLE} ALTER COLUMN agent_id DROP NOT NULL
       `);
 
       // Cheap pre-filter for tenant/agent scoping (filtered ANN).

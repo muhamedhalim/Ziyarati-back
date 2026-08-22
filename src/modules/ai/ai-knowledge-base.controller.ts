@@ -132,12 +132,12 @@ export class AiKnowledgeBaseController {
 
   @ApiOperation({
     summary: 'Rebuild embeddings (abstraction)',
-    description: `**Protected — \`ai.knowledge.manage\`. Clinic active.** Architecture seam — acknowledges a rebuild request for an agent's chunks (no vector store configured).`,
+    description: `**Protected — \`ai.knowledge.manage\`. Clinic active.** Architecture seam — acknowledges a rebuild request for an agent's chunks (no vector store configured). Omit \`agentId\` to target the tenant's own default agent — agents are Admin-managed and not exposed to the clinic owner.`,
   })
   @ApiQuery({
     name: 'agentId',
-    required: true,
-    description: 'Agent UUID',
+    required: false,
+    description: "Agent UUID. Omit to resolve the tenant's default agent.",
     format: 'uuid',
   })
   @ApiOkResponse({
@@ -160,13 +160,15 @@ export class AiKnowledgeBaseController {
     schema: S_ERROR,
   })
   @ApiUnprocessableEntityResponse({
-    description: 'Agent not found in this tenant.',
+    description: 'Agent not found in this tenant, or none configured yet.',
     schema: S_ERROR,
   })
   @Post('rebuild')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.AI_KNOWLEDGE_MANAGE)
-  rebuild(@Query('agentId', ParseUUIDPipe) agentId: string) {
+  rebuild(
+    @Query('agentId', new ParseUUIDPipe({ optional: true })) agentId?: string,
+  ) {
     return this.kb.rebuildEmbeddings(this.ctx.requireTenantId(), agentId);
   }
 

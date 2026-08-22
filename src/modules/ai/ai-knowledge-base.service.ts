@@ -11,18 +11,22 @@ import { UpdateKnowledgeBaseDto } from './dto/update-knowledge-base.dto';
 import { KnowledgeBaseFilterDto } from './dto/knowledge-base-filter.dto';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
 import { UsageService } from '../subscription-billing/usage.service';
+import { resolveDefaultAgentId } from './default-agent.util';
 
 /**
  * AI knowledge base.
  *
- * Schema note: `ai_knowledge_bases` requires `agent` + `content` and has no
- * name/status/enabled column (embedding is commented out). So a row is a
- * knowledge CHUNK belonging to an agent; statuses/enable-disable are not
- * persisted, and "search" is a content match (keyword) — vector retrieval would
- * replace this without changing callers.
+ * Schema note: `ai_knowledge_bases` requires `content`; `agent` is optional
+ * (agents are Admin-managed platform config, so a tenant may have Knowledge
+ * before one is provisioned) and there is no name/status/enabled column
+ * (embedding is commented out). So a row is a knowledge CHUNK optionally
+ * owned by an agent; statuses/enable-disable are not persisted, and "search"
+ * is a content match (keyword) — vector retrieval would replace this without
+ * changing callers.
  *
- * Tenant isolation: every query filters `tenant: { id: tenantId }`; the agent is
- * validated against the tenant.
+ * Tenant isolation: every query filters `tenant: { id: tenantId }` — this,
+ * not `agent`, is the isolation boundary. A caller-supplied agent is
+ * additionally validated against the tenant.
  */
 @Injectable()
 export class AiKnowledgeBaseService {
@@ -46,9 +50,9 @@ export class AiKnowledgeBaseService {
       'knowledgeBaseFiles',
       await this.kb.count({ where: { tenant: { id: tenantId } } }),
     );
-    await this.assertAgent(tenantId, dto.agentId);
+    const agentId = await this.resolveAgentId(tenantId, dto.agentId);
     // Creates the chunk AND (best-effort) its embedding in the pgvector sidecar.
-    return this.ingestion.ingestChunk(tenantId, dto.agentId, dto.content, {
+    return this.ingestion.ingestChunk(tenantId, agentId, dto.content, {
       type: dto.sourceType,
       id: dto.sourceId,
     });
@@ -96,10 +100,10 @@ export class AiKnowledgeBaseService {
     if (dto.sourceId !== undefined) entry.source_id = dto.sourceId;
     const saved = await this.kb.save(entry);
     // Keep the embedding in sync when the text changes.
-    if (contentChanged && entry.agent?.id) {
+    if (contentChanged) {
       await this.ingestion.reembedChunk(
         tenantId,
-        entry.agent.id,
+        entry.agent?.id ?? null,
         saved.id,
         saved.content,
       );
@@ -117,15 +121,15 @@ export class AiKnowledgeBaseService {
    * this is an architecture seam: it acknowledges the request and reports the
    * chunk count. A real implementation would enqueue an embedding job.
    */
-  async rebuildEmbeddings(tenantId: string, agentId: string) {
-    await this.assertAgent(tenantId, agentId);
+  async rebuildEmbeddings(tenantId: string, agentId?: string) {
+    const resolvedAgentId = await this.resolveAgentId(tenantId, agentId);
     const { chunks, embedded } = await this.ingestion.reembedAgent(
       tenantId,
-      agentId,
+      resolvedAgentId,
     );
     return {
       accepted: true,
-      agentId,
+      agentId: resolvedAgentId ?? null,
       chunks,
       embedded,
       note:
@@ -145,5 +149,27 @@ export class AiKnowledgeBaseService {
         message: 'AI agent not found in this tenant',
       });
     }
+  }
+
+  /**
+   * Agents/models are Admin-managed platform config, invisible to the clinic
+   * owner (`ai.agents.read`/`manage` are not granted to that role) — so the
+   * knowledge/training UI never sends an `agentId`, and Knowledge must not
+   * require one to exist. When an `agentId` IS supplied (e.g. a direct API
+   * caller), it is validated as before; otherwise this opportunistically
+   * binds to the tenant's own default agent (the same fallback
+   * `AgentRouterService` uses for chat routing) when one already exists, or
+   * else returns `null` — the chunk/rebuild proceeds unbound rather than
+   * being blocked. Never creates an agent as a side effect.
+   */
+  private async resolveAgentId(
+    tenantId: string,
+    agentId?: string,
+  ): Promise<string | null> {
+    if (agentId) {
+      await this.assertAgent(tenantId, agentId);
+      return agentId;
+    }
+    return resolveDefaultAgentId(this.agents, tenantId);
   }
 }
