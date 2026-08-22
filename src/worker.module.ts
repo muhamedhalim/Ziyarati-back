@@ -11,6 +11,9 @@ import { Tenant } from './entities/SaaS-Core/Tenant';
 import { Subscription } from './entities/SaaS-Core/Subscription';
 import { OutboxJob } from './entities/Campaigns/OutboxJob';
 import { User } from './entities/Auth&RBAC/User';
+import { RefreshToken } from './entities/Auth&RBAC/RefreshToken';
+import { PasswordReset } from './entities/Auth&RBAC/PasswordReset';
+import { AuthTokenMaintenanceService } from './modules/auth/auth-token-maintenance.service';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { CryptoModule } from './common/crypto/crypto.module';
@@ -210,7 +213,20 @@ const WORKER_PROVIDERS =
       inject: [ConfigService],
       useFactory: (config: ConfigService) => typeOrmFactory(config, 'worker'),
     }),
-    TypeOrmModule.forFeature([Tenant, Subscription, OutboxJob, User]),
+    // RefreshToken + PasswordReset back AuthTokenMaintenanceService (AUTH-005),
+    // the retention sweep PlatformProcessor runs. Registered here rather than
+    // by importing AuthModule: the sweep needs two repositories and
+    // ConfigService, whereas AuthModule would drag the HTTP controllers,
+    // guards, SubscriptionBillingModule and PlatformModule into the worker
+    // root for no benefit.
+    TypeOrmModule.forFeature([
+      Tenant,
+      Subscription,
+      OutboxJob,
+      User,
+      RefreshToken,
+      PasswordReset,
+    ]),
     TenantContextModule,
     // Workers decrypt tenant provider credentials on the send path, so the
     // worker root needs this exactly as much as the API root does.
@@ -262,6 +278,6 @@ const WORKER_PROVIDERS =
     // Phase 4 — async import + sync processors reuse the shared write pipeline.
     IntegrationPlatformModule,
   ],
-  providers: WORKER_PROVIDERS,
+  providers: [AuthTokenMaintenanceService, ...WORKER_PROVIDERS],
 })
 export class WorkerModule {}

@@ -49,6 +49,10 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_REAP, { tenantId: null }, '* * * * *');
       // Platform log retention purge — 03:30 UTC daily.
       await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_LOG_CLEANUP, { tenantId: null }, '30 3 * * *');
+      // AUTH-005: expired refresh_tokens / password_resets retention purge —
+      // 03:45 UTC daily, offset 15 minutes after the log purge above so the two
+      // sweeps on this same queue never contend for the same instant.
+      await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_AUTH_TOKEN_CLEANUP, { tenantId: null }, '45 3 * * *');
       // Scheduled usage-report tick — hourly (runs schedules that are due).
       await this.queue.addRepeatable(QUEUE.USAGE_REPORT, JOB.USAGE_REPORT_TICK, { tenantId: null }, '5 * * * *');
       // Long-term AI memory expiry purge — 04:00 UTC daily.

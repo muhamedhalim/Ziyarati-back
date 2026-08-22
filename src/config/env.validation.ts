@@ -271,6 +271,46 @@ export const validate = (config: Record<string, unknown>) => {
     AUTH_LOGIN_MAX_FAILED_ATTEMPTS: Joi.number().integer().min(1).default(5),
     AUTH_LOGIN_LOCKOUT_TTL_SECONDS: Joi.number().integer().min(1).default(900),
 
+    // ── Refresh-token rotation (AUTH-001/002/003 remediation) ─────────────
+    // The bounded retry window that lets a client whose refresh RESPONSE was
+    // lost resume from the successor, without that looking like token theft.
+    // Capped hard on every axis: this is not a grace period on the old token
+    // (which stays revoked forever), and it must never become an unlimited
+    // replay window. `max(60)` is a boot-time refusal to configure a
+    // minute-long replay opportunity; 0 disables retries entirely (strict
+    // one-shot rotation). `_MIN_AGE_MS` is the floor below which a duplicate
+    // is classified as CONCURRENT — refused, revoking nothing — which is what
+    // keeps "N concurrent refreshes rotate exactly once" true under load.
+    // See AuthService.resolveRevokedToken.
+    AUTH_REFRESH_RETRY_WINDOW_SECONDS: Joi.number()
+      .integer()
+      .min(0)
+      .max(60)
+      .default(10),
+    AUTH_REFRESH_MAX_RETRIES: Joi.number().integer().min(0).max(10).default(3),
+    AUTH_REFRESH_RETRY_MIN_AGE_MS: Joi.number()
+      .integer()
+      .min(0)
+      .max(10_000)
+      .default(500),
+
+    // ── Authentication token retention (AUTH-005 remediation) ─────────────
+    // Days an ALREADY-EXPIRED refresh_tokens / password_resets row is kept
+    // before the `platform.authTokenCleanup` sweep removes it. Floored at 1 so
+    // the margin that keeps cleanup from racing an in-flight request (see
+    // AuthTokenMaintenanceService) can never be configured away.
+    AUTH_TOKEN_RETENTION_DAYS: Joi.number().integer().min(1).default(7),
+    AUTH_TOKEN_CLEANUP_BATCH: Joi.number()
+      .integer()
+      .min(1)
+      .max(50_000)
+      .default(1000),
+    AUTH_TOKEN_CLEANUP_MAX_BATCHES: Joi.number()
+      .integer()
+      .min(1)
+      .max(1000)
+      .default(20),
+
     // ── Authentication abuse resistance (009-auth-abuse-resistance) ───────
     // Endpoint-specific bounds for the three public recovery/registration
     // routes (ZT-006) plus the shared bounded degraded-mode fallback (ZT-002).

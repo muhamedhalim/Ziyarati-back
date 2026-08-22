@@ -500,7 +500,24 @@ export class AuthService {
   // Token lifecycle
   // ----------------------------------------------------------------------- //
 
-  /** Rotates a refresh token: validates the old one, revokes it, issues a new pair. */
+  /**
+   * Rotates a refresh token: atomically claims the presented token, then issues
+   * a new pair in the SAME rotation family.
+   *
+   * AUTH-001 — THE SECURITY BOUNDARY IS THE CONDITIONAL UPDATE IN
+   * {@link claimRefreshRow}, NOT ANY CHECK IN THIS METHOD. The pre-fix code
+   * read the row, checked `revoked_at` in JavaScript, then wrote
+   * unconditionally; two concurrent requests both observed `revoked_at IS NULL`
+   * and both minted a child (10/10 rounds locally, 5/5 across two app
+   * instances — docs/AUTH_CONCURRENCY_GC_AUDIT.md §4). Everything below the
+   * claim is DIAGNOSIS of a request that already lost, never admission.
+   *
+   * Because the gate is a single `UPDATE ... WHERE revoked_at IS NULL`, the
+   * serialisation point is the Postgres row itself: a second statement blocks
+   * on the row lock, then re-evaluates the predicate against the committed
+   * value and matches nothing. That holds identically across processes and
+   * hosts, so it needs no distributed lock and no Redis state.
+   */
   async refresh(
     refreshToken: string,
     context?: TokenContext,
@@ -526,32 +543,350 @@ export class AuthService {
       });
     }
 
-    const stored = await this.refreshTokens.findOne({
-      where: { id: payload.jti },
-      relations: { user: true },
-    });
-
-    const tokenHash = this.hashToken(refreshToken);
-    if (
-      !stored ||
-      stored.revoked_at ||
-      stored.token_hash !== tokenHash ||
-      stored.expires_at.getTime() < Date.now()
-    ) {
-      // If a revoked/forged token is presented, defensively revoke the whole
-      // family for that user (possible token theft).
-      if (stored?.user) {
-        await this.revokeAllForUser(stored.user.id);
-      }
+    // `jti` is compared against a `uuid` column. A forged token (only possible
+    // with a leaked signing secret) could carry any string, and handing that
+    // to Postgres raises `invalid input syntax for type uuid` — a 500 where a
+    // 401 belongs. Reject malformed identifiers as the invalid tokens they are.
+    if (!AuthService.UUID_PATTERN.test(payload.jti ?? '')) {
       throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
     }
 
-    stored.revoked_at = new Date();
-    await this.refreshTokens.save(stored);
+    const tokenHash = this.hashToken(refreshToken);
+    // Reserved up-front so the successor id can be written by the SAME
+    // statement that revokes the parent — see claimRefreshRow.
+    const childJti = randomUUID();
 
-    // Return the rotated tokens AND the live principal so the controller can
-    // set fresh cookies and respond with the user (never tokens in the body).
-    return this.issueAuthResult(stored.user.id, context);
+    // ── (1) THE GATE ────────────────────────────────────────────────────────
+    const claimed = await this.claimRefreshRow(
+      payload.jti,
+      childJti,
+      tokenHash,
+    );
+    if (claimed) {
+      return this.issueAuthResult(claimed.userId, context, {
+        jti: childJti,
+        familyId: claimed.familyId,
+        parentId: payload.jti,
+      });
+    }
+
+    // ── (2) DIAGNOSIS — this request did not win the gate ───────────────────
+    // Every branch below returns 401. They differ ONLY in whether they are
+    // evidence of theft, and each one is deliberately narrow: over-revoking is
+    // exactly the AUTH-002/AUTH-003 defect being fixed.
+    // No `relations: { user: true }` any more: the reuse response is scoped by
+    // `family_id`, so the owning user is never needed here. Dropping the join
+    // also removes needless work from a path `/auth/refresh` being `@Public()`
+    // lets an unauthenticated caller drive — the same amplification AUTH-003
+    // was about.
+    const stored = await this.refreshTokens.findOne({
+      where: { id: payload.jti },
+    });
+
+    // Unknown jti — nothing to revoke, and revoking on this path would let
+    // anyone log anyone out by guessing. (Already correct pre-fix.)
+    if (!stored) {
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
+    }
+
+    // The row exists but the presented VALUE is not the one it was issued for.
+    // The bearer never held this token, so this says nothing about the
+    // legitimate holder's session — reject without touching it.
+    if (stored.token_hash !== tokenHash) {
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
+    }
+
+    // Still live, so the only predicate the claim can have failed on is expiry.
+    // An expired token is NOT evidence of theft — it is the ordinary fate of
+    // every token — so nothing is revoked. Pre-fix this path nuked every
+    // session the user had (audit C8).
+    if (!stored.revoked_at) {
+      throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
+    }
+
+    // Revoked. Three very different situations reach this line — see
+    // resolveRevokedToken.
+    const resolved = await this.resolveRevokedToken(stored, childJti, context);
+    if (resolved.kind === 'rotated') {
+      return resolved.result;
+    }
+    if (resolved.kind === 'reuse') {
+      await this.handleRefreshReuse(stored, context);
+    }
+    throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
+  }
+
+  /**
+   * Classifies a presentation of an ALREADY-REVOKED refresh token. Getting this
+   * distinction right is the whole of AUTH-002/AUTH-003: the pre-fix code
+   * collapsed all of it into "revoke every session this user has".
+   *
+   *  - `concurrent` — the successor id is recorded but the successor ROW does
+   *    not exist yet, which happens only while the request that won the gate is
+   *    still minting its child. This request lost a race with itself (same
+   *    client, two in-flight refreshes); it is not evidence of anything.
+   *    401, revoke NOTHING. This is the branch that keeps a fixed AUTH-001
+   *    from turning every multi-tab client into a global logout.
+   *
+   *  - `rotated` — the successor exists and is still live, inside the bounded
+   *    retry window: a client whose response was lost. Resume from the
+   *    successor (see retryRotation).
+   *
+   *  - `reuse` — anything else: the successor was already consumed, or the
+   *    window/retry budget is spent, or the token was retired by logout and has
+   *    no successor at all. Genuine replay → revoke this family only.
+   */
+  private async resolveRevokedToken(
+    parent: RefreshToken,
+    childJti: string,
+    context?: TokenContext,
+  ): Promise<
+    | { kind: 'concurrent' }
+    | { kind: 'reuse' }
+    | { kind: 'rotated'; result: AuthResult }
+  > {
+    // No recorded successor at all — the token was retired by logout, or by a
+    // family revoke, not by a rotation. Nothing to resume from.
+    if (!parent.rotated_at || !parent.replaced_by_id) {
+      return { kind: 'reuse' };
+    }
+
+    const successor = await this.refreshTokens.findOne({
+      where: { id: parent.replaced_by_id },
+    });
+
+    // The successor ROW appears only once the winner has finished issuing,
+    // while `replaced_by_id` is written by the claim itself — so an absent row
+    // PROVES the winner is still in flight. This request raced it and lost.
+    if (!successor) {
+      return { kind: 'concurrent' };
+    }
+
+    // The successor has already been consumed (rotated away, logged out, or
+    // expired). That means the client demonstrably DID receive it and moved
+    // on, so presenting the parent again is unambiguous replay — no timing
+    // heuristic applies, and none is consulted.
+    const successorLive =
+      !successor.revoked_at && successor.expires_at.getTime() > Date.now();
+    if (!successorLive) {
+      return { kind: 'reuse' };
+    }
+
+    // The successor is still live: the client has NOT moved on. This is either
+    // a duplicate that raced the original, or a retry after a lost response.
+    // Only here is timing consulted, and the failure mode is deliberately
+    // asymmetric — misreading a retry as concurrent costs one extra round
+    // trip, whereas misreading a duplicate as a retry would admit a second
+    // rotation. Neither branch revokes anything, so neither can destroy a
+    // session.
+    //
+    // Accepted, bounded gap: a replay arriving within
+    // AUTH_REFRESH_RETRY_MIN_AGE_MS of the rotation, while the successor is
+    // still untouched, is refused (401) but NOT flagged as reuse. The attacker
+    // gains nothing from it, and any later replay — or any use of the
+    // successor by either party — lands in the `reuse` branch above.
+    const rotationAgeMs = Date.now() - parent.rotated_at.getTime();
+    if (
+      rotationAgeMs <
+      this.config.get<number>('AUTH_REFRESH_RETRY_MIN_AGE_MS', 500)
+    ) {
+      return { kind: 'concurrent' };
+    }
+
+    const retried = await this.retryRotation(parent, childJti, context);
+    return retried ? { kind: 'rotated', result: retried } : { kind: 'reuse' };
+  }
+
+  /** Matches a canonical UUID (any version) — the shape every `jti` we sign has. */
+  private static readonly UUID_PATTERN =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  /**
+   * THE ATOMIC ROTATION GATE (AUTH-001).
+   *
+   * One statement does all four things that must not be separable: it checks
+   * the row is unrevoked, checks it is unexpired, checks the presented value
+   * hashes to the stored hash, and revokes it — returning the owner and family
+   * only if it actually won. `affected === 1` is the admission decision; there
+   * is no application-level check that can disagree with it.
+   *
+   * `replaced_by_id` is set HERE rather than after the child is inserted, so a
+   * concurrent loser can never read "revoked, but no successor recorded" and
+   * misclassify a race it lost as token reuse. (If the process dies between
+   * this statement and the child INSERT, `replaced_by_id` points at a row that
+   * never materialised — {@link retryRotation} treats that as "not a retry"
+   * and the caller simply re-authenticates.)
+   *
+   * `tokenHash` is NULL only for the retry path, which resumes from a
+   * successor id this service just read out of the parent row rather than from
+   * a value the caller presented — there is no raw token to hash in that case,
+   * and the caller's authority was already established by the parent's hash.
+   */
+  private async claimRefreshRow(
+    jti: string,
+    nextJti: string,
+    tokenHash: string | null,
+  ): Promise<{ userId: string; familyId: string } | null> {
+    const qb = this.refreshTokens
+      .createQueryBuilder()
+      .update(RefreshToken)
+      .set({
+        revoked_at: () => 'now()',
+        rotated_at: () => 'now()',
+        replaced_by_id: nextJti,
+      })
+      .where('id = :jti', { jti })
+      .andWhere('revoked_at IS NULL')
+      .andWhere('expires_at > now()');
+
+    // Omitted only on the retry path, which resumes from an id this service
+    // read out of the parent row rather than from a caller-supplied value.
+    if (tokenHash !== null) {
+      qb.andWhere('token_hash = :tokenHash', { tokenHash });
+    }
+
+    // Raw `RETURNING` list: the join column is literally `"userId"`, and
+    // passing the projection verbatim avoids depending on how the builder
+    // would otherwise quote a mixed-case column name.
+    const result = await qb.returning('"userId", family_id').execute();
+
+    const row = (result.raw as Array<{ userId: string; family_id: string }>)[0];
+    return row ? { userId: row.userId, familyId: row.family_id } : null;
+  }
+
+  /**
+   * BOUNDED RETRY WINDOW — the answer to "a client sent a refresh, the response
+   * was lost in the network, and it is now sending the same token again".
+   *
+   * Without this, fixing AUTH-001 would make that ordinary event look exactly
+   * like theft and (via reuse detection) kill the session. With it, the retry
+   * resumes from the successor the lost response had already created.
+   *
+   * It is NOT a grace period on the old token: the presented token stays
+   * revoked and is never honoured again. What is honoured is the SUCCESSOR,
+   * claimed through the same atomic gate. Three independent bounds keep this
+   * from becoming a replay window:
+   *   1. TIME — `AUTH_REFRESH_RETRY_WINDOW_SECONDS` (default 10s) after the
+   *      rotation, not after the token's issuance;
+   *   2. COUNT — `AUTH_REFRESH_MAX_RETRIES` (default 3) per row;
+   *   3. STATE — the successor must still be live. If the client already used
+   *      it, this is not a lost response, and the request falls through to
+   *      reuse detection.
+   *
+   * The successor id is chained forward so a second retry within the window
+   * resolves to the current head. At every instant the family still has
+   * exactly ONE live token.
+   */
+  private async retryRotation(
+    parent: RefreshToken,
+    childJti: string,
+    context?: TokenContext,
+  ): Promise<AuthResult | null> {
+    /* istanbul ignore next — resolveRevokedToken already established both. */
+    if (!parent.rotated_at || !parent.replaced_by_id) {
+      return null;
+    }
+
+    const windowMs =
+      this.config.get<number>('AUTH_REFRESH_RETRY_WINDOW_SECONDS', 10) * 1_000;
+    if (Date.now() - parent.rotated_at.getTime() > windowMs) {
+      return null;
+    }
+    if (
+      parent.retry_count >=
+      this.config.get<number>('AUTH_REFRESH_MAX_RETRIES', 3)
+    ) {
+      return null;
+    }
+
+    // Same gate as the primary path — a retry is not a privileged bypass.
+    const claimed = await this.claimRefreshRow(
+      parent.replaced_by_id,
+      childJti,
+      null,
+    );
+    if (!claimed) {
+      return null; // successor already consumed, revoked, expired or absent
+    }
+
+    await this.refreshTokens.update(
+      { id: parent.id },
+      { replaced_by_id: childJti, retry_count: parent.retry_count + 1 },
+    );
+    this.metrics.recordRefreshRotationEvent('retry_served');
+
+    return this.issueAuthResult(claimed.userId, context, {
+      jti: childJti,
+      familyId: claimed.familyId,
+      parentId: parent.replaced_by_id,
+    });
+  }
+
+  /**
+   * REUSE DETECTION RESPONSE (AUTH-002) — revokes the compromised FAMILY, and
+   * nothing else.
+   *
+   * Pre-fix this called `revokeAllForUser`, so one replay signed the user out
+   * of every device, including sessions with no relationship to the replayed
+   * token — and because `/auth/refresh` is public, anyone holding any stale
+   * token could trigger it repeatedly (AUTH-003). Scoping to `family_id`
+   * confines the response to the one device chain that actually leaked, which
+   * is the correct blast radius and leaves every other session untouched.
+   *
+   * Reuse is also now OBSERVABLE. Pre-fix it was completely silent — no metric,
+   * no audit row — even though replay of a rotated token is the single best
+   * theft signal the system has.
+   */
+  private async handleRefreshReuse(
+    stored: RefreshToken,
+    context?: TokenContext,
+  ): Promise<void> {
+    await this.revokeFamily(stored.family_id);
+    this.metrics.recordRefreshRotationEvent('reuse_detected');
+    await this.auditRefreshReuseEvent(stored, context);
+  }
+
+  /**
+   * Safe audit record for a detected replay — identifiers and outcome only,
+   * never a token or its hash. Mirrors {@link auditLoginProtectionEvent},
+   * including the wrapper that keeps a failed audit write from blocking the
+   * security decision it records.
+   */
+  private async auditRefreshReuseEvent(
+    stored: RefreshToken,
+    context?: TokenContext,
+  ): Promise<void> {
+    try {
+      await this.auditLogs.save(
+        this.auditLogs.create({
+          action: 'auth.refresh.reuse_detected',
+          entity_type: 'refresh_token_family',
+          entity_id: stored.family_id,
+          ip_address: context?.ipAddress,
+          new_values: {
+            familyId: stored.family_id,
+            result: 'family_revoked',
+          },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Refresh-reuse audit write failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Revokes every live token in ONE rotation family — the reuse-detection
+   * response. Distinct from {@link revokeAllForUser}, which stays the correct
+   * behaviour for the places the user explicitly asks for it (logout-all,
+   * password change, password reset).
+   */
+  async revokeFamily(familyId: string): Promise<void> {
+    await this.refreshTokens.update(
+      { family_id: familyId, revoked_at: IsNull() },
+      { revoked_at: new Date() },
+    );
   }
 
   /** Revokes a single refresh token (single-device logout). */
@@ -1009,9 +1344,15 @@ export class AuthService {
   private async issueAuthResult(
     userId: string,
     context?: TokenContext,
+    lineage?: RefreshLineage,
   ): Promise<AuthResult> {
     const principal = await this.buildAuthenticatedUser(userId);
-    const tokens = await this.issueTokens(userId, principal.tenantId, context);
+    const tokens = await this.issueTokens(
+      userId,
+      principal.tenantId,
+      context,
+      lineage,
+    );
     return {
       ...tokens,
       user: {
@@ -1025,11 +1366,20 @@ export class AuthService {
     };
   }
 
-  /** Signs an access token and a persisted, rotating refresh token. */
+  /**
+   * Signs an access token and a persisted, rotating refresh token.
+   *
+   * `lineage` is supplied ONLY by {@link refresh}, which has already reserved
+   * the child's id and knows the family to continue. Every other caller (login,
+   * owner registration, patient registration) omits it and therefore starts a
+   * NEW family rooted at its own id — one login, one device chain, which is
+   * exactly the scope reuse detection revokes.
+   */
   private async issueTokens(
     userId: string,
     tenantId: string | null,
     context?: TokenContext,
+    lineage?: RefreshLineage,
   ): Promise<AuthTokens> {
     const accessTtl = this.config.get<string>('JWT_ACCESS_TTL', '15m');
     const refreshTtl = this.config.get<string>('JWT_REFRESH_TTL', '7d');
@@ -1044,8 +1394,10 @@ export class AuthService {
       expiresIn: accessTtl as JwtSignOptions['expiresIn'],
     });
 
-    // Reserve the refresh-token row id so it can be embedded as the jti.
-    const jti = randomUUID();
+    // Reserve the refresh-token row id so it can be embedded as the jti. On a
+    // rotation the id was already reserved by `refresh()` and written into the
+    // parent's `replaced_by_id` — reuse it rather than minting a second one.
+    const jti = lineage?.jti ?? randomUUID();
     const refreshPayload: RefreshTokenPayload = {
       sub: userId,
       tenantId,
@@ -1062,6 +1414,10 @@ export class AuthService {
         id: jti,
         user: { id: userId } as User,
         token_hash: this.hashToken(refreshToken),
+        // A login roots its own family at its own id; a rotation continues its
+        // parent's. This is the whole basis of family-scoped revocation.
+        family_id: lineage?.familyId ?? jti,
+        parent_id: lineage?.parentId ?? null,
         device_info: context?.deviceInfo,
         ip_address: context?.ipAddress,
         expires_at: new Date(Date.now() + this.ttlToMs(refreshTtl)),
@@ -1123,4 +1479,18 @@ export class AuthService {
 export interface TokenContext {
   ipAddress?: string;
   deviceInfo?: string;
+}
+
+/**
+ * Rotation lineage for a refresh token that CONTINUES an existing session
+ * chain. Supplied only by {@link AuthService.refresh}; omitting it starts a new
+ * family (see `issueTokens`).
+ */
+interface RefreshLineage {
+  /** Id reserved before the atomic claim and already recorded as the parent's `replaced_by_id`. */
+  jti: string;
+  /** The family this rotation continues — inherited, never regenerated. */
+  familyId: string;
+  /** The row rotated from. */
+  parentId: string;
 }

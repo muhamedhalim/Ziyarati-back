@@ -28,6 +28,7 @@ import {
   createMockDataSource,
   createMockConfigService,
   createMockJwtService,
+  createMockQueryBuilder,
   MockRepository,
   MockDataSource,
 } from '../../../test/utils/mock-factories';
@@ -96,6 +97,7 @@ describe('AuthService', () => {
   let metrics: {
     recordAuthAbuseLimiterEvent: jest.Mock;
     recordAuthRecoveryEvent: jest.Mock;
+    recordRefreshRotationEvent: jest.Mock;
   };
   const bcryptHash = bcrypt.hash as unknown as jest.Mock;
   const bcryptCompare = bcrypt.compare as unknown as jest.Mock;
@@ -141,12 +143,19 @@ describe('AuthService', () => {
       clear: jest.fn().mockResolvedValue(false),
     };
     limiter = {
-      consume: jest.fn().mockResolvedValue({ allowed: true, degraded: false, count: 1 }),
-      peek: jest.fn().mockResolvedValue({ allowed: true, degraded: false, count: 0 }),
+      consume: jest
+        .fn()
+        .mockResolvedValue({ allowed: true, degraded: false, count: 1 }),
+      peek: jest
+        .fn()
+        .mockResolvedValue({ allowed: true, degraded: false, count: 0 }),
     };
     metrics = {
       recordAuthAbuseLimiterEvent: jest.fn(),
       recordAuthRecoveryEvent: jest.fn(),
+      // AUTH-002 — reuse detection and the bounded retry window are now
+      // observable; pre-fix a detected replay emitted nothing at all.
+      recordRefreshRotationEvent: jest.fn(),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -769,12 +778,48 @@ describe('AuthService', () => {
   });
 
   // ────────────────────────────────── refresh ───────────────────────────────
+  /**
+   * Rewritten for the AUTH-001/002/003 remediation. The previous versions of
+   * these tests asserted the DEFECTIVE contract — that a replay, a hash
+   * mismatch, or a merely EXPIRED token each revoked every session the user
+   * owned. That whole-account response is exactly what the audit found
+   * (docs/AUTH_CONCURRENCY_GC_AUDIT.md, AUTH-002/AUTH-003), so the assertions
+   * were inverted rather than adjusted.
+   *
+   * Admission is now decided by a conditional UPDATE (`claimRefreshRow`), which
+   * surfaces here as `refreshTokens.createQueryBuilder(...).execute()`. A
+   * non-empty `raw` means this request won the row; an empty one means it lost
+   * and everything after it is diagnosis, never admission.
+   */
   describe('refresh', () => {
+    const JTI = '11111111-1111-4111-8111-111111111111';
+    const SUCCESSOR = '22222222-2222-4222-8222-222222222222';
+    const FAMILY = '33333333-3333-4333-8333-333333333333';
+
     const validPayload = {
       sub: 'user-1',
       tenantId: 'tenant-1',
-      jti: 'jti-1',
+      jti: JTI,
       type: 'refresh',
+    };
+
+    /** Makes the atomic claim win, returning the row's owner + family. */
+    const claimWins = () => {
+      const qb = createMockQueryBuilder();
+      qb.execute = jest.fn(async () => ({
+        affected: 1,
+        raw: [{ userId: 'user-1', family_id: FAMILY }],
+      }));
+      refreshTokens.createQueryBuilder.mockReturnValueOnce(qb);
+      return qb;
+    };
+
+    /** Makes the atomic claim lose — no row matched the conditional UPDATE. */
+    const claimLoses = () => {
+      const qb = createMockQueryBuilder();
+      qb.execute = jest.fn(async () => ({ affected: 0, raw: [] }));
+      refreshTokens.createQueryBuilder.mockReturnValue(qb);
+      return qb;
     };
 
     /** The persisted row must hash-match the presented token. */
@@ -785,26 +830,34 @@ describe('AuthService', () => {
       const { createHash } = require('crypto');
       const token_hash = createHash('sha256').update(rawToken).digest('hex');
       return {
-        id: 'jti-1',
+        id: JTI,
         token_hash,
+        family_id: FAMILY,
         revoked_at: null,
+        rotated_at: null,
+        replaced_by_id: null,
+        retry_count: 0,
         expires_at: new Date(Date.now() + 60_000),
         user: { id: 'user-1' },
         ...overrides,
       };
     };
 
-    it('rotates the token: revokes the old row and issues a new pair', async () => {
+    it('rotates when the atomic claim wins, continuing the parent family', async () => {
       jwt.verifyAsync.mockResolvedValueOnce(validPayload);
-      refreshTokens.findOne.mockResolvedValueOnce(storedFor('rt'));
+      claimWins();
       users.findOne.mockResolvedValueOnce(principalRow());
 
       const result = await service.refresh('rt');
 
-      expect(refreshTokens.save).toHaveBeenCalledWith(
-        expect.objectContaining({ revoked_at: expect.any(Date) }),
-      );
       expect(result.user).toEqual(expectedPrincipal);
+      // The child inherits the family and records its parent — the lineage
+      // that makes family-scoped revocation possible.
+      expect(refreshTokens.save).toHaveBeenCalledWith(
+        expect.objectContaining({ family_id: FAMILY, parent_id: JTI }),
+      );
+      // Admission came from the conditional UPDATE, not from a read-then-write.
+      expect(refreshTokens.createQueryBuilder).toHaveBeenCalled();
     });
 
     it('throws INVALID_REFRESH_TOKEN when verification fails', async () => {
@@ -824,8 +877,24 @@ describe('AuthService', () => {
       });
     });
 
+    it('rejects a MALFORMED jti before it ever reaches the database', async () => {
+      jwt.verifyAsync.mockResolvedValueOnce({
+        ...validPayload,
+        jti: 'not-a-uuid',
+      });
+
+      await expect(service.refresh('rt')).rejects.toMatchObject({
+        code: ErrorCode.INVALID_REFRESH_TOKEN,
+      });
+      // A non-UUID compared against a uuid column raises a Postgres syntax
+      // error — a 500 where a 401 belongs. Nothing may be issued at all.
+      expect(refreshTokens.createQueryBuilder).not.toHaveBeenCalled();
+      expect(refreshTokens.findOne).not.toHaveBeenCalled();
+    });
+
     it('rejects an unknown jti without revoking anything', async () => {
       jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+      claimLoses();
       refreshTokens.findOne.mockResolvedValueOnce(null);
 
       await expect(service.refresh('rt')).rejects.toMatchObject({
@@ -834,34 +903,22 @@ describe('AuthService', () => {
       expect(refreshTokens.update).not.toHaveBeenCalled();
     });
 
-    it('REVOKES THE WHOLE FAMILY when a revoked token is replayed (theft response)', async () => {
+    it('rejects a token-hash mismatch without revoking anything (AUTH-002)', async () => {
       jwt.verifyAsync.mockResolvedValueOnce(validPayload);
-      refreshTokens.findOne.mockResolvedValueOnce(
-        storedFor('rt', { revoked_at: new Date() }),
-      );
-
-      await expect(service.refresh('rt')).rejects.toMatchObject({
-        code: ErrorCode.INVALID_REFRESH_TOKEN,
-      });
-      // revokeAllForUser → refreshTokens.update for the whole user family
-      expect(refreshTokens.update).toHaveBeenCalledWith(
-        expect.objectContaining({ user: { id: 'user-1' } }),
-        expect.objectContaining({ revoked_at: expect.any(Date) }),
-      );
-    });
-
-    it('revokes the family on a token-hash mismatch (forged token)', async () => {
-      jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+      claimLoses();
       refreshTokens.findOne.mockResolvedValueOnce(
         storedFor('rt', { token_hash: 'different-hash' }),
       );
 
       await expect(service.refresh('rt')).rejects.toBeInstanceOf(AppError);
-      expect(refreshTokens.update).toHaveBeenCalled();
+      // The bearer never held this token, so it is no evidence about the
+      // legitimate holder's session. Pre-fix this revoked every session.
+      expect(refreshTokens.update).not.toHaveBeenCalled();
     });
 
-    it('rejects an expired refresh token', async () => {
+    it('rejects an EXPIRED token without revoking anything (AUTH-003)', async () => {
       jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+      claimLoses();
       refreshTokens.findOne.mockResolvedValueOnce(
         storedFor('rt', { expires_at: new Date(Date.now() - 1000) }),
       );
@@ -869,7 +926,78 @@ describe('AuthService', () => {
       await expect(service.refresh('rt')).rejects.toMatchObject({
         code: ErrorCode.INVALID_REFRESH_TOKEN,
       });
-      expect(refreshTokens.update).toHaveBeenCalled();
+      // Expiry is the ordinary fate of every token, not evidence of theft.
+      expect(refreshTokens.update).not.toHaveBeenCalled();
+    });
+
+    it('treats a lost race as CONCURRENT — 401, and revokes nothing (AUTH-001)', async () => {
+      jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+      claimLoses();
+      refreshTokens.findOne
+        // the parent: revoked by the winner, successor id already recorded
+        .mockResolvedValueOnce(
+          storedFor('rt', {
+            revoked_at: new Date(),
+            rotated_at: new Date(),
+            replaced_by_id: SUCCESSOR,
+          }),
+        )
+        // the successor row does not exist yet — the winner is still issuing
+        .mockResolvedValueOnce(null);
+
+      await expect(service.refresh('rt')).rejects.toMatchObject({
+        code: ErrorCode.INVALID_REFRESH_TOKEN,
+      });
+      expect(refreshTokens.update).not.toHaveBeenCalled();
+    });
+
+    it('revokes ONLY the family when a consumed token is replayed (AUTH-002)', async () => {
+      jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+      claimLoses();
+      refreshTokens.findOne
+        .mockResolvedValueOnce(
+          storedFor('rt', {
+            revoked_at: new Date(),
+            rotated_at: new Date(),
+            replaced_by_id: SUCCESSOR,
+          }),
+        )
+        // the successor has already been consumed — unambiguous replay
+        .mockResolvedValueOnce({
+          id: SUCCESSOR,
+          revoked_at: new Date(),
+          expires_at: new Date(Date.now() + 60_000),
+        });
+
+      await expect(service.refresh('rt')).rejects.toMatchObject({
+        code: ErrorCode.INVALID_REFRESH_TOKEN,
+      });
+
+      // Scoped to the family...
+      expect(refreshTokens.update).toHaveBeenCalledWith(
+        expect.objectContaining({ family_id: FAMILY }),
+        expect.objectContaining({ revoked_at: expect.any(Date) }),
+      );
+      // ...and NEVER to the whole user, which was the pre-fix behaviour.
+      expect(refreshTokens.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ user: expect.anything() }),
+        expect.anything(),
+      );
+    });
+
+    it('a token retired by logout has no successor, so a replay is reuse of its family alone', async () => {
+      jwt.verifyAsync.mockResolvedValueOnce(validPayload);
+      claimLoses();
+      refreshTokens.findOne.mockResolvedValueOnce(
+        // logout revokes without rotating: no rotated_at, no successor
+        storedFor('rt', { revoked_at: new Date() }),
+      );
+
+      await expect(service.refresh('rt')).rejects.toBeInstanceOf(AppError);
+      expect(refreshTokens.update).toHaveBeenCalledWith(
+        expect.objectContaining({ family_id: FAMILY }),
+        expect.objectContaining({ revoked_at: expect.any(Date) }),
+      );
     });
   });
 
@@ -973,10 +1101,12 @@ describe('AuthService', () => {
     // FR-H014/T156 gap-closure: the user row is already loaded here, so its
     // recorded locale (M-08) must reach the email — a free, no-risk win.
     it("[T156] forwards the user's preferred_locale to the reset email", async () => {
-      users.find.mockResolvedValueOnce([{
-        id: 'user-1',
-        preferred_locale: 'ar',
-      }]);
+      users.find.mockResolvedValueOnce([
+        {
+          id: 'user-1',
+          preferred_locale: 'ar',
+        },
+      ]);
       await service.forgotPassword({ email: 'a@b.com' } as any);
       expect(email.sendPasswordReset).toHaveBeenCalledWith(
         expect.objectContaining({ locale: 'ar' }),
