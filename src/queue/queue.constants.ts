@@ -124,6 +124,14 @@ export const JOB = {
   REFUNDS_REAP: 'refunds.reap',
   PAYMENTS_RECONCILE: 'payments.reconcile',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
+  /**
+   * AUTH-005 (see docs/AUTH_CONCURRENCY_GC_AUDIT.md) — repeatable retention
+   * sweep for `refresh_tokens` / `password_resets`, which previously had no
+   * cleanup path at all. Shares the existing `platform` maintenance queue
+   * rather than introducing a scheduler: BullMQ repeatable jobs dedup by
+   * repeat key, so this stays single-flight across worker replicas.
+   */
+  PLATFORM_AUTH_TOKEN_CLEANUP: 'platform.authTokenCleanup',
   EMAIL_SEND: 'email.send',
   USAGE_REPORT_TICK: 'usageReport.tick',
   USAGE_REPORT_RUN: 'usageReport.run',

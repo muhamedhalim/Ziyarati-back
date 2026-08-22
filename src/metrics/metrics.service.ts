@@ -135,6 +135,20 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * AUTH-002 — refresh-token rotation outcomes. Pre-fix, reuse detection was
+   * completely silent: no metric, no audit row, no log line, even though
+   * replay of a rotated token is the single strongest token-theft signal the
+   * system produces. Carries no identity in the label set — `reuse_detected`
+   * says a family was revoked, never whose.
+   */
+  private readonly refreshRotationEvents = new Counter({
+    name: 'auth_refresh_rotation_events_total',
+    help: 'Refresh-token rotation outcomes (reuse detection, bounded retry window), by event.',
+    labelNames: ['event'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -186,6 +200,17 @@ export class MetricsService {
   /** ZT-010 — the recovery lookup found more than one live row for one normalized email; `uq_user_email_global` has been lost. */
   recordAuthRecoveryEvent(event: 'multiplicity_violation'): void {
     this.authRecoveryEvents.inc({ event });
+  }
+
+  /**
+   * AUTH-002 — `reuse_detected`: a revoked token was replayed outside the retry
+   * window and its family was revoked (investigate: possible token theft).
+   * `retry_served`: a client whose response was lost resumed from the recorded
+   * successor inside the bounded window (benign, but a sustained rate means
+   * clients are losing responses).
+   */
+  recordRefreshRotationEvent(event: 'reuse_detected' | 'retry_served'): void {
+    this.refreshRotationEvents.inc({ event });
   }
 
   recordHttpRequest(method: string, statusCode: number, durationSeconds: number): void {

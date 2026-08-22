@@ -127,6 +127,11 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   [JOB.REFUNDS_REAP]: SYSTEM,
   [JOB.PAYMENTS_RECONCILE]: SYSTEM,
   [JOB.PLATFORM_LOG_CLEANUP]: SYSTEM,
+  // AUTH-005 retention sweep. SYSTEM, never tenant-scoped: `refresh_tokens`
+  // has no tenant column (it hangs off `users`), and the sweep's predicate is
+  // purely temporal — there is no per-tenant variant of "this row expired a
+  // week ago", and no tenant should be able to trigger it.
+  [JOB.PLATFORM_AUTH_TOKEN_CLEANUP]: SYSTEM,
   // Both platform-level (no tenant — e.g. a security alert to a platform
   // admin) and tenant-scoped senders exist under this one job name.
   [JOB.EMAIL_SEND]: SYSTEM_OR_TENANT,
