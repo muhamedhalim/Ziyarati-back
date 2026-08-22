@@ -35,8 +35,9 @@ describe('AiExecutionService — resolveTemperature', () => {
       unused, // processingPolicy
       unused, // subscriptions
       unused, // access
-      { get: jest.fn().mockReturnValue(10) }, // config
-      platformSettings,
+      { get: jest.fn().mockReturnValue(10) } as any, // config
+      platformSettings as any,
+      unused, // bookingContext
     );
   });
 

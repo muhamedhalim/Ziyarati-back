@@ -159,8 +159,14 @@ export class AiToolDispatchService {
         case AI_TOOL.REQUEST_HUMAN_HANDOVER:
           return await this.requestHumanHandover(ctx, args);
         // ── Public booking (anonymous visitors) ────────────────────────────
+        // Recorded like its siblings: it used to return without writing any
+        // row at all, so a booking that dead-ended at the city step left no
+        // trace in `ai_tool_calls` and the failure was invisible to the
+        // monitoring surfaces.
         case AI_PUBLIC_TOOL.LIST_CITIES:
-          return await this.listCities();
+          return await this.recordSessionAttempt(ctx, call.name, args, () =>
+            this.listCities(),
+          );
         // AI-008/C1 (FR-026): these 7 session-state tools never call
         // run() — recordSessionAttempt records one attempt-only row per
         // call, on the same terms as a denial, regardless of outcome.
@@ -325,23 +331,82 @@ export class AiToolDispatchService {
 
   // ───────────────────────── Public discovery tools ──────────────────────── //
 
-  /** Cross-tenant public clinic search — read-only, safe for anonymous chats. */
+  /**
+   * Cross-tenant public clinic search — read-only, safe for anonymous chats.
+   *
+   * TWO things changed here, both of them causes of the "no clinics available"
+   * dead end:
+   *
+   *  1. `cityId` is now honoured. `PublicDiscoveryService.searchClinics` has
+   *     always taken a city (the REST endpoint passes one), but the TOOL schema
+   *     exposed only `query` — which matches clinic/slug/service names and
+   *     nothing else. So the one thing the model had after asking "which city?"
+   *     was a city NAME, and the only place to put it was `query`, where it
+   *     matched nothing and produced a confident "there are no clinics".
+   *  2. An accepted `cityId` is RECORDED on the session, server-side, after the
+   *     database has confirmed the city exists. That is what lets the next turn
+   *     continue instead of starting over — see
+   *     `PublicBookingContextService.describeSelection`.
+   */
   private async searchClinics(
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
     const query = this.str(args.query);
     const limit = typeof args.limit === 'number' ? args.limit : undefined;
+    const requestedCityId = this.str(args.cityId);
+
+    // Validate BEFORE recording: the session only ever holds ids the database
+    // confirmed. An id the model invented is rejected here, not stored and
+    // trusted later.
+    const city = requestedCityId
+      ? await this.discovery.findCity(requestedCityId)
+      : null;
+    if (requestedCityId && !city) {
+      return {
+        success: false,
+        error:
+          'That cityId does not exist. Call list_cities for valid ids, or call search_clinics with no cityId to search every bookable clinic.',
+      };
+    }
+
     return this.run(
       ctx,
       AI_TOOL.SEARCH_CLINICS,
       `search_clinics:${randomUUID()}`,
       args,
       async () => {
-        const clinics = await this.discovery.searchClinics(query, limit);
+        const clinics = await this.discovery.searchClinics(
+          query,
+          limit,
+          city?.id,
+        );
+
+        // Public (guest) turns only. A staff turn shares this tool but has no
+        // public booking session to carry, and writing one would be noise.
+        if (city && ctx.principal?.guest) {
+          await this.bookingContext.patchSelection(
+            ctx.tenantId,
+            ctx.aiConversationId,
+            { selectedCityId: city.id },
+          );
+        }
+
         return {
-          toolResult: { success: true, count: clinics.length, clinics },
-          resultJson: { count: clinics.length },
+          toolResult: {
+            success: true,
+            count: clinics.length,
+            clinics,
+            ...(city ? { cityId: city.id, cityRecorded: true } : {}),
+            ...(clinics.length === 0
+              ? {
+                  guidance: city
+                    ? 'No bookable clinic has a branch in that city. Retry with no cityId before telling the visitor there is nothing available.'
+                    : 'No clinic is currently opted in to public booking. Say so plainly and offer a human handover.',
+                }
+              : {}),
+          },
+          resultJson: { count: clinics.length, cityId: city?.id ?? null },
         };
       },
     );
@@ -737,9 +802,38 @@ export class AiToolDispatchService {
   //   3. the write itself runs as the SELECTED clinic's `ai-bot` actor, so the
   //      visitor is never granted `appointments.create`.
 
+  /**
+   * The cities that have bookable clinics — AND the counts that stop an empty
+   * list from being read as an empty platform.
+   *
+   * `branches.city_id` is nullable, so a perfectly bookable clinic that never
+   * recorded a city contributes no city here. The model used to receive a bare
+   * `{ cities: [] }` and told the visitor "no clinics are available for public
+   * booking", which is a claim this tool cannot support. It now reports what it
+   * actually knows: how many bookable clinics exist, how many of them are not
+   * placed in any city, and what to do next.
+   */
   private async listCities(): Promise<ToolResult> {
-    const cities = await this.discovery.listCities();
-    return { success: true, cities };
+    const { cities, bookableClinics, clinicsWithoutCity } =
+      await this.discovery.cityCoverage();
+
+    const guidance =
+      bookableClinics === 0
+        ? 'No clinic has opted in to public booking. Say so plainly and offer a human handover.'
+        : cities.length === 0
+          ? 'Cities are not recorded for these clinics. Bookable clinics DO exist — call search_clinics with no arguments and offer them. Never tell the visitor there are no clinics.'
+          : clinicsWithoutCity > 0
+            ? 'Some bookable clinics have no city recorded. If the visitor does not want any of these cities, call search_clinics with no arguments to offer the rest.'
+            : 'Ask which city, then pass its id to search_clinics as cityId.';
+
+    return {
+      success: true,
+      cities,
+      cityCount: cities.length,
+      bookableClinics,
+      clinicsWithoutCity,
+      guidance,
+    };
   }
 
   /**

@@ -229,6 +229,15 @@ export class TenantService {
       bot_enabled: dto.botEnabled ?? settings.bot_enabled,
       enforce_staff_working_hours:
         dto.enforceStaffWorkingHours ?? settings.enforce_staff_working_hours,
+      // The clinic's opt-in to the PUBLIC (anonymous) booking assistant. Every
+      // public-discovery query gates on this column (`ELIGIBLE_CLINIC`), and
+      // until now NOTHING wrote it: the DTO carried no field and this assign
+      // list had no entry, so it stayed at its `false` default forever and
+      // `list_cities` / `search_clinics` returned an empty set for every
+      // visitor, on every environment. That is what surfaced in the widget as
+      // "no clinics are available for booking" for clinics that plainly exist.
+      public_booking_enabled:
+        dto.publicBookingEnabled ?? settings.public_booking_enabled,
       updated_at: new Date(),
     });
     return this.settings.save(settings);

@@ -33,8 +33,10 @@ import {
 import { AI_TOOLS, AI_TOOL_PERMISSION } from './tools/ai-tools.constants';
 import {
   AI_PUBLIC_BOOKING_TOOLS,
+  BOOKING_CONTEXT_MUTATING_TOOLS,
   PUBLIC_DISCOVERY_TOOL_NAMES,
 } from './tools/ai-public-booking-tools.constants';
+import { PublicBookingContextService } from '../public-booking/public-booking-context.service';
 import {
   AI_ADMIN_TOOLS,
   AI_ADMIN_TOOL_PERMISSION,
@@ -154,6 +156,12 @@ export class AiExecutionService {
     private readonly access: AccessControlService,
     private readonly config: ConfigService,
     private readonly platformSettings: SystemSettingService,
+    /**
+     * Supplies the server-verified booking state that is pinned into every
+     * public turn's prompt. The selections have always been persisted; this is
+     * what finally shows them to the model.
+     */
+    private readonly bookingContext: PublicBookingContextService,
   ) {
     // AI-023 (FR-048, R7): read once at construction — same posture as
     // MAX_TOOL_ITERATIONS being a fixed module constant; this bound is
@@ -488,8 +496,18 @@ export class AiExecutionService {
       const effectiveSystemPrompt =
         agent?.system_prompt?.trim() || this.defaultSystemPrompt();
 
+      // The booking selections this conversation already established, re-proved
+      // against the database. Pinned into the prompt so a public turn continues
+      // the flow instead of rediscovering it — tool results are not persisted as
+      // messages, so this block is the ONLY way that state survives a turn.
+      const bookingContext = await this.buildBookingContext(
+        tenantId,
+        aiConversationId,
+      );
+
       const built = this.budgets.build({
         systemPrompt: effectiveSystemPrompt,
+        bookingContext,
         ragChunks: chunks,
         memories,
         history: recent
@@ -641,6 +659,15 @@ export class AiExecutionService {
             content: toolOutput.content,
           });
         }
+        // A select_* (or a city-recording search_clinics) just moved the
+        // server-side selection on. Re-prove it and replace the pinned block so
+        // the next iteration reads one consistent account of the booking.
+        messages = await this.refreshBookingContext(
+          messages,
+          tenantId,
+          aiConversationId,
+          accepted,
+        );
         if (i === MAX_TOOL_ITERATIONS - 1) {
           const checked = this.applyPromptDisclosureCheck(
             completion.content || 'I have processed your request.',
@@ -1404,8 +1431,16 @@ export class AiExecutionService {
       const effectiveSystemPrompt =
         agent?.system_prompt?.trim() || this.defaultSystemPrompt();
 
+      // Same server-verified booking state as the non-streaming path — this is
+      // the method the public widget actually reaches, so it had to go here too.
+      const bookingContext = await this.buildBookingContext(
+        tenantId,
+        aiConversationId,
+      );
+
       const built = this.budgets.build({
         systemPrompt: effectiveSystemPrompt,
+        bookingContext,
         ragChunks: chunks,
         memories,
         history: recent
@@ -1602,6 +1637,13 @@ export class AiExecutionService {
               content: toolOutput.content,
             });
           }
+          // Same refresh as the non-streaming loop — see its comment.
+          messages = await this.refreshBookingContext(
+            messages,
+            tenantId,
+            aiConversationId,
+            acceptedStream,
+          );
           if (i === MAX_TOOL_ITERATIONS - 1) {
             const checked = disclosureGate.finalize(
               turnContent || 'I have processed your request.',
@@ -1709,6 +1751,13 @@ export class AiExecutionService {
               content: toolOutput.content,
             });
           }
+          // Same refresh as the other two loops — see the non-streaming one.
+          messages = await this.refreshBookingContext(
+            messages,
+            tenantId,
+            aiConversationId,
+            acceptedFallback,
+          );
           if (i === MAX_TOOL_ITERATIONS - 1) {
             const checked = this.applyPromptDisclosureCheck(
               completion.content || 'I have processed your request.',
@@ -2046,6 +2095,81 @@ export class AiExecutionService {
     return this.ctx.getUser()?.guest
       ? DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT
       : DEFAULT_ASSISTANT_SYSTEM_PROMPT;
+  }
+
+  /**
+   * The ESTABLISHED BOOKING CONTEXT block for a PUBLIC turn, or `undefined`.
+   *
+   * Public surfaces only: it is built from the anonymous booking session, which
+   * no authenticated staff turn has. Never throws — a turn must still be
+   * answerable when this cannot be produced, so a failure degrades to no block
+   * rather than to no reply.
+   */
+  private async buildBookingContext(
+    tenantId: string,
+    aiConversationId: string,
+  ): Promise<string | undefined> {
+    const user = this.ctx.getUser();
+    if (!user?.guest) return undefined;
+    try {
+      return (
+        (await this.bookingContext.describeSelection(
+          tenantId,
+          aiConversationId,
+          user,
+        )) ?? undefined
+      );
+    } catch (err) {
+      this.logger.warn(
+        `booking context unavailable for ${aiConversationId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Rebuilds the pinned booking-context system message IN PLACE after a tool
+   * call changed the selection, so the model never sees a fresh tool result
+   * sitting beside a stale statement of what has been established.
+   *
+   * Identified by position, not by content: it is the SECOND system message,
+   * the only other one being the turn's own system prompt. Replaced when the
+   * refreshed block still has content, removed when the selection has become
+   * empty — leaving the old text in place would be worse than having none.
+   */
+  private async refreshBookingContext(
+    messages: AiChatMessage[],
+    tenantId: string,
+    aiConversationId: string,
+    calls: AiToolCall[],
+  ): Promise<AiChatMessage[]> {
+    if (!calls.some((c) => BOOKING_CONTEXT_MUTATING_TOOLS.has(c.name))) {
+      return messages;
+    }
+    const refreshed = await this.buildBookingContext(
+      tenantId,
+      aiConversationId,
+    );
+    const systemIndexes = messages
+      .map((m, i) => (m.role === 'system' ? i : -1))
+      .filter((i) => i >= 0);
+    const slot = systemIndexes[1];
+
+    if (slot === undefined) {
+      // No block was pinned at assembly time (nothing had been selected yet) —
+      // a `select_*` inside this very turn has now created one.
+      if (!refreshed) return messages;
+      const after = systemIndexes[0] ?? -1;
+      const next = [...messages];
+      next.splice(after + 1, 0, { role: 'system', content: refreshed });
+      return next;
+    }
+    const next = [...messages];
+    if (refreshed) next[slot] = { role: 'system', content: refreshed };
+    else next.splice(slot, 1);
+    return next;
   }
 
   /**
