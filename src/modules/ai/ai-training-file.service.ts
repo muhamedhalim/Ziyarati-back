@@ -18,6 +18,7 @@ import { TRAINING_FILE_STATUS } from './ai.constants';
 import { AiKnowledgeIngestionService } from './ingestion/ai-knowledge-ingestion.service';
 import { splitIntoChunks } from './ingestion/text-splitter';
 import { AiBatchService } from './batch/ai-batch.service';
+import { resolveDefaultAgentId } from './default-agent.util';
 import { AiExecutionPolicyService } from './execution/ai-execution-policy.service';
 import {
   AI_EXECUTION_MODE,
@@ -90,11 +91,19 @@ export class AiTrainingFileService {
   ): Promise<AiTrainingFile> {
     const size = dto.fileSize ?? 0;
     await this.assertTrainingFileQuota(tenantId, size);
+    // Agents/models are Admin-managed platform config, invisible to the
+    // clinic owner — the upload UI never sends an `agentId`. When one IS
+    // supplied (e.g. a direct API caller), it is validated as before;
+    // otherwise the tenant's own default agent is resolved server-side (the
+    // same fallback AgentRouterService already uses for chat routing), so
+    // the file is never left unbound for processing to reject later.
     if (dto.agentId) await this.assertAgent(tenantId, dto.agentId);
+    const agentId =
+      dto.agentId ?? (await resolveDefaultAgentId(this.agents, tenantId));
     this.storage.assertKeyBelongsToTenant(dto.fileUrl, tenantId);
     const file = this.files.create({
       tenant: { id: tenantId } as Tenant,
-      agent: dto.agentId ? ({ id: dto.agentId } as AiAgent) : undefined,
+      agent: agentId ? ({ id: agentId } as AiAgent) : undefined,
       file_name: dto.fileName,
       file_url: dto.fileUrl,
       file_type: dto.fileType,
@@ -201,12 +210,6 @@ export class AiTrainingFileService {
       });
     }
     if (file.status === TRAINING_FILE_STATUS.INDEXED) return file;
-    if (!file.agent?.id)
-      return this.fail(
-        file,
-        'AGENT_REQUIRED',
-        'An AI agent is required before indexing.',
-      );
 
     file.status = TRAINING_FILE_STATUS.PROCESSING;
     file.error_code = undefined;
@@ -282,7 +285,7 @@ export class AiTrainingFileService {
       if (decision.mode === AI_EXECUTION_MODE.BATCH && canBatch) {
         const prepared = await this.ingestion.prepareBatchDocument(
           tenantId,
-          file.agent.id,
+          file.agent?.id ?? null,
           text,
           file.id,
         );
@@ -309,7 +312,7 @@ export class AiTrainingFileService {
           await this.batch.submitEmbeddingBatch({
             tenantId,
             feature: AI_FEATURE.FILE_INDEXING,
-            agentId: file.agent.id,
+            agentId: file.agent?.id ?? null,
             items: prepared.pending.map((p) => ({ targetRef: p.kbId })),
             idempotencyKey: `training:${tenantId}:${file.id}:${contentHash}`,
             sourceType: 'training_file',
@@ -328,7 +331,7 @@ export class AiTrainingFileService {
       // STANDARD synchronous indexing (small file, or batch unavailable & small).
       const result = await this.ingestion.ingestDocument(
         tenantId,
-        file.agent.id,
+        file.agent?.id ?? null,
         text,
         file.id,
         { requireEmbedding: true },

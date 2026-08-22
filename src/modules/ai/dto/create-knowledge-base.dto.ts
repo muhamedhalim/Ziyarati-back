@@ -6,9 +6,14 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  * agent; there is no separate KB container). Tenant + agent validated server-side.
  */
 export class CreateKnowledgeBaseDto {
-  @ApiProperty({ description: 'Owning agent (tenant-scoped).', format: 'uuid' })
+  @ApiPropertyOptional({
+    description:
+      "Owning agent (tenant-scoped). Agents are Admin-managed platform config — omit this and the tenant's own default agent is resolved server-side.",
+    format: 'uuid',
+  })
+  @IsOptional()
   @IsUUID()
-  agentId!: string;
+  agentId?: string;
 
   @ApiProperty({ description: 'Knowledge content (text chunk).', example: 'Our clinic is open Sun–Thu, 9am–9pm.' })
   @IsString()

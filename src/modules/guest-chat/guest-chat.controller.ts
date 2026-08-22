@@ -19,6 +19,7 @@ import type { CookieOptions, Request, Response } from 'express';
 import { GuestSessionService } from './guest-session.service';
 import { ConvertGuestDto } from './dto/convert-guest.dto';
 import { Public } from '../auth/decorators/public.decorator';
+import { SkipCsrf } from '../auth/decorators/skip-csrf.decorator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
 /** Guest (anonymous) chat sessions — Feature 1. `@Public` (no auth required). */
@@ -32,6 +33,23 @@ export class GuestChatController {
   ) {}
 
   @Public()
+  // Session-genesis endpoint (see `@SkipCsrf`'s own docstring): it never reads
+  // an incoming `access_token`/`refresh_token` cookie to authorize anything —
+  // `GuestSessionService.createSession()` takes no request context at all, it
+  // unconditionally mints a brand-new anonymous credential for the singleton
+  // discovery tenant. A stale auth cookie left over from a previous/expired
+  // session (root-scoped `access_token` is sent here by the browser purely
+  // because of path overlap) is therefore not a real CSRF surface, exactly
+  // like `login`/`register-owner`/`forgot-password`.
+  //
+  // Without this, a visitor whose session had gone stale (an expired/revoked
+  // refresh token fails silently in `axiosInstance`'s response interceptor,
+  // which clears the JS-readable `csrf_token` cookie but — being HttpOnly —
+  // cannot touch the still-present `access_token` cookie) could never start a
+  // guest chat again until that leftover cookie's own maxAge finally expired:
+  // `CsrfGuard` saw the auth cookie, demanded a CSRF header the client no
+  // longer had, and rejected every attempt with 403.
+  @SkipCsrf()
   @ApiOperation({
     summary: 'Start an anonymous guest AI session',
     description:

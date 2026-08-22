@@ -40,7 +40,8 @@ export interface BatchEmbeddingItem {
 export interface SubmitEmbeddingBatchInput {
   tenantId: string;
   feature: AiFeature;
-  agentId: string;
+  /** Null when the source (e.g. a training file) has no Admin-provisioned agent yet. */
+  agentId: string | null;
   items: BatchEmbeddingItem[];
   /** Stable across retries — the row-level idempotency key. */
   idempotencyKey: string;
@@ -601,7 +602,7 @@ export class AiBatchService {
           );
           continue;
         }
-        if (!item.target_ref || !job.agent_id) {
+        if (!item.target_ref) {
           await this.markItem(
             m,
             item.id,
@@ -619,7 +620,7 @@ export class AiBatchService {
         await this.ingestion.saveEmbedding(
           item.target_ref,
           job.tenant_id,
-          job.agent_id,
+          job.agent_id ?? null,
           vector,
           m,
         );

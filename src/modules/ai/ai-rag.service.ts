@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 
 import { AiKnowledgeBase } from '../../entities/AI Agent/AiKnowledgeBase';
 import { AI_EMBEDDING_PROVIDER } from './providers/ai-provider.interface';
@@ -44,14 +44,17 @@ export class AiRagService {
   ) {}
 
   /**
-   * Retrieves the most relevant knowledge chunks for an agent + query.
+   * Retrieves the most relevant knowledge chunks for a tenant (+ optionally an
+   * agent) and query. Always tenant-scoped; when `agentId` is given, matches
+   * chunks bound to that agent OR left unbound (agents are Admin-managed
+   * platform config, so a tenant may have knowledge before one exists).
    *
    * `timing`, when passed, is populated with `embeddingMs` (Advanced AI
    * Monitoring) — an optional out-param so existing callers are unaffected.
    */
   async retrieve(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     query: string,
     limit?: number,
     timing?: {
@@ -95,7 +98,7 @@ export class AiRagService {
 
   private async vectorSearch(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     query: string,
     topK: number,
     timing?: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number },
@@ -136,7 +139,7 @@ export class AiRagService {
                1 - (e.embedding <=> $1::vector) AS score
         FROM ${AI_KB_EMBEDDINGS_TABLE} e
         JOIN ai_knowledge_bases k ON k.id = e.kb_id
-        WHERE e.tenant_id = $2 AND e.agent_id = $3
+        WHERE e.tenant_id = $2 AND (e.agent_id = $3 OR e.agent_id IS NULL)
         ORDER BY e.embedding <=> $1::vector
         LIMIT $4
         `,
@@ -162,13 +165,20 @@ export class AiRagService {
 
   private async keywordSearch(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     query: string,
     topK: number,
   ): Promise<RetrievedChunk[]> {
     const terms = this.tokenize(query);
+    // Matches chunks bound to `agentId` OR left unbound — same tenant-scoped
+    // "agent OR unbound" semantics as vectorSearch's WHERE clause.
     const candidates = await this.kb.find({
-      where: { tenant: { id: tenantId }, agent: { id: agentId } },
+      where: agentId
+        ? [
+            { tenant: { id: tenantId }, agent: { id: agentId } },
+            { tenant: { id: tenantId }, agent: IsNull() },
+          ]
+        : { tenant: { id: tenantId }, agent: IsNull() },
       order: { created_at: 'DESC' },
       take: 200,
     });

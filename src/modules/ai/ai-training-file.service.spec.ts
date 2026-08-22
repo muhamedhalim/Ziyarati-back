@@ -3,7 +3,7 @@ import { AiTrainingFileService } from './ai-training-file.service';
 import { TRAINING_FILE_STATUS } from './ai.constants';
 
 describe('AiTrainingFileService physical indexing', () => {
-  function setup(fileType = 'TXT') {
+  function setup(fileType = 'TXT', hasAgent = true) {
     const file: any = {
       id: 'file-1',
       file_name: `faq.${fileType.toLowerCase()}`,
@@ -11,7 +11,7 @@ describe('AiTrainingFileService physical indexing', () => {
       file_type: fileType,
       status: TRAINING_FILE_STATUS.PENDING,
       attempts: 0,
-      agent: { id: 'agent-1' },
+      agent: hasAgent ? { id: 'agent-1' } : undefined,
     };
     const statuses: string[] = [];
     const files = {
@@ -23,6 +23,12 @@ describe('AiTrainingFileService physical indexing', () => {
       create: jest.fn((v) => v),
       findAndCount: jest.fn(),
       remove: jest.fn(),
+      createQueryBuilder: jest.fn(() => ({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn().mockResolvedValue({ bytes: '0' }),
+      })),
     };
     const ingestion = {
       ingestDocument: jest
@@ -34,6 +40,7 @@ describe('AiTrainingFileService physical indexing', () => {
       downloadObject: jest
         .fn()
         .mockResolvedValue(Buffer.from('Arabic العربية\nEnglish FAQ')),
+      assertKeyBelongsToTenant: jest.fn(),
     };
     // Batch OFF + small file → the policy resolves to the synchronous STANDARD path.
     const batch = { isConfigured: jest.fn().mockReturnValue(false) };
@@ -43,9 +50,15 @@ describe('AiTrainingFileService physical indexing', () => {
         .mockReturnValue({ mode: 'STANDARD', action: 'RUN', reason: 'test' }),
     };
     const batchJobs = { findOne: jest.fn().mockResolvedValue(null) };
+    // No agent is provisioned for the tenant by default — `upload()`'s default
+    // resolution (`resolveDefaultAgentId`) must tolerate that (returns null).
+    const agents = {
+      exists: jest.fn().mockResolvedValue(true),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     const service = new AiTrainingFileService(
       files as any,
-      { exists: jest.fn().mockResolvedValue(true) } as any,
+      agents as any,
       batchJobs as any,
       ingestion as any,
       batch as any,
@@ -59,7 +72,7 @@ describe('AiTrainingFileService physical indexing', () => {
         assertResourceWithinLimit: jest.fn().mockResolvedValue(undefined),
       } as any,
     );
-    return { service, file, files, statuses, ingestion, storage };
+    return { service, file, files, statuses, ingestion, storage, agents };
   }
 
   it('does not become INDEXED until fetch, extraction, chunking, embedding, and persistence complete', async () => {
@@ -97,6 +110,35 @@ describe('AiTrainingFileService physical indexing', () => {
     expect(ingestion.cleanupSource).toHaveBeenCalledWith('tenant-1', 'file-1');
     expect(file.error_code).toBe('INDEXING_FAILED');
     expect(statuses.at(-1)).toBe(TRAINING_FILE_STATUS.FAILED);
+  });
+
+  it('uploads (registers) a training file with no agentId and no tenant agent to resolve — never blocked', async () => {
+    const { service, files } = setup();
+
+    const uploaded = await service.upload('tenant-1', {
+      fileName: 'faq.txt',
+      fileUrl: 'tenant-1/ai_training/faq.txt',
+      fileType: 'TXT',
+      fileSize: 100,
+    } as any);
+
+    expect(files.save).toHaveBeenCalled();
+    expect(uploaded.agent).toBeUndefined();
+    expect(uploaded.status).toBe(TRAINING_FILE_STATUS.PENDING);
+  });
+
+  it('indexes a file with no agent (uploaded before the Admin provisioned one) — never blocked by AGENT_REQUIRED', async () => {
+    const { service, statuses, ingestion } = setup('TXT', false);
+    const result = await service.process('tenant-1', 'file-1');
+    expect(result.status).toBe(TRAINING_FILE_STATUS.INDEXED);
+    expect(statuses).not.toContain(TRAINING_FILE_STATUS.FAILED);
+    expect(ingestion.ingestDocument).toHaveBeenCalledWith(
+      'tenant-1',
+      null,
+      expect.any(String),
+      'file-1',
+      { requireEmbedding: true },
+    );
   });
 
   it('fails unsupported extractor types honestly instead of reporting false success', async () => {

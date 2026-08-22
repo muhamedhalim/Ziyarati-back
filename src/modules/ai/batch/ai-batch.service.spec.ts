@@ -219,6 +219,25 @@ describe('AiBatchService', () => {
       expect([kbId, tenantId, agentId, vector]).toEqual(['kb-2', 't1', 'a1', [0.2, 0.3]]);
     });
 
+    it('writes the embedding even when the job has no agent (agent-less knowledge, e.g. before an Admin provisions one) — never fails with NO_TARGET', async () => {
+      const ctx = terminal();
+      ctx.job.agent_id = null;
+      expect(await ctx.service.pollJob('job-1')).toBe(true);
+      expect(ctx.ingestion.saveEmbedding).toHaveBeenCalledTimes(1);
+      const [kbId, tenantId, agentId, vector] =
+        ctx.ingestion.saveEmbedding.mock.calls[0];
+      expect([kbId, tenantId, agentId, vector]).toEqual([
+        'kb-2',
+        't1',
+        null,
+        [0.2, 0.3],
+      ]);
+      const failedNoTarget = (ctx.manager.query as jest.Mock).mock.calls.find(
+        (c) => /error_code=\$3/.test(String(c[0])) && c[1]?.[2] === 'NO_TARGET',
+      );
+      expect(failedNoTarget).toBeUndefined();
+    });
+
     it('prices batch embeddings at the BATCH rate and attributes to the job', async () => {
       const { service, costs } = terminal();
       await service.pollJob('job-1');

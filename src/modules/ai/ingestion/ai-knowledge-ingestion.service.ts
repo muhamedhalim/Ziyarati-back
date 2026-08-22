@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 
@@ -62,7 +62,7 @@ export class AiKnowledgeIngestionService {
    */
   async prepareBatchDocument(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     text: string,
     sourceId: string,
   ): Promise<{ chunks: number; reused: number; pending: Array<{ kbId: string; content: string }> }> {
@@ -80,7 +80,7 @@ export class AiKnowledgeIngestionService {
       `SELECT DISTINCT ON (kb.content_hash) kb.content_hash, kb.id
          FROM ai_knowledge_bases kb
          JOIN ${AI_KB_EMBEDDINGS_TABLE} e ON e.kb_id=kb.id
-        WHERE kb."tenantId"=$1 AND kb."agentId"=$2
+        WHERE kb."tenantId"=$1 AND kb."agentId" IS NOT DISTINCT FROM $2
           AND kb.source_id IS DISTINCT FROM $3
           AND kb.content_hash = ANY($4::varchar[])
         ORDER BY kb.content_hash, kb.created_at ASC`,
@@ -126,7 +126,7 @@ export class AiKnowledgeIngestionService {
   async saveEmbedding(
     kbId: string,
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     vector: number[],
     manager = this.dataSource.manager,
   ): Promise<void> {
@@ -171,30 +171,42 @@ export class AiKnowledgeIngestionService {
     return new Map(rows.map((r) => [r.id, r.content]));
   }
 
-  /** Create one chunk and (best-effort) embed it. */
+  /** Create one chunk and (best-effort) embed it. `agentId` is null when the tenant has no Admin-provisioned agent yet. */
   async ingestChunk(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     content: string,
     source?: { type?: string; id?: string },
   ): Promise<AiKnowledgeBase> {
     const { hash, version } = this.hashContent(content);
+    const agentWhere = agentId ? { id: agentId } : IsNull();
     const existing = await this.kb.findOne({
-      where: { tenant: { id: tenantId }, agent: { id: agentId }, content_hash: hash },
+      where: {
+        tenant: { id: tenantId },
+        agent: agentWhere,
+        content_hash: hash,
+      },
     });
     if (existing) return existing;
 
     let row: AiKnowledgeBase;
     try {
-      row = await this.kb.save(this.kb.create({
-        tenant: { id: tenantId } as Tenant, agent: { id: agentId } as AiAgent,
-        content, content_hash: hash, embedding_version: version,
-        source_type: source?.type, source_id: source?.id,
-      }));
+      row = await this.kb.save(
+        this.kb.create({
+          tenant: { id: tenantId } as Tenant,
+          agent: agentId ? ({ id: agentId } as AiAgent) : undefined,
+          content, content_hash: hash, embedding_version: version,
+          source_type: source?.type, source_id: source?.id,
+        }),
+      );
     } catch (err) {
       if ((err as { code?: string }).code !== '23505') throw err;
       const raced = await this.kb.findOneOrFail({
-        where: { tenant: { id: tenantId }, agent: { id: agentId }, content_hash: hash },
+        where: {
+          tenant: { id: tenantId },
+          agent: agentWhere,
+          content_hash: hash,
+        },
       });
       return raced;
     }
@@ -212,10 +224,10 @@ export class AiKnowledgeIngestionService {
     return row;
   }
 
-  /** Split a document into chunks, batch-embed, and store. */
+  /** Split a document into chunks, batch-embed, and store. `agentId` is null when the tenant has no Admin-provisioned agent yet. */
   async ingestDocument(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     text: string,
     sourceId: string,
     options: { requireEmbedding?: boolean } = {},
@@ -239,7 +251,7 @@ export class AiKnowledgeIngestionService {
         `SELECT DISTINCT ON (kb.content_hash) kb.content_hash, kb.id
            FROM ai_knowledge_bases kb
            JOIN ${AI_KB_EMBEDDINGS_TABLE} e ON e.kb_id=kb.id
-          WHERE kb."tenantId"=$1 AND kb."agentId"=$2
+          WHERE kb."tenantId"=$1 AND kb."agentId" IS NOT DISTINCT FROM $2
             AND kb.source_id IS DISTINCT FROM $3
             AND kb.content_hash = ANY($4::varchar[])
           ORDER BY kb.content_hash, kb.created_at ASC`,
@@ -291,10 +303,16 @@ export class AiKnowledgeIngestionService {
     });
   }
 
-  /** Re-embed all of an agent's chunks (rebuild). Returns counts. */
-  async reembedAgent(tenantId: string, agentId: string): Promise<{ chunks: number; embedded: number }> {
+  /** Re-embed all of an agent's chunks (rebuild). `agentId` null rebuilds the tenant's unbound chunks. Returns counts. */
+  async reembedAgent(
+    tenantId: string,
+    agentId: string | null,
+  ): Promise<{ chunks: number; embedded: number }> {
     const chunks = await this.kb.find({
-      where: { tenant: { id: tenantId }, agent: { id: agentId } },
+      where: {
+        tenant: { id: tenantId },
+        agent: agentId ? { id: agentId } : IsNull(),
+      },
     });
     if (!this.canEmbed() || chunks.length === 0) {
       return { chunks: chunks.length, embedded: 0 };
@@ -314,7 +332,7 @@ export class AiKnowledgeIngestionService {
   /** Re-embed a single chunk (e.g. after its content was edited). Best-effort. */
   async reembedChunk(
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     kbId: string,
     content: string,
   ): Promise<void> {
@@ -369,7 +387,7 @@ export class AiKnowledgeIngestionService {
   private async upsertEmbedding(
     kbId: string,
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     vector: number[],
     manager = this.dataSource.manager,
   ): Promise<void> {

@@ -65,6 +65,10 @@ import {
   AiPromptBudgetService,
   PromptBudgetTelemetry,
 } from './prompt/ai-prompt-budget.service';
+import {
+  DEFAULT_ASSISTANT_SYSTEM_PROMPT,
+  DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
+} from './prompt/default-system-prompt';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
@@ -421,16 +425,23 @@ export class AiExecutionService {
         embeddingCacheHits?: number;
         retrievalMode?: 'vector' | 'keyword';
       } = {};
-      const chunks = agent
-        ? await this.rag.retrieve(
-            tenantId,
-            agent.id,
-            dto.content,
-            undefined,
-            embedTiming,
-            { channel, aiConversationId, idempotencyKey: requestKey },
-          )
-        : [];
+      // Knowledge is agent-OPTIONAL (chunks may be bound to an agent or left
+      // unbound), so retrieval must NOT be gated on an agent existing — that
+      // gate is what made a tenant's own Knowledge unreachable on every surface
+      // that has no Admin-provisioned agent. `retrieve` takes `string | null`
+      // and matches "this agent OR unbound", both tenant-scoped.
+      const knowledgeTenantId = await this.resolveKnowledgeScope(
+        aiConv.session,
+        tenantId,
+      );
+      const chunks = await this.rag.retrieve(
+        knowledgeTenantId,
+        agent?.id ?? null,
+        dto.content,
+        undefined,
+        embedTiming,
+        { channel, aiConversationId, idempotencyKey: requestKey },
+      );
       const ragRetrievalMs = Date.now() - ragStart;
       // 3) Fetch a wider recent window, then let the centralized token budget
       // retain complete recent turns rather than relying on a message count.
@@ -469,8 +480,16 @@ export class AiExecutionService {
       const modelDefinition = routed.definition ?? findModel(routed.model);
       const temperature = await this.resolveTemperature(agent);
 
+      // The prompt this turn ACTUALLY runs under. Computed once because two
+      // things must agree on it: what is sent to the model, and what
+      // `applyPromptDisclosureCheck` protects from being recited back. Passing
+      // the default to the former but `undefined` to the latter would have made
+      // the platform prompt the one prompt the disclosure gate did not cover.
+      const effectiveSystemPrompt =
+        agent?.system_prompt?.trim() || this.defaultSystemPrompt();
+
       const built = this.budgets.build({
-        systemPrompt: agent?.system_prompt,
+        systemPrompt: effectiveSystemPrompt,
         ragChunks: chunks,
         memories,
         history: recent
@@ -579,7 +598,7 @@ export class AiExecutionService {
           // reply carry the redacted form when this trips.
           const checked = this.applyPromptDisclosureCheck(
             completion.content,
-            agent?.system_prompt,
+            effectiveSystemPrompt,
             tools,
           );
           finalContent = checked.content;
@@ -625,7 +644,7 @@ export class AiExecutionService {
         if (i === MAX_TOOL_ITERATIONS - 1) {
           const checked = this.applyPromptDisclosureCheck(
             completion.content || 'I have processed your request.',
-            agent?.system_prompt,
+            effectiveSystemPrompt,
             tools,
           );
           finalContent = checked.content;
@@ -647,8 +666,12 @@ export class AiExecutionService {
             tokens_used: completionTokens,
           }),
         );
-        if (agent)
-          await this.recordUsage(manager, tenantId, agent.id, totalTokens);
+        await this.recordUsage(
+          manager,
+          tenantId,
+          agent?.id ?? null,
+          totalTokens,
+        );
         return saved;
       });
 
@@ -1332,16 +1355,21 @@ export class AiExecutionService {
         embeddingCacheHits?: number;
         retrievalMode?: 'vector' | 'keyword';
       } = {};
-      const chunks = agent
-        ? await this.rag.retrieve(
-            tenantId,
-            agent.id,
-            dto.content,
-            undefined,
-            embedTiming,
-            { channel, aiConversationId, idempotencyKey: requestKey },
-          )
-        : [];
+      // Same agent-optional retrieval as the non-streaming path above — see its
+      // comment. This is the method the public widget, the dashboard realtime
+      // chat and the WhatsApp bridge all reach, so the gate had to go here too.
+      const knowledgeTenantId = await this.resolveKnowledgeScope(
+        aiConv.session,
+        tenantId,
+      );
+      const chunks = await this.rag.retrieve(
+        knowledgeTenantId,
+        agent?.id ?? null,
+        dto.content,
+        undefined,
+        embedTiming,
+        { channel, aiConversationId, idempotencyKey: requestKey },
+      );
       const ragRetrievalMs = Date.now() - ragStart;
       const recent = await this.messages.find({
         where: {
@@ -1371,8 +1399,13 @@ export class AiExecutionService {
       });
       const modelDefinition = routed.definition ?? findModel(routed.model);
 
+      // Same single source of truth for "the prompt this turn runs under" as
+      // the non-streaming path above — see its comment.
+      const effectiveSystemPrompt =
+        agent?.system_prompt?.trim() || this.defaultSystemPrompt();
+
       const built = this.budgets.build({
-        systemPrompt: agent?.system_prompt,
+        systemPrompt: effectiveSystemPrompt,
         ragChunks: chunks,
         memories,
         history: recent
@@ -1458,7 +1491,7 @@ export class AiExecutionService {
           // docblock for why per-iteration, not per-turn).
           const disclosureGate = this.createStreamingDisclosureGate(
             onToken,
-            agent?.system_prompt,
+            effectiveSystemPrompt,
             tools,
           );
           for await (const chunk of provider.stream({
@@ -1632,7 +1665,7 @@ export class AiExecutionService {
             // onToken(full) emission below and before persistence.
             const checked = this.applyPromptDisclosureCheck(
               completion.content,
-              agent?.system_prompt,
+              effectiveSystemPrompt,
               tools,
             );
             full = checked.content;
@@ -1679,7 +1712,7 @@ export class AiExecutionService {
           if (i === MAX_TOOL_ITERATIONS - 1) {
             const checked = this.applyPromptDisclosureCheck(
               completion.content || 'I have processed your request.',
-              agent?.system_prompt,
+              effectiveSystemPrompt,
               tools,
             );
             full = checked.content;
@@ -1718,8 +1751,12 @@ export class AiExecutionService {
             tokens_used: completionTokens,
           }),
         );
-        if (agent)
-          await this.recordUsage(manager, tenantId, agent.id, totalTokens);
+        await this.recordUsage(
+          manager,
+          tenantId,
+          agent?.id ?? null,
+          totalTokens,
+        );
         return saved;
       });
 
@@ -1996,6 +2033,78 @@ export class AiExecutionService {
   }
 
   /**
+   * The platform default system prompt for a turn whose agent supplies none.
+   *
+   * Mirrors `availableTools()`'s own guest branch so the instructions always
+   * describe the toolset the model was actually handed: only the public widget
+   * is told about `list_cities`, because only it is offered that tool.
+   *
+   * Platform-owned code constants, never a clinic-selectable `ai_prompts` row —
+   * agents, models and prompts are Admin-controlled configuration.
+   */
+  private defaultSystemPrompt(): string {
+    return this.ctx.getUser()?.guest
+      ? DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT
+      : DEFAULT_ASSISTANT_SYSTEM_PROMPT;
+  }
+
+  /**
+   * WHICH tenant's Knowledge this turn may retrieve.
+   *
+   * For every authenticated surface this is simply the conversation's own
+   * tenant — unchanged, and the only value RAG has ever been given.
+   *
+   * The public widget is the exception. An anonymous visitor's socket is
+   * authenticated into the shared `__guest_discovery__` tenant, which owns the
+   * chat rows and NOTHING else — so retrieving under it can only ever return
+   * zero chunks, which is exactly why a clinic's Knowledge never reached the
+   * public chatbot. Once the visitor has actually chosen a clinic, that
+   * clinic's own Knowledge becomes the right scope.
+   *
+   * Why `selectedClinicId` is safe to scope on, and why it is not a client
+   * `tenantId` override:
+   *  - It is absent from `SESSION_CLIENT_PATCHABLE_KEYS`, so `patchFromClient`
+   *    silently drops it: no socket payload, DTO or tool argument can write it.
+   *  - Its ONLY writer is `AiToolDispatchService.selectClinic`, via
+   *    `PublicBookingContextService.patchSelection`, and only AFTER
+   *    `PublicDiscoveryService.clinicDetail` has proven the clinic is APPROVED,
+   *    active, not soft-deleted and opted in to public booking.
+   *  - It is re-validated HERE on every turn against live data, not trusted as
+   *    recorded, so an opt-out or deactivation mid-conversation takes effect
+   *    immediately — the same posture as
+   *    `PublicBookingContextService.resolveTenantFromBranch`.
+   *
+   * Fails closed: before a clinic is selected, or if the recorded one is no
+   * longer publicly bookable, the scope stays the conversation's own tenant.
+   * Exactly ONE tenant id is ever returned, so retrieval remains single-tenant
+   * and cross-clinic reads are impossible.
+   */
+  private async resolveKnowledgeScope(
+    session: Record<string, unknown> | undefined,
+    conversationTenantId: string,
+  ): Promise<string> {
+    const selected = session?.selectedClinicId;
+    if (typeof selected !== 'string' || !selected.trim()) {
+      return conversationTenantId;
+    }
+    if (selected === conversationTenantId) return conversationTenantId;
+
+    const rows: { id: string }[] = await this.dataSource.query(
+      `SELECT t.id
+         FROM tenants t
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE t.id = $1
+          AND t.approval_status = 'APPROVED'
+          AND t.is_active = true
+          AND t.deleted_at IS NULL
+          AND COALESCE(ts.public_booking_enabled, false) = true
+        LIMIT 1`,
+      [selected],
+    );
+    return rows[0]?.id ?? conversationTenantId;
+  }
+
+  /**
    * Atomically increment the monthly usage row for (tenant, agent).
    *
    * Was find-then-save, which lost updates under concurrent turns (two turns read
@@ -2003,20 +2112,56 @@ export class AiExecutionService {
    * `INSERT … ON CONFLICT DO UPDATE SET x = x + EXCLUDED.x` against the existing
    * UNIQUE(tenantId, agentId, period_month) is race-safe — the running total can
    * never be lost. Runs inside the caller's transaction.
+   *
+   * AGENT-OPTIONAL. Callers used to skip this entirely when a turn had no agent
+   * (`if (agent) recordUsage(...)`), so every guest/public turn and every turn
+   * on a tenant with no Admin-provisioned agent went UNRECORDED. `agentId` is
+   * nullable on the table, so those turns are now recorded with a NULL agent.
+   *
+   * The NULL case needs its own upsert: Postgres treats NULLs as DISTINCT in a
+   * unique index, so `ON CONFLICT ("tenantId","agentId",period_month)` can never
+   * match a NULL-agent row and would insert a fresh row per turn. It is done as
+   * UPDATE-then-INSERT instead. Two concurrent first-turns of a period can both
+   * miss the UPDATE and insert, leaving two rows for that period — no tokens are
+   * lost (every reader aggregates with `SUM(...)`, and `topAgents` filters
+   * `agent IS NOT NULL`), it is only an extra row. Removing even that would take
+   * a partial unique index on (tenantId, period_month) WHERE agentId IS NULL,
+   * which is schema surface this fix does not need.
    */
   private async recordUsage(
     manager: EntityManager,
     tenantId: string,
-    agentId: string,
+    agentId: string | null,
     tokens: number,
   ): Promise<void> {
+    const period = currentPeriodMonth();
+
+    if (agentId === null) {
+      const updated: unknown[] = await manager.query(
+        `UPDATE ai_usage_logs
+            SET total_tokens   = total_tokens   + $3,
+                total_requests = total_requests + 1
+          WHERE "tenantId" = $1 AND "agentId" IS NULL AND period_month = $2
+        RETURNING id`,
+        [tenantId, period, tokens],
+      );
+      if (updated.length > 0) return;
+
+      await manager.query(
+        `INSERT INTO ai_usage_logs ("tenantId", "agentId", period_month, total_tokens, total_requests)
+         VALUES ($1, NULL, $2, $3, 1)`,
+        [tenantId, period, tokens],
+      );
+      return;
+    }
+
     await manager.query(
       `INSERT INTO ai_usage_logs ("tenantId", "agentId", period_month, total_tokens, total_requests)
        VALUES ($1, $2, $3, $4, 1)
        ON CONFLICT ("tenantId", "agentId", period_month)
        DO UPDATE SET total_tokens   = ai_usage_logs.total_tokens   + EXCLUDED.total_tokens,
                      total_requests = ai_usage_logs.total_requests + 1`,
-      [tenantId, agentId, currentPeriodMonth(), tokens],
+      [tenantId, agentId, period, tokens],
     );
   }
 

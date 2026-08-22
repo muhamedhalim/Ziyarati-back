@@ -40,7 +40,9 @@ const PUBLIC_ONLY_TOOLS: AiToolDefinition[] = [
   {
     name: AI_PUBLIC_TOOL.LIST_CITIES,
     description:
-      'List the cities that currently have bookable clinics. Call this FIRST, when the visitor has not said where they are. Present the cities and ask which one they want.',
+      'List the cities that currently have bookable clinics. This is the FIRST STEP OF A BOOKING — call it only when the visitor wants to book an appointment and has not said which city they are in, then present the cities and ask which one they want. ' +
+      'Do NOT call it to answer a question ABOUT a clinic (its address, working hours, services, prices, policies or FAQs): answer those from the <knowledge> block. ' +
+      'An empty result means no clinic has opted in to public booking yet — it is not an answer to an informational question, so never report it as one.',
     parameters: {
       type: 'object',
       additionalProperties: false,
