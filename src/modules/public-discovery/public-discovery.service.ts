@@ -143,7 +143,16 @@ export class PublicDiscoveryService {
     nameAr: string | null;
     nameEn: string | null;
   } | null> {
-    if (!cityId?.trim()) return null;
+    // Fails closed on a malformed id rather than letting the `::uuid` cast
+    // raise: callers treat `null` as "no such city", and a driver-level error
+    // would instead surface as a tool failure.
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        cityId?.trim() ?? '',
+      )
+    ) {
+      return null;
+    }
     const rows = await this.dataSource.query(
       `SELECT id, name_ar, name_en FROM cities WHERE id = $1::uuid LIMIT 1`,
       [cityId.trim()],

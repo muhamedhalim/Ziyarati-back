@@ -23,6 +23,9 @@ import { AI_TOOL } from './ai-tools.constants';
  * under test, and it is produced here.
  */
 
+/** A real UUID: every public lookup casts its id to `uuid` in SQL. */
+const CITY_ID = '11111111-1111-4111-8111-111111111111';
+
 const CTX = {
   tenantId: 'guest-discovery-tenant',
   aiConversationId: 'conv-1',
@@ -148,7 +151,7 @@ describe('search_clinics — the city is a validated filter, and it is remembere
 
   it('passes an accepted cityId through to the query instead of dropping it', async () => {
     coverage.findCity.mockResolvedValue({
-      id: 'city-1',
+      id: CITY_ID,
       nameAr: 'الرياض',
       nameEn: 'Riyadh',
     });
@@ -159,21 +162,21 @@ describe('search_clinics — the city is a validated filter, and it is remembere
 
     const result: Record<string, unknown> = await service.execute(
       CTX,
-      call(AI_TOOL.SEARCH_CLINICS, { cityId: 'city-1' }),
+      call(AI_TOOL.SEARCH_CLINICS, { cityId: CITY_ID }),
     );
 
     // Third positional argument is the city — the one the tool used to discard.
     expect(coverage.searchClinics).toHaveBeenCalledWith(
       undefined,
       undefined,
-      'city-1',
+      CITY_ID,
     );
     expect(result.count).toBe(1);
   });
 
   it('records the city on the session so the next turn does not start over', async () => {
     coverage.findCity.mockResolvedValue({
-      id: 'city-1',
+      id: CITY_ID,
       nameAr: null,
       nameEn: 'Riyadh',
     });
@@ -182,17 +185,17 @@ describe('search_clinics — the city is a validated filter, and it is remembere
 
     await service.execute(
       CTX,
-      call(AI_TOOL.SEARCH_CLINICS, { cityId: 'city-1' }),
+      call(AI_TOOL.SEARCH_CLINICS, { cityId: CITY_ID }),
     );
 
     expect(patchSelection).toHaveBeenCalledWith(
       'guest-discovery-tenant',
       'conv-1',
-      { selectedCityId: 'city-1' },
+      { selectedCityId: CITY_ID },
     );
   });
 
-  it('refuses a cityId the database does not know, and never records it', async () => {
+  it('refuses a well-formed cityId the database does not know, and never records it', async () => {
     // The session only ever holds ids the database confirmed — an id the model
     // invented is rejected at the door, not stored and trusted later.
     coverage.findCity.mockResolvedValue(null);
@@ -200,19 +203,60 @@ describe('search_clinics — the city is a validated filter, and it is remembere
 
     const result: Record<string, unknown> = await service.execute(
       CTX,
-      call(AI_TOOL.SEARCH_CLINICS, { cityId: 'not-a-city' }),
+      call(AI_TOOL.SEARCH_CLINICS, {
+        cityId: '99999999-9999-4999-8999-999999999999',
+      }),
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/does not exist/);
+    expect(result.error).toMatch(/not a city the platform knows/);
     expect(patchSelection).not.toHaveBeenCalled();
     expect(coverage.searchClinics).not.toHaveBeenCalled();
+  });
+
+  it('refuses a city NAME without ever reaching the database', async () => {
+    // Observed live in a different tool: every public lookup casts its id to
+    // `uuid`, so a non-UUID does not "find nothing" — Postgres raises, and the
+    // driver's own `invalid input syntax for type uuid: "..."` came back as the
+    // tool's error. The model read that as a platform fault and escalated to a
+    // human. The shape check turns it into a recoverable refusal instead.
+    const { service, patchSelection } = build(coverage);
+
+    const result: Record<string, unknown> = await service.execute(
+      CTX,
+      call(AI_TOOL.SEARCH_CLINICS, { cityId: 'الرياض' }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/never a city name/);
+    // Never reached the database, so no driver error could be produced.
+    expect(coverage.findCity).not.toHaveBeenCalled();
+    expect(patchSelection).not.toHaveBeenCalled();
+  });
+
+  it('refuses a clinic NAME passed as clinicId, and says how to recover', async () => {
+    // The exact live failure: `search_clinics` returned a clinic whose NAME
+    // looks like an identifier (`owner@inovra`), the model passed that name as
+    // `clinicId`, and the raw uuid-cast error reached the conversation.
+    const clinicDetail = jest.fn();
+    const { service } = build({ ...coverage, clinicDetail });
+
+    const result: Record<string, unknown> = await service.execute(
+      CTX,
+      call(AI_PUBLIC_TOOL.SELECT_CLINIC, { clinicId: 'owner@inovra' }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/UUID exactly as returned by search_clinics/);
+    // And the driver's own message never reaches the conversation.
+    expect(result.error).not.toMatch(/invalid input syntax/i);
+    expect(clinicDetail).not.toHaveBeenCalled();
   });
 
   it('does not write a booking session for an authenticated staff turn', async () => {
     // Staff share this read-only tool but have no anonymous booking session.
     coverage.findCity.mockResolvedValue({
-      id: 'city-1',
+      id: CITY_ID,
       nameAr: null,
       nameEn: 'Riyadh',
     });
@@ -225,15 +269,55 @@ describe('search_clinics — the city is a validated filter, and it is remembere
         aiConversationId: 'conv-1',
         principal: { id: 'staff-1', guest: false, permissions: [] },
       } as never,
-      call(AI_TOOL.SEARCH_CLINICS, { cityId: 'city-1' }),
+      call(AI_TOOL.SEARCH_CLINICS, { cityId: CITY_ID }),
     );
 
     expect(patchSelection).not.toHaveBeenCalled();
   });
 
+  it('spells out which id in the result select_clinic wants', async () => {
+    // Both ids in this result are uuids. Observed live: the model grabbed
+    // `cityId`, passed it to select_clinic, and gave up on the bare refusal.
+    coverage.findCity.mockResolvedValue({
+      id: CITY_ID,
+      nameAr: null,
+      nameEn: 'Riyadh',
+    });
+    coverage.searchClinics.mockResolvedValue([
+      { id: 'bc7814f5-02f1-4237-a9ed-11b1a6ebbb89', name: 'Al Noor' },
+    ]);
+    const { service } = build(coverage);
+
+    const result: Record<string, unknown> = await service.execute(
+      CTX,
+      call(AI_TOOL.SEARCH_CLINICS, { cityId: CITY_ID }),
+    );
+
+    expect(result.usage).toMatch(/clinics\[\]\.id/);
+    expect(result.usage).toMatch(/never a clinic/);
+  });
+
+  it('makes a rejected clinicId recoverable instead of a dead end', async () => {
+    // A well-formed uuid that is not a bookable clinic — the shape guard cannot
+    // catch this one, so the refusal itself has to carry the recovery.
+    const clinicDetail = jest
+      .fn()
+      .mockRejectedValue(new Error('Clinic not found'));
+    const { service } = build({ ...coverage, clinicDetail });
+
+    const result: Record<string, unknown> = await service.execute(
+      CTX,
+      call(AI_PUBLIC_TOOL.SELECT_CLINIC, { clinicId: CITY_ID }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not a city id/);
+    expect(result.error).toMatch(/search_clinics returned/);
+  });
+
   it('tells the model to retry without the city before declaring nothing available', async () => {
     coverage.findCity.mockResolvedValue({
-      id: 'city-1',
+      id: CITY_ID,
       nameAr: null,
       nameEn: 'Riyadh',
     });
@@ -242,7 +326,7 @@ describe('search_clinics — the city is a validated filter, and it is remembere
 
     const result: Record<string, unknown> = await service.execute(
       CTX,
-      call(AI_TOOL.SEARCH_CLINICS, { cityId: 'city-1' }),
+      call(AI_TOOL.SEARCH_CLINICS, { cityId: CITY_ID }),
     );
 
     expect(result.count).toBe(0);

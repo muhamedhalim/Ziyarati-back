@@ -177,6 +177,12 @@ export const validate = (config: Record<string, unknown>) => {
     JWT_ACCESS_TTL: Joi.string().default('15m'),
     JWT_REFRESH_TTL: Joi.string().default('7d'),
 
+    // Anonymous guest AI session (GuestSessionService). Same "ttl string, cookie
+    // Max-Age derived from it via ttlToMs()" pattern as the two above — never a
+    // separately hardcoded millisecond constant, so the JWT and its cookie can
+    // never drift apart.
+    GUEST_SESSION_TTL: Joi.string().default('1d'),
+
     // ── Password-reset token exposure (FND-006 remediation) ────────────────
     // The raw reset token must NEVER appear in the forgotPassword HTTP
     // response — see auth.service.ts. This flag gates a LOCAL-DEVELOPMENT-ONLY
@@ -316,20 +322,32 @@ export const validate = (config: Record<string, unknown>) => {
     // routes (ZT-006) plus the shared bounded degraded-mode fallback (ZT-002).
     // Named constants for scope/namespace live in
     // src/modules/auth/auth-abuse.constants.ts — no magic value in a service.
-    AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW: Joi.number().integer().min(1).default(5),
+    AUTH_FORGOT_PASSWORD_MAX_PER_WINDOW: Joi.number()
+      .integer()
+      .min(1)
+      .default(5),
     AUTH_FORGOT_PASSWORD_WINDOW_SECONDS: Joi.number()
       .integer()
       .min(60)
       .max(86400)
       .default(900),
-    AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT: Joi.number().integer().min(1).default(10),
-    AUTH_RESET_PASSWORD_INVALID_CEILING: Joi.number().integer().min(1).default(100),
+    AUTH_RESET_PASSWORD_MAX_PER_ACCOUNT: Joi.number()
+      .integer()
+      .min(1)
+      .default(10),
+    AUTH_RESET_PASSWORD_INVALID_CEILING: Joi.number()
+      .integer()
+      .min(1)
+      .default(100),
     AUTH_RESET_PASSWORD_WINDOW_SECONDS: Joi.number()
       .integer()
       .min(60)
       .max(86400)
       .default(900),
-    AUTH_REGISTER_OWNER_MAX_PER_IDENTITY: Joi.number().integer().min(1).default(3),
+    AUTH_REGISTER_OWNER_MAX_PER_IDENTITY: Joi.number()
+      .integer()
+      .min(1)
+      .default(3),
     // No `.default()` here on purpose — production-required, enforced by the
     // fail-fast below (mirrors the FRONTEND_ORIGIN pattern from 008). Sizing
     // this depends on real signup volume, which no registration-rate
@@ -348,7 +366,11 @@ export const validate = (config: Record<string, unknown>) => {
     // Fixes the bounded local fallback's memory ceiling: width of the hashed
     // counter table (BoundedLocalCounter). Memory is independent of key
     // cardinality; this only sizes the (small) false-positive rate.
-    AUTH_ABUSE_FALLBACK_WIDTH: Joi.number().integer().min(256).max(65536).default(4096),
+    AUTH_ABUSE_FALLBACK_WIDTH: Joi.number()
+      .integer()
+      .min(256)
+      .max(65536)
+      .default(4096),
 
     // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
     // PAYMENT_PROVIDER is the single, central gateway selection. In dev/test
@@ -887,10 +909,7 @@ export const validate = (config: Record<string, unknown>) => {
   // which the audit demonstrated leaking planted secret-shaped values.
   // Outside production the setting works exactly as today, including this
   // repository's own current development value.
-  if (
-    value.NODE_ENV === 'production' &&
-    value.TYPEORM_LOGGING === 'true'
-  ) {
+  if (value.NODE_ENV === 'production' && value.TYPEORM_LOGGING === 'true') {
     throw new Error(
       `❌ Env validation error: TYPEORM_LOGGING is "true" but NODE_ENV is ` +
         `"production". Raw SQL logging (parameter values included) must never ` +

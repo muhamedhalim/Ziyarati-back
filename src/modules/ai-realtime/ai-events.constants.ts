@@ -19,6 +19,17 @@ export const AI_EVENT = {
   // ── AI streaming ───────────────────────────────────────────────────────
   THINKING: 'ai:thinking',
   TOKEN: 'ai:token', // server → client: one streamed delta
+  /**
+   * server → client: a tool call started or finished — `{ name, phase }`.
+   *
+   * The tool NAME only. Never arguments (a public booking call carries the
+   * patient's name and phone) and never results. It exists so the client can
+   * show a TRUE status line ("checking available times") instead of a generic
+   * spinner or, worse, a plausible message invented on a timer.
+   *
+   * Purely additive: a client that does not subscribe is unaffected.
+   */
+  TOOL: 'ai:tool',
   DONE: 'ai:done', // server → client: final assistant message + usage
   // ── conversation / handover ────────────────────────────────────────────
   CONVERSATION_UPDATE: 'ai:conversation:update',

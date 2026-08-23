@@ -79,6 +79,34 @@ function resolveCorrelationId(clientSupplied: string | undefined): string {
 }
 
 /**
+ * The same origin allow-list `main.ts` applies to REST, applied to the socket.
+ *
+ * The gateway used to declare `origin: true`, which reflects whatever `Origin`
+ * the request carried — so any site could open a credentialed socket into this
+ * namespace using the visitor's own `guest_token` cookie, on a transport that
+ * bypasses `CsrfGuard` entirely. REST has refused that since the cookie-auth
+ * work landed; this closes the same hole on the transport the public widget
+ * actually uses.
+ *
+ * Read from the identical env var and parsed identically, so the two can never
+ * drift into disagreeing about which origins are legitimate. Evaluated at class
+ * definition time, exactly as the decorator requires — same lifecycle as the
+ * `app.enableCors` call it mirrors.
+ *
+ * NOTE FOR TEST/DEPLOY CONFIG: `http://localhost:3000` and
+ * `http://127.0.0.1:3000` are DIFFERENT origin strings for the same host. Any
+ * harness that serves the app from one must set `FRONTEND_ORIGIN` to match, or
+ * the socket is refused while REST appears fine (REST is same-origin through
+ * the Next rewrite; the socket is not). Both Playwright configs set it.
+ */
+const WS_ALLOWED_ORIGINS = (
+  process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000'
+)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+/**
  * Realtime AI Gateway (Feature 1, extended for Live Agent Handover). Socket.IO,
  * JWT-authenticated, with strict tenant + conversation room isolation. A
  * `ai:message` runs a STREAMING turn through `AiOrchestratorService.handleStream`
@@ -96,7 +124,7 @@ function resolveCorrelationId(clientSupplied: string | undefined): string {
  */
 @WebSocketGateway({
   namespace: '/ai',
-  cors: { origin: true, credentials: true },
+  cors: { origin: WS_ALLOWED_ORIGINS, credentials: true },
 })
 export class AiRealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -243,6 +271,16 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string },
   ) {
     if (!(await this.mayAccess(client, body?.aiConversationId))) {
+      // Unified error contract (`{code, message}` on every conversation-
+      // related failure — join/message/handover/agent-reply alike): this used
+      // to fail silently (no `ai:error` at all), so a client whose restored
+      // `aiConversationId` no longer resolves had no signal to drop it until
+      // the NEXT turn's `ai:message` also failed. Ack shape (`joined: null`)
+      // is unchanged for any caller reading it directly.
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
       return { joined: null };
     }
     client.join(room.conversation(body.aiConversationId));
@@ -336,14 +374,20 @@ export class AiRealtimeGateway
   ) {
     const tenantId = client.data.tenantId as string | undefined;
     if (!tenantId || !body?.aiConversationId) {
-      client.emit(AI_EVENT.ERROR, { message: 'Missing aiConversationId' });
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.VALIDATION_ERROR,
+        message: 'Missing aiConversationId',
+      });
       return { ok: false };
     }
     // No permission is required (a customer escalating their OWN chat), but
     // "own" has to mean something: without this, any socket could pause the AI
     // on a stranger's conversation and pull a human into it.
     if (!(await this.mayAccess(client, body.aiConversationId))) {
-      client.emit(AI_EVENT.ERROR, { message: 'AI conversation not found' });
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
       return { ok: false };
     }
     // Escalating to a human is part of the AI assistant capability — it pauses
@@ -382,15 +426,24 @@ export class AiRealtimeGateway
       !body?.aiConversationId ||
       !body?.content?.trim()
     ) {
-      client.emit(AI_EVENT.ERROR, { message: 'Missing fields' });
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.VALIDATION_ERROR,
+        message: 'Missing fields',
+      });
       return { ok: false };
     }
     if (!user?.permissions?.includes(PERMISSION.AI_HANDOVER_MANAGE)) {
-      client.emit(AI_EVENT.ERROR, { message: 'Forbidden' });
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
+        message: 'Forbidden',
+      });
       return { ok: false };
     }
     if (!(await this.mayAccess(client, body.aiConversationId))) {
-      client.emit(AI_EVENT.ERROR, { message: 'AI conversation not found' });
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
       return { ok: false };
     }
     if (!(await this.mayUseAi(client, AI_EVENT.AGENT_REPLY))) {
@@ -424,6 +477,7 @@ export class AiRealtimeGateway
     const tenantId = client.data.tenantId as string;
     if (!tenantId || !body?.content?.trim()) {
       client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.VALIDATION_ERROR,
         message: 'Empty message or unauthenticated socket',
       });
       return;
@@ -466,7 +520,10 @@ export class AiRealtimeGateway
       !user?.guest &&
       !user?.permissions?.includes(PERMISSION.AI_CONVERSATIONS_MANAGE)
     ) {
-      client.emit(AI_EVENT.ERROR, { message: 'Forbidden' });
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
+        message: 'Forbidden',
+      });
       return;
     }
     // AI-015/AI-028 (FR-051, FR-053, D5): after entitlement + permission,
@@ -531,6 +588,17 @@ export class AiRealtimeGateway
           client.emit(AI_EVENT.TOKEN, {
             aiConversationId: body.aiConversationId ?? null,
             delta,
+          }),
+        // Tool progress. Emitted to THIS socket only — never to the
+        // conversation or tenant room: the caller is the only party waiting on
+        // a spinner, and a staff inbox has no use for another client's
+        // per-tool chatter. The payload is the tool name and phase, nothing
+        // else (see `AiToolProgressEvent`).
+        (event) =>
+          client.emit(AI_EVENT.TOOL, {
+            aiConversationId: body.aiConversationId ?? null,
+            name: event.name,
+            phase: event.phase,
           }),
       );
 

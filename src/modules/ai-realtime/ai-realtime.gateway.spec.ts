@@ -215,7 +215,11 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       ).resolves.not.toThrow();
 
       expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      // Unified {code, message} error contract (guest-identity-churn fix,
+      // section 8) — every emit on this gateway now carries a machine-
+      // readable `code`, this one included.
       expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
         message: 'Forbidden',
       });
       // The entitlement check runs BEFORE the permission check (unchanged
@@ -269,7 +273,10 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
         const tooLong = 'a'.repeat(101);
 
-        await gateway.onMessage(client, { content: 'hello', correlationId: tooLong });
+        await gateway.onMessage(client, {
+          content: 'hello',
+          correlationId: tooLong,
+        });
 
         const [used] = spy.mock.calls[0];
         expect(used).not.toBe(tooLong);
@@ -503,5 +510,212 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       expect(res).toEqual({ ok: false });
       expect(entitlements.resolve).not.toHaveBeenCalled();
     });
+  });
+
+  /**
+   * Guest-identity-churn fix, error-contract half: every conversation-lookup
+   * failure on this gateway must emit the SAME `{code, message}` shape
+   * (`ai:message`'s `runMessage` catch already normalized via
+   * `normalizeException` — AI-010), so a client can branch on `code` instead
+   * of string-matching `message`. `onJoin` previously failed completely
+   * silently (no `ai:error` at all), which is what let a stale restored
+   * `aiConversationId` sit unnoticed until the next `ai:message` also failed.
+   */
+  describe('unified {code, message} error contract for conversation lookups', () => {
+    it('ai:join emits a coded NOT_FOUND — not silence — when the conversation cannot be accessed', async () => {
+      conversationAccess.canAccess.mockResolvedValueOnce(false);
+      const client = socket();
+
+      const res = await gateway.onJoin(client, {
+        aiConversationId: 'stale-conv',
+      });
+
+      expect(res).toEqual({ joined: null });
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
+    });
+
+    it('ai:join emits no error on success', async () => {
+      const client = socket();
+
+      const res = await gateway.onJoin(client, { aiConversationId: 'conv-1' });
+
+      expect(res).toEqual({ joined: 'conv-1' });
+      expect(client.emit).not.toHaveBeenCalledWith(
+        AI_EVENT.ERROR,
+        expect.anything(),
+      );
+    });
+
+    it('ai:handover emits a coded NOT_FOUND for an inaccessible conversation', async () => {
+      conversationAccess.canAccess.mockResolvedValueOnce(false);
+      const client = socket();
+
+      await gateway.onHandover(client, { aiConversationId: 'stale-conv' });
+
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
+    });
+
+    it('ai:agent:reply emits a coded NOT_FOUND for an inaccessible conversation', async () => {
+      conversationAccess.canAccess.mockResolvedValueOnce(false);
+      const client = socket([PERMISSION.AI_HANDOVER_MANAGE]);
+
+      await gateway.onAgentReply(client, {
+        aiConversationId: 'stale-conv',
+        content: 'hi',
+      });
+
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
+    });
+  });
+});
+
+/**
+ * `ai:tool` — per-tool progress on a streaming turn.
+ *
+ * The property under test is not "an event is emitted" but WHAT it carries and
+ * WHERE it goes. Before this event existed the client had only
+ * `ai:thinking`/`ai:token`/`ai:done`, so a turn that spent seconds inside
+ * `search_public_availability` was indistinguishable from a hung one — and the
+ * tempting client-side workaround (cycle plausible statuses on a timer) would
+ * have been fabricated progress.
+ */
+describe('AiRealtimeGateway — ai:tool progress', () => {
+  const TENANT_ID = 't1';
+
+  function build(streamImpl: jest.Mock) {
+    const orchestrator = { handleStream: streamImpl };
+    const tenantContext = new TenantContextService();
+    const gateway = new AiRealtimeGateway(
+      {} as unknown as WsAuthService,
+      orchestrator as unknown as AiOrchestratorService,
+      tenantContext,
+      { create: jest.fn() } as unknown as HandoverRequestService,
+      { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
+      {} as unknown as AgentPresenceService,
+      {
+        canAccess: jest.fn().mockResolvedValue(true),
+      } as unknown as AiConversationAccessService,
+      {
+        resolve: jest.fn().mockResolvedValue({
+          allowed: true,
+          tenantId: TENANT_ID,
+          featureKey: FeatureKey.AI_ASSISTANT,
+          source: AccessSource.FEATURE_OVERRIDE,
+          quotaPolicy: QuotaPolicy.UNMETERED_BY_PLAN,
+        }),
+        shouldBlock: jest.fn().mockReturnValue(true),
+      } as unknown as AccessControlService,
+      {
+        checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }),
+      } as unknown as AiWsRateLimitService,
+    );
+    return gateway;
+  }
+
+  const guest = (): Socket =>
+    ({
+      id: 'sock-1',
+      data: {
+        tenantId: TENANT_ID,
+        userId: 'guest-1',
+        user: {
+          id: 'guest-1',
+          tenantId: TENANT_ID,
+          roles: [],
+          permissions: [],
+          guest: true,
+        },
+      },
+      emit: jest.fn(),
+      join: jest.fn(),
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      rooms: new Set<string>(),
+    }) as unknown as Socket;
+
+  it('relays a tool start/end to the calling socket, carrying the NAME only', async () => {
+    const stream = jest.fn(async (_tenantId, _input, _onToken, onToolEvent) => {
+      onToolEvent?.({ name: 'search_public_availability', phase: 'start' });
+      onToolEvent?.({ name: 'search_public_availability', phase: 'end' });
+      return {
+        aiConversationId: 'conv-1',
+        reply: { content: 'here are the times' },
+        usage: {},
+        streamed: true,
+      };
+    });
+    const gateway = build(stream as unknown as jest.Mock);
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'when can I come in?' });
+
+    const toolEmits = (client.emit as jest.Mock).mock.calls.filter(
+      (c) => c[0] === AI_EVENT.TOOL,
+    );
+    expect(toolEmits).toHaveLength(2);
+    expect(toolEmits[0][1]).toEqual({
+      aiConversationId: null,
+      name: 'search_public_availability',
+      phase: 'start',
+    });
+    expect(toolEmits[1][1]).toMatchObject({ phase: 'end' });
+
+    // The whole point of the payload shape: a public booking call carries the
+    // patient's name and phone in its arguments, and clinic data in its
+    // result. Neither may ride a socket that exists to drive a spinner.
+    for (const [, payload] of toolEmits) {
+      expect(Object.keys(payload as object).sort()).toEqual([
+        'aiConversationId',
+        'name',
+        'phase',
+      ]);
+    }
+  });
+
+  it('never broadcasts tool progress to the conversation or tenant room', async () => {
+    const roomEmit = jest.fn();
+    const stream = jest.fn(async (_tenantId, _input, _onToken, onToolEvent) => {
+      onToolEvent?.({ name: 'list_cities', phase: 'start' });
+      return {
+        aiConversationId: 'conv-1',
+        reply: { content: 'ok' },
+        usage: {},
+        streamed: true,
+      };
+    });
+    const gateway = build(stream as unknown as jest.Mock);
+    const client = guest();
+    (client.to as jest.Mock).mockReturnValue({ emit: roomEmit });
+
+    await gateway.onMessage(client, { content: 'hi' });
+
+    // Other viewers of this conversation still get CONVERSATION_UPDATE; they
+    // must not get another client's per-tool chatter.
+    expect(roomEmit.mock.calls.some((c) => c[0] === AI_EVENT.TOOL)).toBe(false);
+  });
+
+  it('a turn that calls no tool emits no ai:tool at all', async () => {
+    const stream = jest.fn(async () => ({
+      aiConversationId: 'conv-1',
+      reply: { content: 'we open at 9' },
+      usage: {},
+      streamed: true,
+    }));
+    const gateway = build(stream as unknown as jest.Mock);
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'what time do you open?' });
+
+    expect(
+      (client.emit as jest.Mock).mock.calls.some((c) => c[0] === AI_EVENT.TOOL),
+    ).toBe(false);
   });
 });

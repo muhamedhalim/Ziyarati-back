@@ -14,6 +14,7 @@ import { FreeAccessOverrideService } from '../subscription-billing/free-access-o
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { AppError, ErrorCode } from '../../common/errors';
+import { ttlToMs } from '../../common/utils/ttl';
 
 /** Slug of the singleton system tenant that hosts anonymous/guest conversations. */
 const DISCOVERY_TENANT_SLUG = '__guest_discovery__';
@@ -30,6 +31,16 @@ export interface GuestToken {
   guestId: string;
   tenantId: string;
   maxAgeMs: number;
+}
+
+/**
+ * `resolveSession()`'s result additionally says whether a NEW token was
+ * minted, so the controller knows whether the `guest_token` cookie needs to
+ * be (re)written at all — reusing a still-valid identity must not touch the
+ * cookie ("do not unnecessarily change the guest_token").
+ */
+export interface ResolvedGuestSession extends GuestToken {
+  isNew: boolean;
 }
 
 /**
@@ -86,7 +97,7 @@ export class GuestSessionService {
           // `tenants.contact_email` is NOT NULL + UNIQUE. Omitting it made this
           // insert fail outright on any database that did not already carry the
           // singleton row — i.e. every fresh deployment — which took down the
-          // whole anonymous flow, since `createSession()` starts here. Fixed
+          // whole anonymous flow, since `resolveSession()` starts here. Fixed
           // address, same `.internal` convention as the other synthetic
           // identities (`ai-bot@bot.internal`, the WhatsApp contact addresses):
           // never routable, and unique by construction for a singleton row.
@@ -112,11 +123,64 @@ export class GuestSessionService {
     return tenant.id;
   }
 
-  /** Mint a guest session token (scoped to the discovery tenant). */
-  async createSession(): Promise<GuestToken> {
+  /** Last-resort fallback only — every real deployment relies on the
+   * Joi-validated default ('1d', env.validation.ts) instead. Reached only
+   * when GUEST_SESSION_TTL is explicitly set to something `ttlToMs` can't
+   * parse. */
+  private static readonly FALLBACK_TTL = '1d';
+
+  /**
+   * Idempotent guest-session resolution (guest-identity-churn fix).
+   *
+   * A visitor who already carries a valid `guest_token` keeps the SAME
+   * `guestId` — the session is neither re-minted nor re-cookied. Only a
+   * missing, expired, malformed, or foreign-tenant token causes a new
+   * identity to be minted. This is what makes `POST /public/guest/session`
+   * safe to call on every widget mount: minting unconditionally used to
+   * orphan `session.guestSubject` on any conversation the visitor already
+   * had cached client-side — `AiConversationAccessService` then correctly,
+   * and by design, refused it as "AI conversation not found" on the very
+   * next turn. This method only decides whether to REUSE or MINT an
+   * identity; it never changes who a conversation belongs to, and every
+   * downstream ownership/anti-enumeration check is untouched.
+   */
+  async resolveSession(existingToken?: string): Promise<ResolvedGuestSession> {
     const tenantId = await this.ensureDiscoveryTenant();
+    const reused = await this.tryReuse(existingToken, tenantId);
+    if (reused) return { ...reused, isNew: false };
+    return { ...(await this.mint(tenantId)), isNew: true };
+  }
+
+  /**
+   * Verifies a presented `guest_token` and, only if it is genuinely still a
+   * valid guest credential for THIS discovery tenant, returns it unchanged.
+   * Same secret + same verification rules `convert()`/`WsAuthService` use —
+   * an invalid/foreign/expired token is never an error here, it just means
+   * "nothing to reuse" (falls through to minting a fresh identity).
+   */
+  private async tryReuse(
+    token: string | undefined,
+    tenantId: string,
+  ): Promise<GuestToken | null> {
+    if (!token) return null;
+    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
+    let claims: { sub?: string; tenantId?: string; guest?: boolean };
+    try {
+      claims = await this.jwt.verifyAsync(token, { secret: accessSecret });
+    } catch {
+      return null;
+    }
+    if (!claims.guest || !claims.sub || claims.tenantId !== tenantId) {
+      return null;
+    }
+    return { token, guestId: claims.sub, tenantId, maxAgeMs: this.ttlMs() };
+  }
+
+  /** Mints a brand-new guest identity — the previous unconditional behavior,
+   * now reached only when nothing valid was presented to reuse. */
+  private async mint(tenantId: string): Promise<GuestToken> {
     const guestId = randomUUID();
-    const ttl = this.config.get<string>('GUEST_SESSION_TTL', '1d');
+    const ttl = this.resolveTtl();
     const token = await this.jwt.signAsync(
       { sub: guestId, tenantId, guest: true },
       {
@@ -124,7 +188,30 @@ export class GuestSessionService {
         expiresIn: ttl as unknown as JwtSignOptions['expiresIn'],
       },
     );
-    return { token, guestId, tenantId, maxAgeMs: 24 * 60 * 60 * 1000 };
+    return { token, guestId, tenantId, maxAgeMs: ttlToMs(ttl) };
+  }
+
+  /** Cookie Max-Age for the CURRENTLY configured TTL, derived from the exact
+   * same string a fresh mint would sign with — the JWT and its cookie can
+   * never drift apart (mirrors CookieService's own ttlToMs usage). */
+  private ttlMs(): number {
+    return ttlToMs(this.resolveTtl());
+  }
+
+  /** Falls back to a safe default rather than letting a misconfigured
+   * duration reach `jwt.signAsync` (which throws on a bad string) or produce
+   * a cookie Max-Age of 0 (which deletes the cookie immediately, breaking
+   * every guest turn). Logs once per call so a bad deploy is diagnosable. */
+  private resolveTtl(): string {
+    const configured = this.config.get<string>(
+      'GUEST_SESSION_TTL',
+      GuestSessionService.FALLBACK_TTL,
+    );
+    if (ttlToMs(configured) > 0) return configured;
+    this.logger.warn(
+      `GUEST_SESSION_TTL="${configured}" is not a valid duration (e.g. "1d", "12h") — falling back to ${GuestSessionService.FALLBACK_TTL}`,
+    );
+    return GuestSessionService.FALLBACK_TTL;
   }
 
   /**

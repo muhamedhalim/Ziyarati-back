@@ -288,7 +288,7 @@ export async function seedAiAudit(
  * everything after it.
  *
  * The two guest principals and the shared `__guest_discovery__` tenant are
- * NOT touched here: `GuestSessionService.createSession()` only signs a JWT
+ * NOT touched here: `GuestSessionService.resolveSession()` only signs a JWT
  * (no DB row per guest), and the discovery tenant is a memoized singleton
  * shared across every suite in the process — deleting it would break
  * concurrently running specs.

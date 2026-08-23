@@ -1,4 +1,5 @@
 import { JwtService } from '@nestjs/jwt';
+import { Logger } from '@nestjs/common';
 
 import { GuestSessionService } from './guest-session.service';
 import { ErrorCode } from '../../common/errors';
@@ -26,7 +27,7 @@ const GUEST_A = 'guest-a-subject';
 const GUEST_B = 'guest-b-subject';
 const CONV_A = '11111111-1111-4111-8111-111111111111';
 
-/** Signs a guest token with the same shape `createSession()` mints. */
+/** Signs a guest token with the same shape `resolveSession()` mints. */
 function guestToken(
   jwt: JwtService,
   sub: string,
@@ -210,7 +211,7 @@ describe('GuestSessionService.convert — FND-001', () => {
   // uniform not-found response before the secret was resolved outside the
   // verification try/catch).
   describe('fails loudly when JWT_ACCESS_SECRET is unset (ZT-007)', () => {
-    it('createSession (signing) raises rather than minting a token under no secret', async () => {
+    it('resolveSession (minting — no token presented) raises rather than signing under no secret', async () => {
       const svc = new GuestSessionService(
         tenants as never,
         jwt,
@@ -220,7 +221,7 @@ describe('GuestSessionService.convert — FND-001', () => {
         conversationRepo as never,
         auditLogs as never,
       );
-      await expect(svc.createSession()).rejects.toThrow(/JWT_ACCESS_SECRET/);
+      await expect(svc.resolveSession()).rejects.toThrow(/JWT_ACCESS_SECRET/);
     });
 
     it('convert (verification) raises rather than returning the uniform not-found', async () => {
@@ -493,6 +494,169 @@ describe('GuestSessionService.convert — FND-001', () => {
       );
 
       expect(result).toEqual({ converted: true, memoryId: 'memory-1' });
+    });
+  });
+});
+
+/**
+ * Guest-identity-churn fix: `POST /public/guest/session` must be idempotent —
+ * reusing a still-valid `guest_token` instead of always minting a new
+ * identity is what stops a widget remount from orphaning
+ * `session.guestSubject` on a conversation the visitor already has cached
+ * client-side (see the "AI conversation not found" root-cause writeup).
+ */
+describe('GuestSessionService.resolveSession — idempotent guest identity', () => {
+  let service: GuestSessionService;
+  let jwt: JwtService;
+  let tenants: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock };
+  let overrides: { hasActive: jest.Mock; grant: jest.Mock };
+  let config: ReturnType<typeof createMockConfigService>;
+  let loggerWarnSpy: jest.SpyInstance;
+
+  const DISCOVERY_TENANT = 'discovery-tenant-id';
+  const OTHER_TENANT = 'other-tenant-id';
+
+  const sign = (
+    claims: Record<string, unknown>,
+    opts: { secret?: string; expiresIn?: string } = {},
+  ) =>
+    jwt.signAsync(claims, {
+      secret: opts.secret ?? 'test-access-secret',
+      expiresIn: (opts.expiresIn ?? '1d') as never,
+    });
+
+  beforeEach(() => {
+    jwt = new JwtService({});
+    tenants = {
+      findOne: jest.fn().mockResolvedValue({
+        id: DISCOVERY_TENANT,
+        slug: '__guest_discovery__',
+      }),
+      save: jest.fn(),
+      create: jest.fn(),
+    };
+    overrides = {
+      hasActive: jest.fn().mockResolvedValue(true),
+      grant: jest.fn(),
+    };
+    config = createMockConfigService({
+      JWT_ACCESS_SECRET: 'test-access-secret',
+    });
+    loggerWarnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    service = new GuestSessionService(
+      tenants as never,
+      jwt,
+      config as never,
+      overrides as never,
+      { summarizeConversation: jest.fn() } as never,
+      { findOne: jest.fn(), createQueryBuilder: jest.fn() } as never,
+      { create: jest.fn(), save: jest.fn() } as never,
+    );
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('[Test 1] mints a fresh guestId when no token is presented', async () => {
+    const result = await service.resolveSession(undefined);
+    expect(result.isNew).toBe(true);
+    expect(result.guestId).toEqual(expect.any(String));
+    expect(result.tenantId).toBe(DISCOVERY_TENANT);
+  });
+
+  it('[Test 2] reuses the SAME guestId on a second call with the token from the first — never mints a second identity', async () => {
+    const first = await service.resolveSession(undefined);
+    const second = await service.resolveSession(first.token);
+
+    expect(second.isNew).toBe(false);
+    expect(second.guestId).toBe(first.guestId);
+    expect(second.token).toBe(first.token); // untouched — never re-signed
+  });
+
+  it('[Test 13] mints a NEW identity — and does not reuse the old conversationId binding — when the presented token is expired', async () => {
+    const expired = await sign(
+      { sub: 'guest-old', tenantId: DISCOVERY_TENANT, guest: true },
+      { expiresIn: '-1s' },
+    );
+    const result = await service.resolveSession(expired);
+    expect(result.isNew).toBe(true);
+    expect(result.guestId).not.toBe('guest-old');
+  });
+
+  it('mints a NEW identity when the presented token is signed with the wrong secret (forged)', async () => {
+    const forged = await sign(
+      { sub: 'attacker', tenantId: DISCOVERY_TENANT, guest: true },
+      { secret: 'attacker-secret' },
+    );
+    const result = await service.resolveSession(forged);
+    expect(result.isNew).toBe(true);
+    expect(result.guestId).not.toBe('attacker');
+  });
+
+  it('mints a NEW identity when the presented token is not a guest token', async () => {
+    const staffLike = await sign({ sub: 'user-1', tenantId: DISCOVERY_TENANT });
+    const result = await service.resolveSession(staffLike);
+    expect(result.isNew).toBe(true);
+  });
+
+  it('mints a NEW identity when the presented token belongs to a different tenant', async () => {
+    const foreign = await sign({
+      sub: 'guest-foreign',
+      tenantId: OTHER_TENANT,
+      guest: true,
+    });
+    const result = await service.resolveSession(foreign);
+    expect(result.isNew).toBe(true);
+    expect(result.guestId).not.toBe('guest-foreign');
+  });
+
+  it('mints a NEW identity when the presented token is malformed', async () => {
+    const result = await service.resolveSession('not.a.jwt');
+    expect(result.isNew).toBe(true);
+  });
+
+  describe('[Test 12] TTL — JWT expiry and cookie Max-Age never drift apart', () => {
+    it('derives maxAgeMs from the exact GUEST_SESSION_TTL used to sign the token (default)', async () => {
+      const result = await service.resolveSession(undefined);
+      expect(result.maxAgeMs).toBe(24 * 60 * 60 * 1000); // '1d'
+    });
+
+    it('derives maxAgeMs from a custom, valid GUEST_SESSION_TTL', async () => {
+      const svc = new GuestSessionService(
+        tenants as never,
+        jwt,
+        createMockConfigService({
+          JWT_ACCESS_SECRET: 'test-access-secret',
+          GUEST_SESSION_TTL: '12h',
+        }) as never,
+        overrides as never,
+        { summarizeConversation: jest.fn() } as never,
+        { findOne: jest.fn(), createQueryBuilder: jest.fn() } as never,
+        { create: jest.fn(), save: jest.fn() } as never,
+      );
+      const result = await svc.resolveSession(undefined);
+      expect(result.maxAgeMs).toBe(12 * 60 * 60 * 1000);
+    });
+
+    it('falls back to the safe default and warns when GUEST_SESSION_TTL is malformed, rather than zeroing the cookie or throwing', async () => {
+      const svc = new GuestSessionService(
+        tenants as never,
+        jwt,
+        createMockConfigService({
+          JWT_ACCESS_SECRET: 'test-access-secret',
+          GUEST_SESSION_TTL: 'not-a-duration',
+        }) as never,
+        overrides as never,
+        { summarizeConversation: jest.fn() } as never,
+        { findOne: jest.fn(), createQueryBuilder: jest.fn() } as never,
+        { create: jest.fn(), save: jest.fn() } as never,
+      );
+      const result = await svc.resolveSession(undefined);
+      expect(result.maxAgeMs).toBe(24 * 60 * 60 * 1000); // falls back to '1d'
+      expect(result.maxAgeMs).toBeGreaterThan(0);
+      expect(loggerWarnSpy).toHaveBeenCalled();
     });
   });
 });

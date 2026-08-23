@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { AiConversationService } from '../ai/ai-conversation.service';
 import { AiConversationAccessService } from '../ai/ai-conversation-access.service';
-import { AiExecutionService } from '../ai/ai-execution.service';
+import {
+  AiExecutionService,
+  type AiToolProgressListener,
+} from '../ai/ai-execution.service';
 import { ConversationSessionService } from './conversation-session.service';
 import { AgentRouterService } from './agent-router.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
@@ -133,6 +136,11 @@ export class AiOrchestratorService {
     tenantId: string,
     input: OrchestrateInput,
     onToken: (delta: string) => void,
+    /**
+     * Optional per-tool progress signal, passed straight through to the
+     * engine. Trailing and optional so no existing caller changes.
+     */
+    onToolEvent?: AiToolProgressListener,
   ) {
     const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'WEBSOCKET';
     const { conversationId, session, routedRole, handedOver, memoryLoader } =
@@ -161,6 +169,7 @@ export class AiOrchestratorService {
       input.origin,
       transport,
       memoryLoader,
+      onToolEvent,
     );
     return {
       channel: input.channel,

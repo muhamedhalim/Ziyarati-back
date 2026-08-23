@@ -34,12 +34,15 @@ export class GuestChatController {
 
   @Public()
   // Session-genesis endpoint (see `@SkipCsrf`'s own docstring): it never reads
-  // an incoming `access_token`/`refresh_token` cookie to authorize anything —
-  // `GuestSessionService.createSession()` takes no request context at all, it
-  // unconditionally mints a brand-new anonymous credential for the singleton
-  // discovery tenant. A stale auth cookie left over from a previous/expired
-  // session (root-scoped `access_token` is sent here by the browser purely
-  // because of path overlap) is therefore not a real CSRF surface, exactly
+  // an incoming `access_token`/`refresh_token` cookie to AUTHORIZE anything.
+  // It DOES read an incoming `guest_token` (below) — but only to check
+  // whether it is still a valid credential worth REUSING, exactly the same
+  // read `WsAuthService`/`convert()` already perform; it grants no new
+  // authority a forged or replayed call could exploit; at worst a CSRF-
+  // triggered call reuses the visitor's own existing identity, an idempotent
+  // no-op. A stale AUTH cookie left over from a previous/expired session
+  // (root-scoped `access_token` is sent here by the browser purely because
+  // of path overlap) is therefore still not a real CSRF surface, exactly
   // like `login`/`register-owner`/`forgot-password`.
   //
   // Without this, a visitor whose session had gone stale (an expired/revoked
@@ -51,21 +54,30 @@ export class GuestChatController {
   // longer had, and rejected every attempt with 403.
   @SkipCsrf()
   @ApiOperation({
-    summary: 'Start an anonymous guest AI session',
+    summary: 'Start (or resume) an anonymous guest AI session',
     description:
-      'Mints a guest session token scoped to the system discovery tenant and sets it as the httpOnly `guest_token` cookie (path `/` so the AI WebSocket handshake receives it). The visitor can then chat with the AI without logging in. Returns the guest id.',
+      'Idempotent: reuses the identity in a valid, unexpired `guest_token` cookie already presented instead of always minting a new one — the cookie is only (re)written when a genuinely new identity had to be minted. Scoped to the system discovery tenant. The visitor can then chat with the AI without logging in. Returns the guest id.',
   })
   @ApiOkResponse({
-    description: '{ guestId } — the guest_token cookie is set.',
+    description:
+      '{ guestId } — the same id as before when the presented guest_token was still valid, otherwise a freshly minted one (cookie updated accordingly).',
   })
   @Post('session')
   @HttpCode(HttpStatus.OK)
-  async session(@Res({ passthrough: true }) res: Response) {
-    const { token, guestId, maxAgeMs } = await this.guest.createSession();
-    res.cookie('guest_token', token, {
-      ...this.cookieOptions(),
-      maxAge: maxAgeMs,
-    });
+  async session(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const existing = this.readGuestToken(req);
+    const { token, guestId, maxAgeMs, isNew } =
+      await this.guest.resolveSession(existing);
+    // Reusing a still-valid identity must not touch the cookie at all.
+    if (isNew) {
+      res.cookie('guest_token', token, {
+        ...this.cookieOptions(),
+        maxAge: maxAgeMs,
+      });
+    }
     return { guestId };
   }
 
