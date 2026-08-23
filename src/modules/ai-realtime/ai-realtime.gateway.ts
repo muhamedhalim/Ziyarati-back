@@ -28,6 +28,32 @@ import { normalizeException } from '../../common/errors/error-normalizer';
 import { ErrorCode } from '../../common/errors/error-code';
 import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
 
+/** UUID v4, the only shape `POST /public/guest/attachments` ever mints. */
+const ATTACHMENT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Hard cap mirroring `SendMessageDto`'s `@ArrayMaxSize(3)`. */
+const MAX_ATTACHMENT_IDS = 3;
+
+/**
+ * Shape-checks the one array a socket frame may now carry.
+ *
+ * A Socket.IO frame never reaches the global `ValidationPipe`, so anything
+ * arriving here is whatever the client felt like sending — including a
+ * thousand-element array, or objects where strings belong. This is not the
+ * authorization boundary (that is redemption, which is scoped to the socket's
+ * verified subject); it exists so a malformed frame is dropped at the edge
+ * instead of being carried three layers deeper before something notices.
+ */
+function sanitizeAttachmentIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = value
+    .filter((v): v is string => typeof v === 'string')
+    .filter((v) => ATTACHMENT_ID_PATTERN.test(v))
+    .slice(0, MAX_ATTACHMENT_IDS);
+  return ids.length > 0 ? ids : undefined;
+}
+
 interface MessagePayload {
   content: string;
   idempotencyKey?: string;
@@ -37,6 +63,17 @@ interface MessagePayload {
   language?: string;
   useMemory?: boolean;
   autoRoute?: boolean;
+  /**
+   * Files this turn should consider, by the ids `POST
+   * /public/guest/attachments` returned.
+   *
+   * Shape-checked here (`sanitizeAttachmentIds`) because Socket.IO frames
+   * never pass through the global `ValidationPipe`; the substantive rules live
+   * in `SendMessageDto`. Accepting them from a client is safe regardless:
+   * redemption is scoped to this socket's own verified subject, so a forged or
+   * foreign id resolves to nothing rather than to someone else's file.
+   */
+  attachmentIds?: string[];
   /**
    * AI-016/C2 (FR-031, FR-082): an OPTIONAL client-supplied correlation
    * hint for this turn — never an authorization, tenancy, or identity
@@ -583,6 +620,7 @@ export class AiRealtimeGateway
           language: body.language,
           useMemory: body.useMemory,
           autoRoute: body.autoRoute,
+          attachmentIds: sanitizeAttachmentIds(body.attachmentIds),
         },
         (delta) =>
           client.emit(AI_EVENT.TOKEN, {

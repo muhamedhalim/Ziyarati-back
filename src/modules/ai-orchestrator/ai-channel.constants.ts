@@ -28,6 +28,37 @@ export const AUTH_STATE = {
 export type AuthState = (typeof AUTH_STATE)[keyof typeof AUTH_STATE];
 
 /**
+ * One file a visitor attached to a conversation, as the prompt layer sees it.
+ *
+ * `text` is what the SERVER extracted (pdf-parse for PDFs, one vision pass for
+ * images) — never anything the client sent. `displayName` is the visitor's own
+ * filename, kept in Unicode for the UI; `promptName` is the sanitized form and
+ * is the ONLY one the model is ever shown, because a filename is attacker-
+ * controlled free text.
+ */
+export interface ConversationAttachment {
+  id: string;
+  /** Sanitized, ASCII-only, length-capped. Safe to place in a prompt or a log. */
+  promptName: string;
+  mimeType: string;
+  size: number;
+  /** R2 object key. Never sent to the model; used for handover/retention only. */
+  storageKey: string;
+  /** Server-extracted text. Empty when extraction failed — see `status`. */
+  text: string;
+  /**
+   * `ready` — text was extracted. `unreadable` — the file was accepted and
+   * stored but yielded no usable text (a scanned PDF with no text layer, an
+   * image the vision pass could not read). The distinction is surfaced to the
+   * visitor rather than hidden: telling someone their report was read when it
+   * was not is worse than saying nothing.
+   */
+  status: 'ready' | 'unreadable';
+  /** Attached at (ISO-8601). */
+  at: string;
+}
+
+/**
  * Active conversation state. Deliberately loose (`Record<string, unknown>` on the
  * entity) but typed here so the orchestrator + tools read/write a stable shape.
  * This is SESSION state (reset per conversation), NOT long-term memory.
@@ -88,6 +119,23 @@ export interface AiSession {
    * existed carry no value and are deliberately non-convertible.
    */
   guestSubject?: string;
+
+  /**
+   * Files the visitor attached to THIS conversation, with the text that was
+   * extracted from them server-side.
+   *
+   * SERVER-WRITE-ONLY (absent from `SESSION_CLIENT_PATCHABLE_KEYS`). Written
+   * only by `GuestAttachmentService.redeem`, which moves a descriptor here
+   * from its short-lived Redis staging key after re-checking that the staging
+   * key belonged to the acting principal. A client-writable value would let a
+   * caller inject arbitrary text straight into the model's prompt under the
+   * "extracted from a file the visitor uploaded" framing — the exact prompt-
+   * injection channel the whole attachment design exists to close.
+   *
+   * Lives on the existing `ai_conversations.session` jsonb column, so the
+   * feature needs no schema change.
+   */
+  attachments?: ConversationAttachment[];
 
   // ── Omnichannel continuity (Feature 3) ──────────────────────────────────
   /** The channel this turn is being served on. */

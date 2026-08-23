@@ -719,3 +719,102 @@ describe('AiRealtimeGateway — ai:tool progress', () => {
     ).toBe(false);
   });
 });
+
+/**
+ * Attachment ids on a socket frame.
+ *
+ * Socket.IO frames never pass through the global `ValidationPipe`, so whatever
+ * a client emits arrives here as-is. This is not the authorization boundary —
+ * redemption is scoped to the socket's own verified subject, so a foreign id
+ * resolves to nothing — but a malformed frame must be dropped at the edge
+ * rather than carried three layers deeper before something notices.
+ */
+describe('AiRealtimeGateway — ai:message attachmentIds', () => {
+  const TENANT_ID = 't1';
+  const VALID_A = '11111111-1111-4111-8111-111111111111';
+  const VALID_B = '22222222-2222-4222-8222-222222222222';
+
+  function build() {
+    const handleStream = jest.fn().mockResolvedValue({
+      aiConversationId: 'conv-1',
+      reply: { content: 'ok' },
+      usage: {},
+      streamed: true,
+    });
+    const gateway = new AiRealtimeGateway(
+      {} as unknown as WsAuthService,
+      { handleStream } as unknown as AiOrchestratorService,
+      new TenantContextService(),
+      { create: jest.fn() } as unknown as HandoverRequestService,
+      { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
+      {} as unknown as AgentPresenceService,
+      { canAccess: jest.fn().mockResolvedValue(true) } as unknown as AiConversationAccessService,
+      {
+        resolve: jest.fn().mockResolvedValue({
+          allowed: true,
+          tenantId: TENANT_ID,
+          featureKey: FeatureKey.AI_ASSISTANT,
+          source: AccessSource.FEATURE_OVERRIDE,
+          quotaPolicy: QuotaPolicy.UNMETERED_BY_PLAN,
+        }),
+        shouldBlock: jest.fn().mockReturnValue(true),
+      } as unknown as AccessControlService,
+      {
+        checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }),
+      } as unknown as AiWsRateLimitService,
+    );
+    return { gateway, handleStream };
+  }
+
+  const guest = (): Socket =>
+    ({
+      id: 'sock-1',
+      data: {
+        tenantId: TENANT_ID,
+        userId: 'guest-1',
+        user: { id: 'guest-1', tenantId: TENANT_ID, roles: [], permissions: [], guest: true },
+      },
+      emit: jest.fn(),
+      join: jest.fn(),
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      rooms: new Set<string>(),
+    }) as unknown as Socket;
+
+  async function forwarded(attachmentIds: unknown) {
+    const { gateway, handleStream } = build();
+    await gateway.onMessage(guest(), {
+      content: 'what does this say?',
+      attachmentIds,
+    } as never);
+    return handleStream.mock.calls[0][1].attachmentIds;
+  }
+
+  it('forwards well-formed uuid v4 ids', async () => {
+    expect(await forwarded([VALID_A, VALID_B])).toEqual([VALID_A, VALID_B]);
+  });
+
+  it('omits the field entirely when the client sent none', async () => {
+    expect(await forwarded(undefined)).toBeUndefined();
+  });
+
+  it.each([
+    ['a bare string instead of an array', 'not-an-array'],
+    ['an object', { id: VALID_A }],
+    ['an array of non-strings', [1, 2, 3]],
+    ['an array of malformed ids', ['../../etc/passwd', "'; DROP TABLE--"]],
+    ['an empty array', []],
+  ])('drops %s', async (_label, value) => {
+    expect(await forwarded(value)).toBeUndefined();
+  });
+
+  it('keeps only the well-formed entries from a mixed array', async () => {
+    expect(await forwarded([VALID_A, 'nonsense', 42, null])).toEqual([VALID_A]);
+  });
+
+  it('caps a flood at the same three the DTO allows', async () => {
+    // A thousand-element array is a denial-of-service that no single-id check
+    // would catch.
+    const flood = Array.from({ length: 1000 }, () => VALID_A);
+    expect(await forwarded(flood)).toHaveLength(3);
+  });
+});

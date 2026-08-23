@@ -63,6 +63,12 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   // token, with no tenant principal to resolve a decision against. The tenant's
   // entitlement is enforced downstream, at the execution seam these feed.
   'guest-chat/guest-chat.controller.ts',
+  // Same reasoning: an anonymous visitor attaching a report to the public chat
+  // has no tenant principal to evaluate an entitlement against — no clinic has
+  // been chosen yet, and often never is. What the file eventually costs is
+  // metered at the execution seam it feeds, and abuse is bounded here by its
+  // own per-guest and per-IP limiters rather than by a subscription.
+  'guest-chat/attachments/guest-attachment.controller.ts',
   'public-discovery/public-discovery.controller.ts',
   'integration-platform/inbound/inbound-webhook.controller.ts',
   'notifications/notification-webhook.controller.ts',

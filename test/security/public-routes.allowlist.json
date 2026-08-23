@@ -50,6 +50,16 @@
     "reason": "Mints a new HttpOnly guest_token for an anonymous visitor starting a guest AI conversation — by definition pre-authentication."
   },
   {
+    "method": "POST",
+    "path": "/public/guest/attachments",
+    "reason": "Anonymous visitors attach a report/photo to the public AI chat; there is no account to authenticate against. NOT unauthorized: authorizes on the guest_token cookie via GuestSessionService.verifyGuest (same rules as convert()), rejecting with the uniform NOT_FOUND rather than 401. Bounded by a per-guest Redis limiter (6/5min, fail-closed), a per-IP @Throttle (20/min), a 5MB cap, one file per request, and a four-format magic-byte-verified policy."
+  },
+  {
+    "method": "DELETE",
+    "path": "/public/guest/attachments/:id",
+    "reason": "Discards a staged attachment the same anonymous visitor uploaded. Authorizes on the guest_token cookie; the staging key is derived from the guest subject, so another visitor's id simply does not resolve. Always 204 so it is not an existence oracle."
+  },
+  {
     "method": "GET",
     "path": "/public/discovery/cities",
     "reason": "Public clinic-discovery directory — intentionally open marketing/discovery surface, no tenant-private data."
