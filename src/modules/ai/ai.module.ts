@@ -67,6 +67,7 @@ import { AnalyticsModule } from '../analytics/analytics.module';
 import { StaffModule } from '../staff/staff.module';
 import { CrmModule } from '../crm/crm.module';
 import { StorageModule } from '../storage/storage.module';
+import { AiAttachmentModule } from '../ai-attachment/ai-attachment.module';
 import { TenantModule } from '../tenant/tenant.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { AiPriceCatalogService } from './cost/ai-price-catalog.service';
@@ -150,6 +151,11 @@ import { AiBatchService } from './batch/ai-batch.service';
     // bookings) for the AI booking flow's deterministic payment decision.
     TenantModule,
     PaymentsModule,
+    // Redis custody of chat attachments uploaded before the turn that uses
+    // them. Read-only from here: the execution service redeems a staged
+    // descriptor into the conversation's session; nothing in AiModule writes
+    // one (that is the guest upload endpoint's job).
+    AiAttachmentModule,
   ],
   controllers: [
     AiAgentController,

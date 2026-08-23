@@ -25,6 +25,14 @@ export interface OrchestrateInput {
   language?: string;
   device?: string;
   timezone?: string;
+  /**
+   * Ids of files the visitor uploaded through the guest attachment endpoint
+   * and wants this turn to consider. Opaque and safe to accept from a client:
+   * they are redeemed against a staging key derived from the CALLER's own
+   * verified subject, single-use, and every value the model ends up seeing
+   * (filename, extracted text) was produced server-side at upload time.
+   */
+  attachmentIds?: string[];
   /** When true, re-route to the best specialized agent on every turn (Feature 7). */
   autoRoute?: boolean;
   /** When true, recall long-term memory for this turn and attach it to context (Feature 5). */
@@ -96,6 +104,7 @@ export class AiOrchestratorService {
       {
         content: input.content,
         idempotencyKey: input.idempotencyKey,
+        attachmentIds: input.attachmentIds,
       },
       transport,
       memoryLoader,
@@ -164,6 +173,7 @@ export class AiOrchestratorService {
       {
         content: input.content,
         idempotencyKey: input.idempotencyKey ?? input.origin?.waMessageId,
+        attachmentIds: input.attachmentIds,
       },
       onToken,
       input.origin,

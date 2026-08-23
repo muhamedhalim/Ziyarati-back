@@ -152,6 +152,34 @@ export class GuestSessionService {
   }
 
   /**
+   * Verifies a presented `guest_token` and returns the identity it proves, or
+   * throws the SAME not-found every other guest path throws.
+   *
+   * Exists because `@Public()` routes bypass the global JWT guard entirely, so
+   * `TenantContextService.getUser()` is null on them — a public route that
+   * needs to know WHICH guest is calling has to verify the cookie itself. The
+   * rules are `convert()`'s rules exactly (signature, expiry, the `guest`
+   * marker, and membership of the discovery tenant), factored out here rather
+   * than copied so a future tightening cannot apply to only one of them.
+   */
+  async verifyGuest(
+    token: string | undefined,
+  ): Promise<{ guestId: string; tenantId: string }> {
+    if (!token) throw this.notFound();
+    const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
+    let claims: { sub?: string; tenantId?: string; guest?: boolean };
+    try {
+      claims = await this.jwt.verifyAsync(token, { secret: accessSecret });
+    } catch {
+      throw this.notFound();
+    }
+    if (!claims?.guest || !claims.sub || !claims.tenantId) throw this.notFound();
+    const discoveryTenantId = await this.ensureDiscoveryTenant();
+    if (claims.tenantId !== discoveryTenantId) throw this.notFound();
+    return { guestId: claims.sub, tenantId: discoveryTenantId };
+  }
+
+  /**
    * Verifies a presented `guest_token` and, only if it is genuinely still a
    * valid guest credential for THIS discovery tenant, returns it unchanged.
    * Same secret + same verification rules `convert()`/`WsAuthService` use —

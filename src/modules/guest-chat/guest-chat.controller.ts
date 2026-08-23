@@ -17,6 +17,7 @@ import {
 import type { CookieOptions, Request, Response } from 'express';
 
 import { GuestSessionService } from './guest-session.service';
+import { readGuestTokenCookie } from './guest-token.util';
 import { ConvertGuestDto } from './dto/convert-guest.dto';
 import { Public } from '../auth/decorators/public.decorator';
 import { SkipCsrf } from '../auth/decorators/skip-csrf.decorator';
@@ -108,16 +109,7 @@ export class GuestChatController {
 
   /** Reads the httpOnly `guest_token` cookie (mirrors WsAuthService's approach). */
   private readGuestToken(req: Request): string | undefined {
-    const fromParser = (req as unknown as { cookies?: Record<string, string> })
-      .cookies?.guest_token;
-    if (fromParser) return fromParser;
-    const header = req.headers?.cookie;
-    if (!header) return undefined;
-    for (const part of header.split(';')) {
-      const [key, ...rest] = part.trim().split('=');
-      if (key === 'guest_token') return decodeURIComponent(rest.join('='));
-    }
-    return undefined;
+    return readGuestTokenCookie(req);
   }
 
   /** httpOnly cookie at path `/` so the same-origin WS handshake receives it. */

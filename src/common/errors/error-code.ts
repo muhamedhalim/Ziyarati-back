@@ -23,6 +23,25 @@ export enum ErrorCode {
    */
   SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
 
+  // ── File uploads ─────────────────────────────────────────────────────
+  /**
+   * Upload-specific codes. They exist so a client can say something USEFUL and
+   * localized about a rejected file instead of rendering a developer string:
+   * every upload failure used to be a bare `BAD_REQUEST` carrying English
+   * prose, while the frontend's `app/lib/api-error.ts` has long DECLARED file
+   * codes the backend never actually emitted.
+   *
+   * Deliberately thrown ONLY from the guest chat-attachment path. The older
+   * `/uploads` routes keep emitting `BAD_REQUEST` — retrofitting them would
+   * change a shipped contract for no caller that reads it yet.
+   */
+  FILE_TOO_LARGE = 'FILE_TOO_LARGE',
+  UNSUPPORTED_FILE_TYPE = 'UNSUPPORTED_FILE_TYPE',
+  /** Declared type and actual bytes disagree (magic bytes), or the file is corrupt. */
+  FILE_CONTENT_MISMATCH = 'FILE_CONTENT_MISMATCH',
+  /** This conversation already holds as many attachments as it may. */
+  ATTACHMENT_LIMIT_REACHED = 'ATTACHMENT_LIMIT_REACHED',
+
   // ── Authentication ───────────────────────────────────────────────────
   INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
   INVALID_REFRESH_TOKEN = 'INVALID_REFRESH_TOKEN',
@@ -139,6 +158,24 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   [ErrorCode.SERVICE_UNAVAILABLE]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
     message: 'Service temporarily unavailable — please retry',
+  },
+
+  [ErrorCode.FILE_TOO_LARGE]: {
+    status: HttpStatus.PAYLOAD_TOO_LARGE,
+    message: 'File is larger than the allowed maximum',
+  },
+  [ErrorCode.UNSUPPORTED_FILE_TYPE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This file type is not supported',
+  },
+  [ErrorCode.FILE_CONTENT_MISMATCH]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'File content does not match its declared type, or the file is corrupted',
+  },
+  [ErrorCode.ATTACHMENT_LIMIT_REACHED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'No more files can be attached to this conversation',
   },
 
   [ErrorCode.INVALID_CREDENTIALS]: {
