@@ -54,11 +54,33 @@ const BRANCH = {
 };
 
 describe('PublicBookingContextService.describeSelection', () => {
-  it('returns nothing at all when the conversation has selected nothing', async () => {
-    // A first turn must cost no prompt budget and add no block.
+  it("states today's date even before anything has been selected", async () => {
+    // The model has no clock. Asked for "tomorrow" it produced a date from its
+    // training data — observed live as an availability lookup for 2023-10-29,
+    // which returned nothing and was reported as "no appointments available".
+    // A relative date can be the visitor's very first words, so the date is
+    // stated from turn one.
     const f = build({ guestSubject: 'guest-sub' });
 
-    await expect(f.describe()).resolves.toBeNull();
+    const block = await f.describe();
+
+    expect(block).toMatch(/today: \d{4}-\d{2}-\d{2}/);
+    expect(block).toMatch(/never from memory/);
+    expect(block).toMatch(/Nothing has been selected yet/);
+  });
+
+  it("uses the session's own timezone for that date", async () => {
+    const f = build({ timezone: 'Asia/Riyadh' });
+
+    await expect(f.describe()).resolves.toContain('Asia/Riyadh');
+  });
+
+  it('falls back to UTC rather than failing on an unusable timezone', async () => {
+    const f = build({ timezone: 'Not/AZone' });
+
+    const block = await f.describe();
+
+    expect(block).toMatch(/today: \d{4}-\d{2}-\d{2}/);
   });
 
   it('states the clinic, its branch and where that branch is', async () => {

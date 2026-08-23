@@ -17,10 +17,12 @@ import { IS_PUBLIC_KEY } from '../auth/decorators/public.decorator';
  * client no longer had, so every attempt 403'd with "CSRF token missing or
  * invalid" until that cookie's own maxAge finally expired.
  *
- * `session()` never reads an incoming auth cookie to authorize anything —
- * `GuestSessionService.createSession()` takes no request context at all, it
- * unconditionally mints a brand-new anonymous credential — so it belongs to
- * the same class of session-genesis endpoint as `login`/`register-owner`/
+ * `session()` never reads an incoming AUTH cookie to authorize anything. It
+ * does read an incoming `guest_token` to decide whether to REUSE that
+ * identity (`GuestSessionService.resolveSession()`), but that grants no new
+ * authority — a forged/replayed call at worst reuses the caller's own
+ * existing identity, an idempotent no-op — so it still belongs to the same
+ * class of session-genesis endpoint as `login`/`register-owner`/
  * `forgot-password`, all of which already carry `@SkipCsrf()`.
  *
  * `convert()` is the deliberate contrast: it DOES read the incoming

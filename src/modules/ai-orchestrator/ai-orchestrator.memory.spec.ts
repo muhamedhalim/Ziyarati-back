@@ -143,6 +143,11 @@ describe('AiOrchestratorService memory consent gate', () => {
       undefined,
       'WEBSOCKET',
       undefined,
+      // `onToolEvent` — the per-tool progress listener (`AiToolProgressEvent`).
+      // Undefined here because this caller passed none; the gateway supplies
+      // one so the widget can show a status line sourced from a real tool call
+      // rather than a timer.
+      undefined,
     );
     expect(result).toMatchObject({
       channel: 'WEBSITE',

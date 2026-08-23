@@ -191,7 +191,7 @@ export class PublicBookingContextService {
       return null;
     }
 
-    const lines: string[] = [];
+    const lines: string[] = [this.today(session.timezone)];
     const stale: string[] = [];
 
     if (session.selectedCityId) {
@@ -261,13 +261,13 @@ export class PublicBookingContextService {
       lines.push(`slot: ${session.selectedStartAt}`);
     }
 
-    if (lines.length === 0 && stale.length === 0) return null;
-
     const next = branch
       ? 'The branch is already selected — go straight to list_branch_services / list_branch_doctors / search_public_availability. Do NOT call list_cities or search_clinics again.'
       : clinicId
         ? 'The clinic is already selected — call select_branch (or get_clinic_details to list its branches). Do NOT call list_cities or search_clinics again.'
-        : 'A city is already chosen — call search_clinics with that cityId. Do NOT call list_cities again.';
+        : session.selectedCityId
+          ? 'A city is already chosen — call search_clinics with that cityId. Do NOT call list_cities again.'
+          : 'Nothing has been selected yet — start from list_cities or search_clinics.';
 
     return [
       'ESTABLISHED BOOKING CONTEXT (server-verified against the database this turn).',
@@ -280,6 +280,49 @@ export class PublicBookingContextService {
         : []),
       next,
     ].join('\n');
+  }
+
+  /**
+   * Today's date, in the visitor's timezone when the session recorded one.
+   *
+   * The model had no clock. Asked for "tomorrow", it produced a date from its
+   * training data — observed live as a `search_public_availability` call for
+   * `2023-10-29`, which of course returned no windows, and the assistant then
+   * told the visitor there was nothing available. The clinic, branch and doctor
+   * were all correct; only the day was invented.
+   *
+   * The server knows the date, so the server states it. Emitted on every public
+   * turn, including the first, because a relative date can be the very first
+   * thing a visitor says ("can I come tomorrow?").
+   */
+  private today(timezone?: string): string {
+    const now = new Date();
+    const zone = timezone?.trim() || 'UTC';
+    let date: string;
+    try {
+      date = new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(now);
+    } catch {
+      // An unrecognised IANA zone must not cost the whole block.
+      date = now.toISOString().slice(0, 10);
+    }
+    const weekday = (() => {
+      try {
+        return new Intl.DateTimeFormat('en-US', {
+          timeZone: zone,
+          weekday: 'long',
+        }).format(now);
+      } catch {
+        return new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(
+          now,
+        );
+      }
+    })();
+    return `today: ${date} (${weekday}, ${zone}). Resolve "today", "tomorrow" and every other relative date from THIS, never from memory, and pass the result as YYYY-MM-DD.`;
   }
 
   /** Branch + its clinic + city, through the public eligibility predicate. */

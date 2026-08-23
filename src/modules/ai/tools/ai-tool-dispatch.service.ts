@@ -354,19 +354,19 @@ export class AiToolDispatchService {
   ): Promise<ToolResult> {
     const query = this.str(args.query);
     const limit = typeof args.limit === 'number' ? args.limit : undefined;
-    const requestedCityId = this.str(args.cityId);
-
     // Validate BEFORE recording: the session only ever holds ids the database
-    // confirmed. An id the model invented is rejected here, not stored and
-    // trusted later.
-    const city = requestedCityId
-      ? await this.discovery.findCity(requestedCityId)
-      : null;
-    if (requestedCityId && !city) {
+    // confirmed, so an id the model invented is rejected here rather than
+    // stored and trusted later. The SHAPE is checked first because `findCity`
+    // casts to `uuid` — a city NAME passed here would raise in the driver
+    // instead of simply not matching.
+    const citySupplied = !!this.str(args.cityId);
+    const cityId = this.uuid(args.cityId);
+    const city = cityId ? await this.discovery.findCity(cityId) : null;
+    if (citySupplied && !city) {
       return {
         success: false,
         error:
-          'That cityId does not exist. Call list_cities for valid ids, or call search_clinics with no cityId to search every bookable clinic.',
+          'That cityId is not a city the platform knows. Pass the UUID exactly as list_cities returned it — never a city name — or call search_clinics with no cityId to search every bookable clinic.',
       };
     }
 
@@ -398,6 +398,15 @@ export class AiToolDispatchService {
             count: clinics.length,
             clinics,
             ...(city ? { cityId: city.id, cityRecorded: true } : {}),
+            // Spelled out because the two ids are both uuids and sit in the
+            // same result: a model that grabbed `cityId` and passed it to
+            // select_clinic got a bare "Clinic not found" and gave up.
+            ...(clinics.length > 0
+              ? {
+                  usage:
+                    'To choose one of these, pass its own `clinics[].id` to select_clinic. The `cityId` in this result is the search filter, never a clinic.',
+                }
+              : {}),
             ...(clinics.length === 0
               ? {
                   guidance: city
@@ -417,8 +426,8 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const clinicId = this.str(args.clinicId);
-    if (!clinicId) return { success: false, error: 'clinicId is required.' };
+    const clinicId = this.uuid(args.clinicId);
+    if (!clinicId) return this.badId('clinicId', 'search_clinics');
     return this.run(
       ctx,
       AI_TOOL.GET_CLINIC_DETAILS,
@@ -439,14 +448,17 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const branchId = this.str(args.branchId);
-    const staffId = this.str(args.staffId);
+    const branchId = this.uuid(args.branchId);
+    const staffId = this.uuid(args.staffId);
     const date = this.str(args.date);
-    if (!branchId || !staffId || !date) {
-      return {
-        success: false,
-        error: 'branchId, staffId and date are required.',
-      };
+    if (!branchId || !staffId) {
+      return this.badId(
+        'branchId and staffId',
+        'get_clinic_details / list_branch_doctors',
+      );
+    }
+    if (!date) {
+      return { success: false, error: 'date is required (YYYY-MM-DD).' };
     }
     return this.run(
       ctx,
@@ -845,13 +857,29 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const clinicId = this.str(args.clinicId);
-    if (!clinicId) return { success: false, error: 'clinicId is required.' };
+    const clinicId = this.uuid(args.clinicId);
+    if (!clinicId) return this.badId('clinicId', 'search_clinics');
 
     // Throws if the clinic is not publicly bookable — same check the booking
     // itself will make, so an ineligible clinic is rejected at selection time
     // rather than silently at the end.
-    const detail = await this.discovery.clinicDetail(clinicId);
+    //
+    // The bare "Clinic not found" it used to surface was true but unusable:
+    // observed live, the model passed the CITY's uuid as `clinicId` (a
+    // well-formed uuid, so the shape check could not catch it), read the
+    // refusal as "this clinic does not exist", and escalated to a human rather
+    // than re-reading the id from the search result it already had. The
+    // rejection is unchanged — only what the model is told to do next.
+    let detail: Awaited<ReturnType<typeof this.discovery.clinicDetail>>;
+    try {
+      detail = await this.discovery.clinicDetail(clinicId);
+    } catch {
+      return {
+        success: false,
+        error:
+          'No bookable clinic has that id. It must be the `id` of one of the CLINIC objects search_clinics returned — not a city id, a branch id, or a name. Re-read it from that result and call select_clinic again; only report a problem to the visitor if the id you sent really was one of those clinic ids.',
+      };
+    }
     const branches = detail.branches;
 
     // FR-022: only a genuine re-selection (something was already chosen)
@@ -918,8 +946,8 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const branchId = this.str(args.branchId);
-    if (!branchId) return { success: false, error: 'branchId is required.' };
+    const branchId = this.uuid(args.branchId);
+    if (!branchId) return this.badId('branchId', 'get_clinic_details');
 
     // Resolving the branch's owner IS the ownership check: if it does not
     // belong to the selected clinic, the ids disagree and we refuse.
@@ -973,11 +1001,13 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const serviceIds = Array.isArray(args.serviceIds)
-      ? args.serviceIds.filter((s): s is string => typeof s === 'string')
-      : [];
-    if (serviceIds.length === 0)
-      return { success: false, error: 'serviceIds is required.' };
+    const proposed = Array.isArray(args.serviceIds) ? args.serviceIds : [];
+    const serviceIds = proposed
+      .map((s) => this.uuid(s))
+      .filter((s): s is string => !!s);
+    if (serviceIds.length === 0 || serviceIds.length !== proposed.length) {
+      return this.badId('Every serviceIds entry', 'list_branch_services');
+    }
 
     const booking = await this.requirePublicContext(ctx, 'branch');
     const offered = await this.discovery.listBranchServices(
@@ -1015,8 +1045,8 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const staffId = this.str(args.staffId);
-    if (!staffId) return { success: false, error: 'staffId is required.' };
+    const staffId = this.uuid(args.staffId);
+    if (!staffId) return this.badId('staffId', 'list_branch_doctors');
 
     const booking = await this.requirePublicContext(ctx, 'branch');
     const doctors = await this.discovery.listBranchDoctors(
@@ -1738,6 +1768,37 @@ export class AiToolDispatchService {
 
   private str(v: unknown): string | undefined {
     return typeof v === 'string' && v.trim() ? v : undefined;
+  }
+
+  /**
+   * A resource id the model proposed, accepted ONLY if it is a real UUID.
+   *
+   * Every public lookup casts its id to `uuid` in SQL, so a value that is not
+   * one does not "find nothing" — it makes Postgres raise, and the driver's own
+   * message (`invalid input syntax for type uuid: "..."`) came straight back as
+   * the tool's error. Observed live: the model, handed a clinic named
+   * `owner@inovra`, passed the NAME as `clinicId`; the model read the resulting
+   * driver error as a platform fault, told the visitor the system had failed,
+   * and escalated to a human — when all that had happened was a wrong argument
+   * it could have corrected by re-reading the search result.
+   *
+   * Checking the shape first turns that into an ordinary, recoverable refusal
+   * and keeps schema details out of the conversation.
+   */
+  private uuid(v: unknown): string | undefined {
+    const s = this.str(v)?.trim();
+    return s &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+      ? s
+      : undefined;
+  }
+
+  /** The refusal for a malformed id — names the recovery, leaks no schema. */
+  private badId(field: string, source: string): ToolResult {
+    return {
+      success: false,
+      error: `${field} must be the UUID exactly as returned by ${source} — not a name, and not a value you composed. Re-read it from that result and try again.`,
+    };
   }
 
   private msg(err: unknown): string {

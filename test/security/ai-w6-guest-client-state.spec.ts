@@ -112,12 +112,41 @@ describe('AI guest client-state tampering — server ignores unrecognized fields
       console.warn('T085: Ziyarati-font/app/features/ai/realtime.ts not found in this checkout — static cross-check skipped, backend proof below still stands on its own.');
       return;
     }
-    const sendFnMatch = src.match(/const send = React\.useCallback\(([\s\S]*?)\[opts\.channel/);
-    expect(sendFnMatch).toBeTruthy();
-    const sendBody = sendFnMatch![1];
-    expect(sendBody).toContain('AI_EVENT.MESSAGE');
-    expect(sendBody).not.toMatch(/\bmessages\s*[,:]/); // no `messages` field/arg in the emitted payload
-    expect(sendBody).not.toContain('sessionPatch');
+    // Assert against the EMIT PAYLOAD, not against a window of source text
+    // between two landmarks.
+    //
+    // The previous form matched from `const send = React.useCallback(` forward
+    // to the next `[opts.channel` — but that dependency array belongs to
+    // `emitMessage`, which is declared ABOVE `send`, so there was never a
+    // `[opts.channel` after the anchor and the match was always `null`. The
+    // spec failed on its first assertion and never reached the two that carry
+    // its meaning; it was red for a structural reason, not because the widget
+    // ever transmitted history.
+    //
+    // The property worth pinning is what goes on the wire, so pin exactly
+    // that: the object literal passed to `socket.emit(AI_EVENT.MESSAGE, …)`.
+    // That is stable no matter how the hook arranges its callbacks.
+    // If this stops matching, the widget no longer emits through
+    // `socket.emit(AI_EVENT.MESSAGE, {...})` — rewrite this check against
+    // whatever replaced it, never delete it.
+    const emitMatch = src.match(/socket\.emit\(AI_EVENT\.MESSAGE,\s*\{([\s\S]*?)\}\);/);
+    expect(emitMatch).toBeTruthy();
+    const payload = emitMatch![1];
+
+    // The locally-persisted transcript (the `messages` array localStorage
+    // holds) must never be transmitted: a tampered one is then a purely LOCAL
+    // rendering concern, already covered by the two frontend suites.
+    expect(payload).not.toMatch(/\bmessages\s*[,:]/);
+    // Nor may the client hand the server a session patch on this path.
+    expect(payload).not.toContain('sessionPatch');
+    // …nor any server-owned booking/ownership key.
+    expect(payload).not.toContain('guestSubject');
+    expect(payload).not.toMatch(/\bselected[A-Z]/);
+
+    // Positive control, so the negative assertions above cannot pass simply
+    // because the payload was captured empty or the regex drifted.
+    expect(payload).toContain('content');
+    expect(payload).toContain('channel');
   });
 
   it('a raw hostile socket payload with extra fields (messages/history, sessionPatch, guestSubject, selectedClinicId, context) leaves persisted session state UNCHANGED beyond the honored fields', async () => {

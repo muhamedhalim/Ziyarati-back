@@ -105,6 +105,31 @@ export type AiMemoryContextLoader = () => Promise<
 >;
 
 /**
+ * Progress signal for ONE tool call inside a streaming turn.
+ *
+ * WHAT IT CARRIES AND WHY THAT'S ALL. The tool NAME and nothing else — never
+ * arguments, never results. Arguments on the public booking surface routinely
+ * hold a patient's name and phone (`book_public_appointment`), and results hold
+ * clinic data; neither belongs on a socket that exists to drive a spinner.
+ * A name alone is enough for the client to say "checking available times".
+ *
+ * WHY IT EXISTS. Before this, the only turn-level signals were `ai:thinking`,
+ * `ai:token` and `ai:done`, so a turn that spent four seconds in
+ * `search_public_availability` looked identical to a hung one. The alternative
+ * — cycling plausible status messages on a client-side timer — would be
+ * fabricated progress: the UI would claim work that might not be happening.
+ * This makes the claim true by sourcing it from the actual call.
+ *
+ * `end` is emitted from a `finally`, so a tool that throws still clears the
+ * client's status rather than leaving it stuck on the last thing it tried.
+ */
+export interface AiToolProgressEvent {
+  name: string;
+  phase: 'start' | 'end';
+}
+export type AiToolProgressListener = (event: AiToolProgressEvent) => void;
+
+/**
  * AI turn orchestrator: persist user message → retrieve KB context (RAG) →
  * assemble prompt → run the provider with the booking TOOLSET, executing any
  * tool calls through AiToolDispatchService (which reuses the Appointment/
@@ -1231,10 +1256,36 @@ export class AiExecutionService {
     origin?: { waMessageId?: string; messageType?: string },
     transport: AiExecutionTransport = 'WEBSOCKET',
     memoryLoader?: AiMemoryContextLoader,
+    /**
+     * Optional per-tool progress signal (see {@link AiToolProgressEvent}).
+     * Optional, and trailing, so every existing caller — the WhatsApp bridge,
+     * the dashboard socket, the tests — is unaffected by its addition.
+     */
+    onToolEvent?: AiToolProgressListener,
   ) {
     const turnStart = Date.now();
     const requestKey =
       dto.idempotencyKey ?? origin?.waMessageId ?? randomUUID();
+    /**
+     * Runs one tool call, bracketed by its progress signal.
+     *
+     * A local wrapper rather than a change to `timedToolCall`, which is shared
+     * with the non-streaming `sendMessage` path that has no listener to notify
+     * — widening it there would mean threading a parameter through a method
+     * whose other caller can never use it. `finally` guarantees the client's
+     * status clears even when a tool throws.
+     */
+    const runTool = async (
+      ctx: Parameters<typeof this.timedToolCall>[0],
+      call: Parameters<typeof this.timedToolCall>[1],
+    ) => {
+      onToolEvent?.({ name: call.name, phase: 'start' });
+      try {
+        return await this.timedToolCall(ctx, call);
+      } finally {
+        onToolEvent?.({ name: call.name, phase: 'end' });
+      }
+    };
     let requestClaimed = false;
     let providerStarted = false;
     let quotaReserved = false;
@@ -1622,7 +1673,7 @@ export class AiExecutionService {
             });
           }
           for (const call of acceptedStream) {
-            const [result, ms] = await this.timedToolCall(toolCtx, call);
+            const [result, ms] = await runTool(toolCtx, call);
             toolCallsCount += 1;
             toolExecMs += ms;
             if (result.success === false) toolFailureCount += 1;
@@ -1736,7 +1787,7 @@ export class AiExecutionService {
             });
           }
           for (const call of acceptedFallback) {
-            const [result, ms] = await this.timedToolCall(toolCtx, call);
+            const [result, ms] = await runTool(toolCtx, call);
             toolCallsCount += 1;
             toolExecMs += ms;
             if (result.success === false) toolFailureCount += 1;
