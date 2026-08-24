@@ -386,11 +386,11 @@ export const validate = (config: Record<string, unknown>) => {
     // the app boots and runs without a live integration); in PRODUCTION a real
     // provider with missing essential keys fails the boot — see the explicit
     // check after schema validation below.
-    PAYMENT_PROVIDER: Joi.string().valid('moyasar', 'noop').default('moyasar'),
-    MOYASAR_SECRET_KEY: Joi.string().allow('', null),
-    MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
-    MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
-    MOYASAR_API_BASE: Joi.string().allow('', null),
+    // PAYMENT_PROVIDER: Joi.string().valid('moyasar', 'noop').default('moyasar'),
+    // MOYASAR_SECRET_KEY: Joi.string().allow('', null),
+    // MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
+    // MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
+    // MOYASAR_API_BASE: Joi.string().allow('', null),
     // Split payments (Moyasar `splits`) require a commercial Marketplace /
     // Platforms contract + per-clinic recipient ids. OFF until enabled by
     // Moyasar — a technically-supported feature is never assumed active.
@@ -404,12 +404,12 @@ export const validate = (config: Record<string, unknown>) => {
     PLATFORM_FEE_FIXED: Joi.number().min(0).default(0),
 
     // Refund reaper (R2) sweep thresholds, minutes.
-    REFUND_REAPER_STALE_MIN: Joi.number().min(1).default(10),
-    REFUND_REAPER_HARDFAIL_MIN: Joi.number().min(1).default(120),
+    // REFUND_REAPER_STALE_MIN: Joi.number().min(1).default(10),
+    // REFUND_REAPER_HARDFAIL_MIN: Joi.number().min(1).default(120),
     // Payment reconciliation sweep thresholds, minutes (stale PENDING payments
     // re-verified against the gateway; hard threshold pages an operator).
-    PAYMENTS_RECON_STALE_MIN: Joi.number().min(1).default(15),
-    PAYMENTS_RECON_HARDFAIL_MIN: Joi.number().min(1).default(240),
+    // PAYMENTS_RECON_STALE_MIN: Joi.number().min(1).default(15),
+    // PAYMENTS_RECON_HARDFAIL_MIN: Joi.number().min(1).default(240),
 
     // ── Email (Resend by default; provider behind an abstraction) ─────────
     // `enabled` defaults to ON in production, OFF in dev (no-op provider) unless
@@ -893,21 +893,21 @@ export const validate = (config: Record<string, unknown>) => {
   // SIMULATES successful payments — silently faking revenue. Dev/test keep the
   // keyless Noop flow. The message names only the missing VARIABLES, never
   // values. Opting out is explicit: PAYMENT_PROVIDER=noop.
-  if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER !== 'noop') {
-    const missing: string[] = [];
-    if (!String(value.MOYASAR_SECRET_KEY ?? '').trim())
-      missing.push('MOYASAR_SECRET_KEY');
-    if (!String(value.MOYASAR_WEBHOOK_SECRET ?? '').trim())
-      missing.push('MOYASAR_WEBHOOK_SECRET');
-    if (missing.length > 0) {
-      throw new Error(
-        `❌ Env validation error: PAYMENT_PROVIDER is "${value.PAYMENT_PROVIDER}" but ` +
-          `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
-          `Payments cannot run in production without gateway credentials. ` +
-          `Set the missing variable(s), or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
-      );
-    }
-  }
+  // if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER !== 'noop') {
+  //   const missing: string[] = [];
+  //   if (!String(value.MOYASAR_SECRET_KEY ?? '').trim())
+  //     missing.push('MOYASAR_SECRET_KEY');
+  //   if (!String(value.MOYASAR_WEBHOOK_SECRET ?? '').trim())
+  //     missing.push('MOYASAR_WEBHOOK_SECRET');
+  //   if (missing.length > 0) {
+  //     throw new Error(
+  //       `❌ Env validation error: PAYMENT_PROVIDER is "${value.PAYMENT_PROVIDER}" but ` +
+  //         `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
+  //         `Payments cannot run in production without gateway credentials. ` +
+  //         `Set the missing variable(s), or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
+  //     );
+  //   }
+  // }
 
   // ── Credential-encryption fail-fast (production only, HRD-001) ────────────
   // Mirrors the payments fail-fast above (the reference pattern constitution
