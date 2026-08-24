@@ -1,0 +1,44 @@
+# ── Build/runtime artefacts (the image builds its own) ──────────────────────
+node_modules
+dist
+build
+coverage
+.nyc_output
+*.tsbuildinfo
+
+# ── Secrets: NEVER copy a real environment file into an image ───────────────
+.env
+.env.*
+!.env.example
+
+# ── VCS / IDE / OS ──────────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+.claude
+.specify
+
+# ── Tests, benchmarks and load tooling (not shipped, and they pull devDeps) ─
+test
+testsprite_tests
+scripts/perf
+**/*.spec.ts
+**/*.e2e-spec.ts
+
+# ── Local process/state droppings ───────────────────────────────────────────
+*.log
+*.pid
+.api-start-time.txt
+.worker-start-time.txt
+.perfaudit-api.pid
+.perfaudit-worker.pid
+.e2e-out.log
+ziyaratech.backup
+
+# ── Docs & specs (documentation only; nothing at runtime reads these) ───────
+docs
+specs
+README.md
