@@ -8,6 +8,14 @@ export const validate = (config: Record<string, unknown>) => {
       .valid('development', 'production', 'test')
       .default('development'),
 
+    // HTTP listen port for the API process root (`main.ts`: `app.listen(port,
+    // '0.0.0.0')`). The default here is byte-identical to main.ts's own
+    // `process.env.PORT ?? 3000` fallback, so adding it changes no behaviour —
+    // what it adds is a BOOT-TIME error on a non-numeric / out-of-range value,
+    // instead of the opaque `ERR_SOCKET_BAD_PORT` a bad platform variable used
+    // to produce after the whole DI graph had already been constructed.
+    PORT: Joi.number().port().default(3000),
+
     DATABASE_URL: Joi.string().required(),
 
     TYPEORM_SYNCHRONIZE: Joi.string().valid('true', 'false').default('false'),
@@ -674,6 +682,126 @@ export const validate = (config: Record<string, unknown>) => {
     // port via MetricsController; the worker has no HTTP adapter at all (see
     // worker.ts), so it needs its OWN small listener on its own port.
     WORKER_METRICS_PORT: Joi.number().integer().min(1).default(9091),
+
+    // ── Previously-unvalidated operational keys (production-readiness pass) ─
+    // Every key below was ALREADY read by shipped code — most of them through
+    // a direct `process.env.X ?? '<default>'` at a module's top level — but
+    // none was in this schema, so `allowUnknown: true` let a typo'd name or an
+    // out-of-range value through silently. Two deliberate constraints on this
+    // block, so it is a pure documentation/validation addition and not a
+    // behaviour change:
+    //
+    //   1. NO `.default()` anywhere in it. Several of these keys are read at
+    //      MODULE LOAD (e.g. `GUEST_ATTACHMENT_MAX_BYTES` in
+    //      storage.constants.ts), which happens BEFORE ConfigModule validates
+    //      and writes defaults back into `process.env` — a default here would
+    //      therefore be silently ignored at exactly those call sites while
+    //      appearing authoritative in this file. Each call site keeps owning
+    //      its own fallback; this schema only rejects a value that is present
+    //      and wrong.
+    //   2. Shape only — the bounds mirror what the consuming code already
+    //      treats as usable, never a new policy.
+    //
+    // The operator-facing documentation for all of these lives in
+    // `.env.example`, which is generated against this file.
+
+    // Seeder-only super-admin bootstrap (seed/admin.seed.ts). Production skips
+    // admin creation entirely when unset — it never fabricates credentials.
+    ADMIN_EMAIL: Joi.string().allow('', null),
+    ADMIN_PASSWORD: Joi.string().allow('', null),
+
+    // Secondary APP_URL fallback, read only by the non-production test OAuth
+    // provider's redirect allow-list (oauth.registry.ts).
+    API_BASE_URL: Joi.string().allow('', null),
+
+    // Bounded wait for a pooled Postgres connection (typeorm.config.ts). Its
+    // own `config.get(..., 10000)` fallback stays the source of the default.
+    DB_POOL_CONNECTION_TIMEOUT: Joi.number().integer().min(1),
+
+    // Discrete connection parts — read ONLY by `seed/data-source.ts`, and ONLY
+    // when DATABASE_URL is unset (dev/CLI). Never set in production.
+    DB_HOST: Joi.string().allow('', null),
+    DB_PORT: Joi.number().port(),
+    DB_USERNAME: Joi.string().allow('', null),
+    DB_PASSWORD: Joi.string().allow('', null),
+    DB_NAME: Joi.string().allow('', null),
+    DB_LOGGING: Joi.string().valid('true', 'false'),
+
+    // Queue/worker knobs read straight from `process.env` in
+    // queue.constants.ts, queue-monitor.service.ts and outbox-relay.service.ts.
+    // QUEUE_ENV_PREFIX is the one that matters most in a multi-environment
+    // deployment: without it, two environments sharing one Redis database
+    // consume each other's jobs.
+    QUEUE_ENV_PREFIX: Joi.string().allow('', null),
+    QUEUE_BACKOFF_MAX_MS: Joi.number().integer().min(1),
+    QUEUE_LOG_COMPLETED: Joi.string().valid('true', 'false'),
+    CAMPAIGN_GLOBAL_MAX_PER_SEC: Joi.number().min(1),
+    DLQ_POLL_MS: Joi.number().integer().min(1),
+    DLQ_WARN_THRESHOLD: Joi.number().integer().min(0),
+    METRICS_QUEUE_DEPTH_POLL_MS: Joi.number().integer().min(1),
+    OUTBOX_POLL_MS: Joi.number().integer().min(1),
+    OUTBOX_BATCH: Joi.number().integer().min(1),
+    OUTBOX_MAX_ATTEMPTS: Joi.number().integer().min(1),
+    OUTBOX_RECOVERY_POLL_MS: Joi.number().integer().min(1),
+    OUTBOX_PUBLISHING_STUCK_MS: Joi.number().integer().min(1),
+
+    // Notification dispatch (notification-dispatch.service.ts, module-load).
+    NOTIF_RATE_PER_MIN: Joi.number().integer().min(1),
+    NOTIF_LOG_RETENTION_DAYS: Joi.number().integer().min(1),
+
+    // Platform request/webhook logging + retention (api-logging.interceptor.ts,
+    // platform-maintenance.service.ts).
+    PLATFORM_API_LOG_ENABLED: Joi.string().valid('true', 'false'),
+    PLATFORM_API_LOG_SAMPLE: Joi.number().min(0).max(1),
+    PLATFORM_API_LOG_RETENTION_DAYS: Joi.number().integer().min(1),
+    PLATFORM_WEBHOOK_LOG_RETENTION_DAYS: Joi.number().integer().min(1),
+
+    // Tenant access-policy rollout control (access-policy-mode.service.ts). An
+    // unrecognised value is already treated as `enforce` at runtime so a typo
+    // can never disable authorization; this makes it a loud boot error instead.
+    ACCESS_POLICY_MODE: Joi.string().valid('shadow', 'enforce'),
+    ACCESS_DECISION_CACHE_TTL_MS: Joi.number().integer(),
+
+    // Staff invitation lifetime, minutes (auth.service.ts).
+    STAFF_INVITATION_TTL_MIN: Joi.number().integer().min(5),
+
+    // Guest-chat attachment cap, bytes (storage.constants.ts — module-load).
+    GUEST_ATTACHMENT_MAX_BYTES: Joi.number().integer().min(1),
+
+    // Direct WhatsApp send provider (meta-whatsapp.provider.ts). Same version
+    // pattern as META_GRAPH_API_VERSION above.
+    WHATSAPP_API_VERSION: Joi.string().pattern(/^v\d+\.\d+$/),
+    WHATSAPP_HTTP_TIMEOUT_MS: Joi.number().integer().min(1000),
+
+    // LEGACY shared-number notification channel only
+    // (meta-whatsapp-cloud.provider.ts). The per-tenant Independent Tech
+    // Provider flow does not read these — they stay unset in this deployment
+    // model. Declared so a stray value is at least validated, never so that
+    // setting them is encouraged.
+    WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null),
+    WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null),
+
+    // Workflow HTTP-action timeout (workflow-action.executor.ts).
+    WORKFLOW_WEBHOOK_TIMEOUT_MS: Joi.number().integer().min(1),
+
+    // Integration-platform SSRF guard escape hatches + the in-memory test OAuth
+    // provider (integration-url-guard.ts, oauth.registry.ts). All three are
+    // no-ops outside production except the test provider; declared here so an
+    // accidental `1`/`yes` cannot read as "enabled" at one site and not another.
+    INTEGRATION_ALLOW_INSECURE_BASE_URL: Joi.string().valid('true', 'false'),
+    INTEGRATION_ALLOW_PRIVATE_BASE_URL: Joi.string().valid('true', 'false'),
+    INTEGRATION_OAUTH_TEST_PROVIDER: Joi.string().valid('true', 'false'),
+
+    // Attachment vision model + the two prompt sub-budgets that were added
+    // after the AI block above was written.
+    AI_ATTACHMENT_VISION_MODEL: Joi.string(),
+    AI_PROMPT_ATTACHMENT_TOKENS: Joi.number().integer().min(0),
+    AI_PROMPT_BOOKING_CONTEXT_TOKENS: Joi.number().integer().min(0),
+
+    // Presence-only: the platform AI-monitoring screen reports whether these
+    // are configured. No code path in this repository calls either provider.
+    ANTHROPIC_API_KEY: Joi.string().allow('', null),
+    AZURE_OPENAI_API_KEY: Joi.string().allow('', null),
   });
 
   const { error, value } = schema.validate(config, {

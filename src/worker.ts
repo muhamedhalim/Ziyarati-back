@@ -7,8 +7,9 @@ import { MetricsService } from './metrics/metrics.service';
 import { startMetricsHttpServer } from './metrics/start-metrics-http-server';
 
 /**
- * Worker process entrypoint (deployed as a SEPARATE Railway service —
- * `node dist/worker.js`). It is an application CONTEXT (no HTTP server): it only
+ * Worker process entrypoint (deployed as a SEPARATE service —
+ * `node dist/src/worker.js`, the same image as the API with the command
+ * overridden). It is an application CONTEXT (no HTTP server): it only
  * consumes BullMQ jobs. The API (`main.ts`) only enqueues.
  *
  * Graceful shutdown: on SIGTERM/SIGINT it closes the Nest context, which closes
