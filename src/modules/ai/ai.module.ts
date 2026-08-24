@@ -37,7 +37,6 @@ import { AiTrainingFileController } from './ai-training-file.controller';
 import { AiPromptController } from './ai-prompt.controller';
 import { AiConversationController } from './ai-conversation.controller';
 import { AiAnalyticsController } from './ai-analytics.controller';
-import { AiMetricsController } from './ai-metrics.controller';
 import { AiToolCatalogController } from './ai-tool-catalog.controller';
 import { HandoverRequestController } from './handover-request.controller';
 
@@ -164,7 +163,6 @@ import { AiBatchService } from './batch/ai-batch.service';
     AiPromptController,
     AiConversationController,
     AiAnalyticsController,
-    AiMetricsController,
     AiToolCatalogController,
     HandoverRequestController,
   ],

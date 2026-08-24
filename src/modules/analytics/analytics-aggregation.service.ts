@@ -10,11 +10,17 @@ import { Customer } from '../../entities/CRM/Customer';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { CustomerReview } from '../../entities/CRM/CustomerReview';
-import { AppointmentStatus, PaymentStatus } from '../../entities/enums';
+import {
+  AppointmentStatus,
+  AppointmentSource,
+  PaymentStatus,
+} from '../../entities/enums';
+import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import {
   ACTIVE_CONVERSATION_WINDOW_DAYS,
+  BOOKING_SOURCE_METRIC_KEY,
   DASHBOARD_PERIOD,
   METRIC_KEY,
   dayRangeUtc,
@@ -26,9 +32,28 @@ export interface DailyMetrics {
   total_appointments: number;
   completed_appointments: number;
   cancelled_appointments: number;
+  no_show_appointments: number;
   total_revenue: number;
   new_customers: number;
   ai_messages_count: number;
+}
+
+export interface StaffPerformanceRow {
+  staffId: string;
+  name: string;
+  total_appointments: number;
+  completed_appointments: number;
+  cancelled_appointments: number;
+  no_show_appointments: number;
+  revenue: number;
+  avg_rating: number | null;
+}
+
+export interface StaffPerformanceFilters {
+  branchId?: string;
+  /** Inclusive UTC day bounds ('YYYY-MM-DD'); default is the trailing 30 days. */
+  from?: string;
+  to?: string;
 }
 
 export interface DashboardKpi {
@@ -99,6 +124,8 @@ export class AnalyticsAggregationService {
     private readonly reviews: Repository<CustomerReview>,
     @InjectRepository(AppointmentServiceEntity)
     private readonly appointmentServices: Repository<AppointmentServiceEntity>,
+    @InjectRepository(StaffProfile)
+    private readonly staffProfiles: Repository<StaffProfile>,
   ) {}
 
   // ─────────────────────────────── Branches ──────────────────────────────── //
@@ -150,6 +177,7 @@ export class AnalyticsAggregationService {
       total_appointments: appts.total,
       completed_appointments: appts.completed,
       cancelled_appointments: appts.cancelled,
+      no_show_appointments: appts.no_show,
       total_revenue,
       // Excluded from branch scope (not branch-attributable). Tenant-level
       // customer counts are on the dashboard, never replicated across branches.
@@ -173,6 +201,8 @@ export class AnalyticsAggregationService {
       ai_messages,
       total_revenue,
       ai_tokens_used,
+      total_no_shows,
+      bookingsBySource,
     ] = await Promise.all([
       this.customers.count({ where: { tenant: { id: tenantId } } }),
       this.appointments.count({ where: { tenant: { id: tenantId } } }),
@@ -180,11 +210,18 @@ export class AnalyticsAggregationService {
         where: { tenant: { id: tenantId }, status: PaymentStatus.PAID },
       }),
       this.conversations.count({
-        where: { tenant: { id: tenantId }, last_message_at: MoreThanOrEqual(since) },
+        where: {
+          tenant: { id: tenantId },
+          last_message_at: MoreThanOrEqual(since),
+        },
       }),
       this.aiMessages.count({ where: { tenant: { id: tenantId } } }),
       this.sumTenantRevenue(tenantId),
       this.sumAiTokens(tenantId),
+      this.appointments.count({
+        where: { tenant: { id: tenantId }, status: AppointmentStatus.NO_SHOW },
+      }),
+      this.countTenantBookingsBySource(tenantId),
     ]);
 
     const kpi = (metric_key: string, metric_value: number): DashboardKpi => ({
@@ -201,7 +238,36 @@ export class AnalyticsAggregationService {
       kpi(METRIC_KEY.ACTIVE_CONVERSATIONS, active_conversations),
       kpi(METRIC_KEY.AI_MESSAGES, ai_messages),
       kpi(METRIC_KEY.AI_TOKENS_USED, ai_tokens_used),
+      kpi(METRIC_KEY.TOTAL_NO_SHOWS, total_no_shows),
+      ...bookingsBySource.map((row) => kpi(row.metric_key, row.count)),
     ];
+  }
+
+  /**
+   * Tenant-wide appointment counts grouped by `Appointment.source`
+   * (PLATFORM / WHATSAPP_BOT / MANUAL / PUBLIC_AI) — a single grouped query,
+   * every enum value present in {@link BOOKING_SOURCE_METRIC_KEY} even when 0
+   * (so the dashboard always shows all 4 channels, never omits a silent gap).
+   */
+  private async countTenantBookingsBySource(
+    tenantId: string,
+  ): Promise<{ metric_key: string; count: number }[]> {
+    const rows = await this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .select('a.source', 'source')
+      .addSelect('COUNT(*)', 'count')
+      .where('t.id = :tenantId', { tenantId })
+      .groupBy('a.source')
+      .getRawMany<{ source: AppointmentSource; count: string }>();
+
+    const counts = new Map(rows.map((r) => [r.source, Number(r.count)]));
+    return Object.entries(BOOKING_SOURCE_METRIC_KEY).map(
+      ([source, metric_key]) => ({
+        metric_key,
+        count: counts.get(source as AppointmentSource) ?? 0,
+      }),
+    );
   }
 
   // ───────────────────────── Monthly extras ──────────────────────────────── //
@@ -259,33 +325,40 @@ export class AnalyticsAggregationService {
     branchId: string,
     start: Date,
     end: Date,
-  ): Promise<{ total: number; completed: number; cancelled: number }> {
+  ): Promise<{
+    total: number;
+    completed: number;
+    cancelled: number;
+    no_show: number;
+  }> {
     const row = await this.appointments
       .createQueryBuilder('a')
       .innerJoin('a.tenant', 't')
       .innerJoin('a.branch', 'b')
       .select('COUNT(*)', 'total')
-      .addSelect(
-        'COUNT(*) FILTER (WHERE a.status = :completed)',
-        'completed',
-      )
-      .addSelect(
-        'COUNT(*) FILTER (WHERE a.status = :cancelled)',
-        'cancelled',
-      )
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :completed)', 'completed')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :cancelled)', 'cancelled')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :noShow)', 'no_show')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('b.id = :branchId', { branchId })
       .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
       .setParameters({
         completed: AppointmentStatus.COMPLETED,
         cancelled: AppointmentStatus.CANCELLED,
+        noShow: AppointmentStatus.NO_SHOW,
       })
-      .getRawOne<{ total: string; completed: string; cancelled: string }>();
+      .getRawOne<{
+        total: string;
+        completed: string;
+        cancelled: string;
+        no_show: string;
+      }>();
 
     return {
       total: Number(row?.total ?? 0),
       completed: Number(row?.completed ?? 0),
       cancelled: Number(row?.cancelled ?? 0),
+      no_show: Number(row?.no_show ?? 0),
     };
   }
 
@@ -402,13 +475,165 @@ export class AnalyticsAggregationService {
       .addGroupBy('s.name')
       .orderBy('count', 'DESC')
       .limit(5)
-      .getRawMany<{ serviceId: string; name: string; count: string; revenue: string }>();
+      .getRawMany<{
+        serviceId: string;
+        name: string;
+        count: string;
+        revenue: string;
+      }>();
 
     return rows.map((r) => ({
       serviceId: r.serviceId,
       name: r.name,
       count: Number(r.count),
       revenue: round2(Number(r.revenue)),
+    }));
+  }
+
+  // ─────────────────────────── Staff performance ─────────────────────────── //
+
+  /**
+   * Fleet-wide, per-staff performance for a tenant over a window (default:
+   * trailing 30 days). Tenant-scoped; optional branch/date filters. Only staff
+   * with at least one appointment in the window appear (same convention as
+   * `topServices` — nothing invented for staff with zero activity).
+   *
+   * Appointment counts, revenue, and rating are computed as THREE SEPARATE
+   * grouped queries (not one join) — a staff member can have multiple
+   * payments or reviews per appointment, and joining them onto the
+   * appointment-count query would fan out and inflate the counts. Merged by
+   * staffId in memory, same approach as `computeMonthlyExtras`.
+   */
+  async computeStaffPerformance(
+    tenantId: string,
+    filters: StaffPerformanceFilters,
+  ): Promise<StaffPerformanceRow[]> {
+    const start = filters.from
+      ? dayRangeUtc(filters.from).start
+      : new Date(Date.now() - 30 * 86_400_000);
+    const end = filters.to ? dayRangeUtc(filters.to).end : new Date();
+
+    const [counts, revenue, ratings] = await Promise.all([
+      this.countStaffAppointments(tenantId, filters.branchId, start, end),
+      this.sumStaffRevenue(tenantId, filters.branchId, start, end),
+      this.avgStaffRating(tenantId, filters.branchId, start, end),
+    ]);
+
+    const revenueByStaff = new Map(revenue.map((r) => [r.staffId, r.revenue]));
+    const ratingByStaff = new Map(
+      ratings.map((r) => [r.staffId, r.avg_rating]),
+    );
+
+    return counts
+      .map((row) => ({
+        ...row,
+        revenue: revenueByStaff.get(row.staffId) ?? 0,
+        avg_rating: ratingByStaff.get(row.staffId) ?? null,
+      }))
+      .sort((a, b) => b.total_appointments - a.total_appointments);
+  }
+
+  private async countStaffAppointments(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<Omit<StaffPerformanceRow, 'revenue' | 'avg_rating'>[]> {
+    let qb = this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .innerJoin('a.staff', 'staff')
+      .innerJoin('staff.user', 'u')
+      .select('staff.id', 'staffId')
+      .addSelect('u.full_name', 'name')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :completed)', 'completed')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :cancelled)', 'cancelled')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :noShow)', 'no_show')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .setParameters({
+        completed: AppointmentStatus.COMPLETED,
+        cancelled: AppointmentStatus.CANCELLED,
+        noShow: AppointmentStatus.NO_SHOW,
+      })
+      .groupBy('staff.id')
+      .addGroupBy('u.full_name');
+
+    if (branchId)
+      qb = qb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+
+    const rows = await qb.getRawMany<{
+      staffId: string;
+      name: string;
+      total: string;
+      completed: string;
+      cancelled: string;
+      no_show: string;
+    }>();
+
+    return rows.map((r) => ({
+      staffId: r.staffId,
+      name: r.name,
+      total_appointments: Number(r.total),
+      completed_appointments: Number(r.completed),
+      cancelled_appointments: Number(r.cancelled),
+      no_show_appointments: Number(r.no_show),
+    }));
+  }
+
+  private async sumStaffRevenue(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<{ staffId: string; revenue: number }[]> {
+    let qb = this.payments
+      .createQueryBuilder('p')
+      .innerJoin('p.tenant', 't')
+      .innerJoin('p.appointment', 'a')
+      .innerJoin('a.staff', 'staff')
+      .select('staff.id', 'staffId')
+      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .groupBy('staff.id');
+
+    if (branchId) qb = qb.andWhere('a."branchId" = :branchId', { branchId });
+
+    const rows = await qb.getRawMany<{ staffId: string; revenue: string }>();
+    return rows.map((r) => ({
+      staffId: r.staffId,
+      revenue: round2(Number(r.revenue)),
+    }));
+  }
+
+  private async avgStaffRating(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<{ staffId: string; avg_rating: number }[]> {
+    let qb = this.reviews
+      .createQueryBuilder('r')
+      .innerJoin('r.tenant', 't')
+      .innerJoin('r.appointment', 'a')
+      .innerJoin('a.staff', 'staff')
+      .select('staff.id', 'staffId')
+      .addSelect('AVG(r.rating)', 'avg_rating')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('r.created_at BETWEEN :start AND :end', { start, end })
+      .groupBy('staff.id');
+
+    if (branchId) qb = qb.andWhere('a."branchId" = :branchId', { branchId });
+
+    const rows = await qb.getRawMany<{ staffId: string; avg_rating: string }>();
+    return rows.map((r) => ({
+      staffId: r.staffId,
+      avg_rating: round2(Number(r.avg_rating)),
     }));
   }
 }

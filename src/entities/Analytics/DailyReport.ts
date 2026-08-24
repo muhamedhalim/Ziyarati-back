@@ -43,6 +43,11 @@ export class DailyReport {
   cancelled_appointments!: number;
 
   @Column({
+    default: 0,
+  })
+  no_show_appointments!: number;
+
+  @Column({
     type: 'decimal',
     precision: 14,
     scale: 2,
@@ -64,4 +69,4 @@ export class DailyReport {
     type: 'timestamptz',
   })
   created_at!: Date;
-}   
+}
