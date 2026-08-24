@@ -11,6 +11,7 @@ import { MetricsService } from '../../metrics/metrics.service';
 export const CACHE_NS = {
   DASHBOARD: 'dashboard',
   DAILY: 'daily',
+  STAFF: 'staff',
 } as const;
 
 export type CacheNamespace = (typeof CACHE_NS)[keyof typeof CACHE_NS];

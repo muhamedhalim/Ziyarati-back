@@ -10,7 +10,6 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { User } from '../../entities/Auth&RBAC/User';
-import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
 import { StorageModule } from '../storage/storage.module';
 
 import { ConversationService } from './conversation.service';
@@ -52,11 +51,6 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
       Customer,
       WhatsappAccount,
       User,
-      // Read-only here — for handover metrics in ConversationAnalyticsService.
-      // Owned/written by HandoverRequestService (AiModule); registering the
-      // same entity in a second module's forFeature is a normal TypeORM/Nest
-      // pattern (each module gets its own repository instance).
-      HandoverRequest,
     ]),
     StorageModule,
   ],

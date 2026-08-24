@@ -181,47 +181,4 @@ export class ConversationAnalyticsController {
     return this.analytics.responseTime(this.ctx.requireTenantId(), filter);
   }
 
-  @ApiOperation({
-    summary: 'Live Agent Handover metrics',
-    description: `**Protected — requires \`analytics.read\`. Clinic must be active.** Average wait/first-response time, average handling/resolution time, AI→Human and Human→AI transition counts, and per-agent utilization — all computed from real HandoverRequest/Conversation timestamps.`,
-  })
-  @ApiOkResponse({
-    description: 'Handover metrics.',
-    schema: {
-      type: 'object',
-      properties: {
-        tenantId: { type: 'string', format: 'uuid' },
-        aiHandoverCount: { type: 'number', example: 42 },
-        returnedToAiCount: { type: 'number', example: 18 },
-        avgWaitSeconds: { type: 'number', example: 65 },
-        firstResponseSeconds: { type: 'number', example: 65 },
-        avgHandlingSeconds: { type: 'number', example: 480 },
-        resolutionSeconds: { type: 'number', example: 480 },
-        agentUtilization: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              agentId: { type: 'string', format: 'uuid' },
-              conversationsHandled: { type: 'number' },
-              avgHandlingSeconds: { type: 'number' },
-            },
-          },
-        },
-      },
-    },
-  })
-  @ApiUnauthorizedResponse({
-    description: 'Missing or invalid access token.',
-    schema: S_ERROR,
-  })
-  @ApiForbiddenResponse({
-    description: 'Caller lacks `analytics.read`, or clinic inactive.',
-    schema: S_ERROR,
-  })
-  @Get('handover')
-  @RequirePermissions(PERMISSION.CONVERSATION_ANALYTICS_READ)
-  handover(@Query() filter: ConversationAnalyticsFilterDto) {
-    return this.analytics.handoverMetrics(this.ctx.requireTenantId(), filter);
-  }
 }

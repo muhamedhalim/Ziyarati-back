@@ -16,11 +16,13 @@ import { Customer } from '../../entities/CRM/Customer';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { CustomerReview } from '../../entities/CRM/CustomerReview';
+import { StaffProfile } from '../../entities/Staff/StaffProfile';
 
 import { AnalyticsEventService } from './analytics-event.service';
 import { DashboardMetricService } from './dashboard-metric.service';
 import { DailyReportService } from './daily-report.service';
 import { MonthlyReportService } from './monthly-report.service';
+import { StaffPerformanceService } from './staff-performance.service';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AnalyticsCacheService } from './analytics-cache.service';
 import { AnalyticsRetentionService } from './analytics-retention.service';
@@ -30,6 +32,7 @@ import { AnalyticsEventController } from './analytics-event.controller';
 import { DashboardController } from './dashboard.controller';
 import { DailyReportController } from './daily-report.controller';
 import { MonthlyReportController } from './monthly-report.controller';
+import { StaffPerformanceController } from './staff-performance.controller';
 
 /**
  * Analytics Domain.
@@ -66,6 +69,7 @@ import { MonthlyReportController } from './monthly-report.controller';
       AiMessage,
       Conversation,
       CustomerReview,
+      StaffProfile,
     ]),
   ],
   controllers: [
@@ -73,12 +77,14 @@ import { MonthlyReportController } from './monthly-report.controller';
     DashboardController,
     DailyReportController,
     MonthlyReportController,
+    StaffPerformanceController,
   ],
   providers: [
     AnalyticsEventService,
     DashboardMetricService,
     DailyReportService,
     MonthlyReportService,
+    StaffPerformanceService,
     AnalyticsAggregationService,
     AnalyticsCacheService,
     AnalyticsRetentionService,

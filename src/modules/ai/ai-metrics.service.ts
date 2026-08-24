@@ -71,10 +71,12 @@ const n = (v: unknown): number => {
 /**
  * Advanced AI Monitoring — the write side (`record`) is called by
  * `AiExecutionService` after every turn (best-effort, never throws so a metrics
- * failure can never break an AI reply). The read side computes real percentiles
- * (Postgres `percentile_cont`, not fabricated) tenant-scoped for the dashboard's
- * own "AI Monitoring" tab; the platform-wide equivalent lives in
- * `platform-ai-monitoring` (raw queries over the SAME table — no duplication).
+ * failure can never break an AI reply). The read side (`summary`/`timeSeries`)
+ * computes real percentiles (Postgres `percentile_cont`, not fabricated),
+ * tenant-scoped; no controller exposes it to the clinic owner (that surface —
+ * the clinic's own "AI Monitoring" tab — was removed). The platform-wide
+ * equivalent lives in `platform-ai-monitoring` (raw queries over the SAME
+ * table — no duplication).
  */
 @Injectable()
 export class AiMetricsService {

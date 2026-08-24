@@ -15,7 +15,21 @@ export const METRIC_KEY = {
   ACTIVE_CONVERSATIONS: 'active_conversations',
   AI_MESSAGES: 'ai_messages',
   AI_TOKENS_USED: 'ai_tokens_used',
+  TOTAL_NO_SHOWS: 'total_no_shows',
+  /** Tenant-wide appointment counts grouped by `Appointment.source`. */
+  BOOKINGS_PLATFORM: 'bookings_platform',
+  BOOKINGS_WHATSAPP_BOT: 'bookings_whatsapp_bot',
+  BOOKINGS_MANUAL: 'bookings_manual',
+  BOOKINGS_PUBLIC_AI: 'bookings_public_ai',
 } as const;
+
+/** The 4 booking-source metric keys, in display order, mapped from {@link AppointmentSource}. */
+export const BOOKING_SOURCE_METRIC_KEY: Record<string, string> = {
+  PLATFORM: METRIC_KEY.BOOKINGS_PLATFORM,
+  WHATSAPP_BOT: METRIC_KEY.BOOKINGS_WHATSAPP_BOT,
+  MANUAL: METRIC_KEY.BOOKINGS_MANUAL,
+  PUBLIC_AI: METRIC_KEY.BOOKINGS_PUBLIC_AI,
+};
 
 /** Period label stamped on dashboard metrics (snapshot scope). */
 export const DASHBOARD_PERIOD = 'all_time';
@@ -75,7 +89,10 @@ export function monthDateBounds(monthStr: string): {
   const lastDate = new Date(
     Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0),
   );
-  return { firstDay: `${monthStr}-01`, lastDay: lastDate.toISOString().slice(0, 10) };
+  return {
+    firstDay: `${monthStr}-01`,
+    lastDay: lastDate.toISOString().slice(0, 10),
+  };
 }
 
 /**
@@ -86,6 +103,8 @@ export function monthDateBounds(monthStr: string): {
  * just ended — targets the same month regardless of the worker host's TZ.
  */
 export function previousMonthUtc(now: Date = new Date()): ReportMonth {
-  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const prev = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+  );
   return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
 }

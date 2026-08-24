@@ -18,10 +18,14 @@
  * controller route (confirmed by reading `ai-analytics.controller.ts` end to
  * end — only `usage`/`conversations`/`agents`/`knowledge` are `@Get()`
  * routes). This file exercises the DIFFERENT, ACTUALLY HTTP-REACHABLE surface
- * — `AiAnalyticsController`'s 4 routes and `AiMetricsController`'s 2 routes —
- * against a REAL Postgres with REAL multi-tenant data, over REAL HTTP calls
- * with a REAL JWT, checked field-by-field against known seed cardinality
- * rather than SQL-text pattern matching.
+ * — `AiAnalyticsController`'s 4 routes — against a REAL Postgres with REAL
+ * multi-tenant data, over REAL HTTP calls with a REAL JWT, checked
+ * field-by-field against known seed cardinality rather than SQL-text pattern
+ * matching. (`AiMetricsController` — the clinic-facing `/ai/metrics/*`
+ * routes this file used to also cover — was removed along with the clinic
+ * "AI Monitoring" tab; `AiMetricsService.summary()`/`timeSeries()` remain as
+ * internal, not-HTTP-exposed methods, exercised directly in
+ * `ai-w9-feature-exercise.spec.ts`.)
  */
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
@@ -189,33 +193,17 @@ describe('W10 — AI analytics/metrics exposure: tenant-A-only derivability (T15
     assertNoTenantBLeak(res.body);
   });
 
-  it('GET /ai/metrics/summary — request count and token sums are tenant-A-only', async () => {
+  it('GET /ai/metrics/summary — route removed with the clinic AI Monitoring tab, no longer reachable', async () => {
     const res = await request(harness.app.getHttpServer())
       .get('/api/v1/ai/metrics/summary')
       .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(200);
-    expect(res.body.tenantId).toBe(seed.tenantA.id);
-    expect(res.body.requests).toBe(A_TOTAL_REQUESTS);
-    expect(res.body.tokens.total).toBe(A_TOTAL_TOKENS);
-    expect(res.body.tokens.prompt).toBe(A_TURNS.reduce((s, t) => s + t.promptTokens, 0));
-    expect(res.body.tokens.completion).toBe(A_TURNS.reduce((s, t) => s + t.completionTokens, 0));
-    // byModel is present but must not carry more requests than tenant A drove.
-    const modelTotal = (res.body.byModel as Array<{ requests: number }>).reduce((s, m) => s + m.requests, 0);
-    expect(modelTotal).toBe(A_TOTAL_REQUESTS);
-    assertNoTenantBLeak(res.body);
+    expect(res.status).toBe(404);
   });
 
-  it('GET /ai/metrics/timeseries — daily series (a bare array, not wrapped in {tenantId,...}) sums to exactly tenant A\'s known totals', async () => {
+  it('GET /ai/metrics/timeseries — route removed with the clinic AI Monitoring tab, no longer reachable', async () => {
     const res = await request(harness.app.getHttpServer())
       .get('/api/v1/ai/metrics/timeseries')
       .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(200);
-    const series = res.body as Array<{ requests: number; tokens: number }>;
-    expect(Array.isArray(series)).toBe(true);
-    const totalRequests = series.reduce((s, d) => s + Number(d.requests), 0);
-    const totalTokens = series.reduce((s, d) => s + Number(d.tokens), 0);
-    expect(totalRequests).toBe(A_TOTAL_REQUESTS);
-    expect(totalTokens).toBe(A_TOTAL_TOKENS);
-    assertNoTenantBLeak(res.body);
+    expect(res.status).toBe(404);
   });
 });
