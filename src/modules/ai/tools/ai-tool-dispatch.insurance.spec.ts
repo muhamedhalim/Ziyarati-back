@@ -107,6 +107,7 @@ function buildService(overrides: BuildOverrides = {}) {
     {} as any,
     tenantContext as any,
     {} as any,
+    {} as any,
   );
 
   return {

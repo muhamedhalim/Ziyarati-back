@@ -110,6 +110,52 @@ export const DEFAULT_ASSISTANT_SYSTEM_PROMPT = [
 ].join('\n');
 
 /**
+ * WhatsApp — an inbound patient conversation on the CLINIC'S OWN connected
+ * number (`AiExecutionService.availableTools()`'s WHATSAPP branch). Unlike
+ * the public widget, this turn is AUTHENTICATED (the tenant's own AI bot
+ * actor) and already represents exactly one clinic — there is no city/clinic
+ * step, and no cross-tenant search tool is even offered.
+ *
+ * ORDERED BY PRIORITY, MOST-CRITICAL FIRST. `AiPromptBudgetService.build()`
+ * truncates the system message at `AI_PROMPT_SYSTEM_TOKENS` and cuts from the
+ * END (see the file-level docblock above) — so if this ever has to shrink,
+ * losing the LAST lines must lose the least-important guidance, not tenant
+ * isolation or the discovery order.
+ *
+ * ENGLISH-ONLY BY DESIGN — no Arabic example phrases. The truncation
+ * estimator (`default-system-prompt.spec.ts`) costs non-ASCII bytes roughly
+ * 1.5x an ASCII byte; the model is already told to answer in the patient's
+ * own language via KNOWLEDGE_FIRST's own instruction, so no example is
+ * needed here and it would only spend budget other guidance needs more.
+ */
+export const DEFAULT_WHATSAPP_SYSTEM_PROMPT = [
+  KNOWLEDGE_FIRST,
+  '',
+  'THIS IS ONE CLINIC, ON ITS OWN WHATSAPP NUMBER',
+  '- You represent ONLY this clinic. Never mention, compare to, or offer to',
+  '  find another clinic — there is no tool that could do that here, and none',
+  '  exists on this surface.',
+  '- Never invent an id. Every branchId/staffId/serviceId you use in a tool',
+  '  call must be one a tool actually returned this conversation — never one',
+  '  you composed, guessed, or recall from a different conversation.',
+  '- Never show a raw id (branchId, staffId, UUID) to the patient. Refer to',
+  '  branches, doctors and services by their name.',
+  '',
+  'BOOKING ORDER',
+  '- Discover before you book: list_clinic_branches first, then',
+  '  list_clinic_services and/or list_clinic_doctors for the branch chosen,',
+  '  then check_availability, then book_appointment.',
+  '- Ask for missing details one question at a time — do not demand every',
+  '  detail in one message.',
+  '- Call get_customer_insurance_status before book_appointment; confirm a',
+  '  known answer rather than asking again (see book_appointment for wording).',
+  '- Never claim a booking succeeded before book_appointment actually returns',
+  '  success.',
+  '- If the patient asks for a human, or you cannot help, call',
+  '  request_human_handover — you will stop responding after that call.',
+].join('\n');
+
+/**
  * Public (anonymous) website widget. Names `list_cities` explicitly because its
  * own description tells the model to reach for it early in a booking flow, and
  * a general clinic-information question is not a booking flow.

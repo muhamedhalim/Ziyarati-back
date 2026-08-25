@@ -266,6 +266,41 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     expect(orchestrator.handleStream).toHaveBeenCalled();
   });
 
+  /**
+   * Regression for the customer-impersonation gap this bridge used to have:
+   * the WhatsApp contact's bound customer MUST reach the orchestrator via the
+   * UNFILTERED `trustedSessionPatch` — not `sessionPatch`, which always
+   * passes through `ConversationSessionService.patchFromClient` and silently
+   * strips `context.customerId` (`SESSION_CONTEXT_SERVER_ONLY_KEYS`). Before
+   * this fix, `context.customerId` was set via `sessionPatch` and never
+   * persisted, so `AiToolDispatchService.bookAppointment`'s
+   * `ctx.customerId ?? args.customerId` fell through to whatever `customerId`
+   * the model supplied — a WhatsApp turn could book against a customer the
+   * patient never proved they were.
+   */
+  it('binds the contact\'s customer via trustedSessionPatch, never sessionPatch', async () => {
+    await service.handleInboundValue(TENANT, {
+      messages: [
+        {
+          id: 'wamid-4',
+          from: '966500000000',
+          type: 'text',
+          text: { body: 'احجز لي كشف جلدية بكرة بعد العصر' },
+        },
+      ],
+    } as never);
+
+    expect(orchestrator.handleStream).toHaveBeenCalledWith(
+      TENANT,
+      expect.objectContaining({
+        trustedSessionPatch: { context: { customerId: CUSTOMER.id } },
+      }),
+      expect.any(Function),
+    );
+    const [, input] = orchestrator.handleStream.mock.calls[0];
+    expect(input.sessionPatch).toBeUndefined();
+  });
+
   it('[FND-023] records the provider message id onto the mirrored bot reply after a successful send', async () => {
     orchestrator.handleStream.mockResolvedValueOnce({
       reply: { content: 'We open at 9am' },

@@ -13,6 +13,18 @@ export const AI_TOOL = {
   BOOK_APPOINTMENT: 'book_appointment',
   RESCHEDULE_APPOINTMENT: 'reschedule_appointment',
   CANCEL_APPOINTMENT: 'cancel_appointment',
+  // Own-clinic discovery (tenant-bound, read-only — the WhatsApp channel's
+  // equivalent of the guest's search_clinics/get_clinic_details: an
+  // AUTHENTICATED turn (the WhatsApp bot actor) has no public booking
+  // session to resolve a branch from, and no `clinicId` to pass
+  // get_clinic_details, because it already represents exactly one clinic —
+  // its own tenant. Named `list_clinic_*`, not `list_branch_*`, because
+  // `list_branch_doctors`/`list_branch_services` already exist as
+  // AI_PUBLIC_TOOL values bound to the public booking session; reusing
+  // those names would collide in the dispatcher switch.
+  LIST_CLINIC_BRANCHES: 'list_clinic_branches',
+  LIST_CLINIC_DOCTORS: 'list_clinic_doctors',
+  LIST_CLINIC_SERVICES: 'list_clinic_services',
   // Live Agent Handover — channel-agnostic escalation (works over WhatsApp,
   // which has no socket connection to emit `ai:handover` directly).
   REQUEST_HUMAN_HANDOVER: 'request_human_handover',
@@ -250,6 +262,49 @@ export const AI_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: AI_TOOL.LIST_CLINIC_BRANCHES,
+    description:
+      "List THIS clinic's own active branches (id, name, address). This is the FIRST call in any WhatsApp booking flow — there is no other way to learn a valid branchId. Never invent or guess a branchId; only use one returned here.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: AI_TOOL.LIST_CLINIC_DOCTORS,
+    description:
+      "List the doctors who work at one of THIS clinic's branches, chosen from list_clinic_branches. Call this (and/or list_clinic_services) after the branch is chosen, before check_availability.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        branchId: {
+          type: 'string',
+          description: 'Branch UUID from list_clinic_branches.',
+        },
+      },
+      required: ['branchId'],
+    },
+  },
+  {
+    name: AI_TOOL.LIST_CLINIC_SERVICES,
+    description:
+      "List the services (with prices) offered at one of THIS clinic's branches, chosen from list_clinic_branches. Call this (and/or list_clinic_doctors) after the branch is chosen, before book_appointment.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        branchId: {
+          type: 'string',
+          description: 'Branch UUID from list_clinic_branches.',
+        },
+      },
+      required: ['branchId'],
+    },
+  },
+  {
     name: AI_TOOL.REQUEST_HUMAN_HANDOVER,
     description:
       'Escalate this conversation to a human agent. Call this whenever the visitor explicitly asks to speak to a person/human/agent/support, or when you cannot help with their request. Works over every channel (website, WhatsApp, dashboard) — you will stop responding after this call; a human will take over.',
@@ -266,4 +321,51 @@ export const AI_TOOLS: AiToolDefinition[] = [
       required: [],
     },
   },
+];
+
+/**
+ * The toolset offered to an inbound WhatsApp turn: own-clinic discovery
+ * (never cross-tenant search) + the tenant-bound booking tools + handover.
+ *
+ * Deliberately EXCLUDES `search_clinics` / `get_clinic_details` /
+ * `search_public_availability` — those are cross-tenant discovery, safe only
+ * for an anonymous guest turn that has not yet picked a clinic. A patient
+ * messaging Clinic A's own WhatsApp number must never be shown Clinic B: the
+ * clinic is already fixed by which `phone_number_id` the message arrived on,
+ * so offering the model a way to search OTHER clinics is pure disclosure
+ * surface with no legitimate use on this channel.
+ *
+ * Consumed by `AiExecutionService.availableTools()` — see its WHATSAPP
+ * branch. Kept next to `AI_TOOLS` (not inline in the execution service) so
+ * the tool catalogue and its channel matrix stay in one file.
+ */
+export const WHATSAPP_CHANNEL_TOOL_NAMES: string[] = [
+  AI_TOOL.LIST_CLINIC_BRANCHES,
+  AI_TOOL.LIST_CLINIC_DOCTORS,
+  AI_TOOL.LIST_CLINIC_SERVICES,
+  AI_TOOL.CHECK_AVAILABILITY,
+  AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
+  AI_TOOL.BOOK_APPOINTMENT,
+  AI_TOOL.RESCHEDULE_APPOINTMENT,
+  AI_TOOL.CANCEL_APPOINTMENT,
+  AI_TOOL.REQUEST_HUMAN_HANDOVER,
+];
+
+/**
+ * Tools that exist ONLY for the WhatsApp own-clinic discovery step — never
+ * meant for the staff/dashboard branch of `availableTools()`, which already
+ * has its own operational surfaces for branches, doctors and services.
+ *
+ * Named separately from `WHATSAPP_CHANNEL_TOOL_NAMES` (which also lists
+ * `check_availability` / `book_appointment` / etc. — tools shared with, and
+ * pre-existing on, the staff toolset) because the staff branch's filter
+ * default-INCLUDES any `AI_TOOLS` entry absent from `AI_TOOL_PERMISSION`
+ * (see `AiExecutionService.availableTools()`) — without this explicit
+ * exclusion, adding these three to the shared `AI_TOOLS` array would have
+ * silently leaked them into the dashboard toolset too.
+ */
+export const WHATSAPP_ONLY_TOOL_NAMES: string[] = [
+  AI_TOOL.LIST_CLINIC_BRANCHES,
+  AI_TOOL.LIST_CLINIC_DOCTORS,
+  AI_TOOL.LIST_CLINIC_SERVICES,
 ];

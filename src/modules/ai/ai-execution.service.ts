@@ -30,7 +30,12 @@ import {
   AiToolDispatchService,
   ToolContext,
 } from './tools/ai-tool-dispatch.service';
-import { AI_TOOLS, AI_TOOL_PERMISSION } from './tools/ai-tools.constants';
+import {
+  AI_TOOLS,
+  AI_TOOL_PERMISSION,
+  WHATSAPP_CHANNEL_TOOL_NAMES,
+  WHATSAPP_ONLY_TOOL_NAMES,
+} from './tools/ai-tools.constants';
 import {
   AI_PUBLIC_BOOKING_TOOLS,
   BOOKING_CONTEXT_MUTATING_TOOLS,
@@ -75,6 +80,7 @@ import {
 import {
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
+  DEFAULT_WHATSAPP_SYSTEM_PROMPT,
 } from './prompt/default-system-prompt';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
@@ -533,7 +539,7 @@ export class AiExecutionService {
       // the default to the former but `undefined` to the latter would have made
       // the platform prompt the one prompt the disclosure gate did not cover.
       const effectiveSystemPrompt =
-        agent?.system_prompt?.trim() || this.defaultSystemPrompt();
+        agent?.system_prompt?.trim() || this.defaultSystemPrompt(channel);
 
       // The booking selections this conversation already established, re-proved
       // against the database. Pinned into the prompt so a public turn continues
@@ -563,7 +569,7 @@ export class AiExecutionService {
         history: recent
           .reverse()
           .map((m) => ({ role: this.mapRole(m.role), content: m.content })),
-        tools: this.availableTools(),
+        tools: this.availableTools(channel),
         model: modelDefinition,
       });
       let messages: AiChatMessage[] = built.messages;
@@ -1505,7 +1511,7 @@ export class AiExecutionService {
       // Same single source of truth for "the prompt this turn runs under" as
       // the non-streaming path above — see its comment.
       const effectiveSystemPrompt =
-        agent?.system_prompt?.trim() || this.defaultSystemPrompt();
+        agent?.system_prompt?.trim() || this.defaultSystemPrompt(channel);
 
       // Same server-verified booking state as the non-streaming path — this is
       // the method the public widget actually reaches, so it had to go here too.
@@ -1533,7 +1539,7 @@ export class AiExecutionService {
         history: recent
           .reverse()
           .map((m) => ({ role: this.mapRole(m.role), content: m.content })),
-        tools: this.availableTools(),
+        tools: this.availableTools(channel),
         model: modelDefinition,
       });
       let messages: AiChatMessage[] = built.messages;
@@ -2135,8 +2141,13 @@ export class AiExecutionService {
    * Never spend prompt tokens advertising dashboard tools the current actor is
    * not authorized to execute. The dispatcher remains the enforcement point;
    * this is defense-in-depth and keeps the authorized set within its budget.
+   *
+   * `channel` is REQUIRED (not defaulted) so a call site that forgets to pass
+   * it fails to compile rather than silently falling through to the staff
+   * branch — the exact mistake that would hand a WhatsApp turn the
+   * cross-tenant discovery tools this method exists to keep off that channel.
    */
-  private availableTools(): AiToolDefinition[] {
+  private availableTools(channel: AiExecutionTransport): AiToolDefinition[] {
     const user = this.ctx.getUser();
     const permissions = new Set(user?.permissions ?? []);
 
@@ -2153,11 +2164,31 @@ export class AiExecutionService {
       ];
     }
 
+    // WhatsApp: the tenant's own bot actor is AUTHENTICATED (never a guest),
+    // so without this branch it would fall into the staff branch below and
+    // inherit `search_clinics` / `get_clinic_details` /
+    // `search_public_availability` — cross-tenant discovery tools that carry
+    // no entry in AI_TOOL_PERMISSION and so pass the staff filter unchecked.
+    // A patient messaging Clinic A's own WhatsApp number must never be able
+    // to have the model surface Clinic B. Checked here, before the staff
+    // branch, on purpose. See WHATSAPP_CHANNEL_TOOL_NAMES' own docblock for
+    // why the toolset is tenant-scoped discovery + booking, not a filtered
+    // AI_TOOLS.
+    if (channel === 'WHATSAPP') {
+      return AI_TOOLS.filter((t) => WHATSAPP_CHANNEL_TOOL_NAMES.includes(t.name));
+    }
+
     // Authenticated principals: the staff booking tools, each advertised only
     // when the actor could actually execute it. The dispatcher remains the
     // enforcement point; this is defense-in-depth and keeps the authorized set
     // within its prompt budget.
     const booking = AI_TOOLS.filter((tool) => {
+      // Own-clinic discovery is WhatsApp-only — the dashboard has its own
+      // operational surfaces for branches/doctors/services, and without this
+      // exclusion these three would default-include below exactly like every
+      // other permission-less AI_TOOLS entry (search_clinics,
+      // check_availability, etc. — all pre-existing staff tools).
+      if (WHATSAPP_ONLY_TOOL_NAMES.includes(tool.name)) return false;
       const required = AI_TOOL_PERMISSION[tool.name];
       return required ? permissions.has(required) : true;
     });
@@ -2171,17 +2202,19 @@ export class AiExecutionService {
   /**
    * The platform default system prompt for a turn whose agent supplies none.
    *
-   * Mirrors `availableTools()`'s own guest branch so the instructions always
+   * Mirrors `availableTools()`'s own branching so the instructions always
    * describe the toolset the model was actually handed: only the public widget
-   * is told about `list_cities`, because only it is offered that tool.
+   * is told about `list_cities`, because only it is offered that tool; only
+   * WhatsApp is told to start from `list_clinic_branches`, because only it is
+   * offered that (own-clinic, not cross-tenant) discovery toolset.
    *
    * Platform-owned code constants, never a clinic-selectable `ai_prompts` row —
    * agents, models and prompts are Admin-controlled configuration.
    */
-  private defaultSystemPrompt(): string {
-    return this.ctx.getUser()?.guest
-      ? DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT
-      : DEFAULT_ASSISTANT_SYSTEM_PROMPT;
+  private defaultSystemPrompt(channel: AiExecutionTransport): string {
+    if (this.ctx.getUser()?.guest) return DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT;
+    if (channel === 'WHATSAPP') return DEFAULT_WHATSAPP_SYSTEM_PROMPT;
+    return DEFAULT_ASSISTANT_SYSTEM_PROMPT;
   }
 
   /**

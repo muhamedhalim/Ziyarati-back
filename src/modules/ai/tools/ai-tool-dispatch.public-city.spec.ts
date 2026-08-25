@@ -67,6 +67,7 @@ function build(
     {} as never, // botActor
     tenantContext as never,
     {} as never, // sessions
+    {} as never, // branches
   );
   return { service, patchSelection, dataSource };
 }

@@ -216,7 +216,16 @@ export class WhatsappInboundAiService {
         aiConversationId: contact.ai_conversation_id ?? undefined,
         autoRoute: Boolean(contact.ai_conversation_id),
         useMemory: true,
-        sessionPatch: contact.customer?.id
+        // TRUSTED, not `sessionPatch`: this bridge is trusted server code
+        // restoring the bot actor's own principal (see `handleOne` above),
+        // and `context.customerId` is the server-bound booking subject every
+        // write tool prefers over a model-supplied id
+        // (`AiExecutionService.sessionCustomerId`). `sessionPatch` always
+        // passes through `patchFromClient`, which strips `context.customerId`
+        // as one of `SESSION_CONTEXT_SERVER_ONLY_KEYS` — so setting it there
+        // silently never took effect, and every WhatsApp booking's
+        // `customerId` argument came from the model instead of this binding.
+        trustedSessionPatch: contact.customer?.id
           ? { context: { customerId: contact.customer.id } }
           : undefined,
         // Record the provider facts on the mirrored timeline message: the
@@ -388,6 +397,50 @@ export class WhatsappInboundAiService {
           .filter((r) => r.id);
         return this.list('Choose a branch', rows, 'Branches');
       }
+      case 'list_clinic_branches': {
+        const branches = Array.isArray(lastTool.result.branches)
+          ? lastTool.result.branches
+          : [];
+        const rows = branches
+          .slice(0, 10)
+          .map((b: Record<string, unknown>) => ({
+            id: String(b.id ?? ''),
+            title: this.clip(String(b.name ?? 'Branch'), 24),
+            description: b.address
+              ? this.clip(String(b.address), 72)
+              : undefined,
+          }))
+          .filter((r) => r.id);
+        return this.list('Choose a branch', rows, 'Branches');
+      }
+      case 'list_clinic_doctors': {
+        const doctors = Array.isArray(lastTool.result.doctors)
+          ? lastTool.result.doctors
+          : [];
+        const rows = doctors
+          .slice(0, 10)
+          .map((d: Record<string, unknown>) => ({
+            id: String(d.id ?? ''),
+            title: this.clip(String(d.name ?? 'Doctor'), 24),
+            description: d.title ? this.clip(String(d.title), 72) : undefined,
+          }))
+          .filter((r) => r.id);
+        return this.list('Choose a doctor', rows, 'Doctors');
+      }
+      case 'list_clinic_services': {
+        const services = Array.isArray(lastTool.result.services)
+          ? lastTool.result.services
+          : [];
+        const rows = services
+          .slice(0, 10)
+          .map((s: Record<string, unknown>) => ({
+            id: String(s.id ?? ''),
+            title: this.clip(String(s.name ?? 'Service'), 24),
+            description: this.clip(this.serviceLine(s), 72) || undefined,
+          }))
+          .filter((r) => r.id);
+        return this.list('Choose a service', rows, 'Services');
+      }
       case 'search_public_availability':
       case 'check_availability': {
         const windows = Array.isArray(lastTool.result.windows)
@@ -426,6 +479,21 @@ export class WhatsappInboundAiService {
 
   private clip(text: string, max: number): string {
     return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  }
+
+  /**
+   * `list_clinic_services` row description: price and/or duration, whichever
+   * `PublicDiscoveryService.listBranchServices` actually returned (`price`
+   * is `null` for a service with no `service_prices`/`base_price` set —
+   * never omit the row over it, just describe what is known).
+   */
+  private serviceLine(service: Record<string, unknown>): string {
+    const parts: string[] = [];
+    if (typeof service.price === 'number') parts.push(`${service.price}`);
+    if (typeof service.durationMinutes === 'number') {
+      parts.push(`${service.durationMinutes} min`);
+    }
+    return parts.join(' · ');
   }
 
   /**
