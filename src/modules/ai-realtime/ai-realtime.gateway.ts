@@ -27,6 +27,7 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 import { normalizeException } from '../../common/errors/error-normalizer';
 import { ErrorCode } from '../../common/errors/error-code';
 import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
+import { parseAllowedOrigins } from '../../config/cors-origins';
 
 /** UUID v4, the only shape `POST /public/guest/attachments` ever mints. */
 const ATTACHMENT_ID_PATTERN =
@@ -125,10 +126,11 @@ function resolveCorrelationId(clientSupplied: string | undefined): string {
  * work landed; this closes the same hole on the transport the public widget
  * actually uses.
  *
- * Read from the identical env var and parsed identically, so the two can never
- * drift into disagreeing about which origins are legitimate. Evaluated at class
- * definition time, exactly as the decorator requires — same lifecycle as the
- * `app.enableCors` call it mirrors.
+ * Read from the identical env var and parsed by the identical helper
+ * (`parseAllowedOrigins`), so the two can never drift into disagreeing about
+ * which origins are legitimate — including about how an entry is normalized.
+ * Evaluated at class definition time, exactly as the decorator requires — same
+ * lifecycle as the `app.enableCors` call it mirrors.
  *
  * NOTE FOR TEST/DEPLOY CONFIG: `http://localhost:3000` and
  * `http://127.0.0.1:3000` are DIFFERENT origin strings for the same host. Any
@@ -136,12 +138,7 @@ function resolveCorrelationId(clientSupplied: string | undefined): string {
  * the socket is refused while REST appears fine (REST is same-origin through
  * the Next rewrite; the socket is not). Both Playwright configs set it.
  */
-const WS_ALLOWED_ORIGINS = (
-  process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000'
-)
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const WS_ALLOWED_ORIGINS = parseAllowedOrigins(process.env.FRONTEND_ORIGIN);
 
 /**
  * Realtime AI Gateway (Feature 1, extended for Live Agent Handover). Socket.IO,

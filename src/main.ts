@@ -12,6 +12,7 @@ import { RedisIoAdapter } from './modules/ai-realtime/redis-io.adapter';
 import { runClustered } from './cluster-bootstrap';
 import { mountApiDocs } from './config/api-docs';
 import { registerSecurityHeaders } from './config/security-headers';
+import { parseAllowedOrigins } from './config/cors-origins';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -78,17 +79,23 @@ async function bootstrap() {
   // Cookie auth requires an explicit origin allow-list with credentials — a
   // wildcard origin is both invalid alongside credentials and unsafe. Set
   // FRONTEND_ORIGIN as a comma-separated list (defaults to the dev SPA origin).
-  const allowedOrigins = (
-    process.env.FRONTEND_ORIGIN ?? 'http://localhost:3000'
-  )
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  // Parsed by the shared helper so REST and the `/ai` gateway can never
+  // disagree about which origins are legitimate — see cors-origins.ts for why
+  // the entries are normalized rather than merely split.
+  const allowedOrigins = parseAllowedOrigins(process.env.FRONTEND_ORIGIN);
 
   app.enableCors({
     origin: allowedOrigins,
     credentials: true,
   });
+
+  // The resolved allow-list, once, at boot. Not diagnostic noise: a
+  // FRONTEND_ORIGIN matching no real browser origin fails *silently* — the API
+  // boots, same-origin-proxied REST keeps working, and only genuinely
+  // cross-origin traffic (the realtime polling fallback) is refused — so the
+  // effective value has to be visible somewhere. Origins are public by
+  // definition; no secret is printed.
+  new Logger('Bootstrap').log(`CORS allow-list: ${allowedOrigins.join(', ')}`);
 
   // ---------------- Global Prefix ----------------
   app.setGlobalPrefix('api/v1');
