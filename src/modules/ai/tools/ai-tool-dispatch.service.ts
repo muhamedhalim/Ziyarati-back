@@ -16,6 +16,7 @@ import { UsageService } from '../../subscription-billing/usage.service';
 import { CustomerService } from '../../crm/customer.service';
 import { StaffService } from '../../staff/staff.service';
 import { TenantService } from '../../tenant/tenant.service';
+import { BranchService } from '../../tenant/branch.service';
 import { PaymentLinkService } from '../../payments/payment-link.service';
 import { AiToolCall } from '../providers/ai-provider.interface';
 import { AiAnalyticsService } from '../ai-analytics.service';
@@ -124,6 +125,8 @@ export class AiToolDispatchService {
     private readonly tenantContext: TenantContextService,
     /** AI-019/F1: backs the application-issued confirmation gate on irreversible actions. */
     private readonly sessions: ConversationSessionService,
+    /** Own-clinic branch discovery for the WhatsApp channel toolset. */
+    private readonly branches: BranchService,
   ) {}
 
   /** Parse + route one tool call. Never throws — returns a result for the model. */
@@ -146,6 +149,12 @@ export class AiToolDispatchService {
           return await this.getClinicDetails(ctx, args);
         case AI_TOOL.SEARCH_PUBLIC_AVAILABILITY:
           return await this.searchPublicAvailability(ctx, args);
+        case AI_TOOL.LIST_CLINIC_BRANCHES:
+          return await this.listClinicBranches(ctx);
+        case AI_TOOL.LIST_CLINIC_DOCTORS:
+          return await this.listClinicDoctors(ctx, args);
+        case AI_TOOL.LIST_CLINIC_SERVICES:
+          return await this.listClinicServices(ctx, args);
         case AI_TOOL.CHECK_AVAILABILITY:
           return await this.checkAvailability(ctx, args);
         case AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS:
@@ -473,6 +482,122 @@ export class AiToolDispatchService {
           typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
         );
         return { toolResult: { success: true, ...result }, resultJson: result };
+      },
+    );
+  }
+
+  // ───────────────────────── Own-clinic discovery (WhatsApp) ─────────────── //
+  //
+  // Tenant-bound equivalent of the guest discovery tools above, for a channel
+  // (WhatsApp) whose turns are AUTHENTICATED (the tenant's own bot actor,
+  // never a guest) and therefore have no public booking session to resolve a
+  // branch from, and no `clinicId` to pass get_clinic_details — the acting
+  // principal already represents exactly one clinic: `ctx.tenantId`.
+  //
+  // Every method below takes its tenant ONLY from `ctx.tenantId`. `branchId`
+  // is re-validated for ownership before any doctor/service lookup — a
+  // branch belonging to another tenant must produce a plain refusal, never
+  // data (matches `badId`'s existing non-oracle posture for a malformed id).
+
+  /** THIS clinic's own active branches — id, name, address only (no phone/timezone). */
+  private async listClinicBranches(ctx: ToolContext): Promise<ToolResult> {
+    if (!ctx.actorUserId) {
+      return {
+        success: false,
+        error: 'This tool is not available in this context (no acting user).',
+      };
+    }
+    return this.run(
+      ctx,
+      AI_TOOL.LIST_CLINIC_BRANCHES,
+      `clinic_branches:${randomUUID()}`,
+      {},
+      async () => {
+        const all = await this.branches.findAll(ctx.tenantId);
+        const branches = all
+          .filter((b) => b.is_active)
+          .map((b) => ({
+            id: b.id,
+            name: b.name,
+            address: b.address ?? null,
+          }));
+        return {
+          toolResult: { success: true, count: branches.length, branches },
+          resultJson: { count: branches.length },
+        };
+      },
+    );
+  }
+
+  /** Doctors at one of THIS clinic's own branches. */
+  private async listClinicDoctors(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    if (!ctx.actorUserId) {
+      return {
+        success: false,
+        error: 'This tool is not available in this context (no acting user).',
+      };
+    }
+    const branchId = this.uuid(args.branchId);
+    if (!branchId) return this.badId('branchId', 'list_clinic_branches');
+
+    return this.run(
+      ctx,
+      AI_TOOL.LIST_CLINIC_DOCTORS,
+      `clinic_doctors:${randomUUID()}`,
+      args,
+      async () => {
+        // Ownership check INSIDE the executor, before the lookup: a branch
+        // id from another tenant must refuse plainly (recorded as a normal
+        // FAILED_PERMANENT ledger row via AppError, same as getClinicDetails'
+        // not-found path) rather than silently returning an empty doctor
+        // list — which reads to the model as "this branch has no doctors"
+        // and invites a wrong answer to the patient.
+        await this.branches.findOne(ctx.tenantId, branchId);
+        const doctors = await this.discovery.listBranchDoctors(
+          ctx.tenantId,
+          branchId,
+        );
+        return {
+          toolResult: { success: true, count: doctors.length, doctors },
+          resultJson: { branchId, count: doctors.length },
+        };
+      },
+    );
+  }
+
+  /** Services (with prices) at one of THIS clinic's own branches. */
+  private async listClinicServices(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    if (!ctx.actorUserId) {
+      return {
+        success: false,
+        error: 'This tool is not available in this context (no acting user).',
+      };
+    }
+    const branchId = this.uuid(args.branchId);
+    if (!branchId) return this.badId('branchId', 'list_clinic_branches');
+
+    return this.run(
+      ctx,
+      AI_TOOL.LIST_CLINIC_SERVICES,
+      `clinic_services:${randomUUID()}`,
+      args,
+      async () => {
+        // See listClinicDoctors' identical comment above.
+        await this.branches.findOne(ctx.tenantId, branchId);
+        const services = await this.discovery.listBranchServices(
+          ctx.tenantId,
+          branchId,
+        );
+        return {
+          toolResult: { success: true, count: services.length, services },
+          resultJson: { branchId, count: services.length },
+        };
       },
     );
   }

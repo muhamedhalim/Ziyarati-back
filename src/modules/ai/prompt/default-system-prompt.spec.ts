@@ -1,6 +1,7 @@
 import {
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
+  DEFAULT_WHATSAPP_SYSTEM_PROMPT,
 } from './default-system-prompt';
 
 /**
@@ -45,6 +46,7 @@ describe('default system prompts', () => {
   describe.each([
     ['public booking widget', DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT],
     ['staff assistant', DEFAULT_ASSISTANT_SYSTEM_PROMPT],
+    ['whatsapp assistant', DEFAULT_WHATSAPP_SYSTEM_PROMPT],
   ])('%s', (_name, prompt) => {
     it('fits inside AI_PROMPT_SYSTEM_TOKENS with headroom (truncation cuts from the END)', () => {
       expect(estimate(prompt)).toBeLessThanOrEqual(
@@ -96,5 +98,32 @@ describe('default system prompts', () => {
     // `availableTools()` hands `list_cities` to guests only; naming it here
     // would describe a tool the staff turn was never given.
     expect(DEFAULT_ASSISTANT_SYSTEM_PROMPT).not.toContain('list_cities');
+  });
+
+  describe('whatsapp assistant only', () => {
+    it('does not advertise any tool the WHATSAPP channel is not given', () => {
+      // `availableTools()`'s WHATSAPP branch excludes list_cities (guest-only)
+      // and the cross-tenant discovery tools (search_clinics,
+      // get_clinic_details, search_public_availability) — naming any of them
+      // here would describe a tool this turn was never given.
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).not.toContain('list_cities');
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).not.toContain('search_clinics');
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).not.toContain(
+        'get_clinic_details',
+      );
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).not.toContain(
+        'search_public_availability',
+      );
+    });
+
+    it('states the single-clinic boundary and the own-clinic discovery order', () => {
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).toContain(
+        'You represent ONLY this clinic',
+      );
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).toContain(
+        'list_clinic_branches',
+      );
+      expect(DEFAULT_WHATSAPP_SYSTEM_PROMPT).toContain('Never invent an id');
+    });
   });
 });

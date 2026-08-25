@@ -48,6 +48,27 @@ export interface OrchestrateInput {
    * de-duplication key that a client must not be able to assert.
    */
   origin?: { waMessageId?: string; messageType?: string };
+  /**
+   * Session updates from a TRUSTED SERVER-SIDE CALLER, applied UNFILTERED —
+   * unlike `sessionPatch`, which always passes through
+   * `ConversationSessionService.patchFromClient` and therefore has
+   * `SESSION_CONTEXT_SERVER_ONLY_KEYS` (e.g. `context.customerId`) stripped
+   * out before it ever reaches the session.
+   *
+   * Set ONLY by trusted server-side bridges (the WhatsApp webhook worker,
+   * binding the WhatsApp contact's own linked Customer) — same trust model
+   * and same reason as `origin` above: it is not part of any HTTP-bound DTO,
+   * because `context.customerId` is the server-bound booking subject
+   * (`AiExecutionService.sessionCustomerId`) that every write tool prefers
+   * over a model-supplied id. A client-writable path here would let a
+   * WhatsApp turn's `sessionPatch` silently rebind the conversation's
+   * booking subject to an arbitrary customer id — exactly the customer-
+   * impersonation gap this field exists to close (the WhatsApp bridge is the
+   * only caller today; it previously bound the customer through the ordinary
+   * `sessionPatch`, where `patchFromClient` discarded it before it could
+   * ever reach the session).
+   */
+  trustedSessionPatch?: Partial<AiSession>;
   idempotencyKey?: string;
 }
 
@@ -300,6 +321,16 @@ export class AiOrchestratorService {
         conv.id,
         input.sessionPatch,
       );
+
+    // Applied AFTER (and therefore winning over) any client-controlled
+    // `sessionPatch` above, and UNFILTERED (`patch`, not `patchFromClient`) —
+    // see `trustedSessionPatch`'s own docblock on OrchestrateInput. Re-applied
+    // on every turn, not only when a conversation is first created: a
+    // WhatsApp contact's `ai_conversation_id` is resumed on every later
+    // inbound message, and re-asserting the binding each turn is a cheap,
+    // idempotent merge that also self-heals if anything else ever cleared it.
+    if (input.trustedSessionPatch)
+      await this.sessions.patch(tenantId, conv.id, input.trustedSessionPatch);
 
     if (input.autoRoute && input.aiConversationId) {
       const current = await this.sessions.get(tenantId, conv.id);
