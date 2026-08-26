@@ -149,7 +149,13 @@ export class PlatformBillingAdminController {
   @ApiOperation({
     summary: 'Grant a free-access override to a tenant',
     description:
-      'Gives the tenant free access regardless of subscription. Omit `durationDays` for unlimited.',
+      'Gives the tenant free access regardless of subscription, for `durationDays` (1–365) ' +
+      'whole days; omit it for unlimited. The CLIENT NEVER SENDS AN EXPIRY: both `starts_at` ' +
+      'and `ends_at` are computed from the database clock inside one statement, so the stored ' +
+      'grant is exactly `starts_at + durationDays`. Expiry is then evaluated on every access ' +
+      'check (`ends_at > now()`), never by a scheduled job. 409 if the tenant already has an ' +
+      'active override — extend or revoke that one instead; concurrent grants are serialized ' +
+      'so exactly one wins.',
   })
   @ApiOkResponse({ description: 'Override granted.' })
   @Post('tenants/:tenantId/override')

@@ -35,7 +35,14 @@ describe('FreeAccessOverrideService', () => {
     };
     accessCache = createMockAccessCache();
     service = new FreeAccessOverrideService(
-      { query } as unknown as DataSource,
+      {
+        query,
+        // grant/extend now run inside ONE transaction behind a per-tenant
+        // advisory lock; the manager is the same query mock, so the existing
+        // call-order assertions keep describing real statements.
+        transaction: (cb: (m: { query: jest.Mock }) => unknown) =>
+          cb({ query }),
+      } as unknown as DataSource,
       audit as unknown as PlatformAdminAuditService,
       tenantContext as unknown as TenantContextService,
       accessCache as unknown as AccessCacheService,
@@ -95,24 +102,27 @@ describe('FreeAccessOverrideService', () => {
   });
 
   it('grant inserts a new override when none is active', async () => {
-    query.mockResolvedValueOnce([]); // hasActive → getActive → none
+    query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+    query.mockResolvedValueOnce([]); // getActive → none
     query.mockResolvedValueOnce([row()]); // INSERT RETURNING
     const granted = await service.grant('t1', {
       grantedBy: 'admin-1',
       durationDays: 30,
     });
     expect(granted.id).toBe('ov-1');
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(3);
   });
 
   it('grant rejects when an override is already active', async () => {
-    query.mockResolvedValueOnce([row()]); // hasActive → active
+    query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+    query.mockResolvedValueOnce([row()]); // getActive → active
     await expect(service.grant('t1', {})).rejects.toMatchObject({
       code: ErrorCode.CONFLICT,
     });
   });
 
   it('extend throws when there is no active override', async () => {
+    query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
     query.mockResolvedValueOnce([]); // getActive → none
     await expect(service.extend('t1', 30)).rejects.toMatchObject({
       code: ErrorCode.NOT_FOUND,
@@ -120,6 +130,7 @@ describe('FreeAccessOverrideService', () => {
   });
 
   it('extend updates the active override', async () => {
+    query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
     query.mockResolvedValueOnce([row()]); // getActive
     query.mockResolvedValueOnce([row({ ends_at: '2026-12-31T00:00:00Z' })]); // UPDATE RETURNING
     const res = await service.extend('t1', 30);
@@ -145,7 +156,8 @@ describe('FreeAccessOverrideService', () => {
    */
   describe('access-cache invalidation', () => {
     it('busts the tenant on grant', async () => {
-      query.mockResolvedValueOnce([]); // hasActive → none
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
       query.mockResolvedValueOnce([row()]); // INSERT RETURNING
       await service.grant('t1', { durationDays: 30 });
       expect(accessCache.invalidate).toHaveBeenCalledWith('t1');
@@ -169,7 +181,8 @@ describe('FreeAccessOverrideService', () => {
   // FND-015 — grant/extend/revoke previously wrote NO audit entry.
   describe('FND-015 — audit trail', () => {
     it('audits a successful grant, tagged to the TARGET tenant (not the actor)', async () => {
-      query.mockResolvedValueOnce([]); // hasActive → none
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
       query.mockResolvedValueOnce([row()]); // INSERT RETURNING
 
       await service.grant('t1', {
@@ -191,7 +204,8 @@ describe('FreeAccessOverrideService', () => {
     });
 
     it('audits a REJECTED grant (AD-14: refusals recorded too)', async () => {
-      query.mockResolvedValueOnce([row()]); // hasActive → already active
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([row()]); // getActive → already active
 
       await expect(service.grant('t1', {})).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
@@ -205,11 +219,12 @@ describe('FreeAccessOverrideService', () => {
           tenantId: 't1',
         }),
       );
-      // The rejection never reaches an INSERT.
-      expect(query).toHaveBeenCalledTimes(1);
+      // The rejection never reaches an INSERT — only the lock and the check.
+      expect(query).toHaveBeenCalledTimes(2);
     });
 
     it('audits a successful extend with before/after ends_at', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
       query.mockResolvedValueOnce([row({ ends_at: '2026-06-30T00:00:00Z' })]); // getActive
       query.mockResolvedValueOnce([row({ ends_at: '2026-12-31T00:00:00Z' })]); // UPDATE RETURNING
 
@@ -244,6 +259,137 @@ describe('FreeAccessOverrideService', () => {
           after: { status: 'REVOKED' },
         }),
       );
+    });
+  });
+  /**
+   * The duration contract, enforced HERE as well as in `GrantOverrideDto` —
+   * seeds and other in-process callers never pass through a DTO, so a bound
+   * that lived only in the validation layer would not actually be a bound.
+   */
+  describe('duration bounds', () => {
+    it.each([
+      ['zero', 0],
+      ['negative', -1],
+      ['decimal', 1.5],
+      ['NaN', Number.NaN],
+      ['above the 365-day maximum', 366],
+      ['absurdly large', 1e9],
+    ])(
+      'grant refuses a %s duration before touching the database',
+      async (_label, durationDays) => {
+        await expect(
+          service.grant('t1', { durationDays: durationDays as number }),
+        ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+        expect(query).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['the 1-day minimum', 1],
+      ['a mid-range 45 days', 45],
+      ['the 365-day maximum', 365],
+    ])('grant accepts %s', async (_label, durationDays) => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+      await expect(
+        service.grant('t1', { durationDays: durationDays as number }),
+      ).resolves.toMatchObject({ id: 'ov-1' });
+    });
+
+    it('treats an omitted duration as UNLIMITED rather than an invalid one', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row({ ends_at: null })]);
+
+      const granted = await service.grant('t1', {});
+
+      expect(granted.ends_at).toBeNull();
+      // Bound as NULL, which the INSERT's CASE turns into an open-ended grant
+      // — not a zero-day one.
+      expect(query.mock.calls[2][1][4]).toBeNull();
+    });
+
+    it('extend refuses an out-of-range duration too', async () => {
+      await expect(service.extend('t1', 366)).rejects.toMatchObject({
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+      expect(query).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The backend owns BOTH timestamps, and they must come from ONE clock.
+   * `starts_at` was already the database's `now()` while `ends_at` was computed
+   * in Node from the API server's clock — so under any skew between the two
+   * hosts the stored grant was not actually `startedAt + durationDays`.
+   * Computing both inside a single statement makes them exact by construction:
+   * `now()` is transaction time, so both occurrences in one INSERT return the
+   * identical instant.
+   */
+  describe('server-side expiry computation', () => {
+    it('derives ends_at from the same now() as starts_at, inside one statement', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+
+      await service.grant('t1', { durationDays: 45 });
+
+      const [sql, params] = query.mock.calls[2];
+      expect(sql).toContain('now()');
+      expect(sql).toContain('make_interval(days => $5::int)');
+      // Only the DAY COUNT crosses the boundary — never a timestamp.
+      expect(params[4]).toBe(45);
+      expect(params.some((p: unknown) => p instanceof Date)).toBe(false);
+    });
+
+    it('extends from the later of the current end and now(), in SQL', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([row({ ends_at: '2026-06-30T00:00:00Z' })]);
+      query.mockResolvedValueOnce([row({ ends_at: '2026-08-14T00:00:00Z' })]);
+
+      await service.extend('t1', 45);
+
+      const [sql, params] = query.mock.calls[2];
+      expect(sql).toContain('GREATEST(ends_at, now())');
+      expect(params[1]).toBe(45);
+    });
+  });
+
+  /**
+   * `hasActive()` then `INSERT` is a read-then-write race: two grants for one
+   * clinic arriving together both saw "none active" and both inserted. The
+   * lock must be taken BEFORE the check, or it protects nothing.
+   */
+  describe('concurrent-grant serialization', () => {
+    it('takes a per-tenant advisory lock before checking for an existing grant', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+
+      await service.grant('t1', { durationDays: 30 });
+
+      const [lockSql, lockParams] = query.mock.calls[0];
+      expect(lockSql).toContain('pg_advisory_xact_lock');
+      // Namespaced, so it cannot collide with the migration lock; keyed on the
+      // tenant, so one clinic's grant never blocks another clinic's.
+      expect(lockParams[1]).toBe('t1');
+      expect(query.mock.calls[1][0]).toContain(
+        'SELECT * FROM free_access_overrides',
+      );
+      expect(query.mock.calls[2][0]).toContain(
+        'INSERT INTO free_access_overrides',
+      );
+    });
+
+    it('locks before the read on extend as well', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([row()]);
+      query.mockResolvedValueOnce([row()]);
+
+      await service.extend('t1', 30);
+
+      expect(query.mock.calls[0][0]).toContain('pg_advisory_xact_lock');
     });
   });
 });

@@ -38,6 +38,26 @@ export enum OverrideStatus {
 }
 
 /**
+ * Bounds on a TIME-BOXED free-access grant, in days.
+ *
+ * The API is the authority on these, never the console: the slider on
+ * `/platform/feature-flags` merely mirrors them, and a caller that bypasses
+ * the UI is refused by `GrantOverrideDto`/`ExtendOverrideDto` and again by
+ * `FreeAccessOverrideService` — which seeds and other in-process callers reach
+ * without passing through a DTO at all.
+ *
+ * MIN is 1: a zero-day grant is indistinguishable from not granting, and a
+ * negative one back-dates `ends_at` into the past — a grant already expired
+ * the instant it is written. MAX is 365: a comp longer than a year is a
+ * commercial decision that should be re-made deliberately rather than reached
+ * by dragging a slider. Omitting `durationDays` remains the explicit,
+ * unbounded UNLIMITED grant; that is a separate and visible choice, and these
+ * bounds deliberately do not constrain it.
+ */
+export const FREE_ACCESS_MIN_DURATION_DAYS = 1;
+export const FREE_ACCESS_MAX_DURATION_DAYS = 365;
+
+/**
  * `AccessSource` now lives with the rest of the decision shape in
  * `tenant-access-decision.ts` — re-exported here so the many existing
  * `from './platform-billing.constants'` imports keep working. The string
