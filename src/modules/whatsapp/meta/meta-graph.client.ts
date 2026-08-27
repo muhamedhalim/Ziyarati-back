@@ -211,6 +211,19 @@ export class MetaGraphClient {
     }));
   }
 
+  /**
+   * The WABA fields an Embedded Signup token can actually read.
+   *
+   * Meta's Embedded Signup grants EXACTLY `whatsapp_business_management` and
+   * `whatsapp_business_messaging` — never `business_management`.
+   *
+   * `owner_business_info` is deliberately absent: it is gated on
+   * `business_management`, and naming it here made Graph reject the WHOLE read,
+   * so onboarding died at step 3 for every clinic. It is fetched separately and
+   * best-effort by `readOwnerBusinessId` below.
+   */
+  private static readonly WABA_FIELDS = 'id,name,currency,timezone_id';
+
   /** Fetch a single WABA by id — also proves the token can actually read it. */
   async getWaba(wabaId: string, token: string): Promise<MetaWaba> {
     const json = await this.get<{
@@ -218,8 +231,7 @@ export class MetaGraphClient {
       name?: string;
       currency?: string;
       timezone_id?: string;
-      owner_business_info?: { id?: string };
-    }>(`${encodeURIComponent(wabaId)}?fields=id,name,currency,timezone_id,owner_business_info`, token);
+    }>(`${encodeURIComponent(wabaId)}?fields=${MetaGraphClient.WABA_FIELDS}`, token);
 
     if (!json.id) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -231,8 +243,36 @@ export class MetaGraphClient {
       name: json.name,
       currency: json.currency,
       timezoneId: json.timezone_id,
-      ownerBusinessId: json.owner_business_info?.id,
+      ownerBusinessId: await this.readOwnerBusinessId(wabaId, token),
     };
+  }
+
+  /**
+   * The owning Meta Business (portfolio) id — OPTIONAL, and the one read here
+   * that must never fail its caller.
+   *
+   * Reading it needs `business_management`, which an Embedded Signup token does
+   * not carry (a Solution-Partner system-user token does). It is display-only
+   * data: the onboarding DTO already carries the `business_id` the dialog
+   * reported, and `meta_business_id` is nullable. So a failure is downgraded to
+   * `undefined` rather than allowed to abort a valid connection — the ONE
+   * deliberate exception to this client's throw-on-failure rule.
+   */
+  private async readOwnerBusinessId(
+    wabaId: string,
+    token: string,
+  ): Promise<string | undefined> {
+    try {
+      const json = await this.get<{ owner_business_info?: { id?: string } }>(
+        `${encodeURIComponent(wabaId)}?fields=owner_business_info`,
+        token,
+      );
+      return json.owner_business_info?.id;
+    } catch {
+      // Expected whenever the token lacks `business_management`. `request()`
+      // has already logged Meta's code/subcode; nothing to add here.
+      return undefined;
+    }
   }
 
   /** Phone numbers registered on a WABA. */

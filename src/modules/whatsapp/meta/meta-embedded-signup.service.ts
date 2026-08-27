@@ -98,22 +98,28 @@ export class MetaEmbeddedSignupService {
     // check that also stops branch-id probing across tenants.
     if (dto.branchId) await this.assertBranch(tenantId, dto.branchId);
 
+    this.stage(tenantId, 'META_EMBEDDED_SIGNUP_CALLBACK_RECEIVED');
+
     // ── 1. Code → token (server-side only; requires the app secret) ────────
-    const exchanged = await this.graph.exchangeCode(dto.code);
+    const exchanged = await this.trace(tenantId, 'META_OAUTH_CODE_EXCHANGE', () =>
+      this.graph.exchangeCode(dto.code),
+    );
 
     // ── 2. Prove the token belongs to OUR app and can do what we need ──────
-    const debug = await this.graph.debugToken(exchanged.accessToken);
+    const debug = await this.trace(tenantId, 'META_TOKEN_INTROSPECTION', () =>
+      this.graph.debugToken(exchanged.accessToken),
+    );
     this.assertTokenTrustworthy(debug);
 
     // ── 3. Prove the token actually controls the claimed WABA + number ─────
     // The ids arrive from the browser, so they are untrusted input: we re-read
     // both from Meta with the token itself. A caller who posts someone else's
     // wabaId gets a Graph failure here rather than a hijacked connection.
-    const waba = await this.graph.getWaba(dto.wabaId, exchanged.accessToken);
-    const phone = await this.resolvePhoneNumber(
-      dto.wabaId,
-      dto.phoneNumberId,
-      exchanged.accessToken,
+    const waba = await this.trace(tenantId, 'META_WABA_LOOKUP', () =>
+      this.graph.getWaba(dto.wabaId, exchanged.accessToken),
+    );
+    const phone = await this.trace(tenantId, 'META_PHONE_NUMBER_LOOKUP', () =>
+      this.resolvePhoneNumber(dto.wabaId, dto.phoneNumberId, exchanged.accessToken),
     );
 
     // Reject a number already held by ANOTHER tenant before we subscribe the
@@ -121,15 +127,52 @@ export class MetaEmbeddedSignupService {
     await this.assertPhoneNumberAvailable(tenantId, phone.id);
 
     // ── 4. Route this WABA's events to the platform webhook ───────────────
-    await this.graph.subscribeAppToWaba(waba.id, exchanged.accessToken);
+    await this.trace(tenantId, 'META_WEBHOOK_SUBSCRIPTION', () =>
+      this.graph.subscribeAppToWaba(waba.id, exchanged.accessToken),
+    );
 
     // ── 5. Persist under the authenticated tenant, encrypted ──────────────
     const account = await this.persist(tenantId, dto, exchanged, debug, waba, phone);
 
+    this.stage(tenantId, 'META_WHATSAPP_CONNECTION_SAVED');
     this.logger.log(
       `Tenant ${tenantId} connected WhatsApp number ${phone.id} (waba=${waba.id}) via Embedded Signup`,
     );
     return account;
+  }
+
+  // ─────────────────────────── Stage diagnostics ─────────────────────────── //
+
+  /**
+   * Onboarding crosses five Meta round-trips, and until now a failure in any of
+   * them surfaced as one indistinguishable 422 — which is exactly why a broken
+   * WABA read went undiagnosed. These markers name the stage that failed.
+   *
+   * NEVER logged: the authorization code, the access token, the app secret. The
+   * tenant id and Meta's own error code/type are the whole payload; Meta's
+   * code/subcode is already recorded by MetaGraphClient.request().
+   */
+  private stage(tenantId: string, marker: string, detail?: string): void {
+    this.logger.log(`${marker} tenant=${tenantId}${detail ? ` ${detail}` : ''}`);
+  }
+
+  /** Runs one stage, emitting a `_STARTED` marker and a `_FAILED` one on throw. */
+  private async trace<T>(
+    tenantId: string,
+    marker: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    this.stage(tenantId, `${marker}_STARTED`);
+    try {
+      return await run();
+    } catch (err) {
+      // `AppError.message` here is Meta's own rejection text, already stripped
+      // of credentials by the client. Anything else is logged by type only.
+      const reason =
+        err instanceof AppError ? err.message : ((err as Error)?.name ?? 'unknown');
+      this.logger.error(`${marker}_FAILED tenant=${tenantId} reason=${reason}`);
+      throw err;
+    }
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
