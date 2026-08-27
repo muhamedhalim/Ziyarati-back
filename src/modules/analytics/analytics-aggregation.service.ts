@@ -313,6 +313,36 @@ export class AnalyticsAggregationService {
     return { total_appointments, total_revenue };
   }
 
+  /**
+   * Tenant-WIDE (every branch) totals for the CURRENT, in-progress UTC
+   * calendar month — completed appointments (by `start_at`, same status
+   * definition as every other "completed" figure in this file) and PAID
+   * revenue (by `paid_at`). Backs the dashboard's appointment/revenue target
+   * cards.
+   *
+   * Deliberately separate from {@link computeMonthlyTotals}: that method is
+   * per-branch and meant for a CLOSED month's report, so a tenant-wide total
+   * would mean summing across branches for every read. This is the one
+   * tenant-wide, no-branch-filter equivalent for the month still in progress.
+   */
+  async computeCurrentMonthTenantTotals(
+    tenantId: string,
+    monthStr: string,
+  ): Promise<{ completed_appointments: number; total_revenue: number }> {
+    const { start, end } = monthRangeUtc(monthStr);
+    const [completed_appointments, total_revenue] = await Promise.all([
+      this.appointments.count({
+        where: {
+          tenant: { id: tenantId },
+          status: AppointmentStatus.COMPLETED,
+          start_at: Between(start, end),
+        },
+      }),
+      this.sumTenantRevenue(tenantId, { start, end }),
+    ]);
+    return { completed_appointments, total_revenue };
+  }
+
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
   /**
@@ -410,14 +440,26 @@ export class AnalyticsAggregationService {
     return Number(row?.count ?? 0);
   }
 
-  private async sumTenantRevenue(tenantId: string): Promise<number> {
-    const row = await this.payments
+  /**
+   * Sum of PAID payments for a tenant, optionally restricted to a `paid_at`
+   * window. Without `range`, this is the all-time dashboard KPI total; with
+   * it, it's the same PAID-only revenue definition scoped to a period (used
+   * by {@link computeCurrentMonthTenantTotals}) — one query, not a duplicate.
+   */
+  private async sumTenantRevenue(
+    tenantId: string,
+    range?: { start: Date; end: Date },
+  ): Promise<number> {
+    let qb = this.payments
       .createQueryBuilder('p')
       .select('COALESCE(SUM(p.amount), 0)', 'sum')
       .innerJoin('p.tenant', 't')
       .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
-      .getRawOne<{ sum: string }>();
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID });
+    if (range) {
+      qb = qb.andWhere('p.paid_at BETWEEN :start AND :end', range);
+    }
+    const row = await qb.getRawOne<{ sum: string }>();
     return round2(Number(row?.sum ?? 0));
   }
 

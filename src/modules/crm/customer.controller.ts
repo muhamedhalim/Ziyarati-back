@@ -70,7 +70,7 @@ export class CustomerController {
   @ApiOperation({
     summary: 'Create a customer',
     description:
-      '**Protected — `crm.customers.manage`. Clinic active.** Phone and email are both unique per tenant (409 on conflict).',
+      '**Protected — `crm.customers.manage`. Clinic active.** Email and ID number (when provided) are each unique per tenant among live customers (409 on conflict); phone may be shared across customers.',
   })
   @ApiCreatedResponse({ description: 'Customer created.' })
   @ApiUnauthorizedResponse({
@@ -82,7 +82,7 @@ export class CustomerController {
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description: 'Duplicate phone or email.',
+    description: 'Duplicate email or ID number.',
     schema: S_ERROR,
   })
   @Post()
@@ -164,7 +164,7 @@ export class CustomerController {
   @ApiOperation({
     summary: 'Update a customer',
     description:
-      '**Protected — `crm.customers.manage`. Clinic active.** Partial update; phone uniqueness re-checked when changed.',
+      '**Protected — `crm.customers.manage`. Clinic active.** Partial update; ID number uniqueness re-checked when changed.',
   })
   @ApiParam({
     name: 'id',
@@ -186,7 +186,7 @@ export class CustomerController {
     schema: S_ERROR,
   })
   @ApiConflictResponse({
-    description: 'Duplicate phone or email.',
+    description: 'Duplicate email or ID number.',
     schema: S_ERROR,
   })
   @Patch(':id')

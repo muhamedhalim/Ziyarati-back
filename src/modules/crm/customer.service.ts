@@ -19,14 +19,17 @@ import { UsageService } from '../subscription-billing/usage.service';
  * query filters `where: { tenant: { id: tenantId } }` and the tenant always comes
  * from TenantContext (never from input). Supports soft delete (`deleted_at`).
  *
- * Schema notes: `phone` and `email` are both NOT-NULL and unique PER TENANT
- * (FND-040/M-01 — email was globally unique before; two tenants can now
- * legitimately share a customer's email). Phone uniqueness is pre-checked
- * tenant-scoped for a friendly 409; email uniqueness is enforced by the DB
- * constraint alone (mapped to 409 by `typeorm-error.mapper.ts`, which
- * tolerates both the old global and new tenant-scoped constraint names
- * during the deploy window) — deliberately not pre-checked here, to avoid
- * any cross-tenant read.
+ * Schema notes: `phone` and `email` are both NOT-NULL. `phone` is deliberately
+ * NOT unique — multiple customers may legitimately share one (e.g. a shared
+ * household line). `email` is unique PER TENANT among LIVE rows (FND-040/M-01 —
+ * email was globally unique before; two tenants can now legitimately share a
+ * customer's email) and enforced by the DB constraint alone (mapped to 409 by
+ * `typeorm-error.mapper.ts`) — deliberately not pre-checked here, to avoid any
+ * cross-tenant read. `national_id` is the sole hard identity key: optional, but
+ * unique per tenant among LIVE rows when provided, pre-checked below for a
+ * friendly 409. "Among LIVE rows" means a soft-deleted customer's email/
+ * national_id is freed up for reuse — see
+ * migration CrmCustomerSoftDeleteAwareUniqueness1730059000000.
  */
 @Injectable()
 export class CustomerService {
@@ -51,7 +54,6 @@ export class CustomerService {
       'customers',
       await this.customers.count({ where: { tenant: { id: tenantId } } }),
     );
-    await this.assertPhoneUnique(tenantId, dto.phone);
     if (dto.national_id) {
       await this.assertNationalIdUnique(tenantId, dto.national_id);
     }
@@ -86,11 +88,17 @@ export class CustomerService {
    * public AI flow and the WhatsApp flow share one implementation instead of
    * growing a second, subtly different one.
    *
-   * Tenant isolation is structural rather than conventional: `customers` is
-   * uniquely indexed on `(tenantId, phone)` and `(tenantId, email)`, so the
-   * SAME person booking at two clinics necessarily gets two independent rows.
-   * Neither clinic can see the other's — including notes, chronic diseases and
+   * Tenant isolation is structural rather than conventional: every lookup here
+   * is scoped `where: { tenant: { id: tenantId }, phone }`, so the SAME person
+   * booking at two clinics necessarily gets two independent rows. Neither
+   * clinic can see the other's — including notes, chronic diseases and
    * insurance status, which hang off the customer row.
+   *
+   * `phone` is NOT unique (a clinic's staff may legitimately record more than
+   * one customer under the same number), so this matches the FIRST live row
+   * with that phone in the tenant — acceptable for the booking-match heuristic
+   * this method exists for, but callers should not assume it is the ONLY
+   * customer with that phone.
    *
    * `email` is NOT NULL, so a synthetic tenant-unique address is minted when
    * the patient doesn't give one — the same convention the WhatsApp bridge uses.
@@ -136,9 +144,6 @@ export class CustomerService {
   ): Promise<Customer> {
     const customer = await this.findOneOrThrow(tenantId, id);
 
-    if (dto.phone && dto.phone !== customer.phone) {
-      await this.assertPhoneUnique(tenantId, dto.phone, id);
-    }
     if (dto.national_id && dto.national_id !== customer.national_id) {
       await this.assertNationalIdUnique(tenantId, dto.national_id, id);
     }
@@ -287,27 +292,14 @@ export class CustomerService {
     return customer;
   }
 
-  private async assertPhoneUnique(
-    tenantId: string,
-    phone: string,
-    excludeId?: string,
-  ): Promise<void> {
-    const existing = await this.customers.findOne({
-      where: { tenant: { id: tenantId }, phone },
-    });
-    if (existing && existing.id !== excludeId) {
-      throw new AppError(ErrorCode.CONFLICT, {
-        message: 'A customer with this phone already exists',
-      });
-    }
-  }
-
   /**
-   * Pre-check mirroring {@link assertPhoneUnique} — `national_id` is
-   * optional, so this is only ever called when a value is actually given.
-   * The partial unique index (`UQ_customers_tenant_national_id`) is the real
+   * `national_id` is optional, so this is only ever called when a value is
+   * actually given. The partial unique index
+   * (`UQ_customers_tenant_national_id`, scoped to live rows only) is the real
    * backstop against a concurrent-insert race; this just gives the common
-   * case a friendly 409 instead of a raw constraint violation.
+   * case a friendly 409 instead of a raw constraint violation. Uses the
+   * repository's default (non-`withDeleted`) scope, so a soft-deleted
+   * customer's national_id never blocks this check.
    */
   private async assertNationalIdUnique(
     tenantId: string,

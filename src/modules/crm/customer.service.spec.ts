@@ -64,18 +64,32 @@ describe('CustomerService', () => {
       expect(customers.save).not.toHaveBeenCalled();
     });
 
-    it('creates a customer after a tenant-scoped phone-uniqueness check', async () => {
-      customers.findOne.mockResolvedValueOnce(null);
+    it('creates a customer', async () => {
       customers.save.mockResolvedValueOnce({ id: 'c1' });
       await expect(
         service.create(TENANT, { phone: '+966500', email: 'a@b.com' } as any),
       ).resolves.toEqual({ id: 'c1' });
     });
 
-    it('rejects a duplicate phone within the tenant', async () => {
+    // Product requirement: phone is NOT a uniqueness key — multiple customers
+    // may legitimately share one (e.g. a shared household line). Unlike
+    // national_id below, no pre-check is even attempted for phone.
+    it('does not check phone uniqueness — creates successfully with no lookup, even if another customer shares the phone', async () => {
+      customers.save.mockResolvedValueOnce({ id: 'c2' });
+      await expect(
+        service.create(TENANT, { phone: '+966500', email: 'b@b.com' } as any),
+      ).resolves.toEqual({ id: 'c2' });
+      expect(customers.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects a duplicate national_id within the tenant', async () => {
       customers.findOne.mockResolvedValueOnce({ id: 'existing' });
       await expect(
-        service.create(TENANT, { phone: '+966500' } as any),
+        service.create(TENANT, {
+          phone: '+966500',
+          email: 'a@b.com',
+          national_id: 'ID-1',
+        } as any),
       ).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
@@ -180,10 +194,8 @@ describe('CustomerService', () => {
   });
 
   describe('update', () => {
-    it('updates fields and re-checks phone uniqueness on change', async () => {
-      customers.findOne
-        .mockResolvedValueOnce({ id: 'c1', phone: '+966500' }) // findOneOrThrow
-        .mockResolvedValueOnce(null); // phone unique
+    it('updates phone freely (not a uniqueness key) — no extra lookup beyond findOneOrThrow', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500' }); // findOneOrThrow only
       customers.save.mockImplementationOnce(async (c: any) => c);
       const res = await service.update(TENANT, 'c1', {
         phone: '+966511',
@@ -192,6 +204,7 @@ describe('CustomerService', () => {
       expect(res).toEqual(
         expect.objectContaining({ phone: '+966511', full_name: 'New' }),
       );
+      expect(customers.findOne).toHaveBeenCalledTimes(1);
     });
 
     it('throws when the customer does not exist', async () => {
@@ -201,12 +214,12 @@ describe('CustomerService', () => {
       ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
     });
 
-    it('rejects an update to a phone already used by another customer', async () => {
+    it('rejects an update to a national_id already used by another customer', async () => {
       customers.findOne
-        .mockResolvedValueOnce({ id: 'c1', phone: '+966500' })
-        .mockResolvedValueOnce({ id: 'c2' }); // phone taken by another
+        .mockResolvedValueOnce({ id: 'c1', phone: '+966500', national_id: null })
+        .mockResolvedValueOnce({ id: 'c2' }); // national_id taken by another
       await expect(
-        service.update(TENANT, 'c1', { phone: '+966511' } as any),
+        service.update(TENANT, 'c1', { national_id: 'ID-1' } as any),
       ).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });

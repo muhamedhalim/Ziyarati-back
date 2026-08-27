@@ -21,6 +21,7 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
 import { StorageModule } from '../storage/storage.module';
 import { VerificationAuditModule } from '../verification-audit/verification-audit.module';
 import { AdminNotificationModule } from '../admin-notifications/admin-notification.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 /**
  * Tenant aggregate root: the clinic and everything it directly owns —
@@ -50,6 +51,9 @@ import { AdminNotificationModule } from '../admin-notifications/admin-notificati
     // Append-only audit trail + super-admin notifications for verification.
     VerificationAuditModule,
     AdminNotificationModule,
+    // Provides AnalyticsAggregationService/AnalyticsCacheService for the
+    // dashboard target-progress read (GET/PATCH /tenants/me/targets).
+    AnalyticsModule,
   ],
   controllers: [
     TenantController,

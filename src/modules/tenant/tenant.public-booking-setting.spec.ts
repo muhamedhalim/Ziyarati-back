@@ -32,6 +32,8 @@ describe('TenantService.updateSettings — public booking opt-in', () => {
       settings as never,
       {} as never, // approvalEvents
       {} as never, // dataSource
+      {} as never, // analyticsAggregation
+      {} as never, // analyticsCache
     );
     return { service, saved };
   };

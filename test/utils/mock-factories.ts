@@ -21,6 +21,7 @@ export interface MockQueryBuilder {
   andWhere: jest.Mock;
   orWhere: jest.Mock;
   innerJoin: jest.Mock;
+  innerJoinAndSelect: jest.Mock;
   leftJoin: jest.Mock;
   leftJoinAndSelect: jest.Mock;
   orderBy: jest.Mock;
@@ -60,6 +61,7 @@ export const createMockQueryBuilder = (): MockQueryBuilder => {
   qb.andWhere = jest.fn(chain);
   qb.orWhere = jest.fn(chain);
   qb.innerJoin = jest.fn(chain);
+  qb.innerJoinAndSelect = jest.fn(chain);
   qb.leftJoin = jest.fn(chain);
   qb.leftJoinAndSelect = jest.fn(chain);
   qb.orderBy = jest.fn(chain);

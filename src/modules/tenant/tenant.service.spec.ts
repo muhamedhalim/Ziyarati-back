@@ -9,6 +9,9 @@ import { TenantApprovalEvent } from '../../entities/SaaS-Core/TenantApprovalEven
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { TenantApprovalStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
+import { AnalyticsAggregationService } from '../analytics/analytics-aggregation.service';
+import { AnalyticsCacheService } from '../analytics/analytics-cache.service';
+import { currentMonthUtc } from '../analytics/analytics.constants';
 import {
   createMockRepository,
   createMockEntityManager,
@@ -25,6 +28,8 @@ describe('TenantService', () => {
   let approvalEvents: MockRepository;
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
+  let analyticsAggregation: { computeCurrentMonthTenantTotals: jest.Mock };
+  let analyticsCache: { wrap: jest.Mock };
 
   beforeEach(async () => {
     tenants = createMockRepository();
@@ -32,6 +37,18 @@ describe('TenantService', () => {
     approvalEvents = createMockRepository();
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
+    analyticsAggregation = {
+      computeCurrentMonthTenantTotals: jest.fn().mockResolvedValue({
+        completed_appointments: 0,
+        total_revenue: 0,
+      }),
+    };
+    // The real AnalyticsCacheService fails open to `producer()` when Redis is
+    // unconfigured; the mock mirrors exactly that contract so tests exercise
+    // the same "cache miss" path the service always hits without Redis.
+    analyticsCache = {
+      wrap: jest.fn((_tenantId, _ns, _suffix, producer) => producer()),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -40,6 +57,8 @@ describe('TenantService', () => {
         { provide: getRepositoryToken(TenantSetting), useValue: settings },
         { provide: getRepositoryToken(TenantApprovalEvent), useValue: approvalEvents },
         { provide: DataSource, useValue: dataSource },
+        { provide: AnalyticsAggregationService, useValue: analyticsAggregation },
+        { provide: AnalyticsCacheService, useValue: analyticsCache },
       ],
     }).compile();
     service = moduleRef.get(TenantService);
@@ -177,6 +196,120 @@ describe('TenantService', () => {
       settings.save.mockImplementationOnce(async (s: any) => s);
       const result = await service.updateSettings('ten-1', { paymentRequired: false } as any);
       expect(result).toEqual(expect.objectContaining({ payment_required: false }));
+    });
+  });
+
+  describe('target progress', () => {
+    it('no target set -> null target/remaining/percentage, not completed', async () => {
+      settings.findOne.mockResolvedValueOnce({
+        id: 'set-1',
+        currency: 'SAR',
+        appointment_target: null,
+        revenue_target: null,
+      });
+      analyticsAggregation.computeCurrentMonthTenantTotals.mockResolvedValueOnce({
+        completed_appointments: 7,
+        total_revenue: 1234.5,
+      });
+
+      const result = await service.getTargetProgress('ten-1');
+
+      expect(result.currency).toBe('SAR');
+      expect(result.period.month).toBe(currentMonthUtc());
+      expect(result.appointments).toEqual({
+        target: null,
+        current: 7,
+        remaining: null,
+        percentage: null,
+        isCompleted: false,
+      });
+      expect(result.revenue).toEqual({
+        target: null,
+        current: 1234.5,
+        remaining: null,
+        percentage: null,
+        isCompleted: false,
+      });
+    });
+
+    it('computes remaining/percentage/completed against the configured targets', async () => {
+      settings.findOne.mockResolvedValueOnce({
+        id: 'set-1',
+        currency: 'USD',
+        appointment_target: 20,
+        revenue_target: 1000,
+      });
+      analyticsAggregation.computeCurrentMonthTenantTotals.mockResolvedValueOnce({
+        completed_appointments: 25, // exceeds target
+        total_revenue: 400, // under target
+      });
+
+      const result = await service.getTargetProgress('ten-1');
+
+      expect(result.appointments).toEqual({
+        target: 20,
+        current: 25,
+        remaining: 0,
+        percentage: 125,
+        isCompleted: true,
+      });
+      expect(result.revenue).toEqual({
+        target: 1000,
+        current: 400,
+        remaining: 600,
+        percentage: 40,
+        isCompleted: false,
+      });
+    });
+
+    it('reads the current month total through the analytics cache, scoped to this tenant', async () => {
+      settings.findOne.mockResolvedValueOnce({
+        id: 'set-1',
+        currency: 'SAR',
+        appointment_target: 5,
+        revenue_target: 5,
+      });
+
+      await service.getTargetProgress('ten-1');
+
+      expect(analyticsCache.wrap).toHaveBeenCalledWith(
+        'ten-1',
+        'dashboard',
+        `targets:${currentMonthUtc()}`,
+        expect.any(Function),
+      );
+      expect(
+        analyticsAggregation.computeCurrentMonthTenantTotals,
+      ).toHaveBeenCalledWith('ten-1', currentMonthUtc());
+    });
+
+    it('updateTargets only changes the supplied field and returns fresh progress', async () => {
+      settings.findOne.mockResolvedValueOnce({
+        id: 'set-1',
+        currency: 'SAR',
+        appointment_target: 10,
+        revenue_target: 500,
+      });
+      settings.save.mockImplementationOnce(async (s: any) => s);
+      // getTargetProgress (called internally) re-fetches settings.
+      settings.findOne.mockResolvedValueOnce({
+        id: 'set-1',
+        currency: 'SAR',
+        appointment_target: 30,
+        revenue_target: 500, // untouched — omitted from the DTO
+      });
+      analyticsAggregation.computeCurrentMonthTenantTotals.mockResolvedValueOnce({
+        completed_appointments: 3,
+        total_revenue: 0,
+      });
+
+      const result = await service.updateTargets('ten-1', { appointmentTarget: 30 });
+
+      expect(settings.save).toHaveBeenCalledWith(
+        expect.objectContaining({ appointment_target: 30, revenue_target: 500 }),
+      );
+      expect(result.appointments.target).toBe(30);
+      expect(result.revenue.target).toBe(500);
     });
   });
 

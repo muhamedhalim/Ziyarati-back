@@ -98,6 +98,9 @@ import { StaffPerformanceController } from './staff-performance.controller';
     DailyReportService,
     MonthlyReportService,
     AnalyticsRetentionService,
+    // Exposed so TenantModule can cache the dashboard target-progress read
+    // under the same per-tenant `dashboard` cache namespace.
+    AnalyticsCacheService,
   ],
 })
 export class AnalyticsModule {}

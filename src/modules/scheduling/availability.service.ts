@@ -102,11 +102,16 @@ interface OccupancyOptions {
  *   (the window is covered by the POSITIVE availability set — recurring windows
  *   ∪ calendar slots — when that set is defined).
  *
- * Positive-availability gating is conditional and PER-TENANT
+ * Positive-availability gating for a day with NO schedule/calendar-slot
+ * coverage is skipped (day is treated as unrestricted) UNLESS either (a) the
+ * clinic opted into tenant-wide strict enforcement
  * (`tenant_settings.enforce_staff_working_hours`, default false — see
- * `enforceWorkingHours`): if a staff member has no schedule and no calendar slot
- * for the day, the "within working hours" gate is skipped unless the clinic has
- * opted into strict enforcement. Every HARD exclusion above is always enforced.
+ * `enforceWorkingHours`), or (b) this specific staff member has an explicit
+ * working-days schedule configured at all (`StaffScheduleService.hasAnySchedule`)
+ * — in which case a day outside that set is always a violation, so a
+ * per-employee working-days assignment is enforced from the moment it exists,
+ * independent of the tenant toggle. Every HARD exclusion above is always
+ * enforced.
  *
  * Tenant isolation: branch + staff are tenant-validated; every composed query is
  * tenant-scoped.
@@ -412,6 +417,7 @@ export class AvailabilityService {
       occupying,
       positive,
       enforceWhenUndefined,
+      staffHasSchedule,
     ] = await Promise.all([
       this.holidayService.findForDate(tenantId, branchId, dateStr),
       this.blockedService.findOverlapping(
@@ -438,6 +444,7 @@ export class AvailabilityService {
         zone,
       ),
       this.enforceWorkingHours(tenantId, opts.manager),
+      this.staffSchedule.hasAnySchedule(tenantId, staffId),
     ]);
 
     const holiday = holidays.length > 0;
@@ -448,10 +455,13 @@ export class AvailabilityService {
     if (positive.length > 0) {
       outsideAvailability =
         subtractIntervals({ start, end }, positive).length > 0;
-    } else if (enforceWhenUndefined) {
-      // Nothing configured for this staff member on this day. Whether that
-      // means "unrestricted" or "unavailable" is the clinic's own decision —
-      // see `enforceWorkingHours`.
+    } else if (enforceWhenUndefined || staffHasSchedule) {
+      // Nothing configured for THIS day. If the clinic enforces working hours
+      // tenant-wide, or if this specific staff member has an explicit
+      // working-days schedule configured (on other days), an uncovered day is
+      // a working-days violation, not an unconfigured/unrestricted staff
+      // member — see `hasAnySchedule`. A staff member with no schedule at all
+      // keeps the original unrestricted default.
       outsideAvailability = true;
     }
 

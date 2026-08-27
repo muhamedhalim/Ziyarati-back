@@ -90,10 +90,10 @@ export class PlatformBillingAdminController {
   }
 
   @ApiOperation({ summary: 'Get a plan (admin view)' })
-  @ApiOkResponse({ description: 'Plan.' })
+  @ApiOkResponse({ description: 'Plan, including whether it has active subscribers.' })
   @Get('plans/:id')
   getPlan(@Param('id', ParseUUIDPipe) id: string) {
-    return this.plans.get(id);
+    return this.plans.getAdminView(id);
   }
 
   @ApiOperation({

@@ -213,6 +213,61 @@ describe('PlanAdminService', () => {
         }),
       );
     });
+
+    // Regression: an explicit `null` used to be collapsed into `undefined`
+    // ("field omitted") before it ever reached the entity, so there was no
+    // way to reset a previously-finite limit back to unlimited via the API.
+    it('an explicit null on a limit field clears it back to unlimited on a plan that is NOT in use', async () => {
+      plans.findOne.mockResolvedValueOnce(plan({ max_users: 50 }));
+      subscriptions.count.mockResolvedValueOnce(0);
+      plans.save.mockImplementationOnce(async (p: any) => p);
+
+      const result = await service.update('plan-1', {
+        maxUsers: null,
+      } as any);
+
+      expect(result.max_users).toBeNull();
+    });
+
+    it('an explicit null on a limit field is treated as a term change and blocked on an IN-USE plan', async () => {
+      plans.findOne.mockResolvedValueOnce(plan({ max_users: 50 }));
+      subscriptions.count.mockResolvedValueOnce(3); // in use
+
+      await expect(
+        service.update('plan-1', { maxUsers: null } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(plans.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('is_in_use enrichment (admin catalogue views)', () => {
+    it('listAll() marks a plan with active subscribers as is_in_use', async () => {
+      plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
+      subscriptions.count.mockResolvedValueOnce(2);
+
+      const [result] = await service.listAll();
+
+      expect(result.is_in_use).toBe(true);
+    });
+
+    it('listAll() marks a plan with no active subscribers as NOT is_in_use', async () => {
+      plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
+      subscriptions.count.mockResolvedValueOnce(0);
+
+      const [result] = await service.listAll();
+
+      expect(result.is_in_use).toBe(false);
+    });
+
+    it('getAdminView() enriches a single plan the same way', async () => {
+      plans.findOne.mockResolvedValueOnce(plan({ id: 'plan-1' }));
+      subscriptions.count.mockResolvedValueOnce(1);
+
+      const result = await service.getAdminView('plan-1');
+
+      expect(result.is_in_use).toBe(true);
+      expect(result.name).toBe('Starter');
+    });
   });
 
   // Phase 0.2 — limitDeclarations (plan §8)

@@ -31,7 +31,7 @@ describe('AvailabilityService.assertBookable', () => {
   let slotService: { findAvailableForDay: jest.Mock };
   let blockedService: { findOverlapping: jest.Mock };
   let holidayService: { findForDate: jest.Mock };
-  let staffSchedule: { getAvailability: jest.Mock };
+  let staffSchedule: { getAvailability: jest.Mock; hasAnySchedule: jest.Mock };
   let staffTimeOff: { isOffOn: jest.Mock };
 
   /** A calendar slot covering the whole day → positive availability covers the booking. */
@@ -63,7 +63,12 @@ describe('AvailabilityService.assertBookable', () => {
     slotService = { findAvailableForDay: jest.fn().mockResolvedValue([]) };
     blockedService = { findOverlapping: jest.fn().mockResolvedValue([]) };
     holidayService = { findForDate: jest.fn().mockResolvedValue([]) };
-    staffSchedule = { getAvailability: jest.fn().mockResolvedValue(null) };
+    staffSchedule = {
+      getAvailability: jest.fn().mockResolvedValue(null),
+      // No employee-specific working-days set by default — preserves the
+      // pre-existing unrestricted default for staff nobody has configured.
+      hasAnySchedule: jest.fn().mockResolvedValue(false),
+    };
     staffTimeOff = { isOffOn: jest.fn().mockResolvedValue(false) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -345,6 +350,27 @@ describe('AvailabilityService.assertBookable', () => {
           reasonCodes: [BookabilityReason.OUTSIDE_WORKING_HOURS],
         },
       });
+    });
+
+    it('rejects a day OUTSIDE the employee\'s own working-days set, even with the tenant flag off', async () => {
+      // The staff member has an explicit weekly schedule (e.g. Mon/Wed/Fri),
+      // but nothing at all for the requested day — no calendar slot either.
+      nothingConfigured();
+      staffSchedule.hasAnySchedule.mockResolvedValue(true);
+      enforceWorkingHours(false);
+      await expect(assert()).rejects.toMatchObject({
+        code: ErrorCode.STAFF_NOT_AVAILABLE,
+        publicContext: {
+          reasonCodes: [BookabilityReason.OUTSIDE_WORKING_HOURS],
+        },
+      });
+    });
+
+    it('keeps a staff member with NO configured schedule unrestricted even if OTHER staff use the feature', async () => {
+      nothingConfigured();
+      staffSchedule.hasAnySchedule.mockResolvedValue(false);
+      enforceWorkingHours(false);
+      await expect(assert()).resolves.toBeUndefined();
     });
   });
 
