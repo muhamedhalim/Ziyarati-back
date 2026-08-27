@@ -33,11 +33,14 @@ import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { ListTenantsQueryDto } from './dto/list-tenants.query.dto';
 import { TenantApprovalActionDto } from './dto/tenant-approval-action.dto';
 import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
+import { UpdateTenantTargetsDto } from './dto/update-tenant-targets.dto';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { ROLE } from '../../rbac/rbac.constants';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { ROLE, PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
@@ -101,6 +104,34 @@ const S_SETTINGS = {
     defaultLanguage: { type: 'string', example: 'ar' },
     currency: { type: 'string', example: 'SAR' },
     botEnabled: { type: 'boolean', example: true },
+  },
+};
+
+const S_TARGET_METRIC = {
+  type: 'object',
+  properties: {
+    target: { type: 'number', nullable: true, example: 100 },
+    current: { type: 'number', example: 42 },
+    remaining: { type: 'number', nullable: true, example: 58 },
+    percentage: { type: 'number', nullable: true, example: 42 },
+    isCompleted: { type: 'boolean', example: false },
+  },
+};
+
+const S_TARGET_PROGRESS = {
+  type: 'object',
+  properties: {
+    period: {
+      type: 'object',
+      properties: {
+        month: { type: 'string', example: '2026-08' },
+        start: { type: 'string', format: 'date-time' },
+        end: { type: 'string', format: 'date-time' },
+      },
+    },
+    currency: { type: 'string', example: 'SAR' },
+    appointments: S_TARGET_METRIC,
+    revenue: S_TARGET_METRIC,
   },
 };
 
@@ -421,6 +452,76 @@ current values.
   @Roles(ROLE.OWNER, ROLE.MANAGER)
   updateMySettings(@Body() dto: UpdateTenantSettingsDto) {
     return this.tenantService.updateSettings(this.ctx.requireTenantId(), dto);
+  }
+
+  @ApiOperation({
+    summary: "Get progress toward my clinic's monthly targets (self-service)",
+    description: `
+**Protected — requires \`analytics.reports.read\`** (held by Owner and
+Manager by default — the same permission that gates the dashboard's revenue
+trend chart, since this response includes revenue figures).
+
+Returns progress toward the appointment/revenue goals configured by the
+clinic owner, always for the CURRENT (in-progress) UTC calendar month —
+computed live from completed appointments and paid payments, not a stored
+snapshot. Either target may be \`null\` (not yet set), in which case
+\`remaining\`/\`percentage\` are also \`null\` rather than a misleading 0%.
+
+**Who can call this:** Any tenant user holding \`analytics.reports.read\`.
+
+**Tenant scoping:** Always the caller's own clinic.
+    `.trim(),
+  })
+  @ApiOkResponse({ description: 'Target progress for the current month.', schema: S_TARGET_PROGRESS })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `analytics.reports.read`.',
+    schema: S_ERROR,
+  })
+  @Get('me/targets')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions(PERMISSION.ANALYTICS_REPORTS_READ)
+  myTargetProgress() {
+    return this.tenantService.getTargetProgress(this.ctx.requireTenantId());
+  }
+
+  @ApiOperation({
+    summary: "Set my clinic's monthly targets (owner self-service)",
+    description: `
+**Protected — \`owner\` role required.**
+
+Sets the monthly appointment/revenue goals shown on the dashboard target
+cards. Only the supplied field changes; the other target keeps its current
+value. Pass \`0\` for a trivially-met target; omit a field to leave it as-is
+— there is currently no way to clear a target back to "unset" once set.
+
+Returns the freshly recomputed progress (same shape as the GET above), so
+the caller sees the effect of the change without a second request.
+
+**Who can call this:** Clinic Owner only — deliberately narrower than
+\`updateMySettings\` (Owner or Manager), since a revenue/appointment target is
+a business commitment, not an operational toggle.
+
+**Tenant scoping:** Always operates on the caller's own clinic.
+    `.trim(),
+  })
+  @ApiOkResponse({ description: 'Targets updated; current progress returned.', schema: S_TARGET_PROGRESS })
+  @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not the clinic `owner`.',
+    schema: S_ERROR,
+  })
+  @Patch('me/targets')
+  @Roles(ROLE.OWNER)
+  updateMyTargets(@Body() dto: UpdateTenantTargetsDto) {
+    return this.tenantService.updateTargets(this.ctx.requireTenantId(), dto);
   }
 
   // ────────────────────── Platform admin (by ID) ─────────────────────────── //

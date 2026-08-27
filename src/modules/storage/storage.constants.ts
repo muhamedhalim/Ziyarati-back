@@ -255,6 +255,7 @@ const SIGNED_MIMES = new Set([
   'image/jpeg',
   'image/webp',
   'image/gif',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 
 export function normalizeExtension(ext: string): string {
@@ -356,6 +357,13 @@ function matchesSignature(buf: Buffer, mime: string): boolean {
         buf[3] === 0x38 &&
         (buf[4] === 0x37 || buf[4] === 0x39) &&
         buf[5] === 0x61
+      );
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      // .xlsx is a ZIP (OOXML) container — "PK\x03\x04" local-file-header
+      // signature. Same check any ZIP-based Office format would use; there is
+      // no format-specific magic number deeper than "this is a ZIP".
+      return (
+        buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04
       );
     default:
       return false;

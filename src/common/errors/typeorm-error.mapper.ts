@@ -55,11 +55,17 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   // the migration → backend deploy window — the new constraint
   // (UQ_customers_tenant_email) once the migration has run, or the old
   // global one (its literal name — a TypeORM-generated hash, not a
-  // hand-written identifier) beforehand.
+  // hand-written identifier) beforehand. Its definition was later
+  // tightened by CrmCustomerSoftDeleteAwareUniqueness1730059000000 (now
+  // scoped to live rows only, `WHERE "deleted_at" IS NULL`) but the NAME —
+  // and therefore this mapping — did not change.
   UQ_customers_tenant_email: 'A customer with this email already exists',
   UQ_8536b8b85c06969f84f0c098b03: 'A customer with this email already exists',
   // CustomerNationalId1730053000000 — partial unique index (national_id is
-  // optional, only enforced once a value is set).
+  // optional, only enforced once a value is set). Later tightened by
+  // CrmCustomerSoftDeleteAwareUniqueness1730059000000 to also require
+  // `"deleted_at" IS NULL` (a soft-deleted customer's national_id is free to
+  // reuse) — again, same name, so this mapping is unchanged.
   UQ_customers_tenant_national_id: 'A customer with this ID number already exists',
   // FND-032/M-04: a second concurrent request lost the race to open a new
   // invoice for a subscription that already has one OPEN.

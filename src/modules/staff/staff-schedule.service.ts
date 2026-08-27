@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 
@@ -66,6 +66,8 @@ function weekdayOf(dateStr: string): number {
  */
 @Injectable()
 export class StaffScheduleService {
+  private readonly logger = new Logger(StaffScheduleService.name);
+
   constructor(
     @InjectRepository(StaffSchedule)
     private readonly schedules: Repository<StaffSchedule>,
@@ -115,6 +117,21 @@ export class StaffScheduleService {
       where: { staff: { id: staffId }, tenant: { id: tenantId } },
       relations: { branch: true },
       order: { day_of_week: 'ASC', start_time: 'ASC' },
+    });
+  }
+
+  /**
+   * Has this staff member been given ANY active weekly schedule (on any day,
+   * at any branch)? Used by `AvailabilityService` to decide whether "no
+   * schedule row for this particular day" means "unrestricted" (never
+   * configured — the pre-existing default-open behaviour) or "not a working
+   * day" (the admin explicitly defined a working-days set for this person,
+   * so a day outside it must be enforced regardless of the tenant-wide
+   * `enforce_staff_working_hours` toggle).
+   */
+  async hasAnySchedule(tenantId: string, staffId: string): Promise<boolean> {
+    return this.schedules.exists({
+      where: { staff: { id: staffId }, tenant: { id: tenantId }, is_active: true },
     });
   }
 
@@ -284,21 +301,55 @@ export class StaffScheduleService {
     }));
 
     // 2) Active staff schedules at this branch/day.
-    const slots = await this.schedules.find({
-      where: {
-        branch: { id: branchId },
-        tenant: { id: tenantId },
-        day_of_week: dayOfWeek,
-        is_active: true,
-      },
-      relations: { staff: { user: true } },
+    //
+    // Uses an explicit INNER JOIN to `staff` (and `staff.tenant`), not
+    // `.find({ relations: { staff: ... } })`. TypeORM's `relations` option
+    // always compiles to a LEFT JOIN, and for a soft-deletable target
+    // (`StaffProfile.deleted_at`) it appends `staff.deleted_at IS NULL` to
+    // the JOIN CONDITION, not a WHERE clause — so a `StaffSchedule` row left
+    // behind by a soft-deleted staff member (soft-delete does not cascade;
+    // only a hard DELETE does, via `onDelete: 'CASCADE'`) survives the LEFT
+    // JOIN with `staff: null` instead of being dropped. One such row is
+    // enough to crash every staff member's availability lookup for that
+    // branch/day, since this query returns them all in one batch. An INNER
+    // JOIN drops the row when the match fails, which is also the correct
+    // business rule: a deleted (or otherwise no-longer-resolvable) staff
+    // member is never bookable.
+    const slots = await this.schedules
+      .createQueryBuilder('schedule')
+      .innerJoinAndSelect('schedule.staff', 'staff')
+      .leftJoinAndSelect('staff.user', 'user')
+      .innerJoin('schedule.branch', 'branch')
+      .innerJoin('schedule.tenant', 'tenant')
+      .innerJoin('staff.tenant', 'staffTenant')
+      .where('branch.id = :branchId', { branchId })
+      .andWhere('tenant.id = :tenantId', { tenantId })
+      .andWhere('staffTenant.id = :tenantId', { tenantId })
+      .andWhere('schedule.day_of_week = :dayOfWeek', { dayOfWeek })
+      .andWhere('schedule.is_active = :isActive', { isActive: true })
+      .getMany();
+
+    // Defense-in-depth, not the fix: the query above already excludes any
+    // schedule whose staff member no longer resolves (soft-deleted, or any
+    // future orphaned reference) via an INNER JOIN, so `resolvedSlots` should
+    // always equal `slots` in production. This guard means that if that ever
+    // stops being true — a future refactor back to `find({ relations })`, a
+    // raw-SQL insert, replica lag — one bad row still cannot 500 every OTHER
+    // staff member's availability in the same batch; it is just excluded,
+    // and logged so the underlying data issue stays visible.
+    const resolvedSlots = slots.filter((slot) => {
+      if (slot.staff) return true;
+      this.logger.warn(
+        `Schedule ${slot.id} has no resolvable staff member (branch ${branchId}, tenant ${tenantId}, day ${dayOfWeek}) — skipped`,
+      );
+      return false;
     });
-    if (slots.length === 0) {
+    if (resolvedSlots.length === 0) {
       return { date: dateStr, branchId, dayOfWeek, open: true, staff: [] };
     }
 
     // 3) Exclude staff on time off covering the date (date strings compare lexicographically).
-    const staffIds = [...new Set(slots.map((s) => s.staff.id))];
+    const staffIds = [...new Set(resolvedSlots.map((s) => s.staff.id))];
     const onLeaveStaff = new Set<string>();
     const offs = await this.timeOff.find({
       where: { staff: In(staffIds), tenant: { id: tenantId } },
@@ -316,7 +367,7 @@ export class StaffScheduleService {
       { staffId: string; title?: string; name?: string; windows: { start: string; end: string }[] }
     >();
 
-    for (const slot of slots) {
+    for (const slot of resolvedSlots) {
       const staffMember = slot.staff;
       if (!staffMember.is_available_for_booking) continue;
       if (onLeaveStaff.has(staffMember.id)) continue;

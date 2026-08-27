@@ -65,49 +65,57 @@ export class CreatePlanDto {
   @IsEnum(CustomCycleUnit)
   customCycleUnit?: CustomCycleUnit;
 
-  @ApiPropertyOptional({ description: 'Max branches (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max branches (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxBranches?: number;
+  maxBranches?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max users (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max users (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxUsers?: number;
+  maxUsers?: number | null;
 
   @ApiPropertyOptional({
     description: 'Max AI tokens / month (null = unlimited).',
+    type: 'integer',
+    nullable: true,
   })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxAiTokens?: number;
+  maxAiTokens?: number | null;
 
   @ApiPropertyOptional({
     description: 'Max WhatsApp messages / month (null = unlimited).',
+    type: 'integer',
+    nullable: true,
   })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxWhatsappMessages?: number;
+  maxWhatsappMessages?: number | null;
 
   @ApiPropertyOptional({
     description: 'Max appointments / month (null = unlimited).',
+    type: 'integer',
+    nullable: true,
   })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxAppointments?: number;
+  maxAppointments?: number | null;
 
   @ApiPropertyOptional({
     description: 'Max campaigns / month (null = unlimited).',
+    type: 'integer',
+    nullable: true,
   })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxCampaigns?: number;
+  maxCampaigns?: number | null;
 
   // ── Count-based resource caps ────────────────────────────────────────────
   // These 13 columns have existed on `subscription_plans` since migration
@@ -120,86 +128,88 @@ export class CreatePlanDto {
   // nothing. Exposing them here is what makes those caps configurable, and is a
   // prerequisite for pricing them as add-ons.
 
-  @ApiPropertyOptional({ description: 'Max AI requests / month (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max AI requests / month (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxAiRequests?: number;
+  maxAiRequests?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max customers/patients (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max customers/patients (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxCustomers?: number;
+  maxCustomers?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max CRM/WhatsApp contacts (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max CRM/WhatsApp contacts (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxCrmContacts?: number;
+  maxCrmContacts?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max conversations (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max conversations (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxConversations?: number;
+  maxConversations?: number | null;
 
   @ApiPropertyOptional({
     description:
       'Max storage in BYTES (null = unlimited). The platform-wide `uploads.tenant_quota_gb` safety cap still applies and the lower of the two binds.',
+    type: 'integer',
+    nullable: true,
   })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxStorageBytes?: number;
+  maxStorageBytes?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max uploaded-files storage in BYTES (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max uploaded-files storage in BYTES (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxUploadedFiles?: number;
+  maxUploadedFiles?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max API calls / month (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max API calls / month (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxApiCalls?: number;
+  maxApiCalls?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max emails (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max emails (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxEmails?: number;
+  maxEmails?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max invoices (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max invoices (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxInvoices?: number;
+  maxInvoices?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max payments (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max payments (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxPayments?: number;
+  maxPayments?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max transactions (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max transactions (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxTransactions?: number;
+  maxTransactions?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max AI knowledge-base files (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max AI knowledge-base files (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxKnowledgeBaseFiles?: number;
+  maxKnowledgeBaseFiles?: number | null;
 
-  @ApiPropertyOptional({ description: 'Max AI training files storage in BYTES (null = unlimited).' })
+  @ApiPropertyOptional({ description: 'Max AI training files storage in BYTES (null = unlimited).', type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
   @IsPositive()
-  maxTrainingFiles?: number;
+  maxTrainingFiles?: number | null;
 
   @ApiPropertyOptional({
     description:
@@ -225,8 +235,11 @@ export class CreatePlanDto {
 }
 
 /**
- * Update a plan. On a plan that already has active subscribers, only `name` and
- * `isActive` are honoured — economic terms are immutable (422) to protect
- * existing subscriptions; create a new plan instead.
+ * Update a plan. On a plan that already has active subscribers, only `name`,
+ * `isActive` and `limitDeclarations` are honoured — economic terms (price,
+ * billing cycle, every `maxX` limit, `isCustom`) are immutable (422) to
+ * protect existing subscriptions; create a new plan instead. On a plan with
+ * no active subscribers, every field is fully editable, including clearing a
+ * previously-set limit back to unlimited by sending `null` for it.
  */
 export class UpdatePlanDto extends PartialType(CreatePlanDto) {}

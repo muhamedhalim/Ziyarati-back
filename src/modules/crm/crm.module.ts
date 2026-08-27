@@ -19,6 +19,7 @@ import { CustomerNoteService } from './customer-note.service';
 import { CustomerTagService } from './customer-tag.service';
 import { CustomerTagRelationService } from './customer-tag-relation.service';
 import { CustomerFileService } from './customer-file.service';
+import { CustomerImportService } from './customer-import.service';
 
 import { CustomerController } from './customer.controller';
 import { CustomerProfileController } from './customer-profile.controller';
@@ -27,6 +28,7 @@ import { CustomerNoteController } from './customer-note.controller';
 import { CustomerTagController } from './customer-tag.controller';
 import { CustomerTagRelationController } from './customer-tag-relation.controller';
 import { CustomerFileController } from './customer-file.controller';
+import { CustomerImportController } from './customer-import.controller';
 
 /**
  * CRM Domain.
@@ -64,6 +66,7 @@ import { CustomerFileController } from './customer-file.controller';
     CustomerTagController,
     CustomerTagRelationController,
     CustomerFileController,
+    CustomerImportController,
   ],
   providers: [
     CustomerService,
@@ -73,6 +76,7 @@ import { CustomerFileController } from './customer-file.controller';
     CustomerTagService,
     CustomerTagRelationService,
     CustomerFileService,
+    CustomerImportService,
   ],
   // `CustomerNoteService` is reused (not duplicated) by the Live Agent Handover
   // feature's internal notes — a note added during a handover is a first-class

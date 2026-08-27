@@ -20,16 +20,26 @@ import { CustomerFile } from '../CRM/CustomerFile';
 import { CustomerTagRelation } from '../CRM/CustomerTagRelation';
 
 @Entity('customers')
-@Index(['tenant', 'phone'], { unique: true })
+// `phone` is deliberately NOT unique — multiple customers (e.g. a shared
+// household/family line, a walk-in without their own number) may legitimately
+// share one. This is a plain lookup index only, for search and booking-match
+// performance. `national_id` is the sole hard identity key (see below). See
+// migration CrmCustomerSoftDeleteAwareUniqueness1730059000000.
+@Index(['tenant', 'phone'])
 // FND-040/M-01: tenant-scoped, matching the sibling phone index above — was
 // UNIQUE (email) globally (migration CustomerTenantScopedEmail1730019000000).
-@Index(['tenant', 'email'], { unique: true })
+// Scoped to LIVE rows only (`deleted_at IS NULL`) — a soft-deleted customer's
+// email must not permanently block re-creating a customer with that email;
+// see migration CrmCustomerSoftDeleteAwareUniqueness1730059000000.
+@Index(['tenant', 'email'], { unique: true, where: '"deleted_at" IS NULL' })
 // `national_id` is OPTIONAL (not every clinic collects it), so this is a
-// partial unique index — only enforced once a value is actually set. See
-// migration CustomerNationalId1730053000000.
+// partial unique index — only enforced once a value is actually set, and
+// (like email above) only against LIVE rows, so deleting a customer frees
+// their national_id up for reuse. See migrations CustomerNationalId1730053000000
+// and CrmCustomerSoftDeleteAwareUniqueness1730059000000.
 @Index(['tenant', 'national_id'], {
   unique: true,
-  where: '"national_id" IS NOT NULL',
+  where: '"national_id" IS NOT NULL AND "deleted_at" IS NULL',
 })
 export class Customer {
   @PrimaryGeneratedColumn('uuid')

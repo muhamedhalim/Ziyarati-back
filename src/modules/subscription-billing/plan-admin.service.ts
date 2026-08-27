@@ -17,7 +17,7 @@ import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
 
 /** DTO keys carrying a plain numeric limit — the only keys the map below may name. */
 type NumericPlanDtoKey = {
-  [K in keyof CreatePlanDto]-?: CreatePlanDto[K] extends number | undefined
+  [K in keyof CreatePlanDto]-?: CreatePlanDto[K] extends number | null | undefined
     ? K
     : never;
 }[keyof CreatePlanDto];
@@ -62,12 +62,21 @@ export const PLAN_LIMIT_FIELDS = [
   bigint?: boolean;
 }>;
 
-/** A limit value as it must be written to the entity (bigint columns are strings). */
+/**
+ * A limit value as it must be written to the entity (bigint columns are
+ * strings). `undefined` ("field omitted") and `null` ("field explicitly
+ * cleared") are kept distinct — collapsing them (as `raw == null` used to)
+ * made it impossible to reset a previously-finite limit back to unlimited:
+ * an explicit `null` from the client would silently turn into "leave
+ * unchanged" once assigned to the entity, since TypeORM's `save()` skips
+ * `undefined` properties but persists `null` ones.
+ */
 function limitValue(
   isBigInt: boolean,
-  raw: number | undefined,
-): string | number | undefined {
-  if (raw == null) return undefined;
+  raw: number | null | undefined,
+): string | number | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
   return isBigInt ? String(raw) : raw;
 }
 
@@ -137,9 +146,14 @@ export class PlanAdminService {
     private readonly accessCache: AccessCacheService,
   ) {}
 
-  /** Full catalogue including inactive plans (admin view). */
-  listAll(): Promise<SubscriptionPlan[]> {
-    return this.plans.find({ order: { price: 'ASC' } });
+  /**
+   * Full catalogue including inactive plans (admin view), each carrying
+   * `is_in_use` so the admin UI knows, before the user even opens Edit,
+   * whether price/cycle/limits will be editable or frozen for that row.
+   */
+  async listAll(): Promise<Array<SubscriptionPlan & { is_in_use: boolean }>> {
+    const plans = await this.plans.find({ order: { price: 'ASC' } });
+    return this.withUsageFlag(plans);
   }
 
   async get(id: string): Promise<SubscriptionPlan> {
@@ -150,8 +164,22 @@ export class PlanAdminService {
     return plan;
   }
 
+  /** Single-plan admin view, `is_in_use`-enriched like {@link listAll}. */
+  async getAdminView(id: string): Promise<SubscriptionPlan & { is_in_use: boolean }> {
+    const [withFlag] = await this.withUsageFlag([await this.get(id)]);
+    return withFlag;
+  }
+
+  private async withUsageFlag(
+    plans: SubscriptionPlan[],
+  ): Promise<Array<SubscriptionPlan & { is_in_use: boolean }>> {
+    return Promise.all(
+      plans.map(async (plan) => ({ ...plan, is_in_use: await this.isInUse(plan.id) })),
+    );
+  }
+
   async create(dto: CreatePlanDto): Promise<SubscriptionPlan> {
-    const limits: Record<string, string | number | undefined> = {};
+    const limits: Record<string, string | number | null | undefined> = {};
     for (const field of PLAN_LIMIT_FIELDS) {
       limits[field.column] = limitValue(isBigIntColumn(field), dto[field.dto]);
     }

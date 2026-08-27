@@ -108,3 +108,12 @@ export function previousMonthUtc(now: Date = new Date()): ReportMonth {
   );
   return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
 }
+
+/**
+ * The CURRENT calendar month, in UTC, as `'YYYY-MM'`. Used by the dashboard
+ * target-tracking cards, which — unlike the monthly report sweep — always
+ * report on the month still in progress, never the one that just ended.
+ */
+export function currentMonthUtc(now: Date = new Date()): ReportMonth {
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+}

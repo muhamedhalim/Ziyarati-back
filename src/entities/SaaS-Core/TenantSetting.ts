@@ -6,6 +6,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { Tenant } from '../SaaS-Core/Tenant';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('tenant_settings')
 export class TenantSetting {
@@ -68,6 +69,29 @@ export class TenantSetting {
    */
   @Column({ default: false })
   enforce_staff_working_hours!: boolean;
+
+  /**
+   * Monthly goal for completed appointments, set by the clinic owner and
+   * shown as a progress card on the dashboard. `null` = no target set (the
+   * card renders a "set a target" prompt rather than a 0% bar). The target
+   * period is always the current UTC calendar month — there is no history of
+   * past targets, only the standing goal.
+   */
+  @Column({ type: 'int', nullable: true })
+  appointment_target?: number | null;
+
+  /**
+   * Monthly revenue goal, in the clinic's own {@link currency}, set by the
+   * owner. Same semantics as {@link appointment_target}: `null` = unset.
+   */
+  @Column({
+    type: 'decimal',
+    precision: 14,
+    scale: 2,
+    nullable: true,
+    transformer: decimalTransformer,
+  })
+  revenue_target?: number | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   updated_at?: Date;

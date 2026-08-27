@@ -15,9 +15,11 @@ import {
 /**
  * Create a customer for the caller's tenant.
  *
- * Schema notes (frozen entity): `phone` is required and unique per tenant;
- * `email` is a NOT-NULL, globally-unique column, so it is required here. Tenant
- * is NEVER taken from input — it comes from TenantContext.
+ * Schema notes (frozen entity): `phone` is required but NOT unique — multiple
+ * customers may share one. `email` is required and unique per tenant among
+ * live customers; `national_id` is optional but, when provided, is the sole
+ * hard identity key (unique per tenant among live customers). Tenant is NEVER
+ * taken from input — it comes from TenantContext.
  */
 export class CreateCustomerDto {
   @ApiPropertyOptional({ description: 'Full name.', example: 'Sara Al-Otaibi' })
@@ -27,7 +29,7 @@ export class CreateCustomerDto {
   full_name?: string;
 
   @ApiProperty({
-    description: 'Phone number (unique per tenant).',
+    description: 'Phone number. Not required to be unique — multiple customers may share one.',
     example: '+966500000000',
   })
   @IsString()
@@ -35,7 +37,7 @@ export class CreateCustomerDto {
   phone!: string;
 
   @ApiProperty({
-    description: 'Email (unique within this tenant).',
+    description: 'Email (unique among this tenant\'s live customers).',
     example: 'sara@example.com',
   })
   @IsEmail()
@@ -70,7 +72,7 @@ export class CreateCustomerDto {
 
   @ApiPropertyOptional({
     description:
-      'Client ID/identity number (unique within this tenant when provided). Letters, digits and dashes only.',
+      "Client ID/identity number (unique among this tenant's live customers when provided). Letters, digits and dashes only.",
     example: '1234567890',
   })
   @IsOptional()
