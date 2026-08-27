@@ -8,12 +8,15 @@ import { StaffTimeOff } from '../../entities/Staff/StaffTimeOff';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 
 import { AppError, ErrorCode } from '../../common/errors';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { UpdateScheduleDto } from './dto/update-schedule.dto';
 import { CreateWorkingHoursDto } from './dto/create-working-hours.dto';
 import { UpdateWorkingHoursDto } from './dto/update-working-hours.dto';
+
+const MINUTES_PER_DAY = 24 * 60;
 
 /** "HH:MM[:SS]" → minutes since midnight. */
 function toMinutes(time: string): number {
@@ -78,6 +81,8 @@ export class StaffScheduleService {
     @InjectRepository(StaffProfile)
     private readonly staff: Repository<StaffProfile>,
     @InjectRepository(Branch) private readonly branches: Repository<Branch>,
+    @InjectRepository(BranchUser)
+    private readonly branchUsers: Repository<BranchUser>,
   ) {}
 
   // ─────────────────────────── Staff schedules ───────────────────────────── //
@@ -89,6 +94,7 @@ export class StaffScheduleService {
   ): Promise<StaffSchedule> {
     await this.assertStaff(tenantId, staffId);
     await this.assertBranch(tenantId, dto.branchId);
+    await this.assertStaffAssignedToBranch(tenantId, staffId, dto.branchId);
     this.assertTimeOrder(dto.startTime, dto.endTime);
 
     await this.assertNoScheduleOverlap(
@@ -152,6 +158,7 @@ export class StaffScheduleService {
 
     if (dto.branchId) {
       await this.assertBranch(tenantId, dto.branchId);
+      await this.assertStaffAssignedToBranch(tenantId, staffId, dto.branchId);
       row.branch = { id: dto.branchId } as Branch;
     }
     if (dto.dayOfWeek !== undefined) row.day_of_week = dto.dayOfWeek;
@@ -284,21 +291,39 @@ export class StaffScheduleService {
     const dayOfWeek = weekdayOf(dateStr); // 0=Sun … 6=Sat
 
     // 1) Is the branch open that day?
-    const branchHours = await this.workingHours.find({
-      where: {
-        branch: { id: branchId },
-        tenant: { id: tenantId },
-        day_of_week: dayOfWeek,
-        is_closed: false,
-      },
+    //
+    // `Branch.create()` never seeds default `WorkingHour` rows — a clinic
+    // starts with NONE configured, for ANY day, until an admin explicitly
+    // visits Branches → Working Hours. That means "no WorkingHour row for
+    // this day" is an extremely common, entirely normal state — most clinics
+    // set up staff schedules first — and it must NOT be conflated with "the
+    // branch is explicitly closed", or a correctly-scheduled staff member
+    // would show zero availability on their own working day for a reason
+    // that has nothing to do with them. Only an explicit `is_closed: true`
+    // row is a real closure; the absence of any row for the day means
+    // "branch hours aren't configured for this day", so the branch imposes
+    // no additional constraint and the staff member's own schedule alone
+    // defines the bookable window (still gated by every other check below —
+    // is_available_for_booking, time off, blocked slots, existing bookings).
+    const allBranchHours = await this.workingHours.find({
+      where: { branch: { id: branchId }, tenant: { id: tenantId }, day_of_week: dayOfWeek },
     });
-    if (branchHours.length === 0) {
+    const explicitlyClosed = allBranchHours.some((w) => w.is_closed);
+    if (explicitlyClosed) {
       return { date: dateStr, branchId, dayOfWeek, open: false, staff: [] };
     }
-    const openWindows = branchHours.map((w) => ({
-      start: toMinutes(w.start_time),
-      end: toMinutes(w.end_time),
-    }));
+    const branchHours = allBranchHours.filter((w) => !w.is_closed);
+    const branchHoursConfigured = branchHours.length > 0;
+    // Unconfigured ⇒ a single all-day window, so intersecting a staff slot
+    // against it below is a no-op and the staff's own hours pass through
+    // untouched. Configured ⇒ the real, admin-set open windows, exactly as
+    // before.
+    const openWindows = branchHoursConfigured
+      ? branchHours.map((w) => ({
+          start: toMinutes(w.start_time),
+          end: toMinutes(w.end_time),
+        }))
+      : [{ start: 0, end: MINUTES_PER_DAY }];
 
     // 2) Active staff schedules at this branch/day.
     //
@@ -399,10 +424,14 @@ export class StaffScheduleService {
       branchId,
       dayOfWeek,
       open: true,
-      branchHours: openWindows.map((w) => ({
-        start: toHHMM(w.start),
-        end: toHHMM(w.end),
-      })),
+      // Reports the branch's ACTUAL configured hours — `[]` (not an
+      // all-day window) when none exist for this day, so a caller can tell
+      // "the branch imposed no constraint because nobody configured it"
+      // apart from "the branch is open all day by design".
+      branchHours: branchHoursConfigured
+        ? openWindows.map((w) => ({ start: toHHMM(w.start), end: toHHMM(w.end) }))
+        : [],
+      branchHoursConfigured,
       staff: [...byStaff.values()],
     };
   }
@@ -439,6 +468,56 @@ export class StaffScheduleService {
     if (!ok) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'Branch not found in this clinic',
+      });
+    }
+  }
+
+  /**
+   * A weekly schedule at a branch the staff member isn't even assigned to
+   * (via `branch_users`) is silently unreachable: the "New Appointment"
+   * employee picker filters staff by `branch_users`, so this person would
+   * never even be selectable for that branch to begin with, while
+   * `AvailabilityService` resolves recurring windows strictly by
+   * `StaffSchedule.branch` — the two never meet, and the ONLY symptom is an
+   * empty slot grid with no indication why. Rejecting the mismatch here, at
+   * write time, is cheaper than ever having to diagnose it from an empty
+   * read. A staff member with NO branch assignment at all (legacy data,
+   * pre-dating branch assignment, or a single-branch clinic where the
+   * assignment step was skipped) is let through — nothing to check against.
+   */
+  private async assertStaffAssignedToBranch(
+    tenantId: string,
+    staffId: string,
+    branchId: string,
+  ): Promise<void> {
+    const profile = await this.staff.findOne({
+      where: { id: staffId, tenant: { id: tenantId } },
+      relations: { user: true },
+    });
+    if (!profile) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Staff member not found' });
+    }
+
+    const assignedAnywhere = await this.branchUsers.exists({
+      where: { tenant: { id: tenantId }, user: { id: profile.user.id } },
+    });
+    // No branch assignment at all — legacy/unconfigured data, nothing to
+    // check the schedule's branch against. `createSchedule`/`updateSchedule`
+    // already validated `branchId` belongs to this TENANT via `assertBranch`.
+    if (!assignedAnywhere) return;
+
+    const assignedHere = await this.branchUsers.exists({
+      where: {
+        tenant: { id: tenantId },
+        user: { id: profile.user.id },
+        branch: { id: branchId },
+      },
+    });
+    if (!assignedHere) {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message:
+          'This staff member is not assigned to the selected branch. Assign them to this branch first (Staff → Branches).',
+        publicContext: { staffId, branchId },
       });
     }
   }
