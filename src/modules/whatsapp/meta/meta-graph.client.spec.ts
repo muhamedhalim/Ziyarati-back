@@ -144,3 +144,93 @@ describe('MetaGraphClient.createTemplate', () => {
     expect(init.headers['Content-Type']).toBeUndefined();
   });
 });
+
+/**
+ * Regression cover for the defect that broke Embedded Signup in production:
+ * `getWaba` named `owner_business_info` in its `fields` list. That field is
+ * gated on `business_management`, a permission Meta's Embedded Signup NEVER
+ * grants (it grants exactly `whatsapp_business_management` +
+ * `whatsapp_business_messaging`), so Graph rejected the entire read and
+ * onboarding aborted at step 3 for every clinic.
+ *
+ * Every other suite mocks `getWaba` wholesale, which is precisely why nothing
+ * caught it — these assertions are on the real outbound request.
+ */
+describe('MetaGraphClient.getWaba', () => {
+  let client: MetaGraphClient;
+  let fetchMock: jest.Mock;
+
+  const config = {
+    graphVersion: 'v21.0',
+    httpTimeoutMs: 10_000,
+    graphUrl: (path: string) => `https://graph.facebook.com/v21.0/${path.replace(/^\//, '')}`,
+  } as unknown as MetaConfig;
+
+  const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body, headers: new Map() });
+  const fail = (status: number, body: unknown) => ({
+    ok: false,
+    status,
+    json: async () => body,
+    headers: new Map(),
+  });
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    client = new MetaGraphClient(config);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('does NOT request owner_business_info in the primary read', async () => {
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: 'waba-1', name: 'Clinic', currency: 'SAR', timezone_id: '1' }))
+      .mockResolvedValueOnce(ok({ owner_business_info: { id: 'biz-1' } }));
+
+    await client.getWaba('waba-1', 'tok-1');
+
+    const primaryUrl = fetchMock.mock.calls[0][0] as string;
+    expect(primaryUrl).toContain('fields=id,name,currency,timezone_id');
+    expect(primaryUrl).not.toContain('owner_business_info');
+  });
+
+  it('still resolves the owning business id when the token may read it', async () => {
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: 'waba-1', name: 'Clinic' }))
+      .mockResolvedValueOnce(ok({ owner_business_info: { id: 'biz-1' } }));
+
+    await expect(client.getWaba('waba-1', 'tok-1')).resolves.toMatchObject({
+      id: 'waba-1',
+      ownerBusinessId: 'biz-1',
+    });
+  });
+
+  it('SUCCEEDS with an Embedded Signup token that cannot read owner_business_info', async () => {
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: 'waba-1', name: 'Clinic', currency: 'SAR', timezone_id: '1' }))
+      .mockResolvedValueOnce(
+        fail(403, {
+          error: { message: '(#200) Requires business_management permission', code: 200, type: 'OAuthException' },
+        }),
+      );
+
+    // The whole point: a clinic connects even though the optional read fails.
+    await expect(client.getWaba('waba-1', 'tok-1')).resolves.toEqual({
+      id: 'waba-1',
+      name: 'Clinic',
+      currency: 'SAR',
+      timezoneId: '1',
+      ownerBusinessId: undefined,
+    });
+  });
+
+  it('still fails loudly when the WABA itself cannot be read', async () => {
+    fetchMock.mockResolvedValueOnce(
+      fail(400, { error: { message: 'Unsupported get request', code: 100 } }),
+    );
+
+    await expect(client.getWaba('waba-1', 'tok-1')).rejects.toMatchObject({
+      code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
+  });
+});
