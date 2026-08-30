@@ -2,9 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   ChargeRequest,
   ChargeResult,
+  FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
   PaymentProvider,
   RefundRequest,
   RefundResult,
+  VerifyChargeResult,
 } from './payment-provider.interface';
 
 /**
@@ -33,6 +35,7 @@ export class RecurringUnavailableProvider implements PaymentProvider {
       success: false,
       failureReason:
         'Subscription auto-charge is not yet enabled: it requires provider tokenization (a saved payment method). No charge was attempted.',
+      failureClass: FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
     };
   }
 
@@ -45,5 +48,17 @@ export class RecurringUnavailableProvider implements PaymentProvider {
       failureReason:
         'Subscription refunds are not available until recurring payments are enabled with the provider.',
     };
+  }
+
+  /**
+   * T084 — never charges anything, so never has anything to verify. Reports
+   * 'unknown' (never 'paid' without evidence) — the reconciliation sweep
+   * treats 'unknown' as "safe to release the stale claim for a retry".
+   */
+  async verifyCharge(invoiceId: string): Promise<VerifyChargeResult> {
+    this.logger.warn(
+      `Verify requested for invoice ${invoiceId} — recurring payments are not yet enabled, nothing to verify`,
+    );
+    return { status: 'unknown' };
   }
 }

@@ -163,6 +163,30 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   [JOB.INTEGRATION_INBOUND]: TENANT,
   [JOB.INTEGRATION_RECOVER_STALE]: SYSTEM,
   [JOB.CAMPAIGNS_RECOVER_DLQ]: SYSTEM,
+
+  // Spec 014 "Clinic Platform Completion".
+  // Same shape as SUBSCRIPTIONS_RENEWAL_CHECK: a single repeatable sweep with
+  // no per-invocation tenant identity — billing itself is not feature-gated
+  // (FeatureKey.BILLING is `alwaysOn`).
+  [JOB.SUBSCRIPTIONS_RENEWAL_BILL]: SYSTEM,
+  [JOB.ANALYTICS_EXPORT_GENERATE]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.ANALYTICS,
+  },
+  // Rendered for one tenant's own invoice; `invoices` maps to PAYMENTS below.
+  [JOB.ANALYTICS_INVOICE_DOCUMENT]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.PAYMENTS,
+  },
+  [JOB.PLATFORM_WAITLIST_EVALUATE]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.APPOINTMENTS,
+  },
+  // Repeatable maintenance sweeps — no per-invocation tenant identity, same
+  // registration shape as PLATFORM_LOG_CLEANUP / ANALYTICS_CLEANUP.
+  [JOB.PLATFORM_WAITLIST_EXPIRY]: SYSTEM,
+  [JOB.PLATFORM_QUEUE_DAY_CLOSE]: SYSTEM,
+  [JOB.PLATFORM_EXPORT_EXPIRY]: SYSTEM,
 };
 
 /**

@@ -18,6 +18,8 @@ describe('NotificationsProcessor — reap sweep lock guard (M9)', () => {
         .mockResolvedValue({ reclaimed: 1, requeued: 2, purgedLogs: 3 }),
     };
     const metrics = { setWorkerHeartbeat: jest.fn() };
+    /** In-app inbox retention rides on this same sweep. */
+    const inApp = { purgeExpired: jest.fn().mockResolvedValue(4) };
     const processor = new NotificationsProcessor(
       dispatch as unknown as NotificationDispatchService,
       {} as any,
@@ -25,12 +27,13 @@ describe('NotificationsProcessor — reap sweep lock guard (M9)', () => {
       {} as any,
       lock as unknown as DistributedLockService,
       metrics as any,
+      inApp as any,
     );
-    return { processor, lock, dispatch, metrics };
+    return { processor, lock, dispatch, metrics, inApp };
   };
 
   it('acquires the lock, runs the reap sweep, and releases the lock afterwards', async () => {
-    const { processor, lock, dispatch, metrics } = build('token-abc');
+    const { processor, lock, dispatch, metrics, inApp } = build('token-abc');
 
     const result = await processor.process({
       name: JOB.NOTIFICATIONS_REAP,
@@ -38,13 +41,43 @@ describe('NotificationsProcessor — reap sweep lock guard (M9)', () => {
     } as any);
 
     expect(dispatch.reapAndRequeue).toHaveBeenCalled();
-    expect(result).toEqual({ reclaimed: 1, requeued: 2, purgedLogs: 3 });
+    expect(inApp.purgeExpired).toHaveBeenCalled();
+    expect(result).toEqual({
+      reclaimed: 1,
+      requeued: 2,
+      purgedLogs: 3,
+      purgedInApp: 4,
+    });
     expect(lock.release).toHaveBeenCalledWith(
       'lock:notifications-reap',
       'token-abc',
     );
     expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
       'notifications.reap',
+    );
+  });
+
+  it('still reclaims and requeues when the in-app retention purge fails', async () => {
+    // Retention is housekeeping; reclaim/requeue moves real outbound messages.
+    // A failure in the former must never cost us the latter — nor the lock.
+    const { processor, lock, dispatch, metrics, inApp } = build('token-abc');
+    inApp.purgeExpired.mockRejectedValue(new Error('statement timeout'));
+
+    const result = await processor.process({
+      name: JOB.NOTIFICATIONS_REAP,
+      data: {},
+    } as any);
+
+    expect(dispatch.reapAndRequeue).toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({ reclaimed: 1, requeued: 2, purgedInApp: 0 }),
+    );
+    expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+      'notifications.reap',
+    );
+    expect(lock.release).toHaveBeenCalledWith(
+      'lock:notifications-reap',
+      'token-abc',
     );
   });
 

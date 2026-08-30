@@ -6,7 +6,8 @@ import { DataSource, EntityManager, Repository } from 'typeorm';
 import { Payment } from '../../entities/Payments/Payment';
 import { Refund } from '../../entities/Payments/Refund';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { PaymentStatus } from '../../entities/enums';
+import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
+import { InvoiceStatus, PaymentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
@@ -23,6 +24,10 @@ import {
 import { RefundRecordedEvent } from '../../events/refund.events';
 import { verifyTimestamp } from '../integration-platform/inbound/inbound-signature';
 import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-platform.constants';
+import {
+  PlatformAdminAuditService,
+  PLATFORM_ADMIN_AUDIT_ACTION,
+} from '../platform/platform-admin-audit.service';
 
 type TargetStatus = 'paid' | 'failed' | 'refunded' | 'pending';
 
@@ -56,7 +61,9 @@ export interface WebhookResult {
   accepted: boolean;
   matched?: boolean;
   deduplicated?: boolean;
-  status?: PaymentStatus;
+  /** `InvoiceStatus` when this event resolved to a subscription invoice
+   *  (T083) rather than a one-time `Payment`. */
+  status?: PaymentStatus | InvoiceStatus;
 }
 
 /**
@@ -81,11 +88,14 @@ export class PaymentWebhookService {
   constructor(
     @InjectRepository(Payment)
     private readonly payments: Repository<Payment>,
+    @InjectRepository(SubscriptionInvoice)
+    private readonly invoices: Repository<SubscriptionInvoice>,
     private readonly dataSource: DataSource,
     private readonly verifier: MoyasarWebhookVerifier,
     private readonly transactions: TransactionService,
     private readonly adjustments: SettlementAdjustmentService,
     private readonly financials: PaymentFinancialsService,
+    private readonly audit: PlatformAdminAuditService,
     private readonly emitter: EventEmitter2,
   ) {}
 
@@ -131,6 +141,18 @@ export class PaymentWebhookService {
       relations: { tenant: true, customer: true, appointment: true },
     });
     if (!owner || !owner.tenant) {
+      // T083 (spec 014, US5) — no ONE-TIME payment matched; a subscription
+      // renewal charge is the other thing this same webhook stream can be
+      // about. Tried second (rarer today — no real recurring provider is
+      // bound yet, see RecurringUnavailableProvider), never a second
+      // controller/route.
+      const invoiceResult = await this.handleSubscriptionInvoiceEvent(
+        event,
+        eventId,
+        gatewayPaymentId,
+      );
+      if (invoiceResult) return invoiceResult;
+
       this.logger.warn(
         `Moyasar webhook for unknown gateway payment ${gatewayPaymentId}`,
       );
@@ -144,7 +166,11 @@ export class PaymentWebhookService {
 
     // Tracks which domain event (and its name) to emit after the transaction commits.
     let pendingEventName: string | null = null;
-    let pendingEvent: PaymentSucceededEvent | PaymentRefundedEvent | PaymentFailedEvent | null = null;
+    let pendingEvent:
+      | PaymentSucceededEvent
+      | PaymentRefundedEvent
+      | PaymentFailedEvent
+      | null = null;
     // Phase 1.6 (plan §14) — a SEPARATE slot: a refund webhook that reconciles
     // a genuinely new gateway-side refund fires this ALONGSIDE
     // PaymentRefundedEvent above (two different events, two different
@@ -233,7 +259,9 @@ export class PaymentWebhookService {
           // Freeze the fee breakdown from the gateway-reported figures.
           this.financials.applyOnPaid(
             payment,
-            this.financials.extractFromRaw(event as unknown as Record<string, unknown>),
+            this.financials.extractFromRaw(
+              event as unknown as Record<string, unknown>,
+            ),
           );
           changed = true;
           pendingEventName = PaymentSucceededEvent.eventName;
@@ -279,7 +307,10 @@ export class PaymentWebhookService {
       this.emitter.emit(pendingEventName, pendingEvent);
     }
     if (pendingRefundRecordedEvent && !result.deduplicated) {
-      this.emitter.emit(RefundRecordedEvent.eventName, pendingRefundRecordedEvent);
+      this.emitter.emit(
+        RefundRecordedEvent.eventName,
+        pendingRefundRecordedEvent,
+      );
     }
 
     return {
@@ -288,6 +319,148 @@ export class PaymentWebhookService {
       status: result.status,
       deduplicated: result.deduplicated,
     };
+  }
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — T083 (US5, FR-B013-FR-B016).
+   * The subscription-invoice half of the SAME webhook stream — reached only
+   * once no one-time `Payment` matched. Correlates via the metadata
+   * `BillingService.payInvoice` already attaches to every charge
+   * (`{ subscriptionInvoiceId }`), so a confirmation that never made it back
+   * through the synchronous `payInvoice` response ("lost confirmation",
+   * FR-B016) can still settle the invoice later. Falls back to
+   * `provider_reference` for a later/duplicate event on an already-settled
+   * charge.
+   *
+   * Out-of-order safe: a terminal invoice (PAID/VOID/REFUNDED) never moves
+   * backward — a late 'failed' after an earlier 'paid' is recorded as a
+   * no-op dedup, not a regression (FR-B015). Never touches `retry_count`/
+   * `next_retry_at` — that schedule belongs to `RenewalService`'s own
+   * synchronous decline path; a webhook 'failed' is additional evidence,
+   * not a second place that invents a retry cadence.
+   *
+   * Returns `null` (not a `WebhookResult`) when nothing correlates, so the
+   * caller falls through to the SAME "unknown, accepted, logged" outcome
+   * the one-time-payment path already uses for an unmatched event.
+   */
+  private async handleSubscriptionInvoiceEvent(
+    event: MoyasarWebhookEvent,
+    eventId: string | undefined,
+    gatewayPaymentId: string,
+  ): Promise<WebhookResult | null> {
+    const metadataInvoiceId = (
+      event.data as Record<string, unknown> | undefined
+    )?.metadata as Record<string, unknown> | undefined;
+    const correlatedId = metadataInvoiceId?.subscriptionInvoiceId as
+      | string
+      | undefined;
+
+    const owner = correlatedId
+      ? await this.invoices.findOne({ where: { id: correlatedId } })
+      : await this.invoices.findOne({
+          where: { provider_reference: gatewayPaymentId },
+        });
+    if (!owner) return null;
+
+    const target = this.mapEvent(event);
+    if (target !== 'paid' && target !== 'failed') {
+      // Refunds/unknowns on subscription revenue: accepted and logged, but
+      // not acted on here — subscription refunds go through the
+      // `PaymentProvider.refund()` abstraction (`RecurringUnavailableProvider`
+      // today), never this webhook path.
+      return { accepted: true, matched: true };
+    }
+
+    const result = await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(SubscriptionInvoice);
+      const locked = await repo.findOne({
+        where: { id: owner.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked)
+        return { status: owner.status, deduplicated: false, settled: false };
+
+      if (eventId && locked.webhook_event_id === eventId) {
+        return { status: locked.status, deduplicated: true, settled: false };
+      }
+
+      if (
+        locked.status === InvoiceStatus.PAID ||
+        locked.status === InvoiceStatus.VOID ||
+        locked.status === InvoiceStatus.REFUNDED
+      ) {
+        if (eventId) {
+          locked.webhook_event_id = eventId;
+          await repo.save(locked);
+        }
+        return { status: locked.status, deduplicated: true, settled: false };
+      }
+
+      let settled = false;
+      if (target === 'paid') {
+        if (this.subscriptionAmountMatches(locked, event)) {
+          locked.status = InvoiceStatus.PAID;
+          locked.paid_at = new Date();
+          locked.provider_reference = gatewayPaymentId;
+          locked.failure_reason = null;
+          locked.failure_class = null;
+          settled = true;
+        } else {
+          this.logger.error(
+            `Webhook 'paid' for subscription invoice ${locked.id} rejected: captured amount/currency mismatch`,
+          );
+        }
+      } else {
+        locked.failure_reason =
+          event.data?.source?.message ??
+          event.data?.status ??
+          'Gateway reported failure';
+      }
+      if (eventId) locked.webhook_event_id = eventId;
+      await repo.save(locked);
+      return { status: locked.status, deduplicated: false, settled };
+    });
+
+    if (!result.deduplicated) {
+      await this.audit.record({
+        action: result.settled
+          ? PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_SETTLED
+          : PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_DECLINED,
+        userId: undefined,
+        entityType: 'subscription_invoice',
+        entityId: owner.id,
+        tenantId: owner.tenant_id,
+        after: { source: 'webhook', status: result.status },
+      });
+    }
+
+    return {
+      accepted: true,
+      matched: true,
+      status: result.status,
+      deduplicated: result.deduplicated,
+    };
+  }
+
+  /** Same anti-tampering reasoning as `capturedMatches`, for a subscription
+   *  invoice's plain `amount`/`currency` columns. */
+  private subscriptionAmountMatches(
+    invoice: SubscriptionInvoice,
+    event: MoyasarWebhookEvent,
+  ): boolean {
+    const reportedAmount = event.data?.amount;
+    if (reportedAmount != null) {
+      const expectedC = Math.round(Number(invoice.amount) * 100);
+      if (Math.round(Number(reportedAmount)) !== expectedC) return false;
+    }
+    const reportedCurrency = event.data?.currency;
+    if (
+      reportedCurrency &&
+      reportedCurrency.toUpperCase() !== invoice.currency.toUpperCase()
+    ) {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -480,7 +653,8 @@ export class PaymentWebhookService {
         return;
       case 'stale':
         throw new AppError(ErrorCode.UNAUTHORIZED, {
-          message: 'Webhook event timestamp is outside the accepted freshness window',
+          message:
+            'Webhook event timestamp is outside the accepted freshness window',
         });
       case 'future':
         throw new AppError(ErrorCode.UNAUTHORIZED, {

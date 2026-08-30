@@ -19,6 +19,29 @@ const MODULES_DIR = path.join(__dirname, '..');
  * `@NoEntitlementRequired()` on the controller instead, so the decision lives
  * next to the code it governs.
  */
+/**
+ * Entitlement decision table for spec 014 "Clinic Platform Completion"
+ * (T026A). Recorded here so every later controller task applies the same
+ * decision rather than re-deriving one; each task below also carries this
+ * table inline where it lands the annotation or the exemption-set entry.
+ *
+ * | New controller                                    | Policy                                    |
+ * |----------------------------------------------------|--------------------------------------------|
+ * | medical-records/clinical.controller.ts              | @RequireFeature(FeatureKey.CRM)            |
+ * | crm/customer-segment.controller.ts                   | @RequireFeature(FeatureKey.CRM)            |
+ * | patient-queue/patient-queue.controller.ts            | @RequireFeature(FeatureKey.APPOINTMENTS)   |
+ * | waitlist/waitlist.controller.ts                      | @RequireFeature(FeatureKey.APPOINTMENTS)   |
+ * | report-export/report-export.controller.ts            | @RequireFeature(FeatureKey.ANALYTICS)      |
+ * | activity-log/activity-log.controller.ts              | @NoEntitlementRequired(FeatureKey.CORE_WORKSPACE) |
+ * | patient-actions/patient-action.controller.ts         | PLATFORM_AND_PUBLIC_SURFACES (neither decorator — @Public(), no tenant principal) |
+ * | public-booking/public-booking.controller.ts          | PLATFORM_AND_PUBLIC_SURFACES (neither decorator — @Public(), anonymous visitor) |
+ * | email/unsubscribe.controller.ts                      | PLATFORM_AND_PUBLIC_SURFACES (neither decorator — must work regardless of billing state) |
+ *
+ * No new FeatureKey is introduced — every key above already exists in the
+ * registry. The three PLATFORM_AND_PUBLIC_SURFACES rows are added to the set
+ * below by the task that creates that controller file, not here, since an
+ * entry naming a file that does not yet exist fails the stale-entry check.
+ */
 const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   // Super-admin / platform-operator consoles. Tenant billing state never gates
   // a platform operator — `SubscriptionAccessGuard` bypasses principals with
@@ -69,7 +92,18 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   // metered at the execution seam it feeds, and abuse is bounded here by its
   // own per-guest and per-IP limiters rather than by a subscription.
   'guest-chat/attachments/guest-attachment.controller.ts',
+  // T026A/T031 (spec 014) — authorised by the action-link token itself
+  // (constant-time digest match), with no tenant principal at all to
+  // resolve an entitlement against. Abuse is bounded by the T025 per-route
+  // throttles, not a subscription gate.
+  'patient-actions/patient-action.controller.ts',
   'public-discovery/public-discovery.controller.ts',
+  // T065-T068 (spec 014, S4) — the deterministic step-by-step counterpart to
+  // the public AI booking flow. Same reasoning as guest-chat above: an
+  // anonymous visitor has no tenant principal until a clinic is selected, and
+  // what the flow eventually costs is metered at `AppointmentsService.create`
+  // (the same write path the AI tool dispatcher uses), not gated here.
+  'public-booking/public-booking.controller.ts',
   'integration-platform/inbound/inbound-webhook.controller.ts',
   'notifications/notification-webhook.controller.ts',
   'payments/payment-webhook.controller.ts',
@@ -222,9 +256,7 @@ describe('every controller has an explicit entitlement policy', () => {
       // assertion of where enforcement lives (see FeatureSpec.serviceEnforced)
       // — an unflagged key with no gating route is still an orphan.
       if (spec.serviceEnforced) return false;
-      return spec.alwaysOn
-        ? !documentedAlwaysOn.has(key)
-        : !gated.has(key);
+      return spec.alwaysOn ? !documentedAlwaysOn.has(key) : !gated.has(key);
     });
 
     expect(orphans).toEqual([]);

@@ -5,9 +5,15 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 
 import { PublicDiscoveryService } from './public-discovery.service';
 import { Public } from '../auth/decorators/public.decorator';
+import {
+  PUBLIC_DISCOVERY_CITIES_THROTTLE,
+  PUBLIC_DISCOVERY_CLINICS_THROTTLE,
+  PUBLIC_DISCOVERY_CLINIC_DETAIL_THROTTLE,
+} from './public-discovery.throttle';
 
 /**
  * Public clinic discovery — ANONYMOUS (bypasses the global JwtAuthGuard via
@@ -26,6 +32,7 @@ export class PublicDiscoveryController {
       'The first step of the public booking flow. Derived from live branches of APPROVED, active, publicly-bookable clinics, so a city is never offered with nothing behind it.',
   })
   @ApiOkResponse({ description: 'Cities with at least one bookable branch.' })
+  @Throttle(PUBLIC_DISCOVERY_CITIES_THROTTLE)
   @Get('cities')
   cities() {
     return this.discovery.listCities();
@@ -42,6 +49,7 @@ export class PublicDiscoveryController {
       'Narrow to clinics with at least one active branch in this city.',
   })
   @ApiOkResponse({ description: 'Matching public clinics (cards).' })
+  @Throttle(PUBLIC_DISCOVERY_CLINICS_THROTTLE)
   @Get('clinics')
   clinics(@Query('q') q?: string, @Query('cityId') cityId?: string) {
     return this.discovery.searchClinics(q, undefined, cityId);
@@ -52,6 +60,7 @@ export class PublicDiscoveryController {
     summary: 'Public clinic detail: branches, services, doctors',
   })
   @ApiOkResponse({ description: 'Clinic public detail for the booking flow.' })
+  @Throttle(PUBLIC_DISCOVERY_CLINIC_DETAIL_THROTTLE)
   @Get('clinics/:id')
   clinic(@Param('id', ParseUUIDPipe) id: string) {
     return this.discovery.clinicDetail(id);

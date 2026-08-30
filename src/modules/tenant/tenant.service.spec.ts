@@ -197,6 +197,30 @@ describe('TenantService', () => {
       const result = await service.updateSettings('ten-1', { paymentRequired: false } as any);
       expect(result).toEqual(expect.objectContaining({ payment_required: false }));
     });
+
+    it('merges the T011 self-service/reminder switches, leaving unspecified fields unchanged', async () => {
+      settings.findOne.mockResolvedValueOnce({
+        id: 'set-1',
+        self_cancellation_enabled: false,
+        self_reschedule_enabled: false,
+        reminders_enabled: false,
+        reminder_lead_minutes: [],
+      });
+      settings.save.mockImplementationOnce(async (s: any) => s);
+      const result = await service.updateSettings('ten-1', {
+        selfCancellationEnabled: true,
+        remindersEnabled: true,
+        reminderLeadMinutes: [1440, 60],
+      } as any);
+      expect(result).toEqual(
+        expect.objectContaining({
+          self_cancellation_enabled: true,
+          self_reschedule_enabled: false, // untouched by this call
+          reminders_enabled: true,
+          reminder_lead_minutes: [1440, 60],
+        }),
+      );
+    });
   });
 
   describe('target progress', () => {

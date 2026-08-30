@@ -38,6 +38,7 @@ function build(session: Record<string, unknown>, rows: Rows = {}) {
     { query } as never,
     { assertAccess: jest.fn().mockResolvedValue(undefined) } as never,
     { get: jest.fn().mockResolvedValue(session) } as never,
+    {} as never,
   );
   return {
     describe: () => service.describeSelection(CONV_TENANT, CONV, PRINCIPAL),
@@ -190,6 +191,7 @@ describe('PublicBookingContextService.describeSelection', () => {
       { query: jest.fn() } as never,
       { assertAccess: jest.fn().mockRejectedValue(new Error('nope')) } as never,
       { get: jest.fn() } as never,
+      {} as never,
     );
 
     await expect(

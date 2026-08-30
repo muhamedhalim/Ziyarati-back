@@ -17,6 +17,8 @@
 export interface MockQueryBuilder {
   select: jest.Mock;
   addSelect: jest.Mock;
+  /** `SELECT DISTINCT` — TypeORM's proper API for it, not a keyword smuggled into `select()`. */
+  distinct: jest.Mock;
   where: jest.Mock;
   andWhere: jest.Mock;
   orWhere: jest.Mock;
@@ -57,6 +59,7 @@ export const createMockQueryBuilder = (): MockQueryBuilder => {
   const chain = () => qb;
   qb.select = jest.fn(chain);
   qb.addSelect = jest.fn(chain);
+  qb.distinct = jest.fn(chain);
   qb.where = jest.fn(chain);
   qb.andWhere = jest.fn(chain);
   qb.orWhere = jest.fn(chain);

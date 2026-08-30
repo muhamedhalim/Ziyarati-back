@@ -83,6 +83,36 @@ export class ReportQueryBuilder {
     return qb;
   }
 
+  /**
+   * Spec 014 (Clinic Platform Completion) — T022 (S6, FR-A002). The reusable
+   * `(from, to, branchId?)` scope for RAW source-table queries (an
+   * appointment/payment timeline, not the pre-aggregated `daily_reports` /
+   * `monthly_reports` tables `dateRange`/`month` above already cover).
+   * Branch scope is derived from the caller's own already-resolved value —
+   * NEVER from a raw request parameter passed straight through — so callers
+   * must resolve/authorize `branchId` themselves before reaching here, the
+   * same discipline `scoped()` already enforces for `tenantId`.
+   *
+   * `column` is the entity's own timestamptz column name (e.g. `paid_at`,
+   * `created_at`) — always a fixed identifier the calling code selects, so
+   * this never interpolates caller-supplied SQL.
+   */
+  static instantRange<T extends object>(
+    qb: SelectQueryBuilder<T>,
+    alias: string,
+    column: string,
+    from: Date,
+    to: Date,
+    branchId?: string,
+  ): SelectQueryBuilder<T> {
+    qb.andWhere(`${alias}.${column} BETWEEN :instantFrom AND :instantTo`, {
+      instantFrom: from,
+      instantTo: to,
+    });
+    if (branchId) qb.andWhere(`${alias}.branch = :instantBranchId`, { instantBranchId: branchId });
+    return qb;
+  }
+
   /** Order + page, then execute, returning a standardized page envelope. */
   static async page<T extends object>(
     qb: SelectQueryBuilder<T>,

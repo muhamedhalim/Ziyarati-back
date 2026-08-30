@@ -95,6 +95,21 @@ export class ScheduledNotification {
   @Column({ type: 'varchar', length: 255, nullable: true })
   source_ref?: string | null;
 
+  /**
+   * Spec 014 (Clinic Platform Completion) — T015 (FR-G012, FR-M015). Which
+   * channel actually carried a terminal (SENT or FAILED) outcome — may
+   * differ from the template's configured channel when a WhatsApp send
+   * fell back to email (T014). NULL until a terminal outcome is reached.
+   */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  channel?: string | null;
+
+  /** Why no channel was used at all — set only alongside a terminal FAILED
+   *  with no send attempted (e.g. opted out, no reachable recipient). A
+   *  bounded, non-secret label — NEVER a raw provider error (see T015). */
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  skip_reason?: string | null;
+
   @CreateDateColumn()
   created_at!: Date;
 }

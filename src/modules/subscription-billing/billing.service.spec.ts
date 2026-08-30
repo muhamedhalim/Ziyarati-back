@@ -4,7 +4,11 @@ import { DataSource } from 'typeorm';
 
 import { BillingService } from './billing.service';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
-import { PAYMENT_PROVIDER } from './payment/payment-provider.interface';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import {
+  FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
+  PAYMENT_PROVIDER,
+} from './payment/payment-provider.interface';
 import { InvoiceStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
 import {
@@ -23,6 +27,7 @@ const TENANT = 't1';
 describe('BillingService', () => {
   let service: BillingService;
   let invoices: MockRepository;
+  let tenants: MockRepository;
   let payment: { charge: jest.Mock };
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
@@ -33,6 +38,7 @@ describe('BillingService', () => {
 
   beforeEach(async () => {
     invoices = createMockRepository();
+    tenants = createMockRepository();
     payment = { charge: jest.fn() };
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
@@ -46,6 +52,7 @@ describe('BillingService', () => {
           provide: getRepositoryToken(SubscriptionInvoice),
           useValue: invoices,
         },
+        { provide: getRepositoryToken(Tenant), useValue: tenants },
         { provide: PAYMENT_PROVIDER, useValue: payment },
         { provide: DataSource, useValue: dataSource },
       ],
@@ -57,8 +64,23 @@ describe('BillingService', () => {
 
   it('generates an OPEN invoice with a 2-dp amount', async () => {
     invoices.save.mockImplementationOnce(async (i: any) => i);
-    const inv = await service.generateInvoice(TENANT, 'sub1', 99.5);
-    expect(inv).toMatchObject({ amount: '99.50', status: InvoiceStatus.OPEN });
+    const periodStart = new Date('2026-01-01T00:00:00.000Z');
+    const periodEnd = new Date('2026-02-01T00:00:00.000Z');
+    const inv = await service.generateInvoice(
+      TENANT,
+      'sub1',
+      99.5,
+      periodStart,
+      periodEnd,
+      'SAR',
+    );
+    expect(inv).toMatchObject({
+      amount: '99.50',
+      status: InvoiceStatus.OPEN,
+      period_start: periodStart,
+      period_end: periodEnd,
+      currency: 'SAR',
+    });
   });
 
   // VER-013 (REQ-BILL-013) — only the NOT_FOUND case had coverage; the happy
@@ -127,6 +149,7 @@ describe('BillingService', () => {
         id: 'inv1',
         status: InvoiceStatus.OPEN,
         amount: '100',
+        currency: 'SAR',
       });
       payment.charge.mockResolvedValueOnce({
         success: true,
@@ -142,6 +165,11 @@ describe('BillingService', () => {
       expect(res.status).toBe(InvoiceStatus.PAID);
       expect(res.paid_at).toBeInstanceOf(Date);
       expect(res.provider_reference).toBe('gw-ref-1');
+      // T079/T081 — the charge uses the INVOICE's own currency (snapshotted
+      // at issue time from the platform default), never a hardcoded value.
+      expect(payment.charge).toHaveBeenCalledWith(
+        expect.objectContaining({ currency: 'SAR' }),
+      );
     });
 
     it('rejects an already-paid invoice (409, no charge attempted)', async () => {
@@ -229,6 +257,70 @@ describe('BillingService', () => {
       const res = await service.payInvoice(TENANT, 'inv1');
       expect(res).toBe(alreadyPaid);
       expect(lockedRepo().save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listTokenizationDeclines (T089 — FR-B005e)', () => {
+    it('returns the affected clinics with their retry state, newest-due first', async () => {
+      invoices.find.mockResolvedValueOnce([
+        {
+          id: 'inv1',
+          tenant_id: 'tenant-a',
+          subscription_id: 'sub-a',
+          amount: '99.00',
+          retry_count: 2,
+          next_retry_at: new Date('2026-09-01T00:00:00.000Z'),
+        },
+        {
+          id: 'inv2',
+          tenant_id: 'tenant-b',
+          subscription_id: 'sub-b',
+          amount: '49.00',
+          retry_count: 1,
+          next_retry_at: new Date('2026-09-05T00:00:00.000Z'),
+        },
+      ]);
+      tenants.find.mockResolvedValueOnce([
+        { id: 'tenant-a', name: 'Clinic A' },
+        { id: 'tenant-b', name: 'Clinic B' },
+      ]);
+
+      const result = await service.listTokenizationDeclines();
+
+      expect(invoices.find).toHaveBeenCalledWith({
+        where: {
+          status: InvoiceStatus.OPEN,
+          failure_class: FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
+        },
+        order: { next_retry_at: 'ASC' },
+      });
+      expect(result).toEqual([
+        {
+          tenantId: 'tenant-a',
+          tenantName: 'Clinic A',
+          invoiceId: 'inv1',
+          subscriptionId: 'sub-a',
+          amount: '99.00',
+          retryCount: 2,
+          nextRetryAt: new Date('2026-09-01T00:00:00.000Z'),
+        },
+        {
+          tenantId: 'tenant-b',
+          tenantName: 'Clinic B',
+          invoiceId: 'inv2',
+          subscriptionId: 'sub-b',
+          amount: '49.00',
+          retryCount: 1,
+          nextRetryAt: new Date('2026-09-05T00:00:00.000Z'),
+        },
+      ]);
+    });
+
+    it('never confuses an ordinary decline with a tokenization decline — the query filters on the exact failure_class', async () => {
+      invoices.find.mockResolvedValueOnce([]);
+      const result = await service.listTokenizationDeclines();
+      expect(result).toEqual([]);
+      expect(tenants.find).not.toHaveBeenCalled();
     });
   });
 

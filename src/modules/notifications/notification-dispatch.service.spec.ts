@@ -11,6 +11,9 @@ import { TenantRateLimiterService } from '../../queue/tenant-rate-limiter.servic
 import { WhatsappExecutionService } from '../whatsapp/whatsapp-execution.service';
 import { TransientNotificationError } from './notification-dispatch.errors';
 import { NOTIFICATION_CHANNEL, RECIPIENT_TYPE } from './notification.constants';
+import { AppError, ErrorCode } from '../../common/errors';
+import { USAGE_METRIC } from '../subscription-billing/usage-metric';
+import { NotificationChannelFactory } from './channels/notification-channel.factory';
 import {
   createMockRepository,
   createMockQueryBuilder,
@@ -29,6 +32,8 @@ describe('NotificationDispatchService.processScheduled', () => {
   let rateLimiter: { consume: jest.Mock };
   let whatsapp: { sendTemplateMessage: jest.Mock };
   let config: { get: jest.Mock };
+  let emailProvider: { send: jest.Mock };
+  let channelFactory: { resolve: jest.Mock };
 
   const whatsappNotification = (overrides: Record<string, unknown> = {}) => ({
     id: ID,
@@ -40,15 +45,33 @@ describe('NotificationDispatchService.processScheduled', () => {
     ...overrides,
   });
 
+  /** A recipient with BOTH a valid phone and an email — the common case. */
+  const defaultCustomer = (overrides: Record<string, unknown> = {}) => ({
+    id: 'cust-1',
+    preferred_locale: null,
+    phone: '+15551234567',
+    email: 'patient@example.com',
+    opted_out_at: null,
+    ...overrides,
+  });
+
   beforeEach(async () => {
     scheduled = createMockRepository();
     customers = createMockRepository();
-    customers.findOne.mockResolvedValue({ id: 'cust-1', preferred_locale: null });
+    customers.findOne.mockResolvedValue(defaultCustomer());
     logs = { record: jest.fn().mockResolvedValue(undefined), purgeOlderThan: jest.fn().mockResolvedValue(0) };
     queue = { enqueueNotificationDispatchBulk: jest.fn().mockResolvedValue([]) };
     rateLimiter = { consume: jest.fn().mockResolvedValue({ allowed: true }) };
     whatsapp = { sendTemplateMessage: jest.fn() };
     config = { get: jest.fn().mockReturnValue('en') };
+    emailProvider = { send: jest.fn().mockResolvedValue({ success: true, providerRef: 'email-1' }) };
+    channelFactory = {
+      resolve: jest.fn((channel?: string) => {
+        if (channel === NOTIFICATION_CHANNEL.WHATSAPP) return { name: 'meta-whatsapp-cloud' };
+        if (channel === NOTIFICATION_CHANNEL.EMAIL) return emailProvider;
+        throw new Error(`no provider for channel "${channel ?? 'UNKNOWN'}"`);
+      }),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -60,6 +83,7 @@ describe('NotificationDispatchService.processScheduled', () => {
         { provide: TenantRateLimiterService, useValue: rateLimiter },
         { provide: WhatsappExecutionService, useValue: whatsapp },
         { provide: ConfigService, useValue: config },
+        { provide: NotificationChannelFactory, useValue: channelFactory },
       ],
     }).compile();
     service = moduleRef.get(NotificationDispatchService);
@@ -95,18 +119,154 @@ describe('NotificationDispatchService.processScheduled', () => {
     expect(logs.record).toHaveBeenCalled();
   });
 
-  it('marks PERMANENT when the template is not linked to an approved WhatsApp template', async () => {
-    scheduled.findOne.mockResolvedValueOnce(
-      whatsappNotification({ template: { id: 't', channel: NOTIFICATION_CHANNEL.WHATSAPP, provider_template_id: null } }),
-    );
-    const res = await service.processScheduled(TENANT, ID);
-    expect(res).toMatchObject({ status: 'failed_permanent' });
+  // ── T014 (spec 014): WhatsApp-first / email-fallback ──────────────────
+  describe('channel fallback (T014, FR-G010)', () => {
+    it('falls back to email when the clinic has no approved WhatsApp template', async () => {
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: {
+            id: 't',
+            channel: NOTIFICATION_CHANNEL.WHATSAPP,
+            provider_template_id: null,
+            content_en: 'hello',
+          },
+        }),
+      );
+      const res = await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
+      expect(emailProvider.send).toHaveBeenCalledWith(
+        expect.objectContaining({ recipientEmail: 'patient@example.com' }),
+      );
+      expect(res).toEqual({ status: 'sent', providerRef: 'email-1' });
+    });
+
+    it('falls back to email when the recipient has no reachable WhatsApp identity', async () => {
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ phone: '' }));
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      const res = await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
+      expect(emailProvider.send).toHaveBeenCalled();
+      expect(res).toEqual({ status: 'sent', providerRef: 'email-1' });
+    });
+
+    it('falls back to email when WhatsApp returns a PERMANENT failure — quota reservation was still invoked', async () => {
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockRejectedValueOnce(new Error('account not approved'));
+      const res = await service.processScheduled(TENANT, ID);
+      // The WhatsApp seam (and therefore its quota reservation) WAS invoked —
+      // the fallback happens only after it fails, never instead of trying.
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalled();
+      expect(emailProvider.send).toHaveBeenCalled();
+      expect(res).toEqual({ status: 'sent', providerRef: 'email-1' });
+    });
+
+    it('T053 (FR-M009): does NOT fall back to email when the WhatsApp quota is exhausted — records QUOTA_EXHAUSTED', async () => {
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockRejectedValueOnce(
+        new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message: 'Usage limit reached for WHATSAPP_MESSAGES (100/100)',
+          publicContext: { metric: USAGE_METRIC.WHATSAPP_MESSAGES, used: 100, limit: 100, requested: 1 },
+        }),
+      );
+      const res = await service.processScheduled(TENANT, ID);
+
+      expect(whatsapp.sendTemplateMessage).toHaveBeenCalled();
+      // The whole point: an over-quota clinic must not get an unmetered
+      // email as a free substitute for the channel it ran out of.
+      expect(emailProvider.send).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ status: 'failed_permanent' });
+      expect(scheduled.update).toHaveBeenCalledWith(
+        { id: ID },
+        expect.objectContaining({ skip_reason: 'QUOTA_EXHAUSTED' }),
+      );
+    });
+
+    it('does NOT fall back on a TRANSIENT WhatsApp failure — retries WhatsApp itself instead', async () => {
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'FAILED' });
+      await expect(service.processScheduled(TENANT, ID)).rejects.toBeInstanceOf(
+        TransientNotificationError,
+      );
+      expect(emailProvider.send).not.toHaveBeenCalled();
+    });
+
+    it('an opted-out recipient is reached on NO channel — not even as a fallback', async () => {
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ opted_out_at: new Date() }));
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: { id: 't', channel: NOTIFICATION_CHANNEL.WHATSAPP, provider_template_id: null },
+        }),
+      );
+      const res = await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
+      expect(emailProvider.send).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ status: 'failed_permanent' });
+    });
+
+    it('at-most-once is preserved across a fallback — a replay after a fallback send does nothing', async () => {
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockRejectedValueOnce(new Error('permanent'));
+      const first = await service.processScheduled(TENANT, ID);
+      expect(first).toEqual({ status: 'sent', providerRef: 'email-1' });
+
+      // Replay: the send-phase guard now loses (send_attempted already true).
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      scheduled.update.mockResolvedValueOnce({ affected: 0 });
+      const replay = await service.processScheduled(TENANT, ID);
+      expect(replay).toMatchObject({ status: 'noop', reason: 'duplicate-send-prevented' });
+      expect(emailProvider.send).toHaveBeenCalledTimes(1); // not called again on replay
+    });
+
+    // ── T015: channel/skip_reason written on every terminal outcome ────
+    it('T015: writes channel on success', async () => {
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'w1' });
+      await service.processScheduled(TENANT, ID);
+      expect(scheduled.update).toHaveBeenCalledWith(
+        { id: ID },
+        expect.objectContaining({ channel: NOTIFICATION_CHANNEL.WHATSAPP, skip_reason: null }),
+      );
+    });
+
+    it('T015: writes skip_reason (and a null channel) on a suppressed send — no provider was ever attempted', async () => {
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ opted_out_at: new Date() }));
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      await service.processScheduled(TENANT, ID);
+      expect(scheduled.update).toHaveBeenCalledWith(
+        { id: ID },
+        expect.objectContaining({ channel: null, skip_reason: 'OPTED_OUT' }),
+      );
+    });
+
+    it('T015: writes the ATTEMPTED channel (not a skip_reason) on a genuine permanent failure', async () => {
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ email: '' }));
+      scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
+      whatsapp.sendTemplateMessage.mockRejectedValueOnce(new Error('not approved'));
+      await service.processScheduled(TENANT, ID);
+      expect(scheduled.update).toHaveBeenCalledWith(
+        { id: ID },
+        expect.objectContaining({ channel: NOTIFICATION_CHANNEL.WHATSAPP, skip_reason: null }),
+      );
+    });
+
+    it('a genuinely unreachable recipient (no template/phone AND no email) fails permanently', async () => {
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ phone: '', email: '' }));
+      scheduled.findOne.mockResolvedValueOnce(
+        whatsappNotification({
+          template: { id: 't', channel: NOTIFICATION_CHANNEL.WHATSAPP, provider_template_id: null },
+        }),
+      );
+      const res = await service.processScheduled(TENANT, ID);
+      expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
+      expect(emailProvider.send).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ status: 'failed_permanent' });
+    });
   });
 
   // ── T157 gap-closure: locale-based WhatsApp template selection (LG-8) ────
   describe('[T157] locale-based template selection', () => {
     it('sends the DEFAULT provider_template_id when the customer has no recorded locale', async () => {
-      customers.findOne.mockResolvedValueOnce({ id: 'cust-1', preferred_locale: null });
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ preferred_locale: null }));
       scheduled.findOne.mockResolvedValueOnce(
         whatsappNotification({
           template: {
@@ -124,7 +284,7 @@ describe('NotificationDispatchService.processScheduled', () => {
     });
 
     it('sends provider_template_id_ar when the recipient customer prefers Arabic', async () => {
-      customers.findOne.mockResolvedValueOnce({ id: 'cust-1', preferred_locale: 'ar' });
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ preferred_locale: 'ar' }));
       scheduled.findOne.mockResolvedValueOnce(
         whatsappNotification({
           template: {
@@ -142,7 +302,7 @@ describe('NotificationDispatchService.processScheduled', () => {
     });
 
     it('falls back to provider_template_id when the customer prefers Arabic but no Arabic variant is linked (no regression)', async () => {
-      customers.findOne.mockResolvedValueOnce({ id: 'cust-1', preferred_locale: 'ar' });
+      customers.findOne.mockResolvedValueOnce(defaultCustomer({ preferred_locale: 'ar' }));
       scheduled.findOne.mockResolvedValueOnce(
         whatsappNotification({
           template: {
@@ -158,7 +318,7 @@ describe('NotificationDispatchService.processScheduled', () => {
       expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'ptid-default', expect.anything());
     });
 
-    it('falls back to DEFAULT_LOCALE when the customer row itself is missing (never blocks the send)', async () => {
+    it('marks PERMANENT when the recipient customer row itself is missing — T014 now needs it for the consent gate', async () => {
       customers.findOne.mockResolvedValueOnce(null);
       scheduled.findOne.mockResolvedValueOnce(
         whatsappNotification({
@@ -171,9 +331,9 @@ describe('NotificationDispatchService.processScheduled', () => {
           },
         }),
       );
-      whatsapp.sendTemplateMessage.mockResolvedValueOnce({ status: 'SENT', providerMessageId: 'w1' });
-      await service.processScheduled(TENANT, ID);
-      expect(whatsapp.sendTemplateMessage).toHaveBeenCalledWith(TENANT, 'ptid-default', expect.anything());
+      const res = await service.processScheduled(TENANT, ID);
+      expect(res).toMatchObject({ status: 'failed_permanent' });
+      expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -201,11 +361,13 @@ describe('NotificationDispatchService.processScheduled', () => {
     expect(whatsapp.sendTemplateMessage).not.toHaveBeenCalled();
   });
 
-  it('marks PERMANENT when the WhatsApp send throws (validation/quota/account)', async () => {
+  it('marks PERMANENT when the WhatsApp send throws AND the recipient has no email to fall back to', async () => {
+    customers.findOne.mockResolvedValueOnce(defaultCustomer({ email: '' }));
     scheduled.findOne.mockResolvedValueOnce(whatsappNotification());
     whatsapp.sendTemplateMessage.mockRejectedValueOnce(new Error('template not approved'));
     const res = await service.processScheduled(TENANT, ID);
     expect(res).toMatchObject({ status: 'failed_permanent', reason: 'template not approved' });
+    expect(emailProvider.send).not.toHaveBeenCalled();
   });
 
   it('marks SENT and stores the provider ref on success', async () => {

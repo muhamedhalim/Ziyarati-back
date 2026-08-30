@@ -19,6 +19,7 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
+import { RenewalService } from './renewal.service';
 import { UsageService } from './usage.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
 import { FeatureFlagService } from './feature-flag.service';
@@ -45,9 +46,26 @@ import { PlatformBillingAdminController } from './platform-billing-admin.control
 import { FeatureGuard } from './guards/feature.guard';
 import { SubscriptionAccessGuard } from './guards/subscription-access.guard';
 import { PlatformBillingBootstrap } from './platform-billing.bootstrap';
-import { PAYMENT_PROVIDER } from './payment/payment-provider.interface';
+import {
+  PAYMENT_PROVIDER,
+  type PaymentProvider,
+} from './payment/payment-provider.interface';
 import { StubPaymentProvider } from './payment/stub-payment.provider';
 import { RecurringUnavailableProvider } from './payment/recurring-unavailable.provider';
+
+/**
+ * T087 (spec 014, US5) — the always-succeeds stub must be UNREACHABLE in
+ * production under every other configuration. Gated on `NODE_ENV` alone, with
+ * no override: an invoice must never be marked PAID with no money moved.
+ * Exported so it is directly unit-testable without booting the full module.
+ */
+export function resolveSubscriptionPaymentProvider(
+  config: ConfigService,
+): PaymentProvider {
+  return config.get<string>('NODE_ENV') === 'production'
+    ? new RecurringUnavailableProvider()
+    : new StubPaymentProvider();
+}
 
 /**
  * Subscription & Billing Domain (SaaS-Core).
@@ -96,6 +114,7 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
   providers: [
     SubscriptionService,
     BillingService,
+    RenewalService,
     UsageService,
     TenantUsageLimitOverrideService,
     FeatureFlagService,
@@ -122,25 +141,27 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
     // Subscription charges are PLATFORM revenue — deliberately NOT routed
     // through the tenant payments ledger (separate financial stream). Dev/test
     // keep the always-succeeds stub so the billing flow is runnable; a LIVE
-    // deployment (production + real PAYMENT_PROVIDER) binds the honest
-    // provider that DECLINES with a clear domain message until tokenization /
-    // recurring is enabled — an invoice is never marked PAID with no money moved.
+    // deployment (NODE_ENV=production) binds the honest provider that
+    // DECLINES with a clear domain message until tokenization / recurring is
+    // enabled — an invoice is never marked PAID with no money moved. See T087:
+    // resolveSubscriptionPaymentProvider is gated on NODE_ENV alone, with no
+    // other configuration able to bind the stub in production.
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => {
-        const live =
-          config.get<string>('NODE_ENV') === 'production' &&
-          (config.get<string>('PAYMENT_PROVIDER') ?? 'moyasar') !== 'noop';
-        return live
-          ? new RecurringUnavailableProvider()
-          : new StubPaymentProvider();
-      },
+      useFactory: resolveSubscriptionPaymentProvider,
     },
   ],
   exports: [
     SubscriptionService,
     BillingService,
+    // T082 (spec 014, US5) — SubscriptionsProcessor (worker.module.ts)
+    // invokes the renewal cycle from the `subscriptions.renewalBill` job.
+    RenewalService,
+    // T084 (spec 014, US5) — PaymentReconciliationService (payments module)
+    // verifies a stuck subscription-invoice claim through the SAME provider
+    // binding BillingService uses, never a second one.
+    PAYMENT_PROVIDER,
     UsageService,
     TenantUsageLimitOverrideService,
     FeatureFlagService,

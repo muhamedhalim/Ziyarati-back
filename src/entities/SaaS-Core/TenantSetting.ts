@@ -95,4 +95,27 @@ export class TenantSetting {
 
   @Column({ type: 'timestamptz', nullable: true })
   updated_at?: Date;
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — FR-C017/FR-R015/FR-M002.
+   * Fail-closed defaults, matching {@link public_booking_enabled}'s
+   * precedent: no clinic starts accepting patient self-service or sending
+   * reminders without an explicit opt-in.
+   */
+  @Column({ default: false })
+  self_cancellation_enabled!: boolean;
+
+  @Column({ default: false })
+  self_reschedule_enabled!: boolean;
+
+  @Column({ default: false })
+  reminders_enabled!: boolean;
+
+  /**
+   * Minutes before an appointment's start to send a reminder. Validated
+   * against the fixed supported set `{1440, 180, 60}` at the DTO layer
+   * (`UpdateTenantSettingsDto`) — this column accepts whatever it is given.
+   */
+  @Column({ type: 'int', array: true, default: '{}' })
+  reminder_lead_minutes!: number[];
 }

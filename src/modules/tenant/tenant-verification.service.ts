@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -17,6 +18,7 @@ import {
   type AuditActor,
 } from '../verification-audit/verification-audit.service';
 import { AdminNotificationService } from '../admin-notifications/admin-notification.service';
+import { TenantVerificationSubmittedEvent } from '../../events/tenant.events';
 import { REQUIRED_DOC_TYPES, labelForDocType } from './verification.constants';
 
 /**
@@ -41,7 +43,14 @@ export class TenantVerificationService {
     private readonly tenantService: TenantService,
     private readonly storage: StorageService,
     private readonly audit: VerificationAuditService,
+    /**
+     * Retained but no longer written to by this service — see `submitForReview`,
+     * which now emits a domain event instead. Left injected so the legacy
+     * platform feed stays wired and this change is trivially reversible; the
+     * next wave removes both once the migration has soaked.
+     */
     private readonly adminNotifications: AdminNotificationService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   /**
@@ -199,13 +208,24 @@ export class TenantVerificationService {
       metadata: { requiredTypes: REQUIRED_DOC_TYPES },
     });
 
-    await this.adminNotifications.create({
-      type: 'VERIFICATION_SUBMITTED',
-      title: `${tenant.name} submitted verification`,
-      body: `${tenant.name} has uploaded all required documents and is awaiting review.`,
-      tenantId,
-      data: { tenantId, tenantName: tenant.name },
-    });
+    // Was a direct `AdminNotificationService.create` — the only producer that
+    // table ever had. Replaced by a domain event so the notification lands in
+    // the per-recipient inbox instead: `admin_notifications.is_read` is a single
+    // GLOBAL flag, so one administrator opening it cleared the badge for every
+    // other administrator. Title and body now live in the notification catalog,
+    // which also renders them in each reader's own language rather than
+    // freezing English into the row.
+    //
+    // The legacy table, service and routes are untouched and still work; they
+    // simply stop receiving new rows.
+    this.emitter.emit(
+      TenantVerificationSubmittedEvent.eventName,
+      new TenantVerificationSubmittedEvent(
+        tenantId,
+        tenant.name,
+        actor.id ?? null,
+      ),
+    );
 
     return { status: tenant.approval_status, missing: [] };
   }

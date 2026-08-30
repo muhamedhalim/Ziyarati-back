@@ -125,6 +125,16 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
   [PERMISSION.PLATFORM_SUPPORT_NOTIFICATIONS_RETRY]: 'high',
   [PERMISSION.PLATFORM_SUPPORT_EMAIL_RESEND]: 'high',
   [PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK]: 'medium',
+
+  // Clinical records — health data; read is high-risk here, not the derived
+  // low, because it discloses medical history rather than operational data.
+  [PERMISSION.CLINICAL_RECORDS_READ]: 'high',
+  [PERMISSION.CLINICAL_RECORDS_MANAGE]: 'high',
+
+  // Accountability log — a read of who-did-what across the tenant, more
+  // sensitive than an ordinary operational read but not identity/money
+  // touching, so medium rather than the derived low or an escalation to high.
+  [PERMISSION.AUDIT_READ]: 'medium',
 };
 
 // ---------------------------------------------------------------------------

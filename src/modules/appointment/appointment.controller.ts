@@ -53,6 +53,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
+import { AppointmentActionOrigin } from '../../entities/enums';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -652,6 +653,7 @@ belongs to the payments domain.
       userId,
       id,
       dto,
+      AppointmentActionOrigin.STAFF,
     );
   }
 
@@ -717,6 +719,7 @@ Persists an \`appointment_reschedules\` audit row (reason + actor) and an
       userId,
       id,
       dto,
+      AppointmentActionOrigin.STAFF,
     );
   }
 
@@ -867,6 +870,53 @@ Ideal for rendering an activity feed on the appointment detail screen.
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.appointments.getTimeline(this.ctx.requireTenantId(), id, {
+      id: user.id,
+      permissions: user.permissions,
+    });
+  }
+
+  // ───────────────────────────── Reminders ───────────────────────────────── //
+
+  @ApiOperation({
+    summary: 'Get the reminders scheduled for an appointment',
+    description: `
+**Protected — requires \`appointments.read\` OR \`appointments.read_own\` (own appointment only). Clinic must be active.**
+
+Returns every reminder row for the appointment (any lead time), in every
+state — scheduled, sent, suppressed or failed — with its channel and
+reason, projected from \`scheduled_notifications\` (no separate storage).
+
+**Tenant scoping:** An appointment from another clinic returns 404.
+    `.trim(),
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Appointment UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `appointments.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Appointment not found in this clinic.',
+    schema: S_ERROR,
+  })
+  @Get(':id/reminders')
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
+  reminders(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.appointments.listReminders(this.ctx.requireTenantId(), id, {
       id: user.id,
       permissions: user.permissions,
     });

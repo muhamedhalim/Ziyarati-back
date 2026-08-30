@@ -1,3 +1,5 @@
+import { UnrecoverableError } from 'bullmq';
+
 import { AnalyticsProcessor } from './analytics.processor';
 import { DashboardMetricService } from '../../modules/analytics/dashboard-metric.service';
 import { DailyReportService } from '../../modules/analytics/daily-report.service';
@@ -7,6 +9,9 @@ import { WorkerTenantsService } from '../worker-tenants.service';
 import { QueueService } from '../../queue/queue.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { JOB } from '../../queue/queue.constants';
+import { InvoiceDocumentService } from '../../modules/payments/invoice-document.service';
+import { DocumentRendererService } from '../../modules/documents/document-renderer.service';
+import { StorageService } from '../../modules/storage/storage.service';
 
 describe('AnalyticsProcessor', () => {
   let processor: AnalyticsProcessor;
@@ -20,6 +25,13 @@ describe('AnalyticsProcessor', () => {
     enqueueAnalyticsReportBulk: jest.Mock;
     enqueueAnalyticsReportMonthlyBulk: jest.Mock;
   };
+  let invoiceDocuments: {
+    buildDocumentData: jest.Mock;
+    localeFor: jest.Mock;
+    markRendered: jest.Mock;
+  };
+  let renderer: { render: jest.Mock };
+  let storage: { upload: jest.Mock };
 
   beforeEach(() => {
     dashboard = { refresh: jest.fn().mockResolvedValue({ ok: true }) };
@@ -39,6 +51,19 @@ describe('AnalyticsProcessor', () => {
       enqueueAnalyticsReportBulk: jest.fn().mockResolvedValue(undefined),
       enqueueAnalyticsReportMonthlyBulk: jest.fn().mockResolvedValue(undefined),
     };
+    invoiceDocuments = {
+      buildDocumentData: jest
+        .fn()
+        .mockResolvedValue({ invoiceNumber: 'INV-1' }),
+      localeFor: jest.fn().mockResolvedValue('en'),
+      markRendered: jest.fn().mockResolvedValue(undefined),
+    };
+    renderer = {
+      render: jest.fn().mockResolvedValue(Buffer.from('pdf-bytes')),
+    };
+    storage = {
+      upload: jest.fn().mockResolvedValue({ storageKey: 't1/invoices/x.pdf' }),
+    };
     processor = new AnalyticsProcessor(
       dashboard as unknown as DashboardMetricService,
       daily as unknown as DailyReportService,
@@ -48,6 +73,9 @@ describe('AnalyticsProcessor', () => {
       queue as unknown as QueueService,
       new TenantContextService(),
       { assertAuthorized: jest.fn().mockResolvedValue(undefined) } as any,
+      invoiceDocuments as unknown as InvoiceDocumentService,
+      renderer as unknown as DocumentRendererService,
+      storage as unknown as StorageService,
     );
   });
 
@@ -165,5 +193,65 @@ describe('AnalyticsProcessor', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe('T095 — analytics.invoiceDocument job routing', () => {
+    it('renders, uploads and persists the document key/version, never touching report generation', async () => {
+      const res = await processor.process({
+        name: JOB.ANALYTICS_INVOICE_DOCUMENT,
+        data: { tenantId: 't1', invoiceId: 'inv-1', documentVersion: 2 },
+      } as any);
+
+      expect(invoiceDocuments.buildDocumentData).toHaveBeenCalledWith(
+        't1',
+        'inv-1',
+      );
+      expect(invoiceDocuments.localeFor).toHaveBeenCalledWith('t1');
+      expect(renderer.render).toHaveBeenCalled();
+      expect(storage.upload).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenantId: 't1',
+          mimeType: 'application/pdf',
+        }),
+      );
+      expect(invoiceDocuments.markRendered).toHaveBeenCalledWith(
+        't1',
+        'inv-1',
+        2,
+        't1/invoices/x.pdf',
+      );
+      expect(res).toEqual({ documentKey: 't1/invoices/x.pdf' });
+      expect(daily.generate).not.toHaveBeenCalled();
+      expect(monthly.generate).not.toHaveBeenCalled();
+    });
+
+    /**
+     * T095's own regression guard: `AnalyticsProcessor.process` used to be
+     * an if-chain whose final fall-through treated ANY unmatched job name
+     * as `analytics.generateReport`. A new job name added without its own
+     * branch must fail loudly (UnrecoverableError), never silently execute
+     * report generation against a mismatched payload.
+     */
+    it('an unknown job name throws UnrecoverableError instead of falling through to report generation', async () => {
+      await expect(
+        processor.process({
+          name: 'analytics.someFutureJobNobodyBranchedOn',
+          data: { tenantId: 't1' },
+        } as any),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(daily.generate).not.toHaveBeenCalled();
+      expect(monthly.generate).not.toHaveBeenCalled();
+    });
+
+    it('analytics.generateReport itself still routes correctly alongside the new branch', async () => {
+      await processor.process({
+        name: JOB.ANALYTICS_GENERATE_REPORT,
+        data: { tenantId: 't1', date: '2026-07-01' },
+      } as any);
+      expect(daily.generate).toHaveBeenCalledWith(
+        't1',
+        expect.objectContaining({ date: '2026-07-01' }),
+      );
+    });
   });
 });

@@ -40,6 +40,11 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.SETTLEMENTS, JOB.SETTLEMENTS_PROCESS, { tenantId: null }, '0 1 * * *');
       // Subscription renewal/expiry check — 02:00 UTC.
       await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_CHECK, { tenantId: null }, '0 2 * * *');
+      // Spec 014 (Clinic Platform Completion) S5 — recurring billing sweep,
+      // bills subscriptions due for renewal. 02:15 UTC, offset 15 minutes
+      // after the renewal/expiry check above so the two never contend for
+      // the same instant on the shared `subscriptions` queue.
+      await this.queue.addRepeatable(QUEUE.SUBSCRIPTIONS, JOB.SUBSCRIPTIONS_RENEWAL_BILL, { tenantId: null }, '15 2 * * *');
       // Refund recovery / reaper sweep — every 5 minutes (R2).
       await this.queue.addRepeatable(QUEUE.REFUNDS, JOB.REFUNDS_REAP, { tenantId: null }, '*/5 * * * *');
       // Payment reconciliation sweep — every 10 minutes (webhook-loss recovery).
@@ -80,7 +85,20 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // write failed sits for at most DLQ_RECOVERY_GRACE_MS (60s) before the
       // NEXT tick picks it up.
       await this.queue.addRepeatable(QUEUE.CAMPAIGNS_MAINTENANCE, JOB.CAMPAIGNS_RECOVER_DLQ, { tenantId: null }, '*/5 * * * *');
-      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, campaigns-recover-dlq)');
+
+      // Spec 014 (Clinic Platform Completion) — S9. Expires waitlist offers
+      // past their deadline — every 5 minutes, mirroring the other short-
+      // interval recovery sweeps above.
+      await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_WAITLIST_EXPIRY, { tenantId: null }, '*/5 * * * *');
+      // S10 — closes out the day's patient queue. 23:50 UTC, before midnight
+      // so a day's queue is settled before the NEXT day's work begins.
+      await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_QUEUE_DAY_CLOSE, { tenantId: null }, '50 23 * * *');
+      // S13 — expires stale report-export downloads. 04:45 UTC, offset after
+      // AI_TOOL_CALL_RETENTION (04:30) so the two `platform`/`ai`-queue daily
+      // sweeps around that hour don't contend.
+      await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_EXPORT_EXPIRY, { tenantId: null }, '45 4 * * *');
+
+      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions ×2, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, campaigns-recover-dlq, waitlist-expiry, queue-day-close, export-expiry)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

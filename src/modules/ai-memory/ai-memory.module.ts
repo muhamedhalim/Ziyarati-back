@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AiMemory } from '../../entities/AI Agent/AiMemory';
@@ -15,12 +15,9 @@ import { AiMemoryController } from './ai-memory.controller';
  * orchestrator can recall memories and the worker can purge expired ones.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([AiMemory]), AiModule],
+  imports: [TypeOrmModule.forFeature([AiMemory]), forwardRef(() => AiModule)],
   controllers: [AiMemoryController],
-  providers: [
-    AiMemoryService,
-    AiMemoryVectorService,
-  ],
+  providers: [AiMemoryService, AiMemoryVectorService],
   exports: [AiMemoryService],
 })
 export class AiMemoryModule {}

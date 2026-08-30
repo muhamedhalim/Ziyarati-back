@@ -8,6 +8,7 @@ import {
   FindOptionsWhere,
   In,
   LessThan,
+  Like,
   MoreThanOrEqual,
   Repository,
 } from 'typeorm';
@@ -19,6 +20,9 @@ import { AppointmentStatusLog } from '../../entities/Calendar&Appointments/Appoi
 import { AppointmentNote } from '../../entities/Calendar&Appointments/AppointmentNote';
 import { AppointmentReschedule } from '../../entities/Calendar&Appointments/AppointmentReschedule';
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
+import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
+import { leadMinutesFromReminderSourceRef } from '../notifications/reminder-scheduler.service';
+import { AppointmentActionOrigin } from '../../entities/enums';
 
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
@@ -127,6 +131,18 @@ export interface TimelineEntry {
   data: Record<string, unknown>;
 }
 
+/** Spec 014 (Clinic Platform Completion) — T055 (S3, FR-M015). One
+ *  reminder row (any lead time) for an appointment. */
+export interface ReminderView {
+  id: string;
+  leadMinutes: number | null;
+  scheduledAt: Date;
+  status: string;
+  channel: string | null;
+  skipReason: string | null;
+  failureReason: string | null;
+}
+
 /**
  * Appointment domain service.
  *
@@ -155,6 +171,8 @@ export class AppointmentsService {
     private readonly reschedules: Repository<AppointmentReschedule>,
     @InjectRepository(AppointmentCancellation)
     private readonly cancellations: Repository<AppointmentCancellation>,
+    @InjectRepository(ScheduledNotification)
+    private readonly scheduledNotifications: Repository<ScheduledNotification>,
     @InjectRepository(StaffProfile)
     private readonly staffProfiles: Repository<StaffProfile>,
     private readonly dataSource: DataSource,
@@ -675,9 +693,10 @@ export class AppointmentsService {
 
   async cancel(
     tenantId: string,
-    userId: string,
+    userId: string | null,
     id: string,
     dto: CancelAppointmentDto,
+    origin: AppointmentActionOrigin = AppointmentActionOrigin.STAFF,
   ): Promise<Appointment> {
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
@@ -705,8 +724,11 @@ export class AppointmentsService {
           appointment: { id: appointment.id } as Appointment,
           tenant: { id: tenantId } as Tenant,
           reason: dto.reason,
-          cancelled_by: { id: userId } as User,
+          // Patient-initiated (T029): no staff actor — nullable relation,
+          // so omitting it entirely (not a placeholder id) is correct.
+          cancelled_by: userId ? ({ id: userId } as User) : undefined,
           refund_amount: dto.refundAmount,
+          origin,
         }),
       );
 
@@ -745,9 +767,10 @@ export class AppointmentsService {
 
   async reschedule(
     tenantId: string,
-    userId: string,
+    userId: string | null,
     id: string,
     dto: RescheduleAppointmentDto,
+    origin: AppointmentActionOrigin = AppointmentActionOrigin.STAFF,
   ): Promise<Appointment> {
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
@@ -785,7 +808,9 @@ export class AppointmentsService {
           appointment: { id: appointment.id } as Appointment,
           tenant: { id: tenantId } as Tenant,
           reason: dto.reason,
-          rescheduled_by: { id: userId } as User,
+          // Patient-initiated (T029): no staff actor — same reasoning as cancel() above.
+          rescheduled_by: userId ? ({ id: userId } as User) : undefined,
+          origin,
         }),
       );
 
@@ -923,6 +948,41 @@ export class AppointmentsService {
     ];
 
     return entries.sort((a, b) => a.at.getTime() - b.at.getTime());
+  }
+
+  // ───────────────────────────── Reminders ───────────────────────────────── //
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — T055 (S3, FR-M015). Projects
+   * from `scheduled_notifications` filtered by the `source_ref` convention
+   * `ReminderSchedulerService` writes under (`appointment-reminder:{id}:%`)
+   * — no new storage. Reuses `findOne`'s existing tenant/ownership check
+   * (cross-tenant → 404) exactly like `getTimeline` above.
+   */
+  async listReminders(
+    tenantId: string,
+    id: string,
+    caller?: AppointmentCaller,
+  ): Promise<ReminderView[]> {
+    await this.findOne(tenantId, id, caller);
+
+    const rows = await this.scheduledNotifications.find({
+      where: {
+        tenant: { id: tenantId },
+        source_ref: Like(`appointment-reminder:${id}:%`),
+      },
+      order: { scheduled_at: 'ASC' },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      leadMinutes: leadMinutesFromReminderSourceRef(row.source_ref ?? null),
+      scheduledAt: row.scheduled_at,
+      status: row.status,
+      channel: row.channel ?? null,
+      skipReason: row.skip_reason ?? null,
+      failureReason: row.failure_reason ?? null,
+    }));
   }
 
   // ─────────────────── Payment outcome (system-triggered) ────────────────── //
@@ -1380,7 +1440,7 @@ export class AppointmentsService {
     tenantId: string,
     appointment: Appointment,
     status: AppointmentStatus,
-    triggeredBy: string,
+    triggeredBy: string | null,
   ): Promise<void> {
     const repo = manager.getRepository(AppointmentStatusLog);
     await repo.save(
@@ -1388,7 +1448,10 @@ export class AppointmentsService {
         appointment: { id: appointment.id } as Appointment,
         tenant: { id: tenantId } as Tenant,
         status,
-        triggered_by: triggeredBy,
+        // A patient-initiated action (T029) has no staff actor at all —
+        // `triggered_by` is a plain nullable column, not a FK, so NULL is
+        // the correct value rather than a placeholder id.
+        triggered_by: triggeredBy ?? undefined,
       }),
     );
   }
@@ -1399,7 +1462,7 @@ export class AppointmentsService {
     appointment: Appointment,
     oldStatus: AppointmentStatus | undefined,
     newStatus: AppointmentStatus,
-    changedBy: string,
+    changedBy: string | null,
     note?: string,
   ): Promise<void> {
     const repo = manager.getRepository(AppointmentHistory);
@@ -1407,7 +1470,10 @@ export class AppointmentsService {
       repo.create({
         appointment: { id: appointment.id } as Appointment,
         tenant: { id: tenantId } as Tenant,
-        changed_by: changedBy,
+        // Same reasoning as writeStatusLog above — a plain nullable uuid
+        // column, not a FK, so a patient-initiated action correctly stores
+        // NULL rather than an invalid placeholder.
+        changed_by: changedBy ?? undefined,
         old_status: oldStatus,
         new_status: newStatus,
         note,

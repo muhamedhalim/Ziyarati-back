@@ -471,5 +471,77 @@ describe('AvailabilityService.assertBookable', () => {
       // 10:00–10:30 UTC falls inside the 09:00–17:00 recurring window.
       await expect(assert()).resolves.toBeUndefined();
     });
+
+    // ── T018 (S8): anonymous-safe projection ──────────────────────────
+    describe('publicWindows()', () => {
+      it('returns ONLY startAt/endAt plus the branch timezone — a provable subset of windows()', async () => {
+        fullDaySlot();
+        const res = await service.publicWindows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          fromDate: '2026-07-01',
+          toDate: '2026-07-01',
+        });
+        expect(res.timezone).toBe('UTC');
+        expect(res.windows.length).toBeGreaterThan(0);
+        for (const w of res.windows) {
+          expect(Object.keys(w).sort()).toEqual(['endAt', 'startAt']);
+        }
+      });
+
+      it('parity with the authenticated computation for the same inputs', async () => {
+        fullDaySlot();
+        const authenticated = await service.windows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          date: '2026-07-01',
+        } as any);
+        const pub = await service.publicWindows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          fromDate: '2026-07-01',
+          toDate: '2026-07-01',
+        });
+        expect(pub.windows).toEqual(
+          authenticated.windows.map((w: any) => ({ startAt: w.startTime, endAt: w.endTime })),
+        );
+      });
+
+      it('caps the horizon at 14 days regardless of the requested range', async () => {
+        fullDaySlot();
+        const res = await service.publicWindows(TENANT, {
+          branchId: BRANCH,
+          staffId: STAFF,
+          fromDate: '2026-07-01',
+          toDate: '2026-12-31', // far beyond 14 days
+        });
+        // One or more free windows per day, for at most 14 distinct days.
+        const days = new Set(res.windows.map((w) => w.startAt.slice(0, 10)));
+        expect(days.size).toBeLessThanOrEqual(14);
+        expect(slotService.findAvailableForDay).toHaveBeenCalledTimes(14);
+      });
+
+      it('rejects a missing scope (branchId/staffId/dates all required)', async () => {
+        await expect(
+          service.publicWindows(TENANT, {
+            branchId: BRANCH,
+            staffId: '',
+            fromDate: '2026-07-01',
+            toDate: '2026-07-01',
+          }),
+        ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+      });
+
+      it('rejects toDate before fromDate', async () => {
+        await expect(
+          service.publicWindows(TENANT, {
+            branchId: BRANCH,
+            staffId: STAFF,
+            fromDate: '2026-07-05',
+            toDate: '2026-07-01',
+          }),
+        ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+      });
+    });
   });
 });

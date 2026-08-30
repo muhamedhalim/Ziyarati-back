@@ -8,8 +8,10 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -25,9 +27,15 @@ import {
 } from '@nestjs/swagger';
 
 import { InvoiceService } from './invoice.service';
+import {
+  InvoiceAuditService,
+  INVOICE_AUDIT_ACTION,
+} from './invoice-audit.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { AddInvoiceItemsDto } from './dto/add-invoice-item.dto';
 import { QueryInvoicesDto } from './dto/query-invoices.dto';
+import { StorageService } from '../storage/storage.service';
+import { AppError, ErrorCode } from '../../common/errors';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -63,6 +71,8 @@ export class InvoiceController {
   constructor(
     private readonly invoices: InvoiceService,
     private readonly ctx: TenantContextService,
+    private readonly storage: StorageService,
+    private readonly audit: InvoiceAuditService,
   ) {}
 
   @ApiOperation({
@@ -206,5 +216,107 @@ export class InvoiceController {
   @RequirePermissions(PERMISSION.INVOICES_READ)
   getOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.invoices.getOne(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: 'Get the invoice document (PDF)',
+    description:
+      '**Protected — `invoices.read`. Clinic active.** T096 (FR-I001, FR-I007, FR-I009, FR-I012). ' +
+      '200 with a short-lived signed URL once rendered; 202 while a render is pending; 409 for a ' +
+      "DRAFT invoice — nothing to download yet. Another tenant's invoice is a 404, indistinguishable " +
+      'from one that does not exist (FR-I008). Recorded to the audit trail (FR-I014).',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Invoice UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Signed download URL for the rendered document.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `invoices.read`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Invoice not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Invoice is DRAFT — no document to download.',
+    schema: S_ERROR,
+  })
+  @Get(':id/document')
+  @RequirePermissions(PERMISSION.INVOICES_READ)
+  async getDocument(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const tenantId = this.ctx.requireTenantId();
+    const state = await this.invoices.getDocumentState(tenantId, id);
+
+    if (state.state === 'draft') {
+      throw new AppError(ErrorCode.CONFLICT, {
+        message: 'A draft invoice has no document to download',
+      });
+    }
+    if (state.state === 'pending') {
+      res.status(HttpStatus.ACCEPTED);
+      return { status: 'pending' };
+    }
+
+    const url = await this.storage.getSignedDownloadUrl(
+      state.documentKey,
+      tenantId,
+    );
+    await this.audit.record(
+      INVOICE_AUDIT_ACTION.DOCUMENT_DOWNLOADED,
+      tenantId,
+      id,
+      this.ctx.getUser()?.id,
+    );
+    return { status: 'ready', url };
+  }
+
+  @ApiOperation({
+    summary: 'Regenerate the invoice document',
+    description:
+      '**Protected — `invoices.manage`. Clinic active.** T096 (FR-I010) — forces a fresh render, ' +
+      "e.g. after the invoice's payment state changed. 409 for a DRAFT invoice.",
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Invoice UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({ description: 'Regeneration triggered.' })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `invoices.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Invoice not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Invoice is DRAFT — nothing to regenerate.',
+    schema: S_ERROR,
+  })
+  @Post(':id/document/regenerate')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions(PERMISSION.INVOICES_MANAGE)
+  async regenerateDocument(@Param('id', ParseUUIDPipe) id: string) {
+    await this.invoices.regenerateDocument(this.ctx.requireTenantId(), id);
+    return { status: 'pending' };
   }
 }

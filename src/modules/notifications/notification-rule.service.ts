@@ -42,6 +42,7 @@ export class NotificationRuleService {
       trigger_event: dto.triggerEvent,
       delay_minutes: dto.delayMinutes ?? 0,
       is_active: dto.isActive ?? true,
+      anchor: dto.anchor ?? 'AFTER_EVENT',
     });
     return this.rules.save(rule);
   }
@@ -93,6 +94,7 @@ export class NotificationRuleService {
     if (dto.triggerEvent !== undefined) rule.trigger_event = dto.triggerEvent;
     if (dto.delayMinutes !== undefined) rule.delay_minutes = dto.delayMinutes;
     if (dto.isActive !== undefined) rule.is_active = dto.isActive;
+    if (dto.anchor !== undefined) rule.anchor = dto.anchor;
 
     return this.rules.save(rule);
   }

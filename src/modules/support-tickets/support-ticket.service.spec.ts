@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
@@ -41,17 +42,28 @@ describe('SupportTicketService', () => {
   let service: SupportTicketService;
   let tickets: MockRepository;
   let events: MockRepository;
-  let dataSource: { query: jest.Mock };
+  let dataSource: { query: jest.Mock; getRepository: jest.Mock };
   let storage: {
     assertKeyBelongsToTenant: jest.Mock;
     objectExists: jest.Mock;
     getSignedDownloadUrl: jest.Mock;
   };
+  /** Captures the domain events the service emits, so tests can assert on them. */
+  let emitter: { emit: jest.Mock };
 
   beforeEach(async () => {
     tickets = createMockRepository();
     events = createMockRepository();
-    dataSource = { query: jest.fn() };
+    dataSource = {
+      query: jest.fn(),
+      // `tenantName()` resolves the clinic's display name for platform-facing
+      // notifications. Stubbed rather than omitted so the emit path is
+      // genuinely exercised instead of silently taking its null fallback.
+      getRepository: jest.fn(() => ({
+        findOne: jest.fn(async () => ({ id: TENANT, name: 'Test Clinic' })),
+      })),
+    };
+    emitter = { emit: jest.fn() };
     storage = {
       assertKeyBelongsToTenant: jest.fn(),
       objectExists: jest.fn(async () => true),
@@ -65,6 +77,7 @@ describe('SupportTicketService', () => {
         { provide: getRepositoryToken(SupportTicketEvent), useValue: events },
         { provide: DataSource, useValue: dataSource },
         { provide: StorageService, useValue: storage },
+        { provide: EventEmitter2, useValue: emitter },
       ],
     }).compile();
 
@@ -326,6 +339,9 @@ describe('SupportTicketService', () => {
         status: 'closed',
         resolved_at: new Date('2026-01-01'),
         closed_at: new Date('2026-01-02'),
+        // `findAnyOrThrow` loads the tenant relation so platform-side actions
+        // know which clinic to notify.
+        tenant: { id: TENANT, name: 'Test Clinic' },
       });
       tickets.save.mockImplementationOnce(async (t: any) => t);
       events.save.mockImplementationOnce(async (e: any) => e);
@@ -788,6 +804,161 @@ describe('SupportTicketService', () => {
       expect(tickets.findAndCount).toHaveBeenCalledWith(
         expect.objectContaining({ skip: 20, take: 10, order: { priority: 'ASC' } }),
       );
+    });
+  });
+
+  // ── Domain events (what makes anyone find out a ticket changed) ─────────────
+
+  /**
+   * Before these emits existed, every method below wrote its timeline row and
+   * stopped. A platform reply reached the clinic only if somebody happened to
+   * reopen the ticket; a new ticket reached the platform only as an `urgent`
+   * counter recomputed by SQL on each dashboard load.
+   *
+   * These assert the EVENT, not the notification. Who receives it, in what
+   * language, and through which channel belongs to the notification catalog —
+   * this service must stay ignorant of all three.
+   */
+  describe('domain events', () => {
+    /** The event of the given name, or undefined. */
+    const emitted = (name: string) =>
+      emitter.emit.mock.calls.find(([n]) => n === name)?.[1] as any;
+
+    const platformTicket = (over: Record<string, unknown> = {}) => ({
+      id: 'ticket-1',
+      ticket_number: 'SUP-000123',
+      subject: 'Calendar blank',
+      status: 'in_progress',
+      tenant: { id: TENANT, name: 'Test Clinic' },
+      ...over,
+    });
+
+    it('a PLATFORM reply emits support_ticket.replied for the clinic', async () => {
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.save.mockImplementationOnce(async (e: any) => ({ id: 'evt-9', ...e }));
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.find.mockResolvedValueOnce([]);
+
+      await service.addPlatformReply(
+        'ticket-1',
+        PLATFORM_SUPPORT_ACTOR,
+        { note: 'Looking into it' } as any,
+      );
+
+      const event = emitted('support_ticket.replied');
+      expect(event).toBeDefined();
+      expect(event.tenantId).toBe(TENANT);
+      expect(event.ticketNumber).toBe('SUP-000123');
+      expect(event.actorSide).toBe('PLATFORM');
+      expect(event.note).toBe('Looking into it');
+      // The dedupe anchor: it distinguishes a genuine second reply from a
+      // redelivery of this one.
+      expect(event.eventId).toBe('evt-9');
+    });
+
+    it('a CLINIC reply emits the same event marked as the tenant side', async () => {
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.save.mockImplementationOnce(async (e: any) => ({ id: 'evt-10', ...e }));
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.find.mockResolvedValueOnce([]);
+
+      await service.addTenantReply(
+        TENANT,
+        { ...ACTOR, role: 'clinic' },
+        'ticket-1',
+        { note: 'Still broken' } as any,
+      );
+
+      const event = emitted('support_ticket.replied');
+      expect(event.actorSide).toBe('TENANT');
+      expect(event.clinicName).toBe('Test Clinic');
+    });
+
+    it('creating a ticket emits support_ticket.created for the platform', async () => {
+      dataSource.query.mockResolvedValueOnce([{ n: 1000 }]);
+      tickets.save.mockImplementationOnce(async (t: any) => ({
+        id: 'ticket-1',
+        ticket_number: 'SUP-001000',
+        ...t,
+      }));
+
+      await service.create(TENANT, ACTOR, {
+        subject: 'Cannot load calendar',
+        category: 'technical',
+        priority: 'urgent',
+        description: 'Blank since this morning.',
+      } as any);
+
+      const event = emitted('support_ticket.created');
+      expect(event).toBeDefined();
+      expect(event.tenantId).toBe(TENANT);
+      expect(event.priority).toBe('urgent');
+      expect(event.clinicName).toBe('Test Clinic');
+      // So the opener is not notified about their own ticket.
+      expect(event.actorUserId).toBe(ACTOR.id);
+    });
+
+    it('a platform status change emits support_ticket.status_changed', async () => {
+      tickets.findOne.mockResolvedValueOnce(platformTicket({ status: 'in_progress' }));
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => ({ id: 'evt-11', ...e }));
+      tickets.findOne.mockResolvedValueOnce(platformTicket({ status: 'resolved' }));
+      events.find.mockResolvedValueOnce([]);
+
+      await service.updateStatus('ticket-1', SUPER_ADMIN_ACTOR, {
+        status: 'resolved',
+      } as any);
+
+      const event = emitted('support_ticket.status_changed');
+      expect(event.fromStatus).toBe('in_progress');
+      expect(event.toStatus).toBe('resolved');
+      expect(event.actorSide).toBe('PLATFORM');
+    });
+
+    it('reopening emits its own event, aimed at the platform queue', async () => {
+      tickets.findOne.mockResolvedValueOnce(platformTicket({ status: 'resolved' }));
+      tickets.save.mockImplementationOnce(async (t: any) => t);
+      events.save.mockImplementationOnce(async (e: any) => ({ id: 'evt-12', ...e }));
+      tickets.findOne.mockResolvedValueOnce(platformTicket({ status: 'in_progress' }));
+      events.find.mockResolvedValueOnce([]);
+
+      await service.reopenOwnTicket(TENANT, { ...ACTOR, role: 'clinic' }, 'ticket-1');
+
+      expect(emitted('support_ticket.reopened')).toBeDefined();
+      // Deliberately NOT a status_changed: that one notifies the clinic, and
+      // the clinic is the party that just acted.
+      expect(emitted('support_ticket.status_changed')).toBeUndefined();
+    });
+
+    it('an internal note emits nothing — the clinic never sees it', async () => {
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.save.mockImplementationOnce(async (e: any) => e);
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.find.mockResolvedValueOnce([]);
+
+      await service.addNote('ticket-1', SUPER_ADMIN_ACTOR, { note: 'internal' } as any);
+
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('skips the notification, but still completes, when a ticket has no tenant', async () => {
+      // `SupportTicket.tenant` is a nullable relation, so this row shape is
+      // representable. A notification must never turn a successful reply into
+      // a 500.
+      tickets.findOne.mockResolvedValueOnce(platformTicket({ tenant: undefined }));
+      events.save.mockImplementationOnce(async (e: any) => ({ id: 'evt-13', ...e }));
+      tickets.findOne.mockResolvedValueOnce(platformTicket());
+      events.find.mockResolvedValueOnce([]);
+
+      await expect(
+        service.addPlatformReply('ticket-1', PLATFORM_SUPPORT_ACTOR, {
+          note: 'hello',
+        } as any),
+      ).resolves.toBeDefined();
+
+      expect(emitted('support_ticket.replied')).toBeUndefined();
+      // The reply itself was still recorded.
+      expect(events.save).toHaveBeenCalled();
     });
   });
 });

@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 
 import {
   JOB,
@@ -11,6 +11,7 @@ import {
 import {
   AnalyticsAggregateJob,
   AnalyticsGenerateReportJob,
+  AnalyticsInvoiceDocumentJob,
 } from '../../queue/job-data.interface';
 import { previousMonthUtc } from '../../modules/analytics/analytics.constants';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
@@ -22,6 +23,10 @@ import { DashboardMetricService } from '../../modules/analytics/dashboard-metric
 import { DailyReportService } from '../../modules/analytics/daily-report.service';
 import { MonthlyReportService } from '../../modules/analytics/monthly-report.service';
 import { AnalyticsRetentionService } from '../../modules/analytics/analytics-retention.service';
+import { InvoiceDocumentService } from '../../modules/payments/invoice-document.service';
+import { DocumentRendererService } from '../../modules/documents/document-renderer.service';
+import { InvoiceTemplate } from '../../modules/documents/templates/invoice.template';
+import { StorageService } from '../../modules/storage/storage.service';
 
 /**
  * Consumes the `analytics` queue. Each job is either a scheduled SWEEP
@@ -41,6 +46,9 @@ export class AnalyticsProcessor extends WorkerHost {
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
     private readonly authz: WorkerAuthorizationService,
+    private readonly invoiceDocuments: InvoiceDocumentService,
+    private readonly renderer: DocumentRendererService,
+    private readonly storage: StorageService,
   ) {
     super();
   }
@@ -59,7 +67,23 @@ export class AnalyticsProcessor extends WorkerHost {
       return this.retention.purgeExpiredEvents();
     }
 
-    // analytics.generateReport
+    if (job.name === JOB.ANALYTICS_INVOICE_DOCUMENT) {
+      const data = job.data as AnalyticsInvoiceDocumentJob;
+      return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
+        this.renderInvoiceDocument(data),
+      );
+    }
+
+    // T095 — every branch above names its own job; anything else is treated
+    // as `analytics.generateReport` below by DEFAULT. A future job name
+    // added without its own branch must fail loudly here instead of
+    // silently running report generation against a mismatched payload.
+    if (job.name !== JOB.ANALYTICS_GENERATE_REPORT) {
+      throw new UnrecoverableError(
+        `AnalyticsProcessor: unknown job name "${job.name}" — refusing to fall through to report generation`,
+      );
+    }
+
     const data = job.data as AnalyticsGenerateReportJob;
     if (!data.tenantId) {
       return data.kind === 'monthly'
@@ -84,6 +108,46 @@ export class AnalyticsProcessor extends WorkerHost {
         });
       },
     );
+  }
+
+  /**
+   * T095 (spec 014, US12, R2, FR-I012, FR-I013) — the ONE place PDF
+   * rendering is allowed to run (`DocumentRendererService` throws if
+   * constructed outside the worker process). Idempotent on `(invoiceId,
+   * documentVersion)`: `enqueueAnalyticsInvoiceDocument`'s deterministic
+   * jobId already collapses a redelivered job for the SAME version into one
+   * BullMQ job; `markRendered`'s version guard additionally stops a late
+   * redelivery of an OLD version from regressing a newer already-rendered
+   * one.
+   */
+  private async renderInvoiceDocument(
+    data: AnalyticsInvoiceDocumentJob,
+  ): Promise<{ documentKey: string }> {
+    const documentData = await this.invoiceDocuments.buildDocumentData(
+      data.tenantId,
+      data.invoiceId,
+    );
+    const locale = await this.invoiceDocuments.localeFor(data.tenantId);
+    const buffer = await this.renderer.render(
+      new InvoiceTemplate(),
+      documentData,
+      locale,
+    );
+    const stored = await this.storage.upload({
+      tenantId: data.tenantId,
+      docType: 'invoices',
+      originalName: `${documentData.invoiceNumber}.pdf`,
+      mimeType: 'application/pdf',
+      size: buffer.length,
+      buffer,
+    });
+    await this.invoiceDocuments.markRendered(
+      data.tenantId,
+      data.invoiceId,
+      data.documentVersion,
+      stored.storageKey,
+    );
+    return { documentKey: stored.storageKey };
   }
 
   /**

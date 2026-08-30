@@ -82,7 +82,14 @@ describe('SubscriptionService', () => {
       });
 
       const res = await service.create(TENANT, { planId: 'p1' } as any);
-      expect(billing.generateInvoice).toHaveBeenCalledWith(TENANT, 'sub1', 100);
+      expect(billing.generateInvoice).toHaveBeenCalledWith(
+        TENANT,
+        'sub1',
+        100,
+        expect.any(Date),
+        expect.any(Date),
+        14,
+      );
       expect(res.isUsable).toBe(true);
     });
 
@@ -123,6 +130,8 @@ describe('SubscriptionService', () => {
       subscriptions.findOne.mockResolvedValueOnce({
         id: 'sub1',
         plan: { id: 'p1' },
+        starts_at: past,
+        ends_at: future,
       }); // getActiveSubscription
       plans.findOne.mockResolvedValueOnce(plan({ id: 'p2', price: 200 }));
       subscriptions.findOne.mockResolvedValueOnce({
@@ -132,7 +141,14 @@ describe('SubscriptionService', () => {
         plan: plan({ id: 'p2' }),
       });
       await service.changePlan(TENANT, { planId: 'p2' } as any);
-      expect(billing.generateInvoice).toHaveBeenCalledWith(TENANT, 'sub1', 200);
+      expect(billing.generateInvoice).toHaveBeenCalledWith(
+        TENANT,
+        'sub1',
+        200,
+        past,
+        future,
+        14,
+      );
     });
 
     it('rejects changing to the same plan', async () => {

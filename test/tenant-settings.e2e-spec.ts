@@ -166,6 +166,11 @@ describe('Tenant settings — real Postgres', () => {
         bot_enabled: true,
         enforce_staff_working_hours: false,
         public_booking_enabled: false,
+        // T011 (spec 014) — fail-closed defaults.
+        self_cancellation_enabled: false,
+        self_reschedule_enabled: false,
+        reminders_enabled: false,
+        reminder_lead_minutes: [],
       });
     });
 
@@ -191,6 +196,33 @@ describe('Tenant settings — real Postgres', () => {
 
       expect(res.body.cancellation_hours).toBe(48);
       expect(res.body.bot_enabled).toBe(false);
+    });
+
+    it('T011 (spec 014): PATCH round-trips the self-service/reminder switches', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .patch(`${API}/tenants/me/settings`)
+        .set(...authHeader(ownerA.token))
+        .send({
+          selfCancellationEnabled: true,
+          remindersEnabled: true,
+          reminderLeadMinutes: [1440, 60],
+        })
+        .expect(200);
+
+      expect(res.body.self_cancellation_enabled).toBe(true);
+      expect(res.body.self_reschedule_enabled).toBe(false); // untouched
+      expect(res.body.reminders_enabled).toBe(true);
+      expect(res.body.reminder_lead_minutes).toEqual([1440, 60]);
+    });
+
+    it('T011 (spec 014): PATCH rejects a reminder lead time outside the supported set', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .patch(`${API}/tenants/me/settings`)
+        .set(...authHeader(ownerA.token))
+        .send({ reminderLeadMinutes: [45] })
+        .expect(400);
+
+      expect(res.body.message).toBeDefined();
     });
   });
 

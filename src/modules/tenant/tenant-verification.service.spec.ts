@@ -8,6 +8,8 @@ import { TenantService } from './tenant.service';
 import { StorageService } from '../storage/storage.service';
 import { VerificationAuditService } from '../verification-audit/verification-audit.service';
 import { AdminNotificationService } from '../admin-notifications/admin-notification.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TenantVerificationSubmittedEvent } from '../../events/tenant.events';
 import { REQUIRED_DOC_TYPES } from './verification.constants';
 import { ErrorCode } from '../../common/errors';
 import {
@@ -31,6 +33,7 @@ describe('TenantVerificationService', () => {
   };
   let audit: { record: jest.Mock; listForTenant: jest.Mock };
   let adminNotifications: { create: jest.Mock };
+  let emitter: { emit: jest.Mock };
   let storage: {
     assertKeyBelongsToTenant: jest.Mock;
     objectExists: jest.Mock;
@@ -54,6 +57,7 @@ describe('TenantVerificationService', () => {
     };
     audit = { record: jest.fn(async () => undefined), listForTenant: jest.fn(async () => []) };
     adminNotifications = { create: jest.fn(async () => undefined) };
+    emitter = { emit: jest.fn() };
     storage = {
       assertKeyBelongsToTenant: jest.fn(),
       objectExists: jest.fn().mockResolvedValue(true),
@@ -73,6 +77,7 @@ describe('TenantVerificationService', () => {
         { provide: StorageService, useValue: storage },
         { provide: VerificationAuditService, useValue: audit },
         { provide: AdminNotificationService, useValue: adminNotifications },
+        { provide: EventEmitter2, useValue: emitter },
       ],
     }).compile();
 
@@ -343,6 +348,9 @@ describe('TenantVerificationService', () => {
         publicContext: { missing: [TYPE_B, TYPE_C] },
       });
       expect(tenantService.markPendingApproval).not.toHaveBeenCalled();
+      expect(emitter.emit).not.toHaveBeenCalled();
+      // The legacy platform feed must stay untouched too — this service no
+      // longer writes to it at all.
       expect(adminNotifications.create).not.toHaveBeenCalled();
     });
 
@@ -353,9 +361,18 @@ describe('TenantVerificationService', () => {
 
       expect(result).toEqual({ status: TenantApprovalStatus.PENDING_APPROVAL, missing: [] });
       expect(tenantService.markPendingApproval).toHaveBeenCalledWith(TENANT_ID, actor.id);
-      expect(adminNotifications.create).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'VERIFICATION_SUBMITTED', tenantId: TENANT_ID }),
+
+      // Notification now goes out as a domain event, consumed by
+      // InternalNotificationListener → the per-recipient inbox. The service
+      // itself no longer knows who is notified, in what language, or through
+      // which channel.
+      expect(emitter.emit).toHaveBeenCalledWith(
+        TenantVerificationSubmittedEvent.eventName,
+        expect.objectContaining({ tenantId: TENANT_ID, actorUserId: actor.id }),
       );
+      // And the legacy global-read-state feed is no longer written.
+      expect(adminNotifications.create).not.toHaveBeenCalled();
+
       expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ tenantId: TENANT_ID, action: 'SUBMITTED' }));
     });
 

@@ -23,7 +23,7 @@ import { UpdateCustomerProfileDto } from './dto/update-customer-profile.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
-import { PERMISSION } from '../../rbac/rbac.constants';
+import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
@@ -57,10 +57,21 @@ export class CustomerProfileController {
     private readonly ctx: TenantContextService,
   ) {}
 
+  /** Mirrors PermissionsGuard's own super_admin role bypass (not a literal '*' in `permissions`). */
+  private hasClinical(permission: string): boolean {
+    const user = this.ctx.getUser();
+    return (
+      Boolean(user?.roles.includes(ROLE.SUPER_ADMIN)) ||
+      Boolean(user?.permissions.includes(permission))
+    );
+  }
+
   @ApiOperation({
     summary: 'Get customer profile',
     description:
-      '**Protected — `crm.customers.read`. Clinic active.** 404 if not set yet.',
+      '**Protected — `crm.customers.read`. Clinic active.** 404 if not set yet. ' +
+      'T108 (spec 014, US6, FR-H010a/d) — the 4 clinical fields (medical_history, ' +
+      'allergies, blood_type, notes) are included only with `clinical.records.read`.',
   })
   @ApiParam({
     name: 'customerId',
@@ -84,13 +95,20 @@ export class CustomerProfileController {
   @Get()
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_READ)
   get(@Param('customerId', ParseUUIDPipe) customerId: string) {
-    return this.profiles.get(this.ctx.requireTenantId(), customerId);
+    return this.profiles.get(
+      this.ctx.requireTenantId(),
+      customerId,
+      this.hasClinical(PERMISSION.CLINICAL_RECORDS_READ),
+    );
   }
 
   @ApiOperation({
     summary: 'Create or update customer profile',
     description:
-      '**Protected — `crm.customers.manage`. Clinic active.** Upserts the 1:1 profile.',
+      '**Protected — `crm.customers.manage`. Clinic active.** Upserts the 1:1 profile. ' +
+      'T108 (spec 014, US6, FR-H010a) — submitting any of the 4 clinical fields ' +
+      '(medical_history, allergies, blood_type, notes) additionally requires ' +
+      '`clinical.records.manage`, or the request is refused (403), never silently dropped.',
   })
   @ApiParam({
     name: 'customerId',
@@ -104,7 +122,8 @@ export class CustomerProfileController {
     schema: S_ERROR,
   })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `crm.customers.manage`, or clinic inactive.',
+    description:
+      'Caller lacks `crm.customers.manage`, or clinic inactive, or attempted a clinical field without `clinical.records.manage`.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
@@ -117,6 +136,11 @@ export class CustomerProfileController {
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Body() dto: UpdateCustomerProfileDto,
   ) {
-    return this.profiles.upsert(this.ctx.requireTenantId(), customerId, dto);
+    return this.profiles.upsert(
+      this.ctx.requireTenantId(),
+      customerId,
+      dto,
+      this.hasClinical(PERMISSION.CLINICAL_RECORDS_MANAGE),
+    );
   }
 }

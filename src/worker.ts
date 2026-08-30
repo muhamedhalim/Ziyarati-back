@@ -6,6 +6,14 @@ import { WorkerModule } from './worker.module';
 import { MetricsService } from './metrics/metrics.service';
 import { startMetricsHttpServer } from './metrics/start-metrics-http-server';
 
+// Spec 014 (Clinic Platform Completion) — T021. The ONE process-identity
+// marker `DocumentRendererService` checks to refuse construction outside the
+// worker (PDF generation must never run on the request path — R2). Set
+// before `NestFactory.createApplicationContext` below instantiates any
+// provider; `main.ts` (API) and `migrate.ts` never set this, so it is
+// exactly the signal DocumentRendererService needs.
+process.env.PROCESS_ROLE = 'worker';
+
 /**
  * Worker process entrypoint (deployed as a SEPARATE service —
  * `node dist/src/worker.js`, the same image as the API with the command

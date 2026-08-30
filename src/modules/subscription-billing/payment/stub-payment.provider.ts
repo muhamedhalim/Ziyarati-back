@@ -5,6 +5,7 @@ import {
   PaymentProvider,
   RefundRequest,
   RefundResult,
+  VerifyChargeResult,
 } from './payment-provider.interface';
 
 /**
@@ -36,5 +37,19 @@ export class StubPaymentProvider implements PaymentProvider {
       success: true,
       reference: `stub_rf_${request.invoiceId}`,
     };
+  }
+
+  /**
+   * T084 — the stub never leaves anything unsettled: `charge()` always
+   * responds synchronously and immediately. Nothing to look up, so this
+   * always reports 'unknown' rather than fabricating a status — the
+   * reconciliation sweep treats 'unknown' as "safe to release the stale
+   * claim for a retry", never as "paid".
+   */
+  async verifyCharge(invoiceId: string): Promise<VerifyChargeResult> {
+    this.logger.log(
+      `Verify requested for invoice ${invoiceId} — stub has no record (unknown)`,
+    );
+    return { status: 'unknown' };
   }
 }

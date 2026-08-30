@@ -6,6 +6,7 @@ import { DataSource, FindOptionsWhere, Repository } from 'typeorm';
 import { PaymentLink } from '../../entities/Payments/PaymentLink';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreatePaymentLinkDto } from './dto/create-payment-link.dto';
@@ -31,6 +32,8 @@ export class PaymentLinkService {
   constructor(
     @InjectRepository(PaymentLink)
     private readonly links: Repository<PaymentLink>,
+    @InjectRepository(TenantSetting)
+    private readonly tenantSettings: Repository<TenantSetting>,
     private readonly platformSettings: SystemSettingService,
     private readonly merchants: MerchantAccountService,
     private readonly dataSource: DataSource,
@@ -109,6 +112,65 @@ export class PaymentLinkService {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment link not found' });
     }
     return link;
+  }
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — T067 (S4). Auto-generates a
+   * payment link for a just-created appointment when the clinic requires
+   * payment and the booking actually has an amount due — the same policy
+   * `AiToolDispatchService.maybeCreatePaymentLink` already applies for the
+   * AI conversational public-booking path, reused here for the deterministic
+   * one so both booking paths converge on one payment-link decision.
+   * `undefined` (never a thrown error) whenever no link should be issued —
+   * a failure here must never fail the booking that already succeeded.
+   */
+  async createIfDue(
+    tenantId: string,
+    appointment: Appointment,
+  ): Promise<
+    { token: string; amount: number; currency: string; expiresAt?: string } | undefined
+  > {
+    try {
+      const settings = await this.tenantSettings.findOne({
+        where: { tenant: { id: tenantId } },
+      });
+      if (settings && !settings.payment_required) return undefined;
+
+      const amount = round2(Number(appointment.total_amount ?? 0));
+      if (!(amount > 0)) return undefined;
+
+      const link = await this.create(tenantId, {
+        appointmentId: appointment.id,
+        amount,
+      });
+      return {
+        token: link.link_token,
+        amount: Number(link.amount),
+        currency: appointment.currency,
+        expiresAt: link.expires_at?.toISOString(),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * ACTIVE links for one appointment — the sole read path other modules
+   * (e.g. patient-initiated cancellation) use instead of touching the
+   * `PaymentLink` entity directly (VER-009: this service is the only file
+   * allowed to import it, enforced by `payment-link.controller.spec.ts`).
+   */
+  async findActiveForAppointment(
+    tenantId: string,
+    appointmentId: string,
+  ): Promise<PaymentLink[]> {
+    return this.links.find({
+      where: {
+        tenant: { id: tenantId },
+        appointment: { id: appointmentId },
+        status: PAYMENT_LINK_STATUS.ACTIVE,
+      },
+    });
   }
 
   /** Disable an active link so it can no longer be used. */

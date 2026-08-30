@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 
 import { BillingModeService } from './billing-mode.service';
+import { BillingService } from './billing.service';
 import { FreeAccessOverrideService } from './free-access-override.service';
 import { PlanAdminService } from './plan-admin.service';
 import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
@@ -49,6 +50,7 @@ export class PlatformBillingAdminController {
     private readonly mode: BillingModeService,
     private readonly overrides: FreeAccessOverrideService,
     private readonly plans: PlanAdminService,
+    private readonly billing: BillingService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -90,7 +92,9 @@ export class PlatformBillingAdminController {
   }
 
   @ApiOperation({ summary: 'Get a plan (admin view)' })
-  @ApiOkResponse({ description: 'Plan, including whether it has active subscribers.' })
+  @ApiOkResponse({
+    description: 'Plan, including whether it has active subscribers.',
+  })
   @Get('plans/:id')
   getPlan(@Param('id', ParseUUIDPipe) id: string) {
     return this.plans.getAdminView(id);
@@ -188,5 +192,21 @@ export class PlatformBillingAdminController {
   @HttpCode(HttpStatus.OK)
   revokeOverride(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
     return this.overrides.revoke(tenantId);
+  }
+
+  // ──────────────────────────── Renewals (T089) ────────────────────────── //
+
+  @ApiOperation({
+    summary: 'List renewals blocked specifically on provider tokenization',
+    description:
+      'FR-B005e — every OPEN subscription invoice whose last decline is ' +
+      'classified TOKENIZATION_UNAVAILABLE, distinguishable from an ordinary ' +
+      'card decline, so the operational backlog stays visible per clinic ' +
+      'rather than silently accumulating in the past-due state.',
+  })
+  @ApiOkResponse({ description: 'Affected clinics with their retry state.' })
+  @Get('renewals/tokenization-declines')
+  listTokenizationDeclines() {
+    return this.billing.listTokenizationDeclines();
   }
 }

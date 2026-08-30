@@ -1,4 +1,6 @@
 import {
+  ArrayUnique,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -9,6 +11,9 @@ import {
   Min,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+
+/** The only supported reminder lead times, in minutes: 1 day, 3 hours, 1 hour. */
+export const SUPPORTED_REMINDER_LEAD_MINUTES = [1440, 180, 60] as const;
 
 export class UpdateTenantSettingsDto {
   @ApiPropertyOptional({
@@ -107,4 +112,43 @@ export class UpdateTenantSettingsDto {
   @IsOptional()
   @IsBoolean()
   publicBookingEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether a patient can cancel their own appointment from their private action link, with no sign-in. When false — the default — self-service cancellation is unavailable and the clinic cancellation window (cancellationHours) has no self-service path to enforce.',
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  selfCancellationEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether a patient can reschedule their own appointment from their private action link, with no sign-in. When false — the default — self-service rescheduling is unavailable.',
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  selfRescheduleEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether automated appointment reminders are sent to patients. When false — the default — no reminder is ever scheduled, regardless of reminderLeadMinutes.',
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  remindersEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'How many minutes before an appointment to send a reminder. Only the fixed supported set is accepted: 1440 (1 day), 180 (3 hours), 60 (1 hour) — free-form offsets are rejected.',
+    example: [1440, 60],
+    type: [Number],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsIn(SUPPORTED_REMINDER_LEAD_MINUTES, { each: true })
+  reminderLeadMinutes?: number[];
 }
