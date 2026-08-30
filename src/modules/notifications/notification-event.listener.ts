@@ -1,5 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
+import { Repository } from 'typeorm';
+
+import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { PatientActionPurpose } from '../../entities/enums';
+import { PatientActionLinkService } from '../patient-actions/patient-action-link.service';
 
 import {
   APPOINTMENT_EVENT,
@@ -60,7 +67,22 @@ export class NotificationEventListener {
   constructor(
     private readonly rules: NotificationRuleService,
     private readonly scheduler: NotificationSchedulerService,
+    @InjectRepository(Appointment)
+    private readonly appointments: Repository<Appointment>,
+    private readonly patientActionLinks: PatientActionLinkService,
+    private readonly config: ConfigService,
   ) {}
+
+  /** Base URL for links embedded in outbound messages (APP_URL, else first
+   *  FRONTEND_ORIGIN) — same pattern as `AuthService.appUrl`. */
+  private appUrl(): string {
+    return (
+      this.config.get<string>('APP_URL') ??
+      (this.config.get<string>('FRONTEND_ORIGIN') ?? 'http://localhost:3000')
+        .split(',')[0]
+        .trim()
+    );
+  }
 
   // ─────────────────────────── Appointment events ─────────────────────────── //
 
@@ -74,10 +96,57 @@ export class NotificationEventListener {
 
   @OnEvent(APPOINTMENT_EVENT.CONFIRMED)
   async onAppointmentConfirmed(event: AppointmentConfirmedEvent): Promise<void> {
-    await this.dispatch(event.tenantId, APPOINTMENT_EVENT.CONFIRMED, {
-      customerId: event.customerId,
-      appointmentId: event.appointmentId,
-    });
+    const [cancelVars, rescheduleVars] = await Promise.all([
+      this.buildActionLinkVariables(
+        event.tenantId,
+        event.appointmentId,
+        PatientActionPurpose.CANCEL,
+        'cancelUrl',
+      ),
+      this.buildActionLinkVariables(
+        event.tenantId,
+        event.appointmentId,
+        PatientActionPurpose.RESCHEDULE,
+        'rescheduleUrl',
+      ),
+    ]);
+    await this.dispatch(
+      event.tenantId,
+      APPOINTMENT_EVENT.CONFIRMED,
+      { customerId: event.customerId, appointmentId: event.appointmentId },
+      { ...cancelVars, ...rescheduleVars },
+    );
+  }
+
+  /**
+   * T032/T044 (S1/S2, FR-C002/FR-R014) — issues a patient-action link
+   * (`CANCEL` or `RESCHEDULE`) and returns its URL as a template variable
+   * so the confirmation notification can carry it (`{cancelUrl}` /
+   * `{rescheduleUrl}` in the template body). Never blocks the confirmation
+   * notification itself: a failure here is logged and swallowed, returning
+   * no variable, so the notification still sends without a broken link
+   * rather than not sending at all.
+   */
+  private async buildActionLinkVariables(
+    tenantId: string,
+    appointmentId: string,
+    purpose: PatientActionPurpose,
+    variableName: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const appointment = await this.appointments.findOne({
+        where: { id: appointmentId, tenant: { id: tenantId } },
+        select: { id: true, start_at: true },
+      });
+      if (!appointment) return undefined;
+      const secret = await this.patientActionLinks.issue(tenantId, appointment, purpose);
+      return { [variableName]: `${this.appUrl()}/appointment-action/${secret}` };
+    } catch (err) {
+      this.logger.error(
+        `Failed to issue a ${purpose} link for appointment ${appointmentId}: ${(err as Error)?.message}`,
+      );
+      return undefined;
+    }
   }
 
   @OnEvent(APPOINTMENT_EVENT.CANCELLED)
@@ -233,6 +302,7 @@ export class NotificationEventListener {
       tenantId?: string;
       userId?: string;
     },
+    extraVariables?: Record<string, unknown>,
   ): Promise<void> {
     let activeRules;
     try {
@@ -247,9 +317,20 @@ export class NotificationEventListener {
     for (const rule of activeRules) {
       if (!rule.template) continue; // rule has no template — cannot dispatch
 
-      const scheduledAt = new Date(
-        Date.now() + (rule.delay_minutes ?? 0) * 60_000,
-      ).toISOString();
+      let scheduledAtDate: Date;
+      if (rule.anchor === 'BEFORE_APPOINTMENT_START') {
+        const anchor = await this.resolveBeforeAppointmentAnchor(
+          tenantId,
+          context.appointmentId,
+          rule.delay_minutes ?? 0,
+        );
+        if (!anchor) continue; // no appointment to anchor to, or already past
+        scheduledAtDate = anchor;
+      } else {
+        // AFTER_EVENT — byte-identical to the pre-T016 behaviour.
+        scheduledAtDate = new Date(Date.now() + (rule.delay_minutes ?? 0) * 60_000);
+      }
+      const scheduledAt = scheduledAtDate.toISOString();
 
       const recipientType = context.userId
         ? RECIPIENT_TYPE.USER
@@ -259,13 +340,18 @@ export class NotificationEventListener {
       const recipientId = context.userId ?? context.customerId ?? context.tenantId ?? tenantId;
 
       try {
-        await this.scheduler.schedule(tenantId, {
-          templateId: rule.template.id,
-          appointmentId: context.appointmentId,
-          recipientType,
-          recipientId,
-          scheduledAt,
-        });
+        await this.scheduler.schedule(
+          tenantId,
+          {
+            templateId: rule.template.id,
+            appointmentId: context.appointmentId,
+            recipientType,
+            recipientId,
+            scheduledAt,
+          },
+          undefined,
+          extraVariables,
+        );
       } catch (err) {
         // Log but continue — a failure for one rule must not suppress others.
         this.logger.error(
@@ -273,5 +359,33 @@ export class NotificationEventListener {
         );
       }
     }
+  }
+
+  /**
+   * T017 (S3) — `scheduled_at` for a `BEFORE_APPOINTMENT_START` rule:
+   * `appointment.start_at − leadMinutes`. `start_at` is a `timestamptz` — an
+   * absolute instant — so subtracting a fixed duration from it is already
+   * timezone-correct; there is nothing to convert. What matters is using
+   * the appointment's OWN `start_at` (captured at booking time) rather than
+   * reconstructing a time from the branch's CURRENT timezone setting, which
+   * could have changed since booking or disagree across a DST transition.
+   *
+   * Returns `null` (skip scheduling — never a late send) when there is no
+   * appointment to anchor to, or the computed moment is already past.
+   */
+  private async resolveBeforeAppointmentAnchor(
+    tenantId: string,
+    appointmentId: string | undefined,
+    leadMinutes: number,
+  ): Promise<Date | null> {
+    if (!appointmentId) return null;
+    const appointment = await this.appointments.findOne({
+      where: { id: appointmentId, tenant: { id: tenantId } },
+      select: { id: true, start_at: true },
+    });
+    if (!appointment) return null;
+
+    const anchor = new Date(appointment.start_at.getTime() - leadMinutes * 60_000);
+    return anchor.getTime() > Date.now() ? anchor : null;
   }
 }

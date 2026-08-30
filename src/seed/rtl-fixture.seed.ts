@@ -117,7 +117,9 @@ async function ensureFreeAccessOverride(
     [tenantId],
   );
   if (existingOverride.length > 0) {
-    logger.info('RTL fixture tenant already has an active free-access override — skipping');
+    logger.info(
+      'RTL fixture tenant already has an active free-access override — skipping',
+    );
     return;
   }
   await manager.query(
@@ -329,6 +331,7 @@ export async function seedRtlFixture(manager: EntityManager): Promise<void> {
         total_amount: 200 + i * 15,
         status: invoiceStatuses[i % invoiceStatuses.length],
         issued_at: new Date(Date.UTC(2026, 0, 1 + i)),
+        currency: 'SAR', // matches the paired Payment rows below
       }),
     ),
   );

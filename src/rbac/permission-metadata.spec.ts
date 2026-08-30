@@ -33,6 +33,12 @@ describe('permission-metadata', () => {
       expect(DEFAULT_RISK).toBe('medium');
     });
 
+    it('classifies the T003 clinical/audit slugs (spec 014)', () => {
+      expect(getRisk(PERMISSION.CLINICAL_RECORDS_READ)).toBe('high');
+      expect(getRisk(PERMISSION.CLINICAL_RECORDS_MANAGE)).toBe('high');
+      expect(getRisk(PERMISSION.AUDIT_READ)).toBe('medium');
+    });
+
     it('never silently classifies an unmapped permission as high or critical', () => {
       const highRisk = new Set(['high', 'critical']);
       // Every permission that is NOT in the explicit override set must resolve

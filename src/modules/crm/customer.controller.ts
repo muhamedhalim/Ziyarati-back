@@ -33,7 +33,7 @@ import { SearchCustomersDto } from './dto/search-customers.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
-import { PERMISSION } from '../../rbac/rbac.constants';
+import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
@@ -142,7 +142,13 @@ export class CustomerController {
     type: 'string',
     format: 'uuid',
   })
-  @ApiOkResponse({ description: 'Customer details.' })
+  @ApiOkResponse({
+    description:
+      "Customer details. T108 (spec 014, US6, FR-H010d) — the profile's clinical fields " +
+      '(medical_history, allergies, blood_type, notes) are included only when the caller ' +
+      'additionally holds `clinical.records.read`; contact, addresses, tags and the intake ' +
+      'chronic-condition fields are unaffected.',
+  })
   @ApiUnauthorizedResponse({
     description: 'Missing or invalid access token.',
     schema: S_ERROR,
@@ -158,7 +164,18 @@ export class CustomerController {
   @Get(':id')
   @RequirePermissions(PERMISSION.CRM_CUSTOMERS_READ)
   getDetails(@Param('id', ParseUUIDPipe) id: string) {
-    return this.customers.getDetails(this.ctx.requireTenantId(), id);
+    const user = this.ctx.getUser();
+    // Mirrors PermissionsGuard's own super_admin bypass (role-based, not a
+    // literal '*' in `permissions`) — a super_admin who reaches this
+    // tenant-scoped route did so via that same role bypass.
+    const hasClinicalAccess =
+      Boolean(user?.roles.includes(ROLE.SUPER_ADMIN)) ||
+      Boolean(user?.permissions.includes(PERMISSION.CLINICAL_RECORDS_READ));
+    return this.customers.getDetails(
+      this.ctx.requireTenantId(),
+      id,
+      hasClinicalAccess,
+    );
   }
 
   @ApiOperation({

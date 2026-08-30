@@ -4,15 +4,20 @@ import {
   Between,
   DataSource,
   FindOptionsWhere,
+  In,
   MoreThanOrEqual,
   LessThan,
   Repository,
 } from 'typeorm';
 
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { InvoiceStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
-import { PAYMENT_PROVIDER } from './payment/payment-provider.interface';
+import {
+  FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
+  PAYMENT_PROVIDER,
+} from './payment/payment-provider.interface';
 import type { PaymentProvider } from './payment/payment-provider.interface';
 import { QueryInvoicesDto } from './dto/query-invoices.dto';
 
@@ -29,16 +34,30 @@ export class BillingService {
   constructor(
     @InjectRepository(SubscriptionInvoice)
     private readonly invoices: Repository<SubscriptionInvoice>,
+    @InjectRepository(Tenant)
+    private readonly tenants: Repository<Tenant>,
     @Inject(PAYMENT_PROVIDER)
     private readonly payment: PaymentProvider,
     private readonly dataSource: DataSource,
   ) {}
 
-  /** Issues an invoice for a billing cycle (status OPEN). Called by SubscriptionService. */
+  /**
+   * Issues an invoice for a billing cycle (status OPEN). Called by
+   * `SubscriptionService` (creation, plan change) and `RenewalService`
+   * (spec 014, T080).
+   *
+   * `periodStart`/`periodEnd`/`currency` are required, not optional: T079
+   * made all three NOT NULL at the database level (`UQ_sub_invoice_period`
+   * enforces "at most one non-VOID invoice per period"), so a caller that
+   * omitted them would fail at the DB, not silently proceed with a guess.
+   */
   async generateInvoice(
     tenantId: string,
     subscriptionId: string,
     amount: number,
+    periodStart: Date,
+    periodEnd: Date,
+    currency: string,
     status: InvoiceStatus = InvoiceStatus.OPEN,
   ): Promise<SubscriptionInvoice> {
     const invoice = this.invoices.create({
@@ -47,6 +66,9 @@ export class BillingService {
       amount: amount.toFixed(2),
       status,
       issued_at: new Date(),
+      period_start: periodStart,
+      period_end: periodEnd,
+      currency,
     });
     return this.invoices.save(invoice);
   }
@@ -95,11 +117,7 @@ export class BillingService {
    * lock (idempotent: an invoice already PAID is returned as-is). The provider
    * reference is persisted for support/reconciliation.
    */
-  async payInvoice(
-    tenantId: string,
-    id: string,
-    currency = 'USD',
-  ): Promise<SubscriptionInvoice> {
+  async payInvoice(tenantId: string, id: string): Promise<SubscriptionInvoice> {
     // ── Phase 1: atomic claim (UPDATE … WHERE claim free/stale) ──
     const staleBefore = new Date(
       Date.now() - BillingService.CHARGE_CLAIM_STALE_MS,
@@ -147,15 +165,32 @@ export class BillingService {
     const invoice = await this.getInvoice(tenantId, id);
 
     // ── Phase 2: provider charge OUTSIDE any tx/lock ──
+    // Charges in the invoice's OWN currency (T079: snapshotted at issue
+    // time from the platform's billing default) — never a caller-supplied
+    // value, which previously defaulted to a hardcoded 'USD' regardless of
+    // what the invoice actually said.
     const result = await this.payment.charge({
       tenantId,
       invoiceId: invoice.id,
       amount: Number(invoice.amount),
-      currency,
+      currency: invoice.currency,
+      // T083 — echoed back by a real provider's webhook so
+      // PaymentWebhookService can correlate a late/async confirmation to
+      // this invoice even when `provider_reference` was never recorded (the
+      // "lost confirmation" case FR-B016 names).
+      metadata: { subscriptionInvoiceId: invoice.id },
     });
 
     // ── Phase 3: finalize under a row lock (idempotent) ──
-    return this.dataSource.transaction(async (manager) => {
+    // The decline write MUST commit — it must never THROW from inside this
+    // callback: `DataSource.transaction()` rolls back everything the
+    // callback did the moment it throws, which silently discarded
+    // `failure_reason`/`failure_class`/the claim release on every real
+    // decline (only ever masked by the mocked `DataSource` in tests, whose
+    // `transaction()` double has no real rollback semantics). The outcome is
+    // returned instead, and the decline is raised as an error AFTER the
+    // transaction has actually committed.
+    const finalized = await this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(SubscriptionInvoice);
       const locked = await repo.findOne({
         where: { id, tenant_id: tenantId },
@@ -166,25 +201,38 @@ export class BillingService {
           message: 'Invoice not found',
         });
       }
-      if (locked.status === InvoiceStatus.PAID) return locked;
+      if (locked.status === InvoiceStatus.PAID) {
+        return { declined: false as const, invoice: locked };
+      }
 
       if (!result.success) {
         locked.failure_reason = result.failureReason ?? 'Payment was declined';
+        // T081 — an ordinary decline (undefined) is distinct from a
+        // structural refusal like TOKENIZATION_UNAVAILABLE; never treated
+        // as a system error, never retried faster, never marked paid.
+        locked.failure_class = result.failureClass ?? null;
         locked.charge_started_at = null; // release the claim for a future retry
-        await repo.save(locked);
-        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-          message: 'Payment was declined by the provider',
-          // Raw gateway decline text — provider-response detail, logs only.
-          internalContext: { reason: result.failureReason },
-        });
+        const saved = await repo.save(locked);
+        return { declined: true as const, invoice: saved };
       }
 
       locked.status = InvoiceStatus.PAID;
       locked.paid_at = new Date();
       locked.provider_reference = result.reference;
       locked.failure_reason = null;
-      return repo.save(locked);
+      locked.failure_class = null;
+      const saved = await repo.save(locked);
+      return { declined: false as const, invoice: saved };
     });
+
+    if (finalized.declined) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Payment was declined by the provider',
+        // Raw gateway decline text — provider-response detail, logs only.
+        internalContext: { reason: result.failureReason },
+      });
+    }
+    return finalized.invoice;
   }
 
   /** Aggregated billing summary for the tenant: counts + amounts by status. */
@@ -221,5 +269,51 @@ export class BillingService {
       totalOutstanding: +totalOutstanding.toFixed(2),
       byStatus,
     };
+  }
+
+  /**
+   * T089 (spec 014, US5, FR-B005e) — platform-wide visibility into renewals
+   * blocked specifically on tokenization, distinguishable from an ordinary
+   * decline: every OPEN invoice whose last decline carries
+   * `FAILURE_CLASS_TOKENIZATION_UNAVAILABLE`. This is the only remaining
+   * blocker while the production provider is `RecurringUnavailableProvider`
+   * (see subscription-billing.module.ts), so it must stay visible rather than
+   * silently accumulating in the past-due backlog.
+   */
+  async listTokenizationDeclines(): Promise<
+    Array<{
+      tenantId: string;
+      tenantName: string | null;
+      invoiceId: string;
+      subscriptionId: string;
+      amount: string;
+      retryCount: number;
+      nextRetryAt: Date | null;
+    }>
+  > {
+    const invoices = await this.invoices.find({
+      where: {
+        status: InvoiceStatus.OPEN,
+        failure_class: FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
+      },
+      order: { next_retry_at: 'ASC' },
+    });
+    if (invoices.length === 0) return [];
+
+    const tenantIds = [...new Set(invoices.map((i) => i.tenant_id))];
+    const tenants = await this.tenants.find({
+      where: { id: In(tenantIds) },
+    });
+    const nameById = new Map(tenants.map((t) => [t.id, t.name]));
+
+    return invoices.map((i) => ({
+      tenantId: i.tenant_id,
+      tenantName: nameById.get(i.tenant_id) ?? null,
+      invoiceId: i.id,
+      subscriptionId: i.subscription_id,
+      amount: i.amount,
+      retryCount: i.retry_count,
+      nextRetryAt: i.next_retry_at ?? null,
+    }));
   }
 }

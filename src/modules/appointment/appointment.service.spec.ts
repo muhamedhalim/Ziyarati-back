@@ -11,6 +11,8 @@ import { AppointmentStatusLog } from '../../entities/Calendar&Appointments/Appoi
 import { AppointmentNote } from '../../entities/Calendar&Appointments/AppointmentNote';
 import { AppointmentReschedule } from '../../entities/Calendar&Appointments/AppointmentReschedule';
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
+import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
+import { AppointmentActionOrigin } from '../../entities/enums';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
@@ -51,6 +53,7 @@ describe('AppointmentsService', () => {
   let reschedulesRepo: MockRepository;
   let cancellationsRepo: MockRepository;
   let staffProfilesRepo: MockRepository;
+  let scheduledNotificationsRepo: MockRepository;
 
   /** Full tenant-wide access — the default caller for existing tests. */
   const FULL_ACCESS_CALLER = { id: USER, permissions: [PERMISSION.APPOINTMENTS_READ] };
@@ -83,6 +86,7 @@ describe('AppointmentsService', () => {
     reschedulesRepo = createMockRepository();
     cancellationsRepo = createMockRepository();
     staffProfilesRepo = createMockRepository();
+    scheduledNotificationsRepo = createMockRepository();
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -94,6 +98,7 @@ describe('AppointmentsService', () => {
         { provide: getRepositoryToken(AppointmentReschedule), useValue: reschedulesRepo },
         { provide: getRepositoryToken(AppointmentCancellation), useValue: cancellationsRepo },
         { provide: getRepositoryToken(StaffProfile), useValue: staffProfilesRepo },
+        { provide: getRepositoryToken(ScheduledNotification), useValue: scheduledNotificationsRepo },
         { provide: DataSource, useValue: dataSource },
         { provide: AvailabilityService, useValue: availability },
         { provide: UsageService, useValue: usage },
@@ -464,6 +469,42 @@ describe('AppointmentsService', () => {
         service.cancel(TENANT, USER, 'appt-1', {} as any),
       ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
     });
+
+    // ── T019 (spec 014): origin persisted on the audit row ────────────
+    it('T019: defaults origin to STAFF when omitted (regression — every existing caller)', async () => {
+      loadAppointment();
+      await service.cancel(TENANT, USER, 'appt-1', { reason: 'x' } as any);
+      expect(repo(AppointmentCancellation).create).toHaveBeenCalledWith(
+        expect.objectContaining({ origin: AppointmentActionOrigin.STAFF }),
+      );
+    });
+
+    it('T019: persists PATIENT origin when the caller supplies it', async () => {
+      loadAppointment();
+      await service.cancel(
+        TENANT,
+        USER,
+        'appt-1',
+        { reason: 'x' } as any,
+        AppointmentActionOrigin.PATIENT,
+      );
+      expect(repo(AppointmentCancellation).create).toHaveBeenCalledWith(
+        expect.objectContaining({ origin: AppointmentActionOrigin.PATIENT }),
+      );
+    });
+
+    it('a null userId (patient-initiated, no staff actor) omits cancelled_by rather than storing a placeholder id', async () => {
+      loadAppointment();
+      await service.cancel(
+        TENANT,
+        null,
+        'appt-1',
+        { reason: 'x' } as any,
+        AppointmentActionOrigin.PATIENT,
+      );
+      const created = repo(AppointmentCancellation).create.mock.calls[0][0];
+      expect(created.cancelled_by).toBeUndefined();
+    });
   });
 
   describe('reschedule', () => {
@@ -490,6 +531,55 @@ describe('AppointmentsService', () => {
         expect.any(Date),
         expect.objectContaining({ excludeAppointmentId: 'appt-1', manager }),
       );
+    });
+
+    const loadForReschedule = () =>
+      repo(Appointment).findOne.mockResolvedValueOnce({
+        id: 'appt-1',
+        tenant: { id: TENANT },
+        status: AppointmentStatus.CONFIRMED,
+        branch: { id: 'b1' },
+        staff: { id: 's1' },
+        start_at: new Date('2026-07-01T10:00:00Z'),
+        end_at: new Date('2026-07-01T10:30:00Z'),
+      });
+
+    // ── T019 (spec 014): origin persisted on the audit row ────────────
+    it('T019: defaults origin to STAFF when omitted (regression — every existing caller)', async () => {
+      loadForReschedule();
+      await service.reschedule(TENANT, USER, 'appt-1', {
+        newStartAt: '2026-07-02T12:00:00.000Z',
+      } as any);
+      expect(repo(AppointmentReschedule).create).toHaveBeenCalledWith(
+        expect.objectContaining({ origin: AppointmentActionOrigin.STAFF }),
+      );
+    });
+
+    it('T019: persists PATIENT origin when the caller supplies it', async () => {
+      loadForReschedule();
+      await service.reschedule(
+        TENANT,
+        USER,
+        'appt-1',
+        { newStartAt: '2026-07-02T12:00:00.000Z' } as any,
+        AppointmentActionOrigin.PATIENT,
+      );
+      expect(repo(AppointmentReschedule).create).toHaveBeenCalledWith(
+        expect.objectContaining({ origin: AppointmentActionOrigin.PATIENT }),
+      );
+    });
+
+    it('a null userId (patient-initiated, no staff actor) omits rescheduled_by rather than storing a placeholder id', async () => {
+      loadForReschedule();
+      await service.reschedule(
+        TENANT,
+        null,
+        'appt-1',
+        { newStartAt: '2026-07-02T12:00:00.000Z' } as any,
+        AppointmentActionOrigin.PATIENT,
+      );
+      const created = repo(AppointmentReschedule).create.mock.calls[0][0];
+      expect(created.rescheduled_by).toBeUndefined();
     });
   });
 
@@ -800,6 +890,71 @@ describe('AppointmentsService', () => {
       // Sorted ascending by timestamp.
       const times = timeline.map((e) => e.at.getTime());
       expect(times).toEqual([...times].sort((a, b) => a - b));
+    });
+  });
+
+  describe('listReminders (T055, FR-M015)', () => {
+    it('404s for another tenant\'s appointment before ever querying reminders', async () => {
+      appointments.findOne.mockResolvedValueOnce(null);
+      await expect(service.listReminders(TENANT, 'appt-1')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
+      expect(scheduledNotificationsRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('projects every reminder row — scheduled, sent, suppressed and failed — with reason and channel', async () => {
+      appointments.findOne.mockResolvedValueOnce({ id: 'appt-1' });
+      scheduledNotificationsRepo.find.mockResolvedValueOnce([
+        {
+          id: 'sched-1',
+          source_ref: 'appointment-reminder:appt-1:1440',
+          scheduled_at: new Date('2026-08-01T10:00:00Z'),
+          status: 'SENT',
+          channel: 'WHATSAPP',
+          skip_reason: null,
+          failure_reason: null,
+        },
+        {
+          id: 'sched-2',
+          source_ref: 'appointment-reminder:appt-1:60',
+          scheduled_at: new Date('2026-08-02T09:00:00Z'),
+          status: 'FAILED',
+          channel: null,
+          skip_reason: 'OPTED_OUT',
+          failure_reason: null,
+        },
+      ]);
+
+      const rows = await service.listReminders(TENANT, 'appt-1');
+
+      expect(scheduledNotificationsRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            tenant: { id: TENANT },
+            source_ref: expect.anything(),
+          }),
+        }),
+      );
+      expect(rows).toEqual([
+        {
+          id: 'sched-1',
+          leadMinutes: 1440,
+          scheduledAt: new Date('2026-08-01T10:00:00Z'),
+          status: 'SENT',
+          channel: 'WHATSAPP',
+          skipReason: null,
+          failureReason: null,
+        },
+        {
+          id: 'sched-2',
+          leadMinutes: 60,
+          scheduledAt: new Date('2026-08-02T09:00:00Z'),
+          status: 'FAILED',
+          channel: null,
+          skipReason: 'OPTED_OUT',
+          failureReason: null,
+        },
+      ]);
     });
   });
 });

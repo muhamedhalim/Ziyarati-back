@@ -280,6 +280,15 @@ export const PERMISSION = {
   BRANCHES_UPDATE: 'branches.update',
   BRANCHES_UPDATE_OWN: 'branches.update_own', // ABAC — see below
   BRANCHES_DELETE: 'branches.delete',
+
+  // Clinical records (medical-records module — extends the patient record
+  // domain; not granted to any role yet, see T104's enforcing controller)
+  CLINICAL_RECORDS_READ: 'clinical.records.read',
+  CLINICAL_RECORDS_MANAGE: 'clinical.records.manage',
+
+  // Accountability / activity log (activity-log module — not granted to any
+  // role yet, see T190's enforcing controller)
+  AUDIT_READ: 'audit.read',
 } as const;
 
 export type PermissionSlug = (typeof PERMISSION)[keyof typeof PERMISSION];
@@ -359,9 +368,10 @@ export const ROLE_GATED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set(
  *   - CUSTOMERS_CREATE / CUSTOMERS_UPDATE — `CustomerController` (the real,
  *     live route) checks `CRM_CUSTOMERS_MANAGE` instead; these look like
  *     leftovers from before the `crm.*` namespace was split out.
- *   - REPORTS_READ / REPORTS_EXPORT — no `reports.controller.ts` exists; the
- *     equivalent read is `ANALYTICS_REPORTS_READ` (daily/monthly report
- *     controllers), and no export feature exists anywhere in the codebase.
+ *   - REPORTS_READ — no `reports.controller.ts` exists; the equivalent read
+ *     is `ANALYTICS_REPORTS_READ` (daily/monthly report controllers).
+ *     REPORTS_EXPORT was removed from this set in T004 (spec 014): T184
+ *     gives it a real enforcing route (`report-export.controller.ts`).
  *   - AI_CHAT — both AI message routes check `AI_CONVERSATIONS_MANAGE`
  *     instead.
  *
@@ -378,8 +388,13 @@ export const UNTRIAGED_COVERAGE_GAP_SLUGS: ReadonlySet<PermissionSlug> =
     PERMISSION.CUSTOMERS_CREATE,
     PERMISSION.CUSTOMERS_UPDATE,
     PERMISSION.REPORTS_READ,
-    PERMISSION.REPORTS_EXPORT,
     PERMISSION.AI_CHAT,
+    // clinical.records.* enforcing controller landed in T112 — removed here
+    // per this set's own rule ("remove each entry the moment its controller
+    // lands", mirroring T004's REPORTS_EXPORT precedent).
+    // Declared in T003 with no enforcing route yet, on purpose — audit.read's
+    // grant lands with its enforcing code in T190. Remove then.
+    PERMISSION.AUDIT_READ,
   ]);
 
 /**
@@ -448,6 +463,19 @@ export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
   // same reason as the ticket family: none of it may ever be delegated into a
   // tenant custom role by a clinic Owner who happens to hold `roles.manage`.
   ...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
+  // T106 (spec 014, US6, FR-H010b) — the clinical permission decision.
+  // OWNER now holds `roles.manage` AND (T105) `clinical.records.read`/
+  // `.manage`, so without this reservation an Owner could self-delegate
+  // clinical access into an arbitrary "Other" custom role for ANY staff
+  // member — including one built for someone doing reception-shaped work —
+  // silently defeating FR-H010b's "MUST NOT be granted to the reception
+  // role" the moment a custom role existed. Clinical content is exactly the
+  // kind of narrowly-and-deliberately-granted capability this reservation
+  // list exists for; it is never delegable, even to a caller who holds it.
+  // Landed in the SAME change as T105's role grants — a window where the
+  // grant exists but the reservation doesn't would itself be the leak.
+  PERMISSION.CLINICAL_RECORDS_READ,
+  PERMISSION.CLINICAL_RECORDS_MANAGE,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -512,7 +540,10 @@ export const CUSTOM_ROLE_NAME_FALLBACK = 'Custom role';
  * whoever currently holds the role (see {@link CUSTOM_ROLE_NAME_PREFIX}).
  */
 export function isSynthesizedCustomRoleName(name: string): boolean {
-  return name === CUSTOM_ROLE_NAME_FALLBACK || name.startsWith(CUSTOM_ROLE_NAME_PREFIX);
+  return (
+    name === CUSTOM_ROLE_NAME_FALLBACK ||
+    name.startsWith(CUSTOM_ROLE_NAME_PREFIX)
+  );
 }
 
 /**
@@ -639,6 +670,19 @@ export const PERMISSIONS: PermissionDef[] = [
     slug: PERMISSION.CRM_CUSTOMERS_MANAGE,
     name: 'Manage CRM customers',
     module: 'crm',
+  },
+  {
+    // T104/T105 (spec 014, US6, FR-H010a) — one privacy boundary for BOTH the
+    // new structured clinical entries and the clinical fields already stored
+    // on CustomerProfile (medical_history, allergies, blood_type, notes).
+    slug: PERMISSION.CLINICAL_RECORDS_READ,
+    name: 'Read clinical records',
+    module: 'clinical',
+  },
+  {
+    slug: PERMISSION.CLINICAL_RECORDS_MANAGE,
+    name: 'Manage clinical records',
+    module: 'clinical',
   },
   {
     slug: PERMISSION.CRM_NOTES_READ,
@@ -1356,6 +1400,10 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CUSTOMERS_MANAGE,
     PERMISSION.CRM_CUSTOMERS_READ,
     PERMISSION.CRM_CUSTOMERS_MANAGE,
+    // T105 (spec 014, US6, FR-H010b) — one privacy boundary for both the new
+    // structured clinical entries and CustomerProfile's clinical fields.
+    PERMISSION.CLINICAL_RECORDS_READ,
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
     PERMISSION.CRM_NOTES_READ,
     PERMISSION.CRM_NOTES_MANAGE,
     PERMISSION.CRM_TAGS_READ,
@@ -1486,6 +1534,10 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CUSTOMERS_MANAGE,
     PERMISSION.CRM_CUSTOMERS_READ,
     PERMISSION.CRM_CUSTOMERS_MANAGE,
+    // T105 (spec 014, US6, FR-H010b) — one privacy boundary for both the new
+    // structured clinical entries and CustomerProfile's clinical fields.
+    PERMISSION.CLINICAL_RECORDS_READ,
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
     PERMISSION.CRM_NOTES_READ,
     PERMISSION.CRM_NOTES_MANAGE,
     PERMISSION.CRM_TAGS_READ,
@@ -1639,24 +1691,33 @@ export const ROLE_PERMISSIONS: Record<
   //     server-side (filters by the caller's own StaffProfile via
   //     `appointment.staff.id`), so a doctor can list/view only appointments
   //     assigned to them, including the notes/timeline sub-resources.
-  //     Patient data is exposed ONLY as the `customer` relation embedded in
-  //     that already-scoped response — never a broad customers/CRM read
-  //     permission, which would let a doctor browse or read notes/files for
-  //     every patient in the tenant regardless of whether that doctor ever
-  //     treated them (CustomerNote/CustomerFile are scoped to the customer,
-  //     not to a specific appointment or staff member, so there is currently
-  //     no way to grant them without that leak — see the Doctor permissions
-  //     report for what a schema change would need to add here).
+  //   - CRM_CUSTOMERS_READ (T105, spec 014, US6, FR-H010c) — a DELIBERATE
+  //     REVERSAL of this block's own prior reasoning below, made explicitly
+  //     by the spec: without it a doctor cannot open ANY patient record at
+  //     all, so the entire clinical-records capability (the reason this role
+  //     exists) would be unreachable. The tenant-wide browsing risk the
+  //     original comment warned about is now the accepted tradeoff, made
+  //     safe by two things the original reasoning didn't have available:
+  //     `clinical.records.read` gates the actually-sensitive content (not
+  //     this read), and FR-H011 records every clinical read to
+  //     `clinical_access_logs` — so browsing IS possible but is no longer
+  //     unaccountable. CRM_CUSTOMERS_MANAGE is still NOT granted.
+  //   - CLINICAL_RECORDS_READ / CLINICAL_RECORDS_MANAGE (T105, FR-H010b) —
+  //     the actual clinical-content boundary: structured entries and
+  //     CustomerProfile's clinical fields, one gate for both (FR-H010a).
   //
-  // Explicitly NOT granted (see the Doctor permissions report for the full
-  // reasoning): appointments.create/update/reschedule/cancel (status/lifecycle
-  // changes), customers.*/crm.*, staff.* (including own-schedule viewing —
-  // no ownership-scoped variant exists yet), services.read, notifications.read,
-  // ai.chat, reviews.read. Add only once there is a real ownership-scoped
-  // enforcement path for each, mirroring APPOINTMENTS_READ_OWN.
+  // Still explicitly NOT granted: appointments.create/update/reschedule/cancel
+  // (status/lifecycle changes), crm.customers.manage, crm.notes.*, crm.tags.*,
+  // crm.files.*, staff.* (including own-schedule viewing — no ownership-scoped
+  // variant exists yet), services.read, notifications.read, ai.chat,
+  // reviews.read. Add only once there is a real ownership-scoped enforcement
+  // path for each, mirroring APPOINTMENTS_READ_OWN.
   [ROLE.DOCTOR]: [
     PERMISSION.DASHBOARD_ACCESS,
     PERMISSION.APPOINTMENTS_READ_OWN,
+    PERMISSION.CRM_CUSTOMERS_READ,
+    PERMISSION.CLINICAL_RECORDS_READ,
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
   ],
 
   // End user: self-service only (ownership enforced in the service layer).

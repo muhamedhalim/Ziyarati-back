@@ -7,10 +7,11 @@ import { IsNull, Not, Repository } from 'typeorm';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { BillingCycle, CustomCycleUnit, SubscriptionStatus } from '../../entities/enums';
+import { SubscriptionStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { BillingService } from './billing.service';
+import { computeNextPeriodEnd } from './subscription-period.util';
 import { AccessControlService } from './access-control.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { ChangePlanDto } from './dto/change-plan.dto';
@@ -133,7 +134,7 @@ export class SubscriptionService {
       endsAt = new Date(startsAt.getTime() + trialDays * 86_400_000);
       status = SubscriptionStatus.TRIAL;
     } else {
-      endsAt = this.computeEnds(startsAt, plan);
+      endsAt = computeNextPeriodEnd(startsAt, plan);
       status = SubscriptionStatus.ACTIVE;
     }
 
@@ -150,10 +151,16 @@ export class SubscriptionService {
 
     // Issue the first invoice for paid (non-trial) subscriptions.
     if (status !== SubscriptionStatus.TRIAL) {
+      const currency = await this.platformSettings.getTyped<string>(
+        SettingKey.DEFAULT_CURRENCY,
+      );
       await this.billing.generateInvoice(
         tenantId,
         subscription.id,
         Number(plan.price),
+        startsAt,
+        endsAt,
+        currency,
       );
     }
 
@@ -222,10 +229,16 @@ export class SubscriptionService {
     this.access.invalidate(tenantId);
 
     // Proration is abstracted: issue an invoice for the new plan price.
+    const currency = await this.platformSettings.getTyped<string>(
+      SettingKey.DEFAULT_CURRENCY,
+    );
     await this.billing.generateInvoice(
       tenantId,
       current.id,
       Number(newPlan.price),
+      current.starts_at,
+      current.ends_at,
+      currency,
     );
 
     const view = await this.view(await this.loadWithPlan(tenantId, current.id));
@@ -285,7 +298,7 @@ export class SubscriptionService {
     subscription.auto_renew = true;
     if (subscription.ends_at < new Date()) {
       subscription.starts_at = new Date();
-      subscription.ends_at = this.computeEnds(
+      subscription.ends_at = computeNextPeriodEnd(
         subscription.starts_at,
         subscription.plan,
       );
@@ -469,43 +482,5 @@ export class SubscriptionService {
       });
     }
     return subscription;
-  }
-
-  /**
-   * `plan` (not just its cycle) is needed because BillingCycle.CUSTOM has no
-   * fixed interval of its own — it defers to `plan.custom_cycle_value` +
-   * `plan.custom_cycle_unit` (e.g. 3 + MONTH = "every 3 months").
-   */
-  private computeEnds(start: Date, plan: SubscriptionPlan): Date {
-    const end = new Date(start);
-    switch (plan.billing_cycle) {
-      case BillingCycle.YEARLY:
-        end.setUTCFullYear(end.getUTCFullYear() + 1);
-        break;
-      case BillingCycle.CUSTOM: {
-        // Both columns are required together at the DTO level; a plan with
-        // billing_cycle CUSTOM but no duration is malformed data, not a
-        // normal case — fall back to monthly rather than a no-op end date.
-        const value = plan.custom_cycle_value ?? 1;
-        switch (plan.custom_cycle_unit) {
-          case CustomCycleUnit.DAY:
-            end.setUTCDate(end.getUTCDate() + value);
-            break;
-          case CustomCycleUnit.YEAR:
-            end.setUTCFullYear(end.getUTCFullYear() + value);
-            break;
-          case CustomCycleUnit.MONTH:
-          default:
-            end.setUTCMonth(end.getUTCMonth() + value);
-            break;
-        }
-        break;
-      }
-      case BillingCycle.MONTHLY:
-      default:
-        end.setUTCMonth(end.getUTCMonth() + 1);
-        break;
-    }
-    return end;
   }
 }

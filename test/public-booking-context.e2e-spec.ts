@@ -13,8 +13,13 @@
  * the whole public booking design rests on.
  */
 import { randomUUID } from 'node:crypto';
+import request from 'supertest';
 
-import { createE2eApp, cleanupTenant, type E2eApp } from './utils/whatsapp-e2e-app';
+import {
+  createE2eApp,
+  cleanupTenant,
+  type E2eApp,
+} from './utils/whatsapp-e2e-app';
 import { PublicBookingContextService } from '../src/modules/public-booking/public-booking-context.service';
 import { AiConversationService } from '../src/modules/ai/ai-conversation.service';
 import { ConversationSessionService } from '../src/modules/ai-orchestrator/conversation-session.service';
@@ -65,7 +70,8 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
         name: `E2E ${label} ${SUITE}`,
         slug: `e2e-${label}-${SUITE}`,
         contact_email: `${label}-${SUITE}@example.test`,
-        approval_status: overrides.approvalStatus ?? TenantApprovalStatus.APPROVED,
+        approval_status:
+          overrides.approvalStatus ?? TenantApprovalStatus.APPROVED,
         is_active: overrides.tenantActive ?? true,
       }),
     );
@@ -98,7 +104,9 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
     conversations = e2e.app.get(AiConversationService);
     sessions = e2e.app.get(ConversationSessionService);
 
-    discoveryTenantId = await e2e.app.get(GuestSessionService).ensureDiscoveryTenant();
+    discoveryTenantId = await e2e.app
+      .get(GuestSessionService)
+      .ensureDiscoveryTenant();
     guest = {
       id: randomUUID(),
       tenantId: discoveryTenantId,
@@ -113,13 +121,20 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
   }, 90_000);
 
   afterAll(async () => {
-    await e2e.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [
+    await e2e.dataSource
+      .query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [convId])
+      .catch(() => undefined);
+    await e2e.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [
       convId,
-    ]).catch(() => undefined);
-    await e2e.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [convId]);
+    ]);
     for (const tenantId of created) {
-      await e2e.dataSource.query(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenantId]);
-      await e2e.dataSource.query(`DELETE FROM branches WHERE "tenantId" = $1`, [tenantId]);
+      await e2e.dataSource.query(
+        `DELETE FROM tenant_settings WHERE tenant_id = $1`,
+        [tenantId],
+      );
+      await e2e.dataSource.query(`DELETE FROM branches WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
       await cleanupTenant(e2e, tenantId);
     }
     await e2e.app.close();
@@ -128,13 +143,15 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
   describe('resolveTenantFromBranch — the only producer of a booking tenant', () => {
     it('resolves the owning clinic from a branch of a fully eligible clinic', async () => {
       const clinic = await makeClinic('ok');
-      await expect(context.resolveTenantFromBranch(clinic.branchId)).resolves.toBe(
-        clinic.tenantId,
-      );
+      await expect(
+        context.resolveTenantFromBranch(clinic.branchId),
+      ).resolves.toBe(clinic.tenantId);
     });
 
     it('refuses a clinic that has NOT opted in to public booking', async () => {
-      const clinic = await makeClinic('optout', { publicBookingEnabled: false });
+      const clinic = await makeClinic('optout', {
+        publicBookingEnabled: false,
+      });
       await expect(
         context.resolveTenantFromBranch(clinic.branchId),
       ).rejects.toMatchObject({ statusCode: 404 });
@@ -142,17 +159,26 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
 
     it('refuses a clinic with no tenant_settings row at all (COALESCE defaults to opted-out)', async () => {
       const clinic = await makeClinic('nosettings');
-      await e2e.dataSource.query(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [
-        clinic.tenantId,
-      ]);
+      await e2e.dataSource.query(
+        `DELETE FROM tenant_settings WHERE tenant_id = $1`,
+        [clinic.tenantId],
+      );
       await expect(
         context.resolveTenantFromBranch(clinic.branchId),
       ).rejects.toMatchObject({ statusCode: 404 });
     });
 
     it.each([
-      ['a clinic pending approval', 'pending', { approvalStatus: TenantApprovalStatus.PENDING_APPROVAL }],
-      ['a suspended clinic', 'suspended', { approvalStatus: TenantApprovalStatus.SUSPENDED }],
+      [
+        'a clinic pending approval',
+        'pending',
+        { approvalStatus: TenantApprovalStatus.PENDING_APPROVAL },
+      ],
+      [
+        'a suspended clinic',
+        'suspended',
+        { approvalStatus: TenantApprovalStatus.SUSPENDED },
+      ],
       ['a deactivated clinic', 'inactivet', { tenantActive: false }],
       ['a soft-deleted clinic', 'deletedt', { tenantDeleted: true }],
       ['an inactive branch', 'inactiveb', { branchActive: false }],
@@ -165,7 +191,9 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
     });
 
     it('refuses an unknown branch id', async () => {
-      await expect(context.resolveTenantFromBranch(randomUUID())).rejects.toMatchObject({
+      await expect(
+        context.resolveTenantFromBranch(randomUUID()),
+      ).rejects.toMatchObject({
         statusCode: 404,
       });
     });
@@ -177,14 +205,22 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
     });
 
     it('gives the same message for every refusal — not a clinic-state oracle', async () => {
-      const optedOut = await makeClinic('oracle1', { publicBookingEnabled: false });
+      const optedOut = await makeClinic('oracle1', {
+        publicBookingEnabled: false,
+      });
       const unapproved = await makeClinic('oracle2', {
         approvalStatus: TenantApprovalStatus.PENDING_APPROVAL,
       });
 
-      const a = await context.resolveTenantFromBranch(optedOut.branchId).catch((e) => e);
-      const b = await context.resolveTenantFromBranch(unapproved.branchId).catch((e) => e);
-      const c = await context.resolveTenantFromBranch(randomUUID()).catch((e) => e);
+      const a = await context
+        .resolveTenantFromBranch(optedOut.branchId)
+        .catch((e) => e);
+      const b = await context
+        .resolveTenantFromBranch(unapproved.branchId)
+        .catch((e) => e);
+      const c = await context
+        .resolveTenantFromBranch(randomUUID())
+        .catch((e) => e);
 
       expect(b.message).toBe(a.message);
       expect(c.message).toBe(a.message);
@@ -257,21 +293,30 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
 
       await expect(
         context.requireContext(discoveryTenantId, convId, guest, 'service'),
-      ).rejects.toMatchObject({ statusCode: 422, publicContext: { missingStep: 'service' } });
+      ).rejects.toMatchObject({
+        statusCode: 422,
+        publicContext: { missingStep: 'service' },
+      });
 
       await context.patchSelection(discoveryTenantId, convId, {
         selectedServiceIds: [randomUUID()],
       });
       await expect(
         context.requireContext(discoveryTenantId, convId, guest, 'doctor'),
-      ).rejects.toMatchObject({ statusCode: 422, publicContext: { missingStep: 'doctor' } });
+      ).rejects.toMatchObject({
+        statusCode: 422,
+        publicContext: { missingStep: 'doctor' },
+      });
 
       await context.patchSelection(discoveryTenantId, convId, {
         selectedDoctorId: randomUUID(),
       });
       await expect(
         context.requireContext(discoveryTenantId, convId, guest, 'slot'),
-      ).rejects.toMatchObject({ statusCode: 422, publicContext: { missingStep: 'slot' } });
+      ).rejects.toMatchObject({
+        statusCode: 422,
+        publicContext: { missingStep: 'slot' },
+      });
     });
 
     it('refuses a guest that does not own the conversation, before reading any selection', async () => {
@@ -279,6 +324,103 @@ describe('PublicBookingContextService — real Postgres (Phase 2)', () => {
       await expect(
         context.requireContext(discoveryTenantId, convId, stranger, 'branch'),
       ).rejects.toMatchObject({ statusCode: 404 });
+    });
+  });
+
+  /**
+   * T064 (US4, FR-P004/FR-P014) — the same "no oracle" property `resolveTenantFromBranch`
+   * already proves above (line ~179), now proven ACROSS the public HTTP surface: an
+   * opted-out clinic must be as invisible to a network observer as a clinic that never
+   * existed, on both the discovery routes and the booking routes.
+   *
+   * Rate-limit note: like every other `@Throttle()`-gated route in this codebase (see
+   * `GUEST_ATTACHMENT_THROTTLE`'s own precedent and `patient-cancellation.e2e-spec.ts`),
+   * the ceiling is relaxed to a no-op under `NODE_ENV=test`. The NUMERIC ceilings are
+   * proven in `public-booking.throttle.spec.ts` / `public-discovery.throttle.spec.ts`
+   * (T025/T069); this suite instead proves the routes survive a burst without crashing.
+   */
+  describe('HTTP surface — eligibility oracle and abuse (T064)', () => {
+    const API = '/api/v1';
+
+    it('an opted-out clinic never appears in discovery search', async () => {
+      const optedOut = await makeClinic('httpoptout', {
+        publicBookingEnabled: false,
+      });
+
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/public/discovery/clinics`)
+        .query({ q: `httpoptout ${SUITE}` })
+        .expect(200);
+
+      expect(
+        (res.body as Array<{ id: string }>).some(
+          (c) => c.id === optedOut.tenantId,
+        ),
+      ).toBe(false);
+    });
+
+    it('gives the same 404 body for an opted-out clinic and a non-existent one, on GET clinic detail', async () => {
+      const optedOut = await makeClinic('httporacle1', {
+        publicBookingEnabled: false,
+      });
+
+      const optedOutRes = await request(e2e.app.getHttpServer())
+        .get(`${API}/public/discovery/clinics/${optedOut.tenantId}`)
+        .expect(404);
+      const unknownRes = await request(e2e.app.getHttpServer())
+        .get(`${API}/public/discovery/clinics/${randomUUID()}`)
+        .expect(404);
+
+      expect(optedOutRes.body.message).toBe(unknownRes.body.message);
+    });
+
+    it('gives the same 404 body for an opted-out clinic and a non-existent one, on POST select/clinic', async () => {
+      const optedOut = await makeClinic('httporacle2', {
+        publicBookingEnabled: false,
+      });
+
+      const optedOutRes = await request(e2e.app.getHttpServer())
+        .post(`${API}/public/booking/select/clinic`)
+        .send({ clinicId: optedOut.tenantId })
+        .expect(404);
+      const unknownRes = await request(e2e.app.getHttpServer())
+        .post(`${API}/public/booking/select/clinic`)
+        .send({ clinicId: randomUUID() })
+        .expect(404);
+
+      expect(optedOutRes.body.message).toBe(unknownRes.body.message);
+    });
+
+    it('survives a burst of clinic-detail lookups without crashing or behaving inconsistently', async () => {
+      const clinic = await makeClinic('httpburst');
+
+      const results = await Promise.all(
+        Array.from({ length: 25 }, () =>
+          request(e2e.app.getHttpServer()).get(
+            `${API}/public/discovery/clinics/${clinic.tenantId}`,
+          ),
+        ),
+      );
+
+      const statuses = new Set(results.map((r) => r.status));
+      expect(statuses.size).toBe(1);
+      expect([...statuses][0]).toBe(200);
+    });
+
+    it('survives a burst of select/clinic requests without crashing or behaving inconsistently', async () => {
+      const clinic = await makeClinic('httpburst2');
+
+      const results = await Promise.all(
+        Array.from({ length: 25 }, () =>
+          request(e2e.app.getHttpServer())
+            .post(`${API}/public/booking/select/clinic`)
+            .send({ clinicId: clinic.tenantId }),
+        ),
+      );
+
+      const statuses = new Set(results.map((r) => r.status));
+      expect(statuses.size).toBe(1);
+      expect([...statuses][0]).toBe(200);
     });
   });
 });

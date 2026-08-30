@@ -9,6 +9,8 @@ import { AppointmentStatusLog } from '../../entities/Calendar&Appointments/Appoi
 import { AppointmentNote } from '../../entities/Calendar&Appointments/AppointmentNote';
 import { AppointmentReschedule } from '../../entities/Calendar&Appointments/AppointmentReschedule';
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 
 // Reviews + referenced resources (read-only validation: same-tenant checks)
 import { CustomerReview } from '../../entities/CRM/CustomerReview';
@@ -23,6 +25,7 @@ import { SubscriptionBillingModule } from '../subscription-billing/subscription-
 import { AppointmentsService } from './appointment.service';
 import { AppointmentReviewService } from './appointment-review.service';
 import { AppointmentPaymentListener } from './appointment-payment.listener';
+import { AppointmentAuditService } from './appointment-audit.service';
 import { AppointmentController } from './appointment.controller';
 import { ReviewController } from './review.controller';
 
@@ -53,6 +56,8 @@ import { ReviewController } from './review.controller';
       Customer,
       StaffProfile,
       Service,
+      AuditLog,
+      ScheduledNotification,
     ]),
     // The single availability engine — every booking path validates through it.
     SchedulingModule,
@@ -62,7 +67,12 @@ import { ReviewController } from './review.controller';
   controllers: [AppointmentController, ReviewController],
   // AppointmentPaymentListener bridges verified payment events → booking
   // confirmation (the ONLY payment-driven confirmation path; no redirects).
-  providers: [AppointmentsService, AppointmentReviewService, AppointmentPaymentListener],
-  exports: [AppointmentsService, AppointmentReviewService],
+  providers: [
+    AppointmentsService,
+    AppointmentReviewService,
+    AppointmentPaymentListener,
+    AppointmentAuditService,
+  ],
+  exports: [AppointmentsService, AppointmentReviewService, AppointmentAuditService],
 })
 export class AppointmentModule {}

@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -10,6 +11,12 @@ import {
   MinLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export const NOTIFICATION_RULE_ANCHORS = [
+  'AFTER_EVENT',
+  'BEFORE_APPOINTMENT_START',
+] as const;
+export type NotificationRuleAnchor = (typeof NOTIFICATION_RULE_ANCHORS)[number];
 
 /**
  * Creates an automation rule for the caller's tenant: when `trigger_event`
@@ -59,4 +66,15 @@ export class CreateNotificationRuleDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      '`AFTER_EVENT` (default) — `delayMinutes` after the trigger fires, the pre-existing behaviour. `BEFORE_APPOINTMENT_START` — `delayMinutes` before the appointment\'s own start time, for reminders (S3).',
+    enum: NOTIFICATION_RULE_ANCHORS,
+    default: 'AFTER_EVENT',
+    example: 'AFTER_EVENT',
+  })
+  @IsOptional()
+  @IsIn(NOTIFICATION_RULE_ANCHORS)
+  anchor?: NotificationRuleAnchor;
 }

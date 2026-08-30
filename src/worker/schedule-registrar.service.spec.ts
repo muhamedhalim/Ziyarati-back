@@ -65,6 +65,68 @@ describe('ScheduleRegistrarService', () => {
     await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
   });
 
+  // ── T024 (spec 014): the four new repeatable sweeps ────────────────────
+  it('registers subscriptions.renewalBill daily, offset from the pre-existing renewal check', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.SUBSCRIPTIONS,
+      JOB.SUBSCRIPTIONS_RENEWAL_BILL,
+      { tenantId: null },
+      '15 2 * * *',
+    );
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.SUBSCRIPTIONS,
+      JOB.SUBSCRIPTIONS_RENEWAL_CHECK,
+      { tenantId: null },
+      '0 2 * * *',
+    );
+  });
+
+  it('registers platform.waitlistExpiry every 5 minutes', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.PLATFORM,
+      JOB.PLATFORM_WAITLIST_EXPIRY,
+      { tenantId: null },
+      '*/5 * * * *',
+    );
+  });
+
+  it('registers platform.queueDayClose daily', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.PLATFORM,
+      JOB.PLATFORM_QUEUE_DAY_CLOSE,
+      { tenantId: null },
+      '50 23 * * *',
+    );
+  });
+
+  it('registers platform.exportExpiry daily, not colliding with any other platform/ai sweep', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.PLATFORM,
+      JOB.PLATFORM_EXPORT_EXPIRY,
+      { tenantId: null },
+      '45 4 * * *',
+    );
+    const platformCrons = queue.addRepeatable.mock.calls
+      .filter(([q]) => q === QUEUE.PLATFORM)
+      .map(([, , , cron]) => cron);
+    expect(new Set(platformCrons).size).toBe(platformCrons.length);
+  });
+
+  it('registration is idempotent across simulated replicas — two bootstraps issue the identical call set', async () => {
+    await service.onApplicationBootstrap();
+    const firstRound = [...queue.addRepeatable.mock.calls];
+    queue.addRepeatable.mockClear();
+
+    await service.onApplicationBootstrap(); // a second worker replica booting
+    const secondRound = [...queue.addRepeatable.mock.calls];
+
+    expect(secondRound).toEqual(firstRound);
+  });
+
   /**
    * AI-008 (FR-029c, T077/T078): the ai_tool_calls attempt-row retention purge
    * must be a real repeatable sweep, and its cron slot must not collide with

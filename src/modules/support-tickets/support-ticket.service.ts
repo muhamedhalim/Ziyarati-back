@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, FindOptionsOrder, FindOptionsWhere, ILike, Repository } from 'typeorm';
 
@@ -19,6 +20,14 @@ import { AddTicketReplyDto } from './dto/add-ticket-reply.dto';
 import { ReopenTicketDto } from './dto/reopen-ticket.dto';
 import { REPLYABLE_TICKET_STATUSES, TERMINAL_TICKET_STATUSES, TicketStatus } from './support-tickets.constants';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import {
+  SupportTicketCreatedEvent,
+  SupportTicketRepliedEvent,
+  SupportTicketReopenedEvent,
+  SupportTicketStatusChangedEvent,
+  TICKET_ACTOR_SIDE,
+  type TicketActorSide,
+} from '../../events/support-ticket.events';
 
 /** Minimal actor identity — snapshotted onto tickets/events so history survives user deletion. */
 export interface TicketActor {
@@ -50,6 +59,8 @@ export interface TicketActor {
  */
 @Injectable()
 export class SupportTicketService {
+  private readonly logger = new Logger('SupportTicketService');
+
   constructor(
     @InjectRepository(SupportTicket)
     private readonly tickets: Repository<SupportTicket>,
@@ -57,6 +68,18 @@ export class SupportTicketService {
     private readonly events: Repository<SupportTicketEvent>,
     private readonly dataSource: DataSource,
     private readonly storage: StorageService,
+    /**
+     * Notification fan-out is DELIBERATELY not injected here.
+     *
+     * This service emits typed domain events and knows nothing about who gets
+     * notified, in what language, or through which channel — exactly as
+     * `AppointmentService` and `PaymentService` do. `InternalNotificationListener`
+     * subscribes and consults the notification catalog. That is what keeps
+     * "add a notification" from meaning "edit every domain service", and what
+     * lets the same event also feed webhooks, workflows and analytics later
+     * without this file changing again.
+     */
+    private readonly emitter: EventEmitter2,
   ) {}
 
   // ─────────────────────────────── Tenant side ────────────────────────────────
@@ -104,7 +127,26 @@ export class SupportTicketService {
       created_by_name: actor.name ?? undefined,
       created_by_email: actor.email ?? undefined,
     });
-    return this.tickets.save(ticket);
+    const saved = await this.tickets.save(ticket);
+
+    // Before this, a new ticket produced NO signal to the platform unless it
+    // happened to be `urgent` — and even then only a counter recomputed by SQL
+    // on each dashboard load, which nobody is obliged to open.
+    this.emitter.emit(
+      SupportTicketCreatedEvent.eventName,
+      new SupportTicketCreatedEvent(
+        tenantId,
+        saved.id,
+        saved.ticket_number,
+        saved.subject,
+        saved.priority,
+        saved.category,
+        await this.tenantName(tenantId),
+        actor.id,
+      ),
+    );
+
+    return saved;
   }
 
   async listForTenant(tenantId: string, query: QueryMyTicketsDto) {
@@ -200,13 +242,33 @@ export class SupportTicketService {
         message: 'This ticket is closed and can no longer receive replies. Please open a new ticket.',
       });
     }
-    await this.recordEvent({
+    const event = await this.recordEvent({
       ticketId: id,
       type: 'REPLY',
       note: dto.note,
       internalOnly: false,
       actor,
     });
+
+    // The mirror image of the platform reply: a clinic waiting on support is
+    // just as invisible as support waiting on a clinic was. Same event, and the
+    // listener routes on `actorSide`.
+    this.emitter.emit(
+      SupportTicketRepliedEvent.eventName,
+      new SupportTicketRepliedEvent(
+        tenantId,
+        ticket.id,
+        ticket.ticket_number,
+        ticket.subject,
+        await this.tenantName(tenantId),
+        this.actorSide(actor),
+        actor.id,
+        actor.name ?? null,
+        dto.note ?? null,
+        event.id,
+      ),
+    );
+
     return this.getForTenant(tenantId, id);
   }
 
@@ -242,7 +304,7 @@ export class SupportTicketService {
     ticket.resolved_at = null;
     ticket.closed_at = null;
     await this.tickets.save(ticket);
-    await this.recordEvent({
+    const event = await this.recordEvent({
       ticketId: id,
       type: 'STATUS_CHANGED',
       fromValue: from,
@@ -251,6 +313,24 @@ export class SupportTicketService {
       internalOnly: false,
       actor,
     });
+
+    // Its own event rather than a STATUS_CHANGED: this one pushes the ticket
+    // back into the PLATFORM's active queue, so its audience is the opposite of
+    // a platform-driven status change. Collapsing the two would force the
+    // listener to re-derive intent from the from/to pair.
+    this.emitter.emit(
+      SupportTicketReopenedEvent.eventName,
+      new SupportTicketReopenedEvent(
+        tenantId,
+        ticket.id,
+        ticket.ticket_number,
+        ticket.subject,
+        await this.tenantName(tenantId),
+        actor.id,
+        event.id,
+      ),
+    );
+
     return this.getForTenant(tenantId, id);
   }
 
@@ -370,7 +450,7 @@ export class SupportTicketService {
     }
 
     await this.tickets.save(ticket);
-    await this.recordEvent({
+    const event = await this.recordEvent({
       ticketId: id,
       type: 'STATUS_CHANGED',
       fromValue: from,
@@ -379,6 +459,29 @@ export class SupportTicketService {
       internalOnly: false,
       actor,
     });
+
+    // Matters most for `resolved`: only the clinic can then confirm and close
+    // (`closeOwnTicket` requires `resolved`) or reject the resolution. A ticket
+    // that silently sits in `resolved` is one nobody ever closes.
+    const clinic = this.notifiableTenant(ticket, 'status changed');
+    if (clinic) {
+      this.emitter.emit(
+        SupportTicketStatusChangedEvent.eventName,
+        new SupportTicketStatusChangedEvent(
+          clinic.id,
+          ticket.id,
+          ticket.ticket_number,
+          ticket.subject,
+          clinic.name,
+          from,
+          dto.status,
+          this.actorSide(actor),
+          actor.id,
+          event.id,
+        ),
+      );
+    }
+
     return this.getForAdmin(id);
   }
 
@@ -435,13 +538,37 @@ export class SupportTicketService {
         message: `Ticket is already "${ticket.status}" and can no longer receive replies.`,
       });
     }
-    await this.recordEvent({
+    const event = await this.recordEvent({
       ticketId: id,
       type: 'REPLY',
       note: dto.note,
       internalOnly: false,
       actor,
     });
+
+    // THE REPORTED BUG. Until this emit existed, a platform reply wrote the
+    // timeline row above and stopped — the clinic found out only if somebody
+    // happened to reopen the ticket. Emitted AFTER the write so no listener can
+    // observe a reply that does not exist.
+    const clinic = this.notifiableTenant(ticket, 'platform reply');
+    if (clinic) {
+      this.emitter.emit(
+        SupportTicketRepliedEvent.eventName,
+        new SupportTicketRepliedEvent(
+          clinic.id,
+          ticket.id,
+          ticket.ticket_number,
+          ticket.subject,
+          clinic.name,
+          this.actorSide(actor),
+          actor.id,
+          actor.name ?? null,
+          dto.note ?? null,
+          event.id,
+        ),
+      );
+    }
+
     return this.getForAdmin(id);
   }
 
@@ -478,8 +605,21 @@ export class SupportTicketService {
     }
   }
 
+  /**
+   * Loads any tenant's ticket (platform principals are cross-tenant by design).
+   *
+   * The `tenant` relation is loaded — not for the response shape, which reads
+   * the snapshot columns, but because the platform-side actions must be able to
+   * say WHICH clinic to notify. Without it these methods have no tenant context
+   * at all, and a tenant-scoped notification with no tenant is one the recipient
+   * resolver refuses outright (correctly — it would otherwise be a broadcast).
+   * A single-row primary-key lookup with one join is not a cost worth avoiding.
+   */
   private async findAnyOrThrow(id: string): Promise<SupportTicket> {
-    const ticket = await this.tickets.findOne({ where: { id } });
+    const ticket = await this.tickets.findOne({
+      where: { id },
+      relations: { tenant: true },
+    });
     if (!ticket) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Ticket not found' });
     }
@@ -501,6 +641,14 @@ export class SupportTicketService {
     return this.storage.getSignedDownloadUrl(ticket.attachment_key, tenantId);
   }
 
+  /**
+   * Appends one timeline row.
+   *
+   * Returns the SAVED event so callers can use its id as the notification
+   * dedupe anchor. That distinction matters: keying on the ticket id could not
+   * tell a genuine second reply (which must notify again) from a redelivery of
+   * the same reply (which must not).
+   */
   private async recordEvent(input: {
     ticketId: string;
     type: 'STATUS_CHANGED' | 'PRIORITY_CHANGED' | 'NOTE_ADDED' | 'REPLY';
@@ -509,7 +657,7 @@ export class SupportTicketService {
     note?: string;
     internalOnly: boolean;
     actor: TicketActor;
-  }): Promise<void> {
+  }): Promise<SupportTicketEvent> {
     const event = this.events.create({
       ticket: { id: input.ticketId } as SupportTicket,
       type: input.type,
@@ -521,7 +669,71 @@ export class SupportTicketService {
       actor_name: input.actor.name ?? undefined,
       actor_role: input.actor.role ?? undefined,
     });
-    await this.events.save(event);
+    return this.events.save(event);
+  }
+
+  /**
+   * Which side of the conversation an actor is on.
+   *
+   * `TicketActor.role` is `'clinic'` for a tenant-side caller and an RBAC role
+   * slug (`super_admin`, `platform_support`) for a platform one — see the
+   * interface docstring and the two controllers that build it. Anything not
+   * explicitly the clinic marker is treated as PLATFORM, because the platform
+   * controllers are the only other callers and they are all permission-gated.
+   */
+  private actorSide(actor: TicketActor): TicketActorSide {
+    return actor.role === 'clinic'
+      ? TICKET_ACTOR_SIDE.TENANT
+      : TICKET_ACTOR_SIDE.PLATFORM;
+  }
+
+  /**
+   * The clinic's display name, for notifications aimed at platform staff
+   * ("Northgate Dental replied on SUP-000123" reads very differently from a
+   * bare uuid in a support queue).
+   *
+   * The tenant-side methods deliberately load their ticket WITHOUT the tenant
+   * relation — they already have the id from the authenticated context, and the
+   * response shape reads snapshot columns to avoid joins (see the class
+   * docstring). Rather than widen those hot reads for a field only the
+   * notification needs, this fetches just the name, and only on the paths that
+   * emit. Returns `null` on failure so a notification is never lost to a
+   * cosmetic lookup — the catalog renders a placeholder instead.
+   */
+  /**
+   * The clinic a platform-side action concerns, or `null` if it cannot be
+   * determined.
+   *
+   * `SupportTicket.tenant` is a nullable relation in the schema, so an orphaned
+   * or partially-loaded row is representable even though a real ticket always
+   * has one. Returning `null` here — rather than dereferencing and throwing —
+   * is what keeps that edge case from turning a successful reply into a 500.
+   * The notification is skipped and logged; the reply still lands.
+   */
+  private notifiableTenant(
+    ticket: SupportTicket,
+    action: string,
+  ): { id: string; name: string | null } | null {
+    const id = ticket.tenant?.id;
+    if (!id) {
+      this.logger.warn(
+        `Ticket ${ticket.id} has no tenant relation — skipping the "${action}" notification. ` +
+          'The ticket action itself completed normally.',
+      );
+      return null;
+    }
+    return { id, name: ticket.tenant?.name ?? null };
+  }
+
+  private async tenantName(tenantId: string): Promise<string | null> {
+    try {
+      const row = await this.dataSource
+        .getRepository(Tenant)
+        .findOne({ where: { id: tenantId }, select: { id: true, name: true } });
+      return row?.name ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private toTenantSummary(t: SupportTicket) {

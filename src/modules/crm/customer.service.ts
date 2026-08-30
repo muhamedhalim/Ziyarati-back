@@ -191,8 +191,24 @@ export class CustomerService {
     return { id, deleted: true };
   }
 
-  /** Full detail view: profile + addresses + assigned tags. */
-  async getDetails(tenantId: string, id: string): Promise<Customer> {
+  /**
+   * Full detail view: profile + addresses + assigned tags.
+   *
+   * T108 (spec 014, US6, FR-H010a/d — BREAKING) — `profile`'s clinical
+   * fields (`medical_history`, `allergies`, `blood_type`, `notes`) are
+   * stripped unless `hasClinicalAccess` is true (the caller holds
+   * `clinical.records.read`). This is a FIELD-level filter, not a relation-
+   * level one: `emergency_contact_name`/`emergency_contact_phone` live on
+   * the SAME `CustomerProfile` entity and MUST stay visible to reception
+   * (FR-H010e) — `Customer`-level fields (contact, addresses, tags,
+   * `has_chronic_diseases`, `chronic_diseases`, `has_health_insurance`) are
+   * entirely unaffected, they were never clinical.
+   */
+  async getDetails(
+    tenantId: string,
+    id: string,
+    hasClinicalAccess: boolean,
+  ): Promise<Customer> {
     const customer = await this.customers.findOne({
       where: { id, tenant: { id: tenantId } },
       relations: { profile: true, addresses: true, tags: { tag: true } },
@@ -201,6 +217,16 @@ export class CustomerService {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'Customer not found',
       });
+    }
+    if (!hasClinicalAccess && customer.profile) {
+      const {
+        medical_history: _medicalHistory,
+        allergies: _allergies,
+        blood_type: _bloodType,
+        notes: _notes,
+        ...rest
+      } = customer.profile;
+      customer.profile = rest as typeof customer.profile;
     }
     return customer;
   }

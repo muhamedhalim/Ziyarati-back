@@ -261,6 +261,15 @@ export class TenantService {
       // "no clinics are available for booking" for clinics that plainly exist.
       public_booking_enabled:
         dto.publicBookingEnabled ?? settings.public_booking_enabled,
+      // Spec 014 (Clinic Platform Completion) — S1/S2/S3 opt-in switches.
+      // Fail-closed defaults; see the entity for why.
+      self_cancellation_enabled:
+        dto.selfCancellationEnabled ?? settings.self_cancellation_enabled,
+      self_reschedule_enabled:
+        dto.selfRescheduleEnabled ?? settings.self_reschedule_enabled,
+      reminders_enabled: dto.remindersEnabled ?? settings.reminders_enabled,
+      reminder_lead_minutes:
+        dto.reminderLeadMinutes ?? settings.reminder_lead_minutes,
       updated_at: new Date(),
     });
     return this.settings.save(settings);

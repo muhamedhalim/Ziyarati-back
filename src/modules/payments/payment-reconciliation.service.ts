@@ -1,10 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
 
 import { Payment } from '../../entities/Payments/Payment';
-import { PaymentStatus } from '../../entities/enums';
+import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
+import { InvoiceStatus, PaymentStatus } from '../../entities/enums';
 import { PaymentSucceededEvent } from '../../events/payment.events';
 
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
@@ -12,6 +13,14 @@ import { TransactionService } from './transaction.service';
 import { PaymentFinancialsService } from './payment-financials.service';
 import { PaymentsConfig } from './payments.config';
 import { TRANSACTION_TYPE } from './payments.constants';
+import {
+  PAYMENT_PROVIDER,
+  type PaymentProvider,
+} from '../subscription-billing/payment/payment-provider.interface';
+import {
+  PlatformAdminAuditService,
+  PLATFORM_ADMIN_AUDIT_ACTION,
+} from '../platform/platform-admin-audit.service';
 
 type Outcome = 'paid' | 'failed' | 'mismatch' | 'stillPending' | 'skipped';
 
@@ -24,6 +33,18 @@ export interface ReconcileSummary {
   stillPending: number;
   /** Unresolved past the hard threshold → page an operator. */
   alerts: number;
+}
+
+type InvoiceOutcome = 'settled' | 'released' | 'stillClaimed' | 'skipped';
+
+export interface SubscriptionReconcileSummary {
+  scanned: number;
+  settled: number;
+  /** Stale claim released for a clean retry on the next renewalBill sweep —
+   *  the provider reported 'unknown', which is NEVER treated as evidence of
+   *  a failed OR a successful charge, only as "nothing to confirm here". */
+  released: number;
+  stillClaimed: number;
 }
 
 /**
@@ -53,17 +74,24 @@ export class PaymentReconciliationService {
   constructor(
     @InjectRepository(Payment)
     private readonly payments: Repository<Payment>,
+    @InjectRepository(SubscriptionInvoice)
+    private readonly invoices: Repository<SubscriptionInvoice>,
     private readonly dataSource: DataSource,
     private readonly gateways: PaymentGatewayFactory,
     private readonly transactions: TransactionService,
     private readonly financials: PaymentFinancialsService,
     private readonly config: PaymentsConfig,
     private readonly emitter: EventEmitter2,
+    @Inject(PAYMENT_PROVIDER)
+    private readonly subscriptionProvider: PaymentProvider,
+    private readonly audit: PlatformAdminAuditService,
   ) {}
 
   /** Sweep stale PENDING payments and reconcile each against the gateway. */
   async reconcileStalePending(): Promise<ReconcileSummary> {
-    const cutoff = new Date(Date.now() - this.config.reconStaleMinutes * 60_000);
+    const cutoff = new Date(
+      Date.now() - this.config.reconStaleMinutes * 60_000,
+    );
     const candidates = await this.payments.find({
       where: {
         status: PaymentStatus.PENDING,
@@ -98,7 +126,8 @@ export class PaymentReconciliationService {
 
       if (outcome === 'mismatch' || outcome === 'stillPending') {
         const ageMs = Date.now() - new Date(payment.created_at).getTime();
-        if (ageMs >= this.config.reconHardAlertMinutes * 60_000) summary.alerts++;
+        if (ageMs >= this.config.reconHardAlertMinutes * 60_000)
+          summary.alerts++;
       }
     }
 
@@ -162,7 +191,8 @@ export class PaymentReconciliationService {
         lock: { mode: 'pessimistic_write' },
       });
       // A webhook/confirm may have resolved it between phases — never regress.
-      if (!locked || locked.status !== PaymentStatus.PENDING) return 'skipped' as Outcome;
+      if (!locked || locked.status !== PaymentStatus.PENDING)
+        return 'skipped' as Outcome;
 
       await this.transactions.record(
         tenantId,
@@ -180,12 +210,16 @@ export class PaymentReconciliationService {
       if (verify.status === 'paid') {
         locked.status = PaymentStatus.PAID;
         locked.paid_at = new Date();
-        this.financials.applyOnPaid(locked, this.financials.extractFromRaw(verify.raw));
+        this.financials.applyOnPaid(
+          locked,
+          this.financials.extractFromRaw(verify.raw),
+        );
         await repo.save(locked);
         return 'paid' as Outcome;
       }
       locked.status = PaymentStatus.FAILED;
-      locked.failure_reason = verify.failureReason ?? 'Gateway reported failure (reconciliation)';
+      locked.failure_reason =
+        verify.failureReason ?? 'Gateway reported failure (reconciliation)';
       await repo.save(locked);
       return 'failed' as Outcome;
     });
@@ -204,6 +238,150 @@ export class PaymentReconciliationService {
           payment.appointment?.id,
         ),
       );
+    }
+    return applied;
+  }
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — T084 (US5, FR-B016). The
+   * subscription-invoice half of the SAME reconciliation sweep: recovers a
+   * "lost confirmation" — a charge attempt whose synchronous `payInvoice`
+   * response never landed (e.g. a worker crash between the provider call
+   * and recording the outcome), leaving `charge_started_at` set with no
+   * final state. This is a DIFFERENT financial stream from `Payment`
+   * (deliberately — see `subscription-billing.module.ts`), so it is its own
+   * scan/apply pass, through the SAME `PAYMENT_PROVIDER` binding
+   * `BillingService` uses — never a duplicated provider call site.
+   *
+   * `verifyCharge()` returning 'unknown' (both bound providers today) is
+   * NEVER treated as "paid" or "failed" — only as license to release the
+   * stale claim so `RenewalService`'s own next sweep can retry cleanly
+   * (the exact self-healing `BillingService.payInvoice`'s claim-staleness
+   * window already does for a fresh crash, just reached here for one that
+   * survived past this sweep's own, more conservative window).
+   */
+  async reconcileStaleSubscriptionInvoices(): Promise<SubscriptionReconcileSummary> {
+    const cutoff = new Date(
+      Date.now() - this.config.reconStaleMinutes * 60_000,
+    );
+    const candidates = await this.invoices.find({
+      where: {
+        charge_started_at: LessThanOrEqual(cutoff),
+        status: Not(InvoiceStatus.VOID),
+      },
+      order: { charge_started_at: 'ASC' },
+      take: 200,
+    });
+
+    const summary: SubscriptionReconcileSummary = {
+      scanned: candidates.length,
+      settled: 0,
+      released: 0,
+      stillClaimed: 0,
+    };
+
+    for (const invoice of candidates) {
+      // PAID/REFUNDED invoices can still carry a (harmless, stale)
+      // charge_started_at from before they were finalized — never reopen a
+      // terminal invoice by "reconciling" it.
+      if (
+        invoice.status === InvoiceStatus.PAID ||
+        invoice.status === InvoiceStatus.REFUNDED
+      ) {
+        continue;
+      }
+      const outcome = await this.reconcileOneInvoice(invoice).catch((err) => {
+        this.logger.error(
+          `Subscription-invoice reconciliation failed on ${invoice.id}: ${(err as Error).message}`,
+        );
+        return 'stillClaimed' as InvoiceOutcome;
+      });
+      if (outcome === 'settled') summary.settled++;
+      else if (outcome === 'released') summary.released++;
+      else if (outcome === 'stillClaimed') summary.stillClaimed++;
+    }
+
+    if (summary.scanned > 0) {
+      this.logger.warn(
+        `recon(subscriptions): scanned=${summary.scanned} settled=${summary.settled} ` +
+          `released=${summary.released} stillClaimed=${summary.stillClaimed}`,
+      );
+    }
+    return summary;
+  }
+
+  private async reconcileOneInvoice(
+    invoice: SubscriptionInvoice,
+  ): Promise<InvoiceOutcome> {
+    // Phase A: provider truth, OUTSIDE any lock.
+    const verify = await this.subscriptionProvider.verifyCharge(invoice.id);
+
+    // Phase B: decide + apply under the invoice row lock, re-checking state
+    // (a synchronous payInvoice call or a webhook may have resolved it
+    // between phases — never regress a terminal invoice).
+    const applied = await this.dataSource.transaction(async (m) => {
+      const repo = m.getRepository(SubscriptionInvoice);
+      const locked = await repo.findOne({
+        where: { id: invoice.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (
+        !locked ||
+        locked.status === InvoiceStatus.PAID ||
+        locked.status === InvoiceStatus.VOID ||
+        locked.status === InvoiceStatus.REFUNDED ||
+        !locked.charge_started_at
+      ) {
+        return 'skipped' as InvoiceOutcome;
+      }
+
+      if (verify.status === 'pending') return 'stillClaimed' as InvoiceOutcome;
+
+      if (verify.status === 'paid') {
+        const expectedC = Math.round(Number(locked.amount) * 100);
+        if (
+          verify.capturedMinorUnits != null &&
+          verify.capturedMinorUnits !== expectedC
+        ) {
+          this.logger.error(
+            `Subscription invoice ${locked.id}: provider captured ${verify.capturedMinorUnits} ≠ expected ${expectedC} minor units — left claimed for manual review`,
+          );
+          return 'stillClaimed' as InvoiceOutcome;
+        }
+        locked.status = InvoiceStatus.PAID;
+        locked.paid_at = new Date();
+        locked.provider_reference = verify.reference;
+        locked.failure_reason = null;
+        locked.failure_class = null;
+        await repo.save(locked);
+        return 'settled' as InvoiceOutcome;
+      }
+
+      if (verify.status === 'failed') {
+        locked.failure_reason =
+          verify.failureReason ?? 'Provider reported failure (reconciliation)';
+        locked.charge_started_at = null; // release the claim for a future retry
+        await repo.save(locked);
+        return 'released' as InvoiceOutcome;
+      }
+
+      // 'unknown' — no evidence either way. Release the stale claim so the
+      // next renewalBill sweep retries cleanly; never marked paid or failed
+      // on a guess.
+      locked.charge_started_at = null;
+      await repo.save(locked);
+      return 'released' as InvoiceOutcome;
+    });
+
+    if (applied === 'settled') {
+      await this.audit.record({
+        action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_SETTLED,
+        userId: undefined,
+        entityType: 'subscription_invoice',
+        entityId: invoice.id,
+        tenantId: invoice.tenant_id,
+        after: { source: 'reconciliation' },
+      });
     }
     return applied;
   }

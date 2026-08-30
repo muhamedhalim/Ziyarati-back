@@ -65,6 +65,17 @@ import { TenantContextModule } from './core/tenant-context/tenant-context.module
 import { CryptoModule } from './common/crypto/crypto.module';
 import { SeedModule } from './seed/seed.module';
 
+// Spec 014 "Clinic Platform Completion" — scaffolded empty in T006.
+import { PatientActionsModule } from './modules/patient-actions/patient-actions.module';
+import { MedicalRecordsModule } from './modules/medical-records/medical-records.module';
+import { WaitlistModule } from './modules/waitlist/waitlist.module';
+import { PatientQueueModule } from './modules/patient-queue/patient-queue.module';
+// DocumentsModule is intentionally NOT imported here — its one provider
+// (DocumentRendererService, T021) refuses to construct outside the worker
+// process; only worker.module.ts imports it.
+import { ReportExportModule } from './modules/report-export/report-export.module';
+import { ActivityLogModule } from './modules/activity-log/activity-log.module';
+
 import { validate } from './config/env.validation';
 
 @Module({
@@ -178,6 +189,14 @@ import { validate } from './config/env.validation';
     PlatformDashboardModule,
     EmailModule,
     SeedModule,
+
+    // Spec 014 "Clinic Platform Completion" — scaffolded empty in T006.
+    PatientActionsModule,
+    MedicalRecordsModule,
+    WaitlistModule,
+    PatientQueueModule,
+    ReportExportModule,
+    ActivityLogModule,
   ],
 
   providers: [

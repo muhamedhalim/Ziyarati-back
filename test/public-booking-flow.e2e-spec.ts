@@ -13,9 +13,17 @@
  * from the branch they picked — never from an argument.
  */
 import { randomUUID } from 'node:crypto';
+import request from 'supertest';
 
-import { createE2eApp, cleanupTenant, type E2eApp } from './utils/whatsapp-e2e-app';
-import { AiToolDispatchService, type ToolContext } from '../src/modules/ai/tools/ai-tool-dispatch.service';
+import {
+  createE2eApp,
+  cleanupTenant,
+  type E2eApp,
+} from './utils/whatsapp-e2e-app';
+import {
+  AiToolDispatchService,
+  type ToolContext,
+} from '../src/modules/ai/tools/ai-tool-dispatch.service';
 import { AI_TOOL } from '../src/modules/ai/tools/ai-tools.constants';
 import { AI_PUBLIC_TOOL } from '../src/modules/ai/tools/ai-public-booking-tools.constants';
 import { AiConversationService } from '../src/modules/ai/ai-conversation.service';
@@ -73,7 +81,11 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
 
   /** Calls a tool exactly as the model would — through the real dispatcher. */
   const call = (name: string, args: Record<string, unknown> = {}) =>
-    tools.execute(ctx, { id: randomUUID(), name, arguments: JSON.stringify(args) });
+    tools.execute(ctx, {
+      id: randomUUID(),
+      name,
+      arguments: JSON.stringify(args),
+    });
 
   async function makeClinic(label: string, city: string): Promise<Clinic> {
     const ds = e2e.dataSource;
@@ -192,7 +204,9 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
     clinic = await makeClinic('alpha', cityId);
     otherClinic = await makeClinic('beta', cityId);
 
-    discoveryTenantId = await e2e.app.get(GuestSessionService).ensureDiscoveryTenant();
+    discoveryTenantId = await e2e.app
+      .get(GuestSessionService)
+      .ensureDiscoveryTenant();
     guest = {
       id: randomUUID(),
       tenantId: discoveryTenantId,
@@ -204,7 +218,9 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
 
     const conv = await conversations.start(discoveryTenantId, {});
     convIds.push(conv.id);
-    await sessions.patch(discoveryTenantId, conv.id, { guestSubject: guest.id });
+    await sessions.patch(discoveryTenantId, conv.id, {
+      guestSubject: guest.id,
+    });
 
     ctx = {
       tenantId: discoveryTenantId, // the CONVERSATION tenant — never the booking tenant
@@ -215,16 +231,27 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
   }, 120_000);
 
   afterAll(async () => {
-    const q = (sql: string, p: unknown[]) => e2e.dataSource.query(sql, p).catch(() => undefined);
-    await q(`DELETE FROM ai_messages WHERE ai_conversation_id = ANY($1)`, [convIds]);
+    const q = (sql: string, p: unknown[]) =>
+      e2e.dataSource.query(sql, p).catch(() => undefined);
+    await q(`DELETE FROM ai_messages WHERE ai_conversation_id = ANY($1)`, [
+      convIds,
+    ]);
     await q(`DELETE FROM ai_conversations WHERE id = ANY($1)`, [convIds]);
     for (const tenantId of tenantIds) {
       await q(`DELETE FROM ai_tool_calls WHERE tenant_id = $1`, [tenantId]);
-      await q(`DELETE FROM appointment_services WHERE "tenantId" = $1`, [tenantId]);
-      await q(`DELETE FROM appointment_status_logs WHERE "tenantId" = $1`, [tenantId]);
-      await q(`DELETE FROM appointment_history WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM appointment_services WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM appointment_status_logs WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM appointment_history WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
       await q(`DELETE FROM payment_links WHERE "tenantId" = $1`, [tenantId]);
-      await q(`DELETE FROM scheduled_notifications WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM scheduled_notifications WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
       await q(`DELETE FROM appointments WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM staff_schedules WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM staff_profiles WHERE "tenantId" = $1`, [tenantId]);
@@ -232,8 +259,12 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
       await q(`DELETE FROM services WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenantId]);
-      await q(`DELETE FROM subscription_usage WHERE "tenantId" = $1`, [tenantId]);
-      await q(`DELETE FROM free_access_overrides WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM subscription_usage WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM free_access_overrides WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
       // Role provisioning writes an audit row that FKs the tenant.
       await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [tenantId]);
       await q(
@@ -284,14 +315,20 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
     // 5. Branch-scoped doctor list
     const doctors = (await call(AI_PUBLIC_TOOL.LIST_BRANCH_DOCTORS)) as any;
     expect(doctors.success).toBe(true);
-    expect(doctors.doctors).toEqual([expect.objectContaining({ id: clinic.staffId })]);
+    expect(doctors.doctors).toEqual([
+      expect.objectContaining({ id: clinic.staffId }),
+    ]);
 
     // 6. Selections
     expect(
-      (await call(AI_PUBLIC_TOOL.SELECT_SERVICE, { serviceIds: [clinic.serviceId] })) as any,
+      (await call(AI_PUBLIC_TOOL.SELECT_SERVICE, {
+        serviceIds: [clinic.serviceId],
+      })) as any,
     ).toMatchObject({ success: true });
     expect(
-      (await call(AI_PUBLIC_TOOL.SELECT_DOCTOR, { staffId: clinic.staffId })) as any,
+      (await call(AI_PUBLIC_TOOL.SELECT_DOCTOR, {
+        staffId: clinic.staffId,
+      })) as any,
     ).toMatchObject({ success: true });
 
     // 7. Real availability, then a slot
@@ -316,7 +353,10 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
 
     // Assert on `error` first, so a failure reports WHY rather than just `false`.
     expect(booked.error).toBeUndefined();
-    expect(booked).toMatchObject({ success: true, appointmentId: expect.any(String) });
+    expect(booked).toMatchObject({
+      success: true,
+      appointmentId: expect.any(String),
+    });
 
     // The appointment is real, and it belongs to the SELECTED clinic + branch.
     const row = await e2e.dataSource.query(
@@ -420,4 +460,363 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
     // real user, so there is no `actorUserId` to book on behalf of.
     expect(String(res.error)).toMatch(/permission|Forbidden|no acting user/i);
   });
+});
+
+/**
+ * T063 (US4, FR-P003) — the DETERMINISTIC step-by-step HTTP path
+ * (`PublicBookingController`), proven against real Postgres exactly like the
+ * conversational path above. A separate `describe`, a separate clinic and a
+ * separate `E2eApp`: Jest describes in this codebase each own an isolated
+ * app instance rather than sharing state across blocks, matching every other
+ * e2e file here.
+ *
+ * Parity is proven structurally: both paths call the identical write path
+ * (`AppointmentsService.create`, under the clinic's bot actor, with
+ * `AppointmentSource.PUBLIC_AI`) — for the same selections, both must land
+ * an appointment with the same tenant/branch/staff/source/status/price
+ * shape the conversational suite already pins above.
+ */
+describe('Public booking — deterministic HTTP path (T063, US4)', () => {
+  let e2e: E2eApp;
+  const API = '/api/v1';
+  const HTTP_SUITE = `pbf-http-${randomUUID().slice(0, 8)}`;
+  const HTTP_SLOT_START = '2027-03-17T12:00:00.000Z'; // Wednesday, well inside 08:00–20:00
+
+  let cityId: string;
+  let httpClinic: Clinic;
+  let otherHttpClinic: Clinic;
+  const tenantIds: string[] = [];
+
+  async function makeClinic(label: string, city: string): Promise<Clinic> {
+    const ds = e2e.dataSource;
+
+    const tenant = await ds.getRepository(Tenant).save(
+      ds.getRepository(Tenant).create({
+        name: `E2E ${label} ${HTTP_SUITE}`,
+        slug: `e2e-${label}-${HTTP_SUITE}`,
+        contact_email: `${label}-${HTTP_SUITE}@example.test`,
+        approval_status: TenantApprovalStatus.APPROVED,
+        is_active: true,
+      }),
+    );
+    tenantIds.push(tenant.id);
+
+    await e2e.app.get(FreeAccessOverrideService).grant(tenant.id, {
+      reason: `e2e ${HTTP_SUITE}`,
+      durationDays: null,
+    });
+
+    await ds.getRepository(TenantSetting).save(
+      ds.getRepository(TenantSetting).create({
+        tenant: { id: tenant.id } as Tenant,
+        public_booking_enabled: true,
+        payment_required: false,
+      }),
+    );
+
+    const branch = await ds.getRepository(Branch).save(
+      ds.getRepository(Branch).create({
+        tenant: { id: tenant.id } as Tenant,
+        name: `${label} Main`,
+        address: `1 ${label} Street`,
+        city_id: city,
+        is_active: true,
+        timezone: 'Asia/Riyadh',
+      }),
+    );
+
+    const service = await ds.getRepository(Service).save(
+      ds.getRepository(Service).create({
+        tenant: { id: tenant.id } as Tenant,
+        name: `${label} Consultation`,
+        duration_minutes: 30,
+        base_price: 100,
+        is_active: true,
+      }),
+    );
+    await ds.getRepository(ServicePrice).save(
+      ds.getRepository(ServicePrice).create({
+        tenant: { id: tenant.id } as Tenant,
+        service: { id: service.id } as Service,
+        branch: { id: branch.id } as Branch,
+        price: 250,
+        is_active: true,
+      }),
+    );
+
+    const user = await ds.getRepository(User).save(
+      ds.getRepository(User).create({
+        tenant: { id: tenant.id } as Tenant,
+        email: `doctor-${label}-${HTTP_SUITE}@example.test`,
+        full_name: `Dr ${label}`,
+        is_active: true,
+      }),
+    );
+    const staff = await ds.getRepository(StaffProfile).save(
+      ds.getRepository(StaffProfile).create({
+        tenant: { id: tenant.id } as Tenant,
+        user: { id: user.id } as User,
+        title: 'Consultant',
+        is_available_for_booking: true,
+      }),
+    );
+    for (let day = 0; day < 7; day += 1) {
+      await ds.getRepository(StaffSchedule).save(
+        ds.getRepository(StaffSchedule).create({
+          tenant: { id: tenant.id } as Tenant,
+          staff: { id: staff.id } as StaffProfile,
+          branch: { id: branch.id } as Branch,
+          day_of_week: day,
+          start_time: '08:00:00',
+          end_time: '20:00:00',
+          is_active: true,
+        }),
+      );
+    }
+
+    return {
+      tenantId: tenant.id,
+      branchId: branch.id,
+      serviceId: service.id,
+      staffId: staff.id,
+      cityId: city,
+    };
+  }
+
+  /** Drives the deterministic flow's cookie jar across requests, like a browser. */
+  function agent() {
+    return request.agent(e2e.app.getHttpServer());
+  }
+
+  beforeAll(async () => {
+    e2e = await createE2eApp();
+
+    const city = await e2e.dataSource.getRepository(City).save(
+      e2e.dataSource.getRepository(City).create({
+        name_en: `Testville ${HTTP_SUITE}`,
+        name_ar: `مدينة ${HTTP_SUITE}`,
+      }),
+    );
+    cityId = city.id;
+
+    httpClinic = await makeClinic('alpha', cityId);
+    otherHttpClinic = await makeClinic('beta', cityId);
+  }, 120_000);
+
+  afterAll(async () => {
+    const q = (sql: string, p: unknown[]) =>
+      e2e.dataSource.query(sql, p).catch(() => undefined);
+    for (const tenantId of tenantIds) {
+      await q(`DELETE FROM appointment_services WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM appointment_status_logs WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM appointment_history WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM payment_links WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM scheduled_notifications WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM appointments WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM staff_schedules WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM staff_profiles WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM service_prices WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM services WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenantId]);
+      await q(`DELETE FROM subscription_usage WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM free_access_overrides WHERE "tenantId" = $1`, [
+        tenantId,
+      ]);
+      await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [tenantId]);
+      await q(
+        `DELETE FROM role_permissions WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = $1)`,
+        [tenantId],
+      );
+      await q(
+        `DELETE FROM user_roles WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = $1)`,
+        [tenantId],
+      );
+      await q(`DELETE FROM roles WHERE "tenantId" = $1`, [tenantId]);
+      await cleanupTenant(e2e, tenantId);
+    }
+    await q(
+      `DELETE FROM ai_conversations WHERE "tenantId" = (SELECT id FROM tenants WHERE slug LIKE $1)`,
+      [`%${HTTP_SUITE}%`],
+    );
+    await q(`DELETE FROM cities WHERE id = $1`, [cityId]);
+    await e2e.app.close();
+  }, 120_000);
+
+  it('walks the whole step chain over HTTP and produces the same shape as the conversational path', async () => {
+    const client = agent();
+
+    await client
+      .post(`${API}/public/booking/select/clinic`)
+      .send({ clinicId: httpClinic.tenantId })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/service`)
+      .send({ serviceIds: [httpClinic.serviceId] })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/doctor`)
+      .send({ staffId: httpClinic.staffId })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/slot`)
+      .send({ startAt: HTTP_SLOT_START })
+      .expect(200);
+
+    const confirmRes = await client
+      .post(`${API}/public/booking/confirm`)
+      .send({
+        fullName: 'HTTP Anonymous Patient',
+        phone: `+96650${HTTP_SUITE.slice(-7)}`,
+        hasInsurance: false,
+        notes: 'Booked via the deterministic HTTP flow',
+      })
+      .expect(200);
+
+    expect(confirmRes.body).toMatchObject({
+      appointmentId: expect.any(String),
+      status: expect.any(String),
+      hasInsurance: false,
+    });
+
+    const row = await e2e.dataSource.query(
+      `SELECT "tenantId", "branchId", "staffId", source, status, payment_status, total_amount
+         FROM appointments WHERE id = $1`,
+      [confirmRes.body.appointmentId],
+    );
+    // Same shape the conversational path's own assertion pins above — the
+    // parity FR-P003 requires, for the same selections.
+    expect(row[0]).toMatchObject({
+      tenantId: httpClinic.tenantId,
+      branchId: httpClinic.branchId,
+      staffId: httpClinic.staffId,
+      source: AppointmentSource.PUBLIC_AI,
+      status: AppointmentStatus.CONFIRMED,
+      payment_status: AppointmentPaymentStatus.UNPAID,
+    });
+    expect(Number(row[0].total_amount)).toBe(250);
+  }, 60_000);
+
+  it('rejects a doctor from a different clinic than the one selected (cross-clinic, same as the conversational path)', async () => {
+    const client = agent();
+    await client
+      .post(`${API}/public/booking/select/clinic`)
+      .send({ clinicId: httpClinic.tenantId })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/service`)
+      .send({ serviceIds: [httpClinic.serviceId] })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/doctor`)
+      .send({ staffId: otherHttpClinic.staffId })
+      .expect(422);
+  });
+
+  it('an injected branchId/staffId/startAt on the confirm body has no effect — the DTO does not accept them', async () => {
+    const client = agent();
+    await client
+      .post(`${API}/public/booking/select/clinic`)
+      .send({ clinicId: httpClinic.tenantId })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/service`)
+      .send({ serviceIds: [httpClinic.serviceId] })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/doctor`)
+      .send({ staffId: httpClinic.staffId })
+      .expect(200);
+    await client
+      .post(`${API}/public/booking/select/slot`)
+      .send({ startAt: HTTP_SLOT_START })
+      .expect(200);
+
+    // A visitor who never selected `otherHttpClinic` tries to smuggle its
+    // resource ids into the confirm body directly.
+    const res = await client.post(`${API}/public/booking/confirm`).send({
+      fullName: 'Attacker',
+      phone: `+96650${HTTP_SUITE.slice(-6)}9`,
+      branchId: otherHttpClinic.branchId,
+      staffId: otherHttpClinic.staffId,
+      startAt: '2027-03-18T12:00:00.000Z',
+    });
+
+    // Global `forbidNonWhitelisted` refuses the request outright — the
+    // strongest possible "no effect": the fields can never even reach the
+    // handler, let alone retarget the booking.
+    expect(res.status).toBe(400);
+
+    const leaked = await e2e.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM appointments WHERE "tenantId" = $1 AND "branchId" = $2`,
+      [otherHttpClinic.tenantId, otherHttpClinic.branchId],
+    );
+    expect(leaked[0].c).toBe(0);
+  });
+
+  /**
+   * T075 (US4) — two anonymous visitors racing for the SAME slot. The window
+   * is bookable when both check it; only one commit can win. This is
+   * `appointments_no_overlap` (the DB exclusion constraint), not application
+   * code — `AvailabilityService`'s own docblock names this exact race
+   * (`STAFF_NOT_AVAILABLE` → 409, "the window WAS bookable when checked, but
+   * a concurrent request committed first"). Two independent `agent()`
+   * cookie jars, so neither request carries the other's session.
+   */
+  const RACE_SLOT_START = '2027-03-17T14:00:00.000Z';
+
+  it('exactly one of two concurrent confirms for the same slot wins', async () => {
+    const clientA = agent();
+    const clientB = agent();
+
+    for (const client of [clientA, clientB]) {
+      await client
+        .post(`${API}/public/booking/select/clinic`)
+        .send({ clinicId: httpClinic.tenantId })
+        .expect(200);
+      await client
+        .post(`${API}/public/booking/select/service`)
+        .send({ serviceIds: [httpClinic.serviceId] })
+        .expect(200);
+      await client
+        .post(`${API}/public/booking/select/doctor`)
+        .send({ staffId: httpClinic.staffId })
+        .expect(200);
+      await client
+        .post(`${API}/public/booking/select/slot`)
+        .send({ startAt: RACE_SLOT_START })
+        .expect(200);
+    }
+
+    const [resA, resB] = await Promise.all([
+      clientA.post(`${API}/public/booking/confirm`).send({
+        fullName: 'Racer A',
+        phone: `+96650${HTTP_SUITE.slice(-6)}1`,
+      }),
+      clientB.post(`${API}/public/booking/confirm`).send({
+        fullName: 'Racer B',
+        phone: `+96650${HTTP_SUITE.slice(-6)}2`,
+      }),
+    ]);
+
+    const statuses = [resA.status, resB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const landed = await e2e.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM appointments
+        WHERE "tenantId" = $1 AND "staffId" = $2 AND start_at = $3`,
+      [httpClinic.tenantId, httpClinic.staffId, RACE_SLOT_START],
+    );
+    expect(landed[0].c).toBe(1);
+  }, 30_000);
 });

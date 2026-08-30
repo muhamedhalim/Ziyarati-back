@@ -17,9 +17,9 @@
 
 # Pinned to a specific minor so a rebuild resolves the same base. Alpine is safe
 # here: every RUNTIME dependency (pg, ioredis, bcryptjs, @aws-sdk, prom-client,
-# pdf-parse, socket.io) is pure JavaScript — the only native artefacts in the
-# tree belong to devDependencies (artillery/eslint), which never reach the
-# runtime stage.
+# pdf-parse, socket.io, pdfkit, bidi-js) is pure JavaScript — the only native
+# artefacts in the tree belong to devDependencies (artillery/eslint), which
+# never reach the runtime stage.
 ARG NODE_IMAGE=node:24.11-alpine3.22
 
 # ─────────────────────────── Stage 1: dependencies ──────────────────────────

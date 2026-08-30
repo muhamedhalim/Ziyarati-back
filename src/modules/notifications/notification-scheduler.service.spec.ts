@@ -51,6 +51,14 @@ describe('NotificationSchedulerService.schedule — sourceRef dedupe (gap-closur
     expect(scheduled.create).toHaveBeenCalledWith(expect.objectContaining({ source_ref: 'workflow-action:run-1:2' }));
   });
 
+  it('T032 (spec 014): stamps internal-only per-notification variables (e.g. cancelUrl) on the row', async () => {
+    await service.schedule('t1', dto as never, undefined, { cancelUrl: 'https://app/cancel/tok' });
+
+    expect(scheduled.create).toHaveBeenCalledWith(
+      expect.objectContaining({ variables: { cancelUrl: 'https://app/cancel/tok' } }),
+    );
+  });
+
   it('returns the EXISTING row and does NOT enqueue a second dispatch job when a retry hits the unique index on the same sourceRef', async () => {
     const existing = { id: 'sched-1', source_ref: 'workflow-action:run-1:2', status: NOTIFICATION_STATUS.SCHEDULED };
     scheduled.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));

@@ -40,6 +40,15 @@ import {
   zonedYmd,
 } from './timezone.util';
 
+/** S8 abuse control — see {@link AvailabilityService.publicWindows}. */
+export const PUBLIC_AVAILABILITY_HORIZON_DAYS = 14;
+
+/** The ENTIRE anonymous-safe shape — nothing else may ever be added here. */
+export interface PublicAvailabilityWindow {
+  startAt: string;
+  endAt: string;
+}
+
 export interface BookabilityConflicts {
   staffInactive: boolean;
   holiday: boolean;
@@ -297,6 +306,77 @@ export class AvailabilityService {
         endTime: w.end.toISOString(),
       })),
     };
+  }
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — S8. Anonymous-safe projection:
+   * an unauthenticated caller (the public booking widget) may read WHEN a
+   * staff member is free, and NOTHING else. Returns only `{ startAt, endAt }`
+   * plus the branch timezone — no appointment ids, customer data, staff
+   * contact details, or blocked-slot reasons ever reach this return shape.
+   *
+   * Delegates entirely to {@link windows} (day-by-day) — the SAME
+   * availability computation the authenticated surface uses — so this is
+   * provably a subset of its output, never a second implementation of any
+   * rule. The horizon cap (`PUBLIC_AVAILABILITY_HORIZON_DAYS`) is an abuse
+   * control (bounds how much compute an anonymous request can trigger), not
+   * a UX choice — a caller wanting a wider search must ask again.
+   */
+  async publicWindows(
+    tenantId: string,
+    params: {
+      branchId: string;
+      staffId: string;
+      fromDate: string;
+      toDate: string;
+      slotMinutes?: number;
+    },
+  ): Promise<{ timezone: string; windows: PublicAvailabilityWindow[] }> {
+    if (!params.branchId || !params.staffId || !params.fromDate || !params.toDate) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'branchId, staffId, fromDate and toDate are all required',
+      });
+    }
+
+    const branch = await this.refs.getBranch(tenantId, params.branchId);
+    const zone = safeZone(branch.timezone);
+
+    const dates = this.cappedDateRange(params.fromDate, params.toDate);
+    const windows: PublicAvailabilityWindow[] = [];
+    for (const dateStr of dates) {
+      const day = await this.windows(tenantId, {
+        branchId: params.branchId,
+        staffId: params.staffId,
+        date: dateStr,
+        slotMinutes: params.slotMinutes,
+      } as AvailabilityQueryDto);
+      for (const w of day.windows ?? []) {
+        windows.push({ startAt: w.startTime, endAt: w.endTime });
+      }
+    }
+    return { timezone: zone, windows };
+  }
+
+  /** Inclusive YYYY-MM-DD date strings from `from`, capped at
+   *  `PUBLIC_AVAILABILITY_HORIZON_DAYS` days — never `to` alone, which an
+   *  anonymous caller fully controls. */
+  private cappedDateRange(from: string, to: string): string[] {
+    const start = new Date(`${from}T00:00:00.000Z`);
+    const requestedEnd = new Date(`${to}T00:00:00.000Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(requestedEnd.getTime()) || requestedEnd < start) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'toDate must be a valid date on or after fromDate',
+      });
+    }
+    const maxEnd = new Date(start);
+    maxEnd.setUTCDate(maxEnd.getUTCDate() + PUBLIC_AVAILABILITY_HORIZON_DAYS - 1);
+    const end = requestedEnd < maxEnd ? requestedEnd : maxEnd;
+
+    const dates: string[] = [];
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      dates.push(d.toISOString().slice(0, 10));
+    }
+    return dates;
   }
 
   async summary(tenantId: string, q: AvailabilityQueryDto) {

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PlatformModule } from '../platform/platform.module';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+import { StorageModule } from '../storage/storage.module';
 
 import { Payment } from '../../entities/Payments/Payment';
 import { PaymentGateway } from '../../entities/Payments/PaymentGateway';
@@ -12,6 +14,9 @@ import { InvoiceItem } from '../../entities/Payments/InvoiceItem';
 import { Settlement } from '../../entities/Payments/Settlement';
 import { SettlementItem } from '../../entities/Payments/SettlementItem';
 import { MerchantAccount } from '../../entities/Payments/MerchantAccount';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
+import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
+import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 
 import { PaymentGatewayService } from './payment-gateway.service';
 import { PaymentService } from './payment.service';
@@ -20,6 +25,8 @@ import { TransactionService } from './transaction.service';
 import { RefundService } from './refund.service';
 import { InvoiceService } from './invoice.service';
 import { InvoiceItemService } from './invoice-item.service';
+import { InvoiceDocumentService } from './invoice-document.service';
+import { InvoiceAuditService } from './invoice-audit.service';
 import { SettlementService } from './settlement.service';
 import { SettlementItemService } from './settlement-item.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
@@ -80,9 +87,21 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
       Settlement,
       SettlementItem,
       MerchantAccount,
+      TenantSetting,
+      SubscriptionInvoice,
+      AuditLog,
     ]),
     // Provides SystemSettingService for payment link TTL and default currency.
     PlatformModule,
+    // T084 (spec 014, US5) — PaymentReconciliationService's subscription
+    // sweep verifies through the SAME PAYMENT_PROVIDER binding
+    // BillingService uses, never a second one.
+    SubscriptionBillingModule,
+    // T096 (spec 014, US12) — InvoiceController presigns the rendered
+    // document's download URL. StorageService itself has no worker-only
+    // guard (unlike DocumentRendererService), so this is safe in the API
+    // process.
+    StorageModule,
   ],
   controllers: [
     PaymentGatewayController,
@@ -105,6 +124,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     RefundService,
     InvoiceService,
     InvoiceItemService,
+    InvoiceDocumentService,
+    InvoiceAuditService,
     SettlementService,
     SettlementItemService,
     SettlementAdjustmentService,
@@ -131,6 +152,11 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
   exports: [
     PaymentService,
     InvoiceService,
+    // T095 (spec 014, US12) — AnalyticsProcessor (worker) assembles the
+    // document data here, then renders it via DocumentRendererService
+    // (worker-role-only) — this service itself stays constructible in
+    // either process.
+    InvoiceDocumentService,
     // Exposed so the background worker's settlements processor can reuse it.
     SettlementService,
     // Exposed so the background worker's refunds reaper can reuse it.

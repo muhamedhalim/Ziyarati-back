@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -37,7 +37,7 @@ import { GuestAttachmentExtractionService } from './attachments/guest-attachment
     // into its own module precisely so it would not have to.
     StorageModule,
     AiAttachmentModule,
-    AiModule,
+    forwardRef(() => AiModule),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

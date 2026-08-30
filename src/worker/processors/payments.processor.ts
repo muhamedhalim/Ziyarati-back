@@ -50,10 +50,16 @@ export class PaymentsProcessor extends WorkerHost {
     }
     try {
       const result = await this.reconciliation.reconcileStalePending();
+      // T084 (spec 014, US5) — the SAME sweep, extended to cover
+      // subscription invoices too (a separate financial stream, its own
+      // scan/apply pass, but one lock/one heartbeat/one job — not a second
+      // sweep to schedule).
+      const subscriptionResult =
+        await this.reconciliation.reconcileStaleSubscriptionInvoices();
       // Last-successful-run signal (M9's own deferred half, folded into M14 —
       // see docs/CACHING_QUEUES_AUDIT.md).
       this.metrics.setWorkerHeartbeat('payments.reconcile');
-      return result;
+      return { ...result, subscriptions: subscriptionResult };
     } finally {
       await this.lock.release(LOCK_KEY, token);
     }

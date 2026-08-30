@@ -75,6 +75,14 @@ export class NotificationSchedulerService {
     tenantId: string,
     dto: ScheduleNotificationDto,
     sourceRef?: string,
+    // Spec 014 (Clinic Platform Completion) — T032. INTERNAL-only, same
+    // reasoning as `sourceRef` above: deliberately not part of
+    // `ScheduleNotificationDto`, so the public HTTP contract is unchanged.
+    // Lets a caller (e.g. `NotificationEventListener` on
+    // `appointment.confirmed`) attach per-notification template variables —
+    // a `cancelUrl`, for instance — without a template author having to
+    // template-author "the appointment's own values" a second time.
+    variables?: Record<string, unknown>,
   ): Promise<ScheduledNotification> {
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
     if (dto.appointmentId) await this.assertAppointment(tenantId, dto.appointmentId);
@@ -92,6 +100,7 @@ export class NotificationSchedulerService {
       scheduled_at: new Date(dto.scheduledAt),
       status: NOTIFICATION_STATUS.SCHEDULED,
       source_ref: sourceRef,
+      variables,
     });
 
     let saved: ScheduledNotification;

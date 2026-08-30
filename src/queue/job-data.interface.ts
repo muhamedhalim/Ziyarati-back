@@ -212,6 +212,17 @@ export interface AnalyticsGenerateReportJob extends BaseJobData {
 }
 /** Platform-level retention sweep (tenantId null) — purges old analytics_events. */
 export type AnalyticsCleanupJob = BaseJobData;
+/**
+ * T095 (spec 014, US12) — async invoice PDF rendering. `documentVersion` is
+ * the version this render is FOR (bumped by `finalize()`/regenerate) — the
+ * idempotency key is `(invoiceId, documentVersion)`: a redelivered job for a
+ * version already rendered is a no-op, never a second render.
+ */
+export interface AnalyticsInvoiceDocumentJob extends BaseJobData {
+  tenantId: string;
+  invoiceId: string;
+  documentVersion: number;
+}
 
 // ── Settlements ────────────────────────────────────────────────────────────
 export interface SettlementsProcessJob extends BaseJobData {
@@ -224,6 +235,9 @@ export interface SettlementsProcessJob extends BaseJobData {
 
 // ── Subscriptions ──────────────────────────────────────────────────────────
 export type SubscriptionsRenewalCheckJob = BaseJobData;
+/** T082 (spec 014, US5) — `subscriptions.renewalBill`, same queue, already
+ *  scheduled by T024; no distinct payload of its own. */
+export type SubscriptionsRenewalBillJob = BaseJobData;
 
 // ── Workflow engine ─────────────────────────────────────────────────────────
 /** Kick off a workflow run: fan the run's actions out into delayed action jobs. */

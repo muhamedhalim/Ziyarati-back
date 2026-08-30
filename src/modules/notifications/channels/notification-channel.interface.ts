@@ -15,6 +15,9 @@ export interface NotificationPayload {
   /** Resolved destination address (E.164 phone / wa_id) — set by the dispatcher
    *  after a TENANT-SCOPED recipient lookup. Providers must not re-resolve it. */
   recipientPhone?: string;
+  /** Resolved destination email address — same rule as {@link recipientPhone}:
+   *  set by the dispatcher's tenant-scoped lookup, never re-resolved here. */
+  recipientEmail?: string;
   templateId?: string;
   appointmentId?: string;
   /** Rendered/raw content for the message (provider decides how to use it). */

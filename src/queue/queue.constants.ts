@@ -146,6 +146,24 @@ export const JOB = {
   INTEGRATION_RECOVER_STALE: 'integration.recoverStale',
   /** Repeatable maintenance sweep — see QUEUE.CAMPAIGNS_MAINTENANCE. */
   CAMPAIGNS_RECOVER_DLQ: 'campaigns.recoverDlq',
+
+  // Spec 014 "Clinic Platform Completion" — added to EXISTING queues; no new
+  // queue is introduced (SUBSCRIPTIONS_RENEWAL_BILL → QUEUE.SUBSCRIPTIONS,
+  // ANALYTICS_* → QUEUE.ANALYTICS, PLATFORM_* → QUEUE.PLATFORM).
+  /** Repeatable daily sweep: bills subscriptions due for recurring renewal (S5). */
+  SUBSCRIPTIONS_RENEWAL_BILL: 'subscriptions.renewalBill',
+  /** Async report-export rendering (S13), on the existing analytics queue. */
+  ANALYTICS_EXPORT_GENERATE: 'analytics.exportGenerate',
+  /** Async invoice PDF rendering (S12), on the existing analytics queue. */
+  ANALYTICS_INVOICE_DOCUMENT: 'analytics.invoiceDocument',
+  /** Evaluates waitlist entries against a freed slot (S9). */
+  PLATFORM_WAITLIST_EVALUATE: 'platform.waitlistEvaluate',
+  /** Repeatable sweep: expires waitlist offers past their deadline (S9). */
+  PLATFORM_WAITLIST_EXPIRY: 'platform.waitlistExpiry',
+  /** Repeatable daily sweep: closes out the day's patient queue (S10). */
+  PLATFORM_QUEUE_DAY_CLOSE: 'platform.queueDayClose',
+  /** Repeatable daily sweep: expires stale report-export downloads (S13). */
+  PLATFORM_EXPORT_EXPIRY: 'platform.exportExpiry',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

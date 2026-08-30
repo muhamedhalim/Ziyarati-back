@@ -216,7 +216,11 @@ describe('CustomerService', () => {
 
     it('rejects an update to a national_id already used by another customer', async () => {
       customers.findOne
-        .mockResolvedValueOnce({ id: 'c1', phone: '+966500', national_id: null })
+        .mockResolvedValueOnce({
+          id: 'c1',
+          phone: '+966500',
+          national_id: null,
+        })
         .mockResolvedValueOnce({ id: 'c2' }); // national_id taken by another
       await expect(
         service.update(TENANT, 'c1', { national_id: 'ID-1' } as any),
@@ -291,8 +295,73 @@ describe('CustomerService', () => {
 
     it('getDetails throws NOT_FOUND for an unknown/cross-tenant id', async () => {
       customers.findOne.mockResolvedValueOnce(null);
-      await expect(service.getDetails(TENANT, 'x')).rejects.toMatchObject({
+      await expect(
+        service.getDetails(TENANT, 'x', false),
+      ).rejects.toMatchObject({
         code: ErrorCode.NOT_FOUND,
+      });
+    });
+
+    describe('getDetails — T108 (spec 014, US6, FR-H010a/d/e — BREAKING)', () => {
+      const customerWithProfile = () => ({
+        id: 'c1',
+        full_name: 'Test Patient',
+        has_chronic_diseases: true,
+        chronic_diseases: 'Asthma',
+        has_health_insurance: true,
+        profile: {
+          id: 'p1',
+          medical_history: 'Appendectomy 2019',
+          allergies: 'Penicillin',
+          blood_type: 'O+',
+          notes: 'Prefers morning appointments',
+          emergency_contact_name: 'Jane Doe',
+          emergency_contact_phone: '+966500000000',
+        },
+      });
+
+      it('strips the 4 clinical profile fields without clinical.records.read', async () => {
+        customers.findOne.mockResolvedValueOnce(customerWithProfile());
+        const res = await service.getDetails(TENANT, 'c1', false);
+        expect(res.profile).not.toHaveProperty('medical_history');
+        expect(res.profile).not.toHaveProperty('allergies');
+        expect(res.profile).not.toHaveProperty('blood_type');
+        expect(res.profile).not.toHaveProperty('notes');
+      });
+
+      it('KEEPS emergency_contact_name/phone without clinical.records.read (FR-H010e — same entity, non-clinical)', async () => {
+        customers.findOne.mockResolvedValueOnce(customerWithProfile());
+        const res = await service.getDetails(TENANT, 'c1', false);
+        expect(res.profile).toMatchObject({
+          emergency_contact_name: 'Jane Doe',
+          emergency_contact_phone: '+966500000000',
+        });
+      });
+
+      it('KEEPS Customer-level chronic-condition/insurance fields regardless of clinical access (they are not on CustomerProfile)', async () => {
+        customers.findOne.mockResolvedValueOnce(customerWithProfile());
+        const res = await service.getDetails(TENANT, 'c1', false);
+        expect(res.has_chronic_diseases).toBe(true);
+        expect(res.chronic_diseases).toBe('Asthma');
+        expect(res.has_health_insurance).toBe(true);
+      });
+
+      it('returns every profile field, unstripped, WITH clinical.records.read', async () => {
+        customers.findOne.mockResolvedValueOnce(customerWithProfile());
+        const res = await service.getDetails(TENANT, 'c1', true);
+        expect(res.profile).toMatchObject({
+          medical_history: 'Appendectomy 2019',
+          allergies: 'Penicillin',
+          blood_type: 'O+',
+          notes: 'Prefers morning appointments',
+        });
+      });
+
+      it('does not crash on a customer with no profile row at all', async () => {
+        customers.findOne.mockResolvedValueOnce({ id: 'c1', profile: null });
+        await expect(
+          service.getDetails(TENANT, 'c1', false),
+        ).resolves.toMatchObject({ id: 'c1' });
       });
     });
 

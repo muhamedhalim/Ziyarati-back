@@ -36,6 +36,34 @@ describe('NotificationRuleService', () => {
     expect(templates.exists).toHaveBeenCalled();
   });
 
+  it('T016 (spec 014): defaults anchor to AFTER_EVENT when omitted — every existing rule keeps identical scheduling behaviour', async () => {
+    rules.save.mockImplementation(async (r: any) => r);
+    await service.create(TENANT, { triggerEvent: 'appointment.created' } as any);
+    expect(rules.create).toHaveBeenCalledWith(
+      expect.objectContaining({ anchor: 'AFTER_EVENT' }),
+    );
+  });
+
+  it('T016 (spec 014): accepts an explicit BEFORE_APPOINTMENT_START anchor', async () => {
+    rules.save.mockImplementation(async (r: any) => r);
+    await service.create(TENANT, {
+      triggerEvent: 'appointment.upcoming',
+      anchor: 'BEFORE_APPOINTMENT_START',
+    } as any);
+    expect(rules.create).toHaveBeenCalledWith(
+      expect.objectContaining({ anchor: 'BEFORE_APPOINTMENT_START' }),
+    );
+  });
+
+  it('T016 (spec 014): update() changes the anchor only when supplied', async () => {
+    rules.findOne.mockResolvedValue({ id: 'r1', anchor: 'AFTER_EVENT' });
+    rules.save.mockImplementation(async (r: any) => r);
+    await service.update(TENANT, 'r1', { anchor: 'BEFORE_APPOINTMENT_START' } as any);
+    expect(rules.save).toHaveBeenCalledWith(
+      expect.objectContaining({ anchor: 'BEFORE_APPOINTMENT_START' }),
+    );
+  });
+
   it('rejects a template not in the tenant with 422', async () => {
     templates.exists.mockResolvedValueOnce(false);
     await expect(

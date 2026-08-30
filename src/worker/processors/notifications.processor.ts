@@ -11,6 +11,7 @@ import { WorkerAuthorizationService } from '../../queue/worker-authorization.ser
 import { QueueService } from '../../queue/queue.service';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { NotificationDispatchService } from '../../modules/notifications/notification-dispatch.service';
+import { InternalNotificationReadService } from '../../modules/notifications/internal/internal-notification-read.service';
 import { MetricsService } from '../../metrics/metrics.service';
 
 const REAP_LOCK_KEY = 'lock:notifications-reap';
@@ -44,6 +45,14 @@ export class NotificationsProcessor extends WorkerHost {
     private readonly authz: WorkerAuthorizationService,
     private readonly lock: DistributedLockService,
     private readonly metrics: MetricsService,
+    /**
+     * Owns retention for the internal in-app inbox — see the reap branch.
+     *
+     * Appended rather than inserted: this processor is constructed positionally
+     * in its spec, so inserting a parameter mid-list silently reassigns every
+     * collaborator after it.
+     */
+    private readonly inApp: InternalNotificationReadService,
   ) {
     super();
   }
@@ -62,13 +71,32 @@ export class NotificationsProcessor extends WorkerHost {
       }
       try {
         const res = await this.dispatch.reapAndRequeue();
+
+        // Retention for the INTERNAL in-app inbox rides on this existing sweep
+        // rather than adding a second schedule: it is already lock-guarded,
+        // already runs every minute, and already owns notification retention
+        // (`purgedLogs`). Batched, so a large backlog drains over several ticks.
+        //
+        // Failure here is isolated: an inbox that keeps a few extra days of read
+        // history is cosmetic, whereas losing the reclaim/requeue half of this
+        // sweep would strand real outbound messages.
+        let purgedInApp = 0;
+        try {
+          purgedInApp = await this.inApp.purgeExpired();
+        } catch (err) {
+          this.logger.warn(
+            `in-app notification retention purge failed (reap otherwise succeeded): ${(err as Error)?.message}`,
+          );
+        }
+
         this.logger.log(
-          `reap: reclaimed=${res.reclaimed} strandedForReview=${res.strandedForReview} requeued=${res.requeued} purgedLogs=${res.purgedLogs}`,
+          `reap: reclaimed=${res.reclaimed} strandedForReview=${res.strandedForReview} ` +
+            `requeued=${res.requeued} purgedLogs=${res.purgedLogs} purgedInApp=${purgedInApp}`,
         );
         // Last-successful-run signal (M9's own deferred half, folded into
         // M14 — see docs/CACHING_QUEUES_AUDIT.md).
         this.metrics.setWorkerHeartbeat('notifications.reap');
-        return res;
+        return { ...res, purgedInApp };
       } finally {
         await this.lock.release(REAP_LOCK_KEY, lockToken);
       }

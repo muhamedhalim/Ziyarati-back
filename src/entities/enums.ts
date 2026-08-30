@@ -216,3 +216,36 @@ export enum OutboxStatus {
   PUBLISHED = 'PUBLISHED',
   FAILED = 'FAILED',
 }
+
+/**
+ * Spec 014 (Clinic Platform Completion) — what a `PatientActionLink` (S1)
+ * authorises. One purpose per link; the token carries no other capability.
+ */
+export enum PatientActionPurpose {
+  CANCEL = 'CANCEL',
+  RESCHEDULE = 'RESCHEDULE',
+  WAITLIST_OFFER = 'WAITLIST_OFFER',
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T019 (FR-C010, FR-R012). Who
+ * initiated an appointment cancellation/reschedule. Set server-side by the
+ * calling path — NEVER read from a public request body.
+ */
+export enum AppointmentActionOrigin {
+  STAFF = 'STAFF',
+  PATIENT = 'PATIENT',
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T104 (US6, FR-H002). The only
+ * clinical entry kinds in scope — no further clinical domain may be added
+ * without a spec change.
+ */
+export enum ClinicalEntryKind {
+  NOTE = 'NOTE',
+  DIAGNOSIS = 'DIAGNOSIS',
+  MEDICATION = 'MEDICATION',
+  ALLERGY = 'ALLERGY',
+  VITALS = 'VITALS',
+}

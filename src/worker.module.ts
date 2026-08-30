@@ -34,6 +34,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PlatformModule } from './modules/platform/platform.module';
+import { SubscriptionBillingModule } from './modules/subscription-billing/subscription-billing.module';
 import { EmailModule } from './modules/email/email.module';
 
 import { WorkerTenantsService } from './worker/worker-tenants.service';
@@ -66,6 +67,12 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
 import { WorkflowProcessor } from './worker/processors/workflow.processor';
 import { WebhookDeliveryProcessor } from './worker/processors/webhook-delivery.processor';
 import { IntegrationPlatformModule } from './modules/integration-platform/integration-platform.module';
+// Spec 014 (Clinic Platform Completion) — T021. WORKER ROLE ONLY: this
+// module's one provider (DocumentRendererService) refuses to construct
+// anywhere `PROCESS_ROLE !== 'worker'`, so it must NEVER be imported into
+// AppModule (the API root) — only here.
+import { DocumentsModule } from './modules/documents/documents.module';
+import { StorageModule } from './modules/storage/storage.module';
 import { IntegrationImportProcessor } from './worker/processors/integration-import.processor';
 import { IntegrationSyncProcessor } from './worker/processors/integration-sync.processor';
 import { IntegrationInboundProcessor } from './worker/processors/integration-inbound.processor';
@@ -271,12 +278,21 @@ const WORKER_PROVIDERS =
     AnalyticsModule,
     PaymentsModule,
     PlatformModule,
+    // T082 (spec 014, US5) — SubscriptionsProcessor's `renewalBill` branch
+    // needs RenewalService (and, transitively, the SAME `PAYMENT_PROVIDER`
+    // production-safety binding BillingService already depends on — the
+    // real charge happens in THIS process, so the worker must resolve the
+    // identical factory, not a re-declared copy of it).
+    SubscriptionBillingModule,
     EmailModule,
     PlatformUsageModule,
     AiMemoryModule,
     WorkflowModule,
     // Phase 4 — async import + sync processors reuse the shared write pipeline.
     IntegrationPlatformModule,
+    DocumentsModule,
+    // T095 (spec 014, US12) — AnalyticsProcessor uploads rendered invoice PDFs.
+    StorageModule,
   ],
   providers: [AuthTokenMaintenanceService, ...WORKER_PROVIDERS],
 })

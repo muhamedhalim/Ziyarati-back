@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
 import { AiConversationAccessService } from '../ai/ai-conversation-access.service';
@@ -8,6 +9,9 @@ import {
   SessionPatch,
 } from '../ai-orchestrator/conversation-session.service';
 import { AiSession } from '../ai-orchestrator/ai-channel.constants';
+import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
 /** How far the caller needs the selection to have progressed. */
@@ -68,7 +72,56 @@ export class PublicBookingContextService {
     private readonly dataSource: DataSource,
     private readonly access: AiConversationAccessService,
     private readonly sessions: ConversationSessionService,
+    @InjectRepository(AiConversation)
+    private readonly aiConversations: Repository<AiConversation>,
   ) {}
+
+  /**
+   * Spec 014 (Clinic Platform Completion) — T065 (S4, R16). The deterministic
+   * public booking flow (no AI turn, no `aiConversationId` from a model) still
+   * needs a session key to call `getSelection`/`patchSelection`/`requireContext`
+   * with — those are hard-wired to a conversation row. Reuses the row PURELY
+   * as a session-state container, exactly as `AiOrchestratorService.prepare()`
+   * does for a fresh WS turn (`start()` + `patch({ guestSubject })`), so this
+   * writes no second context store.
+   *
+   * `existingConversationId` (carried by the caller across requests — the
+   * controller's own session cookie, since nothing server-side maps
+   * `guestId → conversationId`) is reused only if it still resolves and is
+   * still owned by this exact guest; anything else — wrong owner, deleted,
+   * never existed — silently falls through to minting a fresh one rather than
+   * erroring, since "the session expired" should feel like "start a new one",
+   * not a failure.
+   */
+  async ensureConversation(
+    guestTenantId: string,
+    guestId: string,
+    existingConversationId?: string,
+  ): Promise<string> {
+    if (existingConversationId) {
+      try {
+        await this.access.assertAccess(guestTenantId, existingConversationId, {
+          id: guestId,
+          tenantId: guestTenantId,
+          roles: [],
+          permissions: [],
+          guest: true,
+        });
+        return existingConversationId;
+      } catch {
+        // Not this guest's, or gone — fall through to a fresh session.
+      }
+    }
+
+    const conv = await this.aiConversations.save(
+      this.aiConversations.create({
+        tenant: { id: guestTenantId } as Tenant,
+        status: AI_CONVERSATION_STATUS.ACTIVE,
+      }),
+    );
+    await this.sessions.patch(guestTenantId, conv.id, { guestSubject: guestId });
+    return conv.id;
+  }
 
   /**
    * Resolves the owning clinic of a branch — the ONLY way a public booking

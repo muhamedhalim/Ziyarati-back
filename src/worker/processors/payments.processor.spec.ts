@@ -11,6 +11,12 @@ describe('PaymentsProcessor', () => {
     };
     const reconciliation = {
       reconcileStalePending: jest.fn().mockResolvedValue({ verified: 3 }),
+      reconcileStaleSubscriptionInvoices: jest.fn().mockResolvedValue({
+        scanned: 0,
+        settled: 0,
+        released: 0,
+        stillClaimed: 0,
+      }),
     };
     const metrics = { setWorkerHeartbeat: jest.fn() };
     const processor = new PaymentsProcessor(
@@ -27,7 +33,13 @@ describe('PaymentsProcessor', () => {
     const result = await processor.process({} as any);
 
     expect(reconciliation.reconcileStalePending).toHaveBeenCalled();
-    expect(result).toEqual({ verified: 3 });
+    expect(
+      reconciliation.reconcileStaleSubscriptionInvoices,
+    ).toHaveBeenCalled();
+    expect(result).toEqual({
+      verified: 3,
+      subscriptions: { scanned: 0, settled: 0, released: 0, stillClaimed: 0 },
+    });
     expect(lock.release).toHaveBeenCalledWith(
       'lock:payments-reconcile',
       'token-abc',
@@ -43,6 +55,9 @@ describe('PaymentsProcessor', () => {
     const result = await processor.process({} as any);
 
     expect(reconciliation.reconcileStalePending).not.toHaveBeenCalled();
+    expect(
+      reconciliation.reconcileStaleSubscriptionInvoices,
+    ).not.toHaveBeenCalled();
     expect(result).toEqual({ skipped: true });
     expect(lock.release).not.toHaveBeenCalled();
   });
@@ -57,6 +72,19 @@ describe('PaymentsProcessor', () => {
     expect(lock.release).toHaveBeenCalledWith(
       'lock:payments-reconcile',
       'token-xyz',
+    );
+  });
+
+  it('T084 — still releases the lock if the subscription-invoice sweep throws', async () => {
+    const { processor, lock, reconciliation } = build('token-sub');
+    reconciliation.reconcileStaleSubscriptionInvoices.mockRejectedValueOnce(
+      new Error('provider down'),
+    );
+
+    await expect(processor.process({} as any)).rejects.toThrow('provider down');
+    expect(lock.release).toHaveBeenCalledWith(
+      'lock:payments-reconcile',
+      'token-sub',
     );
   });
 });

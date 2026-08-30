@@ -36,6 +36,14 @@ export class Invoice {
   @Column()
   invoice_number!: string;
 
+  /**
+   * FR-I005 (spec 014, T092/T093) — snapshotted from `tenant_settings.currency`
+   * at CREATE time, never re-read from the live setting afterward. A later
+   * currency change must not rewrite an already-issued invoice's currency.
+   */
+  @Column({ type: 'varchar', length: 3 })
+  currency!: string;
+
   @Column({
     type: 'decimal',
     precision: 14,
@@ -69,4 +77,18 @@ export class Invoice {
 
   @DeleteDateColumn()
   deleted_at?: Date;
+
+  // ── T095/T096 (spec 014, US12) — document render tracking ──────────────
+
+  /** Current rendered PDF's private, tenant-prefixed storage key (FR-I012). Overwritten each render. */
+  @Column({ type: 'varchar', nullable: true })
+  document_key?: string | null;
+
+  /** Bumped by whatever should trigger a (re-)render: `finalize()`, the regenerate route. */
+  @Column({ type: 'int', default: 0 })
+  document_version!: number;
+
+  /** The version `document_key` was actually rendered for. Behind `document_version` = pending. */
+  @Column({ type: 'int', nullable: true })
+  document_rendered_version?: number | null;
 }

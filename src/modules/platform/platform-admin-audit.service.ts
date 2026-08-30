@@ -29,6 +29,11 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   // transitions, reusing this seam per T016/T085 rather than a parallel one.
   SUBSCRIPTION_ENTERED_GRACE: 'subscription.entered_grace',
   SUBSCRIPTION_GRACE_EXPIRED: 'subscription.grace_expired',
+  // T085 (spec 014, US5) — the renewal cycle's own attempt/outcome trail,
+  // same system-initiated (userId undefined) seam as the two rows above.
+  SUBSCRIPTION_RENEWAL_ATTEMPTED: 'subscription.renewal_attempted',
+  SUBSCRIPTION_RENEWAL_DECLINED: 'subscription.renewal_declined',
+  SUBSCRIPTION_RENEWAL_SETTLED: 'subscription.renewal_settled',
   // Platform Customer Service staff provisioning (PlatformStaffService).
   STAFF_CREATE: 'platform_admin.staff.create',
   STAFF_UPDATE: 'platform_admin.staff.update',
@@ -45,7 +50,8 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SUPPORT_EMAIL_RESENT: 'platform_support.email_resent',
   SUPPORT_EMAIL_RESEND_REJECTED: 'platform_support.email_resend_rejected',
   SUPPORT_NOTIFICATION_RETRIED: 'platform_support.notification_retried',
-  SUPPORT_NOTIFICATION_RETRY_REJECTED: 'platform_support.notification_retry_rejected',
+  SUPPORT_NOTIFICATION_RETRY_REJECTED:
+    'platform_support.notification_retry_rejected',
   SUPPORT_INTEGRATION_RECHECKED: 'platform_support.integration_rechecked',
 } as const;
 
@@ -90,7 +96,9 @@ export class PlatformAdminAuditService {
     try {
       await this.auditLogs.save(
         this.auditLogs.create({
-          tenant: input.tenantId ? ({ id: input.tenantId } as Tenant) : undefined,
+          tenant: input.tenantId
+            ? ({ id: input.tenantId } as Tenant)
+            : undefined,
           user: input.userId ? ({ id: input.userId } as User) : undefined,
           action: input.action,
           entity_type: input.entityType,

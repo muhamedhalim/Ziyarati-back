@@ -5,18 +5,28 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Job } from 'bullmq';
 import { Between, In, IsNull, LessThanOrEqual, Repository } from 'typeorm';
 
-import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
-import { SubscriptionsRenewalCheckJob } from '../../queue/job-data.interface';
+import { QUEUE, JOB, workerConcurrency } from '../../queue/queue.constants';
+import {
+  SubscriptionsRenewalCheckJob,
+  SubscriptionsRenewalBillJob,
+} from '../../queue/job-data.interface';
+import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { User } from '../../entities/Auth&RBAC/User';
 import { SubscriptionStatus } from '../../entities/enums';
 import { EmailService } from '../../modules/email/email.service';
+import { RenewalService } from '../../modules/subscription-billing/renewal.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import {
   PlatformAdminAuditService,
   PLATFORM_ADMIN_AUDIT_ACTION,
 } from '../../modules/platform/platform-admin-audit.service';
 
 const RENEWAL_WINDOW_DAYS = 3;
+/** T082 (spec 014, US5) — shorter than the 24h gap between renewalBill's own
+ *  cron ticks, generous for a full page's worth of charge attempts. */
+const RENEWAL_BILL_LOCK_KEY = 'lock:subscriptions-renewal-bill';
+const RENEWAL_BILL_LOCK_TTL_MS = 10 * 60 * 1000;
 /** How far ahead of a boundary (expiry, or grace end) the "before" warning fires. */
 const WARNING_WINDOW_DAYS = 3;
 /**
@@ -55,8 +65,55 @@ export class SubscriptionsProcessor extends WorkerHost {
     private readonly email: EmailService,
     private readonly audit: PlatformAdminAuditService,
     private readonly config: ConfigService,
+    private readonly renewal: RenewalService,
+    private readonly lock: DistributedLockService,
+    private readonly metrics: MetricsService,
   ) {
     super();
+  }
+
+  /**
+   * T082 (spec 014, US5) — this queue now carries two distinct jobs (T024
+   * already registered `subscriptions.renewalBill` alongside the existing
+   * `subscriptions.renewalCheck`); before this branch, an already-scheduled
+   * `renewalBill` tick silently re-ran the grace-check sweep a second time
+   * instead of billing anything.
+   */
+  async process(
+    job: Job<SubscriptionsRenewalCheckJob | SubscriptionsRenewalBillJob>,
+  ) {
+    if (job.name === JOB.SUBSCRIPTIONS_RENEWAL_BILL) {
+      return this.processRenewalBill();
+    }
+    return this.processRenewalCheck();
+  }
+
+  /**
+   * Lock-guarded for the SAME reason `PaymentsProcessor` guards its own
+   * sweep: correctness does not depend on it (`UQ_sub_invoice_period` plus
+   * `BillingService.payInvoice`'s own charge-claim already make a
+   * concurrent run a no-op, never a double charge) — this only avoids
+   * wasted, duplicate provider calls if a stalled run and its replacement
+   * ever overlap.
+   */
+  private async processRenewalBill() {
+    const token = await this.lock.acquire(
+      RENEWAL_BILL_LOCK_KEY,
+      RENEWAL_BILL_LOCK_TTL_MS,
+    );
+    if (!token) {
+      this.logger.log(
+        'renewalBill sweep already in progress elsewhere — skipping this run',
+      );
+      return { skipped: true };
+    }
+    try {
+      const result = await this.renewal.processDueBills();
+      this.metrics.setWorkerHeartbeat('subscriptions.renewalBill');
+      return result;
+    } finally {
+      await this.lock.release(RENEWAL_BILL_LOCK_KEY, token);
+    }
   }
 
   /**
@@ -64,7 +121,7 @@ export class SubscriptionsProcessor extends WorkerHost {
    * batches instead of one unbounded `find()`, and selects only the columns
    * actually used.
    */
-  async process(_job: Job<SubscriptionsRenewalCheckJob>) {
+  private async processRenewalCheck() {
     const cutoff = new Date(Date.now() + RENEWAL_WINDOW_DAYS * 86_400_000);
     const byTenant = new Map<string, number>();
     let total = 0;
@@ -96,12 +153,13 @@ export class SubscriptionsProcessor extends WorkerHost {
       `renewalCheck: ${total} subscription(s) due within ${RENEWAL_WINDOW_DAYS}d across ${byTenant.size} tenant(s)`,
     );
 
-    const [expiringSoon, enteredGrace, graceEndingSoon, graceExpired] = await Promise.all([
-      this.warnExpiringSoon(),
-      this.transitionToGrace(),
-      this.warnGraceEndingSoon(),
-      this.transitionGraceExpired(),
-    ]);
+    const [expiringSoon, enteredGrace, graceEndingSoon, graceExpired] =
+      await Promise.all([
+        this.warnExpiringSoon(),
+        this.transitionToGrace(),
+        this.warnGraceEndingSoon(),
+        this.transitionGraceExpired(),
+      ]);
 
     return {
       due: total,
@@ -121,7 +179,9 @@ export class SubscriptionsProcessor extends WorkerHost {
 
   private async warnExpiringSoon(): Promise<number> {
     const now = new Date();
-    const windowEnd = new Date(now.getTime() + WARNING_WINDOW_DAYS * 86_400_000);
+    const windowEnd = new Date(
+      now.getTime() + WARNING_WINDOW_DAYS * 86_400_000,
+    );
     const due = await this.subscriptions.find({
       where: {
         status: In([SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL]),
@@ -168,10 +228,15 @@ export class SubscriptionsProcessor extends WorkerHost {
         entityId: s.id,
         tenantId: s.tenant?.id,
         before: { status: 'ACTIVE_OR_TRIAL' },
-        after: { status: SubscriptionStatus.PAST_DUE, grace_started_at: now.toISOString() },
+        after: {
+          status: SubscriptionStatus.PAST_DUE,
+          grace_started_at: now.toISOString(),
+        },
       });
 
-      const graceEndsAt = new Date(now.getTime() + this.graceDurationDays() * 86_400_000);
+      const graceEndsAt = new Date(
+        now.getTime() + this.graceDurationDays() * 86_400_000,
+      );
       await this.notify(s, 'entered_grace', {
         endsAt: s.ends_at.toISOString(),
         graceEndsAt: graceEndsAt.toISOString(),
@@ -241,7 +306,10 @@ export class SubscriptionsProcessor extends WorkerHost {
         entityId: s.id,
         tenantId: s.tenant?.id,
         before: { status: SubscriptionStatus.PAST_DUE },
-        after: { status: SubscriptionStatus.GRACE_EXPIRED, grace_expired_at: now.toISOString() },
+        after: {
+          status: SubscriptionStatus.GRACE_EXPIRED,
+          grace_expired_at: now.toISOString(),
+        },
       });
     }
     return due.length;
@@ -266,14 +334,20 @@ export class SubscriptionsProcessor extends WorkerHost {
     const operators = await this.users
       .createQueryBuilder('u')
       .innerJoin('user_roles', 'ur', 'ur."userId" = u.id')
-      .innerJoin('roles', 'r', 'r.id = ur."roleId" AND r.slug = :slug AND r."tenantId" IS NULL', {
-        slug: 'super_admin',
-      })
+      .innerJoin(
+        'roles',
+        'r',
+        'r.id = ur."roleId" AND r.slug = :slug AND r."tenantId" IS NULL',
+        {
+          slug: 'super_admin',
+        },
+      )
       .where('u.is_active = true')
       .select('u.email', 'email')
       .addSelect('u.preferred_locale', 'preferredLocale')
       .getRawMany<{ email: string; preferredLocale: string | null }>();
-    for (const o of operators) recipients.set(o.email, o.preferredLocale ?? undefined);
+    for (const o of operators)
+      recipients.set(o.email, o.preferredLocale ?? undefined);
 
     for (const [to, locale] of recipients) {
       this.email.sendSubscriptionNotification({

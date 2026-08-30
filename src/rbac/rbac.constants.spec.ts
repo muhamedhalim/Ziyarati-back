@@ -14,7 +14,7 @@
  * `PERMISSION.<KEY>`, never a raw string, so a symbol-name scan has no
  * practical false negatives.
  */
-/* eslint-disable @typescript-eslint/no-var-requires */
+
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -37,9 +37,12 @@ const SRC_ROOT = path.join(__dirname, '..');
 
 /** Files whose own references to PERMISSION.<KEY> don't count as "enforcement". */
 const EXCLUDED_FILES = new Set(
-  ['rbac.constants.ts', 'rbac.constants.spec.ts', 'permission-metadata.ts', 'permission-metadata.spec.ts'].map(
-    (f) => path.join(__dirname, f),
-  ),
+  [
+    'rbac.constants.ts',
+    'rbac.constants.spec.ts',
+    'permission-metadata.ts',
+    'permission-metadata.spec.ts',
+  ].map((f) => path.join(__dirname, f)),
 );
 
 function findTsFiles(dir: string, acc: string[] = []): string[] {
@@ -84,6 +87,29 @@ describe('RBAC catalogue-coverage invariant (FND-010)', () => {
     expect(unexpectedlyUnenforced).toEqual([]);
   });
 
+  it('T003 (spec 014) declares audit.read as untriaged pending T190s enforcing controller', () => {
+    expect(PERMISSION.AUDIT_READ).toBe('audit.read');
+    expect(UNTRIAGED_COVERAGE_GAP_SLUGS.has(PERMISSION.AUDIT_READ)).toBe(true);
+  });
+
+  /**
+   * T112 (spec 014, US6) — clinical.records.read/manage's enforcing
+   * controller (ClinicalController) has now landed, so per this set's own
+   * rule ("remove each entry the moment its controller lands", mirroring
+   * T004's REPORTS_EXPORT precedent) they must be OUT of the untriaged set —
+   * they are role-gated + reserved (T105/T106) instead.
+   */
+  it('T112 (spec 014, US6) removed clinical.records.* from the untriaged set once its controller landed', () => {
+    expect(PERMISSION.CLINICAL_RECORDS_READ).toBe('clinical.records.read');
+    expect(PERMISSION.CLINICAL_RECORDS_MANAGE).toBe('clinical.records.manage');
+    expect(
+      UNTRIAGED_COVERAGE_GAP_SLUGS.has(PERMISSION.CLINICAL_RECORDS_READ),
+    ).toBe(false);
+    expect(
+      UNTRIAGED_COVERAGE_GAP_SLUGS.has(PERMISSION.CLINICAL_RECORDS_MANAGE),
+    ).toBe(false);
+  });
+
   it('none of the three exception sets contain a stale entry (a slug that actually IS referenced elsewhere)', () => {
     const allExceptions = [
       ...UNENFORCED_PERMISSION_SLUGS,
@@ -104,7 +130,9 @@ describe('RBAC catalogue-coverage invariant (FND-010)', () => {
     // its assignment is safe. A change here should be a deliberate, reviewed
     // decision — see UNTRIAGED_COVERAGE_GAP_SLUGS for why the other
     // known-unenforced permissions are NOT guarded the same way.
-    expect(Array.from(UNENFORCED_PERMISSION_SLUGS)).toEqual([PERMISSION.PROFILE_UPDATE_OWN]);
+    expect(Array.from(UNENFORCED_PERMISSION_SLUGS)).toEqual([
+      PERMISSION.PROFILE_UPDATE_OWN,
+    ]);
   });
 });
 
@@ -135,7 +163,9 @@ describe('RBAC branch permissions (FND-017 / M-07)', () => {
   });
 
   it('branches.update_own is registered as ownership-scoped (ABAC)', () => {
-    expect(OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.BRANCHES_UPDATE_OWN)).toBe(true);
+    expect(
+      OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.BRANCHES_UPDATE_OWN),
+    ).toBe(true);
   });
 
   it('OWNER gains tenant-wide branch authority (create/update/delete) — matches its pre-existing full-control scope', () => {
@@ -171,7 +201,10 @@ describe('RBAC branch permissions (FND-017 / M-07)', () => {
   it('MANAGER gains create/update ONLY — no branches.delete, matching its pre-existing (no-delete) scope exactly', () => {
     const manager = ROLE_PERMISSIONS[ROLE.MANAGER] as string[];
     expect(manager).toEqual(
-      expect.arrayContaining([PERMISSION.BRANCHES_CREATE, PERMISSION.BRANCHES_UPDATE]),
+      expect.arrayContaining([
+        PERMISSION.BRANCHES_CREATE,
+        PERMISSION.BRANCHES_UPDATE,
+      ]),
     );
     expect(manager).not.toContain(PERMISSION.BRANCHES_DELETE);
     expect(manager).not.toContain(PERMISSION.BRANCHES_UPDATE_OWN);
@@ -188,7 +221,12 @@ describe('RBAC branch permissions (FND-017 / M-07)', () => {
   });
 
   it('every other role (receptionist, doctor, customer, ai-bot) gains NO branch permission — least privilege preserved', () => {
-    for (const role of [ROLE.RECEPTIONIST, ROLE.DOCTOR, ROLE.CUSTOMER, ROLE.AI_BOT]) {
+    for (const role of [
+      ROLE.RECEPTIONIST,
+      ROLE.DOCTOR,
+      ROLE.CUSTOMER,
+      ROLE.AI_BOT,
+    ]) {
       const grants = ROLE_PERMISSIONS[role] as string[];
       expect(grants).not.toEqual(
         expect.arrayContaining([
@@ -293,7 +331,9 @@ describe('Support Operations Console diagnostic permissions', () => {
     const reservedDiagnostics = [...RESERVED_PERMISSION_SLUGS].filter((s) =>
       s.startsWith('platform.support.'),
     );
-    expect(reservedDiagnostics.sort()).toEqual([...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS].sort());
+    expect(reservedDiagnostics.sort()).toEqual(
+      [...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS].sort(),
+    );
   });
 
   it('no tenant role — nor the AI bot, nor the end customer — receives any diagnostic slug', () => {
@@ -326,7 +366,9 @@ describe('Support Operations Console diagnostic permissions', () => {
       PERMISSION.PLATFORM_SUPPORT_INTEGRATIONS_RECHECK,
     ]);
     for (const slug of ALL_PERMISSION_SLUGS) {
-      expect(slug).not.toMatch(/platform\.support\..*(all|purge|pause|resume|clean|delete)/);
+      expect(slug).not.toMatch(
+        /platform\.support\..*(all|purge|pause|resume|clean|delete)/,
+      );
     }
   });
 

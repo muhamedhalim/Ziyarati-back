@@ -20,6 +20,7 @@ import {
   AnalyticsAggregateJob,
   AnalyticsCleanupJob,
   AnalyticsGenerateReportJob,
+  AnalyticsInvoiceDocumentJob,
   BaseJobData,
   CampaignDlqJob,
   CampaignFanoutChunkJob,
@@ -385,6 +386,21 @@ export class QueueService {
 
   enqueueAnalyticsCleanup(data: AnalyticsCleanupJob, opts?: JobsOptions) {
     return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_CLEANUP, data, opts);
+  }
+
+  /**
+   * T095 (spec 014, US12) — deterministic jobId on `(invoiceId,
+   * documentVersion)`: a redelivered/duplicate enqueue for the SAME version
+   * collapses into the same BullMQ job, never a second render.
+   */
+  enqueueAnalyticsInvoiceDocument(
+    data: AnalyticsInvoiceDocumentJob,
+    opts?: JobsOptions,
+  ) {
+    return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_INVOICE_DOCUMENT, data, {
+      jobId: `analytics-invoice-doc-${data.invoiceId}-${data.documentVersion}`,
+      ...opts,
+    });
   }
 
   enqueueSettlementsProcess(data: SettlementsProcessJob, opts?: JobsOptions) {

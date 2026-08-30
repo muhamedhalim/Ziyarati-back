@@ -55,6 +55,17 @@ const S_INVOICE = {
     },
     issued_at: { type: 'string', format: 'date-time', nullable: true },
     paid_at: { type: 'string', format: 'date-time', nullable: true },
+    period_start: { type: 'string', format: 'date-time' },
+    period_end: { type: 'string', format: 'date-time' },
+    currency: { type: 'string', example: 'SAR' },
+    retry_count: { type: 'number', example: 0 },
+    next_retry_at: { type: 'string', format: 'date-time', nullable: true },
+    failure_reason: { type: 'string', nullable: true },
+    failure_class: {
+      type: 'string',
+      nullable: true,
+      example: 'TOKENIZATION_UNAVAILABLE',
+    },
   },
 };
 
