@@ -24,7 +24,7 @@ import { SubscriptionService } from '../subscription-billing/subscription.servic
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { CampaignQueryDto } from './dto/campaign-query.dto';
-import { EDITABLE_LIFECYCLES } from './campaign.constants';
+import { EDITABLE_LIFECYCLES, CAMPAIGN_CHANNEL } from './campaign.constants';
 
 /**
  * Campaign CRUD + archive + duplicate.
@@ -105,6 +105,9 @@ export class CampaignService {
         audience_segment: dto.segmentId
           ? ({ id: dto.segmentId } as CustomerSegment)
           : undefined,
+        channel: dto.channel ?? CAMPAIGN_CHANNEL.WHATSAPP,
+        email_subject: dto.email_subject,
+        email_body: dto.email_body,
         scheduled_at: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
         throttle_per_minute: dto.throttlePerMinute ?? 30,
         daily_cap: dto.dailyCap,
@@ -180,6 +183,10 @@ export class CampaignService {
         campaign.audience_segment = undefined;
       }
     }
+    if (dto.channel !== undefined) campaign.channel = dto.channel;
+    if (dto.email_subject !== undefined)
+      campaign.email_subject = dto.email_subject;
+    if (dto.email_body !== undefined) campaign.email_body = dto.email_body;
     if (dto.scheduledAt !== undefined) {
       campaign.scheduled_at = dto.scheduledAt
         ? new Date(dto.scheduledAt)
@@ -225,6 +232,9 @@ export class CampaignService {
       lifecycle: CampaignLifecycle.DRAFT,
       segment: source.segment,
       audience_segment: source.audience_segment,
+      channel: source.channel,
+      email_subject: source.email_subject,
+      email_body: source.email_body,
       scheduled_at: undefined,
       throttle_per_minute: source.throttle_per_minute,
       daily_cap: source.daily_cap,

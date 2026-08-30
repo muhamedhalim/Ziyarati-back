@@ -286,8 +286,9 @@ export const PERMISSION = {
   CLINICAL_RECORDS_READ: 'clinical.records.read',
   CLINICAL_RECORDS_MANAGE: 'clinical.records.manage',
 
-  // Accountability / activity log (activity-log module — not granted to any
-  // role yet, see T190's enforcing controller)
+  // Accountability / activity log (activity-log module). Granted to `owner`
+  // and `manager` only — see T192's migration and T193's enforcing
+  // `ActivityLogController`.
   AUDIT_READ: 'audit.read',
 } as const;
 
@@ -392,9 +393,9 @@ export const UNTRIAGED_COVERAGE_GAP_SLUGS: ReadonlySet<PermissionSlug> =
     // clinical.records.* enforcing controller landed in T112 — removed here
     // per this set's own rule ("remove each entry the moment its controller
     // lands", mirroring T004's REPORTS_EXPORT precedent).
-    // Declared in T003 with no enforcing route yet, on purpose — audit.read's
-    // grant lands with its enforcing code in T190. Remove then.
-    PERMISSION.AUDIT_READ,
+    // audit.read's enforcing `ActivityLogController` landed in T193 — removed
+    // here for the same reason (was declared in T003 as a known, documented
+    // gap pending exactly this controller).
   ]);
 
 /**
@@ -1307,6 +1308,15 @@ export const PERMISSIONS: PermissionDef[] = [
     name: 'Delete branches',
     module: 'branches',
   },
+
+  {
+    // T192 (spec 014, US14, FR-U009) — the clinic-facing accountability
+    // surface. Granted only to `owner`/`manager` (see ROLE_PERMISSIONS below
+    // and the migration that mirrors this in the database).
+    slug: PERMISSION.AUDIT_READ,
+    name: 'Read clinic activity log',
+    module: 'activity_log',
+  },
 ];
 
 export const ROLES: RoleDef[] = [
@@ -1514,6 +1524,9 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.BRANCHES_CREATE,
     PERMISSION.BRANCHES_UPDATE,
     PERMISSION.BRANCHES_DELETE,
+    // T192 (spec 014, US14, FR-U009) — clinic ownership only, alongside
+    // manager. Deliberately NOT granted to receptionist or doctor.
+    PERMISSION.AUDIT_READ,
   ],
 
   // Operations manager: appointments + customers + staff + reports.
@@ -1626,6 +1639,9 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PLATFORM_FILES_MANAGE,
     PERMISSION.BRANCHES_CREATE,
     PERMISSION.BRANCHES_UPDATE,
+    // T192 (spec 014, US14, FR-U009) — clinic management, alongside owner.
+    // Deliberately NOT granted to receptionist or doctor.
+    PERMISSION.AUDIT_READ,
   ],
 
   // Front desk: books appointments, manages customer records, WhatsApp replies.

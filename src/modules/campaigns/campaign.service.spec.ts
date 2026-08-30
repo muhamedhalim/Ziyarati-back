@@ -167,6 +167,28 @@ describe('CampaignService', () => {
       const created = campaigns.create.mock.calls[0][0];
       expect(created.audience_segment).toEqual({ id: 'seg-1' });
     });
+
+    // Regression guard — the DTO/service previously silently dropped these
+    // (validation would 400 an EMAIL campaign entirely; the fields were also
+    // never persisted even after being added to the DTO), found by the T140
+    // frontend implementation.
+    it('persists channel/email_subject/email_body, defaulting channel to WHATSAPP', async () => {
+      campaigns.save.mockResolvedValue({ id: 'camp1' });
+      campaigns.findOne.mockResolvedValue({ id: 'camp1' });
+      await service.create(TENANT, USER, { name: 'x' } as any);
+      expect(campaigns.create.mock.calls[0][0].channel).toBe('WHATSAPP');
+
+      await service.create(TENANT, USER, {
+        name: 'y',
+        channel: 'EMAIL',
+        email_subject: 'Hello',
+        email_body: 'Body',
+      } as any);
+      const created = campaigns.create.mock.calls[1][0];
+      expect(created.channel).toBe('EMAIL');
+      expect(created.email_subject).toBe('Hello');
+      expect(created.email_body).toBe('Body');
+    });
   });
 
   describe('update', () => {
@@ -217,6 +239,25 @@ describe('CampaignService', () => {
         service.update(TENANT, 'camp1', { segmentId: 'foreign-seg' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
       expect(campaigns.save).not.toHaveBeenCalled();
+    });
+
+    it('updates channel/email_subject/email_body when provided', async () => {
+      campaigns.findOne.mockResolvedValue({
+        id: 'camp1',
+        lifecycle: CampaignLifecycle.DRAFT,
+      });
+      await service.update(TENANT, 'camp1', {
+        channel: 'EMAIL',
+        email_subject: 'New subject',
+        email_body: 'New body',
+      } as any);
+      expect(campaigns.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: 'EMAIL',
+          email_subject: 'New subject',
+          email_body: 'New body',
+        }),
+      );
     });
   });
 

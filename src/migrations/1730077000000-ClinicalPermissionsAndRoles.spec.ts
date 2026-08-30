@@ -15,18 +15,59 @@ const sqlOf = async (
 };
 
 describe('ClinicalPermissionsAndRoles migration (T105 — BREAKING, FR-H010b/c/f)', () => {
-  // 2 permission inserts, 7 grant inserts, then the verification SELECT.
-  const CLEAN_RUN = [[], [], [], [], [], [], [], [], [], [{ c: 0 }]];
+  // 3 role inserts, 3 permission inserts (2 new clinical + the pre-existing
+  // crm.customers.read safety-net), 7 grant inserts, then the verification
+  // SELECT (14 calls total).
+  const CLEAN_RUN = [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [{ c: 0 }],
+  ];
+
+  it('seeds its three dependency roles first, guarded by NOT EXISTS (production-safety: base roles are never created by any other migration)', async () => {
+    const calls = await sqlOf(
+      (q) => new ClinicalPermissionsAndRoles1730077000000().up(q as never),
+      CLEAN_RUN,
+    );
+    const roleCalls = calls.slice(0, 3);
+    for (const call of roleCalls) {
+      expect(call.statement).toContain('INSERT INTO "roles"');
+      expect(call.statement).toContain('NOT EXISTS');
+    }
+    const slugs = roleCalls.map((c) => (c.params as [string, string])[1]);
+    expect(slugs.sort()).toEqual(['doctor', 'manager', 'owner']);
+  });
 
   it('seeds the two permission catalog rows', async () => {
     const calls = await sqlOf(
       (q) => new ClinicalPermissionsAndRoles1730077000000().up(q as never),
       CLEAN_RUN,
     );
-    expect(calls[0].statement).toContain('INSERT INTO "permissions"');
-    expect(calls[0].params).toContain('clinical.records.read');
-    expect(calls[1].statement).toContain('INSERT INTO "permissions"');
-    expect(calls[1].params).toContain('clinical.records.manage');
+    expect(calls[3].statement).toContain('INSERT INTO "permissions"');
+    expect(calls[3].params).toContain('clinical.records.read');
+    expect(calls[4].statement).toContain('INSERT INTO "permissions"');
+    expect(calls[4].params).toContain('clinical.records.manage');
+  });
+
+  it('also safety-nets the pre-existing crm.customers.read catalog row (never deleted on down — foundational, not owned by this migration)', async () => {
+    const calls = await sqlOf(
+      (q) => new ClinicalPermissionsAndRoles1730077000000().up(q as never),
+      CLEAN_RUN,
+    );
+    expect(calls[5].statement).toContain('INSERT INTO "permissions"');
+    expect(calls[5].params).toContain('crm.customers.read');
+    expect(calls[5].statement).toContain('ON CONFLICT');
   });
 
   it('grants exactly doctor+owner+manager the clinical slugs, and crm.customers.read to doctor only', async () => {
@@ -34,7 +75,7 @@ describe('ClinicalPermissionsAndRoles migration (T105 — BREAKING, FR-H010b/c/f
       (q) => new ClinicalPermissionsAndRoles1730077000000().up(q as never),
       CLEAN_RUN,
     );
-    const grantCalls = calls.slice(2, 9);
+    const grantCalls = calls.slice(6, 13);
     const pairs = grantCalls.map((c) => c.params as [string, string]);
 
     expect(pairs).toContainEqual(['doctor', 'clinical.records.read']);
@@ -54,7 +95,7 @@ describe('ClinicalPermissionsAndRoles migration (T105 — BREAKING, FR-H010b/c/f
       (q) => new ClinicalPermissionsAndRoles1730077000000().up(q as never),
       CLEAN_RUN,
     );
-    for (const call of calls.slice(2, 9)) {
+    for (const call of calls.slice(6, 13)) {
       expect(call.statement).toContain('NOT EXISTS');
     }
   });
@@ -63,7 +104,7 @@ describe('ClinicalPermissionsAndRoles migration (T105 — BREAKING, FR-H010b/c/f
     await expect(
       sqlOf(
         (q) => new ClinicalPermissionsAndRoles1730077000000().up(q as never),
-        [[], [], [], [], [], [], [], [], [], [{ c: 2 }]],
+        [[], [], [], [], [], [], [], [], [], [], [], [], [], [{ c: 2 }]],
       ),
     ).rejects.toThrow(/expected grant\(s\) are still missing/);
   });

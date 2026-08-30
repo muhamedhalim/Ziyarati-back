@@ -10,9 +10,12 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CampaignType } from '../../../entities/enums';
+import { CAMPAIGN_CHANNEL } from '../campaign.constants';
+import type { CampaignChannel } from '../campaign.constants';
 
 /**
  * Creates a campaign for the caller's tenant (starts in DRAFT). The tenant comes
@@ -81,6 +84,35 @@ export class CreateCampaignDto {
   @IsOptional()
   @IsUUID()
   segmentId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Delivery channel (Phase 11, US7). Defaults to WHATSAPP when omitted, matching every campaign created before this field existed.',
+    enum: CAMPAIGN_CHANNEL,
+    example: CAMPAIGN_CHANNEL.WHATSAPP,
+  })
+  @IsOptional()
+  @IsEnum(CAMPAIGN_CHANNEL)
+  channel?: CampaignChannel;
+
+  @ApiPropertyOptional({
+    description: 'Marketing email subject. Required when channel is EMAIL.',
+    maxLength: 200,
+  })
+  @ValidateIf((o) => o.channel === CAMPAIGN_CHANNEL.EMAIL)
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  email_subject?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Marketing email body (plain text — HTML-escaped by the renderer, never raw HTML). Required when channel is EMAIL.',
+  })
+  @ValidateIf((o) => o.channel === CAMPAIGN_CHANNEL.EMAIL)
+  @IsString()
+  @MinLength(1)
+  email_body?: string;
 
   @ApiPropertyOptional({
     description:

@@ -1078,6 +1078,7 @@ export class AnalyticsAggregationService {
   async branchPerformance(
     tenantId: string,
     branchIds: string[] | undefined,
+    currency: string,
     start: Date,
     end: Date,
   ): Promise<BranchPerformanceRow[]> {
@@ -1126,6 +1127,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      // FR-A021 — same currency-scoping as revenueTrend/sumBranchRevenue's
+      // sibling; a per-branch total must never silently mix currencies.
+      .andWhere('p.currency = :currency', { currency })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy('b.id');
     if (branchIds?.length) {
@@ -1155,6 +1159,7 @@ export class AnalyticsAggregationService {
   async channelPerformance(
     tenantId: string,
     branchId: string | undefined,
+    currency: string,
     start: Date,
     end: Date,
   ): Promise<ChannelPerformanceRow[]> {
@@ -1193,6 +1198,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      // FR-A021 — same currency-scoping as revenueTrend/sumBranchRevenue's
+      // sibling; a per-channel total must never silently mix currencies.
+      .andWhere('p.currency = :currency', { currency })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy('a.source');
     if (branchId) {

@@ -76,6 +76,7 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
   let customer3: string;
   let staffId: string;
   let restrictedUserId: string;
+  let a1Id: string;
 
   // Fixed range for every conformance assertion below.
   const FROM = '2031-02-01';
@@ -241,6 +242,7 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
         end_at: at('2031-02-02', '09:30'),
       }),
     );
+    a1Id = a1.id;
     const a2 = await appointments.save(
       makeAppt({
         customer: { id: customer2 } as Customer,
@@ -721,6 +723,70 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
       );
       expect(row!.appointments).toBe(r.total);
       expect(row!.completionRate).toBeCloseTo(r.completed / r.total, 6);
+    }
+  });
+
+  // ───────────────── FR-A021 — branch/channel performance must not silently ─────────────
+  // ───────────────── mix currencies (found during the T150 frontend build) ──────────────
+
+  it('performance/branches excludes a differently-currencied payment from revenue and reports it separately', async () => {
+    const payments = ds.getRepository(Payment);
+    const other = await payments.save(
+      payments.create({
+        tenant: { id: tenantId } as Tenant,
+        branch: { id: branchAId } as Branch,
+        appointment: { id: a1Id } as Appointment,
+        amount: 75,
+        currency: 'EUR',
+        status: PaymentStatus.PAID,
+        paid_at: at('2031-02-02', '09:40'),
+      }),
+    );
+    try {
+      const result = await advanced.performanceBranches(
+        tenantId,
+        TENANT_WIDE_USER,
+        { from: FROM, to: TO, page: 1, limit: 20 },
+      );
+      const rowA = result.data.find(
+        (d: { branchId: string }) => d.branchId === branchAId,
+      );
+      // Unchanged — still only the two USD payments (100 + 150), never + 75.
+      expect(rowA!.revenue).toBe(250);
+      expect(result.excludedOtherCurrency).toEqual({ count: 1, amount: 75 });
+    } finally {
+      await payments.delete({ id: other.id });
+    }
+  });
+
+  it('performance/channels excludes a differently-currencied payment from revenue and reports it separately', async () => {
+    const payments = ds.getRepository(Payment);
+    const other = await payments.save(
+      payments.create({
+        tenant: { id: tenantId } as Tenant,
+        branch: { id: branchAId } as Branch,
+        appointment: { id: a1Id } as Appointment,
+        amount: 42,
+        currency: 'EUR',
+        status: PaymentStatus.PAID,
+        paid_at: at('2031-02-02', '09:40'),
+      }),
+    );
+    try {
+      const result = await advanced.performanceChannels(
+        tenantId,
+        TENANT_WIDE_USER,
+        { from: FROM, to: TO, branchId: branchAId, page: 1, limit: 20 },
+      );
+      const manualRow = result.data.find(
+        (d: { source: string }) => d.source === AppointmentSource.MANUAL,
+      );
+      // a1 and a4 (both MANUAL, branch A) carry 100 + 150 USD — the 42 EUR
+      // payment on a1 must never be added to the total.
+      expect(manualRow!.revenue).toBe(250);
+      expect(result.excludedOtherCurrency).toEqual({ count: 1, amount: 42 });
+    } finally {
+      await payments.delete({ id: other.id });
     }
   });
 

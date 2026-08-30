@@ -87,9 +87,18 @@ describe('RBAC catalogue-coverage invariant (FND-010)', () => {
     expect(unexpectedlyUnenforced).toEqual([]);
   });
 
-  it('T003 (spec 014) declares audit.read as untriaged pending T190s enforcing controller', () => {
+  /**
+   * T193 (spec 014, US14) — `audit.read`'s enforcing controller
+   * (`ActivityLogController`) has now landed, so per
+   * `UNTRIAGED_COVERAGE_GAP_SLUGS`'s own rule ("remove each entry the moment
+   * its controller lands", the same precedent T112 set for
+   * clinical.records.*) it must be OUT of the untriaged set. It was declared
+   * in T003 as a known, documented gap pending exactly this controller.
+   */
+  it('T193 (spec 014, US14) removed audit.read from the untriaged set once its controller landed', () => {
     expect(PERMISSION.AUDIT_READ).toBe('audit.read');
-    expect(UNTRIAGED_COVERAGE_GAP_SLUGS.has(PERMISSION.AUDIT_READ)).toBe(true);
+    expect(UNTRIAGED_COVERAGE_GAP_SLUGS.has(PERMISSION.AUDIT_READ)).toBe(false);
+    expect(ENFORCED_KEYS.has('AUDIT_READ')).toBe(true);
   });
 
   /**
@@ -254,6 +263,41 @@ describe('RBAC branch permissions (FND-017 / M-07)', () => {
           PERMISSION.BRANCHES_DELETE,
         ]),
       );
+    }
+  });
+});
+
+/**
+ * T192 (spec 014, US14, FR-U009) — `audit.read`'s grant matrix. Only clinic
+ * ownership and management may reach the Activity UI; the surface must be
+ * absent from reception/doctor navigation, not merely refused at the API, so
+ * this proves the PERMISSION side of that absence.
+ */
+describe('audit.read grant matrix (T192, FR-U009)', () => {
+  it('is in the catalogue under the activity_log module', () => {
+    const def = PERMISSIONS.find((p) => p.slug === PERMISSION.AUDIT_READ);
+    expect(def).toBeDefined();
+    expect(def?.module).toBe('activity_log');
+  });
+
+  it('OWNER and MANAGER hold audit.read', () => {
+    expect(ROLE_PERMISSIONS[ROLE.OWNER] as string[]).toContain(
+      PERMISSION.AUDIT_READ,
+    );
+    expect(ROLE_PERMISSIONS[ROLE.MANAGER] as string[]).toContain(
+      PERMISSION.AUDIT_READ,
+    );
+  });
+
+  it('RECEPTIONIST, DOCTOR, CUSTOMER and AI_BOT do NOT hold audit.read', () => {
+    for (const role of [
+      ROLE.RECEPTIONIST,
+      ROLE.DOCTOR,
+      ROLE.CUSTOMER,
+      ROLE.AI_BOT,
+    ]) {
+      const grants = ROLE_PERMISSIONS[role] as string[];
+      expect(grants).not.toContain(PERMISSION.AUDIT_READ);
     }
   });
 });
