@@ -39,7 +39,8 @@ export class CreateCampaignDto {
   name!: string;
 
   @ApiPropertyOptional({
-    description: 'WhatsApp template to use for delivery. Must belong to the caller\'s tenant.',
+    description:
+      "WhatsApp template to use for delivery. Must belong to the caller's tenant.",
     format: 'uuid',
     example: 'a1b2c3d4-0000-0000-0000-000000000400',
   })
@@ -49,9 +50,9 @@ export class CreateCampaignDto {
 
   @ApiPropertyOptional({
     description:
-      'WhatsApp account (number) this campaign sends FROM. Must belong to the caller\'s tenant, ' +
+      "WhatsApp account (number) this campaign sends FROM. Must belong to the caller's tenant, " +
       'and the chosen template must live on the same WhatsApp Business Account. ' +
-      'Omit to use the clinic\'s default number at launch.',
+      "Omit to use the clinic's default number at launch.",
     format: 'uuid',
     example: 'a1b2c3d4-0000-0000-0000-000000000500',
   })
@@ -60,7 +61,8 @@ export class CreateCampaignDto {
   whatsappAccountId?: string;
 
   @ApiPropertyOptional({
-    description: 'Audience segmentation filter (JSON), e.g. `{ "tags": ["vip"], "lastVisitBeforeDays": 90 }`. Free-form, stored as JSONB.',
+    description:
+      'Audience segmentation filter (JSON), e.g. `{ "tags": ["vip"], "lastVisitBeforeDays": 90 }`. Free-form, stored as JSONB.',
     type: 'object',
     additionalProperties: true,
     example: { tags: ['vip'], inactiveDays: 90 },
@@ -70,7 +72,19 @@ export class CreateCampaignDto {
   segment?: Record<string, unknown>;
 
   @ApiPropertyOptional({
-    description: 'Optional scheduled send time (ISO-8601). Prefer the dedicated schedule endpoint; provided here it pre-fills the value while the campaign stays in DRAFT.',
+    description:
+      'Reusable rule-based audience (Phase 10, R8) — supersedes the free-form `segment` field above. ' +
+      "Must belong to the caller's tenant. Resolved live at fan-out, never frozen at attach time.",
+    format: 'uuid',
+    example: 'a1b2c3d4-0000-0000-0000-000000000600',
+  })
+  @IsOptional()
+  @IsUUID()
+  segmentId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional scheduled send time (ISO-8601). Prefer the dedicated schedule endpoint; provided here it pre-fills the value while the campaign stays in DRAFT.',
     example: '2026-07-01T09:00:00+03:00',
   })
   @IsOptional()
@@ -78,7 +92,8 @@ export class CreateCampaignDto {
   scheduledAt?: string;
 
   @ApiPropertyOptional({
-    description: 'Max messages dispatched per minute (rate limit). Defaults to 30.',
+    description:
+      'Max messages dispatched per minute (rate limit). Defaults to 30.',
     example: 30,
     minimum: 1,
     maximum: 10000,

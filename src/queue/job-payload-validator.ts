@@ -54,6 +54,8 @@ const REQUIRED_FIELDS: Partial<Record<string, RequiredFields>> = {
   [JOB.INTEGRATION_IMPORT]: { strings: ['importJobId'] },
   [JOB.INTEGRATION_SYNC]: { strings: ['syncJobId'] },
   [JOB.INTEGRATION_INBOUND]: { strings: ['inboundEventId'] },
+  [JOB.PLATFORM_WAITLIST_EVALUATE]: { strings: ['appointmentId'] },
+  [JOB.ANALYTICS_EXPORT_GENERATE]: { strings: ['exportJobId'] },
 };
 
 /**

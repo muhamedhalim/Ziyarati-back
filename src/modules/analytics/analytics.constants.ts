@@ -37,6 +37,16 @@ export const DASHBOARD_PERIOD = 'all_time';
 /** A conversation counts as "active" if it had a message within this window. */
 export const ACTIVE_CONVERSATION_WINDOW_DAYS = 7;
 
+/**
+ * Spec 014 (Clinic Platform Completion) — T146 (US11, contracts/clinic-
+ * surfaces.md §F11: "from, to (required, bounded)"). The widest `[from, to]`
+ * an advanced-analytics request may span — just over 2 years, matching the
+ * SC-033 performance budget's own range (2-year / 100k-appointment query
+ * under 3s), so the one range the perf test proves is fast is also the
+ * widest one a caller can ever actually request.
+ */
+export const MAX_ADVANCED_ANALYTICS_RANGE_DAYS = 731;
+
 /** Round monetary/decimal values to 2 dp (avoids float drift in sums). */
 export const round2 = (n: number): number => Math.round(Number(n) * 100) / 100;
 
@@ -92,6 +102,55 @@ export function monthDateBounds(monthStr: string): {
   return {
     firstDay: `${monthStr}-01`,
     lastDay: lastDate.toISOString().slice(0, 10),
+  };
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T145 (US11). Inclusive day count
+ * between two 'YYYY-MM-DD' strings (both UTC calendar days) — the single
+ * place range LENGTH is computed, so the bound check (T146) and the "prior
+ * period" derivation (FR-A007) always agree on what "N days" means.
+ */
+export function inclusiveDayCount(from: ReportDate, to: ReportDate): number {
+  const startMs = dayRangeUtc(from).start.getTime();
+  const endMs = dayRangeUtc(to).start.getTime();
+  return Math.round((endMs - startMs) / 86_400_000) + 1;
+}
+
+/**
+ * Every UTC calendar day in the inclusive [from, to] range, as 'YYYY-MM-DD'
+ * strings — the fixed day list a trend series is filled against so a day
+ * with zero appointments still appears as a real `0`, never a silently
+ * missing bucket (distinct from the whole-range "empty" case, FR-A020).
+ */
+export function enumerateDays(from: ReportDate, to: ReportDate): ReportDate[] {
+  const days: ReportDate[] = [];
+  const start = dayRangeUtc(from).start;
+  const count = inclusiveDayCount(from, to);
+  for (let i = 0; i < count; i++) {
+    const d = new Date(start.getTime() + i * 86_400_000);
+    days.push(d.toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T145 (US11, FR-A007). The "earlier
+ * period" retention is measured against: the SAME number of calendar days,
+ * immediately preceding `from` (so [priorFrom, priorTo] and [from, to] are
+ * adjacent, non-overlapping, and equal length).
+ */
+export function priorPeriod(
+  from: ReportDate,
+  to: ReportDate,
+): { priorFrom: ReportDate; priorTo: ReportDate } {
+  const lengthDays = inclusiveDayCount(from, to);
+  const fromStart = dayRangeUtc(from).start;
+  const priorToDate = new Date(fromStart.getTime() - 86_400_000);
+  const priorFromDate = new Date(fromStart.getTime() - lengthDays * 86_400_000);
+  return {
+    priorFrom: priorFromDate.toISOString().slice(0, 10),
+    priorTo: priorToDate.toISOString().slice(0, 10),
   };
 }
 

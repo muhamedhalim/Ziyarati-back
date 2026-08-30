@@ -6,11 +6,15 @@ import { CampaignService } from './campaign.service';
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
+import { CustomerSegment } from '../../entities/CRM/CustomerSegment';
 import { UsageService } from '../subscription-billing/usage.service';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { CampaignLifecycle } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 const USER = 'u1';
@@ -20,7 +24,12 @@ describe('CampaignService', () => {
   let campaigns: MockRepository;
   let templates: MockRepository;
   let accounts: MockRepository;
-  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock; incrementIfWithinLimit: jest.Mock };
+  let segments: MockRepository;
+  let usage: {
+    assertWithinLimit: jest.Mock;
+    increment: jest.Mock;
+    incrementIfWithinLimit: jest.Mock;
+  };
   let subscriptions: { assertBillableActionAllowed: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
@@ -30,12 +39,18 @@ describe('CampaignService', () => {
     templates.exists.mockResolvedValue(true);
     accounts = createMockRepository();
     accounts.exists.mockResolvedValue(true);
+    segments = createMockRepository();
+    segments.exists.mockResolvedValue(true);
     usage = {
       assertWithinLimit: jest.fn().mockResolvedValue(undefined),
       increment: jest.fn().mockResolvedValue(undefined),
-      incrementIfWithinLimit: jest.fn().mockResolvedValue({ applied: true, used: 0, limit: 100 }),
+      incrementIfWithinLimit: jest
+        .fn()
+        .mockResolvedValue({ applied: true, used: 0, limit: 100 }),
     };
-    subscriptions = { assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined) };
+    subscriptions = {
+      assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined),
+    };
     // FND-034: CampaignService.create now runs inside a transaction — the
     // fake manager routes getRepository(Campaign) back to the SAME mock repo
     // so existing assertions on campaigns.create/save keep working unchanged.
@@ -50,6 +65,7 @@ describe('CampaignService', () => {
         { provide: getRepositoryToken(Campaign), useValue: campaigns },
         { provide: getRepositoryToken(WhatsappTemplate), useValue: templates },
         { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
+        { provide: getRepositoryToken(CustomerSegment), useValue: segments },
         { provide: UsageService, useValue: usage },
         { provide: DataSource, useValue: dataSource },
         { provide: SubscriptionService, useValue: subscriptions },
@@ -64,7 +80,10 @@ describe('CampaignService', () => {
     it('enforces quota atomically (inside the transaction) and creates a DRAFT', async () => {
       campaigns.save.mockResolvedValueOnce({ id: 'camp1' });
       campaigns.findOne.mockResolvedValueOnce({ id: 'camp1' });
-      await service.create(TENANT, USER, { name: 'Promo', templateId: 'tpl1' } as any);
+      await service.create(TENANT, USER, {
+        name: 'Promo',
+        templateId: 'tpl1',
+      } as any);
       expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(
         TENANT,
         'CAMPAIGNS',
@@ -79,9 +98,16 @@ describe('CampaignService', () => {
     // the check now runs inside the same transaction as the insert — nothing
     // is created.
     it('refuses to create when the quota is exhausted', async () => {
-      usage.incrementIfWithinLimit.mockResolvedValueOnce({ applied: false, used: 100, limit: 100 });
+      usage.incrementIfWithinLimit.mockResolvedValueOnce({
+        applied: false,
+        used: 100,
+        limit: 100,
+      });
       await expect(
-        service.create(TENANT, USER, { name: 'Promo', templateId: 'tpl1' } as any),
+        service.create(TENANT, USER, {
+          name: 'Promo',
+          templateId: 'tpl1',
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
       expect(campaigns.save).not.toHaveBeenCalled();
     });
@@ -90,9 +116,13 @@ describe('CampaignService', () => {
     // covered too, not just the HTTP path (SubscriptionAccessGuard).
     it('refuses to create once grace-expired', async () => {
       subscriptions.assertBillableActionAllowed.mockRejectedValueOnce(
-        Object.assign(new Error('grace expired'), { code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED }),
+        Object.assign(new Error('grace expired'), {
+          code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
+        }),
       );
-      await expect(service.create(TENANT, USER, { name: 'x', templateId: 'tpl1' } as any)).rejects.toMatchObject({
+      await expect(
+        service.create(TENANT, USER, { name: 'x', templateId: 'tpl1' } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
       });
       expect(campaigns.save).not.toHaveBeenCalled();
@@ -100,35 +130,109 @@ describe('CampaignService', () => {
 
     it('rejects a template not in the tenant with 422', async () => {
       templates.exists.mockResolvedValueOnce(false);
-      await expect(service.create(TENANT, USER, { name: 'x', templateId: 'bad' } as any)).rejects.toMatchObject({
+      await expect(
+        service.create(TENANT, USER, { name: 'x', templateId: 'bad' } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
+    });
+
+    // T124 (FR-S001) — a segment from another tenant must never be attachable.
+    it('rejects a segment not in the tenant with 422, before any insert', async () => {
+      segments.exists.mockResolvedValueOnce(false);
+      await expect(
+        service.create(TENANT, USER, {
+          name: 'x',
+          segmentId: 'foreign-seg',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(campaigns.save).not.toHaveBeenCalled();
+    });
+
+    it('attaches a tenant-owned segment', async () => {
+      campaigns.save.mockResolvedValueOnce({ id: 'camp1' });
+      campaigns.findOne.mockResolvedValueOnce({ id: 'camp1' });
+      await service.create(TENANT, USER, {
+        name: 'x',
+        segmentId: 'seg-1',
+      } as any);
+      expect(segments.exists).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'seg-1',
+            tenant: { id: TENANT },
+          }),
+        }),
+      );
+      const created = campaigns.create.mock.calls[0][0];
+      expect(created.audience_segment).toEqual({ id: 'seg-1' });
     });
   });
 
   describe('update', () => {
     it('refuses to edit a non-editable lifecycle', async () => {
-      campaigns.findOne.mockResolvedValueOnce({ id: 'camp1', lifecycle: CampaignLifecycle.ACTIVE });
-      await expect(service.update(TENANT, 'camp1', { name: 'x' } as any)).rejects.toMatchObject({
+      campaigns.findOne.mockResolvedValueOnce({
+        id: 'camp1',
+        lifecycle: CampaignLifecycle.ACTIVE,
+      });
+      await expect(
+        service.update(TENANT, 'camp1', { name: 'x' } as any),
+      ).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
     });
 
     it('edits a DRAFT campaign', async () => {
-      campaigns.findOne.mockResolvedValue({ id: 'camp1', lifecycle: CampaignLifecycle.DRAFT });
+      campaigns.findOne.mockResolvedValue({
+        id: 'camp1',
+        lifecycle: CampaignLifecycle.DRAFT,
+      });
       await service.update(TENANT, 'camp1', { name: 'New' } as any);
-      expect(campaigns.save).toHaveBeenCalledWith(expect.objectContaining({ name: 'New' }));
+      expect(campaigns.save).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'New' }),
+      );
+    });
+
+    // T124 — existing (non-segment) campaigns are unaffected by the new field.
+    it('leaves audience_segment untouched when segmentId is not provided', async () => {
+      campaigns.findOne.mockResolvedValue({
+        id: 'camp1',
+        lifecycle: CampaignLifecycle.DRAFT,
+        audience_segment: { id: 'existing-seg' },
+      });
+      await service.update(TENANT, 'camp1', { name: 'New' } as any);
+      expect(campaigns.save).toHaveBeenCalledWith(
+        expect.objectContaining({ audience_segment: { id: 'existing-seg' } }),
+      );
+      expect(segments.exists).not.toHaveBeenCalled();
+    });
+
+    it('rejects attaching a segment from another tenant on update', async () => {
+      campaigns.findOne.mockResolvedValue({
+        id: 'camp1',
+        lifecycle: CampaignLifecycle.DRAFT,
+      });
+      segments.exists.mockResolvedValueOnce(false);
+      await expect(
+        service.update(TENANT, 'camp1', { segmentId: 'foreign-seg' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(campaigns.save).not.toHaveBeenCalled();
     });
   });
 
   describe('lifecycle ops', () => {
     it('findOne throws for an unknown campaign', async () => {
       campaigns.findOne.mockResolvedValueOnce(null);
-      await expect(service.findOne(TENANT, 'x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      await expect(service.findOne(TENANT, 'x')).rejects.toMatchObject({
+        code: ErrorCode.NOT_FOUND,
+      });
     });
 
     it('archive soft-hides and sets ARCHIVED lifecycle', async () => {
-      campaigns.findOne.mockResolvedValueOnce({ id: 'camp1', lifecycle: CampaignLifecycle.DRAFT });
+      campaigns.findOne.mockResolvedValueOnce({
+        id: 'camp1',
+        lifecycle: CampaignLifecycle.DRAFT,
+      });
       campaigns.save.mockImplementationOnce(async (c: any) => c);
       const res = await service.archive(TENANT, 'camp1');
       expect(res.lifecycle).toBe(CampaignLifecycle.ARCHIVED);
@@ -143,7 +247,13 @@ describe('CampaignService', () => {
 
     it('duplicate clones config into a new DRAFT', async () => {
       campaigns.findOne
-        .mockResolvedValueOnce({ id: 'camp1', name: 'Promo', type: 'PROMOTION', segment: {}, throttle_per_minute: 30 })
+        .mockResolvedValueOnce({
+          id: 'camp1',
+          name: 'Promo',
+          type: 'PROMOTION',
+          segment: {},
+          throttle_per_minute: 30,
+        })
         .mockResolvedValueOnce({ id: 'camp2' });
       campaigns.save.mockResolvedValueOnce({ id: 'camp2' });
       await service.duplicate(TENANT, USER, 'camp1');

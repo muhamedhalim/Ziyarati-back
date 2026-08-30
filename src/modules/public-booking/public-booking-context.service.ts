@@ -119,7 +119,9 @@ export class PublicBookingContextService {
         status: AI_CONVERSATION_STATUS.ACTIVE,
       }),
     );
-    await this.sessions.patch(guestTenantId, conv.id, { guestSubject: guestId });
+    await this.sessions.patch(guestTenantId, conv.id, {
+      guestSubject: guestId,
+    });
     return conv.id;
   }
 
@@ -244,22 +246,30 @@ export class PublicBookingContextService {
       return null;
     }
 
-    const lines: string[] = [this.today(session.timezone)];
     const stale: string[] = [];
+
+    // The clinic is resolved from the BRANCH when one is recorded (the branch is
+    // authoritative — it is what the booking tenant is derived from), and from
+    // the recorded clinic id otherwise. Resolved BEFORE the date line, because
+    // the branch's timezone is what "today" has to mean once one is selected.
+    const branch = session.selectedBranchId
+      ? await this.branchSnapshot(session.selectedBranchId)
+      : null;
+    if (session.selectedBranchId && !branch) stale.push('branch');
+
+    // The availability engine reads every `date` as the BRANCH's local calendar
+    // date, so that is the clock the model must resolve "tomorrow" against.
+    // Using the visitor's browser timezone here (the previous behaviour) puts
+    // the two a day apart whenever the visitor and the clinic are on opposite
+    // sides of midnight — the model then asks for a day the patient did not
+    // mean and is told there is nothing free.
+    const lines: string[] = [this.today(branch?.timezone ?? session.timezone)];
 
     if (session.selectedCityId) {
       const city = await this.cityName(session.selectedCityId);
       if (city) lines.push(`city: ${city} (id ${session.selectedCityId})`);
       else stale.push('city');
     }
-
-    // The clinic is resolved from the BRANCH when one is recorded (the branch is
-    // authoritative — it is what the booking tenant is derived from), and from
-    // the recorded clinic id otherwise.
-    const branch = session.selectedBranchId
-      ? await this.branchSnapshot(session.selectedBranchId)
-      : null;
-    if (session.selectedBranchId && !branch) stale.push('branch');
 
     const clinicId = branch?.tenantId ?? session.selectedClinicId;
     if (clinicId) {
@@ -385,9 +395,10 @@ export class PublicBookingContextService {
     address: string | null;
     city: string | null;
     tenantId: string;
+    timezone: string;
   } | null> {
     const rows = await this.dataSource.query(
-      `SELECT b.id, b.name, b.address, b."tenantId" AS tenant_id,
+      `SELECT b.id, b.name, b.address, b."tenantId" AS tenant_id, b.timezone,
               COALESCE(c.name_ar, c.name_en) AS city
          FROM branches b
          JOIN tenants t ON t.id = b."tenantId"
@@ -411,6 +422,7 @@ export class PublicBookingContextService {
           address: (row.address as string) ?? null,
           city: (row.city as string) ?? null,
           tenantId: row.tenant_id as string,
+          timezone: (row.timezone as string) || 'UTC',
         }
       : null;
   }

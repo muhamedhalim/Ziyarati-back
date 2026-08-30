@@ -76,6 +76,32 @@ describe('PublicBookingContextService.describeSelection', () => {
     await expect(f.describe()).resolves.toContain('Asia/Riyadh');
   });
 
+  it("prefers the BRANCH's timezone over the visitor's once a branch is selected", async () => {
+    // The availability engine reads every `date` as the BRANCH's local calendar
+    // date. Resolving "tomorrow" against the visitor's browser zone instead put
+    // the two a day apart whenever they sat on opposite sides of midnight — the
+    // model then asked for a day the patient never meant and was told there was
+    // nothing free.
+    const f = build(
+      { selectedBranchId: 'branch-1', timezone: 'America/New_York' },
+      {
+        branch: [{ ...BRANCH, timezone: 'Asia/Riyadh' }],
+        clinic: [{ name: 'noor' }],
+      },
+    );
+
+    const block = await f.describe();
+
+    expect(block).toContain('Asia/Riyadh');
+    expect(block).not.toContain('America/New_York');
+  });
+
+  it("still uses the visitor's timezone while no branch is selected", async () => {
+    const f = build({ timezone: 'America/New_York' });
+
+    await expect(f.describe()).resolves.toContain('America/New_York');
+  });
+
   it('falls back to UTC rather than failing on an unusable timezone', async () => {
     const f = build({ timezone: 'Not/AZone' });
 

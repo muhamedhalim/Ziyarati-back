@@ -425,6 +425,15 @@ export const validate = (config: Record<string, unknown>) => {
     EMAIL_DEFAULT_LOCALE: Joi.string().default('en'),
     // Base URL used to build links inside emails (falls back to FRONTEND_ORIGIN).
     APP_URL: Joi.string().allow('', null),
+    // Phase 11 (US7, T134) — HMAC secret for the stateless unsubscribe token
+    // (identifies a (tenant, email) pair only). Optional: falls back to
+    // JWT_ACCESS_SECRET (always required/present) so no new mandatory
+    // deployment secret is introduced; set explicitly to use a dedicated key.
+    EMAIL_UNSUBSCRIBE_SECRET: Joi.string().allow('', null),
+    // Phase 11 (US7, T136) — HMAC secret configured on the Resend webhook
+    // endpoint. Unset means bounce/complaint feedback is rejected outright
+    // (fail closed), same posture as META_APP_SECRET/MOYASAR_WEBHOOK_SECRET.
+    RESEND_WEBHOOK_SECRET: Joi.string().allow('', null),
 
     // ── Localization (CAP-I18N) ────────────────────────────────────────────
     // Platform-wide default locale (AD-09 step 4: the last fallback in the

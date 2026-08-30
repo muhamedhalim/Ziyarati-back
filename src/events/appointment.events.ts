@@ -76,6 +76,19 @@ export class AppointmentRescheduledEvent {
     readonly appointmentId: string,
     readonly customerId: string,
     readonly newStartAt: Date,
+    /**
+     * Spec 014 (Clinic Platform Completion) — T159 (US9, FR-W005). The
+     * appointment row's own `start_at`/`end_at` now hold the NEW time, so
+     * they can no longer answer "what time was just freed?" — these four
+     * fields carry that snapshot, captured at the reschedule call site
+     * before the row was updated, for `WaitlistListener` to enqueue
+     * matching against. Optional (trailing) so the existing single-emit-site
+     * contract widens without breaking any other constructor call.
+     */
+    readonly oldStartAt?: Date,
+    readonly oldEndAt?: Date,
+    readonly branchId?: string,
+    readonly staffId?: string,
   ) {}
 }
 

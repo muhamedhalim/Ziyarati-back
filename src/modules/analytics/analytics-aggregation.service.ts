@@ -5,12 +5,14 @@ import { Between, MoreThanOrEqual, Repository } from 'typeorm';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { AppointmentService as AppointmentServiceEntity } from '../../entities/Calendar&Appointments/AppointmentService';
+import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
 import { Payment } from '../../entities/Payments/Payment';
 import { Customer } from '../../entities/CRM/Customer';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { CustomerReview } from '../../entities/CRM/CustomerReview';
 import {
+  AppointmentActionOrigin,
   AppointmentStatus,
   AppointmentSource,
   PaymentStatus,
@@ -27,6 +29,62 @@ import {
   monthRangeUtc,
   round2,
 } from './analytics.constants';
+
+/** One UTC calendar day's appointment-volume bucket (T145, FR-A004). */
+export interface AppointmentTrendDay {
+  date: string;
+  total: number;
+  completed: number;
+  cancelled: number;
+  no_show: number;
+}
+
+/** One UTC calendar day's settled-revenue bucket (T145, FR-A003). */
+export interface RevenueTrendDay {
+  date: string;
+  revenue: number;
+}
+
+/** T145, FR-A005/FR-A006 — cancellation/no-show/completion source counts. */
+export interface RatesRaw {
+  total: number;
+  completed: number;
+  cancelled: number;
+  no_show: number;
+  cancelledByPatient: number;
+  cancelledByClinic: number;
+}
+
+/** T145, FR-A007/FR-A008 — retention + repeat-visit source counts. */
+export interface RetentionRaw {
+  retainedPatients: number;
+  priorPeriodPatients: number;
+  repeatDistribution: { visits: number; patients: number }[];
+}
+
+/** T145, FR-A009 — per-service source rows (unpaginated; caller pages). */
+export interface ServicePerformanceRow {
+  serviceId: string;
+  name: string;
+  appointments: number;
+  revenue: number;
+}
+
+/** T145, FR-A011 — per-branch source rows (unpaginated; caller pages). */
+export interface BranchPerformanceRow {
+  branchId: string;
+  name: string;
+  appointments: number;
+  revenue: number;
+}
+
+/** T145, FR-A012 — per-channel source rows (always all 4 `AppointmentSource`s). */
+export interface ChannelPerformanceRow {
+  source: AppointmentSource;
+  appointments: number;
+  completed: number;
+  revenue: number;
+}
 
 export interface DailyMetrics {
   total_appointments: number;
@@ -126,6 +184,8 @@ export class AnalyticsAggregationService {
     private readonly appointmentServices: Repository<AppointmentServiceEntity>,
     @InjectRepository(StaffProfile)
     private readonly staffProfiles: Repository<StaffProfile>,
+    @InjectRepository(AppointmentCancellation)
+    private readonly appointmentCancellations: Repository<AppointmentCancellation>,
   ) {}
 
   // ─────────────────────────────── Branches ──────────────────────────────── //
@@ -676,6 +736,481 @@ export class AnalyticsAggregationService {
     return rows.map((r) => ({
       staffId: r.staffId,
       avg_rating: round2(Number(r.avg_rating)),
+    }));
+  }
+
+  // ═══════════════ Advanced analytics (spec 014, US11, T145) ═══════════════ //
+  //
+  // Every method below is RANGE-scoped ([start, end) as real `Date` instants,
+  // never a fixed row count) and OPTIONALLY branch-scoped — the two things
+  // R13 found missing from the existing per-branch daily-report trend. Revenue
+  // stays defined as settled (PAID) `Payment` rows exactly as `sumBranchRevenue`
+  // above computes it; nothing here introduces a second revenue definition.
+
+  /** FR-A004 — appointment-volume trend, one row per UTC day WITH data. */
+  async appointmentsTrend(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<AppointmentTrendDay[]> {
+    const dateExpr = `to_char(a.start_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    let qb = this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .select(dateExpr, 'date')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :completed)', 'completed')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :cancelled)', 'cancelled')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :noShow)', 'no_show')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .setParameters({
+        completed: AppointmentStatus.COMPLETED,
+        cancelled: AppointmentStatus.CANCELLED,
+        noShow: AppointmentStatus.NO_SHOW,
+      })
+      .groupBy(dateExpr)
+      .orderBy(dateExpr, 'ASC');
+
+    if (branchId) {
+      qb = qb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+
+    const rows = await qb.getRawMany<{
+      date: string;
+      total: string;
+      completed: string;
+      cancelled: string;
+      no_show: string;
+    }>();
+    return rows.map((r) => ({
+      date: r.date,
+      total: Number(r.total),
+      completed: Number(r.completed),
+      cancelled: Number(r.cancelled),
+      no_show: Number(r.no_show),
+    }));
+  }
+
+  /** FR-A003 — settled-revenue trend, one row per UTC day WITH data. */
+  async revenueTrend(
+    tenantId: string,
+    branchId: string | undefined,
+    currency: string,
+    start: Date,
+    end: Date,
+  ): Promise<RevenueTrendDay[]> {
+    const dateExpr = `to_char(p.paid_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    let qb = this.payments
+      .createQueryBuilder('p')
+      .innerJoin('p.tenant', 't')
+      .select(dateExpr, 'date')
+      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.currency = :currency', { currency })
+      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .groupBy(dateExpr)
+      .orderBy(dateExpr, 'ASC');
+
+    if (branchId) {
+      qb = qb
+        .innerJoin('p.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+
+    const rows = await qb.getRawMany<{ date: string; revenue: string }>();
+    return rows.map((r) => ({
+      date: r.date,
+      revenue: round2(Number(r.revenue)),
+    }));
+  }
+
+  /**
+   * FR-A021 — PAID payments in range whose currency does NOT match the
+   * clinic's configured currency, so the caller can surface a mixed-currency
+   * notice instead of silently summing across currencies.
+   */
+  async countOtherCurrencyRevenue(
+    tenantId: string,
+    branchId: string | undefined,
+    currency: string,
+    start: Date,
+    end: Date,
+  ): Promise<{ count: number; amount: number }> {
+    let qb = this.payments
+      .createQueryBuilder('p')
+      .innerJoin('p.tenant', 't')
+      .select('COUNT(*)', 'count')
+      .addSelect('COALESCE(SUM(p.amount), 0)', 'amount')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.currency != :currency', { currency })
+      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end });
+
+    if (branchId) {
+      qb = qb
+        .innerJoin('p.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+
+    const row = await qb.getRawOne<{ count: string; amount: string }>();
+    return {
+      count: Number(row?.count ?? 0),
+      amount: round2(Number(row?.amount ?? 0)),
+    };
+  }
+
+  /**
+   * FR-A005/FR-A006 — total/completed/cancelled/no-show counts for
+   * appointments SCHEDULED TO OCCUR in the period (by `start_at`, any
+   * status), plus the cancelled subset split by `AppointmentCancellation.origin`
+   * (T019/T020) for the patient-vs-clinic breakdown.
+   */
+  async computeRates(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<RatesRaw> {
+    let countsQb = this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .select('COUNT(*)', 'total')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :completed)', 'completed')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :cancelled)', 'cancelled')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :noShow)', 'no_show')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .setParameters({
+        completed: AppointmentStatus.COMPLETED,
+        cancelled: AppointmentStatus.CANCELLED,
+        noShow: AppointmentStatus.NO_SHOW,
+      });
+    if (branchId) {
+      countsQb = countsQb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+    const counts = await countsQb.getRawOne<{
+      total: string;
+      completed: string;
+      cancelled: string;
+      no_show: string;
+    }>();
+
+    let originQb = this.appointmentCancellations
+      .createQueryBuilder('c')
+      .innerJoin('c.tenant', 't')
+      .innerJoin('c.appointment', 'a')
+      .select('c.origin', 'origin')
+      .addSelect('COUNT(*)', 'count')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.status = :cancelled', {
+        cancelled: AppointmentStatus.CANCELLED,
+      })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .groupBy('c.origin');
+    if (branchId) {
+      originQb = originQb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+    const originRows = await originQb.getRawMany<{
+      origin: string;
+      count: string;
+    }>();
+    const byOrigin = new Map(
+      originRows.map((r) => [r.origin, Number(r.count)]),
+    );
+
+    return {
+      total: Number(counts?.total ?? 0),
+      completed: Number(counts?.completed ?? 0),
+      cancelled: Number(counts?.cancelled ?? 0),
+      no_show: Number(counts?.no_show ?? 0),
+      cancelledByPatient: byOrigin.get(AppointmentActionOrigin.PATIENT) ?? 0,
+      cancelledByClinic: byOrigin.get(AppointmentActionOrigin.STAFF) ?? 0,
+    };
+  }
+
+  /**
+   * FR-A007/FR-A008 — retention + repeat-visit distribution, computed
+   * entirely in Postgres via `EXISTS`/`GROUP BY` rather than pulling patient
+   * id lists into application memory (which would not scale to a clinic with
+   * a large patient base).
+   */
+  async computeRetention(
+    tenantId: string,
+    branchId: string | undefined,
+    priorStart: Date,
+    priorEnd: Date,
+    chosenStart: Date,
+    chosenEnd: Date,
+  ): Promise<RetentionRaw> {
+    const branchRetentionClause = branchId ? 'AND a."branchId" = $7' : '';
+    const branchRetentionExistsClause = branchId
+      ? 'AND a2."branchId" = $7'
+      : '';
+    const retentionParams: unknown[] = [
+      tenantId,
+      AppointmentStatus.COMPLETED,
+      priorStart,
+      priorEnd,
+      chosenStart,
+      chosenEnd,
+      ...(branchId ? [branchId] : []),
+    ];
+    const [retentionRow] = await this.appointments.manager.query<
+      { prior_count: number; retained_count: number }[]
+    >(
+      `WITH prior AS (
+         SELECT DISTINCT a."customerId" AS cid
+         FROM appointments a
+         WHERE a."tenantId" = $1 AND a.status = $2 AND a.start_at BETWEEN $3 AND $4
+         ${branchRetentionClause}
+       )
+       SELECT
+         (SELECT COUNT(*) FROM prior)::int AS prior_count,
+         (SELECT COUNT(*) FROM prior p WHERE EXISTS (
+            SELECT 1 FROM appointments a2
+            WHERE a2."tenantId" = $1 AND a2.status = $2 AND a2."customerId" = p.cid
+              AND a2.start_at BETWEEN $5 AND $6
+              ${branchRetentionExistsClause}
+         ))::int AS retained_count`,
+      retentionParams,
+    );
+
+    const branchDistClause = branchId ? 'AND a."branchId" = $5' : '';
+    const distParams: unknown[] = [
+      tenantId,
+      AppointmentStatus.COMPLETED,
+      chosenStart,
+      chosenEnd,
+      ...(branchId ? [branchId] : []),
+    ];
+    const distRows = await this.appointments.manager.query<
+      { visits: string; patients: string }[]
+    >(
+      `SELECT visits, COUNT(*)::int AS patients FROM (
+         SELECT a."customerId" AS cid, COUNT(*) AS visits
+         FROM appointments a
+         WHERE a."tenantId" = $1 AND a.status = $2 AND a.start_at BETWEEN $3 AND $4
+         ${branchDistClause}
+         GROUP BY a."customerId"
+       ) t
+       GROUP BY visits`,
+      distParams,
+    );
+
+    let one = 0;
+    let two = 0;
+    let threeOrMore = 0;
+    for (const r of distRows) {
+      const visits = Number(r.visits);
+      const patients = Number(r.patients);
+      if (visits === 1) one += patients;
+      else if (visits === 2) two += patients;
+      else threeOrMore += patients;
+    }
+
+    return {
+      retainedPatients: Number(retentionRow?.retained_count ?? 0),
+      priorPeriodPatients: Number(retentionRow?.prior_count ?? 0),
+      repeatDistribution: [
+        { visits: 1, patients: one },
+        { visits: 2, patients: two },
+        { visits: 3, patients: threeOrMore }, // "3 or more" bucket
+      ],
+    };
+  }
+
+  /** FR-A009 — per-service booking count + booked line-item price, unpaged. */
+  async servicePerformance(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<ServicePerformanceRow[]> {
+    let qb = this.appointmentServices
+      .createQueryBuilder('aps')
+      .innerJoin('aps.appointment', 'a')
+      .innerJoin('aps.service', 's')
+      .innerJoin('a.tenant', 't')
+      .select('s.id', 'serviceId')
+      .addSelect('s.name', 'name')
+      .addSelect('COUNT(*)', 'count')
+      .addSelect('COALESCE(SUM(aps.price), 0)', 'revenue')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .groupBy('s.id')
+      .addGroupBy('s.name')
+      .orderBy('count', 'DESC');
+
+    if (branchId) {
+      qb = qb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+
+    const rows = await qb.getRawMany<{
+      serviceId: string;
+      name: string;
+      count: string;
+      revenue: string;
+    }>();
+    return rows.map((r) => ({
+      serviceId: r.serviceId,
+      name: r.name,
+      appointments: Number(r.count),
+      revenue: round2(Number(r.revenue)),
+    }));
+  }
+
+  /**
+   * FR-A011 — per-branch appointment count + settled revenue, unpaged, one
+   * row for EVERY branch in scope (even zero-activity ones — a branch never
+   * silently disappears from the comparison).
+   */
+  async branchPerformance(
+    tenantId: string,
+    branchIds: string[] | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<BranchPerformanceRow[]> {
+    let allBranchesQb = this.branches
+      .createQueryBuilder('b')
+      .innerJoin('b.tenant', 't')
+      .select('b.id', 'branchId')
+      .addSelect('b.name', 'name')
+      .where('t.id = :tenantId', { tenantId })
+      .orderBy('b.name', 'ASC');
+    if (branchIds?.length) {
+      allBranchesQb = allBranchesQb.andWhere('b.id IN (:...branchIds)', {
+        branchIds,
+      });
+    }
+    const allBranches = await allBranchesQb.getRawMany<{
+      branchId: string;
+      name: string;
+    }>();
+
+    let apptQb = this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .innerJoin('a.branch', 'b')
+      .select('b.id', 'branchId')
+      .addSelect('COUNT(*)', 'count')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .groupBy('b.id');
+    if (branchIds?.length) {
+      apptQb = apptQb.andWhere('b.id IN (:...branchIds)', { branchIds });
+    }
+    const apptRows = await apptQb.getRawMany<{
+      branchId: string;
+      count: string;
+    }>();
+    const apptByBranch = new Map(
+      apptRows.map((r) => [r.branchId, Number(r.count)]),
+    );
+
+    let payQb = this.payments
+      .createQueryBuilder('p')
+      .innerJoin('p.tenant', 't')
+      .innerJoin('p.branch', 'b')
+      .select('b.id', 'branchId')
+      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .groupBy('b.id');
+    if (branchIds?.length) {
+      payQb = payQb.andWhere('b.id IN (:...branchIds)', { branchIds });
+    }
+    const payRows = await payQb.getRawMany<{
+      branchId: string;
+      revenue: string;
+    }>();
+    const revenueByBranch = new Map(
+      payRows.map((r) => [r.branchId, round2(Number(r.revenue))]),
+    );
+
+    return allBranches.map((b) => ({
+      branchId: b.branchId,
+      name: b.name,
+      appointments: apptByBranch.get(b.branchId) ?? 0,
+      revenue: revenueByBranch.get(b.branchId) ?? 0,
+    }));
+  }
+
+  /**
+   * FR-A012 — per-`AppointmentSource` appointment/completed counts + settled
+   * revenue. Always returns all 4 sources, even at zero, matching the
+   * dashboard's own booking-by-source convention (never a silent gap).
+   */
+  async channelPerformance(
+    tenantId: string,
+    branchId: string | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<ChannelPerformanceRow[]> {
+    let apptQb = this.appointments
+      .createQueryBuilder('a')
+      .innerJoin('a.tenant', 't')
+      .select('a.source', 'source')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect('COUNT(*) FILTER (WHERE a.status = :completed)', 'completed')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('a.start_at BETWEEN :start AND :end', { start, end })
+      .setParameters({ completed: AppointmentStatus.COMPLETED })
+      .groupBy('a.source');
+    if (branchId) {
+      apptQb = apptQb
+        .innerJoin('a.branch', 'b')
+        .andWhere('b.id = :branchId', { branchId });
+    }
+    const apptRows = await apptQb.getRawMany<{
+      source: AppointmentSource;
+      total: string;
+      completed: string;
+    }>();
+    const apptBySource = new Map(
+      apptRows.map((r) => [
+        r.source,
+        { total: Number(r.total), completed: Number(r.completed) },
+      ]),
+    );
+
+    let payQb = this.payments
+      .createQueryBuilder('p')
+      .innerJoin('p.tenant', 't')
+      .innerJoin('p.appointment', 'a')
+      .select('a.source', 'source')
+      .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
+      .where('t.id = :tenantId', { tenantId })
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
+      .groupBy('a.source');
+    if (branchId) {
+      payQb = payQb.andWhere('a."branchId" = :branchId', { branchId });
+    }
+    const payRows = await payQb.getRawMany<{
+      source: AppointmentSource;
+      revenue: string;
+    }>();
+    const revenueBySource = new Map(
+      payRows.map((r) => [r.source, round2(Number(r.revenue))]),
+    );
+
+    return Object.values(AppointmentSource).map((source) => ({
+      source,
+      appointments: apptBySource.get(source)?.total ?? 0,
+      completed: apptBySource.get(source)?.completed ?? 0,
+      revenue: revenueBySource.get(source) ?? 0,
     }));
   }
 }

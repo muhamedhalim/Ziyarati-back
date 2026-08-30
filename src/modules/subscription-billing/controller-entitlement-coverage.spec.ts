@@ -108,6 +108,13 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'notifications/notification-webhook.controller.ts',
   'payments/payment-webhook.controller.ts',
   'whatsapp/whatsapp-webhook.controller.ts',
+  // Phase 11 (US7, T134/T136, spec 014) — a recipient must be able to
+  // unsubscribe regardless of the clinic's billing state (see the table
+  // above); the Resend bounce/complaint feedback endpoint is authenticated
+  // by HMAC signature (T136), with no tenant principal, exactly like the
+  // other `@Public()` webhook ingress rows above.
+  'email/unsubscribe.controller.ts',
+  'email/webhooks/email-webhook.controller.ts',
 ]);
 
 function controllerFiles(dir: string, out: string[] = []): string[] {

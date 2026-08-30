@@ -160,7 +160,10 @@ describe('list_clinic_branches', () => {
 
   it('is recorded in ai_tool_calls', async () => {
     const { service, dataSource } = build({});
-    await service.execute(CTX_AUTHENTICATED, call(AI_TOOL.LIST_CLINIC_BRANCHES));
+    await service.execute(
+      CTX_AUTHENTICATED,
+      call(AI_TOOL.LIST_CLINIC_BRANCHES),
+    );
     expect(
       dataSource.query.mock.calls.some(([sql]: [string]) =>
         /INSERT INTO ai_tool_calls/.test(sql),
@@ -200,7 +203,9 @@ describe.each([
     expect(result.success).toBe(false);
     expect(String(result.error)).toMatch(/list_clinic_branches/);
     expect(branches.findOne).not.toHaveBeenCalled();
-    expect((discovery as never as Record<string, jest.Mock>)[discoveryMethod]).not.toHaveBeenCalled();
+    expect(
+      (discovery as never as Record<string, jest.Mock>)[discoveryMethod],
+    ).not.toHaveBeenCalled();
   });
 
   it('CROSS-TENANT: a branchId belonging to another tenant is refused, never exposes data, and is checked against ctx.tenantId only', async () => {
@@ -227,7 +232,9 @@ describe.each([
     // The refusal must be a plain error, not silently-empty data that reads
     // as "this branch has none" — and the underlying discovery call for
     // another tenant's branch must never even run.
-    expect((discovery as never as Record<string, jest.Mock>)[discoveryMethod]).not.toHaveBeenCalled();
+    expect(
+      (discovery as never as Record<string, jest.Mock>)[discoveryMethod],
+    ).not.toHaveBeenCalled();
     expect(recordedFailedPermanent(dataSource)).toBe(true);
   });
 

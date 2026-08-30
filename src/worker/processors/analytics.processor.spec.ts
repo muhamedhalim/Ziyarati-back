@@ -12,6 +12,7 @@ import { JOB } from '../../queue/queue.constants';
 import { InvoiceDocumentService } from '../../modules/payments/invoice-document.service';
 import { DocumentRendererService } from '../../modules/documents/document-renderer.service';
 import { StorageService } from '../../modules/storage/storage.service';
+import { ReportExportService } from '../../modules/report-export/report-export.service';
 
 describe('AnalyticsProcessor', () => {
   let processor: AnalyticsProcessor;
@@ -32,6 +33,7 @@ describe('AnalyticsProcessor', () => {
   };
   let renderer: { render: jest.Mock };
   let storage: { upload: jest.Mock };
+  let reportExport: { generateExport: jest.Mock };
 
   beforeEach(() => {
     dashboard = { refresh: jest.fn().mockResolvedValue({ ok: true }) };
@@ -64,6 +66,9 @@ describe('AnalyticsProcessor', () => {
     storage = {
       upload: jest.fn().mockResolvedValue({ storageKey: 't1/invoices/x.pdf' }),
     };
+    reportExport = {
+      generateExport: jest.fn().mockResolvedValue(undefined),
+    };
     processor = new AnalyticsProcessor(
       dashboard as unknown as DashboardMetricService,
       daily as unknown as DailyReportService,
@@ -76,6 +81,7 @@ describe('AnalyticsProcessor', () => {
       invoiceDocuments as unknown as InvoiceDocumentService,
       renderer as unknown as DocumentRendererService,
       storage as unknown as StorageService,
+      reportExport as unknown as ReportExportService,
     );
   });
 
@@ -193,6 +199,29 @@ describe('AnalyticsProcessor', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe('T183 — analytics.exportGenerate job routing', () => {
+    it('delegates to ReportExportService.generateExport, never touching report generation', async () => {
+      await processor.process({
+        name: JOB.ANALYTICS_EXPORT_GENERATE,
+        data: { tenantId: 't1', exportJobId: 'job-1' },
+      } as any);
+
+      expect(reportExport.generateExport).toHaveBeenCalledWith('t1', 'job-1');
+      expect(daily.generate).not.toHaveBeenCalled();
+      expect(monthly.generate).not.toHaveBeenCalled();
+    });
+
+    it('throws (payload guard) when exportJobId is missing, never reaching the service', async () => {
+      await expect(
+        processor.process({
+          name: JOB.ANALYTICS_EXPORT_GENERATE,
+          data: { tenantId: 't1' },
+        } as any),
+      ).rejects.toThrow();
+      expect(reportExport.generateExport).not.toHaveBeenCalled();
+    });
   });
 
   describe('T095 — analytics.invoiceDocument job routing', () => {

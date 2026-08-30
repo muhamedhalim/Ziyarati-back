@@ -61,6 +61,19 @@ export class CampaignRecipient {
   @Column({ type: 'varchar', length: 255, nullable: true, unique: true })
   provider_ref?: string | null;
 
+  /**
+   * Phase 11 (US7, T130/T138) — the resolved email address a EMAIL-channel
+   * send actually went to, snapshotted at dispatch time (mirrors how
+   * `provider_ref` snapshots the provider's own reference). NEVER the
+   * source of truth for WHO to send to or WHETHER consent/suppression
+   * allows it — `CampaignDispatchService` always resolves and checks
+   * against the live `customer.email`; this column only records what was
+   * actually used, for analytics and for the bounce/complaint webhook (T136)
+   * to resolve a suppression address without trusting the webhook payload.
+   */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  email?: string | null;
+
   @Column({ type: 'enum', enum: FailureClass, nullable: true })
   failure_class?: FailureClass | null;
 

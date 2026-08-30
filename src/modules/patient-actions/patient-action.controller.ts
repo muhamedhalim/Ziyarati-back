@@ -26,6 +26,7 @@ import {
   PATIENT_ACTION_LINK_CONFIRM_THROTTLE,
   PATIENT_ACTION_LINK_RESOLVE_THROTTLE,
 } from './patient-action.constants';
+import { WaitlistOfferService } from '../waitlist/waitlist-offer.service';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T031 (US1), contracts/
@@ -55,10 +56,11 @@ export class PatientActionController {
       link.tenant.id,
       appointment,
     );
-    const rescheduleEligibility = await this.reschedule.describeRescheduleEligibility(
-      link.tenant.id,
-      appointment,
-    );
+    const rescheduleEligibility =
+      await this.reschedule.describeRescheduleEligibility(
+        link.tenant.id,
+        appointment,
+      );
 
     return {
       clinicName: link.tenant.name,
@@ -80,7 +82,8 @@ export class PatientActionController {
       // switchable) — when the two genuinely disagree, cancel's reason
       // wins here since `allowed.cancel`/`allowed.reschedule` remain the
       // authoritative per-action flags for the frontend either way.
-      blockedReason: cancelEligibility.blockedReason ?? rescheduleEligibility.blockedReason,
+      blockedReason:
+        cancelEligibility.blockedReason ?? rescheduleEligibility.blockedReason,
       clinicContact: {
         phone: link.tenant.contact_phone,
         email: link.tenant.contact_email,
@@ -96,7 +99,8 @@ export class PatientActionController {
     @Query() query: RescheduleAvailabilityQueryDto,
   ) {
     const link = await this.links.resolve(token);
-    if (!link || link.purpose !== PatientActionPurpose.RESCHEDULE) this.throwNotFound();
+    if (!link || link.purpose !== PatientActionPurpose.RESCHEDULE)
+      this.throwNotFound();
 
     return this.reschedule.getAvailability(
       link.tenant.id,
@@ -116,7 +120,8 @@ export class PatientActionController {
     @Body() dto: ConfirmRescheduleDto,
   ) {
     const link = await this.links.resolve(token);
-    if (!link || link.purpose !== PatientActionPurpose.RESCHEDULE) this.throwNotFound();
+    if (!link || link.purpose !== PatientActionPurpose.RESCHEDULE)
+      this.throwNotFound();
 
     try {
       const rescheduled = await this.reschedule.rescheduleViaLink(
@@ -156,9 +161,13 @@ export class PatientActionController {
   @Throttle(PATIENT_ACTION_LINK_CONFIRM_THROTTLE)
   @Post(':token/cancel')
   @HttpCode(HttpStatus.OK)
-  async cancel(@Param('token') token: string, @Body() dto: ConfirmCancellationDto) {
+  async cancel(
+    @Param('token') token: string,
+    @Body() dto: ConfirmCancellationDto,
+  ) {
     const link = await this.links.resolve(token);
-    if (!link || link.purpose !== PatientActionPurpose.CANCEL) this.throwNotFound();
+    if (!link || link.purpose !== PatientActionPurpose.CANCEL)
+      this.throwNotFound();
 
     // Re-checks eligibility server-side even when the GET's `allowed.cancel`
     // was false — the window/state may have changed since, and a stale
@@ -174,6 +183,113 @@ export class PatientActionController {
       startAt: cancelled.start_at,
       message: 'Your appointment has been cancelled.',
     };
+  }
+
+  private throwNotFound(): never {
+    throw new AppError(ErrorCode.NOT_FOUND, {
+      message: 'This link is invalid or no longer active.',
+    });
+  }
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T162 (US9, contracts/
+ * public-surfaces.md §C). A SEPARATE `@Controller` class (a different route
+ * prefix from `PatientActionController` above cannot share one Nest
+ * controller) but kept in this SAME FILE / module deliberately: it reuses
+ * the identical `WAITLIST_OFFER` link purpose and the identical uniform-404
+ * pattern as `PatientActionController`, and staying in this file means it is
+ * covered by that controller's existing `PLATFORM_AND_PUBLIC_SURFACES`
+ * entitlement-exemption entry (`controller-entitlement-coverage.spec.ts`
+ * keys its allowlist by FILE, not by class) with no change to that list.
+ *
+ * Status-code rule (contracts/public-surfaces.md §C, resolved by the
+ * 2026-08-29 analysis): token validity (unknown/altered/expired/consumed) is
+ * ALWAYS the same 404 as `PatientActionController` — never a signal that a
+ * token existed. A VALID, unconsumed token whose OFFER is no longer
+ * actionable is a completely different thing: 200 + `state` on the GET, 409
+ * + `state` on an action. Never 410 — it would confirm token existence on
+ * the action routes, and `ErrorCode` deliberately has no `GONE` member for
+ * a case `NOT_FOUND`/`CONFLICT` already express correctly.
+ */
+@ApiTags('Public — Waitlist Offers')
+@Controller('public/waitlist/offer')
+export class WaitlistOfferPublicController {
+  constructor(
+    private readonly links: PatientActionLinkService,
+    private readonly offers: WaitlistOfferService,
+  ) {}
+
+  @Public()
+  @Throttle(PATIENT_ACTION_LINK_RESOLVE_THROTTLE)
+  @Get(':token')
+  async resolve(@Param('token') token: string) {
+    const link = await this.links.resolve(token);
+    if (
+      !link ||
+      link.purpose !== PatientActionPurpose.WAITLIST_OFFER ||
+      !link.waitlist_offer
+    ) {
+      this.throwNotFound();
+    }
+
+    const offer = await this.offers.findForPatient(
+      link.tenant.id,
+      link.waitlist_offer!,
+    );
+    if (!offer) this.throwNotFound();
+
+    return {
+      clinicName: link.tenant.name,
+      branchName: offer.branch?.name,
+      serviceName: offer.entry?.service?.name,
+      staffName: offer.staff?.user?.full_name,
+      startAt: offer.start_at,
+      endAt: offer.end_at,
+      timezone: offer.branch?.timezone,
+      respondsBy: offer.responds_by,
+      state: offer.state,
+    };
+  }
+
+  @Public()
+  @SkipCsrf()
+  @Throttle(PATIENT_ACTION_LINK_CONFIRM_THROTTLE)
+  @Post(':token/accept')
+  @HttpCode(HttpStatus.OK)
+  async accept(@Param('token') token: string) {
+    const link = await this.links.resolve(token);
+    if (
+      !link ||
+      link.purpose !== PatientActionPurpose.WAITLIST_OFFER ||
+      !link.waitlist_offer
+    ) {
+      this.throwNotFound();
+    }
+
+    const { appointment } = await this.offers.accept(
+      link.tenant.id,
+      link.waitlist_offer!,
+    );
+    return { appointmentId: appointment.id, startAt: appointment.start_at };
+  }
+
+  @Public()
+  @SkipCsrf()
+  @Throttle(PATIENT_ACTION_LINK_CONFIRM_THROTTLE)
+  @Post(':token/decline')
+  @HttpCode(HttpStatus.OK)
+  async decline(@Param('token') token: string) {
+    const link = await this.links.resolve(token);
+    if (
+      !link ||
+      link.purpose !== PatientActionPurpose.WAITLIST_OFFER ||
+      !link.waitlist_offer
+    ) {
+      this.throwNotFound();
+    }
+
+    return this.offers.decline(link.tenant.id, link.waitlist_offer!);
   }
 
   private throwNotFound(): never {

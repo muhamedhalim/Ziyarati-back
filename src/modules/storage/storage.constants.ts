@@ -207,6 +207,29 @@ export const WHATSAPP_MEDIA_UPLOAD_POLICY: UploadPolicy = {
   requireExtensionMatch: false,
 };
 
+/**
+ * Spec 014 (Clinic Platform Completion) — T182/T183 (US13). Files a
+ * report-export job writes itself (`XlsxWriterService`'s own output, and —
+ * per FR-X003 — a future PDF-format export via the SAME renderer T095 uses
+ * for invoices). The bucket never receives these bytes from a client
+ * upload: they are generated server-side from the export's own registry
+ * entry, so `requireMagicBytes`/`requireExtensionMatch` stay `true` anyway
+ * (defence in depth — a bug that fed the wrong buffer in is still caught),
+ * matching `DOCUMENT_UPLOAD_POLICY`'s strictness rather than loosening it.
+ */
+export const REPORT_EXPORT_UPLOAD_POLICY: UploadPolicy = {
+  name: 'report export',
+  allowedTypes: [
+    {
+      mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      extensions: ['xlsx'],
+    },
+    { mime: 'application/pdf', extensions: ['pdf'] },
+  ],
+  requireMagicBytes: true,
+  requireExtensionMatch: true,
+};
+
 export function policyAllowsMime(policy: UploadPolicy, mime: string): boolean {
   return policy.allowedTypes.some((t) => t.mime === mime);
 }

@@ -45,6 +45,38 @@ export class RecipientDeliveryService {
 
   constructor(private readonly dataSource: DataSource) {}
 
+  /**
+   * Phase 11 (US7, T136) — trusted-webhook variant for a platform-level
+   * feedback endpoint with NO tenant principal to scope against (unlike the
+   * HTTP delivery-status path, which always has one). Resolves the tenant
+   * (and the recipient's own stored `email`, T130) FROM the recipient row
+   * matched by `provider_ref` itself — never from the webhook payload's own
+   * claimed fields — then delegates to {@link recordDelivery}'s existing,
+   * already-tested transactional logic so the two paths can never disagree
+   * on what a BOUNCED/DELIVERED/READ transition means.
+   *
+   * Callers MUST have already cryptographically verified the webhook before
+   * calling this — there is no verification here.
+   */
+  async recordDeliveryTrusted(
+    providerRef: string,
+    event: RecipientDelivery,
+  ): Promise<DeliveryResult & { tenantId?: string; email?: string }> {
+    if (!providerRef) return { updated: false, reason: 'missing-provider-ref' };
+
+    const rec = await this.dataSource.getRepository(CampaignRecipient).findOne({
+      where: { provider_ref: providerRef },
+      relations: { run: { tenant: true }, customer: true },
+    });
+    if (!rec?.run?.tenant)
+      return { updated: false, reason: 'recipient-not-found' };
+
+    const tenantId = rec.run.tenant.id;
+    const email = rec.email ?? rec.customer?.email;
+    const result = await this.recordDelivery({ providerRef, event, tenantId });
+    return { ...result, tenantId, email };
+  }
+
   async recordDelivery(receipt: DeliveryReceipt): Promise<DeliveryResult> {
     const { providerRef, event, tenantId } = receipt;
     if (!providerRef) return { updated: false, reason: 'missing-provider-ref' };
@@ -93,7 +125,10 @@ export class RecipientDeliveryService {
       if (target >= 2) {
         const r = await mgr.update(
           CampaignRecipient,
-          { id: rec.id, delivery: In([RecipientDelivery.NONE, RecipientDelivery.ACCEPTED]) },
+          {
+            id: rec.id,
+            delivery: In([RecipientDelivery.NONE, RecipientDelivery.ACCEPTED]),
+          },
           { delivery: RecipientDelivery.DELIVERED, delivered_at: new Date() },
         );
         if ((r.affected ?? 0) > 0) {
@@ -143,7 +178,11 @@ export class RecipientDeliveryService {
     }
   }
 
-  private incrRun(mgr: DataSource['manager'], runId: string, field: 'delivered' | 'read') {
+  private incrRun(
+    mgr: DataSource['manager'],
+    runId: string,
+    field: 'delivered' | 'read',
+  ) {
     return mgr
       .createQueryBuilder()
       .update(CampaignRun)

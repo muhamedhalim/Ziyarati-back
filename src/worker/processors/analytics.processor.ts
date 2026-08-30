@@ -10,9 +10,11 @@ import {
 } from '../../queue/queue.constants';
 import {
   AnalyticsAggregateJob,
+  AnalyticsExportGenerateJob,
   AnalyticsGenerateReportJob,
   AnalyticsInvoiceDocumentJob,
 } from '../../queue/job-data.interface';
+import { validateJobPayload } from '../../queue/job-payload-validator';
 import { previousMonthUtc } from '../../modules/analytics/analytics.constants';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -27,6 +29,7 @@ import { InvoiceDocumentService } from '../../modules/payments/invoice-document.
 import { DocumentRendererService } from '../../modules/documents/document-renderer.service';
 import { InvoiceTemplate } from '../../modules/documents/templates/invoice.template';
 import { StorageService } from '../../modules/storage/storage.service';
+import { ReportExportService } from '../../modules/report-export/report-export.service';
 
 /**
  * Consumes the `analytics` queue. Each job is either a scheduled SWEEP
@@ -49,6 +52,7 @@ export class AnalyticsProcessor extends WorkerHost {
     private readonly invoiceDocuments: InvoiceDocumentService,
     private readonly renderer: DocumentRendererService,
     private readonly storage: StorageService,
+    private readonly reportExport: ReportExportService,
   ) {
     super();
   }
@@ -71,6 +75,18 @@ export class AnalyticsProcessor extends WorkerHost {
       const data = job.data as AnalyticsInvoiceDocumentJob;
       return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
         this.renderInvoiceDocument(data),
+      );
+    }
+
+    // T183 (spec 014, US13) — explicit branch ahead of T095's unknown-job
+    // guard below, exactly as that task's own trap note requires: a job
+    // name that reaches this processor MUST name its own branch or be
+    // rejected loudly, never silently fall through to report generation.
+    if (job.name === JOB.ANALYTICS_EXPORT_GENERATE) {
+      const data = job.data as AnalyticsExportGenerateJob;
+      validateJobPayload(job.name, data);
+      return runInTenantContext(this.ctx, this.authz, job.name, data, () =>
+        this.reportExport.generateExport(data.tenantId, data.exportJobId),
       );
     }
 

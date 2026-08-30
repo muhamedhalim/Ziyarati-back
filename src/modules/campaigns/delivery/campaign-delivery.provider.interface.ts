@@ -23,6 +23,18 @@ export interface CampaignDeliveryPayload {
   accountId?: string;
   /** Campaign segment/personalization data (no secrets). */
   metadata?: Record<string, unknown>;
+  /**
+   * Phase 11 (US7) — the resolved recipient email address, for the EMAIL
+   * channel. Ignored by non-email providers. Resolved by the dispatcher from
+   * `customer.email` (the source of truth), never trusted from a stale
+   * recipient snapshot.
+   */
+  email?: string;
+  /** Phase 11 (US7) — clinic-authored subject/body for an EMAIL send. */
+  emailSubject?: string;
+  emailBody?: string;
+  /** Phase 11 (US7, FR-E018) — the clinic's own contact address, set as reply-to. */
+  replyTo?: string;
 }
 
 export interface CampaignDeliveryResult {
@@ -49,4 +61,6 @@ export interface CampaignDeliveryProvider {
 }
 
 /** Multi-provider DI token: an array of registered campaign delivery providers. */
-export const CAMPAIGN_DELIVERY_PROVIDERS = Symbol('CAMPAIGN_DELIVERY_PROVIDERS');
+export const CAMPAIGN_DELIVERY_PROVIDERS = Symbol(
+  'CAMPAIGN_DELIVERY_PROVIDERS',
+);

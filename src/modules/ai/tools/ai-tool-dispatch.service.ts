@@ -9,7 +9,12 @@ import { Appointment } from '../../../entities/Calendar&Appointments/Appointment
 import { AppointmentSource } from '../../../entities/enums';
 import { AppointmentsService } from '../../appointment/appointment.service';
 import { PublicDiscoveryService } from '../../public-discovery/public-discovery.service';
-import { AvailabilityService } from '../../scheduling/availability.service';
+import {
+  AvailabilityService,
+  DayWindows,
+  PUBLIC_AVAILABILITY_HORIZON_DAYS,
+} from '../../scheduling/availability.service';
+import { safeZone, zonedYmd } from '../../scheduling/timezone.util';
 import { DashboardMetricService } from '../../analytics/dashboard-metric.service';
 import { SubscriptionService } from '../../subscription-billing/subscription.service';
 import { UsageService } from '../../subscription-billing/usage.service';
@@ -37,6 +42,54 @@ import {
   AiAdminToolName,
 } from './ai-admin-tools.constants';
 import { PERMISSION } from '../../../rbac/rbac.constants';
+
+/** Days searched when the model gives no `daysAhead` — a week reads naturally. */
+const DEFAULT_AVAILABILITY_DAYS = 7;
+
+/**
+ * How many days WITH slots to collect before stopping.
+ *
+ * Three is enough to give a patient a real choice and short enough that a
+ * booked-out doctor does not cost the full 14-day horizon on every question.
+ */
+const MAX_ALTERNATIVE_DAYS = 3;
+
+/**
+ * Plain-language explanation of each `DayWindows.reason`.
+ *
+ * These exist so the model states the ACTUAL cause instead of collapsing every
+ * empty day into "the doctor is unavailable" — the single behaviour that made
+ * the assistant repeat itself for four turns straight. Deliberately English:
+ * the model translates into the patient's language, and non-ASCII text costs
+ * roughly 1.5x in the prompt budget for no gain.
+ */
+const AVAILABILITY_REASON_TEXT: Record<string, string> = {
+  not_working_that_day: 'The doctor is not rostered to work that day.',
+  fully_booked: 'The doctor works that day but every slot is already taken.',
+  holiday: 'The clinic is closed that day for a holiday.',
+  time_off: 'The doctor is on leave that day.',
+  staff_inactive: 'This doctor is not currently taking bookings at all.',
+  no_gap_long_enough:
+    'The doctor has free time that day, but no single gap long enough for the selected service.',
+  day_already_past: "That day's working hours have already finished.",
+  no_availability: 'There are no bookable times on that day.',
+};
+
+/** What an availability tool hands back to the model. */
+interface AvailabilityAnswer {
+  timezone: string;
+  requestedDate?: string;
+  appointmentMinutes?: number;
+  days: { date: string; slots: { startAt: string; localTime: string }[] }[];
+  nextAvailable: {
+    date: string;
+    slots: { startAt: string; localTime: string }[];
+  }[];
+  slotCount: number;
+  requestedDayReason?: string;
+  requestedDayExplanation?: string;
+  guidance: string;
+}
 
 /** Context for a tool execution, all bound server-side (never from the model). */
 export interface ToolContext {
@@ -149,6 +202,10 @@ export class AiToolDispatchService {
           return await this.getClinicDetails(ctx, args);
         case AI_TOOL.SEARCH_PUBLIC_AVAILABILITY:
           return await this.searchPublicAvailability(ctx, args);
+        case AI_TOOL.GET_BRANCH_INFO:
+          return await this.getBranchInfo(ctx, args);
+        case AI_TOOL.GET_DOCTOR_SCHEDULE:
+          return await this.getDoctorSchedule(ctx, args);
         case AI_TOOL.LIST_CLINIC_BRANCHES:
           return await this.listClinicBranches(ctx);
         case AI_TOOL.LIST_CLINIC_DOCTORS:
@@ -452,38 +509,448 @@ export class AiToolDispatchService {
     );
   }
 
-  /** Free slots for a publicly-discovered clinic's branch + doctor on a day. */
+  /**
+   * REAL bookable times for a publicly-discovered clinic's branch + doctor,
+   * over a DATE RANGE rather than a single day.
+   *
+   * THE BUG THIS FIXES. This tool used to take one mandatory `date` and return
+   * a bare `windows: []` when that day had nothing — no reason, no alternative.
+   * The assistant could only translate that into "the doctor is unavailable",
+   * and since every follow-up question hit the same dead end it repeated the
+   * same sentence turn after turn. Three changes close that:
+   *
+   *  1. `date` is now OPTIONAL — omitted, it answers the open-ended "when is
+   *     the doctor free?" from today onward, in the BRANCH's timezone.
+   *  2. When the requested day is empty, the search CONTINUES forward and the
+   *     result carries `nextAvailable`. The model cannot fail to offer
+   *     alternatives, because they are already in its hand.
+   *  3. Slot length comes from the SELECTED SERVICE, resolved server-side —
+   *     never from the model, and never absent. Previously `slotMinutes` was
+   *     an optional model argument that in practice was never sent, so the
+   *     tool returned raw 10:00–20:00 windows and the model invented times
+   *     inside them, including ones too short for the actual appointment.
+   */
   private async searchPublicAvailability(
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const branchId = this.uuid(args.branchId);
-    const staffId = this.uuid(args.staffId);
+    // Ids are OPTIONAL now: on the public widget the branch and doctor already
+    // live on the server-side booking session, so the model has nothing to get
+    // wrong (and nothing an injection could redirect). An explicitly supplied
+    // id is still honoured and still fully validated downstream.
+    const resolved = await this.resolveBranchAndStaff(ctx, args);
+    if ('error' in resolved) return resolved.error;
+    const { branchId, staffId, serviceMinutes } = resolved;
+
     const date = this.str(args.date);
-    if (!branchId || !staffId) {
-      return this.badId(
-        'branchId and staffId',
-        'get_clinic_details / list_branch_doctors',
-      );
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return {
+        success: false,
+        error:
+          'date must be YYYY-MM-DD, resolved from the date in the context block.',
+      };
     }
-    if (!date) {
-      return { success: false, error: 'date is required (YYYY-MM-DD).' };
-    }
+
     return this.run(
       ctx,
       AI_TOOL.SEARCH_PUBLIC_AVAILABILITY,
       `pub_avail:${randomUUID()}`,
       args,
       async () => {
-        const result = await this.discovery.publicAvailability(
-          branchId,
-          staffId,
-          date,
-          typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
+        const result = await this.availabilityAnswer(
+          (from, to, slotMinutes, maxDays) =>
+            this.discovery.publicRangeAvailability(branchId, staffId, {
+              fromDate: from,
+              toDate: to,
+              slotMinutes,
+              maxDaysWithSlots: maxDays,
+              notBefore: new Date(),
+            }),
+          {
+            branchId,
+            requestedDate: date,
+            daysAhead: args.daysAhead,
+            slotMinutes: serviceMinutes,
+          },
         );
-        return { toolResult: { success: true, ...result }, resultJson: result };
+        return {
+          toolResult: { success: true, ...result },
+          resultJson: {
+            branchId,
+            staffId,
+            requestedDate: result.requestedDate ?? null,
+            slotCount: result.slotCount,
+          },
+        };
       },
     );
+  }
+
+  /**
+   * The shared "answer an availability question" routine behind both
+   * `search_public_availability` and `check_availability`.
+   *
+   * It exists so the two channels cannot drift on the part that actually
+   * matters — the FALLBACK. `search` is the only thing that differs between
+   * them (public tenant-from-branch resolution vs. tenant-from-context), and
+   * it is injected; every rule about what to search, how far, and what to say
+   * when a day is empty lives here, once.
+   *
+   * COST. The first pass asks only for the requested day. A second pass runs
+   * ONLY if that day came back empty, and stops as soon as
+   * `MAX_ALTERNATIVE_DAYS` days with slots are found — so the normal
+   * "yes, Tuesday works" path costs exactly one day's queries.
+   */
+  private async availabilityAnswer(
+    search: (
+      fromDate: string,
+      toDate: string,
+      slotMinutes: number | undefined,
+      maxDaysWithSlots: number | undefined,
+    ) => Promise<{ timezone: string; days: DayWindows[] }>,
+    opts: {
+      branchId: string;
+      requestedDate?: string;
+      daysAhead?: unknown;
+      slotMinutes?: number;
+    },
+  ): Promise<AvailabilityAnswer> {
+    const horizon = Math.min(
+      Math.max(
+        typeof opts.daysAhead === 'number' && Number.isFinite(opts.daysAhead)
+          ? Math.trunc(opts.daysAhead)
+          : DEFAULT_AVAILABILITY_DAYS,
+        1,
+      ),
+      PUBLIC_AVAILABILITY_HORIZON_DAYS,
+    );
+
+    // The branch's own timezone decides what "today" is — not the server's and
+    // not the visitor's. A branch in Asia/Riyadh is already on tomorrow while a
+    // visitor in Europe is still on today, and the availability engine reads
+    // `date` as the BRANCH's local calendar date.
+    const zone = await this.branchZone(opts.branchId);
+    const today = zonedYmd(new Date(), zone);
+    const from =
+      opts.requestedDate && opts.requestedDate > today
+        ? opts.requestedDate
+        : today;
+
+    // Pass 1 — exactly the day asked about (or today when open-ended).
+    const first = await search(
+      from,
+      opts.requestedDate ? from : this.addDays(from, horizon - 1),
+      opts.slotMinutes,
+      opts.requestedDate ? undefined : MAX_ALTERNATIVE_DAYS,
+    );
+    const withSlots = first.days.filter((d) => d.available);
+    if (withSlots.length > 0) {
+      return this.availabilityPayload(first.timezone, withSlots, [], {
+        requestedDate: opts.requestedDate,
+        requestedDayReason: undefined,
+        slotMinutes: opts.slotMinutes,
+      });
+    }
+
+    // Pass 2 — nothing on the requested day. Keep looking instead of reporting
+    // a dead end; THIS is what the old single-day tool could never do.
+    const requestedDayReason = first.days[0]?.reason ?? 'no_availability';
+    const alt = await search(
+      this.addDays(from, 1),
+      this.addDays(from, horizon),
+      opts.slotMinutes,
+      MAX_ALTERNATIVE_DAYS,
+    );
+    return this.availabilityPayload(
+      alt.timezone,
+      [],
+      alt.days.filter((d) => d.available),
+      {
+        requestedDate: opts.requestedDate,
+        requestedDayReason,
+        slotMinutes: opts.slotMinutes,
+      },
+    );
+  }
+
+  /** Model-facing shape: local times, an explicit reason, and explicit guidance. */
+  private availabilityPayload(
+    timezone: string,
+    days: DayWindows[],
+    nextAvailable: DayWindows[],
+    meta: {
+      requestedDate?: string;
+      requestedDayReason?: string;
+      slotMinutes?: number;
+    },
+  ): AvailabilityAnswer {
+    const render = (list: DayWindows[]) =>
+      list.map((d) => ({
+        date: d.date,
+        // Times are rendered in the BRANCH's zone as well as ISO. The model
+        // was previously handed only UTC instants and had to convert them
+        // itself to tell a patient "2 PM" — a step it got wrong.
+        slots: d.windows.map((w) => ({
+          startAt: w.startTime,
+          localTime: this.localHhmm(w.startTime, timezone),
+        })),
+      }));
+
+    const slotCount =
+      days.reduce((s, d) => s + d.windows.length, 0) +
+      nextAvailable.reduce((s, d) => s + d.windows.length, 0);
+
+    return {
+      timezone,
+      ...(meta.requestedDate ? { requestedDate: meta.requestedDate } : {}),
+      ...(meta.slotMinutes ? { appointmentMinutes: meta.slotMinutes } : {}),
+      days: render(days),
+      nextAvailable: render(nextAvailable),
+      slotCount,
+      ...(meta.requestedDayReason
+        ? {
+            requestedDayReason: meta.requestedDayReason,
+            requestedDayExplanation:
+              AVAILABILITY_REASON_TEXT[meta.requestedDayReason] ??
+              'There are no bookable times on that day.',
+          }
+        : {}),
+      guidance:
+        slotCount > 0
+          ? meta.requestedDayReason
+            ? 'The requested day has nothing — say why (requestedDayExplanation), then offer the times in `nextAvailable` with their dates. Do NOT stop at "unavailable".'
+            : 'Offer these times using `localTime`, grouped by date. Never invent a time that is not listed.'
+          : 'Nothing is bookable in the searched window. Say so plainly, give the reason, and offer to connect the visitor with the clinic team — do not repeat the same refusal if they ask again.',
+    };
+  }
+
+  /**
+   * WHERE a branch is and WHEN it is open.
+   *
+   * On the public widget it takes NO arguments — the branch comes from the
+   * server-side booking session, so there is no id for a prompt injection to
+   * point at another clinic. On an authenticated channel (WhatsApp / staff)
+   * `branchId` is required and is scoped to `ctx.tenantId`, so it can only
+   * ever resolve a branch this clinic owns.
+   */
+  private async getBranchInfo(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const guest = !ctx.actorUserId;
+    let branchId = this.uuid(args.branchId);
+    if (guest) {
+      const fromSession = await this.sessionBranch(ctx);
+      if ('error' in fromSession) return fromSession.error;
+      branchId = fromSession.branchId;
+    } else if (!branchId) {
+      return this.badId('branchId', 'list_clinic_branches');
+    }
+
+    return this.run(
+      ctx,
+      AI_TOOL.GET_BRANCH_INFO,
+      `branch_info:${randomUUID()}`,
+      args,
+      async () => {
+        const info = await this.discovery.branchInfo(branchId!, {
+          // Guests have no tenant of their own; the public eligibility
+          // predicate applies instead. Staff/WhatsApp turns are scoped to
+          // their own clinic and nothing else.
+          tenantId: guest ? undefined : ctx.tenantId,
+        });
+        const published = info.workingHours.filter((d) => d.status === 'OPEN');
+        return {
+          toolResult: {
+            success: true,
+            ...info,
+            guidance: info.workingHoursConfigured
+              ? `Report only the days listed. ${published.length} day(s) are OPEN; a day marked CLOSED is a closure the clinic set, and NOT_PUBLISHED means the clinic never entered hours for it — say that, never "we are closed" and never a guessed time.`
+              : 'This clinic has NOT published any working hours. Say exactly that and offer to connect the visitor with the clinic team. Never invent hours.',
+          },
+          resultJson: {
+            branchId,
+            workingHoursConfigured: info.workingHoursConfigured,
+            openDays: published.length,
+          },
+        };
+      },
+    );
+  }
+
+  /**
+   * A doctor's recurring weekly roster — "when does Dr. X work?", which the
+   * assistant previously answered by running an availability check for one
+   * arbitrary day and reporting its failure.
+   *
+   * Same id posture as `getBranchInfo`: session-resolved for a guest,
+   * tenant-scoped for an authenticated turn.
+   */
+  private async getDoctorSchedule(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const guest = !ctx.actorUserId;
+    let tenantId = ctx.tenantId;
+    let branchId = this.uuid(args.branchId);
+    let staffId = this.uuid(args.staffId);
+
+    if (guest) {
+      const booking = await this.requirePublicContext(ctx, 'doctor');
+      tenantId = booking.tenantId;
+      branchId = booking.branchId;
+      staffId = booking.staffId!;
+    } else if (!branchId || !staffId) {
+      return this.badId(
+        'branchId and staffId',
+        'list_clinic_branches / list_clinic_doctors',
+      );
+    }
+
+    return this.run(
+      ctx,
+      AI_TOOL.GET_DOCTOR_SCHEDULE,
+      `doctor_schedule:${randomUUID()}`,
+      args,
+      async () => {
+        const schedule = await this.discovery.doctorSchedule(
+          tenantId,
+          branchId!,
+          staffId!,
+        );
+        return {
+          toolResult: {
+            success: true,
+            ...schedule,
+            guidance: schedule.weekly.length
+              ? "These are the doctor's working days. If the visitor wants to BOOK, follow this with the availability tool — a rostered day can still be fully booked."
+              : 'This doctor has no working days configured at this branch. Say so and offer another doctor or the clinic team; do not present it as a temporary shortage.',
+          },
+          resultJson: {
+            branchId,
+            staffId,
+            workingDays: schedule.weekly.length,
+          },
+        };
+      },
+    );
+  }
+
+  // ─────────────────── Availability resolution helpers ───────────────────── //
+
+  /**
+   * Branch + doctor for an availability query, and the SERVICE DURATION the
+   * slots must be sized to.
+   *
+   * On the public widget all three come from the server-side booking session —
+   * the same source the booking itself uses — so the slot length offered to the
+   * visitor is by construction the length that will actually be booked. The
+   * deterministic REST flow (`PublicBookingFlowService.availability`) already
+   * derived it this way; the AI path did not, which is why it offered raw
+   * open-hours windows instead of bookable slots.
+   */
+  private async resolveBranchAndStaff(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+  ): Promise<
+    | { branchId: string; staffId: string; serviceMinutes?: number }
+    | { error: ToolResult }
+  > {
+    if (!ctx.actorUserId) {
+      let booking;
+      try {
+        booking = await this.requirePublicContext(ctx, 'doctor');
+      } catch (err) {
+        return {
+          error: {
+            success: false,
+            error: this.msg(err),
+          },
+        };
+      }
+      return {
+        branchId: booking.branchId,
+        staffId: booking.staffId!,
+        serviceMinutes: await this.selectedServiceMinutes(
+          booking.tenantId,
+          booking.branchId,
+          booking.serviceIds,
+        ),
+      };
+    }
+
+    const branchId = this.uuid(args.branchId);
+    const staffId = this.uuid(args.staffId);
+    if (!branchId || !staffId) {
+      return {
+        error: this.badId(
+          'branchId and staffId',
+          'get_clinic_details / list_branch_doctors',
+        ),
+      };
+    }
+    return { branchId, staffId };
+  }
+
+  /** Branch resolved from the public booking session, as a tool-shaped result. */
+  private async sessionBranch(
+    ctx: ToolContext,
+  ): Promise<{ branchId: string } | { error: ToolResult }> {
+    try {
+      const booking = await this.requirePublicContext(ctx, 'branch');
+      return { branchId: booking.branchId };
+    } catch (err) {
+      return { error: { success: false, error: this.msg(err) } };
+    }
+  }
+
+  /**
+   * Total duration of the services this conversation selected — the real length
+   * of the appointment being booked, so a 45-minute service never gets offered
+   * a 30-minute gap. Zero selected services returns `undefined`, which leaves
+   * the engine returning whole free windows exactly as before.
+   */
+  private async selectedServiceMinutes(
+    tenantId: string,
+    branchId: string,
+    serviceIds: string[],
+  ): Promise<number | undefined> {
+    if (!serviceIds?.length) return undefined;
+    const offered = await this.discovery.listBranchServices(tenantId, branchId);
+    const byId = new Map<string, number>(
+      offered.map((s) => [s.id, Number(s.durationMinutes) || 0]),
+    );
+    const total = serviceIds.reduce((sum, id) => sum + (byId.get(id) ?? 0), 0);
+    return total > 0 ? total : undefined;
+  }
+
+  /** The branch's IANA zone — what "today" and every local time mean here. */
+  private async branchZone(branchId: string): Promise<string> {
+    const rows = await this.dataSource.query(
+      `SELECT timezone FROM branches WHERE id = $1::uuid LIMIT 1`,
+      [branchId],
+    );
+    return safeZone(rows[0]?.timezone as string | undefined);
+  }
+
+  /** 'HH:MM' of an ISO instant in `zone` — what the patient is actually told. */
+  private localHhmm(iso: string, zone: string): string {
+    try {
+      return new Intl.DateTimeFormat('en-GB', {
+        timeZone: zone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).format(new Date(iso));
+    } catch {
+      return iso.slice(11, 16);
+    }
+  }
+
+  /** `days` calendar days after a YYYY-MM-DD, as YYYY-MM-DD. */
+  private addDays(dateStr: string, days: number): string {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
   }
 
   // ───────────────────────── Own-clinic discovery (WhatsApp) ─────────────── //
@@ -619,18 +1086,20 @@ export class AiToolDispatchService {
     if (!ctx.actorUserId) {
       return {
         success: false,
-        error:
-          'This tool is not available in this context (no acting user).',
+        error: 'This tool is not available in this context (no acting user).',
       };
     }
-    const branchId = this.str(args.branchId);
-    const staffId = this.str(args.staffId);
+    const branchId = this.uuid(args.branchId);
+    const staffId = this.uuid(args.staffId);
     const date = this.str(args.date);
-    if (!branchId || !staffId || !date) {
+    if (!branchId || !staffId) {
       return {
         success: false,
-        error: 'branchId, staffId and date are required.',
+        error: 'branchId and staffId are required.',
       };
+    }
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return { success: false, error: 'date must be YYYY-MM-DD.' };
     }
     return this.run(
       ctx,
@@ -638,14 +1107,39 @@ export class AiToolDispatchService {
       `check:${randomUUID()}`,
       args,
       async () => {
-        const result = await this.availability.windows(ctx.tenantId, {
-          branchId,
-          staffId,
-          date,
-          slotMinutes:
-            typeof args.slotMinutes === 'number' ? args.slotMinutes : undefined,
-        } as never);
-        return { toolResult: { success: true, ...result }, resultJson: result };
+        // Same fallback contract as the public tool — one shared routine, so
+        // the WhatsApp/staff channel can never regress to "unavailable, full
+        // stop" while the widget offers alternatives.
+        const result = await this.availabilityAnswer(
+          (from, to, slotMinutes, maxDays) =>
+            this.availability.rangeWindows(ctx.tenantId, {
+              branchId,
+              staffId,
+              fromDate: from,
+              toDate: to,
+              slotMinutes,
+              maxDaysWithSlots: maxDays,
+              notBefore: new Date(),
+            }),
+          {
+            branchId,
+            requestedDate: date,
+            daysAhead: args.daysAhead,
+            slotMinutes:
+              typeof args.slotMinutes === 'number'
+                ? args.slotMinutes
+                : undefined,
+          },
+        );
+        return {
+          toolResult: { success: true, ...result },
+          resultJson: {
+            branchId,
+            staffId,
+            requestedDate: result.requestedDate ?? null,
+            slotCount: result.slotCount,
+          },
+        };
       },
     );
   }
@@ -1017,8 +1511,8 @@ export class AiToolDispatchService {
     );
     const hadPriorSelection = Boolean(
       prior.selectedDoctorId ||
-        prior.selectedServiceIds?.length ||
-        prior.selectedStartAt,
+      prior.selectedServiceIds?.length ||
+      prior.selectedStartAt,
     );
 
     const only = branches.length === 1 ? branches[0] : undefined;
@@ -1110,7 +1604,19 @@ export class AiToolDispatchService {
       booking.tenantId,
       booking.branchId,
     );
-    return { success: true, services };
+    // `price: null` means the clinic has not PUBLISHED a price — it does not
+    // mean the service is free, which is exactly how the model reported it to
+    // a patient ("it's dental, and it's free"). Naming the state explicitly
+    // costs one field and removes the only reading that could produce that.
+    return {
+      success: true,
+      services: services.map((s) => ({
+        ...s,
+        priceStatus: s.price == null ? 'NOT_PUBLISHED' : 'PUBLISHED',
+      })),
+      guidance:
+        'durationMinutes is how long the appointment takes. A service with priceStatus NOT_PUBLISHED has no published price — say the clinic has not listed one; NEVER call it free. Only price 0 is free.',
+    };
   }
 
   private async listBranchDoctors(ctx: ToolContext): Promise<ToolResult> {
@@ -1400,7 +1906,8 @@ export class AiToolDispatchService {
         'reschedule',
         appointmentId,
       );
-      const reason = 'Reschedule requires confirmation (no valid confirmationToken supplied).';
+      const reason =
+        'Reschedule requires confirmation (no valid confirmationToken supplied).';
       await this.recordAttempt(
         ctx,
         AI_TOOL.RESCHEDULE_APPOINTMENT,
@@ -1497,7 +2004,8 @@ export class AiToolDispatchService {
         'cancel',
         appointmentId,
       );
-      const reason = 'Cancellation requires confirmation (no valid confirmationToken supplied).';
+      const reason =
+        'Cancellation requires confirmation (no valid confirmationToken supplied).';
       await this.recordAttempt(
         ctx,
         AI_TOOL.CANCEL_APPOINTMENT,
@@ -1629,13 +2137,7 @@ export class AiToolDispatchService {
       await this.writeAttemptRow(ctx, toolName, args, status, reason);
       return result;
     } catch (err) {
-      await this.writeAttemptRow(
-        ctx,
-        toolName,
-        args,
-        'REFUSED',
-        this.msg(err),
-      );
+      await this.writeAttemptRow(ctx, toolName, args, 'REFUSED', this.msg(err));
       throw err;
     }
   }

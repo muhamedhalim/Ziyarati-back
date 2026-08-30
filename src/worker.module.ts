@@ -36,6 +36,9 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { SubscriptionBillingModule } from './modules/subscription-billing/subscription-billing.module';
 import { EmailModule } from './modules/email/email.module';
+// T183 (spec 014, US13) — AnalyticsProcessor's `analytics.exportGenerate`
+// branch and PlatformProcessor's `platform.exportExpiry` branch.
+import { ReportExportModule } from './modules/report-export/report-export.module';
 
 import { WorkerTenantsService } from './worker/worker-tenants.service';
 import { QueueMonitorService } from './worker/queue-monitor.service';
@@ -77,6 +80,15 @@ import { IntegrationImportProcessor } from './worker/processors/integration-impo
 import { IntegrationSyncProcessor } from './worker/processors/integration-sync.processor';
 import { IntegrationInboundProcessor } from './worker/processors/integration-inbound.processor';
 import { IntegrationRecoveryProcessor } from './worker/processors/integration-recovery.processor';
+// Spec 014 (Clinic Platform Completion) — T160. PlatformProcessor's
+// waitlistEvaluate/waitlistExpiry branches reuse WaitlistService/
+// WaitlistOfferService — same "processors reuse existing domain modules"
+// shape as every other import in this list.
+import { WaitlistModule } from './modules/waitlist/waitlist.module';
+// T174 (spec 014, US10) — PlatformProcessor's queueDayClose branch reuses
+// PatientQueueService.closeUnresolvedEntries — same shape as WaitlistModule
+// immediately above.
+import { PatientQueueModule } from './modules/patient-queue/patient-queue.module';
 
 /**
  * Which processors/infra services this process instantiates, resolved ONCE at
@@ -293,6 +305,14 @@ const WORKER_PROVIDERS =
     DocumentsModule,
     // T095 (spec 014, US12) — AnalyticsProcessor uploads rendered invoice PDFs.
     StorageModule,
+    // T160 (spec 014, US9) — PlatformProcessor's waitlistEvaluate/
+    // waitlistExpiry branches.
+    WaitlistModule,
+    // T174 (spec 014, US10) — PlatformProcessor's queueDayClose branch.
+    PatientQueueModule,
+    // T183 (spec 014, US13) — AnalyticsProcessor's exportGenerate branch and
+    // PlatformProcessor's exportExpiry branch.
+    ReportExportModule,
   ],
   providers: [AuthTokenMaintenanceService, ...WORKER_PROVIDERS],
 })

@@ -66,11 +66,25 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   // CrmCustomerSoftDeleteAwareUniqueness1730059000000 to also require
   // `"deleted_at" IS NULL` (a soft-deleted customer's national_id is free to
   // reuse) — again, same name, so this mapping is unchanged.
-  UQ_customers_tenant_national_id: 'A customer with this ID number already exists',
+  UQ_customers_tenant_national_id:
+    'A customer with this ID number already exists',
   // FND-032/M-04: a second concurrent request lost the race to open a new
   // invoice for a subscription that already has one OPEN.
   UQ_sub_invoice_open_per_subscription:
     'This subscription already has an open invoice. Pay or resolve it before requesting another.',
+  // Spec 014 (Clinic Platform Completion) — T155/T156 (US9, FR-W013). A
+  // patient may hold at most one ACTIVE (WAITING or OFFERED) waitlist entry
+  // per service — refused by the database (partial unique index), not an
+  // application pre-check, since a pre-check would race two concurrent
+  // creates for the same (tenant, customer, service).
+  UQ_waitlist_entries_active_dup:
+    'This patient is already on the waitlist for this service.',
+  // Spec 014 (Clinic Platform Completion) — T168 (US10, FR-Q005). Checking in
+  // the same appointment twice must not create a second queue entry —
+  // refused by the database (partial unique index over LIVE states), not an
+  // application pre-check, since a pre-check would race two concurrent
+  // check-ins for the same appointment.
+  UQ_queue_entries_appointment_live: 'This appointment is already checked in.',
 };
 
 /**
@@ -97,7 +111,9 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
   const driver = error as unknown as PgDriverError;
 
   /** Diagnostic detail for logs only — never touches the client. */
-  const internalContext = (extra?: Record<string, unknown>): Record<string, unknown> => ({
+  const internalContext = (
+    extra?: Record<string, unknown>,
+  ): Record<string, unknown> => ({
     sqlState: driver.code,
     constraint: driver.constraint,
     table: driver.table,
@@ -135,7 +151,8 @@ export function mapTypeOrmError(error: QueryFailedError): AppError {
       }
       return new AppError(ErrorCode.CONFLICT, {
         message: driver.constraint
-          ? CONSTRAINT_MESSAGES[driver.constraint] ?? 'The selected time is no longer available'
+          ? (CONSTRAINT_MESSAGES[driver.constraint] ??
+            'The selected time is no longer available')
           : 'The selected time is no longer available',
         internalContext: internalContext(),
         cause: error,

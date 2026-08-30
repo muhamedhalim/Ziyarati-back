@@ -31,17 +31,29 @@ export class PatientActionLinkService {
    * ever available; only its digest is persisted. Lifetime is capped at
    * min(7 days, appointment start) so a link can never outlive its own
    * appointment.
+   *
+   * `expiresAtOverride` (T158, US9) — for `WAITLIST_OFFER` links only: the
+   * "min(7 days, appointment.start_at)" formula assumes the link's own
+   * appointment is the thing it authorises an action on, which holds for
+   * CANCEL/RESCHEDULE but not for a waitlist offer — at issue time there is
+   * no prospective appointment yet (see `WaitlistOfferService`), and the
+   * `appointment` this call still must pass (the column is NOT NULL) is the
+   * ORIGINATING appointment whose cancellation/reschedule freed the slot,
+   * whose own `start_at` has no bearing on how long the offer link should
+   * stay resolvable. When provided, this replaces `appointment.start_at` in
+   * the cap; the 7-day ceiling still applies either way.
    */
   async issue(
     tenantId: string,
     appointment: Appointment,
     purpose: PatientActionPurpose,
     waitlistOfferId?: string,
+    expiresAtOverride?: Date,
   ): Promise<string> {
     const secret = randomBytes(32).toString('base64url');
     const maxLifetime = new Date(Date.now() + MAX_LIFETIME_MS);
-    const expiresAt =
-      appointment.start_at < maxLifetime ? appointment.start_at : maxLifetime;
+    const naturalCap = expiresAtOverride ?? appointment.start_at;
+    const expiresAt = naturalCap < maxLifetime ? naturalCap : maxLifetime;
 
     await this.links.save(
       this.links.create({
