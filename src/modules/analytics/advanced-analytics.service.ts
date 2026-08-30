@@ -443,18 +443,36 @@ export class AdvancedAnalyticsService {
     const currency = await this.getCurrency(tenantId);
     const { start, end } = this.instants(from, to);
     const branchIds = scope.branchId ? [scope.branchId] : undefined;
-    const rows = await this.aggregation.branchPerformance(
-      tenantId,
-      branchIds,
-      start,
-      end,
-    );
+    const [rows, other] = await Promise.all([
+      this.aggregation.branchPerformance(
+        tenantId,
+        branchIds,
+        currency,
+        start,
+        end,
+      ),
+      this.aggregation.countOtherCurrencyRevenue(
+        tenantId,
+        scope.branchId,
+        currency,
+        start,
+        end,
+      ),
+    ]);
     const envelope = this.envelope(from, to, scope.branchId, currency);
+    // FR-A021 — never silently summed away; surfaced only when non-zero.
+    const excluded =
+      other.count > 0
+        ? {
+            excludedOtherCurrency: { count: other.count, amount: other.amount },
+          }
+        : {};
 
     const anyActivity = rows.some((r) => r.appointments > 0 || r.revenue > 0);
     if (rows.length === 0 || !anyActivity) {
       return {
         ...envelope,
+        ...excluded,
         empty: true,
         data: [],
         total: 0,
@@ -466,6 +484,7 @@ export class AdvancedAnalyticsService {
     const offset = (dto.page - 1) * dto.limit;
     return {
       ...envelope,
+      ...excluded,
       empty: false,
       data: rows.slice(offset, offset + dto.limit),
       total: rows.length,
@@ -484,18 +503,36 @@ export class AdvancedAnalyticsService {
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
     const currency = await this.getCurrency(tenantId);
     const { start, end } = this.instants(from, to);
-    const rows = await this.aggregation.channelPerformance(
-      tenantId,
-      scope.branchId,
-      start,
-      end,
-    );
+    const [rows, other] = await Promise.all([
+      this.aggregation.channelPerformance(
+        tenantId,
+        scope.branchId,
+        currency,
+        start,
+        end,
+      ),
+      this.aggregation.countOtherCurrencyRevenue(
+        tenantId,
+        scope.branchId,
+        currency,
+        start,
+        end,
+      ),
+    ]);
     const envelope = this.envelope(from, to, scope.branchId, currency);
+    // FR-A021 — never silently summed away; surfaced only when non-zero.
+    const excluded =
+      other.count > 0
+        ? {
+            excludedOtherCurrency: { count: other.count, amount: other.amount },
+          }
+        : {};
 
     const totalAppointments = rows.reduce((s, r) => s + r.appointments, 0);
     if (totalAppointments === 0) {
       return {
         ...envelope,
+        ...excluded,
         empty: true,
         data: [],
         total: 0,
@@ -514,6 +551,7 @@ export class AdvancedAnalyticsService {
     const offset = (dto.page - 1) * dto.limit;
     return {
       ...envelope,
+      ...excluded,
       empty: false,
       data: data.slice(offset, offset + dto.limit),
       total: data.length,

@@ -2676,3 +2676,980 @@ CREATE INDEX IF NOT EXISTS "IDX_aiexec_correlation" ON "ai_execution_metrics" ("
 SELECT "id", "tenantId" FROM "users" WHERE "email" = $1;
 SELECT "id" FROM "users" WHERE "email" = $1 AND "id" != $2;
 UPDATE "users" SET "email" = $1 WHERE "id" = $2;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730041300000-AiExecutionMetricToolCallsTruncated.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "tool_calls_truncated" integer NOT NULL DEFAULT 0;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730041400000-AiExecutionMetricPromptDisclosureBlocked.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "prompt_disclosure_blocked" boolean NOT NULL DEFAULT false;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730041500000-AiExecutionMetricRetrievalMode.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "retrieval_mode" varchar(20);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730042000000-TenantSettingEnforceWorkingHours.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'tenant_settings'
+            AND column_name = 'enforce_staff_working_hours'
+        ) THEN
+          ALTER TABLE "tenant_settings"
+            ADD COLUMN "enforce_staff_working_hours" boolean NOT NULL DEFAULT false;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730043000000-ResourcePricingCatalog.ts  (15 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "resource_price_catalog" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "item_key" character varying(64) NOT NULL,
+        "kind" character varying(16) NOT NULL,
+        "unit_label" character varying(32) NOT NULL,
+        "unit_size" bigint NOT NULL DEFAULT 1,
+        "unit_price_minor" bigint NOT NULL DEFAULT 0,
+        "currency" character varying(3) NOT NULL DEFAULT 'SAR',
+        "min_quantity" integer NOT NULL DEFAULT 1,
+        "max_quantity" integer,
+        "is_active" boolean NOT NULL DEFAULT false,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "updatedById" uuid,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_resource_price_catalog" PRIMARY KEY ("id"),
+        CONSTRAINT "CHK_resource_price_catalog_unit_price_minor" CHECK ("unit_price_minor" >= 0),
+        CONSTRAINT "CHK_resource_price_catalog_min_quantity" CHECK ("min_quantity" >= 1),
+        CONSTRAINT "CHK_resource_price_catalog_max_quantity" CHECK ("max_quantity" IS NULL OR "max_quantity" >= "min_quantity"),
+        CONSTRAINT "FK_resource_price_catalog_updated_by" FOREIGN KEY ("updatedById")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_resource_price_catalog_item_key" ON "resource_price_catalog" ("item_key");
+CREATE TABLE IF NOT EXISTS "resource_price_change_events" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "catalogItemId" uuid NOT NULL,
+        "item_key" character varying(64) NOT NULL,
+        "field" character varying(32) NOT NULL,
+        "from_value" text,
+        "to_value" text,
+        "actorId" uuid,
+        "actor_email" character varying(255),
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_resource_price_change_events" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_resource_price_change_events_catalog_item" FOREIGN KEY ("catalogItemId")
+          REFERENCES "resource_price_catalog"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_resource_price_change_events_actor" FOREIGN KEY ("actorId")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_resource_price_change_events_catalog_item" ON "resource_price_change_events" ("catalogItemId");
+CREATE INDEX IF NOT EXISTS "IDX_resource_price_change_events_created_at" ON "resource_price_change_events" ("created_at");
+CREATE TABLE IF NOT EXISTS "resource_purchases" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "purchasedById" uuid,
+        "purchased_by_email" character varying(255),
+        "catalogItemId" uuid,
+        "item_key" character varying(64) NOT NULL,
+        "kind" character varying(16) NOT NULL,
+        "unit_label" character varying(32) NOT NULL,
+        "unit_size" bigint NOT NULL,
+        "quantity" integer NOT NULL,
+        "unit_price_minor" bigint NOT NULL,
+        "total_minor" bigint NOT NULL,
+        "delta_units" bigint NOT NULL,
+        "currency" character varying(3) NOT NULL DEFAULT 'SAR',
+        "status" character varying(32) NOT NULL DEFAULT 'payment_processing',
+        "idempotency_key" character varying(64) NOT NULL,
+        "paymentId" uuid,
+        "payment_reference" character varying,
+        "completed_at" TIMESTAMP WITH TIME ZONE,
+        "failed_at" TIMESTAMP WITH TIME ZONE,
+        "refunded_at" TIMESTAMP WITH TIME ZONE,
+        "created_at" TIMESTAMP NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_resource_purchases" PRIMARY KEY ("id"),
+        CONSTRAINT "CHK_resource_purchases_unit_size" CHECK ("unit_size" > 0),
+        CONSTRAINT "CHK_resource_purchases_quantity" CHECK ("quantity" > 0),
+        CONSTRAINT "CHK_resource_purchases_unit_price_minor" CHECK ("unit_price_minor" > 0),
+        CONSTRAINT "CHK_resource_purchases_total_minor" CHECK ("total_minor" > 0),
+        CONSTRAINT "CHK_resource_purchases_delta_units" CHECK ("delta_units" > 0),
+        CONSTRAINT "FK_resource_purchases_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants"("id"),
+        CONSTRAINT "FK_resource_purchases_purchased_by" FOREIGN KEY ("purchasedById")
+          REFERENCES "users"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_resource_purchases_catalog_item" FOREIGN KEY ("catalogItemId")
+          REFERENCES "resource_price_catalog"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_resource_purchases_payment" FOREIGN KEY ("paymentId")
+          REFERENCES "payments"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_resource_purchases_tenant" ON "resource_purchases" ("tenantId");
+CREATE INDEX IF NOT EXISTS "IDX_resource_purchases_status" ON "resource_purchases" ("status");
+CREATE INDEX IF NOT EXISTS "IDX_resource_purchases_created_at" ON "resource_purchases" ("created_at");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_resource_purchases_tenant_idempotency"
+      ON "resource_purchases" ("tenantId", "idempotency_key");
+CREATE TABLE IF NOT EXISTS "tenant_entitlement_ledger" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "metric" character varying(48) NOT NULL,
+        "kind" character varying(16) NOT NULL,
+        "direction" character varying(8) NOT NULL,
+        "amount_units" bigint NOT NULL,
+        "unrecoverable_units" bigint NOT NULL DEFAULT 0,
+        "reason" character varying(32) NOT NULL,
+        "sourcePurchaseId" uuid,
+        "sourceRefundId" uuid,
+        "actorId" uuid,
+        "note" text,
+        "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_tenant_entitlement_ledger" PRIMARY KEY ("id"),
+        CONSTRAINT "CHK_tenant_entitlement_ledger_amount_units" CHECK ("amount_units" > 0),
+        CONSTRAINT "CHK_tenant_entitlement_ledger_direction" CHECK ("direction" IN ('grant', 'revoke')),
+        CONSTRAINT "FK_tenant_entitlement_ledger_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_tenant_entitlement_ledger_source_purchase" FOREIGN KEY ("sourcePurchaseId")
+          REFERENCES "resource_purchases"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_tenant_entitlement_ledger_source_refund" FOREIGN KEY ("sourceRefundId")
+          REFERENCES "refunds"("id") ON DELETE SET NULL,
+        CONSTRAINT "FK_tenant_entitlement_ledger_actor" FOREIGN KEY ("actorId")
+          REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE INDEX IF NOT EXISTS "IDX_tenant_entitlement_ledger_tenant_metric_kind" ON "tenant_entitlement_ledger" ("tenantId", "metric", "kind");
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_tenant_entitlement_ledger_source_purchase"
+      ON "tenant_entitlement_ledger" ("sourcePurchaseId")
+      WHERE "sourcePurchaseId" IS NOT NULL AND "direction" = 'grant';
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_tenant_entitlement_ledger_source_refund"
+      ON "tenant_entitlement_ledger" ("sourceRefundId")
+      WHERE "sourceRefundId" IS NOT NULL;
+CREATE TABLE IF NOT EXISTS "tenant_metric_credits" (
+        "tenantId" uuid NOT NULL,
+        "metric" character varying(48) NOT NULL,
+        "credited_units" bigint NOT NULL DEFAULT 0,
+        "debited_units" bigint NOT NULL DEFAULT 0,
+        "balance_units" bigint NOT NULL DEFAULT 0,
+        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_tenant_metric_credits" PRIMARY KEY ("tenantId", "metric"),
+        CONSTRAINT "CHK_tenant_metric_credits_balance_units" CHECK ("balance_units" >= 0),
+        CONSTRAINT "FK_tenant_metric_credits_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants"("id") ON DELETE CASCADE
+      );
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730044000000-SubscriptionPlanLimitDeclarations.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscription_plans"
+      ADD COLUMN IF NOT EXISTS "limit_declarations" jsonb;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730045000000-SubscriptionPlanLimitDeclarationsBackfill.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "subscription_plans"
+           SET "limit_declarations" = COALESCE("limit_declarations", '{}'::jsonb)
+                                       || jsonb_build_object('${column}', 'unlimited')
+         WHERE "${column}" IS NULL
+           AND NOT (COALESCE("limit_declarations", '{}'::jsonb) ? '${column}');
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730046000000-ResourcePriceCatalogMinQuantityReset.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "resource_price_catalog" SET "min_quantity" = 1 WHERE "min_quantity" <> 1;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730047000000-AiTokensMinQuantity50k.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "resource_price_catalog"
+          SET "min_quantity" = 50, "max_quantity" = 1000
+        WHERE "item_key" = 'AI_TOKENS';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730048000000-WhatsappMessagesMinQuantity1k.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "resource_price_catalog"
+          SET "min_quantity" = 1000, "max_quantity" = 1000000
+        WHERE "item_key" = 'WHATSAPP_MESSAGES';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730049000000-CatalogRangeCaps.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "resource_price_catalog" SET "max_quantity" = 20 WHERE "item_key" = 'branches';
+UPDATE "resource_price_catalog" SET "max_quantity" = 1000 WHERE "item_key" = 'APPOINTMENTS';
+UPDATE "resource_price_catalog" SET "max_quantity" = 1000 WHERE "item_key" = 'CAMPAIGNS';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730049000000-SubscriptionPlanCustomCycle.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$ BEGIN
+        CREATE TYPE "public"."subscription_plans_custom_cycle_unit_enum" AS ENUM('DAY', 'MONTH', 'YEAR');
+      EXCEPTION
+        WHEN duplicate_object THEN null;
+      END $$;
+ALTER TABLE "subscription_plans"
+      ADD COLUMN IF NOT EXISTS "custom_cycle_value" integer;
+ALTER TABLE "subscription_plans"
+      ADD COLUMN IF NOT EXISTS "custom_cycle_unit" "public"."subscription_plans_custom_cycle_unit_enum";
+ALTER TABLE "subscription_plans"
+      ADD CONSTRAINT "CHK_subscription_plans_custom_cycle_value_positive"
+      CHECK ("custom_cycle_value" IS NULL OR "custom_cycle_value" > 0);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730050000000-StorageItemsMbLotMinimum.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+UPDATE "resource_price_catalog"
+          SET "min_quantity" = 1024
+        WHERE "item_key" IN ('storageBytes', 'uploadedFiles', 'trainingFiles');
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730051000000-SubscriptionPlanFileLimitsBigint.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscription_plans" ALTER COLUMN "max_uploaded_files" TYPE bigint;
+ALTER TABLE "subscription_plans" ALTER COLUMN "max_training_files" TYPE bigint;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730052000000-AiTrainingFileSizeColumn.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_training_files" ADD COLUMN IF NOT EXISTS "file_size" bigint;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730053000000-CustomerNationalId.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "national_id" character varying(50);
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes
+          WHERE tablename = 'customers'
+            AND indexdef ILIKE '%UNIQUE%'
+            AND indexdef ILIKE '%"tenantId"%'
+            AND indexdef ILIKE '%national_id%'
+        ) THEN
+          CREATE UNIQUE INDEX "UQ_customers_tenant_national_id" ON "customers" ("tenantId", "national_id") WHERE "national_id" IS NOT NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730054000000-AiExecutionMetricProcessingMode.ts  (5 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "processing_mode" varchar(40);
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "data_residency_required" boolean;
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "data_residency_region" varchar(40);
+ALTER TABLE "ai_execution_metrics" ADD COLUMN IF NOT EXISTS "data_residency_reason" varchar(200);
+CREATE INDEX IF NOT EXISTS "IDX_ai_execution_metrics_processing_mode"
+         ON "ai_execution_metrics" ("processing_mode");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730055000000-AiCostEntryCacheWrite.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE ai_cost_entries ADD COLUMN IF NOT EXISTS cache_write_tokens integer NOT NULL DEFAULT 0;
+ALTER TABLE ai_cost_entries ADD COLUMN IF NOT EXISTS cache_write_price_microusd_per_million varchar(32);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730056000000-AiKnowledgeBaseAgentOptional.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE IF EXISTS ai_kb_embeddings ALTER COLUMN agent_id DROP NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730057000000-RefreshTokenFamily.ts  (7 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "family_id" uuid;
+ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "parent_id" uuid;
+ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "replaced_by_id" uuid;
+ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "rotated_at" TIMESTAMP WITH TIME ZONE;
+ALTER TABLE "refresh_tokens" ADD COLUMN IF NOT EXISTS "retry_count" integer NOT NULL DEFAULT 0;
+UPDATE "refresh_tokens" SET "family_id" = "id" WHERE "family_id" IS NULL;
+ALTER TABLE "refresh_tokens" ALTER COLUMN "family_id" SET NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730057100000-AuthTokenIndexes.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"${index.name}"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730058000000-DailyReportNoShows.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "daily_reports" ADD COLUMN IF NOT EXISTS "no_show_appointments" integer NOT NULL DEFAULT 0;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730059000000-CrmCustomerSoftDeleteAwareUniqueness.ts  (10 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_customers_tenant_phone" ON "customers" ("tenantId", "phone");
+DROP INDEX IF EXISTS "IDX_4c0d50bb04cf7976e922b5781d";
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UQ_customers_tenant_email_new"
+      ON "customers" ("tenantId", "email")
+      WHERE "deleted_at" IS NULL;
+DROP INDEX IF EXISTS "UQ_customers_tenant_email";
+ALTER TABLE "customers" DROP CONSTRAINT IF EXISTS "UQ_8536b8b85c06969f84f0c098b03";
+ALTER INDEX "UQ_customers_tenant_email_new" RENAME TO "UQ_customers_tenant_email";
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UQ_customers_tenant_national_id_new"
+      ON "customers" ("tenantId", "national_id")
+      WHERE "national_id" IS NOT NULL AND "deleted_at" IS NULL;
+DROP INDEX IF EXISTS "UQ_customers_tenant_national_id";
+ALTER INDEX "UQ_customers_tenant_national_id_new" RENAME TO "UQ_customers_tenant_national_id";
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"${indexName}"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730060000000-CustomerNoteConversationIdDrift.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${WRONG}'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${RIGHT}'
+        ) THEN
+          ALTER TABLE "${TABLE}" RENAME COLUMN "${WRONG}" TO "${RIGHT}";
+        END IF;
+      END $$;
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${RIGHT}'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: %.% is missing', '${TABLE}', '${RIGHT}';
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${WRONG}'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: %.% still exists alongside %', '${TABLE}', '${WRONG}', '${RIGHT}';
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730061000000-TenantSettingTargets.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'tenant_settings'
+            AND column_name = 'appointment_target'
+        ) THEN
+          ALTER TABLE "tenant_settings"
+            ADD COLUMN "appointment_target" integer NULL;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'tenant_settings'
+            AND column_name = 'revenue_target'
+        ) THEN
+          ALTER TABLE "tenant_settings"
+            ADD COLUMN "revenue_target" numeric(14,2) NULL;
+        END IF;
+      END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730062000000-AuditLogIndexes.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_audit_logs_tenant_created" ON "audit_logs" ("tenantId", "created_at" DESC);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_audit_logs_tenant_action_created" ON "audit_logs" ("tenantId", "action", "created_at" DESC);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_audit_logs_tenant_entity" ON "audit_logs" ("tenantId", "entity_type", "entity_id");
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"${indexName}"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730063000000-PatientActionLinks.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "patient_action_links" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "appointmentId" uuid NOT NULL,
+        "purpose" varchar(20) NOT NULL,
+        "token_digest" varchar(64) NOT NULL,
+        "expires_at" timestamptz NOT NULL,
+        "consumed_at" timestamptz,
+        "waitlist_offer" uuid,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_patient_action_links" PRIMARY KEY ("id"),
+        CONSTRAINT "UQ_patient_action_links_token_digest" UNIQUE ("token_digest"),
+        CONSTRAINT "patient_action_links_waitlist_offer_required" CHECK
+          ("purpose" <> 'WAITLIST_OFFER' OR "waitlist_offer" IS NOT NULL),
+        CONSTRAINT "FK_patient_action_links_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_patient_action_links_appointment" FOREIGN KEY ("appointmentId")
+          REFERENCES "appointments" ("id") ON DELETE CASCADE
+      );
+CREATE INDEX "IDX_patient_action_links_appointment_purpose" ON "patient_action_links" ("appointmentId", "purpose");
+CREATE INDEX "IDX_patient_action_links_expires_at" ON "patient_action_links" ("expires_at");
+CREATE INDEX "IDX_patient_action_links_tenant" ON "patient_action_links" ("tenantId");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730063500000-AppointmentActionOrigin.ts  (2 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "appointment_cancellations"
+        ADD COLUMN IF NOT EXISTS "origin" varchar(16) NOT NULL DEFAULT 'STAFF';
+ALTER TABLE "appointment_reschedules"
+        ADD COLUMN IF NOT EXISTS "origin" varchar(16) NOT NULL DEFAULT 'STAFF';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730064000000-TenantSettingSelfServiceAndReminders.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "tenant_settings"
+        ADD COLUMN IF NOT EXISTS "self_cancellation_enabled" boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "self_reschedule_enabled" boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "reminders_enabled" boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "reminder_lead_minutes" integer[] NOT NULL DEFAULT '{}';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730065000000-NotificationRuleAnchor.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "notification_rules"
+        ADD COLUMN IF NOT EXISTS "anchor" varchar(24) NOT NULL DEFAULT 'AFTER_EVENT';
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730065500000-ScheduledNotificationDeliveryChannel.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "scheduled_notifications"
+        ADD COLUMN IF NOT EXISTS "channel" varchar(16),
+        ADD COLUMN IF NOT EXISTS "skip_reason" varchar(40);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730067000000-SubscriptionInvoicePeriodAndCurrency.ts  (8 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscription_invoices"
+        ADD COLUMN IF NOT EXISTS "period_start" timestamptz,
+        ADD COLUMN IF NOT EXISTS "period_end" timestamptz,
+        ADD COLUMN IF NOT EXISTS "currency" varchar(3),
+        ADD COLUMN IF NOT EXISTS "retry_count" integer NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "next_retry_at" timestamptz,
+        ADD COLUMN IF NOT EXISTS "failure_class" varchar(64);
+SELECT si.id FROM subscription_invoices si
+       WHERE si.period_start IS NULL
+         AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = si.subscription_id::uuid)
+       LIMIT 20;
+SELECT value #>> '{}' AS currency FROM system_settings WHERE key = 'billing.default_currency';
+WITH batch AS (
+          SELECT si.id
+            FROM subscription_invoices si
+           WHERE si.period_start IS NULL
+           LIMIT 500
+        )
+        UPDATE subscription_invoices si
+           SET period_start = s.starts_at,
+               period_end = s.ends_at,
+               currency = $1
+          FROM subscriptions s, batch
+         WHERE si.id = batch.id
+           AND si.subscription_id::uuid = s.id
+        RETURNING si.id;
+SELECT COUNT(*)::int AS c FROM subscription_invoices WHERE period_start IS NULL;
+ALTER TABLE "subscription_invoices"
+        ALTER COLUMN "period_start" SET NOT NULL,
+        ALTER COLUMN "period_end" SET NOT NULL,
+        ALTER COLUMN "currency" SET NOT NULL;
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UQ_sub_invoice_period" ON "subscription_invoices" ("subscription_id", "period_start") WHERE "status" <> 'VOID';
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"UQ_sub_invoice_period"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730068000000-SubscriptionInvoiceWebhookDedup.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "subscription_invoices"
+        ADD COLUMN IF NOT EXISTS "webhook_event_id" varchar;
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UQ_sub_invoice_webhook_event" ON "subscription_invoices" ("webhook_event_id") WHERE "webhook_event_id" IS NOT NULL;
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"UQ_sub_invoice_webhook_event"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730070000000-InAppNotifications.ts  (7 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "in_app_notifications" (
+        "id"                uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        "tenantId"          uuid NULL,
+        "recipient_user_id" uuid NOT NULL,
+        "key"               character varying(64)  NOT NULL,
+        "category"          character varying(32)  NOT NULL,
+        "priority"          character varying(16)  NOT NULL DEFAULT 'NORMAL',
+        "variables"         jsonb NULL,
+        "link_url"          character varying(512) NULL,
+        "entity_type"       character varying(64)  NULL,
+        "entity_id"         uuid NULL,
+        "dedupe_key"        character varying(255) NULL,
+        "read_at"           TIMESTAMP WITH TIME ZONE NULL,
+        "created_at"        TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "FK_in_app_notifications_tenant"
+          FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_in_app_notifications_recipient"
+          FOREIGN KEY ("recipient_user_id") REFERENCES "users"("id") ON DELETE CASCADE
+      );
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_in_app_notifications_recipient_dedupe"
+        ON "in_app_notifications" ("recipient_user_id", "dedupe_key")
+        WHERE "dedupe_key" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS "IX_in_app_notifications_recipient_created"
+        ON "in_app_notifications" ("recipient_user_id", "created_at" DESC);
+CREATE INDEX IF NOT EXISTS "IX_in_app_notifications_recipient_unread"
+        ON "in_app_notifications" ("recipient_user_id")
+        WHERE "read_at" IS NULL;
+CREATE INDEX IF NOT EXISTS "IX_in_app_notifications_tenant_created"
+        ON "in_app_notifications" ("tenantId", "created_at");
+CREATE TABLE IF NOT EXISTS "notification_preferences" (
+        "id"         uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        "user_id"    uuid NOT NULL,
+        "category"   character varying(32) NOT NULL,
+        "muted"      boolean NOT NULL DEFAULT false,
+        "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        CONSTRAINT "FK_notification_preferences_user"
+          FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE
+      );
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_notification_preferences_user_category"
+        ON "notification_preferences" ("user_id", "category");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730070100000-NotificationHotPathIndexes.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_notification_rules_tenant_trigger_active"
+        ON "notification_rules" ("tenantId", "trigger_event", "is_active");
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_scheduled_notifications_tenant_status_scheduled"
+        ON "scheduled_notifications" ("tenantId", "status", "scheduled_at");
+SELECT indisvalid FROM pg_index WHERE indexrelid = $1::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730071000000-CustomerSegments.ts  (8 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "customer_segments" (
+        "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+        "tenantId" uuid NOT NULL,
+        "name" varchar(160) NOT NULL,
+        "description" varchar(500),
+        "rules" jsonb NOT NULL,
+        "match" varchar(3) NOT NULL,
+        "created_byId" uuid,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        "deleted_at" timestamptz,
+        CONSTRAINT "PK_customer_segments" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_customer_segments_tenant" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_customer_segments_created_by" FOREIGN KEY ("created_byId") REFERENCES "users"("id") ON DELETE SET NULL
+      );
+CREATE UNIQUE INDEX "UQ_customer_segments_tenant_name_live"
+      ON "customer_segments" ("tenantId", "name")
+      WHERE "deleted_at" IS NULL;
+ALTER TABLE "campaigns" ADD COLUMN "segment_id" uuid;
+ALTER TABLE "campaigns" ADD CONSTRAINT "FK_campaigns_segment" FOREIGN KEY ("segment_id") REFERENCES "customer_segments"("id") ON DELETE SET NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_appointment_services_tenant_service" ON "appointment_services" ("tenantId", "serviceId");
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_customers_tenant_created" ON "customers" ("tenantId", "created_at");
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_customers_tenant_birthday"
+      ON "customers" ("tenantId", (DATE_PART('doy', "date_of_birth"::date)))
+      WHERE "date_of_birth" IS NOT NULL;
+SELECT indisvalid FROM pg_index WHERE indexrelid = '"${indexName}"'::regclass;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730074000000-InvoiceCurrency.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "currency" varchar(3);
+SELECT
+        t.id AS tenant_id,
+        t.name AS tenant_name,
+        ts.currency AS tenant_currency,
+        COUNT(i.id) AS invoice_count,
+        COUNT(i.id) FILTER (
+          WHERE a.currency IS NOT NULL AND a.currency <> ts.currency
+        ) AS mismatched_count
+      FROM invoices i
+      JOIN "tenants" t ON t.id = i."tenantId"
+      LEFT JOIN "tenant_settings" ts ON ts.tenant_id = t.id
+      LEFT JOIN "appointments" a ON a.id = i."appointmentId"
+      WHERE i.currency IS NULL
+      GROUP BY t.id, t.name, ts.currency
+      ORDER BY mismatched_count DESC, invoice_count DESC;
+SELECT COUNT(DISTINCT i.id)::int AS c
+        FROM invoices i
+        JOIN "tenants" t ON t.id = i."tenantId"
+        LEFT JOIN "tenant_settings" ts ON ts.tenant_id = t.id
+       WHERE i.currency IS NULL AND ts.currency IS NULL;
+WITH batch AS (
+          SELECT i.id
+            FROM invoices i
+           WHERE i.currency IS NULL
+           LIMIT 500
+        )
+        UPDATE invoices i
+           SET currency = ts.currency
+          FROM "tenant_settings" ts, batch
+         WHERE i.id = batch.id
+           AND ts.tenant_id = i."tenantId"
+        RETURNING i.id;
+SELECT COUNT(*)::int AS c FROM invoices WHERE currency IS NULL;
+ALTER TABLE "invoices" ALTER COLUMN "currency" SET NOT NULL;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730075000000-InvoiceDocumentTracking.ts  (1 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "invoices"
+        ADD COLUMN IF NOT EXISTS "document_key" varchar,
+        ADD COLUMN IF NOT EXISTS "document_version" integer NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "document_rendered_version" integer;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730076000000-ClinicalRecords.ts  (12 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "clinical_encounters" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "customerId" uuid NOT NULL,
+        "appointmentId" uuid,
+        "branchId" uuid,
+        "authorId" uuid NOT NULL,
+        "occurred_at" timestamptz NOT NULL,
+        "summary" text,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_clinical_encounters" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_clinical_encounters_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_clinical_encounters_customer" FOREIGN KEY ("customerId")
+          REFERENCES "customers" ("id"),
+        CONSTRAINT "FK_clinical_encounters_appointment" FOREIGN KEY ("appointmentId")
+          REFERENCES "appointments" ("id"),
+        CONSTRAINT "FK_clinical_encounters_branch" FOREIGN KEY ("branchId")
+          REFERENCES "branches" ("id"),
+        CONSTRAINT "FK_clinical_encounters_author" FOREIGN KEY ("authorId")
+          REFERENCES "users" ("id")
+      );
+CREATE INDEX "IDX_clinical_encounters_timeline" ON "clinical_encounters" ("tenantId", "customerId");
+CREATE INDEX "IDX_clinical_encounters_appointment" ON "clinical_encounters" ("tenantId", "appointmentId");
+CREATE TYPE "public"."clinical_entries_kind_enum" AS ENUM('NOTE', 'DIAGNOSIS', 'MEDICATION', 'ALLERGY', 'VITALS');
+CREATE TABLE "clinical_entries" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "customerId" uuid NOT NULL,
+        "encounterId" uuid,
+        "kind" "public"."clinical_entries_kind_enum" NOT NULL,
+        "data" jsonb NOT NULL,
+        "recorded_at" timestamptz NOT NULL,
+        "authorId" uuid NOT NULL,
+        "version" integer NOT NULL DEFAULT 1,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        "deleted_at" timestamptz,
+        CONSTRAINT "PK_clinical_entries" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_clinical_entries_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_clinical_entries_customer" FOREIGN KEY ("customerId")
+          REFERENCES "customers" ("id"),
+        CONSTRAINT "FK_clinical_entries_encounter" FOREIGN KEY ("encounterId")
+          REFERENCES "clinical_encounters" ("id"),
+        CONSTRAINT "FK_clinical_entries_author" FOREIGN KEY ("authorId")
+          REFERENCES "users" ("id")
+      );
+CREATE INDEX "IDX_clinical_entries_timeline" ON "clinical_entries" ("tenantId", "customerId", "recorded_at");
+CREATE INDEX "IDX_clinical_entries_kind" ON "clinical_entries" ("tenantId", "customerId", "kind");
+CREATE INDEX "IDX_clinical_entries_encounter" ON "clinical_entries" ("tenantId", "encounterId");
+CREATE TABLE "clinical_entry_revisions" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "entryId" uuid NOT NULL,
+        "previous_data" jsonb NOT NULL,
+        "changed_byId" uuid NOT NULL,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_clinical_entry_revisions" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_clinical_entry_revisions_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_clinical_entry_revisions_entry" FOREIGN KEY ("entryId")
+          REFERENCES "clinical_entries" ("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_clinical_entry_revisions_changed_by" FOREIGN KEY ("changed_byId")
+          REFERENCES "users" ("id")
+      );
+CREATE INDEX "IDX_clinical_entry_revisions_entry" ON "clinical_entry_revisions" ("entryId", "created_at");
+CREATE TABLE "clinical_access_logs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "customerId" uuid NOT NULL,
+        "userId" uuid NOT NULL,
+        "scope" varchar(40) NOT NULL,
+        "entryId" uuid,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_clinical_access_logs" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_clinical_access_logs_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_clinical_access_logs_customer" FOREIGN KEY ("customerId")
+          REFERENCES "customers" ("id"),
+        CONSTRAINT "FK_clinical_access_logs_user" FOREIGN KEY ("userId")
+          REFERENCES "users" ("id"),
+        CONSTRAINT "FK_clinical_access_logs_entry" FOREIGN KEY ("entryId")
+          REFERENCES "clinical_entries" ("id")
+      );
+CREATE INDEX "IDX_clinical_access_logs_customer" ON "clinical_access_logs" ("tenantId", "customerId", "created_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730077000000-ClinicalPermissionsAndRoles.ts  (6 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+INSERT INTO "roles" ("name", "slug", "description", "is_system")
+         SELECT $1, $2::varchar, $3, true
+         WHERE NOT EXISTS (
+           SELECT 1 FROM "roles" WHERE "slug" = $2::varchar AND "tenantId" IS NULL
+         );
+INSERT INTO "permissions" ("name", "slug", "module", "description", "risk_level")
+       VALUES ('Read clinical records', $1, 'clinical',
+         'Read structured clinical entries and CustomerProfile''s clinical fields.', 'high')
+       ON CONFLICT (slug) DO NOTHING;
+INSERT INTO "permissions" ("name", "slug", "module", "description", "risk_level")
+       VALUES ('Manage clinical records', $1, 'clinical',
+         'Create, correct and soft-delete structured clinical entries.', 'high')
+       ON CONFLICT (slug) DO NOTHING;
+INSERT INTO "permissions" ("name", "slug", "module")
+       VALUES ('Read CRM customers', $1, 'crm')
+       ON CONFLICT (slug) DO NOTHING;
+INSERT INTO "role_permissions" ("roleId", "permissionId")
+         SELECT r.id, p.id
+           FROM "roles" r, "permissions" p
+          WHERE r.slug = $1 AND r."tenantId" IS NULL
+            AND p.slug = $2
+            AND NOT EXISTS (
+              SELECT 1 FROM "role_permissions" rp
+               WHERE rp."roleId" = r.id AND rp."permissionId" = p.id
+            );
+SELECT COUNT(*)::int AS c FROM (
+        VALUES ('doctor', '${ClinicalPermissionsAndRoles1730077000000.CLINICAL_READ}'),
+               ('doctor', '${ClinicalPermissionsAndRoles1730077000000.CLINICAL_MANAGE}'),
+               ('doctor', '${ClinicalPermissionsAndRoles1730077000000.CRM_CUSTOMERS_READ}'),
+               ('owner', '${ClinicalPermissionsAndRoles1730077000000.CLINICAL_READ}'),
+               ('owner', '${ClinicalPermissionsAndRoles1730077000000.CLINICAL_MANAGE}'),
+               ('manager', '${ClinicalPermissionsAndRoles1730077000000.CLINICAL_READ}'),
+               ('manager', '${ClinicalPermissionsAndRoles1730077000000.CLINICAL_MANAGE}')
+      ) AS expected(role_slug, perm_slug)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM role_permissions rp
+        JOIN roles r ON r.id = rp."roleId" AND r."tenantId" IS NULL
+        JOIN permissions p ON p.id = rp."permissionId"
+        WHERE r.slug = expected.role_slug AND p.slug = expected.perm_slug
+      );
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730078000000-WaitlistEntriesAndOffers.ts  (10 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "waitlist_entries" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "customerId" uuid NOT NULL,
+        "serviceId" uuid NOT NULL,
+        "preferredStaffId" uuid,
+        "preferredBranchId" uuid,
+        "window_start" timestamptz,
+        "window_end" timestamptz,
+        "priority" integer NOT NULL DEFAULT 0,
+        "state" varchar(20) NOT NULL DEFAULT 'WAITING',
+        "expires_at" timestamptz,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_waitlist_entries" PRIMARY KEY ("id"),
+        CONSTRAINT "waitlist_entries_window_order" CHECK
+          ("window_end" IS NULL OR "window_start" IS NULL OR "window_end" > "window_start"),
+        CONSTRAINT "FK_waitlist_entries_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_waitlist_entries_customer" FOREIGN KEY ("customerId")
+          REFERENCES "customers" ("id"),
+        CONSTRAINT "FK_waitlist_entries_service" FOREIGN KEY ("serviceId")
+          REFERENCES "services" ("id"),
+        CONSTRAINT "FK_waitlist_entries_preferred_staff" FOREIGN KEY ("preferredStaffId")
+          REFERENCES "staff_profiles" ("id"),
+        CONSTRAINT "FK_waitlist_entries_preferred_branch" FOREIGN KEY ("preferredBranchId")
+          REFERENCES "branches" ("id")
+      );
+CREATE INDEX "IDX_waitlist_entries_match" ON "waitlist_entries" ("tenantId", "serviceId", "state");
+CREATE INDEX "IDX_waitlist_entries_expiry" ON "waitlist_entries" ("tenantId", "state", "expires_at");
+CREATE INDEX "IDX_waitlist_entries_dup_lookup" ON "waitlist_entries" ("tenantId", "customerId", "serviceId", "state");
+CREATE UNIQUE INDEX "UQ_waitlist_entries_active_dup"
+      ON "waitlist_entries" ("tenantId", "customerId", "serviceId")
+      WHERE "state" IN ('WAITING', 'OFFERED');
+CREATE TABLE "waitlist_offers" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "entryId" uuid NOT NULL,
+        "branchId" uuid NOT NULL,
+        "staffId" uuid NOT NULL,
+        "start_at" timestamptz NOT NULL,
+        "end_at" timestamptz NOT NULL,
+        "state" varchar(20) NOT NULL DEFAULT 'PENDING',
+        "responds_by" timestamptz NOT NULL,
+        "appointmentId" uuid,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_waitlist_offers" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_waitlist_offers_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_waitlist_offers_entry" FOREIGN KEY ("entryId")
+          REFERENCES "waitlist_entries" ("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_waitlist_offers_branch" FOREIGN KEY ("branchId")
+          REFERENCES "branches" ("id"),
+        CONSTRAINT "FK_waitlist_offers_staff" FOREIGN KEY ("staffId")
+          REFERENCES "staff_profiles" ("id"),
+        CONSTRAINT "FK_waitlist_offers_appointment" FOREIGN KEY ("appointmentId")
+          REFERENCES "appointments" ("id")
+      );
+CREATE INDEX "IDX_waitlist_offers_expiry" ON "waitlist_offers" ("tenantId", "state", "responds_by");
+CREATE INDEX "IDX_waitlist_offers_entry_state" ON "waitlist_offers" ("entryId", "state");
+CREATE UNIQUE INDEX "UQ_waitlist_offers_entry_pending_slot"
+      ON "waitlist_offers" ("entryId", "start_at")
+      WHERE "state" = 'PENDING';
+ALTER TABLE "patient_action_links"
+      ADD CONSTRAINT "FK_patient_action_links_waitlist_offer"
+      FOREIGN KEY ("waitlist_offer") REFERENCES "waitlist_offers" ("id");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730079000000-EmailSuppressionAndCampaignChannel.ts  (7 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS "email_suppressions" (
+        "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+        "tenant_id" uuid NOT NULL,
+        "email" varchar(255) NOT NULL,
+        "reason" varchar(32) NOT NULL,
+        "source" varchar(32),
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_email_suppressions" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_email_suppressions_tenant" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE
+      );
+CREATE UNIQUE INDEX IF NOT EXISTS "UQ_email_suppressions_tenant_email"
+      ON "email_suppressions" ("tenant_id", "email");
+CREATE INDEX IF NOT EXISTS "IDX_email_suppressions_tenant"
+      ON "email_suppressions" ("tenant_id");
+ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "channel" varchar(16) NOT NULL DEFAULT 'WHATSAPP';
+ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "email_subject" varchar(200);
+ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "email_body" text;
+ALTER TABLE "campaign_recipients" ADD COLUMN IF NOT EXISTS "email" varchar(255);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730080000000-QueueEntries.ts  (4 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "queue_entries" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "branchId" uuid NOT NULL,
+        "appointmentId" uuid NOT NULL,
+        "customerId" uuid NOT NULL,
+        "staffId" uuid,
+        "business_date" date NOT NULL,
+        "state" varchar(20) NOT NULL DEFAULT 'WAITING',
+        "arrived_at" timestamptz NOT NULL,
+        "called_at" timestamptz,
+        "started_at" timestamptz,
+        "ended_at" timestamptz,
+        "called_byId" uuid,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_queue_entries" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_queue_entries_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id"),
+        CONSTRAINT "FK_queue_entries_branch" FOREIGN KEY ("branchId")
+          REFERENCES "branches" ("id"),
+        CONSTRAINT "FK_queue_entries_appointment" FOREIGN KEY ("appointmentId")
+          REFERENCES "appointments" ("id"),
+        CONSTRAINT "FK_queue_entries_customer" FOREIGN KEY ("customerId")
+          REFERENCES "customers" ("id"),
+        CONSTRAINT "FK_queue_entries_staff" FOREIGN KEY ("staffId")
+          REFERENCES "staff_profiles" ("id"),
+        CONSTRAINT "FK_queue_entries_called_by" FOREIGN KEY ("called_byId")
+          REFERENCES "users" ("id")
+      );
+CREATE INDEX "IDX_queue_entries_live" ON "queue_entries" ("tenantId", "branchId", "business_date", "state");
+CREATE INDEX "IDX_queue_entries_staff" ON "queue_entries" ("tenantId", "branchId", "business_date", "staffId");
+CREATE UNIQUE INDEX "UQ_queue_entries_appointment_live"
+      ON "queue_entries" ("tenantId", "appointmentId")
+      WHERE "state" NOT IN ('COMPLETED', 'CANCELLED', 'NO_SHOW');
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730081000000-ExportJobs.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE "export_jobs" (
+        "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+        "tenantId" uuid NOT NULL,
+        "requestedById" uuid NOT NULL,
+        "report" varchar(60) NOT NULL,
+        "format" varchar(10) NOT NULL DEFAULT 'XLSX',
+        "filters" jsonb NOT NULL,
+        "branch_scope" jsonb,
+        "state" varchar(20) NOT NULL DEFAULT 'PENDING',
+        "storage_key" varchar,
+        "row_count" integer,
+        "error" text,
+        "expires_at" timestamptz,
+        "created_at" timestamptz NOT NULL DEFAULT now(),
+        "updated_at" timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_export_jobs" PRIMARY KEY ("id"),
+        CONSTRAINT "FK_export_jobs_tenant" FOREIGN KEY ("tenantId")
+          REFERENCES "tenants" ("id") ON DELETE CASCADE,
+        CONSTRAINT "FK_export_jobs_requested_by" FOREIGN KEY ("requestedById")
+          REFERENCES "users" ("id")
+      );
+CREATE INDEX "IDX_export_jobs_tenant_requested_created" ON "export_jobs" ("tenantId", "requestedById", "created_at" DESC);
+CREATE INDEX "IDX_export_jobs_state_expires" ON "export_jobs" ("state", "expires_at");
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- 1730082000000-AuditReadPermission.ts  (3 statements)
+-- ─────────────────────────────────────────────────────────────────────────
+
+INSERT INTO "permissions" ("name", "slug", "module", "description", "risk_level")
+       VALUES ('Read clinic activity log', $1, 'activity_log',
+         'Read the clinic-facing accountability timeline (allow-listed actions only, field names never values).', 'medium')
+       ON CONFLICT (slug) DO NOTHING;
+INSERT INTO "role_permissions" ("roleId", "permissionId")
+         SELECT r.id, p.id
+           FROM "roles" r, "permissions" p
+          WHERE r.slug = $1 AND r."tenantId" IS NULL
+            AND p.slug = $2
+            AND NOT EXISTS (
+              SELECT 1 FROM "role_permissions" rp
+               WHERE rp."roleId" = r.id AND rp."permissionId" = p.id
+            );
+SELECT COUNT(*)::int AS c FROM (
+        VALUES ('owner', '${AuditReadPermission1730082000000.AUDIT_READ}'),
+               ('manager', '${AuditReadPermission1730082000000.AUDIT_READ}')
+      ) AS expected(role_slug, perm_slug)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM role_permissions rp
+        JOIN roles r ON r.id = rp."roleId" AND r."tenantId" IS NULL
+        JOIN permissions p ON p.id = rp."permissionId"
+        WHERE r.slug = expected.role_slug AND p.slug = expected.perm_slug
+      );
