@@ -249,3 +249,78 @@ export enum ClinicalEntryKind {
   ALLERGY = 'ALLERGY',
   VITALS = 'VITALS',
 }
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T155 (US9, data-model.md §1.8/§4).
+ * `WaitlistEntry` lifecycle. `OFFERED → WAITING` happens both on offer
+ * expiry (FR-W004: the entry survives, the offer does not) and whenever a
+ * losing acceptance race leaves the entry's offer non-actionable without an
+ * appointment (FR-W011: "the loser ... MUST remain on the waitlist") — see
+ * `WaitlistOfferService`.
+ */
+export enum WaitlistState {
+  WAITING = 'WAITING',
+  OFFERED = 'OFFERED',
+  FULFILLED = 'FULFILLED',
+  EXPIRED = 'EXPIRED',
+  CANCELLED = 'CANCELLED',
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T155 (US9, data-model.md §1.9/§4).
+ * `WaitlistOffer` lifecycle. `WITHDRAWN` covers every case where the offer
+ * itself was never wrong but the slot stopped being available before it was
+ * answered — booked directly by someone else (FR-W009), or a sibling offer
+ * for the same slot was accepted first (FR-W012).
+ */
+export enum WaitlistOfferState {
+  PENDING = 'PENDING',
+  ACCEPTED = 'ACCEPTED',
+  DECLINED = 'DECLINED',
+  EXPIRED = 'EXPIRED',
+  WITHDRAWN = 'WITHDRAWN',
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T168 (US10, data-model.md
+ * §1.10/§4). `QueueEntry` lifecycle:
+ * `WAITING → CALLED → IN_CONSULTATION → COMPLETED` (terminal) ·
+ * `CALLED → SKIPPED → WAITING` (recall, FR-Q010) ·
+ * `WAITING|CALLED → NO_SHOW|CANCELLED` (terminal).
+ * Each transition that corresponds to an appointment transition drives it
+ * through the EXISTING `AppointmentsService.changeStatus` /
+ * `AppointmentsService.cancel` — the appointment transition matrix
+ * (`ALLOWED_TRANSITIONS`) is never widened (R10, FR-Q004).
+ */
+export enum QueueState {
+  WAITING = 'WAITING',
+  CALLED = 'CALLED',
+  IN_CONSULTATION = 'IN_CONSULTATION',
+  COMPLETED = 'COMPLETED',
+  SKIPPED = 'SKIPPED',
+  NO_SHOW = 'NO_SHOW',
+  CANCELLED = 'CANCELLED',
+}
+
+/**
+ * Spec 014 (Clinic Platform Completion) — T179 (US13, data-model.md §1.11).
+ * `ExportJob` lifecycle: `PENDING` (queued, not yet claimed) → `RUNNING`
+ * (claimed by a worker via a conditional `PENDING → RUNNING` update, T183) →
+ * `READY` (file stored) or `FAILED` (with `error`). `READY` transitions to
+ * `EXPIRED` once the daily `platform.exportExpiry` sweep deletes the storage
+ * object past `expires_at` — deletion happens BEFORE this flip so an
+ * `EXPIRED` job never points at retrievable bytes (FR-X010).
+ */
+export enum ExportJobState {
+  PENDING = 'PENDING',
+  RUNNING = 'RUNNING',
+  READY = 'READY',
+  FAILED = 'FAILED',
+  EXPIRED = 'EXPIRED',
+}
+
+/** Spec 014 (Clinic Platform Completion) — T179/T180 (US13, FR-X003). */
+export enum ExportJobFormat {
+  XLSX = 'XLSX',
+  PDF = 'PDF',
+}

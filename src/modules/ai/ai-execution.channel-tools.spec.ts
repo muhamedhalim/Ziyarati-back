@@ -89,6 +89,12 @@ describe('AiExecutionService — availableTools() / defaultSystemPrompt() channe
           AI_TOOL.LIST_CLINIC_BRANCHES,
           AI_TOOL.LIST_CLINIC_DOCTORS,
           AI_TOOL.LIST_CLINIC_SERVICES,
+          // Own-clinic FACTS: where the branch is, when it is open, and which
+          // days a doctor works. Tenant-bound from `ctx.tenantId` exactly like
+          // the three above, so they widen what a patient can ask about
+          // without widening which clinic they can reach.
+          AI_TOOL.GET_BRANCH_INFO,
+          AI_TOOL.GET_DOCTOR_SCHEDULE,
           AI_TOOL.CHECK_AVAILABILITY,
           AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
           AI_TOOL.BOOK_APPOINTMENT,
@@ -98,7 +104,7 @@ describe('AiExecutionService — availableTools() / defaultSystemPrompt() channe
         ]),
       );
       // And NOTHING else — the admin/dashboard toolset is not offered either.
-      expect(toolNames).toHaveLength(9);
+      expect(toolNames).toHaveLength(11);
     });
 
     it('uses the WhatsApp system prompt', () => {
@@ -110,7 +116,11 @@ describe('AiExecutionService — availableTools() / defaultSystemPrompt() channe
 
   describe('guest (public web widget) — unaffected by the new WHATSAPP branch', () => {
     beforeEach(() => {
-      getUser.mockReturnValue({ id: 'guest-sub', guest: true, permissions: [] });
+      getUser.mockReturnValue({
+        id: 'guest-sub',
+        guest: true,
+        permissions: [],
+      });
     });
 
     it('gets the public discovery + public booking toolset on every transport, including WHATSAPP', () => {

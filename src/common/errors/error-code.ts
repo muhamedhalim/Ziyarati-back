@@ -105,6 +105,16 @@ export enum ErrorCode {
    * client should refresh the available slots and re-pick.
    */
   SLOT_ALREADY_BOOKED = 'SLOT_ALREADY_BOOKED',
+
+  // ── Patient queue (Spec 014, US10) ─────────────────────────────────────
+  /**
+   * A queue entry's `start` action was refused because the underlying
+   * appointment is still `PENDING_PAYMENT` (FR-Q007a/FR-Q007c). The queue
+   * never confirms an appointment implicitly — confirm it through the
+   * existing `POST /appointments/:id/status` route, then retry `start`.
+   * `context.requires` is always `'CONFIRM_APPOINTMENT'`.
+   */
+  AWAITING_CONFIRMATION = 'AWAITING_CONFIRMATION',
 }
 
 export interface ErrorCodeMeta {
@@ -259,7 +269,8 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
 
   [ErrorCode.DUPLICATE_ACTIVE_REQUEST]: {
     status: HttpStatus.CONFLICT,
-    message: 'An active upgrade request already exists for this feature or usage limit',
+    message:
+      'An active upgrade request already exists for this feature or usage limit',
   },
   [ErrorCode.INVALID_UPGRADE_METRIC]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -275,12 +286,14 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
   },
   [ErrorCode.QUOTE_EXPIRED]: {
     status: HttpStatus.CONFLICT,
-    message: 'This quote has expired — ask the platform to re-quote the request',
+    message:
+      'This quote has expired — ask the platform to re-quote the request',
   },
 
   [ErrorCode.SUBSCRIPTION_GRACE_EXPIRED]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
-    message: 'Your subscription grace period has ended. Renew or contact support to continue this action — your existing data remains fully accessible.',
+    message:
+      'Your subscription grace period has ended. Renew or contact support to continue this action — your existing data remains fully accessible.',
   },
   [ErrorCode.NO_ACTIVE_SUBSCRIPTION]: {
     status: HttpStatus.FORBIDDEN,
@@ -290,7 +303,8 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
 
   [ErrorCode.VARIABLE_PRICING_UNSUPPORTED]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
-    message: 'This service uses variable pricing, which cannot be booked online yet. Please arrange this booking directly with the clinic.',
+    message:
+      'This service uses variable pricing, which cannot be booked online yet. Please arrange this booking directly with the clinic.',
   },
 
   [ErrorCode.STAFF_NOT_AVAILABLE]: {
@@ -301,5 +315,11 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
     status: HttpStatus.CONFLICT,
     message:
       'This time slot was just booked for the selected staff member. Please choose another time.',
+  },
+
+  [ErrorCode.AWAITING_CONFIRMATION]: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'This appointment is still awaiting payment confirmation and cannot be started yet.',
   },
 };

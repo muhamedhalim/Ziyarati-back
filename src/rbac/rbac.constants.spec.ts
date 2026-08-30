@@ -110,6 +110,24 @@ describe('RBAC catalogue-coverage invariant (FND-010)', () => {
     ).toBe(false);
   });
 
+  /**
+   * T184 (spec 014, US13) — `reports.export`'s enforcing controller
+   * (`ReportExportController`) has now landed. T004 already removed
+   * `REPORTS_EXPORT` from the untriaged set in anticipation of this task
+   * (see this set's own docblock: "REPORTS_EXPORT was removed from this set
+   * in T004... T184 gives it a real enforcing route"); this test proves
+   * that removal is now justified — the coverage test passes for the RIGHT
+   * reason (a real enforcing route exists), not because the entry was
+   * quietly left out.
+   */
+  it('T184 (spec 014, US13) enforces reports.export via ReportExportController, justifying T004s removal', () => {
+    expect(PERMISSION.REPORTS_EXPORT).toBe('reports.export');
+    expect(UNTRIAGED_COVERAGE_GAP_SLUGS.has(PERMISSION.REPORTS_EXPORT)).toBe(
+      false,
+    );
+    expect(ENFORCED_KEYS.has('REPORTS_EXPORT')).toBe(true);
+  });
+
   it('none of the three exception sets contain a stale entry (a slug that actually IS referenced elsewhere)', () => {
     const allExceptions = [
       ...UNENFORCED_PERMISSION_SLUGS,

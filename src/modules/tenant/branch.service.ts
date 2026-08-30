@@ -57,7 +57,11 @@ export class BranchService {
     const current = await this.branches.count({
       where: { tenant: { id: tenantId } },
     });
-    await this.usage.assertCountWithinLimit(tenantId, COUNT_LIMIT.BRANCHES, current);
+    await this.usage.assertCountWithinLimit(
+      tenantId,
+      COUNT_LIMIT.BRANCHES,
+      current,
+    );
 
     const branch = this.branches.create({
       tenant: { id: tenantId } as Tenant,
@@ -181,6 +185,18 @@ export class BranchService {
   }
 
   /**
+   * Spec 014 (Clinic Platform Completion) — T145 (US11, FR-A016). Public
+   * entry point onto the SAME `branch_users` ABAC membership lookup FND-017
+   * already built for `branches.update_own`, so a second module (analytics)
+   * scoping a branch-restricted caller to their own branch(es) reuses the one
+   * real "which branches is this user assigned to" query — including its
+   * Redis cache — rather than re-deriving branch membership a second way.
+   */
+  getCallerBranchIds(tenantId: string, userId: string): Promise<string[]> {
+    return this.resolveOwnBranchIds(tenantId, userId);
+  }
+
+  /**
    * The branch ids `userId` is assigned to in this tenant (via `branch_users`),
    * Redis-cached with a tenant-qualified key (PR-006) so this ABAC check adds
    * at most one scoped read per `BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS` window
@@ -208,7 +224,12 @@ export class BranchService {
     });
     const branchIds = rows.map((r) => r.branch.id);
     await this.redis.application
-      .set(cacheKey, JSON.stringify(branchIds), 'EX', BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS)
+      .set(
+        cacheKey,
+        JSON.stringify(branchIds),
+        'EX',
+        BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS,
+      )
       .catch(() => undefined);
     return branchIds;
   }

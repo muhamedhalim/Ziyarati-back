@@ -41,9 +41,10 @@ function build() {
     }),
   };
   const customers = {
-    findOneOrThrow: jest
-      .fn()
-      .mockResolvedValue({ id: SERVER_BOUND_CUSTOMER_ID, has_health_insurance: null }),
+    findOneOrThrow: jest.fn().mockResolvedValue({
+      id: SERVER_BOUND_CUSTOMER_ID,
+      has_health_insurance: null,
+    }),
     setInsuranceStatus: jest.fn().mockResolvedValue(undefined),
   };
   const tenants = {
@@ -123,9 +124,11 @@ describe('book_appointment — server-bound customer wins over a model-supplied 
     );
     // Never even considered — a hallucinated/injected id must not silently
     // fall through, and must not surface anywhere in the executed booking.
-    const bookedCustomerId = (appointments.create.mock.calls[0]?.[2] as
-      | { customerId?: string }
-      | undefined)?.customerId;
+    const bookedCustomerId = (
+      appointments.create.mock.calls[0]?.[2] as
+        | { customerId?: string }
+        | undefined
+    )?.customerId;
     expect(bookedCustomerId).not.toBe(MODEL_SUPPLIED_CUSTOMER_ID);
   });
 

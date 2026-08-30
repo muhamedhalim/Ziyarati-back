@@ -11,12 +11,19 @@ import { DashboardMetric } from '../../entities/Analytics/DashboardMetric';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { AppointmentService } from '../../entities/Calendar&Appointments/AppointmentService';
+import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
 import { Payment } from '../../entities/Payments/Payment';
 import { Customer } from '../../entities/CRM/Customer';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { CustomerReview } from '../../entities/CRM/CustomerReview';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+// Spec 014 (Clinic Platform Completion) — T145 (US11). Read-only here too:
+// AdvancedAnalyticsService only READS `branch_users` (to scope a
+// branch-restricted caller, FR-A016) and `tenant_settings` (the clinic's
+// configured currency, FR-A021) — it never mutates either.
+import { BranchUser } from '../../entities/Multi Branch/BranchUser';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 
 import { AnalyticsEventService } from './analytics-event.service';
 import { DashboardMetricService } from './dashboard-metric.service';
@@ -27,12 +34,14 @@ import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AnalyticsCacheService } from './analytics-cache.service';
 import { AnalyticsRetentionService } from './analytics-retention.service';
 import { AnalyticsSchemaBootstrap } from './analytics-schema.bootstrap';
+import { AdvancedAnalyticsService } from './advanced-analytics.service';
 
 import { AnalyticsEventController } from './analytics-event.controller';
 import { DashboardController } from './dashboard.controller';
 import { DailyReportController } from './daily-report.controller';
 import { MonthlyReportController } from './monthly-report.controller';
 import { StaffPerformanceController } from './staff-performance.controller';
+import { AdvancedAnalyticsController } from './advanced-analytics.controller';
 
 /**
  * Analytics Domain.
@@ -70,6 +79,9 @@ import { StaffPerformanceController } from './staff-performance.controller';
       Conversation,
       CustomerReview,
       StaffProfile,
+      AppointmentCancellation,
+      BranchUser,
+      TenantSetting,
     ]),
   ],
   controllers: [
@@ -78,6 +90,7 @@ import { StaffPerformanceController } from './staff-performance.controller';
     DailyReportController,
     MonthlyReportController,
     StaffPerformanceController,
+    AdvancedAnalyticsController,
   ],
   providers: [
     AnalyticsEventService,
@@ -89,6 +102,7 @@ import { StaffPerformanceController } from './staff-performance.controller';
     AnalyticsCacheService,
     AnalyticsRetentionService,
     AnalyticsSchemaBootstrap,
+    AdvancedAnalyticsService,
   ],
   exports: [
     AnalyticsEventService,
@@ -101,6 +115,11 @@ import { StaffPerformanceController } from './staff-performance.controller';
     // Exposed so TenantModule can cache the dashboard target-progress read
     // under the same per-tenant `dashboard` cache namespace.
     AnalyticsCacheService,
+    StaffPerformanceService,
+    // T181 (spec 014, US13) — ReportExportModule reuses `resolveScope` (the
+    // ONE branch-scope resolution, FR-A016) and the row-returning query
+    // methods; never a second implementation.
+    AdvancedAnalyticsService,
   ],
 })
 export class AnalyticsModule {}

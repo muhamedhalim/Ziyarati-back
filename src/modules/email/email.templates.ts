@@ -32,7 +32,12 @@ export type EmailTemplateKey =
   | 'security_alert'
   | 'doctor_notification'
   | 'patient_notification'
-  | 'generic';
+  | 'generic'
+  // Phase 11 (US7, T132) — marketing family, deliberately separate from every
+  // transactional key above: clinic-authored content + an unsubscribe
+  // footer. No transactional template gains unsubscribe semantics (FR-E009 —
+  // a marketing unsubscribe must never affect a reminder/receipt/confirmation).
+  | 'campaign_marketing';
 
 export interface RenderedEmail {
   subject: string;
@@ -46,17 +51,23 @@ export interface RenderContext {
   brand?: string;
 }
 
-const s = (v: unknown, fallback = ''): string => (v == null ? fallback : String(v));
+const s = (v: unknown, fallback = ''): string =>
+  v == null ? fallback : String(v);
 const esc = (v: unknown): string =>
-  s(v).replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string,
+  s(v).replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
+        c
+      ] as string,
   );
 
 /** Supported locales for email copy. Anything else (including unset) falls back to English — the configured `EMAIL_DEFAULT_LOCALE`. */
 const isArabic = (ctx: RenderContext): boolean => ctx.locale === 'ar';
 
 /** Picks English or Arabic copy for the active locale — the ONE place this decision is made. */
-const t = (ctx: RenderContext, en: string, ar: string): string => (isArabic(ctx) ? ar : en);
+const t = (ctx: RenderContext, en: string, ar: string): string =>
+  isArabic(ctx) ? ar : en;
 
 function layout(title: string, body: string, ctx: RenderContext): string {
   const brand = esc(ctx.brand ?? 'Ziyarati');
@@ -80,8 +91,10 @@ ${footer}
 
 const btn = (label: string, url: string): string =>
   `<a href="${esc(url)}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:600">${esc(label)}</a>`;
-const p = (html: string): string => `<p style="margin:0 0 14px;line-height:1.6">${html}</p>`;
-const h = (t: string): string => `<h1 style="margin:0 0 16px;font-size:20px">${esc(t)}</h1>`;
+const p = (html: string): string =>
+  `<p style="margin:0 0 14px;line-height:1.6">${html}</p>`;
+const h = (t: string): string =>
+  `<h1 style="margin:0 0 16px;font-size:20px">${esc(t)}</h1>`;
 /** One labeled row inside a credentials box (e.g. email / temporary password). */
 const credRow = (label: string, value: string): string =>
   `<tr><td style="padding:6px 0 0;color:#5b6b7c;font-size:12px">${esc(label)}</td></tr>
@@ -101,33 +114,55 @@ function action(
     h(title) +
     p(esc(greeting)) +
     p(esc(intro)) +
-    (cta ? `<p style="margin:20px 0">${btn(cta.label, cta.url)}</p>` +
-      p(`<span style="color:#8a97a8;font-size:13px">${linkNote} ${esc(cta.url)}</span>`) : '') +
+    (cta
+      ? `<p style="margin:20px 0">${btn(cta.label, cta.url)}</p>` +
+        p(
+          `<span style="color:#8a97a8;font-size:13px">${linkNote} ${esc(cta.url)}</span>`,
+        )
+      : '') +
     (outro ? p(esc(outro)) : '');
-  const text = [title, '', greeting, intro, cta ? `${cta.label}: ${cta.url}` : '', outro]
+  const text = [
+    title,
+    '',
+    greeting,
+    intro,
+    cta ? `${cta.label}: ${cta.url}` : '',
+    outro,
+  ]
     .filter(Boolean)
     .join('\n');
   return { subject: title, html: layout(title, body, ctx), text };
 }
 
-const name = (v: EmailVars, ctx: RenderContext): string => s(v.name, t(ctx, 'there', 'عزيزي العميل'));
+const name = (v: EmailVars, ctx: RenderContext): string =>
+  s(v.name, t(ctx, 'there', 'عزيزي العميل'));
 /** Arabic greeting reads naturally as "مرحبًا NAME،" (comma-equivalent), matching "Hi NAME," in structure. */
 const greet = (v: EmailVars, ctx: RenderContext): string =>
   t(ctx, `Hi ${name(v, ctx)},`, `مرحبًا ${name(v, ctx)}،`);
 const greetDoctor = (v: EmailVars, ctx: RenderContext): string =>
   t(ctx, `Hi Dr. ${name(v, ctx)},`, `مرحبًا د. ${name(v, ctx)}،`);
 
-export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: RenderContext) => RenderedEmail> = {
+export const EMAIL_TEMPLATES: Record<
+  EmailTemplateKey,
+  (v: EmailVars, ctx: RenderContext) => RenderedEmail
+> = {
   welcome: (v, ctx) =>
     action(
-      t(ctx, 'Welcome to ' + s(ctx.brand ?? 'Ziyarati'), 'مرحبًا بك في ' + s(ctx.brand ?? 'Ziyarati')),
+      t(
+        ctx,
+        'Welcome to ' + s(ctx.brand ?? 'Ziyarati'),
+        'مرحبًا بك في ' + s(ctx.brand ?? 'Ziyarati'),
+      ),
       greet(v, ctx),
       t(
         ctx,
         `Your clinic "${s(v.clinicName, 'account')}" is set up. Let's get you started.`,
         `تم إعداد عيادتك "${s(v.clinicName, 'الحساب')}". لنبدأ معًا.`,
       ),
-      { label: t(ctx, 'Open dashboard', 'فتح لوحة التحكم'), url: `${ctx.appUrl}/app/dashboard` },
+      {
+        label: t(ctx, 'Open dashboard', 'فتح لوحة التحكم'),
+        url: `${ctx.appUrl}/app/dashboard`,
+      },
       t(ctx, "We're glad to have you on board.", 'يسعدنا انضمامك إلينا.'),
       ctx,
     ),
@@ -136,8 +171,15 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
     action(
       t(ctx, 'Verify your email', 'تأكيد بريدك الإلكتروني'),
       greet(v, ctx),
-      t(ctx, 'Please confirm your email address to activate your account.', 'يرجى تأكيد بريدك الإلكتروني لتفعيل حسابك.'),
-      { label: t(ctx, 'Verify email', 'تأكيد البريد الإلكتروني'), url: s(v.verifyUrl) },
+      t(
+        ctx,
+        'Please confirm your email address to activate your account.',
+        'يرجى تأكيد بريدك الإلكتروني لتفعيل حسابك.',
+      ),
+      {
+        label: t(ctx, 'Verify email', 'تأكيد البريد الإلكتروني'),
+        url: s(v.verifyUrl),
+      },
       t(ctx, 'This link expires soon.', 'ستنتهي صلاحية هذا الرابط قريبًا.'),
       ctx,
     ),
@@ -151,7 +193,10 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         'We received a request to reset your password. If you made this request, click below.',
         'تلقينا طلبًا لإعادة تعيين كلمة المرور الخاصة بك. إذا كنت من قدّم هذا الطلب، انقر أدناه.',
       ),
-      { label: t(ctx, 'Reset password', 'إعادة تعيين كلمة المرور'), url: s(v.resetUrl) },
+      {
+        label: t(ctx, 'Reset password', 'إعادة تعيين كلمة المرور'),
+        url: s(v.resetUrl),
+      },
       t(
         ctx,
         "If you didn't request this, no action is needed — your password is unchanged.",
@@ -169,8 +214,17 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `Your appointment${v.service ? ` for ${s(v.service)}` : ''} is confirmed for ${s(v.dateTime)}${v.clinicName ? ` at ${s(v.clinicName)}` : ''}.`,
         `تم تأكيد موعدك${v.service ? ` لخدمة ${s(v.service)}` : ''} بتاريخ ${s(v.dateTime)}${v.clinicName ? ` في ${s(v.clinicName)}` : ''}.`,
       ),
-      v.detailsUrl ? { label: t(ctx, 'View appointment', 'عرض الموعد'), url: s(v.detailsUrl) } : null,
-      t(ctx, 'Please arrive a few minutes early.', 'يرجى الحضور قبل الموعد بدقائق قليلة.'),
+      v.detailsUrl
+        ? {
+            label: t(ctx, 'View appointment', 'عرض الموعد'),
+            url: s(v.detailsUrl),
+          }
+        : null,
+      t(
+        ctx,
+        'Please arrive a few minutes early.',
+        'يرجى الحضور قبل الموعد بدقائق قليلة.',
+      ),
       ctx,
     ),
 
@@ -183,7 +237,12 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `This is a reminder of your appointment${v.service ? ` for ${s(v.service)}` : ''} on ${s(v.dateTime)}${v.clinicName ? ` at ${s(v.clinicName)}` : ''}.`,
         `هذا تذكير بموعدك${v.service ? ` لخدمة ${s(v.service)}` : ''} بتاريخ ${s(v.dateTime)}${v.clinicName ? ` في ${s(v.clinicName)}` : ''}.`,
       ),
-      v.detailsUrl ? { label: t(ctx, 'View appointment', 'عرض الموعد'), url: s(v.detailsUrl) } : null,
+      v.detailsUrl
+        ? {
+            label: t(ctx, 'View appointment', 'عرض الموعد'),
+            url: s(v.detailsUrl),
+          }
+        : null,
       '',
       ctx,
     ),
@@ -197,7 +256,9 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `Your appointment on ${s(v.dateTime)} has been cancelled${v.reason ? `: ${s(v.reason)}` : '.'}`,
         `تم إلغاء موعدك بتاريخ ${s(v.dateTime)}${v.reason ? `: ${s(v.reason)}` : '.'}`,
       ),
-      v.rebookUrl ? { label: t(ctx, 'Book again', 'حجز موعد جديد'), url: s(v.rebookUrl) } : null,
+      v.rebookUrl
+        ? { label: t(ctx, 'Book again', 'حجز موعد جديد'), url: s(v.rebookUrl) }
+        : null,
       '',
       ctx,
     ),
@@ -206,8 +267,17 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
     action(
       t(ctx, 'Appointment rescheduled', 'تم تغيير موعد الحجز'),
       greet(v, ctx),
-      t(ctx, `Your appointment has been moved to ${s(v.dateTime)}.`, `تم نقل موعدك إلى ${s(v.dateTime)}.`),
-      v.detailsUrl ? { label: t(ctx, 'View appointment', 'عرض الموعد'), url: s(v.detailsUrl) } : null,
+      t(
+        ctx,
+        `Your appointment has been moved to ${s(v.dateTime)}.`,
+        `تم نقل موعدك إلى ${s(v.dateTime)}.`,
+      ),
+      v.detailsUrl
+        ? {
+            label: t(ctx, 'View appointment', 'عرض الموعد'),
+            url: s(v.detailsUrl),
+          }
+        : null,
       '',
       ctx,
     ),
@@ -222,8 +292,14 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `فاتورة ${s(v.invoiceNumber, '')} بمبلغ ${s(v.amount)} متاحة الآن لباقة ${s(v.planName, 'اشتراكك')}.`,
       ),
       v.invoiceUrl
-        ? { label: t(ctx, 'View invoice', 'عرض الفاتورة'), url: s(v.invoiceUrl) }
-        : { label: t(ctx, 'View billing', 'عرض الفوترة'), url: `${ctx.appUrl}/app/billing` },
+        ? {
+            label: t(ctx, 'View invoice', 'عرض الفاتورة'),
+            url: s(v.invoiceUrl),
+          }
+        : {
+            label: t(ctx, 'View billing', 'عرض الفوترة'),
+            url: `${ctx.appUrl}/app/billing`,
+          },
       '',
       ctx,
     ),
@@ -232,8 +308,14 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
     action(
       t(ctx, 'Payment received', 'تم استلام الدفعة'),
       greet(v, ctx),
-      t(ctx, `We received your payment of ${s(v.amount)}. Thank you!`, `تم استلام دفعتك بمبلغ ${s(v.amount)}. شكرًا لك!`),
-      v.receiptUrl ? { label: t(ctx, 'View receipt', 'عرض الإيصال'), url: s(v.receiptUrl) } : null,
+      t(
+        ctx,
+        `We received your payment of ${s(v.amount)}. Thank you!`,
+        `تم استلام دفعتك بمبلغ ${s(v.amount)}. شكرًا لك!`,
+      ),
+      v.receiptUrl
+        ? { label: t(ctx, 'View receipt', 'عرض الإيصال'), url: s(v.receiptUrl) }
+        : null,
       '',
       ctx,
     ),
@@ -247,7 +329,10 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `We couldn't process your payment of ${s(v.amount)}${v.reason ? ` (${s(v.reason)})` : ''}. Please update your payment method to avoid interruption.`,
         `تعذّر معالجة دفعتك بمبلغ ${s(v.amount)}${v.reason ? ` (${s(v.reason)})` : ''}. يرجى تحديث وسيلة الدفع لتجنّب انقطاع الخدمة.`,
       ),
-      { label: t(ctx, 'Update payment', 'تحديث وسيلة الدفع'), url: `${ctx.appUrl}/app/billing` },
+      {
+        label: t(ctx, 'Update payment', 'تحديث وسيلة الدفع'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
       '',
       ctx,
     ),
@@ -261,7 +346,10 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `Your free trial ends in ${s(v.daysLeft, 'a few')} day(s). Upgrade now to keep access to all features.`,
         `تنتهي فترتك التجريبية المجانية خلال ${s(v.daysLeft, 'أيام قليلة')} يوم. قم بالترقية الآن للاحتفاظ بجميع الميزات.`,
       ),
-      { label: t(ctx, 'Choose a plan', 'اختر باقة'), url: `${ctx.appUrl}/app/billing` },
+      {
+        label: t(ctx, 'Choose a plan', 'اختر باقة'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
       '',
       ctx,
     ),
@@ -270,8 +358,15 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
     action(
       t(ctx, 'Subscription activated', 'تم تفعيل الاشتراك'),
       greet(v, ctx),
-      t(ctx, `Your ${s(v.planName, '')} subscription is now active.`, `تم تفعيل اشتراكك في باقة ${s(v.planName, '')}.`),
-      { label: t(ctx, 'Go to dashboard', 'الذهاب إلى لوحة التحكم'), url: `${ctx.appUrl}/app/dashboard` },
+      t(
+        ctx,
+        `Your ${s(v.planName, '')} subscription is now active.`,
+        `تم تفعيل اشتراكك في باقة ${s(v.planName, '')}.`,
+      ),
+      {
+        label: t(ctx, 'Go to dashboard', 'الذهاب إلى لوحة التحكم'),
+        url: `${ctx.appUrl}/app/dashboard`,
+      },
       '',
       ctx,
     ),
@@ -299,7 +394,10 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `Your subscription has been cancelled${v.endsAt ? ` and access continues until ${s(v.endsAt)}` : ''}.`,
         `تم إلغاء اشتراكك${v.endsAt ? `، ويستمر الوصول حتى ${s(v.endsAt)}` : ''}.`,
       ),
-      { label: t(ctx, 'Reactivate', 'إعادة التفعيل'), url: `${ctx.appUrl}/app/billing` },
+      {
+        label: t(ctx, 'Reactivate', 'إعادة التفعيل'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
       '',
       ctx,
     ),
@@ -316,35 +414,52 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `Your ${s(v.planName, '')} subscription ends on ${s(v.endsAt)}. Renew to avoid any interruption.`,
         `ينتهي اشتراكك في باقة ${s(v.planName, '')} بتاريخ ${s(v.endsAt)}. جدّده لتجنّب أي انقطاع في الخدمة.`,
       ),
-      { label: t(ctx, 'Manage subscription', 'إدارة الاشتراك'), url: `${ctx.appUrl}/app/billing` },
+      {
+        label: t(ctx, 'Manage subscription', 'إدارة الاشتراك'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
       '',
       ctx,
     ),
 
   subscription_entered_grace: (v, ctx) =>
     action(
-      t(ctx, 'Your subscription has ended — grace period active', 'انتهى اشتراكك — فترة السماح سارية'),
+      t(
+        ctx,
+        'Your subscription has ended — grace period active',
+        'انتهى اشتراكك — فترة السماح سارية',
+      ),
       greet(v, ctx),
       t(
         ctx,
         `Your ${s(v.planName, '')} subscription ended on ${s(v.endsAt)}. You keep full access until ${s(v.graceEndsAt)} while you renew — nothing has been charged automatically.`,
         `انتهى اشتراكك في باقة ${s(v.planName, '')} بتاريخ ${s(v.endsAt)}. ستحتفظ بالوصول الكامل حتى ${s(v.graceEndsAt)} ريثما تجدّد اشتراكك — لم يتم خصم أي مبلغ تلقائيًا.`,
       ),
-      { label: t(ctx, 'Renew now', 'جدّد الآن'), url: `${ctx.appUrl}/app/billing` },
+      {
+        label: t(ctx, 'Renew now', 'جدّد الآن'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
       '',
       ctx,
     ),
 
   subscription_grace_ending_soon: (v, ctx) =>
     action(
-      t(ctx, 'Your grace period is ending soon', 'فترة السماح على وشك الانتهاء'),
+      t(
+        ctx,
+        'Your grace period is ending soon',
+        'فترة السماح على وشك الانتهاء',
+      ),
       greet(v, ctx),
       t(
         ctx,
         `Your grace period ends on ${s(v.graceEndsAt)}. After that, new billable actions will be paused until you renew — your existing data stays fully accessible.`,
         `تنتهي فترة السماح بتاريخ ${s(v.graceEndsAt)}. بعد ذلك، ستُعلَّق الإجراءات القابلة للفوترة الجديدة حتى تجدّد اشتراكك — تظل بياناتك الحالية متاحة بالكامل.`,
       ),
-      { label: t(ctx, 'Renew now', 'جدّد الآن'), url: `${ctx.appUrl}/app/billing` },
+      {
+        label: t(ctx, 'Renew now', 'جدّد الآن'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
       '',
       ctx,
     ),
@@ -358,7 +473,10 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
         `${s(v.inviterName, 'A clinic admin')} invited you to join ${s(v.clinicName, 'their clinic')}${v.role ? ` as ${s(v.role)}` : ''}.`,
         `دعاك ${s(v.inviterName, 'مسؤول العيادة')} للانضمام إلى ${s(v.clinicName, 'عيادتهم')}${v.role ? ` بصفة ${s(v.role)}` : ''}.`,
       ),
-      { label: t(ctx, 'Accept invitation', 'قبول الدعوة'), url: s(v.invitationUrl) },
+      {
+        label: t(ctx, 'Accept invitation', 'قبول الدعوة'),
+        url: s(v.invitationUrl),
+      },
       t(ctx, 'This invitation may expire.', 'قد تنتهي صلاحية هذه الدعوة.'),
       ctx,
     ),
@@ -411,9 +529,25 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
     action(
       t(ctx, 'Security alert', 'تنبيه أمني'),
       greet(v, ctx),
-      s(v.message, t(ctx, 'We detected an important security event on your account.', 'رصدنا نشاطًا أمنيًا مهمًا على حسابك.')),
-      v.actionUrl ? { label: t(ctx, 'Review activity', 'مراجعة النشاط'), url: s(v.actionUrl) } : null,
-      t(ctx, 'If this was you, no action is needed.', 'إذا كان هذا أنت، فلا حاجة لاتخاذ أي إجراء.'),
+      s(
+        v.message,
+        t(
+          ctx,
+          'We detected an important security event on your account.',
+          'رصدنا نشاطًا أمنيًا مهمًا على حسابك.',
+        ),
+      ),
+      v.actionUrl
+        ? {
+            label: t(ctx, 'Review activity', 'مراجعة النشاط'),
+            url: s(v.actionUrl),
+          }
+        : null,
+      t(
+        ctx,
+        'If this was you, no action is needed.',
+        'إذا كان هذا أنت، فلا حاجة لاتخاذ أي إجراء.',
+      ),
       ctx,
     ),
 
@@ -422,7 +556,12 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
       s(v.title, t(ctx, 'Notification', 'إشعار')),
       greetDoctor(v, ctx),
       s(v.message),
-      v.actionUrl ? { label: s(v.actionLabel, t(ctx, 'View', 'عرض')), url: s(v.actionUrl) } : null,
+      v.actionUrl
+        ? {
+            label: s(v.actionLabel, t(ctx, 'View', 'عرض')),
+            url: s(v.actionUrl),
+          }
+        : null,
       '',
       ctx,
     ),
@@ -432,7 +571,12 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
       s(v.title, t(ctx, 'Notification', 'إشعار')),
       greet(v, ctx),
       s(v.message),
-      v.actionUrl ? { label: s(v.actionLabel, t(ctx, 'View', 'عرض')), url: s(v.actionUrl) } : null,
+      v.actionUrl
+        ? {
+            label: s(v.actionLabel, t(ctx, 'View', 'عرض')),
+            url: s(v.actionUrl),
+          }
+        : null,
       '',
       ctx,
     ),
@@ -442,10 +586,64 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateKey, (v: EmailVars, ctx: Rende
       s(v.title, t(ctx, 'Notification', 'إشعار')),
       greet(v, ctx),
       s(v.message),
-      v.actionUrl ? { label: s(v.actionLabel, t(ctx, 'Open', 'فتح')), url: s(v.actionUrl) } : null,
+      v.actionUrl
+        ? {
+            label: s(v.actionLabel, t(ctx, 'Open', 'فتح')),
+            url: s(v.actionUrl),
+          }
+        : null,
       '',
       ctx,
     ),
+
+  /**
+   * Phase 11 (US7, T131/T132/FR-E010) — marketing campaign email. Subject and
+   * body are CLINIC-AUTHORED free text (escaped, never raw HTML — `body`'s
+   * newlines are turned into `<br>` after escaping, so no injection is
+   * possible through campaign content). A BOUNDED personalisation set
+   * (`name`, `clinicName`) — not a general template-expression language.
+   *
+   * The unsubscribe footer lives ONLY here — see this key's docblock on the
+   * `EmailTemplateKey` union. `email.templates.spec.ts` pins that no
+   * transactional template contains one.
+   */
+  campaign_marketing: (v, ctx) => {
+    const subject = s(
+      v.subject,
+      t(ctx, 'Update from your clinic', 'تحديث من عيادتك'),
+    );
+    const bodyHtml = esc(v.body).replace(/\n/g, '<br>');
+    const unsubscribeNote = t(
+      ctx,
+      "Don't want to receive marketing emails from this clinic?",
+      'لا ترغب في تلقي رسائل تسويقية من هذه العيادة؟',
+    );
+    const unsubscribeLabel = t(
+      ctx,
+      'Unsubscribe',
+      'إلغاء الاشتراك في الرسائل التسويقية',
+    );
+    const unsubscribeUrl = s(v.unsubscribeUrl);
+
+    const body =
+      h(subject) +
+      p(esc(greet(v, ctx))) +
+      `<p style="margin:0 0 14px;line-height:1.6">${bodyHtml}</p>` +
+      (unsubscribeUrl
+        ? `<p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #eef1f5;color:#8a97a8;font-size:12px">${unsubscribeNote} <a href="${esc(unsubscribeUrl)}" style="color:#8a97a8">${esc(unsubscribeLabel)}</a></p>`
+        : '');
+    const text = [
+      subject,
+      '',
+      greet(v, ctx),
+      s(v.body),
+      unsubscribeUrl ? `\n${unsubscribeNote} ${unsubscribeUrl}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    return { subject, html: layout(subject, body, ctx), text };
+  },
 };
 
 export function renderEmail(
@@ -453,6 +651,7 @@ export function renderEmail(
   vars: EmailVars,
   ctx: RenderContext,
 ): RenderedEmail {
-  const renderer = EMAIL_TEMPLATES[key as EmailTemplateKey] ?? EMAIL_TEMPLATES.generic;
+  const renderer =
+    EMAIL_TEMPLATES[key as EmailTemplateKey] ?? EMAIL_TEMPLATES.generic;
   return renderer(vars, ctx);
 }

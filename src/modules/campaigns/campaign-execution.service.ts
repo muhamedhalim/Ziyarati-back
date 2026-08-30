@@ -18,10 +18,19 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { WhatsappMessageRouter } from '../whatsapp/routing/whatsapp-message.router';
 import { WhatsappTemplateService } from '../whatsapp/whatsapp-template.service';
 import { CampaignRunService } from './campaign-run.service';
+import { CustomerSegmentService } from '../crm/customer-segment.service';
 import { ScheduleCampaignDto } from './dto/schedule-campaign.dto';
 import { LaunchCampaignDto } from './dto/launch-campaign.dto';
 import { CancelCampaignDto } from './dto/cancel-campaign.dto';
-import { LIFECYCLE_TRANSITIONS, TERMINAL_LIFECYCLES } from './campaign.constants';
+import {
+  CAMPAIGN_CHANNEL,
+  LIFECYCLE_TRANSITIONS,
+  TERMINAL_LIFECYCLES,
+} from './campaign.constants';
+import {
+  CampaignAuditService,
+  CAMPAIGN_AUDIT_ACTION,
+} from './campaign-audit.service';
 
 /**
  * Campaign lifecycle (operator intent) + the produce side of execution.
@@ -47,6 +56,8 @@ export class CampaignExecutionService {
     private readonly whatsappRouter: WhatsappMessageRouter,
     private readonly templates: WhatsappTemplateService,
     private readonly ctx: TenantContextService,
+    private readonly segments: CustomerSegmentService,
+    private readonly audit: CampaignAuditService,
   ) {}
 
   async schedule(
@@ -90,22 +101,54 @@ export class CampaignExecutionService {
     await this.dataSource.transaction(async (mgr) => {
       const campaign = await mgr.findOne(Campaign, {
         where: { id, tenant: { id: tenantId }, deleted_at: IsNull() },
+        relations: { audience_segment: true },
       });
       if (!campaign) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Campaign not found' });
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Campaign not found',
+        });
       }
       this.assertLifecycle(campaign.lifecycle, CampaignLifecycle.ACTIVE);
 
       const run = await this.runs.currentEditable(tenantId, id, mgr);
-      const total = await mgr.count(CampaignRecipient, {
-        where: { run: { id: run.id }, processing: RecipientProcessing.PENDING },
-      });
+      // T125 (FR-S007) — a segment-audience campaign has no pre-materialised
+      // recipient rows at launch time; its size is a live PREVIEW COUNT, and
+      // membership is re-resolved live, per chunk, by CampaignFanoutService.
+      // This total is therefore an ESTIMATE, not a promise every fanout chunk
+      // will reproduce exactly — the fanout's own empty-window completion
+      // handles a segment run whose actual resolved count differs from it.
+      const total = campaign.audience_segment
+        ? (
+            await this.segments.preview(
+              tenantId,
+              campaign.audience_segment.rules,
+              campaign.audience_segment.match,
+            )
+          ).count
+        : await mgr.count(CampaignRecipient, {
+            where: {
+              run: { id: run.id },
+              processing: RecipientProcessing.PENDING,
+            },
+          });
       if (total === 0 && !dto.force) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message:
             'Campaign run has no pending recipients. Add recipients or launch with force=true.',
         });
       }
+
+      // T137 (FR-E015/E016) — warn (never block) when the resolved audience
+      // exceeds the remaining daily/monthly cap: the clinic is told, but
+      // nothing already sent (there is nothing sent yet at launch time) is
+      // affected, and dispatch itself still stops cleanly at the cap either
+      // way (CampaignDispatchService's existing rate-limiter gate).
+      this.warnIfAudienceExceedsCaps(
+        id,
+        total,
+        campaign.daily_cap,
+        campaign.monthly_cap,
+      );
 
       campaign.lifecycle = CampaignLifecycle.ACTIVE;
       if (!campaign.scheduled_at) campaign.scheduled_at = new Date();
@@ -139,8 +182,40 @@ export class CampaignExecutionService {
       this.logger.log(
         `[cid=${this.ctx.getCorrelationId() ?? '-'}] Campaign ${id} launched (run=${run.id}, total=${total}) — outbox queued`,
       );
+
+      // T139 — attributable, never leaking a recipient address: campaign id,
+      // tenant, run id, channel and the aggregate audience size only.
+      await this.audit.record(CAMPAIGN_AUDIT_ACTION.LAUNCHED, tenantId, id, {
+        runId: run.id,
+        channel: campaign.channel,
+        totalRecipients: total,
+      });
     });
     return this.loadOwned(tenantId, id);
+  }
+
+  /**
+   * T137 (FR-E015/E016) — pre-launch visibility only, never a block: logs
+   * (the clinic-facing surface for this is the frontend composer, T140,
+   * explicitly out of scope for this backend phase) when the resolved
+   * audience exceeds either remaining cap.
+   */
+  private warnIfAudienceExceedsCaps(
+    campaignId: string,
+    total: number,
+    dailyCap?: number | null,
+    monthlyCap?: number | null,
+  ): void {
+    if (dailyCap != null && total > dailyCap) {
+      this.logger.warn(
+        `Campaign ${campaignId}: audience (${total}) exceeds the daily cap (${dailyCap}) — dispatch will stop at the cap; nothing already sent is affected.`,
+      );
+    }
+    if (monthlyCap != null && total > monthlyCap) {
+      this.logger.warn(
+        `Campaign ${campaignId}: audience (${total}) exceeds the monthly cap (${monthlyCap}) — dispatch will stop at the cap; nothing already sent is affected.`,
+      );
+    }
   }
 
   async pause(tenantId: string, id: string): Promise<Campaign> {
@@ -301,9 +376,28 @@ export class CampaignExecutionService {
    *
    * Reuses the same router + template seam the dispatcher uses, so "launchable"
    * and "sendable" can't drift into two different definitions.
+   *
+   * Phase 11 (US7, T131) — channel selection is the only difference between
+   * the two paths (T131's own "Done when"): an EMAIL-channel campaign skips
+   * the WhatsApp-specific WABA/template/number chain entirely (none of it
+   * applies) and instead requires the clinic-authored `email_subject`/
+   * `email_body` content T132 introduced.
    */
-  private async assertSendable(tenantId: string, campaignId: string): Promise<void> {
+  private async assertSendable(
+    tenantId: string,
+    campaignId: string,
+  ): Promise<void> {
     const campaign = await this.loadOwned(tenantId, campaignId);
+
+    if (campaign.channel === CAMPAIGN_CHANNEL.EMAIL) {
+      if (!campaign.email_subject || !campaign.email_body) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message:
+            'Campaign has no email subject/body. An EMAIL campaign requires both before it can be launched.',
+        });
+      }
+      return;
+    }
 
     if (!campaign.template) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -320,7 +414,9 @@ export class CampaignExecutionService {
     const [account, template] = await Promise.all([
       this.whatsappRouter.resolveForSend(
         tenantId,
-        campaign.whatsapp_account ? { accountId: campaign.whatsapp_account.id } : {},
+        campaign.whatsapp_account
+          ? { accountId: campaign.whatsapp_account.id }
+          : {},
       ),
       this.templates.getSendableTemplate(tenantId, campaign.template.id),
     ]);
@@ -346,7 +442,7 @@ export class CampaignExecutionService {
     throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
       message:
         `Template "${template.name}" belongs to a different WhatsApp Business Account than the ` +
-        'number this campaign sends from. Pick a template from the sending number\'s account.',
+        "number this campaign sends from. Pick a template from the sending number's account.",
     });
   }
 
@@ -356,7 +452,9 @@ export class CampaignExecutionService {
       relations: { template: true },
     });
     if (!campaign) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Campaign not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Campaign not found',
+      });
     }
     return campaign;
   }
@@ -370,12 +468,17 @@ export class CampaignExecutionService {
       where: { id, tenant: { id: tenantId }, deleted_at: IsNull() },
     });
     if (!campaign) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Campaign not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Campaign not found',
+      });
     }
     return campaign;
   }
 
-  private assertLifecycle(from: CampaignLifecycle, to: CampaignLifecycle): void {
+  private assertLifecycle(
+    from: CampaignLifecycle,
+    to: CampaignLifecycle,
+  ): void {
     if (from === to) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: `Campaign is already in lifecycle "${to}"`,

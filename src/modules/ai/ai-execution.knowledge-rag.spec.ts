@@ -134,7 +134,10 @@ function build(opts: Options = {}) {
    */
   const describeSelection = jest.fn().mockImplementation(async () => {
     const next = (opts.bookingContexts ?? [])[
-      Math.min(describeSelection.mock.calls.length - 1, (opts.bookingContexts?.length ?? 1) - 1)
+      Math.min(
+        describeSelection.mock.calls.length - 1,
+        (opts.bookingContexts?.length ?? 1) - 1,
+      )
     ];
     return next ?? opts.bookingContext ?? null;
   });
@@ -447,8 +450,14 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
       DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
     ]) {
       expect(prompt).toContain('<knowledge>');
-      expect(prompt).toMatch(/ANSWER FROM IT DIRECTLY/);
+      expect(prompt).toMatch(/Answer those from it directly/);
       expect(prompt).toMatch(/Never invent facts/);
+      // The precedence rule, which <knowledge> alone could not give: a clinic's
+      // hours, address, prices and free times are read from the DATABASE even
+      // when a Knowledge document also mentions them. Without this the model
+      // could answer "what are your hours?" from a stale document while a
+      // `get_branch_info` call sat unused.
+      expect(prompt).toMatch(/LIVE FACTS COME FROM A TOOL/);
     }
   });
 
@@ -459,10 +468,20 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
     // Same rule as before, now stated in both directions: an empty tool result
     // never erases <knowledge>, and <knowledge> never establishes bookability.
     expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
-      /empty or failed tool result never erases what <knowledge> states/,
+      /empty tool result never erases what <knowledge> says/,
     );
     expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
-      /is NOT evidence that it can be booked/,
+      /absent from search_clinics is NOT bookable/,
+    );
+    // And each informational question now routes to the tool that can actually
+    // answer it, rather than to <knowledge> alone (which most clinics never
+    // populate) or to an availability check (which answers a different
+    // question entirely).
+    expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
+      /what are your hours[\s\S]*-> get_branch_info/,
+    );
+    expect(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT).toMatch(
+      /when does Dr X work[\s\S]*-> get_doctor_schedule/,
     );
     // Booking is still explicitly a tool job — the prompt must not talk the
     // model out of the booking flow it is there to run.
@@ -632,7 +651,9 @@ describe('Tool routing — a tool result never displaces the Knowledge', () => {
     )!;
 
     expect(searchClinics.parameters.properties).toHaveProperty('cityId');
-    expect(searchClinics.description).toMatch(/NEVER put a city name in `query`/);
+    expect(searchClinics.description).toMatch(
+      /NEVER put a city name in `query`/,
+    );
     // Calling it bare is the documented answer to "whatever you have".
     expect(searchClinics.description).toMatch(/NO arguments/);
   });

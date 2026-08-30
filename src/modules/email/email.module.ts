@@ -2,6 +2,9 @@ import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { EmailLog } from '../../entities/System/EmailLog';
+import { EmailSuppression } from '../../entities/System/EmailSuppression';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { Customer } from '../../entities/CRM/Customer';
 
 import { EmailService } from './email.service';
 import { EmailDeliveryService } from './email-delivery.service';
@@ -10,6 +13,15 @@ import { ResendProvider } from './providers/resend.provider';
 import { NoopEmailProvider } from './providers/noop-email.provider';
 import { EmailLogController } from './email-log.controller';
 
+import { EmailSuppressionService } from './email-suppression.service';
+import { UnsubscribeTokenService } from './unsubscribe-token.service';
+import { UnsubscribeService } from './unsubscribe.service';
+import { UnsubscribeController } from './unsubscribe.controller';
+import { EmailWebhookSignatureVerifier } from './webhooks/email-webhook-signature.verifier';
+import { EmailWebhookController } from './webhooks/email-webhook.controller';
+
+import { CampaignsModule } from '../campaigns/campaigns.module';
+
 /**
  * Email infrastructure. `EmailService` is the single business entry point (no
  * module calls a provider directly); providers sit behind
@@ -17,18 +29,43 @@ import { EmailLogController } from './email-log.controller';
  * appointments, …) can inject `EmailService` without re-importing. Imported in
  * BOTH the API root (AppModule) and the worker root (WorkerModule) — the worker's
  * EmailProcessor reuses {@link EmailDeliveryService} to deliver queued emails.
+ *
+ * Phase 11 (US7) additions: the per-tenant suppression list + the public
+ * unsubscribe surface (T134) + the bounce/complaint webhook (T136). These
+ * import `CampaignsModule` for `RecipientDeliveryService` (resolving a
+ * webhook's `provider_ref` back to a recipient) and `CampaignAuditService`
+ * (T139) — a ONE-DIRECTION import; `CampaignsModule` never imports
+ * `EmailModule` back (it doesn't need to: `EmailModule` is `@Global()`, so
+ * `EmailCampaignDeliveryProvider`/`EmailSuppressionService` are already
+ * available everywhere without one).
  */
 @Global()
 @Module({
-  imports: [TypeOrmModule.forFeature([EmailLog])],
-  controllers: [EmailLogController],
+  imports: [
+    TypeOrmModule.forFeature([EmailLog, EmailSuppression, Tenant, Customer]),
+    CampaignsModule,
+  ],
+  controllers: [
+    EmailLogController,
+    UnsubscribeController,
+    EmailWebhookController,
+  ],
   providers: [
     EmailService,
     EmailDeliveryService,
     EmailProviderFactory,
     ResendProvider,
     NoopEmailProvider,
+    EmailSuppressionService,
+    UnsubscribeTokenService,
+    UnsubscribeService,
+    EmailWebhookSignatureVerifier,
   ],
-  exports: [EmailService, EmailDeliveryService, EmailProviderFactory],
+  exports: [
+    EmailService,
+    EmailDeliveryService,
+    EmailProviderFactory,
+    EmailSuppressionService,
+  ],
 })
 export class EmailModule {}

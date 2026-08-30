@@ -1,12 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, ILike, IsNull, Repository } from 'typeorm';
+import {
+  DataSource,
+  FindOptionsWhere,
+  ILike,
+  IsNull,
+  Repository,
+} from 'typeorm';
 
 import { Campaign } from '../../entities/Campaigns/Campaign';
 import { WhatsappTemplate } from '../../entities/WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
+import { CustomerSegment } from '../../entities/CRM/CustomerSegment';
 import { CampaignLifecycle } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
@@ -39,6 +46,8 @@ export class CampaignService {
     private readonly templates: Repository<WhatsappTemplate>,
     @InjectRepository(WhatsappAccount)
     private readonly accounts: Repository<WhatsappAccount>,
+    @InjectRepository(CustomerSegment)
+    private readonly segments: Repository<CustomerSegment>,
     private readonly usage: UsageService,
     private readonly dataSource: DataSource,
     private readonly subscriptions: SubscriptionService,
@@ -54,7 +63,9 @@ export class CampaignService {
     // this same seam is covered too (background paths never go through a guard).
     await this.subscriptions.assertBillableActionAllowed(tenantId);
     if (dto.templateId) await this.assertTemplate(tenantId, dto.templateId);
-    if (dto.whatsappAccountId) await this.assertAccount(tenantId, dto.whatsappAccountId);
+    if (dto.whatsappAccountId)
+      await this.assertAccount(tenantId, dto.whatsappAccountId);
+    if (dto.segmentId) await this.assertSegment(tenantId, dto.segmentId);
 
     // FND-034: the quota check-and-increment runs INSIDE the same transaction
     // as the campaign insert, atomically (see UsageService.incrementIfWithinLimit)
@@ -91,6 +102,9 @@ export class CampaignService {
           : undefined,
         lifecycle: CampaignLifecycle.DRAFT,
         segment: dto.segment,
+        audience_segment: dto.segmentId
+          ? ({ id: dto.segmentId } as CustomerSegment)
+          : undefined,
         scheduled_at: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
         throttle_per_minute: dto.throttlePerMinute ?? 30,
         daily_cap: dto.dailyCap,
@@ -125,10 +139,12 @@ export class CampaignService {
   async findOne(tenantId: string, id: string): Promise<Campaign> {
     const campaign = await this.campaigns.findOne({
       where: { id, tenant: { id: tenantId }, deleted_at: IsNull() },
-      relations: { template: true, created_by: true },
+      relations: { template: true, created_by: true, audience_segment: true },
     });
     if (!campaign) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Campaign not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Campaign not found',
+      });
     }
     return campaign;
   }
@@ -156,10 +172,21 @@ export class CampaignService {
     if (dto.type !== undefined) campaign.type = dto.type;
     if (dto.name !== undefined) campaign.name = dto.name;
     if (dto.segment !== undefined) campaign.segment = dto.segment;
-    if (dto.scheduledAt !== undefined) {
-      campaign.scheduled_at = dto.scheduledAt ? new Date(dto.scheduledAt) : undefined;
+    if (dto.segmentId !== undefined) {
+      if (dto.segmentId) {
+        await this.assertSegment(tenantId, dto.segmentId);
+        campaign.audience_segment = { id: dto.segmentId } as CustomerSegment;
+      } else {
+        campaign.audience_segment = undefined;
+      }
     }
-    if (dto.throttlePerMinute !== undefined) campaign.throttle_per_minute = dto.throttlePerMinute;
+    if (dto.scheduledAt !== undefined) {
+      campaign.scheduled_at = dto.scheduledAt
+        ? new Date(dto.scheduledAt)
+        : undefined;
+    }
+    if (dto.throttlePerMinute !== undefined)
+      campaign.throttle_per_minute = dto.throttlePerMinute;
     if (dto.dailyCap !== undefined) campaign.daily_cap = dto.dailyCap;
     if (dto.monthlyCap !== undefined) campaign.monthly_cap = dto.monthlyCap;
 
@@ -192,9 +219,12 @@ export class CampaignService {
       tenant: { id: tenantId } as Tenant,
       type: source.type,
       name: `${source.name} (Copy)`,
-      template: source.template ? ({ id: source.template.id } as WhatsappTemplate) : undefined,
+      template: source.template
+        ? ({ id: source.template.id } as WhatsappTemplate)
+        : undefined,
       lifecycle: CampaignLifecycle.DRAFT,
       segment: source.segment,
+      audience_segment: source.audience_segment,
       scheduled_at: undefined,
       throttle_per_minute: source.throttle_per_minute,
       daily_cap: source.daily_cap,
@@ -205,7 +235,10 @@ export class CampaignService {
     return this.findOne(tenantId, saved.id);
   }
 
-  private async assertTemplate(tenantId: string, templateId: string): Promise<void> {
+  private async assertTemplate(
+    tenantId: string,
+    templateId: string,
+  ): Promise<void> {
     const ok = await this.templates.exists({
       where: { id: templateId, tenant: { id: tenantId } },
     });
@@ -222,13 +255,31 @@ export class CampaignService {
    * at LAUNCH (CampaignExecutionService.assertSendable) — a draft may legitimately
    * name a number that is not connected yet.
    */
-  private async assertAccount(tenantId: string, accountId: string): Promise<void> {
+  private async assertAccount(
+    tenantId: string,
+    accountId: string,
+  ): Promise<void> {
     const ok = await this.accounts.exists({
       where: { id: accountId, tenant: { id: tenantId } },
     });
     if (!ok) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message: 'WhatsApp account not found in this tenant',
+      });
+    }
+  }
+
+  /** T124 — the segment must belong to the same tenant as the campaign. */
+  private async assertSegment(
+    tenantId: string,
+    segmentId: string,
+  ): Promise<void> {
+    const ok = await this.segments.exists({
+      where: { id: segmentId, tenant: { id: tenantId }, deleted_at: IsNull() },
+    });
+    if (!ok) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Segment not found in this tenant',
       });
     }
   }

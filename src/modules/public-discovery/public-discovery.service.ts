@@ -9,6 +9,20 @@ const n = (v: unknown): number => {
   return Number.isFinite(x) ? x : 0;
 };
 
+/** `day_of_week` is 0=Sun … 6=Sat throughout the scheduling domain. */
+const WEEKDAYS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
+/** Postgres `time` comes back as 'HH:MM:SS'; nobody needs the seconds. */
+const hhmm = (t: string | null | undefined): string => (t ?? '').slice(0, 5);
+
 /**
  * The eligibility predicate every public query shares: an APPROVED, active,
  * non-deleted clinic that has explicitly opted in to public booking.
@@ -363,18 +377,7 @@ export class PublicDiscoveryService {
     date: string,
     slotMinutes?: number,
   ) {
-    const rows = await this.dataSource.query(
-      `SELECT b."tenantId" AS tenant_id
-         FROM branches b
-         JOIN tenants t ON t.id = b."tenantId"
-         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
-        WHERE b.id = $1 AND b.is_active = true AND b.deleted_at IS NULL
-          AND ${ELIGIBLE_CLINIC}`,
-      [branchId],
-    );
-    const tenantId: string | undefined = rows[0]?.tenant_id;
-    if (!tenantId)
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
+    const tenantId = await this.tenantOfPublicBranch(branchId);
 
     // N-4: `staffId` used to be forwarded completely unchecked, so the F-4
     // branch/doctor mismatch was reachable ANONYMOUSLY — a visitor could ask
@@ -388,6 +391,259 @@ export class PublicDiscoveryService {
       date,
       slotMinutes,
     } as never);
+  }
+
+  /**
+   * Public MULTI-DAY free-slot lookup — the same per-day computation as
+   * {@link publicAvailability}, run across a range so a caller can answer "when
+   * is this doctor next free?" instead of only "is he free on this exact day?".
+   *
+   * Tenant and branch/doctor pairing are validated identically; only the shape
+   * of the answer differs. Slot computation stays entirely in
+   * `AvailabilityService.rangeWindows`.
+   */
+  async publicRangeAvailability(
+    branchId: string,
+    staffId: string,
+    params: {
+      fromDate: string;
+      toDate: string;
+      slotMinutes?: number;
+      maxDaysWithSlots?: number;
+      notBefore?: Date;
+    },
+  ) {
+    const tenantId = await this.tenantOfPublicBranch(branchId);
+    await this.assertDoctorAtBranch(tenantId, branchId, staffId);
+    return this.availability.rangeWindows(tenantId, {
+      branchId,
+      staffId,
+      ...params,
+    });
+  }
+
+  /**
+   * WHERE a branch is and WHEN it is open — the two questions the assistant
+   * could not answer at all, because nothing in the AI surface had ever read
+   * `working_hours` and only `clinicDetail` exposed an address (during the
+   * discovery step, long before "where are you?" is usually asked).
+   *
+   * `is_closed` vs. "no row at all" is reported EXPLICITLY, never collapsed:
+   * a clinic that has not configured its hours must produce "the clinic has not
+   * published its hours", not an invented schedule and not a false "we are
+   * closed that day". That distinction is the whole point of `configured`.
+   *
+   * `tenantId` scopes the lookup for an AUTHENTICATED own-clinic caller (the
+   * WhatsApp bot, which already represents exactly one clinic). Omitting it
+   * selects the anonymous path, where the public eligibility predicate applies
+   * instead — so a guest can only ever read a clinic that opted in.
+   */
+  async branchInfo(
+    branchId: string,
+    opts: { tenantId?: string } = {},
+  ): Promise<{
+    branch: {
+      id: string;
+      name: string;
+      address: string | null;
+      city: string | null;
+      phone: string | null;
+      whatsapp: string | null;
+      timezone: string;
+    };
+    clinic: { id: string; name: string };
+    workingHours: {
+      dayOfWeek: number;
+      day: string;
+      status: 'OPEN' | 'CLOSED' | 'NOT_PUBLISHED';
+      hours: { start: string; end: string }[];
+    }[];
+    workingHoursConfigured: boolean;
+  }> {
+    const scoped = opts.tenantId
+      ? {
+          clause: `AND b."tenantId" = $2::uuid`,
+          params: [branchId, opts.tenantId],
+        }
+      : { clause: `AND ${ELIGIBLE_CLINIC}`, params: [branchId] };
+
+    const rows = await this.dataSource.query(
+      `SELECT b.id, b.name, b.address, b.phone, b.whatsapp_phone, b.timezone,
+              b."tenantId" AS tenant_id, t.name AS clinic_name,
+              COALESCE(c.name_ar, c.name_en) AS city
+         FROM branches b
+         JOIN tenants t ON t.id = b."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+         LEFT JOIN cities c ON c.id = b.city_id
+        WHERE b.id = $1::uuid AND b.is_active = true AND b.deleted_at IS NULL
+          ${scoped.clause}
+        LIMIT 1`,
+      scoped.params,
+    );
+    const row = rows[0];
+    if (!row)
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
+
+    const hours = await this.dataSource.query(
+      `SELECT day_of_week, start_time, end_time, is_closed
+         FROM working_hours
+        WHERE "branchId" = $1::uuid AND "tenantId" = $2::uuid
+        ORDER BY day_of_week, start_time`,
+      [branchId, row.tenant_id],
+    );
+
+    const byDay = new Map<number, Record<string, unknown>[]>();
+    for (const h of hours as Record<string, unknown>[]) {
+      const d = n(h.day_of_week);
+      byDay.set(d, [...(byDay.get(d) ?? []), h]);
+    }
+
+    return {
+      branch: {
+        id: row.id as string,
+        name: row.name as string,
+        address: (row.address as string) ?? null,
+        city: (row.city as string) ?? null,
+        phone: (row.phone as string) ?? null,
+        whatsapp: (row.whatsapp_phone as string) ?? null,
+        timezone: (row.timezone as string) || 'UTC',
+      },
+      clinic: { id: row.tenant_id as string, name: row.clinic_name as string },
+      workingHours: WEEKDAYS.map((day, dayOfWeek) => {
+        const rowsForDay = byDay.get(dayOfWeek);
+        if (!rowsForDay?.length) {
+          return {
+            dayOfWeek,
+            day,
+            status: 'NOT_PUBLISHED' as const,
+            hours: [],
+          };
+        }
+        const open = rowsForDay.filter((r) => r.is_closed !== true);
+        return open.length
+          ? {
+              dayOfWeek,
+              day,
+              status: 'OPEN' as const,
+              hours: open.map((r) => ({
+                start: hhmm(r.start_time as string),
+                end: hhmm(r.end_time as string),
+              })),
+            }
+          : { dayOfWeek, day, status: 'CLOSED' as const, hours: [] };
+      }),
+      workingHoursConfigured: hours.length > 0,
+    };
+  }
+
+  /**
+   * A doctor's RECURRING weekly working pattern at a branch — the answer to
+   * "when does Dr. X work?", which is a different question from "is Dr. X free
+   * at 10:00 next Tuesday?" and was previously answered by running the second
+   * one and reporting its failure.
+   *
+   * This is the SCHEDULE (which days and hours they are rostered), never the
+   * AVAILABILITY (what is actually still free once bookings, blocks, holidays
+   * and time off are subtracted). Callers that need bookable times must use
+   * `publicRangeAvailability`; the returned `note` says so, because conflating
+   * the two is precisely how a fully-booked Tuesday gets offered to a patient.
+   */
+  async doctorSchedule(
+    tenantId: string,
+    branchId: string,
+    staffId: string,
+  ): Promise<{
+    doctor: { id: string; name: string; title: string | null };
+    weekly: {
+      dayOfWeek: number;
+      day: string;
+      hours: { start: string; end: string }[];
+    }[];
+    worksAtBranch: boolean;
+    note: string;
+  }> {
+    await this.assertDoctorAtBranch(tenantId, branchId, staffId);
+
+    const [profile] = await this.dataSource.query(
+      `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
+         FROM staff_profiles sp
+         LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
+        WHERE sp.id = $2::uuid AND sp."tenantId" = $1::uuid AND sp.deleted_at IS NULL
+        LIMIT 1`,
+      [tenantId, staffId],
+    );
+    if (!profile)
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Doctor not found' });
+
+    // Staff schedule ∩ branch open hours — the same intersection
+    // `StaffScheduleService.getAvailability` performs per day, expressed here
+    // as the weekly pattern. An unconfigured branch day imposes no constraint
+    // (see that method's own note), so LEFT JOIN and fall back to the
+    // schedule's own window rather than dropping the day.
+    const rows = await this.dataSource.query(
+      `SELECT ss.day_of_week,
+              GREATEST(ss.start_time, COALESCE(wh.start_time, ss.start_time)) AS start_time,
+              LEAST(ss.end_time,   COALESCE(wh.end_time,   ss.end_time))   AS end_time
+         FROM staff_schedules ss
+         LEFT JOIN working_hours wh
+                ON wh."branchId" = ss."branchId"
+               AND wh.day_of_week = ss.day_of_week
+               AND wh.is_closed = false
+        WHERE ss."staffId" = $2::uuid
+          AND ss."tenantId" = $1::uuid
+          AND ss."branchId" = $3::uuid
+          AND ss.is_active = true
+          AND NOT EXISTS (
+                SELECT 1 FROM working_hours whc
+                 WHERE whc."branchId" = ss."branchId"
+                   AND whc.day_of_week = ss.day_of_week
+                   AND whc.is_closed = true)
+        ORDER BY ss.day_of_week, start_time`,
+      [tenantId, staffId, branchId],
+    );
+
+    const byDay = new Map<number, { start: string; end: string }[]>();
+    for (const r of rows as Record<string, unknown>[]) {
+      const d = n(r.day_of_week);
+      const start = hhmm(r.start_time as string);
+      const end = hhmm(r.end_time as string);
+      if (start >= end) continue; // schedule and branch hours do not overlap
+      byDay.set(d, [...(byDay.get(d) ?? []), { start, end }]);
+    }
+
+    return {
+      doctor: {
+        id: profile.id as string,
+        name: profile.name as string,
+        title: (profile.title as string) ?? null,
+      },
+      weekly: [...byDay.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([dayOfWeek, hours]) => ({
+          dayOfWeek,
+          day: WEEKDAYS[dayOfWeek],
+          hours,
+        })),
+      worksAtBranch: true,
+      note: 'This is the recurring roster, not free time. Existing bookings, blocked periods, holidays and leave are NOT subtracted — use the availability tool for bookable slots.',
+    };
+  }
+
+  /** Owning tenant of a branch that is publicly bookable RIGHT NOW. Fails closed. */
+  private async tenantOfPublicBranch(branchId: string): Promise<string> {
+    const rows = await this.dataSource.query(
+      `SELECT b."tenantId" AS tenant_id
+         FROM branches b
+         JOIN tenants t ON t.id = b."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE b.id = $1 AND b.is_active = true AND b.deleted_at IS NULL
+          AND ${ELIGIBLE_CLINIC}`,
+      [branchId],
+    );
+    const tenantId: string | undefined = rows[0]?.tenant_id;
+    if (!tenantId)
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
+    return tenantId;
   }
 
   /** Public-side branch/doctor pairing check. Fails closed. */

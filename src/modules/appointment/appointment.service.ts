@@ -772,6 +772,16 @@ export class AppointmentsService {
     dto: RescheduleAppointmentDto,
     origin: AppointmentActionOrigin = AppointmentActionOrigin.STAFF,
   ): Promise<Appointment> {
+    // Spec 014 (Clinic Platform Completion) — T159 (US9, FR-W005): captured
+    // in this outer scope (not just inside the transaction closure below) so
+    // the freed-slot snapshot survives past `await this.dataSource
+    // .transaction(...)` and can ride on `AppointmentRescheduledEvent` — by
+    // the time that event is emitted below, `appointment.start_at`/`end_at`
+    // already hold the NEW time.
+    let freedSlot:
+      | { startAt: Date; endAt: Date; branchId: string; staffId: string }
+      | undefined;
+
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
       this.assertNotTerminal(appointment, 'rescheduled');
@@ -779,6 +789,12 @@ export class AppointmentsService {
       const oldStart = appointment.start_at;
       const oldEnd = appointment.end_at;
       const durationMs = oldEnd.getTime() - oldStart.getTime();
+      freedSlot = {
+        startAt: oldStart,
+        endAt: oldEnd,
+        branchId: appointment.branch.id,
+        staffId: appointment.staff.id,
+      };
 
       const newStart = new Date(dto.newStartAt);
       const newEnd = dto.newEndAt
@@ -834,6 +850,10 @@ export class AppointmentsService {
         rescheduled.id,
         rescheduled.customer!.id,
         rescheduled.start_at,
+        freedSlot?.startAt,
+        freedSlot?.endAt,
+        freedSlot?.branchId,
+        freedSlot?.staffId,
       ),
     );
     return rescheduled;

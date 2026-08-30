@@ -19,6 +19,7 @@ import {
   AiExecuteJob,
   AnalyticsAggregateJob,
   AnalyticsCleanupJob,
+  AnalyticsExportGenerateJob,
   AnalyticsGenerateReportJob,
   AnalyticsInvoiceDocumentJob,
   BaseJobData,
@@ -45,6 +46,7 @@ import {
   IntegrationImportJobData,
   IntegrationSyncJobData,
   IntegrationInboundJobData,
+  PlatformWaitlistEvaluateJob,
 } from './job-data.interface';
 
 /**
@@ -403,6 +405,21 @@ export class QueueService {
     });
   }
 
+  /**
+   * T183 (spec 014, US13) — deterministic jobId on `exportJobId`: a
+   * redelivered/duplicate enqueue for the SAME export job collapses into
+   * the same BullMQ job, never a second generation run.
+   */
+  enqueueAnalyticsExportGenerate(
+    data: AnalyticsExportGenerateJob,
+    opts?: JobsOptions,
+  ) {
+    return this.add(QUEUE.ANALYTICS, JOB.ANALYTICS_EXPORT_GENERATE, data, {
+      jobId: `analytics-export-generate-${data.exportJobId}`,
+      ...opts,
+    });
+  }
+
   enqueueSettlementsProcess(data: SettlementsProcessJob, opts?: JobsOptions) {
     return this.add(QUEUE.SETTLEMENTS, JOB.SETTLEMENTS_PROCESS, data, opts);
   }
@@ -607,6 +624,24 @@ export class QueueService {
   retryIntegrationSync(data: IntegrationSyncJobData, opts?: JobsOptions) {
     return this.add(QUEUE.INTEGRATION_SYNC, JOB.INTEGRATION_SYNC, data, {
       jobId: `integration-sync-${data.syncJobId}-retry-${Date.now()}`,
+      ...opts,
+    });
+  }
+
+  // ── Waitlist (Spec 014 "Clinic Platform Completion" — US9) ──────────────
+
+  /**
+   * T159 — enqueue matching for one freed slot. Deterministic jobId per
+   * (appointment, whether it's the cancel or the reschedule side) so a
+   * duplicate `@OnEvent` fan-out collapses onto one evaluation job rather
+   * than running the matcher twice for the same freed time.
+   */
+  enqueueWaitlistEvaluate(
+    data: PlatformWaitlistEvaluateJob,
+    opts?: JobsOptions,
+  ) {
+    return this.add(QUEUE.PLATFORM, JOB.PLATFORM_WAITLIST_EVALUATE, data, {
+      jobId: `waitlist-evaluate-${data.appointmentId}-${data.freedStartAt ?? 'cancel'}`,
       ...opts,
     });
   }

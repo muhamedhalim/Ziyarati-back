@@ -1,4 +1,9 @@
-import { EMAIL_TEMPLATES, renderEmail, type EmailTemplateKey, type RenderContext } from './email.templates';
+import {
+  EMAIL_TEMPLATES,
+  renderEmail,
+  type EmailTemplateKey,
+  type RenderContext,
+} from './email.templates';
 
 /**
  * T155 / LR-003 — Arabic email variants reuse the EXISTING `RenderContext.locale`
@@ -14,18 +19,28 @@ const ALL_KEYS = Object.keys(EMAIL_TEMPLATES) as EmailTemplateKey[];
 const enCtx: RenderContext = { appUrl: 'https://app.test', locale: 'en' };
 const arCtx: RenderContext = { appUrl: 'https://app.test', locale: 'ar' };
 
-const VARS_BY_KEY: Partial<Record<EmailTemplateKey, Record<string, unknown>>> = {
-  password_reset: { name: 'Sara', resetUrl: 'https://app.test/reset?token=abc' },
-  email_verification: { name: 'Sara', verifyUrl: 'https://app.test/verify?token=abc' },
-  staff_invitation: { name: 'Sara', invitationUrl: 'https://app.test/invite?token=abc' },
-  staff_credentials: {
-    name: 'Sara',
-    role: 'Receptionist',
-    to: 'sara@clinic.com',
-    temporaryPassword: 'Ab3xQ9zK2mNp',
-    loginUrl: 'https://app.test/auth/login',
-  },
-};
+const VARS_BY_KEY: Partial<Record<EmailTemplateKey, Record<string, unknown>>> =
+  {
+    password_reset: {
+      name: 'Sara',
+      resetUrl: 'https://app.test/reset?token=abc',
+    },
+    email_verification: {
+      name: 'Sara',
+      verifyUrl: 'https://app.test/verify?token=abc',
+    },
+    staff_invitation: {
+      name: 'Sara',
+      invitationUrl: 'https://app.test/invite?token=abc',
+    },
+    staff_credentials: {
+      name: 'Sara',
+      role: 'Receptionist',
+      to: 'sara@clinic.com',
+      temporaryPassword: 'Ab3xQ9zK2mNp',
+      loginUrl: 'https://app.test/auth/login',
+    },
+  };
 
 function varsFor(key: EmailTemplateKey): Record<string, unknown> {
   return VARS_BY_KEY[key] ?? { name: 'Sara' };
@@ -75,7 +90,11 @@ describe('EMAIL_TEMPLATES — Arabic variants (T155)', () => {
   });
 
   it('an unknown locale falls back to the configured default (English) rather than throwing or rendering blank', () => {
-    const rendered = renderEmail('welcome', { name: 'Sara' }, { appUrl: 'https://app.test', locale: 'fr' });
+    const rendered = renderEmail(
+      'welcome',
+      { name: 'Sara' },
+      { appUrl: 'https://app.test', locale: 'fr' },
+    );
     expect(rendered.subject.length).toBeGreaterThan(0);
   });
 });
@@ -118,5 +137,77 @@ describe('EMAIL_TEMPLATES — staff_credentials', () => {
     expect(rendered.html).not.toMatch(/\bas\s*<\/p>|\bas\s*<\/h1>/);
     expect(rendered.text).not.toContain('undefined');
     expect(rendered.html).toContain('Ab3xQ9zK2mNp');
+  });
+});
+
+/**
+ * Phase 11 (US7, T132/FR-E009) — the marketing family (`campaign_marketing`)
+ * must be provably SEPARATE from every transactional template: no
+ * transactional key gains unsubscribe semantics, and rendering the marketing
+ * template does not perturb any transactional key's output. FR-E009's
+ * hard requirement (a marketing unsubscribe must never block a reminder or
+ * receipt) starts here — if a transactional template ever grew an
+ * unsubscribe link, an email client or a future refactor could plausibly wire
+ * it to the same suppression path, which is exactly the regression this
+ * pins against.
+ */
+describe('EMAIL_TEMPLATES — marketing vs transactional separation (T132)', () => {
+  const TRANSACTIONAL_KEYS = ALL_KEYS.filter((k) => k !== 'campaign_marketing');
+
+  it('no transactional template renders an "unsubscribe" footer (en or ar)', () => {
+    for (const key of TRANSACTIONAL_KEYS) {
+      const en = renderEmail(key, varsFor(key), enCtx);
+      const ar = renderEmail(key, varsFor(key), arCtx);
+      expect([key, /unsubscribe/i.test(en.html)]).toEqual([key, false]);
+      expect([
+        key,
+        /إلغاء الاشتراك في الرسائل التسويقية/.test(ar.html),
+      ]).toEqual([key, false]);
+    }
+  });
+
+  it("rendering campaign_marketing does not change any transactional template's output (pure functions, no shared mutable state)", () => {
+    const before = TRANSACTIONAL_KEYS.map((key) =>
+      renderEmail(key, varsFor(key), enCtx),
+    );
+    renderEmail(
+      'campaign_marketing',
+      {
+        subject: 'Sale',
+        body: 'Big news',
+        unsubscribeUrl: 'https://app.test/unsubscribe/tok',
+      },
+      enCtx,
+    );
+    const after = TRANSACTIONAL_KEYS.map((key) =>
+      renderEmail(key, varsFor(key), enCtx),
+    );
+    expect(after).toEqual(before);
+  });
+
+  it('campaign_marketing carries an unsubscribe link when one is supplied, and escapes clinic-authored body content', () => {
+    const rendered = renderEmail(
+      'campaign_marketing',
+      {
+        name: 'Sara',
+        subject: '20% off this month',
+        body: 'Hi <script>alert(1)</script>\nSecond line',
+        unsubscribeUrl: 'https://app.test/unsubscribe/tok',
+      },
+      enCtx,
+    );
+    expect(rendered.html).toContain('unsubscribe/tok');
+    expect(/unsubscribe/i.test(rendered.html)).toBe(true);
+    expect(rendered.html).not.toContain('<script>alert(1)</script>');
+    expect(rendered.html).toContain('Second line');
+  });
+
+  it('campaign_marketing renders with no unsubscribe link at all when none is supplied (never throws, never fabricates one)', () => {
+    const rendered = renderEmail(
+      'campaign_marketing',
+      { name: 'Sara', subject: 'Hello', body: 'Just checking in' },
+      enCtx,
+    );
+    expect(/unsubscribe/i.test(rendered.html)).toBe(false);
   });
 });

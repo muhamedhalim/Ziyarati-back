@@ -224,6 +224,18 @@ export interface AnalyticsInvoiceDocumentJob extends BaseJobData {
   documentVersion: number;
 }
 
+/**
+ * T183 (spec 014, US13) — `analytics.exportGenerate`, on the existing
+ * `ANALYTICS` queue. Carries only the durable `export_jobs` row id — that
+ * row (with its FROZEN `filters`/`branch_scope`, captured at request time
+ * by `ReportExportService.requestExport`) is the source of truth, never a
+ * second copy of the request in Redis.
+ */
+export interface AnalyticsExportGenerateJob extends BaseJobData {
+  tenantId: string;
+  exportJobId: string;
+}
+
 // ── Settlements ────────────────────────────────────────────────────────────
 export interface SettlementsProcessJob extends BaseJobData {
   periodStart?: string;
@@ -300,4 +312,30 @@ export interface IntegrationSyncJobData extends BaseJobData {
  */
 export interface IntegrationInboundJobData extends BaseJobData {
   inboundEventId: string;
+}
+
+// ── Waitlist (Spec 014 "Clinic Platform Completion" — US9) ──────────────────
+
+/**
+ * T159/T160 — evaluates a freed slot against waiting entries. Carries only
+ * ids/scalars; `WaitlistOfferService.evaluateFreedSlot` re-resolves
+ * everything else in tenant context.
+ *
+ * `appointmentId` alone is enough for a CANCEL-triggered evaluation — that
+ * appointment's own row still holds the freed (branch, staff, start, end)
+ * unchanged (only its `status` moved to `CANCELLED`). A RESCHEDULE-triggered
+ * evaluation cannot rely on the same row: by the time this job runs, the
+ * appointment's `start_at`/`end_at` hold the NEW time, not the freed one — so
+ * `WaitlistListener` fills the four `freed*` fields from
+ * `AppointmentRescheduledEvent`'s own snapshot in that case. Left `undefined`
+ * for a CANCEL-triggered evaluation, which derives them from the appointment
+ * row instead.
+ */
+export interface PlatformWaitlistEvaluateJob extends BaseJobData {
+  tenantId: string;
+  appointmentId: string;
+  freedStartAt?: string;
+  freedEndAt?: string;
+  freedBranchId?: string;
+  freedStaffId?: string;
 }

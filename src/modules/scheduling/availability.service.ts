@@ -49,6 +49,26 @@ export interface PublicAvailabilityWindow {
   endAt: string;
 }
 
+/**
+ * One branch-local day's availability result.
+ *
+ * `reason` is present on EVERY unavailable day, not only the two cases that
+ * used to carry one. It is the difference between an assistant that can say
+ * "Dr. Halim does not work Tuesdays, but he is free Wednesday at 14:00" and one
+ * that can only ever say "unavailable" — see `windows()`'s own note.
+ */
+export interface DayWindows {
+  date: string;
+  branchId: string;
+  staffId?: string;
+  /** The BRANCH's IANA zone — the zone `date` and every window is expressed in. */
+  timezone: string;
+  available: boolean;
+  reason?: string;
+  reasonCode?: BookabilityReason;
+  windows: { startTime: string; endTime: string }[];
+}
+
 export interface BookabilityConflicts {
   staffInactive: boolean;
   holiday: boolean;
@@ -242,7 +262,20 @@ export class AvailabilityService {
     };
   }
 
-  async windows(tenantId: string, q: AvailabilityQueryDto) {
+  /**
+   * Free windows for one staff member on one branch-local calendar day.
+   *
+   * `opts.notBefore` is an OPT-IN floor: free time entirely before that instant
+   * is dropped. Nothing passes it today except the AI/public callers, so every
+   * pre-existing caller (the dashboard grid, which legitimately renders a whole
+   * past day) keeps its exact current output. Without it, "do you have anything
+   * today?" at 15:00 answers with this morning's 10:00.
+   */
+  async windows(
+    tenantId: string,
+    q: AvailabilityQueryDto,
+    opts: { notBefore?: Date } = {},
+  ): Promise<DayWindows> {
     this.requireFields(q, ['staffId', 'date']);
     const branch = await this.refs.getBranch(tenantId, q.branchId);
     const zone = safeZone(branch.timezone);
@@ -251,25 +284,36 @@ export class AvailabilityService {
     const dateStr = q.date!; // interpreted as the branch's LOCAL calendar date
     const { dayStart, dayEnd } = zonedDayBoundsUtc(dateStr, zone);
 
+    const empty = (
+      reason: string,
+      reasonCode?: BookabilityReason,
+    ): DayWindows => ({
+      date: dateStr,
+      branchId: q.branchId,
+      staffId: q.staffId,
+      timezone: zone,
+      available: false,
+      reason,
+      ...(reasonCode ? { reasonCode } : {}),
+      windows: [],
+    });
+
+    // A staff member who is not bookable at all is not "fully booked" — say so,
+    // or the caller reports a permanent state as a scheduling accident.
+    if (!staff.is_available_for_booking) {
+      return empty('staff_inactive', BookabilityReason.STAFF_INACTIVE);
+    }
+
     const [holidays, offToday] = await Promise.all([
       this.holidayService.findForDate(tenantId, q.branchId, dateStr),
       this.staffTimeOff.isOffOn(tenantId, q.staffId!, dateStr),
     ]);
     if (holidays.length > 0 || offToday) {
-      return {
-        date: dateStr,
-        branchId: q.branchId,
-        staffId: q.staffId,
-        available: false,
-        // `reason` is the pre-existing lowercase string, kept for back-compat;
-        // `reasonCode` is the stable enum a client should branch on.
-        reason: holidays.length > 0 ? 'holiday' : 'time_off',
-        reasonCode:
-          holidays.length > 0
-            ? BookabilityReason.HOLIDAY
-            : BookabilityReason.TIME_OFF,
-        windows: [],
-      };
+      // `reason` is the pre-existing lowercase string, kept for back-compat;
+      // `reasonCode` is the stable enum a client should branch on.
+      return holidays.length > 0
+        ? empty('holiday', BookabilityReason.HOLIDAY)
+        : empty('time_off', BookabilityReason.TIME_OFF);
     }
 
     const [positive, busy] = await Promise.all([
@@ -291,21 +335,137 @@ export class AvailabilityService {
         staff.booking_buffer_minutes,
       ),
     ]);
+
+    // WHY THE OUTCOMES ARE NAMED. Until now every one of the cases below
+    // returned an identical `windows: []`, so a caller — the AI assistant most
+    // of all — could not tell "the doctor does not work Tuesdays" from "the
+    // doctor is fully booked" from "your 45-minute service does not fit in the
+    // 20 minutes that are still free". It said "unavailable" to all three and
+    // had nothing else to offer, which is exactly how the same sentence gets
+    // repeated at a patient turn after turn.
+    if (positive.length === 0) {
+      return empty(
+        'not_working_that_day',
+        BookabilityReason.OUTSIDE_WORKING_HOURS,
+      );
+    }
+
     let free = mergeIntervals(
       positive.flatMap((p) => subtractIntervals(p, busy)),
     );
-    if (q.slotMinutes) free = chunkIntervals(free, q.slotMinutes);
+    if (free.length === 0)
+      return empty('fully_booked', BookabilityReason.OCCUPIED);
+
+    if (q.slotMinutes) {
+      // CHUNK FIRST, THEN drop the past ones. Clamping the raw window to `now`
+      // before chunking would slide the whole grid onto whatever second the
+      // request happened to arrive on — a request at 17:15:49 produced slots at
+      // 17:15:49, 18:00:49, … which is both an odd thing to offer a patient and
+      // an odd instant to write into `appointments.start_at`. Chunking from the
+      // window's own start keeps every slot on the clinic's natural grid
+      // (10:00, 10:45, 11:30 …); the filter then simply removes the ones that
+      // have already begun.
+      const chunked = chunkIntervals(free, q.slotMinutes);
+      // Free time existed but no CONTIGUOUS block was long enough for the
+      // requested duration. A distinct outcome from "fully booked": a shorter
+      // service would still fit, and saying so is actionable.
+      if (chunked.length === 0) return empty('no_gap_long_enough');
+
+      const upcoming = opts.notBefore
+        ? chunked.filter((w) => w.start >= opts.notBefore!)
+        : chunked;
+      if (upcoming.length === 0) return empty('day_already_past');
+      free = upcoming;
+    } else if (opts.notBefore) {
+      // No fixed slot size: report the remainder of each window, starting at
+      // the next whole minute rather than at a stray second.
+      const floor = new Date(
+        Math.ceil(opts.notBefore.getTime() / 60_000) * 60_000,
+      );
+      free = free
+        .map((w) => ({ start: maxDate(w.start, floor), end: w.end }))
+        .filter((w) => w.end > w.start);
+      if (free.length === 0) return empty('day_already_past');
+    }
 
     return {
       date: dateStr,
       branchId: q.branchId,
       staffId: q.staffId,
-      available: free.length > 0,
+      timezone: zone,
+      available: true,
       windows: free.map((w) => ({
         startTime: w.start.toISOString(),
         endTime: w.end.toISOString(),
       })),
     };
+  }
+
+  /**
+   * The SAME per-day computation as {@link windows}, run across a bounded range
+   * of branch-local dates and grouped by day — the shape a caller needs to
+   * answer "when is this doctor next free?" rather than only "is he free on
+   * this one date?".
+   *
+   * There is no second availability implementation here: this is a loop over
+   * `windows()`, so every rule (schedule ∩ branch hours, holidays, time off,
+   * blocked periods, occupancy, per-staff buffer, service duration) applies
+   * identically and cannot drift.
+   *
+   * COST IS BOUNDED TWICE. The range is capped at
+   * `PUBLIC_AVAILABILITY_HORIZON_DAYS` (the pre-existing abuse control), and
+   * `maxDaysWithSlots` stops the scan as soon as enough days have been found —
+   * so the common case ("is Tuesday free?" → yes) costs exactly one day's
+   * queries, and only a genuinely booked-out doctor pays for the full horizon.
+   */
+  async rangeWindows(
+    tenantId: string,
+    params: {
+      branchId: string;
+      staffId: string;
+      fromDate: string;
+      toDate: string;
+      slotMinutes?: number;
+      /** Stop once this many days have at least one slot. Omit to scan all. */
+      maxDaysWithSlots?: number;
+      /** Drop free time before this instant (typically "now"). */
+      notBefore?: Date;
+    },
+  ): Promise<{ timezone: string; days: DayWindows[] }> {
+    if (
+      !params.branchId ||
+      !params.staffId ||
+      !params.fromDate ||
+      !params.toDate
+    ) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'branchId, staffId, fromDate and toDate are all required',
+      });
+    }
+    const branch = await this.refs.getBranch(tenantId, params.branchId);
+    const zone = safeZone(branch.timezone);
+
+    const dates = this.cappedDateRange(params.fromDate, params.toDate);
+    const days: DayWindows[] = [];
+    let found = 0;
+    for (const dateStr of dates) {
+      const day = await this.windows(
+        tenantId,
+        {
+          branchId: params.branchId,
+          staffId: params.staffId,
+          date: dateStr,
+          slotMinutes: params.slotMinutes,
+        } as AvailabilityQueryDto,
+        { notBefore: params.notBefore },
+      );
+      days.push(day);
+      if (day.available) {
+        found += 1;
+        if (params.maxDaysWithSlots && found >= params.maxDaysWithSlots) break;
+      }
+    }
+    return { timezone: zone, days };
   }
 
   /**
@@ -332,29 +492,28 @@ export class AvailabilityService {
       slotMinutes?: number;
     },
   ): Promise<{ timezone: string; windows: PublicAvailabilityWindow[] }> {
-    if (!params.branchId || !params.staffId || !params.fromDate || !params.toDate) {
+    if (
+      !params.branchId ||
+      !params.staffId ||
+      !params.fromDate ||
+      !params.toDate
+    ) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
         message: 'branchId, staffId, fromDate and toDate are all required',
       });
     }
 
-    const branch = await this.refs.getBranch(tenantId, params.branchId);
-    const zone = safeZone(branch.timezone);
-
-    const dates = this.cappedDateRange(params.fromDate, params.toDate);
-    const windows: PublicAvailabilityWindow[] = [];
-    for (const dateStr of dates) {
-      const day = await this.windows(tenantId, {
-        branchId: params.branchId,
-        staffId: params.staffId,
-        date: dateStr,
-        slotMinutes: params.slotMinutes,
-      } as AvailabilityQueryDto);
-      for (const w of day.windows ?? []) {
-        windows.push({ startAt: w.startTime, endAt: w.endTime });
-      }
-    }
-    return { timezone: zone, windows };
+    // Delegates to `rangeWindows` (which owns the day loop and the horizon cap)
+    // and flattens — so the two range-shaped callers share ONE loop and cannot
+    // drift apart. `notBefore` is deliberately not passed: this projection's
+    // existing callers ask for an explicit range and render it themselves.
+    const { timezone, days } = await this.rangeWindows(tenantId, params);
+    return {
+      timezone,
+      windows: days.flatMap((d) =>
+        d.windows.map((w) => ({ startAt: w.startTime, endAt: w.endTime })),
+      ),
+    };
   }
 
   /** Inclusive YYYY-MM-DD date strings from `from`, capped at
@@ -363,13 +522,19 @@ export class AvailabilityService {
   private cappedDateRange(from: string, to: string): string[] {
     const start = new Date(`${from}T00:00:00.000Z`);
     const requestedEnd = new Date(`${to}T00:00:00.000Z`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(requestedEnd.getTime()) || requestedEnd < start) {
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(requestedEnd.getTime()) ||
+      requestedEnd < start
+    ) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
         message: 'toDate must be a valid date on or after fromDate',
       });
     }
     const maxEnd = new Date(start);
-    maxEnd.setUTCDate(maxEnd.getUTCDate() + PUBLIC_AVAILABILITY_HORIZON_DAYS - 1);
+    maxEnd.setUTCDate(
+      maxEnd.getUTCDate() + PUBLIC_AVAILABILITY_HORIZON_DAYS - 1,
+    );
     const end = requestedEnd < maxEnd ? requestedEnd : maxEnd;
 
     const dates: string[] = [];

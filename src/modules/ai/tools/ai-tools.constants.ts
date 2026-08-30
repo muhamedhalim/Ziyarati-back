@@ -7,6 +7,15 @@ export const AI_TOOL = {
   SEARCH_CLINICS: 'search_clinics',
   GET_CLINIC_DETAILS: 'get_clinic_details',
   SEARCH_PUBLIC_AVAILABILITY: 'search_public_availability',
+  // Branch facts (WHERE it is, WHEN it is open) and a doctor's recurring
+  // roster (WHICH days they work). Neither question is an availability
+  // question, and answering them by running an availability check — which is
+  // all the assistant could previously do — turns "what are your hours?" into
+  // "the doctor is unavailable". Both are read-only and tenant-safe: the
+  // public path resolves ids from the server-side booking session, the
+  // authenticated path from `ctx.tenantId`.
+  GET_BRANCH_INFO: 'get_branch_info',
+  GET_DOCTOR_SCHEDULE: 'get_doctor_schedule',
   // Booking (tenant-bound, transactional — authenticated conversations only).
   CHECK_AVAILABILITY: 'check_availability',
   GET_CUSTOMER_INSURANCE_STATUS: 'get_customer_insurance_status',
@@ -104,49 +113,111 @@ export const AI_TOOLS: AiToolDefinition[] = [
     },
   },
   {
-    name: AI_TOOL.SEARCH_PUBLIC_AVAILABILITY,
+    name: AI_TOOL.GET_BRANCH_INFO,
     description:
-      'List the free appointment time windows for a doctor at a branch on a given day, for a clinic discovered publicly. Call this after the user picks a branch and doctor, to offer bookable slots. The owning clinic is resolved server-side from the branch.',
+      'WHERE a branch is and WHEN it is open — its address, city, phone, timezone, and its published weekly working hours. This is the ONLY tool that answers "what are your working hours?", "when do you open?", "where are you?", "what is your address/phone?". NEVER answer any of those by checking a doctor\'s availability, and never invent hours or a location. ' +
+      'Each day comes back as OPEN (with hours), CLOSED (the clinic marked it closed) or NOT_PUBLISHED (the clinic never entered hours for that day) — report those three differently: NOT_PUBLISHED means "the clinic has not published hours for that day", NOT "we are closed". ' +
+      'A null address or phone means the clinic has not published it: say so and offer what you do have, never guess.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         branchId: {
           type: 'string',
-          description: 'Branch UUID from get_clinic_details.',
+          description:
+            'Branch UUID. On the public website widget, OMIT this — the branch already selected in this conversation is used automatically.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: AI_TOOL.GET_DOCTOR_SCHEDULE,
+    description:
+      'Which DAYS OF THE WEEK and hours a doctor is rostered at a branch — the answer to "when does Dr. X work?", "what are the doctor\'s days?", "when is Dr. X at the clinic?". ' +
+      'This is the recurring roster, NOT free time: it does not subtract existing bookings, holidays or leave. To offer real bookable times, follow it with the availability tool. ' +
+      "Use this when the visitor asks about the doctor's WORKING PATTERN, and the availability tool when they ask about BOOKABLE TIMES or a specific date.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        staffId: {
+          type: 'string',
+          description:
+            'Doctor UUID. On the public website widget, OMIT this — the doctor already selected in this conversation is used automatically.',
+        },
+        branchId: {
+          type: 'string',
+          description:
+            'Branch UUID. On the public website widget, OMIT this — the selected branch is used automatically.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: AI_TOOL.SEARCH_PUBLIC_AVAILABILITY,
+    description:
+      'REAL bookable appointment times for a doctor at a branch, for a clinic discovered publicly. Returns one entry PER DAY, each with concrete slots and, when a day has none, a `reason` saying why (not_working_that_day, fully_booked, holiday, time_off, no_gap_long_enough). ' +
+      'Slot length is set SERVER-SIDE from the selected service, so every time returned is genuinely bookable end-to-end — do not pass slotMinutes yourself. ' +
+      'If the day you asked about has nothing, this tool KEEPS LOOKING and returns the next days that do, under `nextAvailable`. So never reply "the doctor is unavailable" and stop: state the reason for the day they asked about, then offer what came back in `nextAvailable`. ' +
+      'Omit `date` to answer an open-ended "when is the doctor free?". Give a `date` for a specific day. The owning clinic is resolved server-side from the branch.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        branchId: {
+          type: 'string',
+          description:
+            'Branch UUID. On the public website widget, OMIT this — the selected branch is used automatically.',
         },
         staffId: {
           type: 'string',
-          description: 'Doctor UUID from get_clinic_details.',
+          description:
+            'Doctor UUID. On the public website widget, OMIT this — the selected doctor is used automatically.',
         },
-        date: { type: 'string', description: 'Target day in YYYY-MM-DD.' },
-        slotMinutes: {
+        date: {
+          type: 'string',
+          description:
+            'A specific day in YYYY-MM-DD, resolved from the date given in the context block — never from memory. Omit for "when is the doctor next free?".',
+        },
+        daysAhead: {
           type: 'integer',
           description:
-            'Optional: chunk free time into fixed slots of N minutes.',
+            'How many days from `date` to search (default 7, max 14). Raise it only when a first search came back empty.',
         },
       },
-      required: ['branchId', 'staffId', 'date'],
+      required: [],
     },
   },
   {
     name: AI_TOOL.CHECK_AVAILABILITY,
     description:
-      'List the free appointment time windows for a staff member at a branch on a given day. Call this before booking to find a slot the customer can choose.',
+      'REAL bookable appointment times for a staff member at a branch. Returns one entry PER DAY, each with concrete slots and, when a day has none, a `reason` (not_working_that_day, fully_booked, holiday, time_off, no_gap_long_enough). ' +
+      'When the requested day has nothing, the tool searches forward and returns the next days that do under `nextAvailable` — offer those instead of reporting a dead end. Omit `date` for "when is this person next free?". Call before booking to find a slot the customer can choose.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         branchId: { type: 'string', description: 'Branch UUID.' },
         staffId: { type: 'string', description: 'Staff member UUID.' },
-        date: { type: 'string', description: 'Target day in YYYY-MM-DD.' },
+        date: {
+          type: 'string',
+          description:
+            'A specific day in YYYY-MM-DD. Omit to search from today onward.',
+        },
+        daysAhead: {
+          type: 'integer',
+          description:
+            'How many days from `date` to search (default 7, max 14).',
+        },
         slotMinutes: {
           type: 'integer',
           description:
-            'Optional: chunk free time into fixed slots of N minutes.',
+            'Optional: chunk free time into fixed slots of N minutes. Pass the service duration so every slot returned actually fits the appointment.',
         },
       },
-      required: ['branchId', 'staffId', 'date'],
+      required: ['branchId', 'staffId'],
     },
   },
   {
@@ -343,6 +414,11 @@ export const WHATSAPP_CHANNEL_TOOL_NAMES: string[] = [
   AI_TOOL.LIST_CLINIC_BRANCHES,
   AI_TOOL.LIST_CLINIC_DOCTORS,
   AI_TOOL.LIST_CLINIC_SERVICES,
+  // Own-clinic facts (address / hours / roster). Tenant-bound exactly like
+  // every other tool on this channel — `ctx.tenantId`, never an argument — so
+  // a patient on Clinic A's number can only ever read Clinic A.
+  AI_TOOL.GET_BRANCH_INFO,
+  AI_TOOL.GET_DOCTOR_SCHEDULE,
   AI_TOOL.CHECK_AVAILABILITY,
   AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
   AI_TOOL.BOOK_APPOINTMENT,

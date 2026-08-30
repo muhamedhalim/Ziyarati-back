@@ -194,6 +194,14 @@ export const PUBLIC_DISCOVERY_TOOL_NAMES: string[] = [
   AI_TOOL.SEARCH_CLINICS,
   AI_TOOL.GET_CLINIC_DETAILS,
   AI_TOOL.SEARCH_PUBLIC_AVAILABILITY,
+  // Branch facts and doctor rosters. They take NO ids on this surface — both
+  // resolve branch and doctor from the server-side booking session, so they
+  // add read surface without adding a single argument a prompt injection
+  // could aim at another clinic. Without them, "what are your hours?" and
+  // "when does the doctor work?" had no tool at all and fell through to
+  // <knowledge>, which most clinics never populate.
+  AI_TOOL.GET_BRANCH_INFO,
+  AI_TOOL.GET_DOCTOR_SCHEDULE,
   AI_TOOL.REQUEST_HUMAN_HANDOVER,
 ];
 

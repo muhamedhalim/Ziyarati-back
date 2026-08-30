@@ -11,6 +11,7 @@ import { CustomerNote } from '../../entities/CRM/CustomerNote';
 import { CustomerTag } from '../../entities/CRM/CustomerTag';
 import { CustomerTagRelation } from '../../entities/CRM/CustomerTagRelation';
 import { CustomerFile } from '../../entities/CRM/CustomerFile';
+import { CustomerSegment } from '../../entities/CRM/CustomerSegment';
 
 import { CustomerService } from './customer.service';
 import { CustomerProfileService } from './customer-profile.service';
@@ -20,6 +21,8 @@ import { CustomerTagService } from './customer-tag.service';
 import { CustomerTagRelationService } from './customer-tag-relation.service';
 import { CustomerFileService } from './customer-file.service';
 import { CustomerImportService } from './customer-import.service';
+import { SegmentQueryBuilder } from './segment-query.builder';
+import { CustomerSegmentService } from './customer-segment.service';
 
 import { CustomerController } from './customer.controller';
 import { CustomerProfileController } from './customer-profile.controller';
@@ -29,6 +32,7 @@ import { CustomerTagController } from './customer-tag.controller';
 import { CustomerTagRelationController } from './customer-tag-relation.controller';
 import { CustomerFileController } from './customer-file.controller';
 import { CustomerImportController } from './customer-import.controller';
+import { CustomerSegmentController } from './customer-segment.controller';
 
 /**
  * CRM Domain.
@@ -52,6 +56,7 @@ import { CustomerImportController } from './customer-import.controller';
       CustomerTag,
       CustomerTagRelation,
       CustomerFile,
+      CustomerSegment,
     ]),
     StorageModule,
     // `max_customers` is a plan cap enforced at `CustomerService.create`.
@@ -67,6 +72,7 @@ import { CustomerImportController } from './customer-import.controller';
     CustomerTagRelationController,
     CustomerFileController,
     CustomerImportController,
+    CustomerSegmentController,
   ],
   providers: [
     CustomerService,
@@ -77,10 +83,13 @@ import { CustomerImportController } from './customer-import.controller';
     CustomerTagRelationService,
     CustomerFileService,
     CustomerImportService,
+    SegmentQueryBuilder,
+    CustomerSegmentService,
   ],
   // `CustomerNoteService` is reused (not duplicated) by the Live Agent Handover
   // feature's internal notes — a note added during a handover is a first-class
-  // CRM note against the conversation's customer.
-  exports: [CustomerService, CustomerNoteService],
+  // CRM note against the conversation's customer. `CustomerSegmentService` is
+  // exported for `CampaignsModule` (segment-aware fan-out, Phase 10 T125).
+  exports: [CustomerService, CustomerNoteService, CustomerSegmentService],
 })
 export class CrmModule {}

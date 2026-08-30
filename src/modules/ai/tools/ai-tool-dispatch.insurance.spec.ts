@@ -332,7 +332,11 @@ describe('AiToolDispatchService — get_customer_insurance_status', () => {
   // tenant's whole insurance-status roster.
   it('refuses an unbound customerId supplied only in args when the principal lacks customers.read', async () => {
     const { service, customers } = buildService();
-    const unboundCtx = { ...ctx, customerId: undefined, permissions: ['dashboard.access'] };
+    const unboundCtx = {
+      ...ctx,
+      customerId: undefined,
+      permissions: ['dashboard.access'],
+    };
 
     const result: any = await service.execute(unboundCtx as any, {
       id: 'call-1',
@@ -350,7 +354,11 @@ describe('AiToolDispatchService — get_customer_insurance_status', () => {
         .fn()
         .mockResolvedValue({ id: 'cust-2', has_health_insurance: true }),
     });
-    const unboundCtx = { ...ctx, customerId: undefined, permissions: ['customers.read'] };
+    const unboundCtx = {
+      ...ctx,
+      customerId: undefined,
+      permissions: ['customers.read'],
+    };
 
     const result: any = await service.execute(unboundCtx as any, {
       id: 'call-1',
@@ -359,7 +367,11 @@ describe('AiToolDispatchService — get_customer_insurance_status', () => {
     });
 
     expect(result).toEqual(
-      expect.objectContaining({ success: true, hasInsurance: true, known: true }),
+      expect.objectContaining({
+        success: true,
+        hasInsurance: true,
+        known: true,
+      }),
     );
     expect(customers.findOneOrThrow).toHaveBeenCalledWith(TENANT, 'cust-2');
   });

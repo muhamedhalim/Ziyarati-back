@@ -14,6 +14,8 @@ import { WhatsappTemplate } from '../WhatsApp/WhatsappTemplate';
 import { WhatsappAccount } from '../WhatsApp/WhatsappAccount';
 import { CampaignLifecycle, CampaignType } from '../enums';
 import { User } from '../Auth&RBAC/User';
+import { CustomerSegment } from '../CRM/CustomerSegment';
+import { CAMPAIGN_CHANNEL } from '../../modules/campaigns/campaign.constants';
 
 @Entity('campaigns')
 @Index(['tenant', 'lifecycle'])
@@ -32,6 +34,29 @@ export class Campaign {
 
   @Column({ length: 200 })
   name!: string;
+
+  /**
+   * Phase 11 (US7, T130/T131) — the delivery channel this campaign targets.
+   * NOT NULL with a default of WHATSAPP so every pre-existing campaign reads
+   * back unchanged (`migration:verify`'s own assertion). `CampaignDeliveryFactory`
+   * resolves the real provider from this value; `CampaignDispatchService`
+   * treats a value OTHER than the default as an explicit channel selection —
+   * see its "fail loudly on noop" guard.
+   */
+  @Column({ type: 'varchar', length: 16, default: CAMPAIGN_CHANNEL.WHATSAPP })
+  channel!: string;
+
+  /**
+   * Phase 11 (US7, T131/T132) — clinic-authored marketing email content, used
+   * only when {@link channel} is EMAIL. Plain text (HTML-escaped by the
+   * `campaign_marketing` renderer, never raw HTML) — kept minimal and
+   * separate from the transactional template family (T132).
+   */
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  email_subject?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  email_body?: string | null;
 
   /**
    * The number this campaign sends FROM. Explicit rather than resolved at send
@@ -68,11 +93,27 @@ export class Campaign {
   })
   lifecycle!: CampaignLifecycle;
 
+  /**
+   * Legacy free-form audience snapshot. Phase 10 (R8) supersedes this with
+   * {@link segment} (a reusable, rule-based `CustomerSegment`) — retained
+   * WRITTEN-BUT-UNREAD so existing campaigns don't silently change meaning;
+   * never read by any Phase-10-or-later code path.
+   */
   @Column({
     type: 'jsonb',
     nullable: true,
   })
   segment?: Record<string, any>;
+
+  /**
+   * Phase 10 (US8, R8) — an optional reusable audience. When set, campaign
+   * fan-out resolves membership live (`CampaignFanoutService`), never
+   * freezing it at attach time. `onDelete: 'SET NULL'` — deleting the segment
+   * must never delete campaign history, only detach the reference.
+   */
+  @ManyToOne(() => CustomerSegment, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'segment_id' })
+  audience_segment?: CustomerSegment;
 
   @Column({
     type: 'timestamptz',
@@ -91,11 +132,11 @@ export class Campaign {
   @Column({ nullable: true })
   monthly_cap?: number;
 
-@ManyToOne(() => User, {
-  nullable: true,
-})
-@JoinColumn({ name: 'created_by' })
-created_by?: User;
+  @ManyToOne(() => User, {
+    nullable: true,
+  })
+  @JoinColumn({ name: 'created_by' })
+  created_by?: User;
 
   @Column({ type: 'timestamptz', nullable: true })
   deleted_at?: Date;
