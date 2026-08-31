@@ -612,6 +612,16 @@ export class AuthService {
     }
     if (resolved.kind === 'reuse') {
       await this.handleRefreshReuse(stored, context);
+    } else {
+      // Lost the gate to a concurrent rotation of the same token. Nothing is
+      // revoked and the winner's session is untouched, but the caller still
+      // gets a bare 401 — indistinguishable, from the outside, from a dead
+      // session. Metered so that a client mishandling it is visible here
+      // rather than only as user-reported "random logouts". The RESPONSE is
+      // deliberately unchanged: making this branch distinguishable over the
+      // wire would hand a replaying attacker an oracle for "a legitimate
+      // rotation is in flight right now".
+      this.metrics.recordRefreshRotationEvent('concurrent_refused');
     }
     throw new AppError(ErrorCode.INVALID_REFRESH_TOKEN);
   }

@@ -208,8 +208,17 @@ export class MetricsService {
    * `retry_served`: a client whose response was lost resumed from the recorded
    * successor inside the bounded window (benign, but a sustained rate means
    * clients are losing responses).
+   * `concurrent_refused`: a request lost the atomic rotation gate to another
+   * request presenting the same token — the winner's session is intact and
+   * nothing was revoked. Benign in itself, but it was previously the ONE
+   * rotation outcome with no metric and no log at all, which is why a client
+   * that mistook it for session loss went undiagnosed: the server saw only an
+   * ordinary 401. A sustained rate means clients are refreshing concurrently
+   * (multiple tabs) and should be serialising it.
    */
-  recordRefreshRotationEvent(event: 'reuse_detected' | 'retry_served'): void {
+  recordRefreshRotationEvent(
+    event: 'reuse_detected' | 'retry_served' | 'concurrent_refused',
+  ): void {
     this.refreshRotationEvents.inc({ event });
   }
 

@@ -949,6 +949,16 @@ describe('AuthService', () => {
         code: ErrorCode.INVALID_REFRESH_TOKEN,
       });
       expect(refreshTokens.update).not.toHaveBeenCalled();
+      // The outcome a client must NOT read as session loss — and, before this,
+      // the one rotation outcome with no metric and no log at all, which is
+      // why a client that did mistake it for one was invisible here.
+      expect(metrics.recordRefreshRotationEvent).toHaveBeenCalledWith(
+        'concurrent_refused',
+      );
+      // Never mislabelled as theft: that would revoke the winner's family too.
+      expect(metrics.recordRefreshRotationEvent).not.toHaveBeenCalledWith(
+        'reuse_detected',
+      );
     });
 
     it('revokes ONLY the family when a consumed token is replayed (AUTH-002)', async () => {
@@ -982,6 +992,13 @@ describe('AuthService', () => {
       expect(refreshTokens.update).not.toHaveBeenCalledWith(
         expect.objectContaining({ user: expect.anything() }),
         expect.anything(),
+      );
+      // Real replay is reported as replay, never as a benign lost race.
+      expect(metrics.recordRefreshRotationEvent).toHaveBeenCalledWith(
+        'reuse_detected',
+      );
+      expect(metrics.recordRefreshRotationEvent).not.toHaveBeenCalledWith(
+        'concurrent_refused',
       );
     });
 
