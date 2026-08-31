@@ -19,7 +19,7 @@ import {
 /**
  * Spec 014 (Clinic Platform Completion) — T193 (US14, contracts/
  * clinic-surfaces.md F14). `GET /activity`'s query params: `actorUserId?`,
- * `action?`, `entityType?`, `entityId?`, `from?`, `to?`, `q?`, `page`, `limit`.
+ * `action?`, `from?`, `to?`, `q?`, `page`, `limit`.
  */
 export class QueryActivityLogDto {
   @ApiPropertyOptional({ example: 1, minimum: 1, default: 1 })
@@ -55,17 +55,6 @@ export class QueryActivityLogDto {
   @IsString()
   @MaxLength(200)
   action?: string;
-
-  @ApiPropertyOptional({ description: 'Filter by entity type.' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  entityType?: string;
-
-  @ApiPropertyOptional({ description: 'Filter by entity id.' })
-  @IsOptional()
-  @IsUUID()
-  entityId?: string;
 
   @ApiPropertyOptional({
     description: 'ISO date/time — lower bound (inclusive).',
