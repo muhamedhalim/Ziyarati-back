@@ -384,6 +384,8 @@ export class PublicBookingFlowService {
         source: AppointmentSource.PUBLIC_AI,
         hasInsurance,
       },
+      // Branch context; the visitor is anonymous, so there is no actor.
+      { branchId: appt.branch?.id ?? null },
     );
 
     const paymentLink = hasInsurance

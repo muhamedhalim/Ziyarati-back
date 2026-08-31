@@ -1271,45 +1271,124 @@ export class AuthService {
   async buildAuthenticatedUserWithTenant(
     userId: string,
   ): Promise<{ principal: AuthenticatedUser; tenant: Tenant | null }> {
-    const { user, principal } = await this.loadPrincipal(userId);
-    return { principal, tenant: user.tenant ?? null };
+    const { tenant, principal } = await this.loadPrincipal(userId);
+    return { principal, tenant };
   }
 
   private async loadPrincipal(
     userId: string,
-  ): Promise<{ user: User; principal: AuthenticatedUser }> {
-    const user = await this.users.findOne({
-      where: { id: userId },
-      relations: {
-        tenant: true,
-        userRoles: {
-          role: { rolePermissions: { permission: true } },
-        },
-      },
-    });
+  ): Promise<{ tenant: Tenant | null; principal: AuthenticatedUser }> {
+    type PrincipalRow = {
+      userId: string;
+      userIsActive: boolean;
+      userEmail: string | null;
+      userFullName: string | null;
+      tenantId: string | null;
+      tenantName: string | null;
+      tenantSlug: string | null;
+      tenantLogoUrl: string | null;
+      tenantCommercialRegistrationNumber: string | null;
+      tenantLegalName: string | null;
+      tenantContactEmail: string | null;
+      tenantContactPhone: string | null;
+      tenantCountryId: number | null;
+      tenantDefaultCurrency: string | null;
+      tenantDefaultTimezone: string | null;
+      tenantApprovalStatus: Tenant['approval_status'] | null;
+      tenantIsActive: boolean | null;
+      tenantCreatedAt: Date | null;
+      tenantUpdatedAt: Date | null;
+      tenantDeletedAt: Date | null;
+      roleSlug: string | null;
+      permissionSlug: string | null;
+    };
 
-    if (!user || !user.is_active) {
+    // ONE query, explicit narrow columns, no `take`/`skip` — a plain
+    // `Repository.findOne`/`findOneBy` unconditionally sets `take: 1`, which
+    // (combined with these joins) forces TypeORM's DISTINCT-id-then-hydrate
+    // branch: 2 round trips (research.md R-01/R-10). A query builder that
+    // never sets take/skip/limit/offset stays in the single-query path, and
+    // filtering on the primary key already bounds the result to one user.
+    const rows = await this.users
+      .createQueryBuilder('u')
+      .leftJoin('u.tenant', 't')
+      .leftJoin('u.userRoles', 'ur')
+      .leftJoin('ur.role', 'r')
+      .leftJoin('r.rolePermissions', 'rp')
+      .leftJoin('rp.permission', 'p')
+      .select('u.id', 'userId')
+      .addSelect('u.is_active', 'userIsActive')
+      .addSelect('u.email', 'userEmail')
+      .addSelect('u.full_name', 'userFullName')
+      .addSelect('t.id', 'tenantId')
+      .addSelect('t.name', 'tenantName')
+      .addSelect('t.slug', 'tenantSlug')
+      .addSelect('t.logo_url', 'tenantLogoUrl')
+      .addSelect(
+        't.commercial_registration_number',
+        'tenantCommercialRegistrationNumber',
+      )
+      .addSelect('t.legal_name', 'tenantLegalName')
+      .addSelect('t.contact_email', 'tenantContactEmail')
+      .addSelect('t.contact_phone', 'tenantContactPhone')
+      .addSelect('t.country_id', 'tenantCountryId')
+      .addSelect('t.default_currency', 'tenantDefaultCurrency')
+      .addSelect('t.default_timezone', 'tenantDefaultTimezone')
+      .addSelect('t.approval_status', 'tenantApprovalStatus')
+      .addSelect('t.is_active', 'tenantIsActive')
+      .addSelect('t.created_at', 'tenantCreatedAt')
+      .addSelect('t.updated_at', 'tenantUpdatedAt')
+      .addSelect('t.deleted_at', 'tenantDeletedAt')
+      .addSelect('r.slug', 'roleSlug')
+      .addSelect('p.slug', 'permissionSlug')
+      .where('u.id = :id', { id: userId })
+      .getRawMany<PrincipalRow>();
+
+    const first = rows[0];
+    if (!first || !first.userIsActive) {
       throw new AppError(ErrorCode.USER_INACTIVE);
     }
 
     const roleSlugs = new Set<string>();
     const permissionSlugs = new Set<string>();
-
-    for (const ur of user.userRoles ?? []) {
-      if (!ur.role) continue;
-      roleSlugs.add(ur.role.slug);
-      for (const rp of ur.role.rolePermissions ?? []) {
-        if (rp.permission) permissionSlugs.add(rp.permission.slug);
-      }
+    for (const row of rows) {
+      if (row.roleSlug) roleSlugs.add(row.roleSlug);
+      if (row.permissionSlug) permissionSlugs.add(row.permissionSlug);
     }
 
+    // Folded from the same row set as the principal, never a second query —
+    // and returned separately (never merged into `principal`) so it can never
+    // leak through GET /auth/me or anywhere else that serializes the
+    // principal as-is.
+    const tenant: Tenant | null = first.tenantId
+      ? ({
+          id: first.tenantId,
+          name: first.tenantName,
+          slug: first.tenantSlug,
+          logo_url: first.tenantLogoUrl ?? undefined,
+          commercial_registration_number:
+            first.tenantCommercialRegistrationNumber ?? undefined,
+          legal_name: first.tenantLegalName ?? undefined,
+          contact_email: first.tenantContactEmail ?? undefined,
+          contact_phone: first.tenantContactPhone ?? undefined,
+          country_id: first.tenantCountryId ?? undefined,
+          default_currency: first.tenantDefaultCurrency as string,
+          default_timezone: first.tenantDefaultTimezone as string,
+          approval_status: first.tenantApprovalStatus as Tenant['approval_status'],
+          is_active: !!first.tenantIsActive,
+          created_at: first.tenantCreatedAt as Date,
+          updated_at: first.tenantUpdatedAt as Date,
+          deleted_at: first.tenantDeletedAt as Date,
+        } as Tenant)
+      : null;
+
     return {
-      user,
+      tenant,
       principal: {
-        id: user.id,
-        tenantId: user.tenant?.id ?? null,
-        email: user.email ?? null,
-        fullName: user.full_name ?? null,
+        id: first.userId,
+        tenantId: tenant?.id ?? null,
+        email: first.userEmail ?? null,
+        fullName: first.userFullName ?? null,
         roles: [...roleSlugs],
         permissions: [...permissionSlugs],
       },

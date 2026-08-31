@@ -5,7 +5,10 @@ import { Repository } from 'typeorm';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { PatientActionLink } from '../../entities/Calendar&Appointments/PatientActionLink';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
-import { AppointmentActionOrigin, AppointmentStatus } from '../../entities/enums';
+import {
+  AppointmentActionOrigin,
+  AppointmentStatus,
+} from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { AppointmentsService } from '../appointment/appointment.service';
@@ -142,6 +145,9 @@ export class PatientCancellationService {
       tenantId,
       appointment.id,
       { origin: AppointmentActionOrigin.PATIENT },
+      // Branch context so the Activity log can answer "where" for a patient-
+      // driven action too. No actor: a signed link has no authenticated user.
+      { branchId: cancelled.branch?.id ?? null },
     );
 
     return cancelled;

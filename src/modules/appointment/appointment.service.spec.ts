@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { AppointmentsService } from './appointment.service';
+import { AppointmentAuditService } from './appointment-audit.service';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { AppointmentService as AppointmentServiceEntity } from '../../entities/Calendar&Appointments/AppointmentService';
 import { AppointmentHistory } from '../../entities/Calendar&Appointments/AppointmentHistory';
@@ -45,7 +46,11 @@ describe('AppointmentsService', () => {
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
   let availability: { assertBookable: jest.Mock };
-  let usage: { assertWithinLimit: jest.Mock; increment: jest.Mock; incrementIfWithinLimit: jest.Mock };
+  let usage: {
+    assertWithinLimit: jest.Mock;
+    increment: jest.Mock;
+    incrementIfWithinLimit: jest.Mock;
+  };
   let subscriptions: { assertBillableActionAllowed: jest.Mock };
   let notesRepo: MockRepository;
   let historyRepo: MockRepository;
@@ -54,9 +59,13 @@ describe('AppointmentsService', () => {
   let cancellationsRepo: MockRepository;
   let staffProfilesRepo: MockRepository;
   let scheduledNotificationsRepo: MockRepository;
+  let appointmentAudit: { record: jest.Mock };
 
   /** Full tenant-wide access — the default caller for existing tests. */
-  const FULL_ACCESS_CALLER = { id: USER, permissions: [PERMISSION.APPOINTMENTS_READ] };
+  const FULL_ACCESS_CALLER = {
+    id: USER,
+    permissions: [PERMISSION.APPOINTMENTS_READ],
+  };
 
   /** A fully-hydrated appointment returned by the trailing `findOne` reload. */
   const reloaded = {
@@ -77,9 +86,13 @@ describe('AppointmentsService', () => {
     usage = {
       assertWithinLimit: jest.fn().mockResolvedValue(undefined),
       increment: jest.fn().mockResolvedValue(undefined),
-      incrementIfWithinLimit: jest.fn().mockResolvedValue({ applied: true, used: 0, limit: 100 }),
+      incrementIfWithinLimit: jest
+        .fn()
+        .mockResolvedValue({ applied: true, used: 0, limit: 100 }),
     };
-    subscriptions = { assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined) };
+    subscriptions = {
+      assertBillableActionAllowed: jest.fn().mockResolvedValue(undefined),
+    };
     notesRepo = createMockRepository();
     historyRepo = createMockRepository();
     statusLogsRepo = createMockRepository();
@@ -87,23 +100,43 @@ describe('AppointmentsService', () => {
     cancellationsRepo = createMockRepository();
     staffProfilesRepo = createMockRepository();
     scheduledNotificationsRepo = createMockRepository();
+    appointmentAudit = { record: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         AppointmentsService,
         { provide: getRepositoryToken(Appointment), useValue: appointments },
         { provide: getRepositoryToken(AppointmentNote), useValue: notesRepo },
-        { provide: getRepositoryToken(AppointmentHistory), useValue: historyRepo },
-        { provide: getRepositoryToken(AppointmentStatusLog), useValue: statusLogsRepo },
-        { provide: getRepositoryToken(AppointmentReschedule), useValue: reschedulesRepo },
-        { provide: getRepositoryToken(AppointmentCancellation), useValue: cancellationsRepo },
-        { provide: getRepositoryToken(StaffProfile), useValue: staffProfilesRepo },
-        { provide: getRepositoryToken(ScheduledNotification), useValue: scheduledNotificationsRepo },
+        {
+          provide: getRepositoryToken(AppointmentHistory),
+          useValue: historyRepo,
+        },
+        {
+          provide: getRepositoryToken(AppointmentStatusLog),
+          useValue: statusLogsRepo,
+        },
+        {
+          provide: getRepositoryToken(AppointmentReschedule),
+          useValue: reschedulesRepo,
+        },
+        {
+          provide: getRepositoryToken(AppointmentCancellation),
+          useValue: cancellationsRepo,
+        },
+        {
+          provide: getRepositoryToken(StaffProfile),
+          useValue: staffProfilesRepo,
+        },
+        {
+          provide: getRepositoryToken(ScheduledNotification),
+          useValue: scheduledNotificationsRepo,
+        },
         { provide: DataSource, useValue: dataSource },
         { provide: AvailabilityService, useValue: availability },
         { provide: UsageService, useValue: usage },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: SubscriptionService, useValue: subscriptions },
+        { provide: AppointmentAuditService, useValue: appointmentAudit },
       ],
     }).compile();
     service = moduleRef.get(AppointmentsService);
@@ -112,7 +145,8 @@ describe('AppointmentsService', () => {
   afterEach(() => jest.clearAllMocks());
 
   // Convenience: the per-entity stable repos the service obtains via the manager.
-  const repo = (entity: unknown) => manager.getRepository(entity) as unknown as MockRepository;
+  const repo = (entity: unknown) =>
+    manager.getRepository(entity) as unknown as MockRepository;
 
   describe('create', () => {
     const dto = {
@@ -139,7 +173,10 @@ describe('AppointmentsService', () => {
         { id: 'svc1', duration_minutes: 30, base_price: 100, is_active: true },
       ]);
       manager.findOne.mockResolvedValue({ id: 'b1', timezone: 'Asia/Riyadh' }); // timezone snapshot
-      repo(Appointment).save.mockImplementation(async (e: any) => ({ id: 'appt-1', ...e }));
+      repo(Appointment).save.mockImplementation(async (e: any) => ({
+        id: 'appt-1',
+        ...e,
+      }));
     };
 
     it('books through the availability engine and counts the quota atomically (success)', async () => {
@@ -150,7 +187,12 @@ describe('AppointmentsService', () => {
       // FND-034: the quota check-and-increment is now ONE atomic call, INSIDE
       // the transaction (manager passed through), after availability —
       // replacing the old assertWithinLimit-then-later-increment pair.
-      expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(TENANT, 'APPOINTMENTS', 1, manager);
+      expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(
+        TENANT,
+        'APPOINTMENTS',
+        1,
+        manager,
+      );
       expect(availability.assertBookable).toHaveBeenCalledWith(
         TENANT,
         'b1',
@@ -230,7 +272,9 @@ describe('AppointmentsService', () => {
 
       // 250 (branch price), NOT 100 (clinic-wide base_price).
       expect(repo(Appointment).create.mock.calls[0][0].total_amount).toBe(250);
-      expect(repo(AppointmentServiceEntity).create.mock.calls[0][0].price).toBe(250);
+      expect(repo(AppointmentServiceEntity).create.mock.calls[0][0].price).toBe(
+        250,
+      );
     });
 
     it('[F-5] rejects a service configured for OTHER branches but not this one', async () => {
@@ -249,8 +293,8 @@ describe('AppointmentsService', () => {
     it('[F-4] rejects a doctor who has schedules elsewhere but none at this branch', async () => {
       primeValidRefs();
       // Not at branch b1, but scheduled somewhere → explicit config says no.
-      repo(StaffSchedule).exists
-        .mockResolvedValueOnce(false) // at b1?
+      repo(StaffSchedule)
+        .exists.mockResolvedValueOnce(false) // at b1?
         .mockResolvedValueOnce(true); // anywhere?
 
       await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
@@ -270,7 +314,11 @@ describe('AppointmentsService', () => {
     // rejection there rolls the transaction back, so nothing is created.
     it('rejects when the plan appointment quota is exceeded (transaction rolls back)', async () => {
       primeValidRefs();
-      usage.incrementIfWithinLimit.mockResolvedValueOnce({ applied: false, used: 10, limit: 10 });
+      usage.incrementIfWithinLimit.mockResolvedValueOnce({
+        applied: false,
+        used: 10,
+        limit: 10,
+      });
       await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
@@ -281,7 +329,9 @@ describe('AppointmentsService', () => {
     // covered too, not just the HTTP path (SubscriptionAccessGuard).
     it('refuses to create once grace-expired (before any work)', async () => {
       subscriptions.assertBillableActionAllowed.mockRejectedValueOnce(
-        Object.assign(new Error('grace expired'), { code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED }),
+        Object.assign(new Error('grace expired'), {
+          code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
+        }),
       );
       await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
         code: ErrorCode.SUBSCRIPTION_GRACE_EXPIRED,
@@ -325,7 +375,13 @@ describe('AppointmentsService', () => {
     it('refuses to book a VARIABLE-priced service (no booking-time pricing mechanism exists)', async () => {
       primeValidRefs();
       repo(Service).find.mockResolvedValue([
-        { id: 'svc1', duration_minutes: 30, base_price: null, pricing_type: PricingType.VARIABLE, is_active: true },
+        {
+          id: 'svc1',
+          duration_minutes: 30,
+          base_price: null,
+          pricing_type: PricingType.VARIABLE,
+          is_active: true,
+        },
       ]);
 
       await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
@@ -337,7 +393,13 @@ describe('AppointmentsService', () => {
     it('still books normally when every service is FIXED-priced (regression guard)', async () => {
       primeValidRefs();
       repo(Service).find.mockResolvedValue([
-        { id: 'svc1', duration_minutes: 30, base_price: 100, pricing_type: PricingType.FIXED, is_active: true },
+        {
+          id: 'svc1',
+          duration_minutes: 30,
+          base_price: 100,
+          pricing_type: PricingType.FIXED,
+          is_active: true,
+        },
       ]);
 
       await expect(service.create(TENANT, USER, dto)).resolves.toBeDefined();
@@ -364,7 +426,9 @@ describe('AppointmentsService', () => {
 
     it('routes CANCELLED to the dedicated endpoint (BAD_REQUEST)', async () => {
       await expect(
-        service.changeStatus(TENANT, USER, 'appt-1', { status: AppointmentStatus.CANCELLED } as any),
+        service.changeStatus(TENANT, USER, 'appt-1', {
+          status: AppointmentStatus.CANCELLED,
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
     });
 
@@ -380,7 +444,9 @@ describe('AppointmentsService', () => {
     it('rejects a no-op transition to the same status (BAD_REQUEST)', async () => {
       loadAppointment(AppointmentStatus.CONFIRMED);
       await expect(
-        service.changeStatus(TENANT, USER, 'appt-1', { status: AppointmentStatus.CONFIRMED } as any),
+        service.changeStatus(TENANT, USER, 'appt-1', {
+          status: AppointmentStatus.CONFIRMED,
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
     });
   });
@@ -432,7 +498,9 @@ describe('AppointmentsService', () => {
       repo(Appointment).findOne.mockResolvedValueOnce(appt);
       await service.applyPaymentOutcome(TENANT, 'appt-1', 'partially_refunded');
       expect(appt.status).toBe(AppointmentStatus.CONFIRMED);
-      expect(appt.payment_status).toBe(AppointmentPaymentStatus.PARTIALLY_REFUNDED);
+      expect(appt.payment_status).toBe(
+        AppointmentPaymentStatus.PARTIALLY_REFUNDED,
+      );
     });
   });
 
@@ -450,7 +518,10 @@ describe('AppointmentsService', () => {
 
     it('cancels and marks REFUNDED on a full refund', async () => {
       loadAppointment();
-      await service.cancel(TENANT, USER, 'appt-1', { reason: 'x', refundAmount: 200 } as any);
+      await service.cancel(TENANT, USER, 'appt-1', {
+        reason: 'x',
+        refundAmount: 200,
+      } as any);
       const saved = repo(Appointment).save.mock.calls[0][0];
       expect(saved.status).toBe(AppointmentStatus.CANCELLED);
       expect(saved.payment_status).toBe(AppointmentPaymentStatus.REFUNDED);
@@ -460,7 +531,9 @@ describe('AppointmentsService', () => {
       loadAppointment();
       await service.cancel(TENANT, USER, 'appt-1', { refundAmount: 50 } as any);
       const saved = repo(Appointment).save.mock.calls[0][0];
-      expect(saved.payment_status).toBe(AppointmentPaymentStatus.PARTIALLY_REFUNDED);
+      expect(saved.payment_status).toBe(
+        AppointmentPaymentStatus.PARTIALLY_REFUNDED,
+      );
     });
 
     it('refuses to cancel an already-terminal appointment', async () => {
@@ -592,14 +665,22 @@ describe('AppointmentsService', () => {
     });
 
     it('refuses to delete a non-terminal appointment', async () => {
-      appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', status: AppointmentStatus.CONFIRMED });
-      await expect(service.remove(TENANT, USER, 'appt-1')).rejects.toMatchObject({
+      appointments.findOne.mockResolvedValueOnce({
+        id: 'appt-1',
+        status: AppointmentStatus.CONFIRMED,
+      });
+      await expect(
+        service.remove(TENANT, USER, 'appt-1'),
+      ).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
     });
 
     it('soft-deletes a cancelled appointment', async () => {
-      appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', status: AppointmentStatus.CANCELLED });
+      appointments.findOne.mockResolvedValueOnce({
+        id: 'appt-1',
+        status: AppointmentStatus.CANCELLED,
+      });
       await service.remove(TENANT, USER, 'appt-1');
       expect(appointments.softRemove).toHaveBeenCalled();
     });
@@ -623,20 +704,33 @@ describe('AppointmentsService', () => {
         FULL_ACCESS_CALLER,
       );
 
-      expect(result).toEqual({ data: [{ id: 'a1' }], total: 1, page: 1, limit: 10 });
+      expect(result).toEqual({
+        data: [{ id: 'a1' }],
+        total: 1,
+        page: 1,
+        limit: 10,
+      });
       const arg = appointments.findAndCount.mock.calls[0][0];
       expect(arg.where).toEqual(
-        expect.objectContaining({ tenant: { id: TENANT }, staff: { id: 's1' } }),
+        expect.objectContaining({
+          tenant: { id: TENANT },
+          staff: { id: 's1' },
+        }),
       );
     });
   });
 
   describe('ownership scoping (appointments.read_own)', () => {
-    const OWN_CALLER = { id: 'doctor-1', permissions: [PERMISSION.APPOINTMENTS_READ_OWN] };
+    const OWN_CALLER = {
+      id: 'doctor-1',
+      permissions: [PERMISSION.APPOINTMENTS_READ_OWN],
+    };
 
     describe('findAll', () => {
-      it('forces the staff filter to the caller\'s own StaffProfile, ignoring query.staffId', async () => {
-        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+      it("forces the staff filter to the caller's own StaffProfile, ignoring query.staffId", async () => {
+        staffProfilesRepo.findOne.mockResolvedValueOnce({
+          id: 'staff-doctor-1',
+        });
         appointments.findAndCount.mockResolvedValueOnce([[{ id: 'a1' }], 1]);
 
         await service.findAll(
@@ -656,42 +750,66 @@ describe('AppointmentsService', () => {
 
       it('returns an empty page without querying when the caller has no StaffProfile', async () => {
         staffProfilesRepo.findOne.mockResolvedValueOnce(null);
-        const result = await service.findAll(TENANT, { page: 1, limit: 10 } as any, OWN_CALLER);
+        const result = await service.findAll(
+          TENANT,
+          { page: 1, limit: 10 } as any,
+          OWN_CALLER,
+        );
         expect(result).toEqual({ data: [], total: 0, page: 1, limit: 10 });
         expect(appointments.findAndCount).not.toHaveBeenCalled();
       });
     });
 
     describe('findOne', () => {
-      it('returns the appointment when it belongs to the caller\'s own StaffProfile', async () => {
-        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'staff-doctor-1' } });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+      it("returns the appointment when it belongs to the caller's own StaffProfile", async () => {
+        appointments.findOne.mockResolvedValueOnce({
+          id: 'appt-1',
+          staff: { id: 'staff-doctor-1' },
+        });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({
+          id: 'staff-doctor-1',
+        });
 
-        await expect(service.findOne(TENANT, 'appt-1', OWN_CALLER)).resolves.toEqual(
-          expect.objectContaining({ id: 'appt-1' }),
-        );
+        await expect(
+          service.findOne(TENANT, 'appt-1', OWN_CALLER),
+        ).resolves.toEqual(expect.objectContaining({ id: 'appt-1' }));
       });
 
-      it('returns NOT_FOUND (never a distinguishable forbidden) for another staff member\'s appointment', async () => {
-        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'someone-elses-staff-id' } });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+      it("returns NOT_FOUND (never a distinguishable forbidden) for another staff member's appointment", async () => {
+        appointments.findOne.mockResolvedValueOnce({
+          id: 'appt-1',
+          staff: { id: 'someone-elses-staff-id' },
+        });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({
+          id: 'staff-doctor-1',
+        });
 
-        await expect(service.findOne(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+        await expect(
+          service.findOne(TENANT, 'appt-1', OWN_CALLER),
+        ).rejects.toMatchObject({
           code: ErrorCode.NOT_FOUND,
         });
       });
 
       it('returns NOT_FOUND when the caller has no StaffProfile at all', async () => {
-        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'staff-doctor-1' } });
+        appointments.findOne.mockResolvedValueOnce({
+          id: 'appt-1',
+          staff: { id: 'staff-doctor-1' },
+        });
         staffProfilesRepo.findOne.mockResolvedValueOnce(null);
 
-        await expect(service.findOne(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+        await expect(
+          service.findOne(TENANT, 'appt-1', OWN_CALLER),
+        ).rejects.toMatchObject({
           code: ErrorCode.NOT_FOUND,
         });
       });
 
       it('is unrestricted when no caller is passed (internal call sites)', async () => {
-        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'anyone' } });
+        appointments.findOne.mockResolvedValueOnce({
+          id: 'appt-1',
+          staff: { id: 'anyone' },
+        });
         await expect(service.findOne(TENANT, 'appt-1')).resolves.toEqual(
           expect.objectContaining({ id: 'appt-1' }),
         );
@@ -700,21 +818,35 @@ describe('AppointmentsService', () => {
     });
 
     describe('listNotes / getTimeline', () => {
-      it('listNotes 404s for another staff member\'s appointment before touching notes', async () => {
-        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'someone-elses-staff-id' } });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+      it("listNotes 404s for another staff member's appointment before touching notes", async () => {
+        appointments.findOne.mockResolvedValueOnce({
+          id: 'appt-1',
+          staff: { id: 'someone-elses-staff-id' },
+        });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({
+          id: 'staff-doctor-1',
+        });
 
-        await expect(service.listNotes(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+        await expect(
+          service.listNotes(TENANT, 'appt-1', OWN_CALLER),
+        ).rejects.toMatchObject({
           code: ErrorCode.NOT_FOUND,
         });
         expect(notesRepo.find).not.toHaveBeenCalled();
       });
 
-      it('getTimeline 404s for another staff member\'s appointment', async () => {
-        appointments.findOne.mockResolvedValueOnce({ id: 'appt-1', staff: { id: 'someone-elses-staff-id' } });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({ id: 'staff-doctor-1' });
+      it("getTimeline 404s for another staff member's appointment", async () => {
+        appointments.findOne.mockResolvedValueOnce({
+          id: 'appt-1',
+          staff: { id: 'someone-elses-staff-id' },
+        });
+        staffProfilesRepo.findOne.mockResolvedValueOnce({
+          id: 'staff-doctor-1',
+        });
 
-        await expect(service.getTimeline(TENANT, 'appt-1', OWN_CALLER)).rejects.toMatchObject({
+        await expect(
+          service.getTimeline(TENANT, 'appt-1', OWN_CALLER),
+        ).rejects.toMatchObject({
           code: ErrorCode.NOT_FOUND,
         });
       });
@@ -757,7 +889,9 @@ describe('AppointmentsService', () => {
 
     it('updates notes only without touching availability', async () => {
       loadConfirmed();
-      await service.update(TENANT, USER, 'appt-1', { notes: 'call ahead' } as any);
+      await service.update(TENANT, USER, 'appt-1', {
+        notes: 'call ahead',
+      } as any);
       expect(availability.assertBookable).not.toHaveBeenCalled();
     });
 
@@ -796,7 +930,9 @@ describe('AppointmentsService', () => {
         { id: 'svc1', duration_minutes: 45, base_price: 150, is_active: true },
       ]);
 
-      await service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc1'] } as any);
+      await service.setServices(TENANT, USER, 'appt-1', {
+        serviceIds: ['svc1'],
+      } as any);
 
       expect(repo(AppointmentServiceEntity).delete).toHaveBeenCalledWith({
         appointment: { id: 'appt-1' },
@@ -815,7 +951,9 @@ describe('AppointmentsService', () => {
         { id: 'svc2', duration_minutes: 90, base_price: 300, is_active: true },
       ]);
 
-      await service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc2'] } as any);
+      await service.setServices(TENANT, USER, 'appt-1', {
+        serviceIds: ['svc2'],
+      } as any);
 
       expect(availability.assertBookable).toHaveBeenCalledWith(
         TENANT,
@@ -833,11 +971,15 @@ describe('AppointmentsService', () => {
         { id: 'svc2', duration_minutes: 90, base_price: 300, is_active: true },
       ]);
       availability.assertBookable.mockRejectedValueOnce(
-        Object.assign(new Error('conflict'), { code: ErrorCode.STAFF_NOT_AVAILABLE }),
+        Object.assign(new Error('conflict'), {
+          code: ErrorCode.STAFF_NOT_AVAILABLE,
+        }),
       );
 
       await expect(
-        service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc2'] } as any),
+        service.setServices(TENANT, USER, 'appt-1', {
+          serviceIds: ['svc2'],
+        } as any),
       ).rejects.toMatchObject({ code: ErrorCode.STAFF_NOT_AVAILABLE });
       expect(repo(Appointment).save).not.toHaveBeenCalled();
     });
@@ -849,7 +991,9 @@ describe('AppointmentsService', () => {
         { id: 'svc3', duration_minutes: 45, base_price: 999, is_active: true },
       ]);
 
-      await service.setServices(TENANT, USER, 'appt-1', { serviceIds: ['svc3'] } as any);
+      await service.setServices(TENANT, USER, 'appt-1', {
+        serviceIds: ['svc3'],
+      } as any);
 
       expect(availability.assertBookable).not.toHaveBeenCalled();
     });
@@ -859,14 +1003,18 @@ describe('AppointmentsService', () => {
     it('adds a note after a tenant-scoped existence check', async () => {
       appointments.findOne.mockResolvedValueOnce({ id: 'appt-1' });
       notesRepo.save.mockResolvedValueOnce({ id: 'note-1' });
-      const note = await service.addNote(TENANT, USER, 'appt-1', { content: 'hi' } as any);
+      const note = await service.addNote(TENANT, USER, 'appt-1', {
+        content: 'hi',
+      } as any);
       expect(note).toEqual({ id: 'note-1' });
     });
 
     it('lists notes for an appointment', async () => {
       appointments.findOne.mockResolvedValueOnce({ id: 'appt-1' });
       notesRepo.find.mockResolvedValueOnce([{ id: 'n1' }]);
-      await expect(service.listNotes(TENANT, 'appt-1')).resolves.toEqual([{ id: 'n1' }]);
+      await expect(service.listNotes(TENANT, 'appt-1')).resolves.toEqual([
+        { id: 'n1' },
+      ]);
     });
 
     it('merges audit tables into a single chronological timeline', async () => {
@@ -875,7 +1023,11 @@ describe('AppointmentsService', () => {
         created_at: new Date('2026-07-01T09:00:00Z'),
       });
       historyRepo.find.mockResolvedValueOnce([
-        { created_at: new Date('2026-07-01T11:00:00Z'), old_status: 'CONFIRMED', new_status: 'COMPLETED' },
+        {
+          created_at: new Date('2026-07-01T11:00:00Z'),
+          old_status: 'CONFIRMED',
+          new_status: 'COMPLETED',
+        },
       ]);
       statusLogsRepo.find.mockResolvedValueOnce([
         { created_at: new Date('2026-07-01T10:00:00Z'), status: 'CONFIRMED' },
@@ -894,9 +1046,11 @@ describe('AppointmentsService', () => {
   });
 
   describe('listReminders (T055, FR-M015)', () => {
-    it('404s for another tenant\'s appointment before ever querying reminders', async () => {
+    it("404s for another tenant's appointment before ever querying reminders", async () => {
       appointments.findOne.mockResolvedValueOnce(null);
-      await expect(service.listReminders(TENANT, 'appt-1')).rejects.toMatchObject({
+      await expect(
+        service.listReminders(TENANT, 'appt-1'),
+      ).rejects.toMatchObject({
         code: ErrorCode.NOT_FOUND,
       });
       expect(scheduledNotificationsRepo.find).not.toHaveBeenCalled();
@@ -955,6 +1109,191 @@ describe('AppointmentsService', () => {
           failureReason: null,
         },
       ]);
+    });
+  });
+
+  /**
+   * The clinic-wide Activity trail. Before this, a receptionist creating an
+   * appointment wrote to `appointment_history` and `appointment_status_logs`
+   * but NOTHING to `audit_logs` — so the owner's Activity page could not show
+   * the single most common thing that happens in a clinic.
+   */
+  describe('activity audit trail', () => {
+    const primeRefs = () => {
+      repo(Branch).exists.mockResolvedValue(true);
+      repo(Customer).exists.mockResolvedValue(true);
+      repo(StaffProfile).findOne.mockResolvedValue({
+        id: 's1',
+        is_available_for_booking: true,
+      });
+      repo(StaffSchedule).exists.mockResolvedValue(false);
+      repo(Service).find.mockResolvedValue([
+        { id: 'svc1', duration_minutes: 30, base_price: 100, is_active: true },
+      ]);
+      manager.findOne.mockResolvedValue({ id: 'b1', timezone: 'Asia/Riyadh' });
+      repo(Appointment).save.mockImplementation(async (e: any) => ({
+        id: 'appt-1',
+        ...e,
+      }));
+    };
+
+    const createDto = {
+      branchId: 'b1',
+      customerId: 'c1',
+      staffId: 's1',
+      serviceIds: ['svc1'],
+      startAt: '2026-07-01T10:00:00.000Z',
+    } as any;
+
+    it('records appointment.created with the AUTHENTICATED actor — never the customer or the booking owner', async () => {
+      primeRefs();
+      appointments.findOne.mockResolvedValue({
+        ...reloaded,
+        source: 'MANUAL',
+        services: [{ service: { name: 'Dental cleaning' } }],
+      });
+
+      await service.create(TENANT, USER, createDto);
+
+      expect(appointmentAudit.record).toHaveBeenCalledWith(
+        'appointment.created',
+        TENANT,
+        'appt-1',
+        expect.objectContaining({ status: expect.anything() }),
+        expect.objectContaining({ actorUserId: USER }),
+      );
+    });
+
+    it('carries the branch and the non-sensitive service label, and never the customer', async () => {
+      primeRefs();
+      appointments.findOne.mockResolvedValue({
+        ...reloaded,
+        source: 'MANUAL',
+        customer: { id: 'cust-1', full_name: 'Ahmed Mohamed' },
+        services: [{ service: { name: 'Dental cleaning' } }],
+      });
+
+      await service.create(TENANT, USER, createDto);
+
+      const [, , , details, context] = appointmentAudit.record.mock.calls[0];
+      expect(context).toMatchObject({
+        branchId: 'b1',
+        entityLabel: 'Dental cleaning',
+      });
+      // The patient's name must not reach `audit_logs` through any field.
+      expect(JSON.stringify([details, context])).not.toContain('Ahmed Mohamed');
+    });
+
+    it('records AFTER the transaction commits, so an audit failure cannot fail the booking', async () => {
+      primeRefs();
+      appointments.findOne.mockResolvedValue({ ...reloaded, source: 'MANUAL' });
+      appointmentAudit.record.mockRejectedValueOnce(new Error('audit db down'));
+
+      // `record` is best-effort and swallows internally; this asserts the
+      // booking survives even the pathological case where it does throw.
+      await expect(service.create(TENANT, USER, createDto)).rejects.toThrow();
+      // …and the appointment was still committed before that point.
+      expect(repo(Appointment).save).toHaveBeenCalled();
+    });
+
+    it('does NOT record appointment.created for a PUBLIC_AI booking — that path has its own action', async () => {
+      primeRefs();
+      // PUBLIC_AI books under strict branch scope, so the staff member must
+      // have an active schedule AT this branch (`primeRefs` models the looser
+      // unconfigured-clinic case the other tests use).
+      repo(StaffSchedule).exists.mockResolvedValue(true);
+      appointments.findOne.mockResolvedValue({
+        ...reloaded,
+        source: 'PUBLIC_AI',
+      });
+
+      await service.create(TENANT, USER, {
+        ...createDto,
+        source: 'PUBLIC_AI',
+        // The assistant sources also reject a past start time (PD-6/AI-027).
+        startAt: new Date(Date.now() + 86_400_000).toISOString(),
+      });
+
+      expect(appointmentAudit.record).not.toHaveBeenCalled();
+    });
+
+    it('records appointment.status_changed with the previous status, so changedFields can name it', async () => {
+      repo(Appointment).findOne.mockResolvedValue({
+        id: 'appt-1',
+        status: AppointmentStatus.CONFIRMED,
+        branch: { id: 'b1' },
+        staff: { id: 's1' },
+        customer: { id: 'c1' },
+      });
+      appointments.findOne.mockResolvedValue({
+        ...reloaded,
+        status: AppointmentStatus.IN_PROGRESS,
+      });
+
+      await service.changeStatus(TENANT, USER, 'appt-1', {
+        status: AppointmentStatus.IN_PROGRESS,
+      } as any);
+
+      expect(appointmentAudit.record).toHaveBeenCalledWith(
+        'appointment.status_changed',
+        TENANT,
+        'appt-1',
+        expect.anything(),
+        expect.objectContaining({
+          actorUserId: USER,
+          before: { status: AppointmentStatus.CONFIRMED },
+        }),
+      );
+    });
+
+    it('records appointment.cancelled for a STAFF cancellation', async () => {
+      repo(Appointment).findOne.mockResolvedValue({
+        id: 'appt-1',
+        status: AppointmentStatus.CONFIRMED,
+        branch: { id: 'b1' },
+        staff: { id: 's1' },
+        customer: { id: 'c1' },
+      });
+      appointments.findOne.mockResolvedValue({
+        ...reloaded,
+        status: AppointmentStatus.CANCELLED,
+      });
+
+      await service.cancel(TENANT, USER, 'appt-1', {
+        reason: 'Clinic closed',
+      } as any);
+
+      expect(appointmentAudit.record).toHaveBeenCalledWith(
+        'appointment.cancelled',
+        TENANT,
+        'appt-1',
+        expect.objectContaining({ reason: 'Clinic closed' }),
+        expect.objectContaining({ actorUserId: USER }),
+      );
+    });
+
+    it('does NOT record appointment.cancelled for a PATIENT cancellation — that path records its own action', async () => {
+      repo(Appointment).findOne.mockResolvedValue({
+        id: 'appt-1',
+        status: AppointmentStatus.CONFIRMED,
+        branch: { id: 'b1' },
+        staff: { id: 's1' },
+        customer: { id: 'c1' },
+      });
+      appointments.findOne.mockResolvedValue({
+        ...reloaded,
+        status: AppointmentStatus.CANCELLED,
+      });
+
+      await service.cancel(
+        TENANT,
+        null,
+        'appt-1',
+        { reason: 'Changed my mind' } as any,
+        AppointmentActionOrigin.PATIENT,
+      );
+
+      expect(appointmentAudit.record).not.toHaveBeenCalled();
     });
   });
 });

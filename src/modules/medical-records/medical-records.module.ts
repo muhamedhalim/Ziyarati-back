@@ -13,6 +13,8 @@ import { ClinicalAccessLogService } from './clinical-access-log.service';
 import { ClinicalTimelineService } from './clinical-timeline.service';
 import { ClinicalController } from './clinical.controller';
 
+import { ActivityLogModule } from '../activity-log/activity-log.module';
+
 /**
  * Spec 014 (Clinic Platform Completion) — clinical records (US6). Scaffolded
  * empty in T006; entities registered in T104, providers/controller land
@@ -29,6 +31,8 @@ import { ClinicalController } from './clinical.controller';
       // field-level clinical boundary this module's own controller checks.
       CustomerProfile,
     ]),
+    // The single clinic-wide audit INSERT path (ActivityAuditService).
+    ActivityLogModule,
   ],
   controllers: [ClinicalController],
   providers: [

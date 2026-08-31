@@ -37,6 +37,17 @@ describe('UsageService', () => {
 
   beforeEach(async () => {
     subscriptions = createMockRepository();
+    // T045 (015-db-api-efficiency-audit, P7-2/ORM-001): findCurrentSubscriptionWithPlan
+    // now reads the tenant FK column via entity metadata (R-11 — Subscription
+    // exposes no plain `tenantId` property), the same
+    // `.metadata.findRelationWithPropertyPath` pattern used elsewhere in this
+    // audit. `tenantId` matches the real column name (BaselineSchema
+    // migration: `subscriptions."tenantId"`).
+    (subscriptions as unknown as { metadata: unknown }).metadata = {
+      name: 'Subscription',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     usageRepo = createMockRepository();
     access = {
       isEnforced: jest.fn().mockResolvedValue(true),
@@ -75,6 +86,33 @@ describe('UsageService', () => {
 
   afterEach(() => jest.clearAllMocks());
 
+  /**
+   * T045 (015-db-api-efficiency-audit, P7-2): `findCurrentSubscriptionWithPlan`
+   * now reads via `createQueryBuilder().getOne()`, not `findOne()` — but this
+   * file also exercises `findCurrentSubscription` (a separate, still-`findOne`-
+   * based private method, e.g. via `increment`/`release`), and many existing
+   * tests don't know or care which one their code path actually uses. These
+   * helpers prime BOTH mechanisms with the same row for exactly the next call,
+   * so every pre-existing `subscriptions.findOne.mockResolvedValueOnce(...)` /
+   * `mockResolvedValue(...)` call site keeps working unchanged regardless of
+   * which private method it happens to exercise.
+   */
+  function mockCurrentSubscriptionOnce(row: unknown) {
+    subscriptions.findOne.mockResolvedValueOnce(row as never);
+    const qb = createMockQueryBuilder();
+    qb.getOne = jest.fn().mockResolvedValue(row);
+    subscriptions.createQueryBuilder.mockReturnValueOnce(qb);
+    return qb;
+  }
+
+  function mockCurrentSubscriptionAlways(row: unknown) {
+    subscriptions.findOne.mockResolvedValue(row as never);
+    const qb = createMockQueryBuilder();
+    qb.getOne = jest.fn().mockResolvedValue(row);
+    subscriptions.createQueryBuilder.mockReturnValue(qb);
+    return qb;
+  }
+
   describe('increment', () => {
     it('is a no-op for a non-positive amount', async () => {
       await service.increment('t1', USAGE_METRIC.APPOINTMENTS, 0);
@@ -88,7 +126,7 @@ describe('UsageService', () => {
       // on a super-admin grant. `incrementIfWithinLimit` already recorded on
       // this branch; the two now agree.
       access.isEnforced.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValueOnce(null);
+      mockCurrentSubscriptionOnce(null);
       await service.increment('t1', USAGE_METRIC.APPOINTMENTS, 1);
       // insert(orIgnore) + update => two query builders
       expect(usageRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
@@ -99,14 +137,14 @@ describe('UsageService', () => {
       // feature grant produced no usage rows at all and the platform was blind
       // to what it consumed. There is no plan to CAP it against, but that is a
       // reason not to enforce — not a reason not to count.
-      subscriptions.findOne.mockResolvedValueOnce(null);
+      mockCurrentSubscriptionOnce(null);
       await service.increment('t1', USAGE_METRIC.APPOINTMENTS, 1);
       // insert(orIgnore) + update => two query builders
       expect(usageRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
     });
 
     it('upserts then atomically increments the metric', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1' });
+      mockCurrentSubscriptionOnce({ id: 'sub-1' });
       await service.increment('t1', USAGE_METRIC.APPOINTMENTS, 2);
       // insert(orIgnore) + update => two query builders
       expect(usageRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
@@ -123,7 +161,7 @@ describe('UsageService', () => {
     });
 
     it('allows unlimited metrics (null plan limit)', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_appointments: null },
       });
@@ -133,7 +171,7 @@ describe('UsageService', () => {
     });
 
     it('allows when usage stays within the plan limit', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_appointments: 100 },
       });
@@ -144,7 +182,7 @@ describe('UsageService', () => {
     });
 
     it('throws 422 when the increment would exceed the limit', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_appointments: 100 },
       });
@@ -159,7 +197,7 @@ describe('UsageService', () => {
 
   describe('assertCountWithinLimit', () => {
     it('throws 422 when adding would exceed the absolute cap', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_users: 5 },
       });
@@ -171,7 +209,7 @@ describe('UsageService', () => {
     });
 
     it('allows an unlimited count cap (null)', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_users: null },
       });
@@ -184,7 +222,7 @@ describe('UsageService', () => {
     // column, so a paid "+1 branch" add-on displayed correctly in the usage
     // view but still 422'd here.
     it('honors purchased CAPACITY on top of the plan limit', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_branches: 5 },
       });
@@ -200,7 +238,7 @@ describe('UsageService', () => {
     });
 
     it('honors an active OVERRIDE on top of the plan limit', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_branches: 5 },
       });
@@ -211,7 +249,7 @@ describe('UsageService', () => {
     });
 
     it('asks the ledger for the correct capacity METRIC derived from the column', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_branches: 5 },
       });
@@ -221,16 +259,64 @@ describe('UsageService', () => {
     });
   });
 
+  // T045 (015-db-api-efficiency-audit, P7-2/ORM-001): findCurrentSubscriptionWithPlan
+  // exercised directly through assertCountWithinLimit, the simplest public
+  // wrapper — the mandatory per-site assertion set (identical result, empty
+  // for non-match, empty for a foreign tenant, soft-delete exclusion left to
+  // TypeORM rather than hand-written, statement count).
+  describe('findCurrentSubscriptionWithPlan — T045 (P7-2, ORM-001)', () => {
+    it('resolves an unlimited cap identically to before (a matching row)', async () => {
+      mockCurrentSubscriptionOnce({ id: 'sub-1', plan: { max_users: null } });
+      await expect(
+        service.assertCountWithinLimit('t1', COUNT_LIMIT.USERS, 999),
+      ).resolves.toBeUndefined();
+    });
+
+    it('no subscription (empty result) → allowed, no plan to compare against', async () => {
+      mockCurrentSubscriptionOnce(null);
+      await expect(
+        service.assertCountWithinLimit('t1', COUNT_LIMIT.USERS, 999),
+      ).resolves.toBeUndefined();
+    });
+
+    it('scopes strictly by the FK column resolved from metadata — a foreign tenant id never widens the filter', async () => {
+      const qb = mockCurrentSubscriptionOnce(null);
+      await service.assertCountWithinLimit('other-tenant', COUNT_LIMIT.USERS, 1);
+      expect(qb.where).toHaveBeenCalledWith('s."tenantId" = :tenantId', {
+        tenantId: 'other-tenant',
+      });
+    });
+
+    it('never hand-writes a deleted_at predicate — soft-delete exclusion is TypeORM auto-injection, not a copy that could drift', async () => {
+      const qb = mockCurrentSubscriptionOnce({ id: 'sub-1', plan: { max_users: 5 } });
+      await service.assertCountWithinLimit('t1', COUNT_LIMIT.USERS, 1);
+      const allCalls = [...qb.where.mock.calls, ...qb.andWhere.mock.calls];
+      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(false);
+    });
+
+    it('issues exactly one query (createQueryBuilder, not findOne) with limit(1), never take/skip', async () => {
+      const qb = mockCurrentSubscriptionOnce({ id: 'sub-1', plan: { max_users: 5 } });
+      await service.assertCountWithinLimit('t1', COUNT_LIMIT.USERS, 1);
+
+      expect(subscriptions.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(qb.getOne).toHaveBeenCalledTimes(1);
+      expect(qb.limit).toHaveBeenCalledWith(1);
+      expect(qb.take).not.toHaveBeenCalled();
+      expect(qb.skip).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getUsage / getBreakdown', () => {
     it('returns zeros when no usage row exists', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({ id: 'sub-1' });
+      mockCurrentSubscriptionOnce({ id: 'sub-1' });
       usageRepo.findOne.mockResolvedValueOnce(null);
       const u = await service.getUsage('t1');
       expect(u).toMatchObject({ appointmentsUsed: 0, aiTokensUsed: 0 });
     });
 
     it('computes remaining and percentUsed per metric', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: {
           id: 'p1',
@@ -263,7 +349,7 @@ describe('UsageService', () => {
     // prepaid credit balance, so reporting agrees with what
     // incrementIfWithinLimit would actually admit.
     it('extends the limit by the prepaid CREDIT balance once the plan allowance is exhausted', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_appointments: 100 },
       });
@@ -284,7 +370,7 @@ describe('UsageService', () => {
     });
 
     it('exposes creditBalance as 0 (not undefined) when the tenant has never bought credit for a metric', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_appointments: 100 },
       });
@@ -299,7 +385,7 @@ describe('UsageService', () => {
 
   describe('getUnifiedBreakdown', () => {
     it('extends a metered metric line by the credit balance', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_ai_tokens: '1000' },
       });
@@ -318,7 +404,7 @@ describe('UsageService', () => {
     });
 
     it('extends a count-based resource line by purchased capacity', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_customers: 50 },
       });
@@ -335,7 +421,7 @@ describe('UsageService', () => {
     });
 
     it('with no credits/capacity purchased, behaves exactly as before Phase 1.4 (backward compatibility)', async () => {
-      subscriptions.findOne.mockResolvedValue({
+      mockCurrentSubscriptionAlways({
         id: 'sub-1',
         plan: { max_ai_tokens: '1000', max_customers: 50 },
       });
@@ -353,7 +439,7 @@ describe('UsageService', () => {
   // tested standalone here.
   describe('effectiveStorageLimit', () => {
     it('is the plan bytes when it is lower than the platform ceiling', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_storage_bytes: '1000000' }, // 1 MB, well under the 5 GB default ceiling
       });
@@ -362,7 +448,7 @@ describe('UsageService', () => {
     });
 
     it('is the platform ceiling when the plan bytes (+ addon) would exceed it', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_storage_bytes: String(100 * 1024 * 1024 * 1024) }, // 100 GB plan
       });
@@ -372,7 +458,7 @@ describe('UsageService', () => {
     });
 
     it('adds purchased storageBytes capacity to the plan bytes before comparing to the ceiling', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_storage_bytes: '1000000' },
       });
@@ -382,7 +468,7 @@ describe('UsageService', () => {
     });
 
     it('is unlimited-commercial (platform ceiling binds alone) when the plan column is null', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_storage_bytes: null },
       });
@@ -392,7 +478,7 @@ describe('UsageService', () => {
     });
 
     it('falls back to the platform ceiling alone when the tenant has no subscription', async () => {
-      subscriptions.findOne.mockResolvedValueOnce(null);
+      mockCurrentSubscriptionOnce(null);
       platformSettings.getTyped.mockResolvedValueOnce(5);
       const limit = await service.effectiveStorageLimit('t1');
       expect(limit).toBe(5 * 1024 * 1024 * 1024);
@@ -434,6 +520,11 @@ describe('UsageService', () => {
      */
     function newManager() {
       const managerSubscriptions = createMockRepository();
+      (managerSubscriptions as unknown as { metadata: unknown }).metadata = {
+        name: 'Subscription',
+        findRelationWithPropertyPath: (path: string) =>
+          path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+      };
       const managerUsage = createMockRepository();
       const manager = createMockEntityManager(
         new Map<unknown, MockRepository>([
@@ -444,9 +535,20 @@ describe('UsageService', () => {
       return { manager, managerSubscriptions, managerUsage };
     }
 
+    /**
+     * T045: primes `repo.createQueryBuilder().getOne()` for exactly the next
+     * call — `findCurrentSubscriptionWithPlan`'s mechanism, not `findOne`.
+     */
+    function mockSubscriptionWithPlanOnce(repo: MockRepository, row: unknown) {
+      const qb = createMockQueryBuilder();
+      qb.getOne = jest.fn().mockResolvedValue(row);
+      repo.createQueryBuilder.mockReturnValueOnce(qb);
+      return qb;
+    }
+
     it('passes the manager through to access.isEnforced', async () => {
       const { manager, managerSubscriptions, managerUsage } = newManager();
-      managerSubscriptions.findOne.mockResolvedValueOnce({
+      mockSubscriptionWithPlanOnce(managerSubscriptions, {
         id: 'sub-mgr',
         plan: { max_campaigns: 100 },
       });
@@ -463,7 +565,7 @@ describe('UsageService', () => {
 
     it('resolves the subscription via manager.getRepository(Subscription), never the injected non-transactional repo', async () => {
       const { manager, managerSubscriptions, managerUsage } = newManager();
-      managerSubscriptions.findOne.mockResolvedValueOnce({
+      mockSubscriptionWithPlanOnce(managerSubscriptions, {
         id: 'sub-mgr',
         plan: { max_campaigns: 100 },
       });
@@ -478,14 +580,14 @@ describe('UsageService', () => {
         manager as any,
       );
 
-      expect(managerSubscriptions.findOne).toHaveBeenCalledTimes(1);
-      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(managerSubscriptions.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(subscriptions.createQueryBuilder).not.toHaveBeenCalled();
       expect(result).toEqual({ applied: true, used: 0, limit: 100, fundedBy: 'plan' });
     });
 
     it('performs the atomic insert+update against manager.getRepository(SubscriptionUsage), never the injected repo', async () => {
       const { manager, managerSubscriptions, managerUsage } = newManager();
-      managerSubscriptions.findOne.mockResolvedValueOnce({
+      mockSubscriptionWithPlanOnce(managerSubscriptions, {
         id: 'sub-mgr',
         plan: { max_campaigns: 100 },
       });
@@ -501,7 +603,7 @@ describe('UsageService', () => {
 
     it('passes the manager through to limitOverrides.getActive', async () => {
       const { manager, managerSubscriptions, managerUsage } = newManager();
-      managerSubscriptions.findOne.mockResolvedValueOnce({
+      mockSubscriptionWithPlanOnce(managerSubscriptions, {
         id: 'sub-mgr',
         plan: { max_campaigns: 100 },
       });
@@ -519,6 +621,9 @@ describe('UsageService', () => {
     });
 
     it('free-mode short-circuit: the raw increment subscription lookup also uses the manager', async () => {
+      // isEnforced=false skips requirePlanOrDeny (findCurrentSubscriptionWithPlan)
+      // entirely — only rawIncrement's plain findCurrentSubscription (still
+      // findOne-based) runs, so this mock is unaffected by T045.
       access.isEnforced.mockResolvedValueOnce(false);
       const { manager, managerSubscriptions, managerUsage } = newManager();
       managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr' });
@@ -540,9 +645,15 @@ describe('UsageService', () => {
 
     it('unlimited-plan short-circuit: the raw increment subscription lookup also uses the manager', async () => {
       const { manager, managerSubscriptions, managerUsage } = newManager();
-      managerSubscriptions.findOne
-        .mockResolvedValueOnce({ id: 'sub-mgr', plan: { max_campaigns: null } }) // resolveSubscription
-        .mockResolvedValueOnce({ id: 'sub-mgr' }); // rawIncrement's findCurrentSubscription
+      // Two DIFFERENT downstream calls in sequence: requirePlanOrDeny's
+      // findCurrentSubscriptionWithPlan (createQueryBuilder, T045) resolves
+      // the plan (unlimited), then rawIncrement's findCurrentSubscription
+      // (still findOne) resolves the scope for the actual increment.
+      mockSubscriptionWithPlanOnce(managerSubscriptions, {
+        id: 'sub-mgr',
+        plan: { max_campaigns: null },
+      });
+      managerSubscriptions.findOne.mockResolvedValueOnce({ id: 'sub-mgr' }); // rawIncrement's findCurrentSubscription
       managerUsage.createQueryBuilder.mockImplementation(() =>
         createMockQueryBuilder(),
       );
@@ -555,11 +666,12 @@ describe('UsageService', () => {
       );
 
       expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(subscriptions.createQueryBuilder).not.toHaveBeenCalled();
       expect(result).toEqual({ applied: true, used: 0, limit: null, fundedBy: 'plan' });
     });
 
     it('omits the manager for standalone callers (AI/WhatsApp execution — unchanged)', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_campaigns: 100 },
       });
@@ -575,11 +687,14 @@ describe('UsageService', () => {
         metric,
         undefined,
       );
-      expect(subscriptions.findOne).toHaveBeenCalledTimes(1);
+      // T045: findCurrentSubscriptionWithPlan reads via createQueryBuilder
+      // now, not findOne — this still proves the call went through
+      // `this.subscriptions` directly (no manager threaded through).
+      expect(subscriptions.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
     it('admits when the atomic UPDATE affects a row (one below the limit)', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_campaigns: 100 },
       });
@@ -595,7 +710,7 @@ describe('UsageService', () => {
     });
 
     it('refuses (applied: false, fundedBy: none) when the atomic UPDATE affects zero rows and no credit covers it', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_campaigns: 100 },
       });
@@ -609,7 +724,7 @@ describe('UsageService', () => {
     });
 
     it('falls back to a prepaid credit when the plan allowance is exhausted (plan §9 spillover)', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_campaigns: 100 },
       });
@@ -636,7 +751,7 @@ describe('UsageService', () => {
     });
 
     it('a tenant-specific override raises the effective limit used in the atomic UPDATE', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_campaigns: 100 },
       });
@@ -665,7 +780,7 @@ describe('UsageService', () => {
   describe('incrementIfWithinLimit — free-access tenants (no subscription)', () => {
     it('does NOT throw "No active subscription found" when enforcement is off and no subscription exists', async () => {
       access.isEnforced.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValue(null); // free-access tenant: no subscription
+      mockCurrentSubscriptionAlways(null); // free-access tenant: no subscription
 
       const result = await service.incrementIfWithinLimit(
         't1',
@@ -689,7 +804,7 @@ describe('UsageService', () => {
      */
     it('refuses through the centralized policy, never with a bare NOT_FOUND', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce(null);
+      mockCurrentSubscriptionOnce(null);
       access.assertAccess.mockRejectedValueOnce(denied());
 
       await expect(
@@ -711,7 +826,7 @@ describe('UsageService', () => {
      */
     it('records and admits when access is allowed but no plan exists', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValue(null);
+      mockCurrentSubscriptionAlways(null);
       access.assertAccess.mockResolvedValueOnce({ allowed: false });
 
       await expect(
@@ -721,7 +836,7 @@ describe('UsageService', () => {
 
     it('asks about the feature the metric belongs to — scoped, never a blanket bypass', async () => {
       access.isEnforced.mockResolvedValueOnce(false);
-      subscriptions.findOne.mockResolvedValue(null);
+      mockCurrentSubscriptionAlways(null);
 
       await service.incrementIfWithinLimit(
         't1',
@@ -751,7 +866,7 @@ describe('UsageService', () => {
         [USAGE_METRIC.CAMPAIGNS, ['campaigns']],
       ] as const) {
         access.isEnforced.mockResolvedValueOnce(false);
-        subscriptions.findOne.mockResolvedValue(null);
+        mockCurrentSubscriptionAlways(null);
         await service.incrementIfWithinLimit('t1', metric, 1);
         expect(access.isEnforced).toHaveBeenCalledWith('t1', undefined, keys);
       }
@@ -785,7 +900,7 @@ describe('UsageService', () => {
 
     it('does not refuse a branch when there is no plan to cap against', async () => {
       access.isEnforced.mockResolvedValue(true); // denied tenants stay enforced
-      subscriptions.findOne.mockResolvedValue(null);
+      mockCurrentSubscriptionAlways(null);
       await expect(
         service.assertCountWithinLimit('t1', COUNT_LIMIT.BRANCHES, 5),
       ).resolves.toBeUndefined();
@@ -803,6 +918,10 @@ describe('UsageService', () => {
     it('honors purchased CAPACITY on top of the seat cap', async () => {
       const managerSubscriptions = createMockRepository();
       const managerUsers = createMockRepository();
+      // NOT part of T045 — assertUserSeatWithinLimit has its own inline
+      // `findOne` (a separate, duplicated instance of the same query shape,
+      // not a call to findCurrentSubscriptionWithPlan), so this mock is
+      // unaffected and stays as-is.
       managerSubscriptions.findOne.mockResolvedValueOnce({
         id: 'sub-1',
         plan: { max_users: 5 },
@@ -830,7 +949,7 @@ describe('UsageService', () => {
     });
 
     it('reports an all-unlimited breakdown instead of throwing NOT_FOUND', async () => {
-      subscriptions.findOne.mockResolvedValue(null);
+      mockCurrentSubscriptionAlways(null);
       usageRepo.findOne.mockResolvedValue({
         ai_tokens_used: '12',
         whatsapp_messages_used: 3,
@@ -856,7 +975,7 @@ describe('UsageService', () => {
   describe('assertResourceWithinLimit', () => {
     it('enforces the plan column when the tenant is metered', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_customers: 100 },
       });
@@ -868,7 +987,7 @@ describe('UsageService', () => {
 
     it('admits below the cap', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_customers: 100 },
       });
@@ -892,7 +1011,7 @@ describe('UsageService', () => {
 
     it('treats a null plan column as unlimited', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_knowledge_base_files: null },
       });
@@ -906,7 +1025,7 @@ describe('UsageService', () => {
     // to every ENFORCED_RESOURCE_LIMITS metric.
     it('honors purchased CAPACITY on top of the plan limit', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_customers: 100 },
       });
@@ -919,7 +1038,7 @@ describe('UsageService', () => {
 
     it('honors an active OVERRIDE on top of the plan limit', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_customers: 100 },
       });
@@ -931,7 +1050,7 @@ describe('UsageService', () => {
 
     it('still refuses once override + capacity are exhausted too', async () => {
       access.isEnforced.mockResolvedValueOnce(true);
-      subscriptions.findOne.mockResolvedValueOnce({
+      mockCurrentSubscriptionOnce({
         id: 'sub-1',
         plan: { max_customers: 100 },
       });

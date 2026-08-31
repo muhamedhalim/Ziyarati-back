@@ -34,6 +34,14 @@ export class TenantContextInterceptor implements NestInterceptor {
       this.context.setTenant(tenant);
     }
 
+    // 015-db-api-efficiency-audit — P10/T062. Same value (and same
+    // `req.route.path` fallback-to-`req.path` shape) `ApiLoggingInterceptor`
+    // already uses for `api_logs.endpoint` — set here, once, so every DB
+    // query fired downstream of this interceptor can be attributed to it via
+    // `getCurrentRequestRoute()`.
+    const route = (request.route as { path?: string } | undefined)?.path ?? request.path;
+    this.context.setRoute(route ?? null);
+
     return next.handle();
   }
 }

@@ -23,6 +23,7 @@ import {
   createMockAccessCache,
   createMockAccessPolicyMode,
   createMockRepository,
+  createMockQueryBuilder,
   MockRepository,
 } from '../../../test/utils/mock-factories';
 
@@ -109,6 +110,15 @@ describe('Super-admin feature override — branch creation', () => {
 
   beforeEach(() => {
     subscriptions = createMockRepository();
+    // T045 (015-db-api-efficiency-audit, P7-2/ORM-001): UsageService's
+    // findCurrentSubscriptionWithPlan now reads via createQueryBuilder, not
+    // findOne — the tenant FK column comes from entity metadata (R-11)
+    // instead of `findOne({ relations })`.
+    (subscriptions as unknown as { metadata: unknown }).metadata = {
+      name: 'Subscription',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     definitions = createMockRepository();
     featurePlans = createMockRepository();
     subscriptionUsage = createMockRepository();
@@ -126,7 +136,7 @@ describe('Super-admin feature override — branch creation', () => {
     // "available on every plan" — the production state for a fresh platform.
     definitions.find.mockResolvedValue([]);
     featurePlans.find.mockResolvedValue([]);
-    subscriptions.findOne.mockResolvedValue(null);
+    mockSubscription(null);
 
     access = new AccessControlService(
       subscriptions as never,
@@ -163,6 +173,22 @@ describe('Super-admin feature override — branch creation', () => {
 
   afterEach(() => jest.clearAllMocks());
 
+  /**
+   * T045 (015-db-api-efficiency-audit, P7-2): `UsageService
+   * .findCurrentSubscriptionWithPlan` reads via `createQueryBuilder()
+   * .getOne()`, not `findOne()` — but `AccessControlService` (also
+   * constructed against this same `subscriptions` mock) may have its own
+   * subscription lookups unaffected by that change. Primes BOTH mechanisms
+   * so every pre-existing `subscriptions.findOne.mockResolvedValue(...)`
+   * call site keeps working regardless of which one actually gets invoked.
+   */
+  function mockSubscription(row: unknown) {
+    subscriptions.findOne.mockResolvedValue(row as never);
+    const qb = createMockQueryBuilder();
+    qb.getOne = jest.fn().mockResolvedValue(row);
+    subscriptions.createQueryBuilder.mockReturnValue(qb);
+  }
+
   // ────────────────────────── The four business states ───────────────────── //
 
   it('blocks an approved clinic with no subscription and no grant', async () => {
@@ -183,12 +209,12 @@ describe('Super-admin feature override — branch creation', () => {
   });
 
   it('admits a paying clinic whose plan includes branches', async () => {
-    subscriptions.findOne.mockResolvedValue(paidPlan());
+    mockSubscription(paidPlan());
     await expect(guard.canActivate(branchRequest())).resolves.toBe(true);
   });
 
   it('denies a suspended capability even with a paid subscription', async () => {
-    subscriptions.findOne.mockResolvedValue(paidPlan());
+    mockSubscription(paidPlan());
     featureFlags.getStates.mockResolvedValue(suspend(FeatureKey.BRANCHES));
 
     // The tenant still holds platform access, so the remedy is not "buy a
@@ -270,7 +296,7 @@ describe('Super-admin feature override — branch creation', () => {
   // ─────────────────────────── Quotas vs. grants ─────────────────────────── //
 
   it('still enforces the plan branch cap for a PAYING clinic', async () => {
-    subscriptions.findOne.mockResolvedValue(paidPlan(2));
+    mockSubscription(paidPlan(2));
 
     await expect(
       usage.assertCountWithinLimit(TENANT, COUNT_LIMIT.BRANCHES, 2),
@@ -300,7 +326,7 @@ describe('Super-admin feature override — branch creation', () => {
     // and keeps its cap. The override substitutes for a MISSING subscription;
     // layering it on an existing one must not silently buy unlimited branches.
     featureFlags.getStates.mockResolvedValue(grant(FeatureKey.BRANCHES));
-    subscriptions.findOne.mockResolvedValue(paidPlan(2));
+    mockSubscription(paidPlan(2));
 
     const decision = await access.resolve(TENANT, FeatureKey.BRANCHES);
     expect(decision.allowed).toBe(true);
@@ -316,7 +342,7 @@ describe('Super-admin feature override — branch creation', () => {
   it('does not unmeter a capability the grant did not cover', async () => {
     // A branches grant must not hand the clinic an unlimited customer count.
     featureFlags.getStates.mockResolvedValue(grant(FeatureKey.BRANCHES));
-    subscriptions.findOne.mockResolvedValue(paidPlan(2));
+    mockSubscription(paidPlan(2));
 
     expect(await access.isEnforced(TENANT, undefined, [FeatureKey.CRM])).toBe(
       true,

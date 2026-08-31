@@ -231,17 +231,45 @@ export class CustomerService {
     return customer;
   }
 
+  /**
+   * T044 (015-db-api-efficiency-audit, P7-2/ORM-001/R-08): a relation-shaped
+   * `where: { tenant: { id } }` creates the same join a `relations:` option
+   * does, and combined with `skip`/`take` forces TypeORM's DISTINCT-id-then-
+   * hydrate branch — 2 round trips, not 1 (research.md R-01/R-08/R-10). No
+   * relation is actually needed here (the list never used one), so this is
+   * built as a query builder filtering the FK column resolved from entity
+   * metadata (no entity exposes it as a plain property — R-11), with
+   * `.limit()/.offset()` instead of `.take()/.skip()` — `SelectQueryBuilder`
+   * only enters the two-query branch on `skip`/`take`, never on `limit`/
+   * `offset` (R-10). `getManyAndCount()` still hydrates full `Customer`
+   * entities, so the response shape is unchanged.
+   */
   async list(tenantId: string, query: QueryCustomersDto) {
-    const where: FindOptionsWhere<Customer> = { tenant: { id: tenantId } };
-    if (query.isActive !== undefined) where.is_active = query.isActive;
+    const tenantFk = this.fk(this.customers, 'tenant');
+    const qb = this.customers
+      .createQueryBuilder('c')
+      .where(`c."${tenantFk}" = :tenantId`, { tenantId })
+      .orderBy('c.created_at', 'DESC')
+      .limit(query.limit)
+      .offset((query.page - 1) * query.limit);
+    if (query.isActive !== undefined) {
+      qb.andWhere('c.is_active = :isActive', { isActive: query.isActive });
+    }
 
-    const [data, total] = await this.customers.findAndCount({
-      where,
-      order: { created_at: 'DESC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
-    });
+    const [data, total] = await qb.getManyAndCount();
     return { data, total, page: query.page, limit: query.limit };
+  }
+
+  /** Resolves `property`'s join-column database name from entity metadata —
+   *  no entity exposes a relation's FK as a plain property (research.md
+   *  R-11); the proven `DashboardSummaryService.fk()` pattern. */
+  private fk(repo: Repository<Customer>, property: string): string {
+    const relation = repo.metadata.findRelationWithPropertyPath(property);
+    const column = relation?.joinColumns[0]?.databaseName;
+    if (!column) {
+      throw new Error(`${repo.metadata.name}.${property} has no join column`);
+    }
+    return column;
   }
 
   /** Tenant-scoped search across name/email/phone (partial) + optional tag filter. */

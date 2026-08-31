@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 import { ClinicalRecordService } from './clinical-record.service';
 import { ClinicalEncounter } from '../../entities/Clinical/ClinicalEncounter';
 import { ClinicalEntry } from '../../entities/Clinical/ClinicalEntry';
@@ -60,6 +61,10 @@ describe('ClinicalRecordService (T103 — FR-H008, FR-H009, FR-H013)', () => {
           useValue: revisions,
         },
         { provide: DataSource, useValue: dataSource },
+        {
+          provide: ActivityAuditService,
+          useValue: { record: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
     service = moduleRef.get(ClinicalRecordService);

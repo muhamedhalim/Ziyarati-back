@@ -14,6 +14,7 @@ import { User } from '../../entities/Auth&RBAC/User';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { AppError, ErrorCode } from '../../common/errors';
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 
 import {
   CreateClinicalEncounterDto,
@@ -27,6 +28,14 @@ import {
   ClinicalAllergyDataDto,
   ClinicalVitalsDataDto,
 } from './dto/clinical-entry-data.dto';
+
+/** Additive only — mirrors `APPOINTMENT_AUDIT_ACTION`'s convention. Both
+ *  values are on the Activity allow-list; before this writer existed they
+ *  were listed there with nothing writing them. */
+export const CLINICAL_AUDIT_ACTION = {
+  ENTRY_CREATED: 'clinical.entry.created',
+  ENTRY_CORRECTED: 'clinical.entry.corrected',
+} as const;
 
 const DATA_DTO_BY_KIND: Record<ClinicalEntryKind, new () => object> = {
   [ClinicalEntryKind.NOTE]: ClinicalNoteDataDto,
@@ -56,6 +65,10 @@ export class ClinicalRecordService {
     @InjectRepository(ClinicalEntryRevision)
     private readonly revisions: Repository<ClinicalEntryRevision>,
     private readonly dataSource: DataSource,
+    /** Clinic-wide activity trail. Clinical WRITES are auditable actions; the
+     *  high-volume clinical READS deliberately go to `clinical_access_logs`
+     *  instead (FR-H012) and never reach the Activity surface. */
+    private readonly activityAudit: ActivityAuditService,
   ) {}
 
   /** Validates `data` against its kind's DTO. Throws BAD_REQUEST on the FIRST violation — nothing is stored on a rejected input. */
@@ -122,7 +135,23 @@ export class ClinicalRecordService {
       recorded_at: dto.recordedAt ? new Date(dto.recordedAt) : new Date(),
       author: { id: actorUserId } as User,
     });
-    return this.entries.save(entry);
+    const saved = await this.entries.save(entry);
+
+    // Activity trail, after the write succeeded. `entityLabel` is the entry
+    // KIND ("DIAGNOSIS"), never any of `data`'s clinical content — the
+    // Activity log records THAT a clinical entry was written and by whom,
+    // which is the accountability question, and nothing about what it says.
+    await this.activityAudit.record({
+      tenantId,
+      action: CLINICAL_AUDIT_ACTION.ENTRY_CREATED,
+      entityType: 'ClinicalEntry',
+      entityId: saved.id,
+      actorUserId,
+      entityLabel: saved.kind,
+      after: { kind: saved.kind },
+    });
+
+    return saved;
   }
 
   /**
@@ -139,7 +168,7 @@ export class ClinicalRecordService {
     actorUserId: string,
     dto: CorrectClinicalEntryDto,
   ): Promise<ClinicalEntry> {
-    return this.dataSource.transaction(async (manager) => {
+    const corrected = await this.dataSource.transaction(async (manager) => {
       const entryRepo = manager.getRepository(ClinicalEntry);
       const entry = await entryRepo.findOne({
         where: { id: entryId, tenant: { id: tenantId } },
@@ -168,6 +197,23 @@ export class ClinicalRecordService {
       entry.data = dto.data;
       return entryRepo.save(entry);
     });
+
+    // After the correction transaction commits. A correction to a clinical
+    // record is exactly the kind of action an owner must be able to review —
+    // but the trail records only that it happened, never the prior or new
+    // clinical content (the full prior payload lives in
+    // `clinical_entry_revisions`, which is access-controlled separately).
+    await this.activityAudit.record({
+      tenantId,
+      action: CLINICAL_AUDIT_ACTION.ENTRY_CORRECTED,
+      entityType: 'ClinicalEntry',
+      entityId: corrected.id,
+      actorUserId,
+      entityLabel: corrected.kind,
+      after: { kind: corrected.kind, version: corrected.version },
+    });
+
+    return corrected;
   }
 
   /** Soft delete only (FR-H014) — clinical content is never destroyed. */

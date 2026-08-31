@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Headers, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import {
   ApiBearerAuth,
@@ -11,6 +11,10 @@ import { MonitoringService } from './monitoring.service';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ROLE } from '../../rbac/rbac.constants';
+import { PrivateCache } from '../../common/http/private-cache.decorator';
+
+/** Matches the server-side cache TTL (`overview()`, `CACHE_NS.PLATFORM`). */
+const MONITORING_MAX_AGE_SECONDS = 10;
 
 /**
  * Platform monitoring dashboard — super-admin only. Read-only snapshot of system
@@ -32,8 +36,13 @@ export class PlatformMonitoringController {
   })
   @ApiOkResponse({ description: 'Monitoring snapshot.' })
   @Get('overview')
-  overview() {
-    return this.monitoring.overview();
+  @PrivateCache(MONITORING_MAX_AGE_SECONDS)
+  overview(@Headers('cache-control') cacheControl?: string) {
+    // The dashboard's Refresh action sends `Cache-Control: no-cache`; honoring
+    // it is what makes Refresh mean "recompute now" rather than re-serving the
+    // same 10s-old shared payload (mirrors PlatformDashboardController.snapshot).
+    const bypassCache = /no-cache/i.test(cacheControl ?? '');
+    return this.monitoring.overview({ bypassCache });
   }
 
   @ApiOperation({

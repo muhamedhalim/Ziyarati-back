@@ -7,7 +7,11 @@ import { ApiKey } from '../../entities/System/ApiKey';
 import { ErrorCode } from '../../common/errors';
 import { INTEGRATION_SCOPE } from './integration-scopes.constants';
 import { PERMISSION } from '../../rbac/rbac.constants';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  createMockQueryBuilder,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 
@@ -31,6 +35,16 @@ describe('ApiKeyService', () => {
 
   beforeEach(async () => {
     keys = createMockRepository();
+    // P5-2 (015-db-api-efficiency-audit, AUTH-006): `authenticate` now reads
+    // the tenant FK column via entity metadata (R-11 — ApiKey exposes no
+    // plain `tenantId` property), the same `.metadata.findRelationWithPropertyPath`
+    // pattern `DashboardSummaryService.fk()` already uses. `tenantId` matches
+    // the real column name (BaselineSchema migration: `api_keys."tenantId"`).
+    (keys as unknown as { metadata: unknown }).metadata = {
+      name: 'ApiKey',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -41,6 +55,26 @@ describe('ApiKeyService', () => {
     }).compile();
     service = moduleRef.get(ApiKeyService);
   });
+
+  /**
+   * Wires `keys.createQueryBuilder()` to return `getRawAndEntities()` shaped
+   * like `authenticate`'s real query — one entity plus the raw `tenant_fk`
+   * column — for exactly the next call. `tenantFk` mirrors what
+   * `key.tenant?.id` used to be: the tenant's id string, or `null` for a
+   * platform key.
+   */
+  function mockAuthenticateQuery(
+    entity: Record<string, unknown> | null,
+    tenantFk: string | null = null,
+  ) {
+    const qb = createMockQueryBuilder();
+    qb.getRawAndEntities = jest.fn(async () => ({
+      entities: entity ? [entity] : [],
+      raw: entity ? [{ tenant_fk: tenantFk }] : [],
+    }));
+    keys.createQueryBuilder.mockReturnValueOnce(qb);
+    return qb;
+  }
 
   afterEach(() => jest.clearAllMocks());
 
@@ -157,37 +191,86 @@ describe('ApiKeyService', () => {
     });
 
     it('rejects an unknown or inactive key', async () => {
-      keys.findOne.mockResolvedValueOnce(null);
+      mockAuthenticateQuery(null);
       await expect(service.authenticate('plain')).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
 
-      keys.findOne.mockResolvedValueOnce({ id: 'k1', is_active: false });
+      mockAuthenticateQuery({ id: 'k1', is_active: false }, TENANT);
       await expect(service.authenticate('plain')).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
     });
 
     it('rejects an expired key', async () => {
-      keys.findOne.mockResolvedValueOnce({
-        id: 'k1',
-        is_active: true,
-        expires_at: new Date(Date.now() - 1000),
-      });
+      mockAuthenticateQuery(
+        { id: 'k1', is_active: true, expires_at: new Date(Date.now() - 1000) },
+        TENANT,
+      );
       await expect(service.authenticate('plain')).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
     });
 
     it('resolves the principal for a valid key, normalizing legacy scope junk', async () => {
-      keys.findOne.mockResolvedValueOnce({
-        id: 'k1',
-        is_active: true,
-        expires_at: null,
-        tenant: { id: TENANT },
-        permissions: [INTEGRATION_SCOPE.CUSTOMERS_READ, 'not-a-real-scope'],
-        last_used_at: null,
-      });
+      mockAuthenticateQuery(
+        {
+          id: 'k1',
+          is_active: true,
+          expires_at: null,
+          permissions: [INTEGRATION_SCOPE.CUSTOMERS_READ, 'not-a-real-scope'],
+          last_used_at: null,
+        },
+        TENANT,
+      );
       const principal = await service.authenticate('plain');
       expect(principal).toEqual({
         keyId: 'k1',
         tenantId: TENANT,
         permissions: [INTEGRATION_SCOPE.CUSTOMERS_READ],
       });
+    });
+
+    // P5-2 (AUTH-006) — the regression this fix could introduce: a
+    // null/undefined tenantId silently granting platform (unscoped) access
+    // to what should be a tenant-scoped key.
+    it('resolves tenantId: null ONLY for a genuine platform key, never as a fallback', async () => {
+      mockAuthenticateQuery(
+        {
+          id: 'k-platform',
+          is_active: true,
+          expires_at: null,
+          permissions: [],
+          last_used_at: null,
+        },
+        null, // no tenant row — a real platform-level key
+      );
+      const principal = await service.authenticate('plain');
+      expect(principal.tenantId).toBeNull();
+    });
+
+    it('resolves the exact tenant FK for a tenant-scoped key — a wrong/dropped value would be a cross-tenant leak', async () => {
+      mockAuthenticateQuery(
+        { id: 'k-tenant', is_active: true, expires_at: null, permissions: [], last_used_at: null },
+        'tenant-42',
+      );
+      const principal = await service.authenticate('plain');
+      expect(principal.tenantId).toBe('tenant-42');
+    });
+
+    it('issues exactly one query (createQueryBuilder, not findOne)', async () => {
+      const qb = mockAuthenticateQuery(
+        { id: 'k1', is_active: true, expires_at: null, permissions: [], last_used_at: null },
+        TENANT,
+      );
+      await service.authenticate('plain');
+      expect(keys.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(keys.findOne).not.toHaveBeenCalled();
+      expect(qb.getRawAndEntities).toHaveBeenCalledTimes(1);
+    });
+
+    it('the throttled last_used_at update still fires and cannot fail the request', async () => {
+      mockAuthenticateQuery(
+        { id: 'k1', is_active: true, expires_at: null, permissions: [], last_used_at: null },
+        TENANT,
+      );
+      keys.update.mockRejectedValueOnce(new Error('db hiccup'));
+      await expect(service.authenticate('plain')).resolves.toMatchObject({ keyId: 'k1' });
+      expect(keys.update).toHaveBeenCalledWith({ id: 'k1' }, { last_used_at: expect.any(Date) });
     });
   });
 });

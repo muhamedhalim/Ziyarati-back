@@ -654,6 +654,14 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
     logs.save.mockImplementation(async (v: object) => ({ id: 'log-1', ...v }));
 
     subscriptionRepo = createMockRepository();
+    // T045 (015-db-api-efficiency-audit, P7-2/ORM-001): UsageService's
+    // findCurrentSubscriptionWithPlan now reads the tenant FK column via
+    // entity metadata (R-11) instead of `findOne({ relations })`.
+    (subscriptionRepo as unknown as { metadata: unknown }).metadata = {
+      name: 'Subscription',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     usageRepo = createMockRepository();
     usageRepo.createQueryBuilder.mockImplementation(() =>
       createMockQueryBuilder(),
@@ -761,8 +769,23 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
   beforeEach(build);
   afterEach(() => jest.clearAllMocks());
 
+  /**
+   * T045 (015-db-api-efficiency-audit, P7-2): `UsageService
+   * .findCurrentSubscriptionWithPlan` reads via `createQueryBuilder()
+   * .getOne()`, not `findOne()` — primes BOTH mechanisms (AccessControlService,
+   * built against this same repo, may have its own unaffected lookups) so
+   * every pre-existing `subscriptionRepo.findOne.mockResolvedValue(...)` call
+   * site keeps working regardless of which one actually gets invoked.
+   */
+  function mockSubscription(row: unknown) {
+    subscriptionRepo.findOne.mockResolvedValue(row as never);
+    const qb = createMockQueryBuilder();
+    qb.getOne = jest.fn().mockResolvedValue(row);
+    subscriptionRepo.createQueryBuilder.mockReturnValue(qb);
+  }
+
   it('[1] sends successfully with NO subscription when the whatsapp feature is granted', async () => {
-    subscriptionRepo.findOne.mockResolvedValue(null); // free-access tenant: no subscription
+    mockSubscription(null); // free-access tenant: no subscription
     featureFlags.getStates.mockResolvedValue(grantOf(FeatureKey.WHATSAPP));
 
     const res = await service.sendTemplateMessage(TENANT, 'tpl-1', {
@@ -777,7 +800,7 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
   });
 
   it('[5] never surfaces "No active subscription found" on that path', async () => {
-    subscriptionRepo.findOne.mockResolvedValue(null);
+    mockSubscription(null);
     featureFlags.getStates.mockResolvedValue(grantOf(FeatureKey.WHATSAPP));
 
     await expect(
@@ -795,7 +818,7 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
    * on public booking and guest chat it reached unauthenticated visitors.
    */
   it('[2] is DENIED with no subscription and no grant of any kind', async () => {
-    subscriptionRepo.findOne.mockResolvedValue(null);
+    mockSubscription(null);
     featureFlags.getStates.mockResolvedValue(new Map()); // nothing granted
 
     await expect(
@@ -807,7 +830,7 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
   });
 
   it('[4] a grant for an unrelated feature does not unlock WhatsApp', async () => {
-    subscriptionRepo.findOne.mockResolvedValue(null);
+    mockSubscription(null);
     // Only Payments is granted. Deliberately NOT Campaigns: campaigns DECLARE
     // whatsapp as a dependency, so granting campaigns is meant to open
     // whatsapp — a campaign that cannot send is not a granted campaign.
@@ -822,7 +845,7 @@ describe('WhatsappExecutionService — admin free access (real UsageService + Ac
   });
 
   it('[3] a paid tenant keeps plan quota enforcement even with the feature flag on', async () => {
-    subscriptionRepo.findOne.mockResolvedValue({
+    mockSubscription({
       id: 'sub-1',
       status: 'ACTIVE',
       ends_at: new Date(Date.now() + 86_400_000),

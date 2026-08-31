@@ -32,6 +32,17 @@ import { decimalTransformer } from '../../common/transformers/decimal.transforme
 @Index(['staff', 'start_at'])
 @Index(['customer', 'start_at'])
 @Index(['branch', 'status', 'start_at']) // status-filtered calendar queries
+/**
+ * 015-db-api-efficiency-audit — P9/T060 (IDX-002, evidence in
+ * evidence/p9-t058-explain-captures-2026-08-31.md). Serves
+ * `AppointmentService.findAll`'s DEFAULT list (`WHERE tenant ORDER BY
+ * start_at DESC LIMIT/OFFSET`, no branch filter) — the existing `(tenant,
+ * branch, start_at)` index above only helps when a branch is also filtered;
+ * without one, Postgres fetched every one of the tenant's rows and sorted
+ * them in memory. Measured: Bitmap Heap Scan + top-N sort (39 buffers) →
+ * Index Scan, no sort (3 buffers) on a 1,200-row tenant.
+ */
+@Index(['tenant', 'start_at'])
 @Check('appointments_end_after_start', '"end_at" > "start_at"')
 @Check('appointments_total_nonneg', '"total_amount" IS NULL OR "total_amount" >= 0')
 export class Appointment {

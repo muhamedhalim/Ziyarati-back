@@ -125,12 +125,15 @@ export class TenantService {
     return { data, total, page: query.page, limit: query.limit };
   }
 
-  /** Loads a tenant by id or throws. */
+  /**
+   * Loads a tenant by id or throws. Plain-column `where`, no relations — the
+   * `settings` sub-object was previously joined here but T028's consumer
+   * analysis found nothing reads it, so it was dropped (2 round trips → 1;
+   * spec R-09, contracts §3.1). Callers that need settings use
+   * {@link getSettings}.
+   */
   async findById(id: string): Promise<Tenant> {
-    const tenant = await this.tenants.findOne({
-      where: { id },
-      relations: { settings: true },
-    });
+    const tenant = await this.tenants.findOne({ where: { id } });
     if (!tenant) {
       throw new AppError(ErrorCode.TENANT_NOT_FOUND);
     }

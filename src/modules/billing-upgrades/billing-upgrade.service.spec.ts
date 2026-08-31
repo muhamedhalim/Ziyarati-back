@@ -6,6 +6,7 @@ import {
   createMockDataSource,
   createMockEntityManager,
   createMockRepository,
+  createMockQueryBuilder,
   MockDataSource,
   MockRepository,
 } from '../../../test/utils/mock-factories';
@@ -23,6 +24,17 @@ describe('BillingUpgradeService', () => {
 
   beforeEach(() => {
     requests = createMockRepository();
+    // T047 (015-db-api-efficiency-audit, P7-2/ORM-001): list() now reads the
+    // tenant FK column via entity metadata (R-11 — BillingUpgradeRequest
+    // exposes no plain `tenantId` property), the same
+    // `.metadata.findRelationWithPropertyPath` pattern used elsewhere in this
+    // audit. `tenantId` matches the real column name (migration
+    // 1730012000000-BillingUpgradeRequests: `billing_upgrade_requests."tenantId"`).
+    (requests as unknown as { metadata: unknown }).metadata = {
+      name: 'BillingUpgradeRequest',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     featureDefinitions = createMockRepository();
     repoMap.set(BillingUpgradeRequest, requests);
     dataSource = createMockDataSource(createMockEntityManager(repoMap));
@@ -129,12 +141,59 @@ describe('BillingUpgradeService', () => {
   });
 
   describe('tenant isolation', () => {
+    /** Wires `requests.createQueryBuilder()` to return `getManyAndCount()`
+     *  resolving to `[rows, total]` for exactly the next call — list()'s
+     *  real mechanism (T047), replacing the old `findAndCount` mock. */
+    function mockList(rows: unknown[], total: number) {
+      const qb = createMockQueryBuilder();
+      (qb as unknown as { getManyAndCount: jest.Mock }).getManyAndCount = jest
+        .fn()
+        .mockResolvedValue([rows, total]);
+      requests.createQueryBuilder.mockReturnValueOnce(qb);
+      return qb;
+    }
+
     it('list() always filters by the caller tenant', async () => {
-      requests.findAndCount.mockResolvedValueOnce([[], 0]);
+      const qb = mockList([], 0);
       await service.list('tenant-a', { page: 1, limit: 20 } as any);
-      expect(requests.findAndCount).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ tenant: { id: 'tenant-a' } }) }),
-      );
+      expect(qb.where).toHaveBeenCalledWith('r."tenantId" = :tenantId', {
+        tenantId: 'tenant-a',
+      });
+    });
+
+    // T047 — the mandatory per-site assertion set (identical result, empty
+    // for non-match, empty for a foreign tenant already covered above,
+    // statement count).
+    it('list() returns an empty page when no requests match', async () => {
+      mockList([], 0);
+      const res = await service.list('tenant-a', { page: 1, limit: 20 } as any);
+      expect(res).toEqual({ data: [], total: 0, page: 1, limit: 20 });
+    });
+
+    it('list() resolves matching rows identically to before, and applies an optional status filter', async () => {
+      const qb = mockList([{ id: 'req-1' }], 1);
+      const res = await service.list('tenant-a', {
+        page: 1,
+        limit: 20,
+        status: BILLING_UPGRADE_STATUS.PENDING_REVIEW,
+      } as any);
+      expect(res).toEqual({ data: [{ id: 'req-1' }], total: 1, page: 1, limit: 20 });
+      expect(qb.andWhere).toHaveBeenCalledWith('r.status = :status', {
+        status: BILLING_UPGRADE_STATUS.PENDING_REVIEW,
+      });
+    });
+
+    it('list() issues exactly one query (createQueryBuilder, not findAndCount) with limit/offset, never skip/take', async () => {
+      const qb = mockList([{ id: 'req-1' }], 1);
+      await service.list('tenant-a', { page: 2, limit: 20 } as any);
+
+      expect(requests.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(requests.findAndCount).not.toHaveBeenCalled();
+      expect(qb.getManyAndCount).toHaveBeenCalledTimes(1);
+      expect(qb.limit).toHaveBeenCalledWith(20);
+      expect(qb.offset).toHaveBeenCalledWith(20); // (page 2 - 1) * limit 20
+      expect(qb.skip).not.toHaveBeenCalled();
+      expect(qb.take).not.toHaveBeenCalled();
     });
 
     it('get() 404s for a request belonging to another tenant', async () => {

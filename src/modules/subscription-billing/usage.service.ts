@@ -991,7 +991,23 @@ export class UsageService {
     };
   }
 
-  /** Non-throwing current subscription WITH plan (for the unified breakdown). */
+  /**
+   * Non-throwing current subscription WITH plan (for the unified breakdown).
+   *
+   * T045 (015-db-api-efficiency-audit, P7-2/ORM-001): `findOne` unconditionally
+   * sets `take: 1` internally (research.md R-01), so the `relations: { plan:
+   * true }` join here cost 2 round trips on EVERY call — and this is a shared
+   * private helper called from 6 sites in this file, so the fix compounds.
+   * Rewritten as a query builder: `plan` stays a real `leftJoinAndSelect`
+   * (its columns are read dynamically by every caller), the tenant filter
+   * moves to the FK column resolved from entity metadata (no entity exposes
+   * it as a plain property — R-11), and `.limit(1)` replaces the implicit
+   * `take: 1` — `SelectQueryBuilder` only enters the two-query branch on
+   * `skip`/`take`, never on `limit`/`offset` (R-10). The hand-written
+   * `deleted_at IS NULL` is dropped: `Subscription` has `@DeleteDateColumn`,
+   * so the query builder injects the identical predicate for the main alias
+   * automatically — one fewer copy that could drift.
+   */
   private findCurrentSubscriptionWithPlan(
     tenantId: string,
     manager?: EntityManager,
@@ -999,15 +1015,29 @@ export class UsageService {
     const repo = manager
       ? manager.getRepository(Subscription)
       : this.subscriptions;
-    return repo.findOne({
-      where: {
-        tenant: { id: tenantId },
-        status: Not(SubscriptionStatus.CANCELLED),
-        deleted_at: IsNull(),
-      },
-      relations: { plan: true },
-      order: { created_at: 'DESC' },
-    });
+    const tenantFk = this.fk(repo, 'tenant');
+    return repo
+      .createQueryBuilder('s')
+      .leftJoinAndSelect('s.plan', 'plan')
+      .where(`s."${tenantFk}" = :tenantId`, { tenantId })
+      .andWhere('s.status != :cancelled', {
+        cancelled: SubscriptionStatus.CANCELLED,
+      })
+      .orderBy('s.created_at', 'DESC')
+      .limit(1)
+      .getOne();
+  }
+
+  /** Resolves `property`'s join-column database name from entity metadata —
+   *  no entity exposes a relation's FK as a plain property (research.md
+   *  R-11); the proven `DashboardSummaryService.fk()` pattern. */
+  private fk(repo: Repository<Subscription>, property: string): string {
+    const relation = repo.metadata.findRelationWithPropertyPath(property);
+    const column = relation?.joinColumns[0]?.databaseName;
+    if (!column) {
+      throw new Error(`${repo.metadata.name}.${property} has no join column`);
+    }
+    return column;
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //

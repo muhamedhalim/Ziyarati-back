@@ -51,6 +51,22 @@ function build(options: { cached?: unknown } = {}) {
       .fn()
       .mockResolvedValue({ count: 0, amount: 0 }),
     assertBranch: jest.fn().mockResolvedValue(undefined),
+    computeRates: jest.fn().mockResolvedValue({
+      total: 0,
+      cancelled: 0,
+      cancelledByPatient: 0,
+      cancelledByClinic: 0,
+      no_show: 0,
+      completed: 0,
+    }),
+    computeRetention: jest.fn().mockResolvedValue({
+      priorPeriodPatients: 0,
+      retainedPatients: 0,
+      repeatDistribution: {},
+    }),
+    servicePerformance: jest.fn().mockResolvedValue([]),
+    branchPerformance: jest.fn().mockResolvedValue([]),
+    channelPerformance: jest.fn().mockResolvedValue([]),
   };
 
   const cacheKeys: string[] = [];
@@ -204,5 +220,344 @@ describe('AdvancedAnalyticsService — trend caching', () => {
 
       expect(cacheKeys[0]).not.toEqual(cacheKeys[1]);
     });
+  });
+});
+
+/**
+ * T056 (P8, CACHE-002) — extends the pattern proven above to the five
+ * non-trend aggregates wrapped in T055: `rates`, `retention`,
+ * `performanceServices`, `performanceBranches`, `performanceChannels`.
+ * (`performanceStaff` is deliberately NOT wrapped — no frontend consumer,
+ * verified during P3 — so it is not covered here.)
+ *
+ * `rates`/`retention` cache the whole envelope+result, exactly like the
+ * trend methods. The three paginated methods cache only the aggregation
+ * (envelope + unpaginated rows) — `page`/`limit` are applied to whatever
+ * `cache.wrap` returns, hit or miss — so the "cached" fixtures below use
+ * that PRE-pagination shape, not the final HTTP response shape.
+ */
+const PAGE_DTO = { ...RANGE, page: 1, limit: 20 };
+const ENVELOPE = {
+  range: RANGE,
+  scope: { branchId: 'ALL' },
+  currency: 'SAR',
+  generatedAt: '2026-08-31T00:00:00.000Z',
+};
+
+describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)', () => {
+  describe('rates', () => {
+    it('a hit runs no aggregation and no currency read', async () => {
+      const { service, aggregation, tenantSettings } = build({
+        cached: { ...ENVELOPE, empty: true },
+      });
+
+      await service.rates(TENANT, TENANT_WIDE, RANGE as never);
+
+      expect(aggregation.computeRates).not.toHaveBeenCalled();
+      expect(tenantSettings.findOne).not.toHaveBeenCalled();
+    });
+
+    it('a miss still reaches the aggregation engine', async () => {
+      const { service, aggregation } = build();
+
+      await service.rates(TENANT, TENANT_WIDE, RANGE as never);
+
+      expect(aggregation.computeRates).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
+      const { service, branchUsers } = build({
+        cached: { ...ENVELOPE, empty: true },
+      });
+
+      await service.rates(TENANT, BRANCH_RESTRICTED, RANGE as never);
+
+      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a branch the caller is not assigned to, even on a hit', async () => {
+      const { service } = build({ cached: { ...ENVELOPE, empty: true } });
+
+      await expect(
+        service.rates(TENANT, BRANCH_RESTRICTED, {
+          ...RANGE,
+          branchId: 'branch-somebody-else',
+        } as never),
+      ).rejects.toThrow();
+    });
+
+    it('keys the cache on the resolved branch and range', async () => {
+      const wide = build();
+      await wide.service.rates(TENANT, TENANT_WIDE, RANGE as never);
+      const narrow = build();
+      await narrow.service.rates(TENANT, BRANCH_RESTRICTED, RANGE as never);
+      expect(wide.cacheKeys[0]).not.toEqual(narrow.cacheKeys[0]);
+    });
+  });
+
+  describe('retention', () => {
+    it('a hit runs no aggregation and no currency read', async () => {
+      const { service, aggregation, tenantSettings } = build({
+        cached: { ...ENVELOPE, empty: true },
+      });
+
+      await service.retention(TENANT, TENANT_WIDE, RANGE as never);
+
+      expect(aggregation.computeRetention).not.toHaveBeenCalled();
+      expect(tenantSettings.findOne).not.toHaveBeenCalled();
+    });
+
+    it('a miss still reaches the aggregation engine', async () => {
+      const { service, aggregation } = build();
+
+      await service.retention(TENANT, TENANT_WIDE, RANGE as never);
+
+      expect(aggregation.computeRetention).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
+      const { service, branchUsers } = build({
+        cached: { ...ENVELOPE, empty: true },
+      });
+
+      await service.retention(TENANT, BRANCH_RESTRICTED, RANGE as never);
+
+      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a branch the caller is not assigned to, even on a hit', async () => {
+      const { service } = build({ cached: { ...ENVELOPE, empty: true } });
+
+      await expect(
+        service.retention(TENANT, BRANCH_RESTRICTED, {
+          ...RANGE,
+          branchId: 'branch-somebody-else',
+        } as never),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('performanceServices', () => {
+    it('a hit runs no aggregation and no currency read', async () => {
+      const cached = { envelope: ENVELOPE, rows: [] };
+      const { service, aggregation, tenantSettings } = build({ cached });
+
+      await service.performanceServices(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+      expect(aggregation.servicePerformance).not.toHaveBeenCalled();
+      expect(tenantSettings.findOne).not.toHaveBeenCalled();
+    });
+
+    it('a miss still reaches the aggregation engine', async () => {
+      const { service, aggregation } = build();
+
+      await service.performanceServices(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+      expect(aggregation.servicePerformance).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
+      const cached = { envelope: ENVELOPE, rows: [] };
+      const { service, branchUsers } = build({ cached });
+
+      await service.performanceServices(
+        TENANT,
+        BRANCH_RESTRICTED,
+        PAGE_DTO as never,
+      );
+
+      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a branch the caller is not assigned to, even on a hit', async () => {
+      const cached = { envelope: ENVELOPE, rows: [] };
+      const { service } = build({ cached });
+
+      await expect(
+        service.performanceServices(TENANT, BRANCH_RESTRICTED, {
+          ...PAGE_DTO,
+          branchId: 'branch-somebody-else',
+        } as never),
+      ).rejects.toThrow();
+    });
+
+    it('response body is unchanged in shape on a hit (envelope + paginated data)', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        rows: [{ serviceId: 's1', appointments: 3, price: 100 }],
+      };
+      const { service } = build({ cached });
+
+      const result = await service.performanceServices(
+        TENANT,
+        TENANT_WIDE,
+        PAGE_DTO as never,
+      );
+
+      expect(result).toEqual({
+        ...ENVELOPE,
+        empty: false,
+        data: cached.rows,
+        total: 1,
+        page: 1,
+        limit: 20,
+      });
+    });
+  });
+
+  describe('performanceBranches', () => {
+    it('a hit runs no aggregation and no currency read', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        excluded: {},
+        rows: [],
+        anyActivity: false,
+      };
+      const { service, aggregation, tenantSettings } = build({ cached });
+
+      await service.performanceBranches(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+      expect(aggregation.branchPerformance).not.toHaveBeenCalled();
+      expect(aggregation.countOtherCurrencyRevenue).not.toHaveBeenCalled();
+      expect(tenantSettings.findOne).not.toHaveBeenCalled();
+    });
+
+    it('a miss still reaches the aggregation engine', async () => {
+      const { service, aggregation } = build();
+
+      await service.performanceBranches(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+      expect(aggregation.branchPerformance).toHaveBeenCalledTimes(1);
+      expect(aggregation.countOtherCurrencyRevenue).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        excluded: {},
+        rows: [],
+        anyActivity: false,
+      };
+      const { service, branchUsers } = build({ cached });
+
+      await service.performanceBranches(
+        TENANT,
+        BRANCH_RESTRICTED,
+        PAGE_DTO as never,
+      );
+
+      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a branch the caller is not assigned to, even on a hit', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        excluded: {},
+        rows: [],
+        anyActivity: false,
+      };
+      const { service } = build({ cached });
+
+      await expect(
+        service.performanceBranches(TENANT, BRANCH_RESTRICTED, {
+          ...PAGE_DTO,
+          branchId: 'branch-somebody-else',
+        } as never),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('performanceChannels', () => {
+    it('a hit runs no aggregation and no currency read', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        excluded: {},
+        data: [],
+        totalAppointments: 0,
+      };
+      const { service, aggregation, tenantSettings } = build({ cached });
+
+      await service.performanceChannels(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+      expect(aggregation.channelPerformance).not.toHaveBeenCalled();
+      expect(aggregation.countOtherCurrencyRevenue).not.toHaveBeenCalled();
+      expect(tenantSettings.findOne).not.toHaveBeenCalled();
+    });
+
+    it('a miss still reaches the aggregation engine', async () => {
+      const { service, aggregation } = build();
+
+      await service.performanceChannels(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+      expect(aggregation.channelPerformance).toHaveBeenCalledTimes(1);
+      expect(aggregation.countOtherCurrencyRevenue).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        excluded: {},
+        data: [],
+        totalAppointments: 0,
+      };
+      const { service, branchUsers } = build({ cached });
+
+      await service.performanceChannels(
+        TENANT,
+        BRANCH_RESTRICTED,
+        PAGE_DTO as never,
+      );
+
+      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a branch the caller is not assigned to, even on a hit', async () => {
+      const cached = {
+        envelope: ENVELOPE,
+        excluded: {},
+        data: [],
+        totalAppointments: 0,
+      };
+      const { service } = build({ cached });
+
+      await expect(
+        service.performanceChannels(TENANT, BRANCH_RESTRICTED, {
+          ...PAGE_DTO,
+          branchId: 'branch-somebody-else',
+        } as never),
+      ).rejects.toThrow();
+    });
+  });
+
+  it('every one of the five aggregates gets its own cache key', async () => {
+    const { service, cacheKeys } = build();
+
+    await service.rates(TENANT, TENANT_WIDE, RANGE as never);
+    await service.retention(TENANT, TENANT_WIDE, RANGE as never);
+    await service.performanceServices(TENANT, TENANT_WIDE, PAGE_DTO as never);
+    await service.performanceBranches(TENANT, TENANT_WIDE, PAGE_DTO as never);
+    await service.performanceChannels(TENANT, TENANT_WIDE, PAGE_DTO as never);
+
+    expect(new Set(cacheKeys).size).toBe(cacheKeys.length);
+  });
+
+  it('a Redis outage (cache.wrap failing open to producer()) still returns correct data', async () => {
+    // The `build()` fixture's `cache.wrap` mimics the REAL
+    // `AnalyticsCacheService`'s fail-open behavior when no `cached` option is
+    // given: it always calls `producer()` directly, exactly what happens when
+    // Redis is unreachable.
+    const { service, aggregation } = build();
+    aggregation.computeRates.mockResolvedValueOnce({
+      total: 10,
+      cancelled: 2,
+      cancelledByPatient: 2,
+      cancelledByClinic: 0,
+      no_show: 1,
+      completed: 7,
+    });
+
+    const result = await service.rates(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(result).toMatchObject({ empty: false, cancellationRate: 0.2 });
   });
 });

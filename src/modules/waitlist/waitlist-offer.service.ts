@@ -18,8 +18,15 @@ import { CreateAppointmentDto } from '../appointment/dto/create-appointment.dto'
 import { PatientActionLinkService } from '../patient-actions/patient-action-link.service';
 import { WhatsappBotActorService } from '../whatsapp/whatsapp-bot-actor.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 
 import { FreedSlot, WaitlistMatcherService } from './waitlist-matcher.service';
+
+/** Additive only. On the Activity allow-list since T023 — this is the writer
+ *  that entry had been missing. */
+export const WAITLIST_AUDIT_ACTION = {
+  OFFER_ACCEPTED: 'waitlist.offer_accepted',
+} as const;
 
 /** Response deadline (FR-W008) — how long a patient has to answer an offer. */
 export const OFFER_RESPONSE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
@@ -77,6 +84,7 @@ export class WaitlistOfferService {
     private readonly links: PatientActionLinkService,
     private readonly botActor: WhatsappBotActorService,
     private readonly tenantContext: TenantContextService,
+    private readonly activityAudit: ActivityAuditService,
   ) {}
 
   // ─────────────────────── T157/T159/T160 — matching ──────────────────── //
@@ -279,6 +287,19 @@ export class WaitlistOfferService {
       });
       await this.entries.update(entry.id, { state: WaitlistState.FULFILLED });
       await this.withdrawSiblingOffers(tenantId, offer!);
+
+      // Activity trail, only once the whole acceptance has succeeded. No
+      // actor: the patient acted on a signed link, so this is correctly a
+      // system action. The label is the requested SERVICE, never the patient.
+      await this.activityAudit.record({
+        tenantId,
+        action: WAITLIST_AUDIT_ACTION.OFFER_ACCEPTED,
+        entityType: 'WaitlistOffer',
+        entityId: offer!.id,
+        branchId: offer!.branch?.id ?? null,
+        entityLabel: entry.service?.name ?? null,
+        after: { appointmentId: appointment.id },
+      });
 
       return { appointment };
     } catch (err) {

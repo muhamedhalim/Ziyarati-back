@@ -9,7 +9,6 @@ import { AppointmentStatusLog } from '../../entities/Calendar&Appointments/Appoi
 import { AppointmentNote } from '../../entities/Calendar&Appointments/AppointmentNote';
 import { AppointmentReschedule } from '../../entities/Calendar&Appointments/AppointmentReschedule';
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
-import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
 
 // Reviews + referenced resources (read-only validation: same-tenant checks)
@@ -20,6 +19,7 @@ import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { Service } from '../../entities/Services/Service';
 
 import { SchedulingModule } from '../scheduling/scheduling.module';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { AppointmentsService } from './appointment.service';
@@ -56,13 +56,15 @@ import { ReviewController } from './review.controller';
       Customer,
       StaffProfile,
       Service,
-      AuditLog,
       ScheduledNotification,
     ]),
     // The single availability engine — every booking path validates through it.
     SchedulingModule,
     // Usage-quota enforcement (UsageService) for appointment creation.
     SubscriptionBillingModule,
+    // The single clinic-wide audit INSERT path (ActivityAuditService), which
+    // AppointmentAuditService delegates to.
+    ActivityLogModule,
   ],
   controllers: [AppointmentController, ReviewController],
   // AppointmentPaymentListener bridges verified payment events → booking
@@ -73,6 +75,10 @@ import { ReviewController } from './review.controller';
     AppointmentPaymentListener,
     AppointmentAuditService,
   ],
-  exports: [AppointmentsService, AppointmentReviewService, AppointmentAuditService],
+  exports: [
+    AppointmentsService,
+    AppointmentReviewService,
+    AppointmentAuditService,
+  ],
 })
 export class AppointmentModule {}

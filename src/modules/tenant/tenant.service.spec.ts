@@ -349,6 +349,36 @@ describe('TenantService', () => {
       await expect(service.findById('ten-1')).resolves.toEqual({ id: 'ten-1' });
     });
 
+    // P4-1 (015-db-api-efficiency-audit, R-09): T028's consumer analysis
+    // found no consumer of the `settings` sub-object this used to join, so
+    // T029 dropped the relation — plain-column `where`, one round trip
+    // instead of two. This is the regression guard for that: the join must
+    // never come back.
+    it('loads by plain-column where — no relations, one repository call', async () => {
+      tenants.findOne.mockResolvedValueOnce({ id: 'ten-1', name: 'Al-Noor' });
+
+      const result = await service.findById('ten-1');
+
+      expect(tenants.findOne).toHaveBeenCalledTimes(1);
+      expect(tenants.findOne).toHaveBeenCalledWith({ where: { id: 'ten-1' } });
+      const call = tenants.findOne.mock.calls[0][0];
+      expect(call).not.toHaveProperty('relations');
+      expect(result).toEqual({ id: 'ten-1', name: 'Al-Noor' });
+    });
+
+    it('returned tenant shape carries no settings key when the repository omits it', async () => {
+      tenants.findOne.mockResolvedValueOnce({
+        id: 'ten-1',
+        name: 'Al-Noor',
+        approval_status: TenantApprovalStatus.APPROVED,
+        is_active: true,
+      });
+
+      const result = await service.findById('ten-1');
+
+      expect(result).not.toHaveProperty('settings');
+    });
+
     it('throws when a tenant is not found', async () => {
       tenants.findOne.mockResolvedValueOnce(null);
       await expect(service.findById('nope')).rejects.toMatchObject({ code: ErrorCode.TENANT_NOT_FOUND });

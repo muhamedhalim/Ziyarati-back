@@ -19,6 +19,7 @@ import { TenantContextModule } from './core/tenant-context/tenant-context.module
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { MetricsService } from './metrics/metrics.service';
 import {
   bullPrefix,
   resolveWorkerRole,
@@ -229,8 +230,9 @@ const WORKER_PROVIDERS =
     // boot — discovered by actually starting the worker process, not `tsc`.
     EventEmitterModule.forRoot({ global: true, wildcard: false }),
     TypeOrmModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => typeOrmFactory(config, 'worker'),
+      inject: [ConfigService, MetricsService],
+      useFactory: (config: ConfigService, metrics: MetricsService) =>
+        typeOrmFactory(config, 'worker', metrics),
     }),
     // RefreshToken + PasswordReset back AuthTokenMaintenanceService (AUTH-005),
     // the retention sweep PlatformProcessor runs. Registered here rather than

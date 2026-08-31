@@ -12,6 +12,33 @@ interface TenantContextStore {
   tenant: Tenant | null;
   /** Request/job correlation id — propagated into enqueued jobs + logs. */
   correlationId: string | null;
+  /**
+   * Express-matched route pattern for the current request (e.g.
+   * `/appointments/:id`) — the same value `ApiLoggingInterceptor` uses for
+   * `api_logs.endpoint`. Set by `TenantContextInterceptor`, once routing has
+   * matched but before the handler runs, so every DB query the request
+   * fires can be attributed to it. `null` outside an HTTP request (a worker
+   * job) or before routing has matched.
+   */
+  route: string | null;
+}
+
+/**
+ * The ALS instance itself, exported as a plain module binding (015-db-api-
+ * efficiency-audit — P10/T062) so `typeorm.config.ts`'s query logger can read
+ * the current route WITHOUT going through Nest DI. Injecting
+ * `TenantContextService` into `TypeOrmModule.forRootAsync`'s factory would be
+ * circular: `TenantContextModule` imports `TypeOrmModule.forFeature([Tenant])`,
+ * which itself depends on the root `TypeOrmModule.forRootAsync` connection
+ * existing first. A plain function import has no such module-graph edge.
+ * Still exactly ONE store per request — `TenantContextService` reads/writes
+ * this SAME instance, never a second one.
+ */
+const tenantContextAls = new AsyncLocalStorage<TenantContextStore>();
+
+/** DI-free reader for `typeorm.config.ts` — see `tenantContextAls`'s docstring. */
+export function getCurrentRequestRoute(): string | null {
+  return tenantContextAls.getStore()?.route ?? null;
 }
 
 /**
@@ -27,11 +54,14 @@ interface TenantContextStore {
  */
 @Injectable()
 export class TenantContextService {
-  private readonly als = new AsyncLocalStorage<TenantContextStore>();
+  private readonly als = tenantContextAls;
 
   /** Opens an isolated context for the lifetime of one request (or one job). */
   run<T>(callback: () => T): T {
-    return this.als.run({ user: null, tenant: null, correlationId: null }, callback);
+    return this.als.run(
+      { user: null, tenant: null, correlationId: null, route: null },
+      callback,
+    );
   }
 
   setPrincipal(user: AuthenticatedUser | null): void {
@@ -46,6 +76,12 @@ export class TenantContextService {
 
   getCorrelationId(): string | null {
     return this.als.getStore()?.correlationId ?? null;
+  }
+
+  /** See `TenantContextStore.route`'s docstring. */
+  setRoute(route: string | null): void {
+    const store = this.als.getStore();
+    if (store) store.route = route;
   }
 
   setTenant(tenant: Tenant | null): void {

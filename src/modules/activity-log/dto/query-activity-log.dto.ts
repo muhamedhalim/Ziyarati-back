@@ -14,12 +14,17 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ACTIVITY_LOG_MAX_PAGE_SIZE,
   ACTIVITY_LOG_PAGE_SIZE,
+  ACTIVITY_SEARCH_MIN_LENGTH,
 } from '../activity-log.constants';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T193 (US14, contracts/
  * clinic-surfaces.md F14). `GET /activity`'s query params: `actorUserId?`,
- * `action?`, `from?`, `to?`, `q?`, `page`, `limit`.
+ * `action?`, `branchId?`, `from?`, `to?`, `q?`, `page`, `limit`.
+ *
+ * Every filter is optional and every empty value is simply absent from the
+ * SQL — an omitted or blank filter never contributes a predicate, so it can
+ * never produce an invalid or accidentally-matching query.
  */
 export class QueryActivityLogDto {
   @ApiPropertyOptional({ example: 1, minimum: 1, default: 1 })
@@ -70,8 +75,33 @@ export class QueryActivityLogDto {
   @IsDateString()
   to?: string;
 
+  @ApiPropertyOptional({ description: 'Filter to one branch.' })
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
+
+  /**
+   * Was already part of this surface's contract — `activity-log.e2e-spec.ts`
+   * has asserted an `entityType`-filtered page since T190 — but no property
+   * ever existed to accept it, so with the app's global
+   * `forbidNonWhitelisted: true` every such request was rejected as 400.
+   * Backed by the existing `IDX_audit_logs_tenant_entity`.
+   */
   @ApiPropertyOptional({
-    description: 'Free-text search over the action string only.',
+    description: 'Filter to one resource type (e.g. `Appointment`).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  entityType?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Free-text search, case-insensitive partial match, across the action, ' +
+      'entity type, entity label, entity id, branch name, and the acting ' +
+      "user's name and email. Terms shorter than " +
+      ACTIVITY_SEARCH_MIN_LENGTH +
+      ' characters (after trimming) are ignored rather than rejected.',
   })
   @IsOptional()
   @IsString()

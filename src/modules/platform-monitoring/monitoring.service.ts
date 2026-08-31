@@ -8,6 +8,17 @@ import { ApiLog } from '../../entities/System/ApiLog';
 import { WebhookLog } from '../../entities/System/WebhookLog';
 import { QueueService } from '../../queue/queue.service';
 import { StorageService } from '../storage/storage.service';
+import { AnalyticsCacheService, CACHE_NS } from '../analytics/analytics-cache.service';
+
+/**
+ * `AnalyticsCacheService.wrap` is per-TENANT by design (the tenant id is
+ * baked into every key). This payload has no tenant — it is one platform-
+ * global snapshot for every super-admin — so it is cached under this fixed
+ * pseudo-tenant id, paired with the dedicated `CACHE_NS.PLATFORM` namespace
+ * (never `DASHBOARD`/`DAILY`/`STAFF`) so it can never collide with, or be
+ * invalidated by, a real tenant's cache traffic.
+ */
+const PLATFORM_CACHE_SCOPE = 'platform';
 
 const n = (v: unknown): number => {
   const x = Number(v);
@@ -40,9 +51,29 @@ export class MonitoringService {
     private readonly queues: QueueService,
     private readonly config: ConfigService,
     private readonly storage: StorageService,
+    private readonly cache: AnalyticsCacheService,
   ) {}
 
-  async overview() {
+  /**
+   * ~10 raw SQL statements (system health + traffic + webhooks +
+   * infrastructure) per open tab, on a client that polls every 15s (POLL-001)
+   * — this collapsed that to one compute per 10s shared across every open
+   * tab. `bypassCache` mirrors `PlatformDashboardService.snapshot`'s explicit
+   * `Cache-Control: no-cache` escape hatch (`PlatformMonitoringController`),
+   * so Refresh always re-runs the aggregation instead of re-serving a value
+   * the operator just asked to replace.
+   */
+  async overview(options?: { bypassCache?: boolean }) {
+    if (options?.bypassCache) return this.computeOverview();
+    return this.cache.wrap(
+      PLATFORM_CACHE_SCOPE,
+      CACHE_NS.PLATFORM,
+      'overview',
+      () => this.computeOverview(),
+    );
+  }
+
+  private async computeOverview() {
     const [system, traffic, webhooks, queueList] = await Promise.all([
       this.systemHealth(),
       this.traffic(),

@@ -19,6 +19,7 @@ import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
 import { PatientActionsModule } from '../patient-actions/patient-actions.module';
 import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 
 /**
  * Spec 014 (Clinic Platform Completion) — appointment waitlist (US9).
@@ -48,6 +49,8 @@ import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
     SchedulingModule,
     forwardRef(() => PatientActionsModule),
     AiBotActorModule,
+    // The single clinic-wide audit INSERT path (ActivityAuditService).
+    ActivityLogModule,
   ],
   controllers: [WaitlistController],
   providers: [
