@@ -9,7 +9,10 @@ import { AvailabilityService } from '../scheduling/availability.service';
 import { PatientActionLinkService } from './patient-action-link.service';
 import { PatientChangeWindowService } from './patient-change-window.service';
 import { AppointmentActionOrigin } from '../../entities/enums';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 
@@ -46,11 +49,17 @@ describe('PatientRescheduleService', () => {
       cancellation_hours: 24,
     });
     appointments = {
-      reschedule: jest
-        .fn()
-        .mockResolvedValue({ id: 'appt-1', status: 'CONFIRMED', start_at: new Date() }),
+      reschedule: jest.fn().mockResolvedValue({
+        id: 'appt-1',
+        status: 'CONFIRMED',
+        start_at: new Date(),
+      }),
     };
-    availability = { publicWindows: jest.fn().mockResolvedValue({ timezone: 'UTC', windows: [] }) };
+    availability = {
+      publicWindows: jest
+        .fn()
+        .mockResolvedValue({ timezone: 'UTC', windows: [] }),
+    };
     links = { consume: jest.fn().mockResolvedValue(1) };
     appointmentAudit = { record: jest.fn().mockResolvedValue(undefined) };
 
@@ -58,7 +67,10 @@ describe('PatientRescheduleService', () => {
       providers: [
         PatientRescheduleService,
         PatientChangeWindowService,
-        { provide: getRepositoryToken(TenantSetting), useValue: tenantSettings },
+        {
+          provide: getRepositoryToken(TenantSetting),
+          useValue: tenantSettings,
+        },
         { provide: AppointmentsService, useValue: appointments },
         { provide: AvailabilityService, useValue: availability },
         { provide: PatientActionLinkService, useValue: links },
@@ -81,7 +93,10 @@ describe('PatientRescheduleService', () => {
       status: 'CONFIRMED' as any,
       start_at: new Date(Date.now() + 48 * 3600_000),
     });
-    expect(res).toEqual({ allowed: false, blockedReason: 'DISABLED_BY_CLINIC' });
+    expect(res).toEqual({
+      allowed: false,
+      blockedReason: 'DISABLED_BY_CLINIC',
+    });
   });
 
   it('TERMINAL_STATE for a cancelled appointment', async () => {
@@ -125,7 +140,11 @@ describe('PatientRescheduleService', () => {
   // ── rescheduleViaLink ────────────────────────────────────────────────── //
 
   it('delegates the write to AppointmentsService.reschedule — no userId, origin=PATIENT, no scheduling logic here', async () => {
-    await service.rescheduleViaLink(TENANT, linkFor(), '2031-02-01T10:00:00.000Z');
+    await service.rescheduleViaLink(
+      TENANT,
+      linkFor(),
+      '2031-02-01T10:00:00.000Z',
+    );
     expect(appointments.reschedule).toHaveBeenCalledWith(
       TENANT,
       null,
@@ -136,17 +155,28 @@ describe('PatientRescheduleService', () => {
   });
 
   it('consumes the link after a successful reschedule', async () => {
-    await service.rescheduleViaLink(TENANT, linkFor(), '2031-02-01T10:00:00.000Z');
+    await service.rescheduleViaLink(
+      TENANT,
+      linkFor(),
+      '2031-02-01T10:00:00.000Z',
+    );
     expect(links.consume).toHaveBeenCalledWith('link-1');
   });
 
   it('T045: audits with the appointment id, PATIENT origin, and previous/new times — no token/contact detail', async () => {
-    await service.rescheduleViaLink(TENANT, linkFor(), '2031-02-01T10:00:00.000Z');
+    await service.rescheduleViaLink(
+      TENANT,
+      linkFor(),
+      '2031-02-01T10:00:00.000Z',
+    );
     expect(appointmentAudit.record).toHaveBeenCalledWith(
       'appointment.rescheduled_by_patient',
       TENANT,
       'appt-1',
       expect.objectContaining({ origin: AppointmentActionOrigin.PATIENT }),
+      // Context arg: branch, so the Activity log can answer "where". Still no
+      // actor — a signed link has no authenticated user.
+      expect.objectContaining({ branchId: null }),
     );
     const [, , , details] = appointmentAudit.record.mock.calls[0];
     expect(details).toHaveProperty('previousStartAt');
@@ -157,7 +187,9 @@ describe('PatientRescheduleService', () => {
     const nearLink = linkFor({ start_at: new Date(Date.now() + 3600_000) }); // 1h away, inside 24h window
     await expect(
       service.rescheduleViaLink(TENANT, nearLink, '2031-02-01T10:00:00.000Z'),
-    ).rejects.toMatchObject({ publicContext: { blockedReason: 'WINDOW_CLOSED' } });
+    ).rejects.toMatchObject({
+      publicContext: { blockedReason: 'WINDOW_CLOSED' },
+    });
     expect(appointments.reschedule).not.toHaveBeenCalled();
     expect(links.consume).not.toHaveBeenCalled();
   });

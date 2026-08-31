@@ -49,6 +49,7 @@ export interface MockQueryBuilder {
   getManyAndCount: jest.Mock;
   getRawOne: jest.Mock;
   getRawMany: jest.Mock;
+  getRawAndEntities: jest.Mock;
   getCount: jest.Mock;
   execute: jest.Mock;
 }
@@ -90,6 +91,7 @@ export const createMockQueryBuilder = (): MockQueryBuilder => {
   qb.getManyAndCount = jest.fn(async () => [[], 0]);
   qb.getRawOne = jest.fn(async () => undefined);
   qb.getRawMany = jest.fn(async () => []);
+  qb.getRawAndEntities = jest.fn(async () => ({ entities: [], raw: [] }));
   qb.getCount = jest.fn(async () => 0);
   qb.execute = jest.fn(async () => ({ affected: 1, raw: [] }));
   return qb;

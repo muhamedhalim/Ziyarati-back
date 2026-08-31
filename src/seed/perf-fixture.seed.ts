@@ -358,7 +358,7 @@ export async function seedPerfFixture(ds: DataSource, tier: Tier): Promise<void>
       const appt = pick(appointments, i);
       const cust = pick(customers, i);
       const amount = 200 + (i % 30) * 15;
-      invoiceRows.push([invoiceId, `PERF-${tier}-${t}-${String(i + 1).padStart(6, '0')}`, amount, pick(INVOICE_STATUSES, i), now, tenantIds[t], appt, cust]);
+      invoiceRows.push([invoiceId, `PERF-${tier}-${t}-${String(i + 1).padStart(6, '0')}`, amount, pick(INVOICE_STATUSES, i), 'SAR', now, tenantIds[t], appt, cust]);
 
       paymentRows.push([
         randomUUID(),
@@ -377,7 +377,7 @@ export async function seedPerfFixture(ds: DataSource, tier: Tier): Promise<void>
       ]);
     }
   }
-  await bulkInsert(ds, 'invoices', ['id', 'invoice_number', 'total_amount', 'status', 'created_at', 'tenantId', 'appointmentId', 'customerId'], invoiceRows);
+  await bulkInsert(ds, 'invoices', ['id', 'invoice_number', 'total_amount', 'status', 'currency', 'created_at', 'tenantId', 'appointmentId', 'customerId'], invoiceRows);
   await bulkInsert(
     ds,
     'payments',

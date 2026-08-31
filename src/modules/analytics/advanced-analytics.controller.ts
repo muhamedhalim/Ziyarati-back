@@ -37,15 +37,29 @@ const S_ERROR = {
 };
 
 /**
- * How long the browser may reuse a trend payload without re-asking.
+ * How long the browser may reuse a payload from this controller without
+ * re-asking.
  *
- * Matched to `ANALYTICS_CACHE_TTL`'s 60 s default: a request sent inside this
- * window could only have been answered from the server-side cache anyway, so
+ * Originally sized for the two trend routes, matched to
+ * `ANALYTICS_CACHE_TTL`'s 60 s default: a request sent inside this window
+ * could only have been answered from the server-side cache anyway, so
  * skipping it costs no staleness the tenant was not already accepting.
  * Deliberately shorter than the TTL, not equal to it, so the browser copy can
  * never outlive the server copy it was derived from.
+ *
+ * Also applied to `rates`/`retention`/`performance/{services,branches,
+ * channels}` (015-db-api-efficiency-audit CACHE-001/P3): those five have no
+ * server-side cache at all, so the 60 s TTL argument above doesn't apply to
+ * them — their safety rests instead on the frontend's own `AGGREGATE` tier
+ * (`app/lib/api/cache-policy.ts`, 5 min `staleTime`, confirmed for exactly
+ * these five call sites in `Ziyarati-font/app/features/clinic/advanced-
+ * analytics.ts`): a 30 s browser cache is strictly shorter than staleness the
+ * client already tolerates, so it adds none. Deliberately **not** applied to
+ * the sixth, structurally-identical `performance/staff` handler — verified
+ * during P3 that it has no frontend consumer at all, so there is no known
+ * client tolerance to lean on for it.
  */
-const TREND_MAX_AGE_SECONDS = 30;
+const ANALYTICS_MAX_AGE_SECONDS = 30;
 
 const AUTH_RESPONSES = {
   unauthorized: {
@@ -106,7 +120,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('trends/appointments')
-  @PrivateCache(TREND_MAX_AGE_SECONDS)
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -131,7 +145,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('trends/revenue')
-  @PrivateCache(TREND_MAX_AGE_SECONDS)
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -152,6 +166,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('rates')
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -172,6 +187,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('retention')
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -192,6 +208,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('performance/services')
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -240,6 +257,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('performance/branches')
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -264,6 +282,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('performance/channels')
+  @PrivateCache(ANALYTICS_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,

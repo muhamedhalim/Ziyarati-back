@@ -361,6 +361,8 @@ describe('PublicBookingFlowService.confirm', () => {
       TENANT,
       'appt-1',
       expect.objectContaining({ hasInsurance: false }),
+      // Context arg: branch. The visitor is anonymous, so still no actor.
+      expect.objectContaining({ branchId: null }),
     );
     expect(result).toMatchObject({
       appointmentId: 'appt-1',

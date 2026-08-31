@@ -8,6 +8,7 @@ import { ErrorCode } from '../../common/errors';
 import {
   createMockAccessCache,
   createMockRepository,
+  createMockQueryBuilder,
   MockRepository,
 } from '../../../test/utils/mock-factories';
 import { PlatformAdminAuditService } from '../platform/platform-admin-audit.service';
@@ -37,6 +38,17 @@ describe('PlanAdminService', () => {
   beforeEach(async () => {
     plans = createMockRepository();
     subscriptions = createMockRepository();
+    // P7-1 (015-db-api-efficiency-audit, NPLUS-001): withUsageFlag now reads
+    // the plan FK column via entity metadata (R-11 — Subscription exposes no
+    // plain `planId` property), the same `.metadata.findRelationWithPropertyPath`
+    // pattern DashboardSummaryService.fk() and ApiKeyService.authenticate use.
+    // `planId` matches the real column name (BaselineSchema migration:
+    // `subscriptions."planId"`).
+    (subscriptions as unknown as { metadata: unknown }).metadata = {
+      name: 'Subscription',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'plan' ? { joinColumns: [{ databaseName: 'planId' }] } : undefined,
+    };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     tenantContext = {
       getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
@@ -240,33 +252,130 @@ describe('PlanAdminService', () => {
     });
   });
 
-  describe('is_in_use enrichment (admin catalogue views)', () => {
+  describe('is_in_use enrichment (admin catalogue views) — T042 (P7-1, NPLUS-001)', () => {
+    /**
+     * Wires `subscriptions.createQueryBuilder()` to return the grouped
+     * `{ planId }` rows `withUsageFlag`'s real query would produce for the
+     * next call — the raw-row equivalent of the old per-plan
+     * `subscriptions.count.mockResolvedValueOnce(n)`. `planIdsInUse` is the
+     * full set of distinct plan ids the grouped query would return (i.e.
+     * every plan with at least one non-cancelled, non-deleted subscription).
+     */
+    function mockGroupedUsage(planIdsInUse: string[]) {
+      const qb = createMockQueryBuilder();
+      qb.getRawMany = jest.fn(async () => planIdsInUse.map((id) => ({ planId: id })));
+      subscriptions.createQueryBuilder.mockReturnValueOnce(qb);
+      return qb;
+    }
+
     it('listAll() marks a plan with active subscribers as is_in_use', async () => {
       plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
-      subscriptions.count.mockResolvedValueOnce(2);
+      mockGroupedUsage(['plan-1']);
 
       const [result] = await service.listAll();
 
       expect(result.is_in_use).toBe(true);
     });
 
-    it('listAll() marks a plan with no active subscribers as NOT is_in_use', async () => {
+    it('listAll() marks a plan with only CANCELLED subscriptions as NOT is_in_use', async () => {
+      // The grouped query filters status != CANCELLED, so a plan referenced
+      // only by cancelled subscriptions never appears in the returned rows —
+      // simulated here by simply omitting it from the "in use" set.
       plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
-      subscriptions.count.mockResolvedValueOnce(0);
+      mockGroupedUsage([]);
 
       const [result] = await service.listAll();
 
       expect(result.is_in_use).toBe(false);
     });
 
+    it('listAll() marks a plan with only soft-deleted subscriptions as NOT is_in_use', async () => {
+      // createQueryBuilder auto-injects `deleted_at IS NULL` for the main
+      // alias (Subscription has @DeleteDateColumn) — a plan referenced only
+      // by soft-deleted rows is excluded the same way a cancelled-only plan is.
+      plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
+      mockGroupedUsage([]);
+
+      const [result] = await service.listAll();
+
+      expect(result.is_in_use).toBe(false);
+    });
+
+    it('listAll() marks a plan with zero subscriptions of any kind as NOT is_in_use', async () => {
+      plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
+      mockGroupedUsage([]);
+
+      const [result] = await service.listAll();
+
+      expect(result.is_in_use).toBe(false);
+    });
+
+    it('listAll() with zero plans never queries subscriptions at all', async () => {
+      plans.find.mockResolvedValueOnce([]);
+
+      const result = await service.listAll();
+
+      expect(result).toEqual([]);
+      expect(subscriptions.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
     it('getAdminView() enriches a single plan the same way', async () => {
       plans.findOne.mockResolvedValueOnce(plan({ id: 'plan-1' }));
-      subscriptions.count.mockResolvedValueOnce(1);
+      mockGroupedUsage(['plan-1']);
 
       const result = await service.getAdminView('plan-1');
 
       expect(result.is_in_use).toBe(true);
       expect(result.name).toBe('Starter');
+    });
+
+    it('correctly distinguishes multiple plans from one grouped query — no cross-plan bleed', async () => {
+      plans.find.mockResolvedValueOnce([
+        plan({ id: 'plan-1' }),
+        plan({ id: 'plan-2' }),
+        plan({ id: 'plan-3' }),
+      ]);
+      mockGroupedUsage(['plan-1', 'plan-3']);
+
+      const results = await service.listAll();
+
+      expect(results.map((r) => ({ id: r.id, inUse: r.is_in_use }))).toEqual([
+        { id: 'plan-1', inUse: true },
+        { id: 'plan-2', inUse: false },
+        { id: 'plan-3', inUse: true },
+      ]);
+    });
+
+    it('statement count: exactly 2 (one plans read, one grouped subscriptions query) regardless of plan count', async () => {
+      plans.find.mockResolvedValueOnce([
+        plan({ id: 'plan-1' }),
+        plan({ id: 'plan-2' }),
+        plan({ id: 'plan-3' }),
+      ]);
+      const qb = mockGroupedUsage(['plan-1']);
+
+      await service.listAll();
+
+      expect(plans.find).toHaveBeenCalledTimes(1);
+      expect(subscriptions.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(qb.getRawMany).toHaveBeenCalledTimes(1);
+      expect(subscriptions.count).not.toHaveBeenCalled(); // no per-plan fallback
+    });
+
+    it('the grouped query filters status != CANCELLED and lets TypeORM inject the soft-delete predicate', async () => {
+      plans.find.mockResolvedValueOnce([plan({ id: 'plan-1' })]);
+      const qb = mockGroupedUsage(['plan-1']);
+
+      await service.listAll();
+
+      expect(qb.where).toHaveBeenCalledWith('s.status != :cancelled', {
+        cancelled: 'CANCELLED',
+      });
+      // Hand-writing `deleted_at IS NULL` here would defeat the point (R-03) —
+      // it must come from the query builder's own soft-delete handling, so
+      // this spec asserts it is NEVER present in a manually-added predicate.
+      const whereCalls = [...qb.where.mock.calls, ...qb.andWhere.mock.calls];
+      expect(whereCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(false);
     });
   });
 

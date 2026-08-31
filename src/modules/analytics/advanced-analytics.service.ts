@@ -198,6 +198,29 @@ export class AdvancedAnalyticsService {
     return `trend:${kind}:${from}:${to}:${branchId ?? 'ALL'}`;
   }
 
+  /**
+   * Same shape as {@link trendKey} for the five non-trend aggregates
+   * (CACHE-002). Deliberately excludes `page`/`limit`: every paginated
+   * method here slices an already-fetched, unpaginated row set in memory
+   * (see `AnalyticsAggregationService.servicePerformance` etc. — no `LIMIT`/
+   * `OFFSET` in the SQL), so the expensive part — the aggregation query
+   * itself — is identical across pages of the same (kind, range, branch) and
+   * a page-2 request reuses page-1's cache entry instead of re-querying.
+   */
+  private aggregateKey(
+    kind:
+      | 'rates'
+      | 'retention'
+      | 'perf-services'
+      | 'perf-branches'
+      | 'perf-channels',
+    from: ReportDate,
+    to: ReportDate,
+    branchId: string | undefined,
+  ): string {
+    return `${kind}:${from}:${to}:${branchId ?? 'ALL'}`;
+  }
+
   // ─────────────────────────────── Trends ────────────────────────────────── //
 
   /** FR-A004 — `GET /analytics/trends/appointments`. */
@@ -322,30 +345,41 @@ export class AdvancedAnalyticsService {
     dto: QueryAdvancedAnalyticsDto,
   ) {
     const { from, to } = this.validateRange(dto);
+    // Resolved BEFORE the cache is consulted — same authorization discipline
+    // as the trend methods above (an authorization decision must never be
+    // cached).
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const currency = await this.getCurrency(tenantId);
-    const { start, end } = this.instants(from, to);
-    const raw = await this.aggregation.computeRates(
+
+    return this.cache.wrap(
       tenantId,
-      scope.branchId,
-      start,
-      end,
+      CACHE_NS.DASHBOARD,
+      this.aggregateKey('rates', from, to, scope.branchId),
+      async () => {
+        const currency = await this.getCurrency(tenantId);
+        const { start, end } = this.instants(from, to);
+        const raw = await this.aggregation.computeRates(
+          tenantId,
+          scope.branchId,
+          start,
+          end,
+        );
+        const envelope = this.envelope(from, to, scope.branchId, currency);
+
+        if (raw.total === 0) {
+          return { ...envelope, empty: true };
+        }
+
+        return {
+          ...envelope,
+          empty: false,
+          cancellationRate: round2(raw.cancelled / raw.total),
+          cancellationByPatient: raw.cancelledByPatient,
+          cancellationByClinic: raw.cancelledByClinic,
+          noShowRate: round2(raw.no_show / raw.total),
+          completionRate: round2(raw.completed / raw.total),
+        };
+      },
     );
-    const envelope = this.envelope(from, to, scope.branchId, currency);
-
-    if (raw.total === 0) {
-      return { ...envelope, empty: true };
-    }
-
-    return {
-      ...envelope,
-      empty: false,
-      cancellationRate: round2(raw.cancelled / raw.total),
-      cancellationByPatient: raw.cancelledByPatient,
-      cancellationByClinic: raw.cancelledByClinic,
-      noShowRate: round2(raw.no_show / raw.total),
-      completionRate: round2(raw.completed / raw.total),
-    };
   }
 
   // ─────────────────────────────── Retention ─────────────────────────────── //
@@ -358,36 +392,49 @@ export class AdvancedAnalyticsService {
   ) {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const currency = await this.getCurrency(tenantId);
-    const { priorFrom, priorTo } = priorPeriod(from, to);
-    const { start: chosenStart, end: chosenEnd } = this.instants(from, to);
-    const { start: priorStart, end: priorEnd } = this.instants(
-      priorFrom,
-      priorTo,
-    );
 
-    const raw = await this.aggregation.computeRetention(
+    return this.cache.wrap(
       tenantId,
-      scope.branchId,
-      priorStart,
-      priorEnd,
-      chosenStart,
-      chosenEnd,
+      CACHE_NS.DASHBOARD,
+      this.aggregateKey('retention', from, to, scope.branchId),
+      async () => {
+        const currency = await this.getCurrency(tenantId);
+        const { priorFrom, priorTo } = priorPeriod(from, to);
+        const { start: chosenStart, end: chosenEnd } = this.instants(
+          from,
+          to,
+        );
+        const { start: priorStart, end: priorEnd } = this.instants(
+          priorFrom,
+          priorTo,
+        );
+
+        const raw = await this.aggregation.computeRetention(
+          tenantId,
+          scope.branchId,
+          priorStart,
+          priorEnd,
+          chosenStart,
+          chosenEnd,
+        );
+        const envelope = this.envelope(from, to, scope.branchId, currency);
+
+        if (raw.priorPeriodPatients === 0) {
+          return { ...envelope, empty: true };
+        }
+
+        return {
+          ...envelope,
+          empty: false,
+          retainedPatients: raw.retainedPatients,
+          priorPeriodPatients: raw.priorPeriodPatients,
+          retentionRate: round2(
+            raw.retainedPatients / raw.priorPeriodPatients,
+          ),
+          repeatDistribution: raw.repeatDistribution,
+        };
+      },
     );
-    const envelope = this.envelope(from, to, scope.branchId, currency);
-
-    if (raw.priorPeriodPatients === 0) {
-      return { ...envelope, empty: true };
-    }
-
-    return {
-      ...envelope,
-      empty: false,
-      retainedPatients: raw.retainedPatients,
-      priorPeriodPatients: raw.priorPeriodPatients,
-      retentionRate: round2(raw.retainedPatients / raw.priorPeriodPatients),
-      repeatDistribution: raw.repeatDistribution,
-    };
   }
 
   // ────────────────────────────── Performance ─────────────────────────────── //
@@ -400,15 +447,26 @@ export class AdvancedAnalyticsService {
   ) {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const currency = await this.getCurrency(tenantId);
-    const { start, end } = this.instants(from, to);
-    const rows = await this.aggregation.servicePerformance(
+
+    // Only the aggregation is cached — `page`/`limit` are applied AFTER, on
+    // the full (already-fetched) row set, so every page of the same range/
+    // branch shares one cache entry instead of the query running per page.
+    const { envelope, rows } = await this.cache.wrap(
       tenantId,
-      scope.branchId,
-      start,
-      end,
+      CACHE_NS.DASHBOARD,
+      this.aggregateKey('perf-services', from, to, scope.branchId),
+      async () => {
+        const currency = await this.getCurrency(tenantId);
+        const { start, end } = this.instants(from, to);
+        const rows = await this.aggregation.servicePerformance(
+          tenantId,
+          scope.branchId,
+          start,
+          end,
+        );
+        return { envelope: this.envelope(from, to, scope.branchId, currency), rows };
+      },
     );
-    const envelope = this.envelope(from, to, scope.branchId, currency);
 
     if (rows.length === 0) {
       return {
@@ -491,35 +549,49 @@ export class AdvancedAnalyticsService {
   ) {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const currency = await this.getCurrency(tenantId);
-    const { start, end } = this.instants(from, to);
-    const branchIds = scope.branchId ? [scope.branchId] : undefined;
-    const [rows, other] = await Promise.all([
-      this.aggregation.branchPerformance(
-        tenantId,
-        branchIds,
-        currency,
-        start,
-        end,
-      ),
-      this.aggregation.countOtherCurrencyRevenue(
-        tenantId,
-        scope.branchId,
-        currency,
-        start,
-        end,
-      ),
-    ]);
-    const envelope = this.envelope(from, to, scope.branchId, currency);
-    // FR-A021 — never silently summed away; surfaced only when non-zero.
-    const excluded =
-      other.count > 0
-        ? {
-            excludedOtherCurrency: { count: other.count, amount: other.amount },
-          }
-        : {};
 
-    const anyActivity = rows.some((r) => r.appointments > 0 || r.revenue > 0);
+    const { envelope, excluded, rows, anyActivity } = await this.cache.wrap(
+      tenantId,
+      CACHE_NS.DASHBOARD,
+      this.aggregateKey('perf-branches', from, to, scope.branchId),
+      async () => {
+        const currency = await this.getCurrency(tenantId);
+        const { start, end } = this.instants(from, to);
+        const branchIds = scope.branchId ? [scope.branchId] : undefined;
+        const [rows, other] = await Promise.all([
+          this.aggregation.branchPerformance(
+            tenantId,
+            branchIds,
+            currency,
+            start,
+            end,
+          ),
+          this.aggregation.countOtherCurrencyRevenue(
+            tenantId,
+            scope.branchId,
+            currency,
+            start,
+            end,
+          ),
+        ]);
+        const envelope = this.envelope(from, to, scope.branchId, currency);
+        // FR-A021 — never silently summed away; surfaced only when non-zero.
+        const excluded =
+          other.count > 0
+            ? {
+                excludedOtherCurrency: {
+                  count: other.count,
+                  amount: other.amount,
+                },
+              }
+            : {};
+        const anyActivity = rows.some(
+          (r) => r.appointments > 0 || r.revenue > 0,
+        );
+        return { envelope, excluded, rows, anyActivity };
+      },
+    );
+
     if (rows.length === 0 || !anyActivity) {
       return {
         ...envelope,
@@ -552,34 +624,59 @@ export class AdvancedAnalyticsService {
   ) {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const currency = await this.getCurrency(tenantId);
-    const { start, end } = this.instants(from, to);
-    const [rows, other] = await Promise.all([
-      this.aggregation.channelPerformance(
-        tenantId,
-        scope.branchId,
-        currency,
-        start,
-        end,
-      ),
-      this.aggregation.countOtherCurrencyRevenue(
-        tenantId,
-        scope.branchId,
-        currency,
-        start,
-        end,
-      ),
-    ]);
-    const envelope = this.envelope(from, to, scope.branchId, currency);
-    // FR-A021 — never silently summed away; surfaced only when non-zero.
-    const excluded =
-      other.count > 0
-        ? {
-            excludedOtherCurrency: { count: other.count, amount: other.amount },
-          }
-        : {};
 
-    const totalAppointments = rows.reduce((s, r) => s + r.appointments, 0);
+    const { envelope, excluded, data, totalAppointments } =
+      await this.cache.wrap(
+        tenantId,
+        CACHE_NS.DASHBOARD,
+        this.aggregateKey('perf-channels', from, to, scope.branchId),
+        async () => {
+          const currency = await this.getCurrency(tenantId);
+          const { start, end } = this.instants(from, to);
+          const [rows, other] = await Promise.all([
+            this.aggregation.channelPerformance(
+              tenantId,
+              scope.branchId,
+              currency,
+              start,
+              end,
+            ),
+            this.aggregation.countOtherCurrencyRevenue(
+              tenantId,
+              scope.branchId,
+              currency,
+              start,
+              end,
+            ),
+          ]);
+          const envelope = this.envelope(from, to, scope.branchId, currency);
+          // FR-A021 — never silently summed away; surfaced only when non-zero.
+          const excluded =
+            other.count > 0
+              ? {
+                  excludedOtherCurrency: {
+                    count: other.count,
+                    amount: other.amount,
+                  },
+                }
+              : {};
+          const totalAppointments = rows.reduce(
+            (s, r) => s + r.appointments,
+            0,
+          );
+          const data = rows.map((r) => ({
+            source: r.source,
+            appointments: r.appointments,
+            completionRate:
+              r.appointments > 0
+                ? round2(r.completed / r.appointments)
+                : null,
+            revenue: r.revenue,
+          }));
+          return { envelope, excluded, data, totalAppointments };
+        },
+      );
+
     if (totalAppointments === 0) {
       return {
         ...envelope,
@@ -592,13 +689,6 @@ export class AdvancedAnalyticsService {
       };
     }
 
-    const data = rows.map((r) => ({
-      source: r.source,
-      appointments: r.appointments,
-      completionRate:
-        r.appointments > 0 ? round2(r.completed / r.appointments) : null,
-      revenue: r.revenue,
-    }));
     const offset = (dto.page - 1) * dto.limit;
     return {
       ...envelope,

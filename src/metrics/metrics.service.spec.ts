@@ -156,4 +156,27 @@ describe('MetricsService (M14)', () => {
     const body = await service.render();
     expect(body).toMatch(/process_cpu_user_seconds_total|nodejs_heap_size/);
   });
+
+  // ── 015-db-api-efficiency-audit — P10/T062/T063 (spec §21.2 gap) ──────────
+
+  it('renders db_queries_total after recordDbQuery, labeled by route only', async () => {
+    service.recordDbQuery('/appointments/:id');
+    service.recordDbQuery('/appointments/:id');
+    service.recordDbQuery('/crm/customers');
+    const body = await service.render();
+    expect(body).toContain('db_queries_total');
+    expect(body).toContain('route="/appointments/:id"} 2');
+    expect(body).toContain('route="/crm/customers"} 1');
+  });
+
+  it('db_queries_total never carries a tenant id or query text — the only label is route', async () => {
+    service.recordDbQuery('/crm/customers');
+    const body = await service.render();
+    const line = body
+      .split('\n')
+      .find((l) => l.startsWith('db_queries_total{'))!;
+    // Exactly one label (`route`) on the series — no second label slot for a
+    // tenant id, statement hash, or anything else to have been added to.
+    expect(line.match(/="/g)).toHaveLength(1);
+  });
 });

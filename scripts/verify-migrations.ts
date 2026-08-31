@@ -79,7 +79,50 @@ async function main() {
     (await q(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [name])).length >
     0;
 
+  // ── ReadPathIndexes (015-db-api-efficiency-audit, P9/T061) — up→down→up ────
+  // Chronologically the newest migration as of this addition, so — same
+  // reasoning as the M3 block immediately below, whose own comment already
+  // states this constraint — it MUST run first, from the top of the
+  // freshly-applied stack, before any of the fixed-depth `undoLastMigration()`
+  // cascades further down this script (each of which assumes a specific named
+  // migration sits at an exact distance from the tail; inserting a new
+  // migration after those were written shifts that distance for every one of
+  // them). Ends on a fresh `up`, so the tail is back to normal for the M3
+  // block that follows.
+  await ds.undoLastMigration(); // ReadPathIndexes down
+  check(
+    'ReadPathIndexes down drops IDX_appointments_tenant_start_at',
+    !(await idxExists('IDX_appointments_tenant_start_at')),
+  );
+  await ds.runMigrations(); // ReadPathIndexes up
+  check(
+    'ReadPathIndexes up recreates IDX_appointments_tenant_start_at',
+    await idxExists('IDX_appointments_tenant_start_at'),
+  );
+  await ds.runMigrations(); // second up — already applied, TypeORM skips it; must not throw
+  check('ReadPathIndexes second up run does not throw', true);
+
   // ── M3 (BotActorTenantQualifiedEmail, AI-001) — G6 round trip ──────────────
+  // PRE-EXISTING STALENESS (015-db-api-efficiency-audit, P9/T061 — found
+  // while adding `ReadPathIndexes` above, not introduced by it; reproduced
+  // with that migration file removed entirely, against an unmodified copy of
+  // this script, before any P9 change): the comment below ("M3 is
+  // chronologically the newest migration") stopped being true at
+  // `AiExecutionMetricToolCallsTruncated1730041300000` — two migrations were
+  // added immediately after `BotActorTenantQualifiedEmail` even before this
+  // trio's OWN comment was written, and roughly 40 more have landed since.
+  // `undoLastMigration()` always pops whichever migration is CHRONOLOGICALLY
+  // LAST, so this block (and the M1/M2 cascade right after it) has been
+  // silently reverting/reapplying the WRONG migrations for a long time — the
+  // exact same class of staleness already called out, and left as out of
+  // scope, at the `AiBatchExecution` block further down this file. Given that
+  // standing precedent, and that fixing it means auditing every
+  // `undoLastMigration()` position in this ~700-line script against the
+  // full, unrelated migration history rather than anything P9 touches, it is
+  // left as-is here too. `ReadPathIndexes`'s OWN up→down→up→(second up) cycle
+  // is proven correct above, independently, while it is genuinely the tail.
+  //
+  // Original comment, kept for context (no longer accurate — see above):
   // M3 is chronologically the newest migration, so at this point (immediately
   // after the initial `runMigrations()` from empty) it is the top of the
   // applied stack — the only position from which `undoLastMigration()` can

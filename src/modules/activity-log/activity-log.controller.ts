@@ -18,6 +18,7 @@ import { FeatureKey } from '../subscription-billing/feature-registry';
 
 import { ActivityLogService } from './activity-log.service';
 import { QueryActivityLogDto } from './dto/query-activity-log.dto';
+import { QueryActivitySuggestionsDto } from './dto/query-activity-suggestions.dto';
 
 const S_ERROR = {
   type: 'object',
@@ -86,5 +87,38 @@ export class ActivityLogController {
   @RequirePermissions(PERMISSION.AUDIT_READ)
   actions() {
     return this.activityLog.actions();
+  }
+
+  @ApiOperation({
+    summary: 'Typeahead suggestions for the activity search box',
+    description:
+      '**Protected — `audit.read`.** Up to a handful of short suggestion strings ' +
+      '(actor names/emails, action names, entity labels) drawn from THIS tenant’s ' +
+      'own allow-listed activity, ranked exact → prefix → trigram similarity. ' +
+      'A separate route rather than an option on `GET /activity` because a ' +
+      'suggestion is one string: returning a page of full audit rows per ' +
+      'keystroke just to harvest names from it would move orders of magnitude ' +
+      'more data.\n\n' +
+      'Isolation is identical to `GET /activity` — same guards, same permission, ' +
+      'same tenant binding, same allow-list — so a suggestion can never reveal a ' +
+      'name, an action, or the existence of a row the caller could not already ' +
+      'read on the page itself.',
+  })
+  @ApiOkResponse({
+    description: 'The suggestion list (bounded, may be empty).',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `audit.read`.',
+    schema: S_ERROR,
+  })
+  @Get('suggestions')
+  @RequirePermissions(PERMISSION.AUDIT_READ)
+  async suggestions(@Query() query: QueryActivitySuggestionsDto) {
+    const tenantId = this.ctx.requireTenantId();
+    return this.activityLog.suggestions(tenantId, query);
   }
 }

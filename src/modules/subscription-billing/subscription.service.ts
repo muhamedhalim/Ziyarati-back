@@ -194,13 +194,29 @@ export class SubscriptionService {
     return view;
   }
 
-  /** The tenant's current subscription (most recent, non-deleted) + computed status. */
+  /**
+   * The tenant's current subscription (most recent, non-deleted) + computed
+   * status.
+   *
+   * T046 (015-db-api-efficiency-audit, P7-2/ORM-001): same fix as T045 —
+   * `findOne` unconditionally sets `take: 1` internally (research.md R-01),
+   * so the `relations: { plan: true }` join here cost 2 round trips. `plan`
+   * stays a real `leftJoinAndSelect` (its columns are read by `this.view()`),
+   * the tenant filter moves to the FK column resolved from entity metadata
+   * (R-11), and `.limit(1)` replaces the implicit `take: 1` (R-10). The
+   * hand-written `deleted_at IS NULL` is dropped — `Subscription` has
+   * `@DeleteDateColumn`, so the query builder injects the identical
+   * predicate for the main alias automatically.
+   */
   async getCurrent(tenantId: string): Promise<SubscriptionView> {
-    const subscription = await this.subscriptions.findOne({
-      where: { tenant: { id: tenantId }, deleted_at: IsNull() },
-      relations: { plan: true },
-      order: { created_at: 'DESC' },
-    });
+    const tenantFk = this.fk(this.subscriptions, 'tenant');
+    const subscription = await this.subscriptions
+      .createQueryBuilder('s')
+      .leftJoinAndSelect('s.plan', 'plan')
+      .where(`s."${tenantFk}" = :tenantId`, { tenantId })
+      .orderBy('s.created_at', 'DESC')
+      .limit(1)
+      .getOne();
     if (!subscription) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'No subscription found for this tenant',
@@ -482,5 +498,17 @@ export class SubscriptionService {
       });
     }
     return subscription;
+  }
+
+  /** Resolves `property`'s join-column database name from entity metadata —
+   *  no entity exposes a relation's FK as a plain property (research.md
+   *  R-11); the proven `DashboardSummaryService.fk()` pattern. */
+  private fk(repo: Repository<Subscription>, property: string): string {
+    const relation = repo.metadata.findRelationWithPropertyPath(property);
+    const column = relation?.joinColumns[0]?.databaseName;
+    if (!column) {
+      throw new Error(`${repo.metadata.name}.${property} has no join column`);
+    }
+    return column;
   }
 }

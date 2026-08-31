@@ -1,10 +1,76 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { AdvancedConsoleLogger, type Logger as TypeOrmLogger, type QueryRunner } from 'typeorm';
 import { join } from 'node:path';
 
 import { runMigrationsWithAdvisoryLock } from './run-migrations-with-lock';
 import { databaseSslOptions } from './database-ssl';
+import { MetricsService } from '../metrics/metrics.service';
+import { getCurrentRequestRoute } from '../core/tenant-context/tenant-context.service';
+
+/**
+ * 015-db-api-efficiency-audit — P10/T062 (spec §21.2 gap). Wraps TypeORM's
+ * own `AdvancedConsoleLogger` — preserving 100% of the existing
+ * `TYPEORM_LOGGING=true` console output, byte-for-byte — and ALWAYS (query
+ * text logging on or off) increments `db_queries_total`, labelled by route.
+ *
+ * Counter-only, per the Constitution XXVI / spec §21.2 requirement: this
+ * class never passes `query`/`parameters` to `MetricsService`, only the fact
+ * that one statement executed. `getCurrentRequestRoute()` reads the
+ * Express-matched route pattern (never a raw path or tenant id) from the
+ * SAME AsyncLocalStorage `TenantContextService` already threads a
+ * correlation id through — see that file's `tenantContextAls` docstring for
+ * why this reads it via a plain function import rather than DI (a DI edge
+ * into `TenantContextService` here would be circular).
+ *
+ * `TypeOrmModule`'s `logging` option is IGNORED by TypeORM itself once a
+ * custom `logger` object (rather than a string preset) is supplied
+ * (`LoggerFactory.create` returns a custom-object logger as-is) — so the
+ * on/off + level filtering that option used to provide is reproduced here by
+ * constructing the delegate `AdvancedConsoleLogger` with the same `logging`
+ * value, which respects it internally.
+ */
+export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
+  private readonly delegate: AdvancedConsoleLogger;
+
+  constructor(
+    private readonly metrics: MetricsService,
+    logging: boolean | ('query' | 'error' | 'warn')[],
+  ) {
+    this.delegate = new AdvancedConsoleLogger(logging);
+  }
+
+  logQuery(query: string, parameters?: unknown[], queryRunner?: QueryRunner): void {
+    this.metrics.recordDbQuery(getCurrentRequestRoute() ?? 'unknown');
+    this.delegate.logQuery(query, parameters, queryRunner);
+  }
+
+  logQueryError(
+    error: string | Error,
+    query: string,
+    parameters?: unknown[],
+    queryRunner?: QueryRunner,
+  ): void {
+    this.delegate.logQueryError(error as string, query, parameters, queryRunner);
+  }
+
+  logQuerySlow(time: number, query: string, parameters?: unknown[], queryRunner?: QueryRunner): void {
+    this.delegate.logQuerySlow(time, query, parameters, queryRunner);
+  }
+
+  logSchemaBuild(message: string, queryRunner?: QueryRunner): void {
+    this.delegate.logSchemaBuild(message, queryRunner);
+  }
+
+  logMigration(message: string, queryRunner?: QueryRunner): void {
+    this.delegate.logMigration(message, queryRunner);
+  }
+
+  log(level: 'log' | 'info' | 'warn', message: unknown, queryRunner?: QueryRunner): void {
+    this.delegate.log(level, message, queryRunner);
+  }
+}
 
 /**
  * Shared TypeORM configuration factory.
@@ -25,6 +91,7 @@ import { databaseSslOptions } from './database-ssl';
 export async function typeOrmFactory(
   config: ConfigService,
   poolRole: 'api' | 'worker' = 'api',
+  metrics?: MetricsService,
 ): Promise<TypeOrmModuleOptions> {
   const logger = new Logger('TypeORM');
 
@@ -103,7 +170,14 @@ export async function typeOrmFactory(
     // OutboxHardening's `ALTER TYPE ... ADD VALUE`). 'each' closes that
     // structurally rather than by convention.
     migrationsTransactionMode: 'each',
-    logging: logging ? ['query', 'error', 'warn'] : ['error'],
+    // `logger` (not `logging`) — a custom logger object makes TypeORM ignore
+    // `logging` entirely (see `MetricsAwareTypeOrmLogger`'s docstring), so
+    // the on/off + level behavior `logging` used to provide is reproduced by
+    // constructing the logger with the identical value below.
+    logger: metrics
+      ? new MetricsAwareTypeOrmLogger(metrics, logging ? ['query', 'error', 'warn'] : ['error'])
+      : undefined,
+    logging: metrics ? undefined : logging ? ['query', 'error', 'warn'] : ['error'],
     ssl,
     extra: {
       // Default raised 10 → 15 (Phase 0 correction, measured — see

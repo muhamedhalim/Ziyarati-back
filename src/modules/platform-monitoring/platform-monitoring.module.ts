@@ -6,13 +6,21 @@ import { WebhookLog } from '../../entities/System/WebhookLog';
 import { MonitoringService } from './monitoring.service';
 import { PlatformMonitoringController } from './platform-monitoring.controller';
 import { StorageModule } from '../storage/storage.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 /**
  * Super-admin platform monitoring. Read-only aggregation over existing infra:
  * QueueService (global), the SQL logs, and StorageService. No new health checks.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([ApiLog, WebhookLog]), StorageModule],
+  imports: [
+    TypeOrmModule.forFeature([ApiLog, WebhookLog]),
+    StorageModule,
+    // Provides AnalyticsCacheService (CACHE_NS.PLATFORM) for `overview()`'s
+    // 10s shared cache — reuses the existing Redis read-through instead of a
+    // second caching mechanism (AC-20).
+    AnalyticsModule,
+  ],
   controllers: [PlatformMonitoringController],
   providers: [MonitoringService],
   // Exported so the Platform Control Center can reuse the health primitives

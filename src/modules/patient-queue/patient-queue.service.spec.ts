@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 import { PatientQueueService } from './patient-queue.service';
 import { QueueEntry } from '../../entities/Calendar&Appointments/QueueEntry';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
@@ -44,6 +45,10 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
         { provide: getRepositoryToken(Branch), useValue: branches },
         { provide: getRepositoryToken(BranchUser), useValue: branchUsers },
         { provide: AppointmentsService, useValue: { changeStatus: jest.fn() } },
+        {
+          provide: ActivityAuditService,
+          useValue: { record: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
     service = moduleRef.get(PatientQueueService);

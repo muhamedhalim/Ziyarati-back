@@ -5,7 +5,10 @@ import { Repository } from 'typeorm';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { PatientActionLink } from '../../entities/Calendar&Appointments/PatientActionLink';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
-import { AppointmentActionOrigin, AppointmentStatus } from '../../entities/enums';
+import {
+  AppointmentActionOrigin,
+  AppointmentStatus,
+} from '../../entities/enums';
 
 import { AppointmentsService } from '../appointment/appointment.service';
 import {
@@ -98,13 +101,16 @@ export class PatientRescheduleService {
     fromDate: string,
     toDate: string,
   ): Promise<{ timezone: string; slots: PublicAvailabilityWindow[] }> {
-    const { timezone, windows } = await this.availability.publicWindows(tenantId, {
-      branchId: appointment.branch.id,
-      staffId: appointment.staff.id,
-      fromDate,
-      toDate,
-      slotMinutes: this.durationMinutes(appointment),
-    });
+    const { timezone, windows } = await this.availability.publicWindows(
+      tenantId,
+      {
+        branchId: appointment.branch.id,
+        staffId: appointment.staff.id,
+        fromDate,
+        toDate,
+        slotMinutes: this.durationMinutes(appointment),
+      },
+    );
     // contracts/public-surfaces.md §A names this field `slots`, distinct
     // from `AvailabilityService`'s own internal `windows` naming.
     return { timezone, slots: windows };
@@ -148,6 +154,8 @@ export class PatientRescheduleService {
         previousStartAt: previousStartAt.toISOString(),
         newStartAt: rescheduled.start_at.toISOString(),
       },
+      // Branch context; still no actor (a signed link has no authenticated user).
+      { branchId: rescheduled.branch?.id ?? null },
     );
 
     return rescheduled;

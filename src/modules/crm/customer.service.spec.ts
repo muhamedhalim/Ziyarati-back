@@ -6,6 +6,7 @@ import { Customer } from '../../entities/CRM/Customer';
 import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
+  createMockQueryBuilder,
   MockRepository,
 } from '../../../test/utils/mock-factories';
 import { UsageService } from '../subscription-billing/usage.service';
@@ -19,6 +20,16 @@ describe('CustomerService', () => {
 
   beforeEach(async () => {
     customers = createMockRepository();
+    // T044 (015-db-api-efficiency-audit, P7-2/ORM-001): list() now reads the
+    // tenant FK column via entity metadata (R-11 — Customer exposes no plain
+    // `tenantId` property), the same `.metadata.findRelationWithPropertyPath`
+    // pattern used elsewhere in this audit. `tenantId` matches the real
+    // column name (BaselineSchema migration: `customers."tenantId"`).
+    (customers as unknown as { metadata: unknown }).metadata = {
+      name: 'Customer',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     usage = {
       assertResourceWithinLimit: jest.fn().mockResolvedValue(undefined),
     };
@@ -384,8 +395,19 @@ describe('CustomerService', () => {
   });
 
   describe('list / search', () => {
+    /** Wires `customers.createQueryBuilder()` to return `getManyAndCount()`
+     *  resolving to `[rows, total]` for exactly the next call. */
+    function mockList(rows: unknown[], total: number) {
+      const qb = createMockQueryBuilder();
+      (qb as unknown as { getManyAndCount: jest.Mock }).getManyAndCount = jest
+        .fn()
+        .mockResolvedValue([rows, total]);
+      customers.createQueryBuilder.mockReturnValueOnce(qb);
+      return qb;
+    }
+
     it('lists customers with an active filter and pagination', async () => {
-      customers.findAndCount.mockResolvedValueOnce([[{ id: 'c1' }], 1]);
+      mockList([{ id: 'c1' }], 1);
       const res = await service.list(TENANT, {
         page: 1,
         limit: 10,
@@ -397,6 +419,43 @@ describe('CustomerService', () => {
         page: 1,
         limit: 10,
       });
+    });
+
+    // T044 — the mandatory per-site assertion set (identical result,
+    // empty for non-match, empty for a foreign tenant, soft-delete
+    // exclusion left to TypeORM rather than hand-written, statement count).
+    it('returns an empty page when no customers match', async () => {
+      mockList([], 0);
+      const res = await service.list(TENANT, { page: 1, limit: 10 } as any);
+      expect(res).toEqual({ data: [], total: 0, page: 1, limit: 10 });
+    });
+
+    it('scopes strictly by the FK column resolved from metadata — a foreign tenant id never widens the filter', async () => {
+      const qb = mockList([], 0);
+      await service.list('other-tenant', { page: 1, limit: 10 } as any);
+      expect(qb.where).toHaveBeenCalledWith('c."tenantId" = :tenantId', {
+        tenantId: 'other-tenant',
+      });
+    });
+
+    it('never hand-writes a deleted_at predicate — soft-delete exclusion is TypeORM auto-injection, not a copy that could drift', async () => {
+      const qb = mockList([{ id: 'c1' }], 1);
+      await service.list(TENANT, { page: 1, limit: 10, isActive: true } as any);
+      const allCalls = [...qb.where.mock.calls, ...qb.andWhere.mock.calls];
+      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(false);
+    });
+
+    it('issues exactly one query (createQueryBuilder, not findAndCount) with limit/offset, never skip/take', async () => {
+      const qb = mockList([{ id: 'c1' }], 1);
+      await service.list(TENANT, { page: 2, limit: 10, isActive: true } as any);
+
+      expect(customers.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(customers.findAndCount).not.toHaveBeenCalled();
+      expect(qb.getManyAndCount).toHaveBeenCalledTimes(1);
+      expect(qb.limit).toHaveBeenCalledWith(10);
+      expect(qb.offset).toHaveBeenCalledWith(10); // (page 2 - 1) * limit 10
+      expect(qb.skip).not.toHaveBeenCalled();
+      expect(qb.take).not.toHaveBeenCalled();
     });
 
     it('search builds an OR (name/email/phone) when a query term is present', async () => {

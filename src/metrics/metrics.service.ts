@@ -149,6 +149,34 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * 015-db-api-efficiency-audit — P10/T062 (spec §21.2 gap). Before this,
+   * NOTHING counted database statements per request; every "N queries per
+   * page" figure in this audit had to be derived by reading TypeORM source
+   * or manually counting `query:` log lines against a disposable database
+   * (see the P0/P5/P7/P9 evidence files) rather than read off a graph.
+   *
+   * Incremented once per EXECUTED STATEMENT (`TypeOrmLogger.logQuery`),
+   * labelled by `route` ONLY:
+   *  - `route` is the Express-matched pattern (e.g. `/appointments/:id`) —
+   *    the exact same value `ApiLoggingInterceptor` already uses for
+   *    `api_logs.endpoint` — never the raw path with real ids, and never a
+   *    tenant id. Bounded cardinality: one series per distinct ROUTE
+   *    TEMPLATE, not per request or per tenant.
+   *  - Counter only. The SQL text and parameters TypeORM's logger receives
+   *    are never touched by this method — only the fact that one statement
+   *    ran is counted.
+   *  - `rate(db_queries_total[5m]) / rate(http_requests_total[5m])` derives
+   *    "average queries per request" — this counter does not need to be a
+   *    histogram to answer that question.
+   */
+  private readonly dbQueries = new Counter({
+    name: 'db_queries_total',
+    help: 'Executed SQL statements by route (Express-matched pattern only — never a raw path, tenant id, or query text).',
+    labelNames: ['route'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -224,6 +252,11 @@ export class MetricsService {
 
   recordHttpRequest(method: string, statusCode: number, durationSeconds: number): void {
     this.httpRequestDuration.observe({ method, status_code: String(statusCode) }, durationSeconds);
+  }
+
+  /** `route` must already be a matched pattern (or `'unknown'`) — see `dbQueries`' docstring. */
+  recordDbQuery(route: string): void {
+    this.dbQueries.inc({ route });
   }
 
   get contentType(): string {

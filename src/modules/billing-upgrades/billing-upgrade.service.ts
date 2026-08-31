@@ -161,17 +161,43 @@ export class BillingUpgradeService {
     return saved;
   }
 
+  /**
+   * T047 (015-db-api-efficiency-audit, P7-2/ORM-001): a relation-shaped
+   * `where: { tenant: { id } }` creates the same join a `relations:` option
+   * does, and combined with `skip`/`take` forces TypeORM's DISTINCT-id-then-
+   * hydrate branch — 2 round trips, not 1 (research.md R-01/R-08/R-10). No
+   * relation is actually needed here, so this is built as a query builder
+   * filtering the FK column resolved from entity metadata (no entity exposes
+   * it as a plain property — R-11; `"tenantId"` also carries a real index,
+   * `IDX_billing_upgrade_requests_tenant`), with `.limit()/.offset()`
+   * instead of `.take()/.skip()` (R-10).
+   */
   async list(tenantId: string, query: QueryBillingUpgradeRequestsDto) {
-    const where: FindOptionsWhere<BillingUpgradeRequest> = { tenant: { id: tenantId } };
-    if (query.status) where.status = query.status;
+    const tenantFk = this.fk(this.requests, 'tenant');
+    const qb = this.requests
+      .createQueryBuilder('r')
+      .where(`r."${tenantFk}" = :tenantId`, { tenantId })
+      .orderBy('r.created_at', 'DESC')
+      .limit(query.limit)
+      .offset((query.page - 1) * query.limit);
+    if (query.status) {
+      qb.andWhere('r.status = :status', { status: query.status });
+    }
 
-    const [data, total] = await this.requests.findAndCount({
-      where,
-      order: { created_at: 'DESC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
-    });
+    const [data, total] = await qb.getManyAndCount();
     return { data, total, page: query.page, limit: query.limit };
+  }
+
+  /** Resolves `property`'s join-column database name from entity metadata —
+   *  no entity exposes a relation's FK as a plain property (research.md
+   *  R-11); the proven `DashboardSummaryService.fk()` pattern. */
+  private fk(repo: Repository<BillingUpgradeRequest>, property: string): string {
+    const relation = repo.metadata.findRelationWithPropertyPath(property);
+    const column = relation?.joinColumns[0]?.databaseName;
+    if (!column) {
+      throw new Error(`${repo.metadata.name}.${property} has no join column`);
+    }
+    return column;
   }
 
   async get(tenantId: string, id: string) {

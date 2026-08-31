@@ -7,11 +7,22 @@ import { cacheConnectionOptions } from '../../queue/redis.config';
 import { cacheKeyPrefix } from '../../queue/queue.constants';
 import { MetricsService } from '../../metrics/metrics.service';
 
-/** Cache namespaces — each has its own per-tenant version counter. */
+/**
+ * Cache namespaces — each has its own per-tenant version counter.
+ *
+ * `PLATFORM` is the one exception to "per-tenant": it backs a single,
+ * platform-global payload (the super-admin monitoring snapshot) cached under
+ * a fixed pseudo-tenant id (see `monitoring.service.ts`), never a real
+ * tenant. Kept in its own namespace, separate from `DASHBOARD`/`DAILY`/
+ * `STAFF`, so it can never collide with — or be invalidated by — an actual
+ * tenant's cache activity, and so it is never eligible to hold tenant-scoped
+ * data.
+ */
 export const CACHE_NS = {
   DASHBOARD: 'dashboard',
   DAILY: 'daily',
   STAFF: 'staff',
+  PLATFORM: 'platform',
 } as const;
 
 export type CacheNamespace = (typeof CACHE_NS)[keyof typeof CACHE_NS];

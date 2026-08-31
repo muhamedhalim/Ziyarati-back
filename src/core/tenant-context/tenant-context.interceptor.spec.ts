@@ -40,4 +40,27 @@ describe('TenantContextInterceptor', () => {
     });
     expect(setTenant).not.toHaveBeenCalled();
   });
+
+  // ── 015-db-api-efficiency-audit — P10/T062 ──────────────────────────────
+
+  it('falls back to req.path when Express has not attached a matched route (e.g. a 404)', () => {
+    const setRoute = jest.spyOn(context, 'setRoute');
+    context.run(() => {
+      const ctx = createMockExecutionContext({ path: '/no-such-route' });
+      interceptor.intercept(ctx, next as any);
+    });
+    expect(setRoute).toHaveBeenCalledWith('/no-such-route');
+  });
+
+  it('prefers the matched route template over the raw path when both exist', () => {
+    const setRoute = jest.spyOn(context, 'setRoute');
+    context.run(() => {
+      const ctx = createMockExecutionContext({
+        path: '/appointments/real-uuid-123',
+        route: { path: '/appointments/:id' },
+      });
+      interceptor.intercept(ctx, next as any);
+    });
+    expect(setRoute).toHaveBeenCalledWith('/appointments/:id');
+  });
 });

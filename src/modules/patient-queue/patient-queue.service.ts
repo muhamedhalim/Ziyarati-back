@@ -14,9 +14,16 @@ import { AppointmentStatus, QueueState } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AppointmentsService } from '../appointment/appointment.service';
 import { zonedYmd, safeZone } from '../scheduling/timezone.util';
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 import { CheckInQueueDto } from './dto/check-in-queue.dto';
 import { QueryQueueDto } from './dto/query-queue.dto';
 import { orderQueueEntries, type OrderableQueueEntry } from './queue-ordering';
+
+/** Additive only. On the Activity allow-list since T023 — this is the writer
+ *  that entry had been missing. */
+export const QUEUE_AUDIT_ACTION = {
+  PATIENT_CHECKED_IN: 'queue.patient_checked_in',
+} as const;
 
 /** FR-Q007 — checking in a terminal appointment is refused. */
 const TERMINAL_APPOINTMENT_STATUSES: AppointmentStatus[] = [
@@ -99,6 +106,7 @@ export class PatientQueueService {
     @InjectRepository(BranchUser)
     private readonly branchUsers: Repository<BranchUser>,
     private readonly appointmentsService: AppointmentsService,
+    private readonly activityAudit: ActivityAuditService,
   ) {}
 
   // ───────────────────────────── Check-in ────────────────────────────────── //
@@ -176,6 +184,20 @@ export class PatientQueueService {
     // undefined), which would render a blank customer/staff name on the
     // check-in response. `reload` (used by every transition method below)
     // fetches the entry back with `customer`/`staff.user` populated.
+    // Activity trail, after the check-in row exists. A check-in is a real
+    // front-desk action with a branch and an actor; the label is the treating
+    // staff member (an employee), never the patient (ActivityAuditService).
+    await this.activityAudit.record({
+      tenantId,
+      action: QUEUE_AUDIT_ACTION.PATIENT_CHECKED_IN,
+      entityType: 'QueueEntry',
+      entityId: saved.id,
+      actorUserId,
+      branchId: appointment.branch.id,
+      entityLabel: appointment.staff?.user?.full_name ?? null,
+      after: { appointmentId: appointment.id, businessDate },
+    });
+
     return this.reload(tenantId, saved.id);
   }
 

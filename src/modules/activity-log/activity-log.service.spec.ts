@@ -9,6 +9,11 @@ import {
 import { ActivityLogService } from './activity-log.service';
 import { QueryActivityLogDto } from './dto/query-activity-log.dto';
 import { ACTIVITY_VISIBLE_AUDIT_ACTIONS } from './activity-allowlist';
+import { QueryActivitySuggestionsDto } from './dto/query-activity-suggestions.dto';
+import {
+  ACTIVITY_SUGGESTION_LIMIT,
+  ACTIVITY_SUGGESTION_SCAN_LIMIT,
+} from './activity-log.constants';
 
 const TENANT_ID = '66666666-6666-4666-8666-666666666666';
 const query = (over: Partial<QueryActivityLogDto> = {}) =>
@@ -42,10 +47,16 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
       patient_note: 'diabetic, on metformin',
       card_number: '4242424242424242',
     },
+    entity_label: 'Summer checkup',
+    actor_user_id: 'user-1',
     actor_id: 'user-1',
     actor_name: 'Sara Al Otaibi',
     actor_email: 'sara@clinic.example',
     actor_is_platform: false,
+    actor_role_slug: 'receptionist',
+    actor_role_name: 'Receptionist',
+    branch_id: 'branch-1',
+    branch_name: 'Main Branch',
   };
 
   beforeEach(async () => {
@@ -160,6 +171,8 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
       id: 'user-1',
       name: 'Sara Al Otaibi',
       email: 'sara@clinic.example',
+      role: { slug: 'receptionist', name: 'Receptionist' },
+      isDeleted: false,
     });
   });
 
@@ -170,10 +183,13 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
         : [
             {
               ...auditRow,
+              actor_user_id: 'platform-user-1',
               actor_id: 'platform-user-1',
               actor_name: 'Mohamed Halem',
               actor_email: 'support@ziyaratech.com',
               actor_is_platform: true,
+              actor_role_slug: null,
+              actor_role_name: null,
             },
           ],
     );
@@ -186,6 +202,8 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
       id: 'platform-user-1',
       name: 'Mohamed Halem',
       email: 'support@ziyaratech.com',
+      role: null,
+      isDeleted: false,
     });
   });
 
@@ -201,6 +219,7 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
         : [
             {
               ...auditRow,
+              actor_user_id: null,
               actor_id: null,
               actor_name: null,
               actor_email: null,
@@ -257,6 +276,7 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
     expect(sql).toContain('al.created_at >=');
     expect(sql).toContain('al.created_at <=');
     expect(sql).toContain('al.action ILIKE');
+    expect(sql).toContain('u.full_name ILIKE');
   });
 
   it('orders newest first', async () => {
@@ -272,5 +292,296 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
 
   it('actions() returns exactly the allow-list, for the filter dropdown', () => {
     expect(service.actions()).toEqual([...ACTIVITY_VISIBLE_AUDIT_ACTIONS]);
+  });
+  // ───────────────────── Actor identity & context ─────────────────────── //
+
+  describe('actor identity', () => {
+    it('a HARD-DELETED actor is reported as deleted, NOT silently re-attributed to the system', async () => {
+      // The audit row still names a user; the join finds no row for them.
+      // Conflating this with a system action would erase the fact that a
+      // person did it — the exact opposite of what an audit log is for.
+      dataSource.query = jest.fn(async (sql: string) =>
+        /COUNT\(\*\)/.test(sql)
+          ? [{ total: 1 }]
+          : [
+              {
+                ...auditRow,
+                actor_user_id: 'gone-user',
+                actor_id: null,
+                actor_name: null,
+                actor_email: null,
+                actor_is_platform: null,
+                actor_role_slug: null,
+                actor_role_name: null,
+              },
+            ],
+      );
+
+      const { data } = await service.list(TENANT_ID, query());
+
+      expect(data[0].isSystem).toBe(false);
+      expect(data[0].actor).toEqual({
+        id: 'gone-user',
+        name: null,
+        email: null,
+        role: null,
+        isDeleted: true,
+      });
+    });
+
+    it('resolves the actor role through a LATERAL single-row join, so a multi-role user cannot duplicate their own audit rows', async () => {
+      await service.list(TENANT_ID, query());
+      const [listSql] = dataSource.query.mock.calls[1];
+      expect(listSql).toContain('LEFT JOIN LATERAL');
+      expect(listSql).toContain('LIMIT 1');
+    });
+
+    it('carries the branch the action happened at', async () => {
+      const { data } = await service.list(TENANT_ID, query());
+      expect(data[0].branch).toEqual({ id: 'branch-1', name: 'Main Branch' });
+    });
+
+    it('a branchless action reports branch: null rather than a fabricated one', async () => {
+      dataSource.query = jest.fn(async (sql: string) =>
+        /COUNT\(\*\)/.test(sql)
+          ? [{ total: 1 }]
+          : [{ ...auditRow, branch_id: null, branch_name: null }],
+      );
+      const { data } = await service.list(TENANT_ID, query());
+      expect(data[0].branch).toBeNull();
+    });
+
+    it('carries the non-sensitive entity label', async () => {
+      const { data } = await service.list(TENANT_ID, query());
+      expect(data[0].entityLabel).toBe('Summer checkup');
+    });
+  });
+
+  // ──────────────────────────── Search ─────────────────────────────────── //
+
+  describe('search (q)', () => {
+    const listSqlFor = async (over: Partial<QueryActivityLogDto>) => {
+      dataSource.query.mockClear();
+      await service.list(TENANT_ID, query(over));
+      return {
+        countSql: dataSource.query.mock.calls[0][0] as string,
+        sql: dataSource.query.mock.calls[1][0] as string,
+        params: dataSource.query.mock.calls[1][1] as unknown[],
+      };
+    };
+
+    it('matches across action, entity type, entity label, actor name, actor email and branch', async () => {
+      const { sql } = await listSqlFor({ q: 'ahmed' });
+      for (const column of [
+        'al.action ILIKE',
+        'al.entity_type ILIKE',
+        'al.entity_label ILIKE',
+        'u.full_name ILIKE',
+        'u.email ILIKE',
+        'b.name ILIKE',
+      ]) {
+        expect(sql).toContain(column);
+      }
+    });
+
+    it('is a CONTAINS match, so a partial word finds the whole one', async () => {
+      const { params } = await listSqlFor({ q: 'appoint' });
+      expect(params).toContain('%appoint%');
+    });
+
+    it('is case-insensitive via ILIKE, never a lower() wrapper that would defeat the index', async () => {
+      const { sql, params } = await listSqlFor({ q: 'AHMED' });
+      expect(sql).toContain('ILIKE');
+      expect(sql).not.toContain('lower(al.action)');
+      // The term reaches SQL exactly as typed — ILIKE does the folding.
+      expect(params).toContain('%AHMED%');
+    });
+
+    it('passes Arabic terms through untouched', async () => {
+      const { params } = await listSqlFor({ q: 'أحمد' });
+      expect(params).toContain('%أحمد%');
+    });
+
+    it('escapes LIKE metacharacters so user input cannot alter the query semantics', async () => {
+      const { params } = await listSqlFor({ q: '100%_x' });
+      expect(params).toContain(String.raw`%100\%\_x%`);
+    });
+
+    it('escapes a backslash BEFORE it can escape anything else', async () => {
+      const { params } = await listSqlFor({ q: String.raw`a\%b` });
+      expect(params).toContain(String.raw`%a\\\%b%`);
+    });
+
+    it('ignores a whitespace-only search rather than running one', async () => {
+      const { sql } = await listSqlFor({ q: '   ' });
+      expect(sql).not.toContain('ILIKE');
+    });
+
+    it('ignores a single character — below the width a trigram index can be selective on', async () => {
+      const { sql } = await listSqlFor({ q: 'a' });
+      expect(sql).not.toContain('ILIKE');
+    });
+
+    it('runs a two-character search', async () => {
+      const { params } = await listSqlFor({ q: 'Ah' });
+      expect(params).toContain('%Ah%');
+    });
+
+    it('trims before searching, so a trailing space does not change the result set', async () => {
+      const { params } = await listSqlFor({ q: '  Ahmed  ' });
+      expect(params).toContain('%Ahmed%');
+    });
+
+    it('counts through the SAME joins and predicate as the page, so total never disagrees with it', async () => {
+      const { countSql } = await listSqlFor({ q: 'ahmed' });
+      expect(countSql).toContain('LEFT JOIN users u');
+      expect(countSql).toContain('LEFT JOIN branches b');
+      expect(countSql).toContain('u.full_name ILIKE');
+    });
+
+    it('composes with the action filter and with pagination', async () => {
+      dataSource.query.mockClear();
+      await service.list(
+        TENANT_ID,
+        query({
+          q: 'appoint',
+          action: 'appointment.created',
+          page: 3,
+          limit: 10,
+        }),
+      );
+      const [sql, params] = dataSource.query.mock.calls[1];
+      expect(sql).toContain('al.action = $');
+      expect(sql).toContain('ILIKE');
+      // Page 3 at 10/page → OFFSET 20, still tenant- and allow-list-bound.
+      expect(params).toContain(20);
+      expect(params[0]).toBe(TENANT_ID);
+    });
+
+    it('never drops the tenant or allow-list binding when searching', async () => {
+      const { sql, params } = await listSqlFor({ q: 'ahmed' });
+      expect(sql).toContain('al."tenantId" = $1');
+      expect(sql).toContain('al.action = ANY($2)');
+      expect(params[0]).toBe(TENANT_ID);
+    });
+  });
+
+  describe('branch and date filters', () => {
+    it('filters on the indexed branch column', async () => {
+      dataSource.query.mockClear();
+      await service.list(TENANT_ID, query({ branchId: 'branch-1' }));
+      const [sql] = dataSource.query.mock.calls[0];
+      expect(sql).toContain('al."branchId" =');
+    });
+
+    it('compares created_at directly, never wrapped in a function, so the index stays usable', async () => {
+      dataSource.query.mockClear();
+      await service.list(
+        TENANT_ID,
+        query({ from: '2026-01-01T00:00:00.000Z' }),
+      );
+      const [sql] = dataSource.query.mock.calls[0];
+      expect(sql).toContain('al.created_at >=');
+      expect(sql).not.toMatch(/date\(al\.created_at\)|al\.created_at::date/);
+    });
+  });
+
+  // ───────────────────────── Suggestions ───────────────────────────────── //
+
+  describe('suggestions', () => {
+    const suggestionQuery = (over: Partial<QueryActivitySuggestionsDto> = {}) =>
+      Object.assign(new QueryActivitySuggestionsDto(), over);
+
+    beforeEach(() => {
+      dataSource.query = jest.fn(async (sql: string) => {
+        if (/pg_extension/.test(sql)) return [{ ok: 1 }]; // pg_trgm present
+        return [
+          { value: 'Ahmed Mohamed', kind: 'actor', rank: 1 },
+          { value: 'Mohamed Ahmed', kind: 'actor', rank: 2 },
+        ];
+      });
+    });
+
+    it('returns bounded, ranked suggestions', async () => {
+      const { data } = await service.suggestions(
+        TENANT_ID,
+        suggestionQuery({ q: 'Ahmed' }),
+      );
+      expect(data).toEqual([
+        { value: 'Ahmed Mohamed', kind: 'actor' },
+        { value: 'Mohamed Ahmed', kind: 'actor' },
+      ]);
+    });
+
+    it('ranks exact, then prefix, then trigram similarity, then alphabetical', async () => {
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: 'Ahmed' }));
+      const sql = dataSource.query.mock.calls.at(-1)![0] as string;
+      expect(sql).toContain('ORDER BY rank ASC, score DESC, value ASC');
+      expect(sql).toContain('similarity(value, $4::text)');
+    });
+
+    it('falls back to a constant score — never an error — when pg_trgm is absent', async () => {
+      dataSource.query = jest.fn(async () => []);
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: 'Ahmed' }));
+      const sql = dataSource.query.mock.calls.at(-1)![0] as string;
+      expect(sql).toContain('0::real');
+      expect(sql).not.toContain('similarity(');
+    });
+
+    it('binds every branch to the caller tenant AND the allow-list — a suggestion can never cross a tenant', async () => {
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: 'Ahmed' }));
+      const [sql, params] = dataSource.query.mock.calls.at(-1)!;
+      const tenantBindings = (sql.match(/al\."tenantId" = \$1/g) ?? []).length;
+      const allowListBindings = (sql.match(/al\.action = ANY\(\$2\)/g) ?? [])
+        .length;
+      expect(tenantBindings).toBe(4); // one per UNION branch
+      expect(allowListBindings).toBe(4);
+      expect(params[0]).toBe(TENANT_ID);
+      expect(params[1]).toEqual([...ACTIVITY_VISIBLE_AUDIT_ACTIONS]);
+    });
+
+    it('caps the result count and bounds the rows each branch scans', async () => {
+      await service.suggestions(
+        TENANT_ID,
+        suggestionQuery({ q: 'Ahmed', limit: 99 }),
+      );
+      const params = dataSource.query.mock.calls.at(-1)![1] as unknown[];
+      expect(params).toContain(ACTIVITY_SUGGESTION_LIMIT); // clamped, not 99
+      expect(params).toContain(ACTIVITY_SUGGESTION_SCAN_LIMIT);
+    });
+
+    it('returns an empty list — issuing no query at all — for a term below the minimum', async () => {
+      dataSource.query.mockClear();
+      const { data } = await service.suggestions(
+        TENANT_ID,
+        suggestionQuery({ q: 'a' }),
+      );
+      expect(data).toEqual([]);
+      expect(dataSource.query).not.toHaveBeenCalled();
+    });
+
+    it('returns an empty list for a missing term', async () => {
+      dataSource.query.mockClear();
+      const { data } = await service.suggestions(TENANT_ID, suggestionQuery());
+      expect(data).toEqual([]);
+      expect(dataSource.query).not.toHaveBeenCalled();
+    });
+
+    it('uses the RAW term for the exact-match tier and the ESCAPED one for the patterns', async () => {
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: '50%' }));
+      const params = dataSource.query.mock.calls.at(-1)![1] as unknown[];
+      expect(params).toContain('50%'); // $4, raw — for lower(value) = lower($4)
+      expect(params).toContain(String.raw`%50\%%`); // $3, escaped — for ILIKE
+    });
+
+    it('asks whether pg_trgm exists once, not once per keystroke', async () => {
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: 'Ahmed' }));
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: 'Ahme' }));
+      await service.suggestions(TENANT_ID, suggestionQuery({ q: 'Ahm' }));
+      const probes = dataSource.query.mock.calls.filter(([sql]: [string]) =>
+        /pg_extension/.test(sql),
+      );
+      expect(probes).toHaveLength(1);
+    });
   });
 });

@@ -59,6 +59,11 @@ import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { AddAppointmentNoteDto } from './dto/add-appointment-note.dto';
 import { SetAppointmentServicesDto } from './dto/set-appointment-services.dto';
 import {
+  AppointmentAuditService,
+  APPOINTMENT_AUDIT_ACTION,
+  type AppointmentAuditAction,
+} from './appointment-audit.service';
+import {
   AppointmentCancelledEvent,
   AppointmentCompletedEvent,
   AppointmentConfirmedEvent,
@@ -181,7 +186,53 @@ export class AppointmentsService {
     private readonly usage: UsageService,
     private readonly emitter: EventEmitter2,
     private readonly subscriptions: SubscriptionService,
+    /** Clinic-wide activity trail. Every call is best-effort and happens
+     *  AFTER the owning transaction commits — see `recordAudit`. */
+    private readonly audit: AppointmentAuditService,
   ) {}
+
+  // ────────────────────── Activity / audit trail ─────────────────────────── //
+
+  /**
+   * A staff-initiated appointment action worth showing in the clinic's
+   * Activity log, recorded from the appointment AFTER its transaction has
+   * committed.
+   *
+   * `entityLabel` is the booked SERVICE name ("Dental cleaning") — readable,
+   * useful to search, already loaded by `findOne`, and deliberately NOT the
+   * patient's name: `audit_logs` must not accumulate patient PII (see
+   * `ActivityAuditService`'s rules). `after` carries only ids, a status and a
+   * timestamp — never a note, a price or a contact detail.
+   */
+  private async recordAudit(
+    action: AppointmentAuditAction,
+    tenantId: string,
+    appointment: Appointment,
+    actorUserId: string | null,
+    extra?: {
+      after?: Record<string, unknown>;
+      before?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    await this.audit.record(
+      action,
+      tenantId,
+      appointment.id,
+      {
+        status: appointment.status,
+        startAt: appointment.start_at?.toISOString(),
+        branchId: appointment.branch?.id,
+        staffId: appointment.staff?.id,
+        ...extra?.after,
+      },
+      {
+        actorUserId,
+        branchId: appointment.branch?.id ?? null,
+        entityLabel: appointmentLabel(appointment),
+        before: extra?.before ?? null,
+      },
+    );
+  }
 
   // ───────────────────────────── Queries ─────────────────────────────────── //
 
@@ -450,6 +501,22 @@ export class AppointmentsService {
     });
 
     const appointment = await this.findOne(tenantId, created.id);
+
+    // Activity trail — AFTER the transaction has committed, so an audit
+    // failure can never turn a successful booking into a failed one.
+    // PUBLIC_AI is excluded: the public-booking and waitlist-acceptance flows
+    // that use it already record their own dedicated action, and logging both
+    // would show one real-world booking as two entries.
+    if (appointment.source !== AppointmentSource.PUBLIC_AI) {
+      await this.recordAudit(
+        APPOINTMENT_AUDIT_ACTION.CREATED,
+        tenantId,
+        appointment,
+        userId,
+        { after: { source: appointment.source } },
+      );
+    }
+
     this.emitter.emit(
       AppointmentCreatedEvent.eventName,
       new AppointmentCreatedEvent(
@@ -560,6 +627,16 @@ export class AppointmentsService {
 
     const appointment = await this.findOne(tenantId, id);
     if (madeChanges) {
+      // `changes` are already the human-readable field summaries this method
+      // built for its own history row — reusing them means the Activity log's
+      // "what changed" answer never drifts from the appointment timeline's.
+      await this.recordAudit(
+        APPOINTMENT_AUDIT_ACTION.UPDATED,
+        tenantId,
+        appointment,
+        userId,
+        { after: { changes: emittedChanges } },
+      );
       this.emitter.emit(
         AppointmentUpdatedEvent.eventName,
         new AppointmentUpdatedEvent(
@@ -658,11 +735,13 @@ export class AppointmentsService {
       });
     }
 
+    let previousStatus: AppointmentStatus | undefined;
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
       this.assertTransition(appointment.status, dto.status);
 
       const previous = appointment.status;
+      previousStatus = previous;
       appointment.status = dto.status;
       await manager.getRepository(Appointment).save(appointment);
 
@@ -685,6 +764,15 @@ export class AppointmentsService {
     });
 
     const updated = await this.findOne(tenantId, id);
+    await this.recordAudit(
+      APPOINTMENT_AUDIT_ACTION.STATUS_CHANGED,
+      tenantId,
+      updated,
+      userId,
+      // `before.status` is what makes this row answer "what changed" — the
+      // read projection surfaces the changed KEY NAMES from before/after.
+      { before: { status: previousStatus } },
+    );
     this.emitStatusEvent(tenantId, updated, dto.status);
     return updated;
   }
@@ -698,6 +786,7 @@ export class AppointmentsService {
     dto: CancelAppointmentDto,
     origin: AppointmentActionOrigin = AppointmentActionOrigin.STAFF,
   ): Promise<Appointment> {
+    let previousStatus: AppointmentStatus | undefined;
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
 
@@ -708,6 +797,7 @@ export class AppointmentsService {
       }
 
       const previous = appointment.status;
+      previousStatus = previous;
       appointment.status = AppointmentStatus.CANCELLED;
       // Reflect a recorded refund on the payment axis.
       if (dto.refundAmount && dto.refundAmount > 0) {
@@ -751,6 +841,25 @@ export class AppointmentsService {
     });
 
     const cancelled = await this.findOne(tenantId, id);
+    // STAFF origin only — a patient cancelling through their signed link goes
+    // through `PatientCancellationService`, which records
+    // `appointment.cancelled_by_patient` itself. Emitting here too would show
+    // one cancellation twice.
+    if (origin === AppointmentActionOrigin.STAFF) {
+      await this.recordAudit(
+        APPOINTMENT_AUDIT_ACTION.CANCELLED,
+        tenantId,
+        cancelled,
+        userId,
+        {
+          before: { status: previousStatus },
+          // The reason is staff-authored free text about the booking, not
+          // about the patient — and it is what makes a cancellation
+          // reviewable at all. Never the refund amount or any payment detail.
+          after: { reason: dto.reason ?? null },
+        },
+      );
+    }
     this.emitter.emit(
       AppointmentCancelledEvent.eventName,
       new AppointmentCancelledEvent(
@@ -843,6 +952,17 @@ export class AppointmentsService {
     });
 
     const rescheduled = await this.findOne(tenantId, id);
+    // STAFF origin only — the patient-facing path records
+    // `appointment.rescheduled_by_patient` itself (same reasoning as cancel).
+    if (origin === AppointmentActionOrigin.STAFF) {
+      await this.recordAudit(
+        APPOINTMENT_AUDIT_ACTION.RESCHEDULED,
+        tenantId,
+        rescheduled,
+        userId,
+        { before: { startAt: freedSlot?.startAt?.toISOString() } },
+      );
+    }
     this.emitter.emit(
       AppointmentRescheduledEvent.eventName,
       new AppointmentRescheduledEvent(
@@ -1543,4 +1663,17 @@ export class AppointmentsService {
         break;
     }
   }
+}
+
+/**
+ * The non-sensitive human label an appointment carries into the Activity log:
+ * the booked service name(s), never the patient. Returns undefined when the
+ * services relation was not loaded, which is correct — a missing label is far
+ * better than a wrong or sensitive one.
+ */
+function appointmentLabel(appointment: Appointment): string | null {
+  const names = (appointment.services ?? [])
+    .map((row) => row.service?.name)
+    .filter((name): name is string => !!name);
+  return names.length > 0 ? names.join(', ') : null;
 }

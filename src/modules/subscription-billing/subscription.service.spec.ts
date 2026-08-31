@@ -13,6 +13,7 @@ import { BillingCycle, SubscriptionStatus } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
+  createMockQueryBuilder,
   MockRepository,
 } from '../../../test/utils/mock-factories';
 
@@ -37,6 +38,17 @@ describe('SubscriptionService', () => {
 
   beforeEach(async () => {
     subscriptions = createMockRepository();
+    // T046 (015-db-api-efficiency-audit, P7-2/ORM-001): getCurrent now reads
+    // the tenant FK column via entity metadata (R-11 — Subscription exposes
+    // no plain `tenantId` property), the same
+    // `.metadata.findRelationWithPropertyPath` pattern used elsewhere in this
+    // audit. `tenantId` matches the real column name (BaselineSchema
+    // migration: `subscriptions."tenantId"`).
+    (subscriptions as unknown as { metadata: unknown }).metadata = {
+      name: 'Subscription',
+      findRelationWithPropertyPath: (path: string) =>
+        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+    };
     plans = createMockRepository();
     billing = { generateInvoice: jest.fn().mockResolvedValue(undefined) };
     access = {
@@ -249,11 +261,57 @@ describe('SubscriptionService', () => {
       ).toBe(SubscriptionStatus.PAST_DUE);
     });
 
+    /** Wires `subscriptions.createQueryBuilder()` to return `getOne()`
+     *  resolving to `row` for exactly the next call — getCurrent's real
+     *  mechanism (T046), replacing the old `findOne` mock. */
+    function mockCurrentOnce(row: unknown) {
+      const qb = createMockQueryBuilder();
+      qb.getOne = jest.fn().mockResolvedValue(row);
+      subscriptions.createQueryBuilder.mockReturnValueOnce(qb);
+      return qb;
+    }
+
     it('getCurrent throws when there is no subscription', async () => {
-      subscriptions.findOne.mockResolvedValueOnce(null);
+      mockCurrentOnce(null);
       await expect(service.getCurrent(TENANT)).rejects.toMatchObject({
         code: ErrorCode.NOT_FOUND,
       });
+    });
+
+    // T046 — the mandatory per-site assertion set (identical result, empty
+    // for a foreign tenant, soft-delete exclusion left to TypeORM rather
+    // than hand-written, statement count).
+    it('getCurrent resolves the subscription identically to before (a matching row)', async () => {
+      mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      const result = await service.getCurrent(TENANT);
+      expect(result.subscription.id).toBe('sub-1');
+    });
+
+    it('getCurrent scopes strictly by the FK column resolved from metadata — a foreign tenant id never widens the filter', async () => {
+      const qb = mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      await service.getCurrent('other-tenant');
+      expect(qb.where).toHaveBeenCalledWith('s."tenantId" = :tenantId', {
+        tenantId: 'other-tenant',
+      });
+    });
+
+    it('getCurrent never hand-writes a deleted_at predicate — soft-delete exclusion is TypeORM auto-injection, not a copy that could drift', async () => {
+      const qb = mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      await service.getCurrent(TENANT);
+      const allCalls = [...qb.where.mock.calls, ...qb.andWhere.mock.calls];
+      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(false);
+    });
+
+    it('getCurrent issues exactly one query (createQueryBuilder, not findOne) with limit(1), never take/skip', async () => {
+      const qb = mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      await service.getCurrent(TENANT);
+
+      expect(subscriptions.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(subscriptions.findOne).not.toHaveBeenCalled();
+      expect(qb.getOne).toHaveBeenCalledTimes(1);
+      expect(qb.limit).toHaveBeenCalledWith(1);
+      expect(qb.take).not.toHaveBeenCalled();
+      expect(qb.skip).not.toHaveBeenCalled();
     });
 
     // The `assertUsable` pass-through this used to cover is gone: it had no

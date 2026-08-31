@@ -41,6 +41,9 @@ describe('WaitlistOfferService (T158)', () => {
       run: jest.fn((fn: () => unknown) => fn()),
       setPrincipal: jest.fn(),
     };
+    const activityAudit: any = {
+      record: jest.fn().mockResolvedValue(undefined),
+    };
 
     const svc = new WaitlistOfferService(
       offers,
@@ -51,8 +54,10 @@ describe('WaitlistOfferService (T158)', () => {
       links,
       botActor,
       tenantContext,
+      activityAudit,
     );
     return {
+      activityAudit,
       svc,
       offers,
       entries,

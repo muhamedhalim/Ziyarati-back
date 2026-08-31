@@ -11,6 +11,7 @@ import { PatientQueueController } from './patient-queue.controller';
 import { PatientQueueListener } from './patient-queue.listener';
 
 import { AppointmentModule } from '../appointment/appointment.module';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 
 /**
  * Spec 014 (Clinic Platform Completion) — walk-in / day-of queue management
@@ -26,6 +27,8 @@ import { AppointmentModule } from '../appointment/appointment.module';
   imports: [
     TypeOrmModule.forFeature([QueueEntry, Appointment, Branch, BranchUser]),
     AppointmentModule,
+    // The single clinic-wide audit INSERT path (ActivityAuditService).
+    ActivityLogModule,
   ],
   controllers: [PatientQueueController],
   providers: [PatientQueueService, PatientQueueListener],

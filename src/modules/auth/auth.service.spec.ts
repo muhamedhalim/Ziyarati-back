@@ -66,6 +66,89 @@ const expectedPrincipal = {
   permissions: ['appointments.read', 'appointments.create'],
 };
 
+/**
+ * P5-1 (015-db-api-efficiency-audit, AUTH-001): `loadPrincipal` no longer
+ * does `users.findOne({ relations })` — it issues one `createQueryBuilder`
+ * read and folds the flat (role, permission) rows itself. This converts the
+ * same nested "row as loaded with relations" fixture shape the tests already
+ * used (`principalRow()` and its variants) into the flat raw-row array that
+ * query now produces, so every existing fixture keeps expressing "what the
+ * database holds" rather than "which TypeORM API loaded it".
+ *
+ * Mirrors `AuthService.loadPrincipal`'s fold exactly: one row per
+ * (role, permission) pair; a role with no permissions still contributes one
+ * row (permissionSlug: null); a user with no roles at all still contributes
+ * one row (LEFT JOIN — the row never disappears, only the joined columns go
+ * null), which is why `rows.length === 0` means "no such user", not "no
+ * roles".
+ */
+function toRawPrincipalRows(row: any): any[] {
+  if (!row) return [];
+  const t = row.tenant ?? null;
+  const base = {
+    userId: row.id,
+    userIsActive: row.is_active,
+    userEmail: row.email ?? null,
+    userFullName: row.full_name ?? null,
+    tenantId: t?.id ?? null,
+    tenantName: t?.name ?? null,
+    tenantSlug: t?.slug ?? null,
+    tenantLogoUrl: t?.logo_url ?? null,
+    tenantCommercialRegistrationNumber:
+      t?.commercial_registration_number ?? null,
+    tenantLegalName: t?.legal_name ?? null,
+    tenantContactEmail: t?.contact_email ?? null,
+    tenantContactPhone: t?.contact_phone ?? null,
+    tenantCountryId: t?.country_id ?? null,
+    tenantDefaultCurrency: t?.default_currency ?? null,
+    tenantDefaultTimezone: t?.default_timezone ?? null,
+    tenantApprovalStatus: t?.approval_status ?? null,
+    tenantIsActive: t?.is_active ?? null,
+    tenantCreatedAt: t?.created_at ?? null,
+    tenantUpdatedAt: t?.updated_at ?? null,
+    tenantDeletedAt: t?.deleted_at ?? null,
+  };
+
+  const userRoles = row.userRoles ?? [];
+  const pairs: Array<{ roleSlug: string | null; permissionSlug: string | null }> =
+    [];
+  if (userRoles.length === 0) {
+    pairs.push({ roleSlug: null, permissionSlug: null });
+  } else {
+    for (const ur of userRoles) {
+      if (!ur.role) {
+        pairs.push({ roleSlug: null, permissionSlug: null });
+        continue;
+      }
+      const rps = ur.role.rolePermissions ?? [];
+      if (rps.length === 0) {
+        pairs.push({ roleSlug: ur.role.slug, permissionSlug: null });
+      } else {
+        for (const rp of rps) {
+          pairs.push({
+            roleSlug: ur.role.slug,
+            permissionSlug: rp.permission?.slug ?? null,
+          });
+        }
+      }
+    }
+  }
+  return pairs.map((p) => ({ ...base, ...p }));
+}
+
+/**
+ * Wires `users.createQueryBuilder()` to return `toRawPrincipalRows(row)` for
+ * exactly the next call — the raw-row equivalent of the old
+ * `users.findOne.mockResolvedValueOnce(row)`. Returns the query-builder mock
+ * so a test can additionally assert on `leftJoin`/`where`/`getRawMany` calls.
+ */
+function mockPrincipal(users: MockRepository, row: any) {
+  const qb = createMockQueryBuilder();
+  qb.getRawMany = jest.fn(async () => toRawPrincipalRows(row));
+  users.createQueryBuilder.mockReturnValueOnce(qb);
+  return qb;
+}
+
 describe('AuthService', () => {
   let service: AuthService;
   let users: MockRepository;
@@ -208,7 +291,7 @@ describe('AuthService', () => {
         id: 'role-owner',
         slug: 'owner',
       }); // owner role seeded
-      users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
+      mockPrincipal(users, principalRow()); // buildAuthenticatedUser
 
       const result = await service.registerOwner(dto);
 
@@ -250,7 +333,7 @@ describe('AuthService', () => {
         id: 'role-owner',
         slug: 'owner',
       });
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
 
       await service.registerOwner({ ...dto, locale: 'ar' });
 
@@ -269,7 +352,7 @@ describe('AuthService', () => {
         id: 'role-owner',
         slug: 'owner',
       });
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
 
       await service.registerOwner(dto);
 
@@ -298,7 +381,7 @@ describe('AuthService', () => {
         slug: ROLE.RECEPTIONIST,
       }); // resolveSystemRole
       dataSource.manager.findOne.mockResolvedValueOnce(null); // createUserWithRole: no email clash
-      users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
+      mockPrincipal(users, principalRow()); // buildAuthenticatedUser
 
       const result = await service.createTenantUser(dto, 'tenant-1');
 
@@ -318,7 +401,7 @@ describe('AuthService', () => {
         slug: ROLE.MANAGER,
       });
       dataSource.manager.findOne.mockResolvedValueOnce(null); // no email clash
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
 
       await expect(
         service.createTenantUser(
@@ -502,7 +585,7 @@ describe('AuthService', () => {
 
     it('verifies credentials, stamps last_login_at and returns tokens', async () => {
       users.find.mockResolvedValueOnce([credUser]); // validateCredentials
-      users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
+      mockPrincipal(users, principalRow()); // buildAuthenticatedUser
       bcryptCompare.mockResolvedValueOnce(true);
 
       const result = await service.login({
@@ -523,7 +606,7 @@ describe('AuthService', () => {
 
     it('checks login protection BEFORE validating credentials', async () => {
       users.find.mockResolvedValueOnce([credUser]);
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
       bcryptCompare.mockResolvedValueOnce(true);
 
       await service.login({
@@ -589,7 +672,7 @@ describe('AuthService', () => {
 
     it('clears protection state on a successful login', async () => {
       users.find.mockResolvedValueOnce([credUser]);
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
       bcryptCompare.mockResolvedValueOnce(true);
 
       await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
@@ -627,7 +710,7 @@ describe('AuthService', () => {
     it('writes a safe audit record when a successful login clears an ACTIVE protection state', async () => {
       loginProtection.clear.mockResolvedValueOnce(true); // there was something to clear
       users.find.mockResolvedValueOnce([credUser]);
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
       bcryptCompare.mockResolvedValueOnce(true);
 
       await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
@@ -641,7 +724,7 @@ describe('AuthService', () => {
     it('does NOT write an audit record on an ordinary successful login with no prior failures', async () => {
       loginProtection.clear.mockResolvedValueOnce(false); // nothing to clear
       users.find.mockResolvedValueOnce([credUser]);
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
       bcryptCompare.mockResolvedValueOnce(true);
 
       await service.login({ email: 'owner@clinic.com', password: 'pw' } as any);
@@ -846,7 +929,7 @@ describe('AuthService', () => {
     it('rotates when the atomic claim wins, continuing the parent family', async () => {
       jwt.verifyAsync.mockResolvedValueOnce(validPayload);
       claimWins();
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
 
       const result = await service.refresh('rt');
 
@@ -1294,14 +1377,14 @@ describe('AuthService', () => {
   // ──────────────────────────── buildAuthenticatedUser ──────────────────────
   describe('buildAuthenticatedUser', () => {
     it('flattens roles + permissions and de-duplicates', async () => {
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
       await expect(service.buildAuthenticatedUser('user-1')).resolves.toEqual(
         expectedPrincipal,
       );
     });
 
     it('maps a null tenant (super-admin) correctly', async () => {
-      users.findOne.mockResolvedValueOnce({
+      mockPrincipal(users, {
         id: 'sa-1',
         email: 'root@platform',
         is_active: true,
@@ -1314,7 +1397,7 @@ describe('AuthService', () => {
     });
 
     it('throws USER_INACTIVE when the user is missing', async () => {
-      users.findOne.mockResolvedValueOnce(null);
+      mockPrincipal(users, null); // no row at all — LEFT JOIN never applies
       await expect(
         service.buildAuthenticatedUser('nope'),
       ).rejects.toMatchObject({
@@ -1323,10 +1406,7 @@ describe('AuthService', () => {
     });
 
     it('throws USER_INACTIVE when the user is deactivated', async () => {
-      users.findOne.mockResolvedValueOnce({
-        ...principalRow(),
-        is_active: false,
-      });
+      mockPrincipal(users, { ...principalRow(), is_active: false });
       await expect(
         service.buildAuthenticatedUser('user-1'),
       ).rejects.toMatchObject({
@@ -1334,14 +1414,13 @@ describe('AuthService', () => {
       });
     });
 
-    it('tolerates missing userRoles / null role / null permission rows', async () => {
-      users.findOne.mockResolvedValueOnce({
+    it('tolerates a null permission row (LEFT JOIN with an empty rolePermissions set)', async () => {
+      mockPrincipal(users, {
         id: 'user-2',
         email: 'staff@clinic.com',
         is_active: true,
         tenant: { id: 'tenant-1' },
         userRoles: [
-          { role: null }, // skipped (no role)
           {
             role: {
               slug: 'receptionist',
@@ -1359,8 +1438,8 @@ describe('AuthService', () => {
       expect(principal.permissions).toEqual(['customers.read']);
     });
 
-    it('handles a user with an undefined userRoles relation', async () => {
-      users.findOne.mockResolvedValueOnce({
+    it('handles a user with an undefined userRoles relation (zero roles)', async () => {
+      mockPrincipal(users, {
         id: 'user-3',
         email: null,
         is_active: true,
@@ -1375,20 +1454,37 @@ describe('AuthService', () => {
 
   // ─────────────────── buildAuthenticatedUserWithTenant (PERF-BE-003) ───────────────
   describe('buildAuthenticatedUserWithTenant', () => {
-    it('returns the same principal as buildAuthenticatedUser, plus the loaded Tenant row', async () => {
-      const row = principalRow();
-      users.findOne.mockResolvedValueOnce(row);
+    it('returns the same principal as buildAuthenticatedUser, plus the Tenant row folded from the same rows', async () => {
+      const row = {
+        ...principalRow(),
+        tenant: {
+          id: 'tenant-1',
+          name: 'Al-Noor Clinic',
+          approval_status: 'APPROVED',
+          is_active: true,
+        },
+      };
+      mockPrincipal(users, row);
       const { principal, tenant } =
         await service.buildAuthenticatedUserWithTenant('user-1');
       expect(principal).toEqual(expectedPrincipal);
-      expect(tenant).toBe(row.tenant);
+      // Byte-identical to what ActiveTenantGuard and the one other consumer
+      // (WhatsappAnalyticsController reading `.name`) actually read — not a
+      // reference-equal object any more (it's rebuilt from flat rows, not
+      // hydrated by TypeORM), but the same fields with the same values.
+      expect(tenant).toMatchObject({
+        id: 'tenant-1',
+        name: 'Al-Noor Clinic',
+        approval_status: 'APPROVED',
+        is_active: true,
+      });
       // The tenant is never merged into the principal — guards against a future
       // regression that would leak it through GET /auth/me.
       expect((principal as any).tenant).toBeUndefined();
     });
 
     it('returns tenant: null for a super-admin / no-tenant user', async () => {
-      users.findOne.mockResolvedValueOnce({
+      mockPrincipal(users, {
         id: 'sa-1',
         email: 'root@platform',
         is_active: true,
@@ -1402,15 +1498,237 @@ describe('AuthService', () => {
     });
 
     it('throws USER_INACTIVE when the user is deactivated, same as buildAuthenticatedUser', async () => {
-      users.findOne.mockResolvedValueOnce({
-        ...principalRow(),
-        is_active: false,
-      });
+      mockPrincipal(users, { ...principalRow(), is_active: false });
       await expect(
         service.buildAuthenticatedUserWithTenant('user-1'),
       ).rejects.toMatchObject({
         code: ErrorCode.USER_INACTIVE,
       });
+    });
+  });
+
+  // ───────── P5-1 (015-db-api-efficiency-audit, AUTH-001) — loadPrincipal ─────────
+  //
+  // T031: a differential test over a fixture matrix, asserting the query-
+  // builder-based `loadPrincipal` resolves EXACTLY the role/permission sets
+  // the old `findOne({ relations })` fold algorithm would have produced from
+  // the same underlying data — a dropped permission is a lockout, an extra
+  // one is privilege escalation (Constitution VII). `expectedFor()` below
+  // independently re-implements that old fold (dedupe via Set, skip nulls)
+  // over the fixture's nested shape, so this is a genuine comparison against
+  // the pre-change algorithm's semantics, not a tautology against whatever
+  // the current code happens to output.
+  describe('loadPrincipal — differential across role fixtures (T031, AUTH-001)', () => {
+    type RoleFixture = { slug: string; permissions: string[] };
+    const buildRow = (opts: {
+      id: string;
+      email?: string | null;
+      fullName?: string | null;
+      isActive?: boolean;
+      tenant?: { id: string } | null;
+      roles?: RoleFixture[];
+    }) => ({
+      id: opts.id,
+      email: opts.email ?? null,
+      full_name: opts.fullName ?? null,
+      is_active: opts.isActive ?? true,
+      tenant: opts.tenant ?? null,
+      userRoles: (opts.roles ?? []).map((r) => ({
+        role: {
+          slug: r.slug,
+          rolePermissions: r.permissions.map((p) => ({
+            permission: { slug: p },
+          })),
+        },
+      })),
+    });
+
+    // Independent re-implementation of the OLD entity-relations fold, over
+    // the fixture's nested shape — deliberately NOT calling any AuthService
+    // code, so this is a real second source of truth to diff against.
+    const expectedFor = (row: ReturnType<typeof buildRow>) => {
+      const roleSlugs = new Set<string>();
+      const permissionSlugs = new Set<string>();
+      for (const ur of row.userRoles ?? []) {
+        if (!ur.role) continue;
+        roleSlugs.add(ur.role.slug);
+        for (const rp of ur.role.rolePermissions ?? []) {
+          if (rp.permission) permissionSlugs.add(rp.permission.slug);
+        }
+      }
+      return {
+        id: row.id,
+        tenantId: row.tenant?.id ?? null,
+        email: row.email,
+        fullName: row.full_name,
+        roles: [...roleSlugs],
+        permissions: [...permissionSlugs],
+      };
+    };
+
+    const FIXTURES: Record<string, ReturnType<typeof buildRow>> = {
+      owner: buildRow({
+        id: 'u-owner',
+        email: 'owner@t1.test',
+        tenant: { id: 'tenant-1' },
+        roles: [
+          {
+            slug: ROLE.OWNER,
+            permissions: ['appointments.read', 'appointments.create', 'staff.manage'],
+          },
+        ],
+      }),
+      manager: buildRow({
+        id: 'u-mgr',
+        email: 'mgr@t1.test',
+        tenant: { id: 'tenant-1' },
+        roles: [
+          { slug: ROLE.MANAGER, permissions: ['appointments.read', 'staff.manage'] },
+        ],
+      }),
+      'doctor (ownership-scoped)': buildRow({
+        id: 'u-doc',
+        email: 'doc@t1.test',
+        tenant: { id: 'tenant-1' },
+        roles: [{ slug: ROLE.DOCTOR, permissions: ['appointments.read_own'] }],
+      }),
+      receptionist: buildRow({
+        id: 'u-rec',
+        email: 'rec@t1.test',
+        tenant: { id: 'tenant-1' },
+        roles: [
+          {
+            slug: ROLE.RECEPTIONIST,
+            permissions: ['appointments.read', 'customers.read'],
+          },
+        ],
+      }),
+      'platform support': buildRow({
+        id: 'u-sup',
+        email: 'sup@platform.test',
+        tenant: null,
+        roles: [
+          { slug: ROLE.PLATFORM_SUPPORT, permissions: ['support.tickets.read'] },
+        ],
+      }),
+      'super-admin (tenantId: null)': buildRow({
+        id: 'u-sa',
+        email: 'sa@platform.test',
+        tenant: null,
+        roles: [
+          { slug: ROLE.SUPER_ADMIN, permissions: ['platform.settings.manage'] },
+        ],
+      }),
+      "custom 'other' role": buildRow({
+        id: 'u-other',
+        email: 'other@t2.test',
+        tenant: { id: 'tenant-2' },
+        roles: [{ slug: 'other', permissions: ['custom.permission'] }],
+      }),
+      'two-role user (overlapping permission de-duplicated)': buildRow({
+        id: 'u-two',
+        email: 'two@t1.test',
+        tenant: { id: 'tenant-1' },
+        roles: [
+          { slug: ROLE.OWNER, permissions: ['appointments.read', 'staff.manage'] },
+          {
+            slug: ROLE.DOCTOR,
+            permissions: ['appointments.read_own', 'appointments.read'],
+          },
+        ],
+      }),
+      'zero-role user': buildRow({
+        id: 'u-zero',
+        email: 'zero@t1.test',
+        tenant: { id: 'tenant-1' },
+        roles: [],
+      }),
+    };
+
+    it.each(Object.entries(FIXTURES))(
+      '%s: resolves byte-identical role/permission sets to the pre-change fold',
+      async (_label, row) => {
+        mockPrincipal(users, row);
+        const principal = await service.buildAuthenticatedUser(row.id);
+        expect(principal).toEqual(expectedFor(row));
+      },
+    );
+
+    it('inactive user (from the fixture matrix) throws USER_INACTIVE', async () => {
+      mockPrincipal(users, { ...FIXTURES.owner, is_active: false });
+      await expect(
+        service.buildAuthenticatedUser(FIXTURES.owner.id),
+      ).rejects.toMatchObject({ code: ErrorCode.USER_INACTIVE });
+    });
+
+    it('missing user (no row returned at all) throws USER_INACTIVE', async () => {
+      mockPrincipal(users, null);
+      await expect(
+        service.buildAuthenticatedUser('does-not-exist'),
+      ).rejects.toMatchObject({ code: ErrorCode.USER_INACTIVE });
+    });
+  });
+
+  // T033: the property a differential test on VALUES cannot see — that the
+  // fix is actually ONE round trip, not two.
+  describe('loadPrincipal — single-statement guarantee (T033, AUTH-001)', () => {
+    it('issues exactly one query per buildAuthenticatedUser call (spy on the query runner)', async () => {
+      const qb = mockPrincipal(users, principalRow());
+      await service.buildAuthenticatedUser('user-1');
+
+      // Exactly one createQueryBuilder() — the single entry point to the DB
+      // for this call — and no fallback to the old findOne/relations path.
+      expect(users.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(users.findOne).not.toHaveBeenCalled();
+      expect(qb.getRawMany).toHaveBeenCalledTimes(1);
+      // No pagination branch entered — the specific TypeORM behaviour
+      // (research.md R-01/R-10) that turns a joined read into two queries.
+      expect(qb.take).not.toHaveBeenCalled();
+      expect(qb.skip).not.toHaveBeenCalled();
+      expect(qb.limit).not.toHaveBeenCalled();
+      expect(qb.offset).not.toHaveBeenCalled();
+    });
+
+    it('issues exactly one query per buildAuthenticatedUserWithTenant call', async () => {
+      const qb = mockPrincipal(users, principalRow());
+      await service.buildAuthenticatedUserWithTenant('user-1');
+
+      expect(users.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(qb.getRawMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('USER_INACTIVE for an inactive user (statement-count context)', async () => {
+      mockPrincipal(users, { ...principalRow(), is_active: false });
+      await expect(
+        service.buildAuthenticatedUser('user-1'),
+      ).rejects.toMatchObject({ code: ErrorCode.USER_INACTIVE });
+    });
+
+    it('USER_INACTIVE for a missing user (statement-count context)', async () => {
+      mockPrincipal(users, null);
+      await expect(
+        service.buildAuthenticatedUser('nope'),
+      ).rejects.toMatchObject({ code: ErrorCode.USER_INACTIVE });
+    });
+
+    it('preloadedTenant: set (non-null) on a tenant user, null on a super-admin, and never present on the principal', async () => {
+      mockPrincipal(users, {
+        ...principalRow(),
+        tenant: { id: 'tenant-1', approval_status: 'APPROVED', is_active: true },
+      });
+      const withTenant = await service.buildAuthenticatedUserWithTenant('user-1');
+      expect(withTenant.tenant).not.toBeNull();
+      expect((withTenant.principal as any).tenant).toBeUndefined();
+
+      mockPrincipal(users, {
+        id: 'sa-1',
+        is_active: true,
+        tenant: null,
+        userRoles: [{ role: { slug: 'super_admin', rolePermissions: [] } }],
+      });
+      const superAdmin = await service.buildAuthenticatedUserWithTenant('sa-1');
+      expect(superAdmin.tenant).toBeNull();
+      expect((superAdmin.principal as any).tenant).toBeUndefined();
     });
   });
 
@@ -1453,7 +1771,7 @@ describe('AuthService', () => {
           tenant: { id: 'tenant-1' },
         },
       ]); // validateCredentials
-      users.findOne.mockResolvedValueOnce(principalRow()); // buildAuthenticatedUser
+      mockPrincipal(users, principalRow()); // buildAuthenticatedUser
       bcryptCompare.mockResolvedValueOnce(true);
     };
 
@@ -1523,7 +1841,7 @@ describe('AuthService', () => {
           tenant: { id: 'tenant-1' },
         },
       ]);
-      users.findOne.mockResolvedValueOnce(principalRow());
+      mockPrincipal(users, principalRow());
       bcryptCompare.mockResolvedValueOnce(true);
     };
 

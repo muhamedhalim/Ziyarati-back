@@ -10,7 +10,10 @@ import { PaymentLinkService } from '../payments/payment-link.service';
 import { PatientChangeWindowService } from './patient-change-window.service';
 import { ErrorCode } from '../../common/errors';
 import { AppointmentActionOrigin } from '../../entities/enums';
-import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
+import {
+  createMockRepository,
+  MockRepository,
+} from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
 
@@ -31,14 +34,20 @@ describe('PatientCancellationService — cancellation window (T027, FR-C007)', (
     tenantSettings = createMockRepository();
     appointments = { cancel: jest.fn() };
     links = { consume: jest.fn() };
-    paymentLinks = { disable: jest.fn(), findActiveForAppointment: jest.fn().mockResolvedValue([]) };
+    paymentLinks = {
+      disable: jest.fn(),
+      findActiveForAppointment: jest.fn().mockResolvedValue([]),
+    };
     appointmentAudit = { record: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         PatientCancellationService,
         PatientChangeWindowService,
-        { provide: getRepositoryToken(TenantSetting), useValue: tenantSettings },
+        {
+          provide: getRepositoryToken(TenantSetting),
+          useValue: tenantSettings,
+        },
         { provide: AppointmentsService, useValue: appointments },
         { provide: PatientActionLinkService, useValue: links },
         { provide: PaymentLinkService, useValue: paymentLinks },
@@ -85,7 +94,9 @@ describe('PatientCancellationService — cancellation window (T027, FR-C007)', (
     // Same appointment, window now loosened back to 6h — now inside it.
     await expect(
       service.assertCancellationAllowed(TENANT, startAt),
-    ).rejects.toMatchObject({ publicContext: { blockedReason: 'WINDOW_CLOSED' } });
+    ).rejects.toMatchObject({
+      publicContext: { blockedReason: 'WINDOW_CLOSED' },
+    });
   });
 
   it('falls back to the 24-hour platform default when the clinic has no settings row', async () => {
@@ -93,7 +104,9 @@ describe('PatientCancellationService — cancellation window (T027, FR-C007)', (
     const insideDefault = new Date(Date.now() + 10 * 3600_000); // 10h away
     await expect(
       service.assertCancellationAllowed(TENANT, insideDefault),
-    ).rejects.toMatchObject({ publicContext: { blockedReason: 'WINDOW_CLOSED' } });
+    ).rejects.toMatchObject({
+      publicContext: { blockedReason: 'WINDOW_CLOSED' },
+    });
 
     tenantSettings.findOne.mockResolvedValueOnce(null);
     const outsideDefault = new Date(Date.now() + 30 * 3600_000); // 30h away
@@ -129,16 +142,26 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
   beforeEach(async () => {
     tenantSettings = createMockRepository();
     tenantSettings.findOne.mockResolvedValue({ cancellation_hours: 24 });
-    appointments = { cancel: jest.fn().mockResolvedValue({ id: 'appt-1', status: 'CANCELLED' }) };
+    appointments = {
+      cancel: jest
+        .fn()
+        .mockResolvedValue({ id: 'appt-1', status: 'CANCELLED' }),
+    };
     links = { consume: jest.fn().mockResolvedValue(1) };
-    paymentLinks = { disable: jest.fn(), findActiveForAppointment: jest.fn().mockResolvedValue([]) };
+    paymentLinks = {
+      disable: jest.fn(),
+      findActiveForAppointment: jest.fn().mockResolvedValue([]),
+    };
     appointmentAudit = { record: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         PatientCancellationService,
         PatientChangeWindowService,
-        { provide: getRepositoryToken(TenantSetting), useValue: tenantSettings },
+        {
+          provide: getRepositoryToken(TenantSetting),
+          useValue: tenantSettings,
+        },
         { provide: AppointmentsService, useValue: appointments },
         { provide: PatientActionLinkService, useValue: links },
         { provide: PaymentLinkService, useValue: paymentLinks },
@@ -173,6 +196,9 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
       TENANT,
       'appt-1',
       { origin: AppointmentActionOrigin.PATIENT },
+      // Context arg: branch, so the Activity log can answer "where". Still no
+      // actor — a signed link has no authenticated user.
+      expect.objectContaining({ branchId: null }),
     );
   });
 
@@ -183,9 +209,14 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
   });
 
   it('a PENDING_PAYMENT appointment: its active payment link is disabled and becomes unusable', async () => {
-    paymentLinks.findActiveForAppointment.mockResolvedValueOnce([{ id: 'plink-1' }]);
+    paymentLinks.findActiveForAppointment.mockResolvedValueOnce([
+      { id: 'plink-1' },
+    ]);
     await service.cancelViaLink(TENANT, linkFor());
-    expect(paymentLinks.findActiveForAppointment).toHaveBeenCalledWith(TENANT, 'appt-1');
+    expect(paymentLinks.findActiveForAppointment).toHaveBeenCalledWith(
+      TENANT,
+      'appt-1',
+    );
     expect(paymentLinks.disable).toHaveBeenCalledWith(TENANT, 'plink-1');
   });
 
@@ -205,7 +236,10 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
       status: 'CONFIRMED' as any,
       start_at: new Date(Date.now() + 48 * 3600_000),
     });
-    expect(res).toEqual({ allowed: false, blockedReason: 'DISABLED_BY_CLINIC' });
+    expect(res).toEqual({
+      allowed: false,
+      blockedReason: 'DISABLED_BY_CLINIC',
+    });
   });
 
   it('describeCancelEligibility: TERMINAL_STATE for a completed appointment', async () => {
@@ -246,9 +280,11 @@ describe('PatientCancellationService.cancelViaLink (T029/T030)', () => {
 
   it('refuses when the window is closed — AppointmentsService.cancel is never reached', async () => {
     const nearLink = linkFor({ start_at: new Date(Date.now() + 3600_000) }); // 1h away, inside 24h window
-    await expect(service.cancelViaLink(TENANT, nearLink)).rejects.toMatchObject({
-      publicContext: { blockedReason: 'WINDOW_CLOSED' },
-    });
+    await expect(service.cancelViaLink(TENANT, nearLink)).rejects.toMatchObject(
+      {
+        publicContext: { blockedReason: 'WINDOW_CLOSED' },
+      },
+    );
     expect(appointments.cancel).not.toHaveBeenCalled();
     expect(links.consume).not.toHaveBeenCalled();
   });

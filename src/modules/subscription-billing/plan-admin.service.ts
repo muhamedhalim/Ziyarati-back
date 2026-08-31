@@ -170,12 +170,50 @@ export class PlanAdminService {
     return withFlag;
   }
 
+  /**
+   * P7-1 (015-db-api-efficiency-audit, NPLUS-001): one grouped read instead
+   * of `Promise.all(plans.map(isInUse))` — 1+N round trips down to 1 (2
+   * counting the `listAll`/`getAdminView` caller's own plan read). Built
+   * through the query builder (not hand-written SQL) so the `deleted_at IS
+   * NULL` soft-delete predicate is the same one TypeORM would inject for any
+   * other read of this entity, not a copy that could drift.
+   *
+   * R-03: `subscriptions` has no index on `planId`, so this is one table
+   * scan, not an index lookup — a strict improvement over 1+N scans, but not
+   * an index win. `getAdminView(id)` still calls this with a one-element
+   * array; the grouped query itself is not scoped to specific plan ids
+   * (there is no index to seek on regardless), so a single-plan call costs
+   * the same one scan a multi-plan call does.
+   */
   private async withUsageFlag(
     plans: SubscriptionPlan[],
   ): Promise<Array<SubscriptionPlan & { is_in_use: boolean }>> {
-    return Promise.all(
-      plans.map(async (plan) => ({ ...plan, is_in_use: await this.isInUse(plan.id) })),
-    );
+    if (plans.length === 0) return [];
+
+    const planFk = this.fk(this.subscriptions, 'plan');
+    const rows = await this.subscriptions
+      .createQueryBuilder('s')
+      .select(`s."${planFk}"`, 'planId')
+      .where('s.status != :cancelled', {
+        cancelled: SubscriptionStatus.CANCELLED,
+      })
+      .groupBy(`s."${planFk}"`)
+      .getRawMany<{ planId: string }>();
+
+    const inUse = new Set(rows.map((r) => r.planId));
+    return plans.map((plan) => ({ ...plan, is_in_use: inUse.has(plan.id) }));
+  }
+
+  /** Resolves `property`'s join-column database name from entity metadata —
+   *  no entity exposes a relation's FK as a plain property (research.md
+   *  R-11); the proven `DashboardSummaryService.fk()` pattern. */
+  private fk(repo: Repository<Subscription>, property: string): string {
+    const relation = repo.metadata.findRelationWithPropertyPath(property);
+    const column = relation?.joinColumns[0]?.databaseName;
+    if (!column) {
+      throw new Error(`${repo.metadata.name}.${property} has no join column`);
+    }
+    return column;
   }
 
   async create(dto: CreatePlanDto): Promise<SubscriptionPlan> {

@@ -167,7 +167,6 @@ const S_TENANT_DETAIL = {
     countryId: { type: 'number', nullable: true, example: 194 },
     defaultCurrency: { type: 'string', nullable: true, example: 'SAR' },
     defaultTimezone: { type: 'string', nullable: true, example: 'Asia/Riyadh' },
-    settings: S_SETTINGS,
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },
   },

@@ -179,10 +179,21 @@ export class ApiKeyService {
     if (!plaintext || typeof plaintext !== 'string') {
       throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'API key required' });
     }
-    const key = await this.keys.findOne({
-      where: { key_hash: hashApiKey(plaintext) },
-      relations: { tenant: true },
-    });
+    // P5-2 (015-db-api-efficiency-audit, AUTH-006): the guard's synthetic
+    // principal only ever reads `key.tenant?.id`, so loading the full Tenant
+    // relation cost a second round trip for one column. No entity exposes the
+    // FK as a plain property (research.md R-11), so the id is read via the
+    // quoted join-column name resolved from entity metadata — the same
+    // pattern DashboardSummaryService.fk() uses. No joins at all here, so
+    // this was already a single query without `relations`; dropping it just
+    // removes the one it no longer needs.
+    const tenantFk = this.fk(this.keys, 'tenant');
+    const { entities, raw } = await this.keys
+      .createQueryBuilder('k')
+      .addSelect(`k."${tenantFk}"`, 'tenant_fk')
+      .where('k.key_hash = :hash', { hash: hashApiKey(plaintext) })
+      .getRawAndEntities();
+    const key = entities[0];
     if (!key || !key.is_active) {
       throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid or inactive API key' });
     }
@@ -197,10 +208,23 @@ export class ApiKeyService {
 
     return {
       keyId: key.id,
-      tenantId: key.tenant?.id ?? null,
+      tenantId: (raw[0]?.tenant_fk as string | null) ?? null,
       // Legacy/junk-safe: only recognised scope strings ever reach the principal.
       permissions: normalizeScopes(key.permissions),
     };
+  }
+
+  /** Resolves `property`'s join-column database name from entity metadata — no
+   *  entity exposes a relation's FK as a plain property (research.md R-11). */
+  private fk(repo: Repository<ApiKey>, property: string): string {
+    const relation = repo.metadata.findRelationWithPropertyPath(property);
+    const column = relation?.joinColumns[0]?.databaseName;
+    if (!column) {
+      throw new Error(
+        `${repo.metadata.name}.${property} has no join column`,
+      );
+    }
+    return column;
   }
 
   private async findOneOrThrow(tenantId: string, id: string): Promise<ApiKey> {

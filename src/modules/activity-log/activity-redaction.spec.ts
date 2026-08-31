@@ -13,7 +13,10 @@ describe('changedFields (T023, S7)', () => {
   });
 
   it('a payload containing a secret-shaped key yields only its name', () => {
-    const fields = changedFields(null, { password: 'hunter2', token_digest: 'abc' });
+    const fields = changedFields(null, {
+      password: 'hunter2',
+      token_digest: 'abc',
+    });
     expect(fields).toEqual(['password', 'token_digest']);
   });
 
