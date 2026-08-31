@@ -9,6 +9,7 @@ import { PERMISSION } from '../../rbac/rbac.constants';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
+import { AnalyticsCacheService, CACHE_NS } from './analytics-cache.service';
 import {
   MAX_ADVANCED_ANALYTICS_RANGE_DAYS,
   dayRangeUtc,
@@ -60,6 +61,7 @@ export class AdvancedAnalyticsService {
     private readonly branchUsers: Repository<BranchUser>,
     @InjectRepository(TenantSetting)
     private readonly tenantSettings: Repository<TenantSetting>,
+    private readonly cache: AnalyticsCacheService,
   ) {}
 
   // ─────────────────────────── Shared plumbing ───────────────────────────── //
@@ -168,6 +170,34 @@ export class AdvancedAnalyticsService {
     return { start: dayRangeUtc(from).start, end: dayRangeUtc(to).end };
   }
 
+  /**
+   * Cache suffix for a trend payload.
+   *
+   * Keyed on the RESOLVED branch scope, not the requested one: two callers who
+   * asked for different things but were authorized down to the same branch
+   * share an entry, and a branch-restricted caller can never read the
+   * tenant-wide (`ALL`) entry. Tenant isolation is handled one level up — the
+   * tenant id is baked into every key by `AnalyticsCacheService` itself.
+   *
+   * Namespace is `dashboard`, the same one the KPI snapshot and target
+   * progress already use, so the existing `POST /analytics/dashboard/refresh`
+   * invalidation clears these too rather than leaving a second, separately
+   * stale surface behind.
+   *
+   * NOTE ON `generatedAt`: the whole payload is cached, envelope included, so
+   * a cache hit reports when the aggregation actually ran rather than when the
+   * request arrived. That is the honest value — a client displaying it is
+   * being told the age of the numbers it is looking at.
+   */
+  private trendKey(
+    kind: 'appointments' | 'revenue',
+    from: ReportDate,
+    to: ReportDate,
+    branchId: string | undefined,
+  ): string {
+    return `trend:${kind}:${from}:${to}:${branchId ?? 'ALL'}`;
+  }
+
   // ─────────────────────────────── Trends ────────────────────────────────── //
 
   /** FR-A004 — `GET /analytics/trends/appointments`. */
@@ -177,36 +207,46 @@ export class AdvancedAnalyticsService {
     dto: QueryAdvancedAnalyticsDto,
   ) {
     const { from, to } = this.validateRange(dto);
+    // Resolved BEFORE the cache is consulted: the branch a caller may see is
+    // an authorization decision and must never be read from a cached payload.
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const [currency, { start, end }] = [
-      await this.getCurrency(tenantId),
-      this.instants(from, to),
-    ];
-    const rows = await this.aggregation.appointmentsTrend(
+
+    return this.cache.wrap(
       tenantId,
-      scope.branchId,
-      start,
-      end,
+      CACHE_NS.DASHBOARD,
+      this.trendKey('appointments', from, to, scope.branchId),
+      async () => {
+        const [currency, { start, end }] = [
+          await this.getCurrency(tenantId),
+          this.instants(from, to),
+        ];
+        const rows = await this.aggregation.appointmentsTrend(
+          tenantId,
+          scope.branchId,
+          start,
+          end,
+        );
+        const envelope = this.envelope(from, to, scope.branchId, currency);
+
+        const totalAcrossRange = rows.reduce((s, r) => s + r.total, 0);
+        if (totalAcrossRange === 0) {
+          return { ...envelope, empty: true, data: [] };
+        }
+
+        const byDate = new Map(rows.map((r) => [r.date, r]));
+        const data = enumerateDays(from, to).map((date) => {
+          const r = byDate.get(date);
+          return {
+            date,
+            total: r?.total ?? 0,
+            completed: r?.completed ?? 0,
+            cancelled: r?.cancelled ?? 0,
+            noShow: r?.no_show ?? 0,
+          };
+        });
+        return { ...envelope, empty: false, data };
+      },
     );
-    const envelope = this.envelope(from, to, scope.branchId, currency);
-
-    const totalAcrossRange = rows.reduce((s, r) => s + r.total, 0);
-    if (totalAcrossRange === 0) {
-      return { ...envelope, empty: true, data: [] };
-    }
-
-    const byDate = new Map(rows.map((r) => [r.date, r]));
-    const data = enumerateDays(from, to).map((date) => {
-      const r = byDate.get(date);
-      return {
-        date,
-        total: r?.total ?? 0,
-        completed: r?.completed ?? 0,
-        cancelled: r?.cancelled ?? 0,
-        noShow: r?.no_show ?? 0,
-      };
-    });
-    return { ...envelope, empty: false, data };
   }
 
   /** FR-A003 — `GET /analytics/trends/revenue`. */
@@ -217,49 +257,60 @@ export class AdvancedAnalyticsService {
   ) {
     const { from, to } = this.validateRange(dto);
     const scope = await this.resolveScope(tenantId, user, dto.branchId);
-    const currency = await this.getCurrency(tenantId);
-    const { start, end } = this.instants(from, to);
 
-    const [rows, other] = await Promise.all([
-      this.aggregation.revenueTrend(
-        tenantId,
-        scope.branchId,
-        currency,
-        start,
-        end,
-      ),
-      this.aggregation.countOtherCurrencyRevenue(
-        tenantId,
-        scope.branchId,
-        currency,
-        start,
-        end,
-      ),
-    ]);
-    const envelope = this.envelope(from, to, scope.branchId, currency);
+    return this.cache.wrap(
+      tenantId,
+      CACHE_NS.DASHBOARD,
+      this.trendKey('revenue', from, to, scope.branchId),
+      async () => {
+        const currency = await this.getCurrency(tenantId);
+        const { start, end } = this.instants(from, to);
 
-    const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
-    if (totalRevenue === 0 && other.count === 0) {
-      return { ...envelope, empty: true, data: [] };
-    }
+        const [rows, other] = await Promise.all([
+          this.aggregation.revenueTrend(
+            tenantId,
+            scope.branchId,
+            currency,
+            start,
+            end,
+          ),
+          this.aggregation.countOtherCurrencyRevenue(
+            tenantId,
+            scope.branchId,
+            currency,
+            start,
+            end,
+          ),
+        ]);
+        const envelope = this.envelope(from, to, scope.branchId, currency);
 
-    const byDate = new Map(rows.map((r) => [r.date, r]));
-    const data = enumerateDays(from, to).map((date) => ({
-      date,
-      revenue: byDate.get(date)?.revenue ?? 0,
-    }));
+        const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
+        if (totalRevenue === 0 && other.count === 0) {
+          return { ...envelope, empty: true, data: [] };
+        }
 
-    return {
-      ...envelope,
-      empty: false,
-      data,
-      // FR-A021 — never silently summed away; surfaced only when non-zero.
-      ...(other.count > 0
-        ? {
-            excludedOtherCurrency: { count: other.count, amount: other.amount },
-          }
-        : {}),
-    };
+        const byDate = new Map(rows.map((r) => [r.date, r]));
+        const data = enumerateDays(from, to).map((date) => ({
+          date,
+          revenue: byDate.get(date)?.revenue ?? 0,
+        }));
+
+        return {
+          ...envelope,
+          empty: false,
+          data,
+          // FR-A021 — never silently summed away; surfaced only when non-zero.
+          ...(other.count > 0
+            ? {
+                excludedOtherCurrency: {
+                  count: other.count,
+                  amount: other.amount,
+                },
+              }
+            : {}),
+        };
+      },
+    );
   }
 
   // ──────────────────────────────── Rates ────────────────────────────────── //

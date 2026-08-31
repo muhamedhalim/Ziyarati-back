@@ -36,7 +36,11 @@ const S_ITEM = {
     priority: { type: 'string', example: 'HIGH' },
     title: { type: 'string', example: 'New reply on ticket SUP-000123' },
     body: { type: 'string' },
-    linkUrl: { type: 'string', nullable: true, example: '/app/support?ticket=…' },
+    linkUrl: {
+      type: 'string',
+      nullable: true,
+      example: '/app/support?ticket=…',
+    },
     entityType: { type: 'string', nullable: true, example: 'SupportTicket' },
     entityId: { type: 'string', format: 'uuid', nullable: true },
     isRead: { type: 'boolean' },
@@ -74,7 +78,7 @@ const S_PREFERENCES = {
  *
  * ── WHY THIS CONTROLLER CARRIES NO PERMISSION, FEATURE OR SUBSCRIPTION GUARD ──
  * Every other controller in this module is wrapped in `PermissionsGuard`,
- * `ActiveTenantGuard`, `@RequireFeature(NOTIFICATIONS)` and
+ * `ActiveTenantGuard`, `@RequireFeature(FeatureKey.NOTIFICATIONS)` and
  * `@RequireActiveSubscription()`. This one deliberately is not, and each
  * omission is load-bearing:
  *
@@ -124,7 +128,7 @@ caller's \`preferred_locale\`, then English).
 There is no way to request another user's notifications: the recipient is always taken
 from the access token.`,
   })
-  @ApiOkResponse({ description: 'The caller\'s notifications.', schema: S_PAGE })
+  @ApiOkResponse({ description: "The caller's notifications.", schema: S_PAGE })
   @Get()
   async list(
     @CurrentUser('id') userId: string,
@@ -170,7 +174,8 @@ from the access token.`,
   })
   @ApiOkResponse({ schema: S_PREFERENCES })
   @ApiUnprocessableEntityResponse({
-    description: 'The payload tried to mute a category that cannot be turned off.',
+    description:
+      'The payload tried to mute a category that cannot be turned off.',
   })
   @Put('preferences')
   @HttpCode(HttpStatus.OK)
@@ -185,8 +190,8 @@ from the access token.`,
     summary: 'Mark one notification read',
     description:
       '**Authenticated only.** Idempotent — marking an already-read notification succeeds and does ' +
-      'not move its timestamp. An id that is not the caller\'s returns **404**, not 403: a 403 would ' +
-      "confirm the id exists, which is itself a disclosure.",
+      "not move its timestamp. An id that is not the caller's returns **404**, not 403: a 403 would " +
+      'confirm the id exists, which is itself a disclosure.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiOkResponse({

@@ -23,6 +23,7 @@ import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
+import { PrivateCache } from '../../common/http/private-cache.decorator';
 
 const S_ERROR = {
   type: 'object',
@@ -34,6 +35,17 @@ const S_ERROR = {
     timestamp: { type: 'string', format: 'date-time' },
   },
 };
+
+/**
+ * How long the browser may reuse a trend payload without re-asking.
+ *
+ * Matched to `ANALYTICS_CACHE_TTL`'s 60 s default: a request sent inside this
+ * window could only have been answered from the server-side cache anyway, so
+ * skipping it costs no staleness the tenant was not already accepting.
+ * Deliberately shorter than the TTL, not equal to it, so the browser copy can
+ * never outlive the server copy it was derived from.
+ */
+const TREND_MAX_AGE_SECONDS = 30;
 
 const AUTH_RESPONSES = {
   unauthorized: {
@@ -94,6 +106,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('trends/appointments')
+  @PrivateCache(TREND_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,
@@ -118,6 +131,7 @@ export class AdvancedAnalyticsController {
   @ApiUnauthorizedResponse(AUTH_RESPONSES.unauthorized)
   @ApiForbiddenResponse(AUTH_RESPONSES.forbidden)
   @Get('trends/revenue')
+  @PrivateCache(TREND_MAX_AGE_SECONDS)
   @RequireAnyPermission(
     PERMISSION.ANALYTICS_DASHBOARD_READ,
     PERMISSION.ANALYTICS_REPORTS_READ,

@@ -23,6 +23,10 @@ import { DataSource } from 'typeorm';
 import { SeedDataSource } from '../../seed/data-source';
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AdvancedAnalyticsService } from './advanced-analytics.service';
+import type {
+  AnalyticsCacheService,
+  CacheNamespace,
+} from './analytics-cache.service';
 import { METRIC_REGISTRY } from './metric-registry';
 import { dayRangeUtc } from './analytics.constants';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -105,6 +109,19 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
       aggregation,
       ds.getRepository(BranchUser),
       ds.getRepository(TenantSetting),
+      // Pass-through cache: this suite asserts the SQL and the response
+      // envelope, so every call must reach the aggregation engine. This is
+      // exactly how the real service behaves with no `REDIS_URL` configured
+      // (`AnalyticsCacheService.wrap` returns `producer()` untouched), so the
+      // code path under test is the production one, not a test-only variant.
+      {
+        wrap: <T>(
+          _tenantId: string,
+          _ns: CacheNamespace,
+          _suffix: string,
+          producer: () => Promise<T>,
+        ) => producer(),
+      } as unknown as AnalyticsCacheService,
     );
 
     const suffix = randomUUID().slice(0, 8);
