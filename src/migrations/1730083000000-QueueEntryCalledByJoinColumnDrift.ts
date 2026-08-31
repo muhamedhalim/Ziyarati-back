@@ -1,0 +1,111 @@
+import { MigrationInterface, QueryRunner } from 'typeorm';
+
+/**
+ * CORRECTIVE. Migration `1730080000000-QueueEntries` created
+ * `queue_entries.called_byId`, a name TypeORM does not actually use.
+ *
+ * `QueueEntry.called_by` has no explicit `@JoinColumn`, so TypeORM derives
+ * the join column from the relation property via its naming strategy, which
+ * camel-cases the whole thing (`called_by` + `Id` → `calledById`). The
+ * hand-written DDL guessed the snake_case `called_byId` instead — the same
+ * class of bug already fixed for `integration_conflicts`/
+ * `integration_import_jobs`/`integration_sync_jobs` in
+ * `1730011000000-IntegrationFixJoinColumnDrift`, and for `customer_notes` in
+ * `1730060000000-CustomerNoteConversationIdDrift`.
+ *
+ * WHY THIS WAS NOT CAUGHT EARLIER. The development database is built with
+ * `TYPEORM_SYNCHRONIZE=true`, which creates columns from entity metadata —
+ * so it always had the CORRECT name and every query worked. Only a database
+ * built from the migration chain (production) has the wrong name, and there
+ * `QueueEntry`'s implicit SELECT of every own column (e.g. every
+ * `PatientQueueService.list`/`reload` call, which never even filters on
+ * `called_by`) fails outright with `column QueueEntry.calledById does not
+ * exist` (mapped to the generic `DATABASE_ERROR` by
+ * `typeorm-error.mapper.ts`, since SQLSTATE 42703 has no dedicated branch)
+ * — breaking the ENTIRE queue board (`GET /queue`) on a production-built
+ * database, regardless of which branch is requested.
+ *
+ * The rename is conditional ON PURPOSE — and this is not the blanket
+ * `IF NOT EXISTS` that hides drift. There are exactly two legitimate
+ * historical states (built by migrations = wrong name; built by
+ * synchronize = right name), and this reconciles them to one. A table with
+ * NEITHER column is genuine drift and raises loudly in the post-condition
+ * below.
+ *
+ * ADDITIVE and data-preserving: `ALTER TABLE ... RENAME COLUMN` keeps every
+ * row; `FK_queue_entries_called_by` keeps tracking the column across the
+ * rename automatically. Nothing is dropped.
+ */
+export class QueueEntryCalledByJoinColumnDrift1730083000000 implements MigrationInterface {
+  name = 'QueueEntryCalledByJoinColumnDrift1730083000000';
+
+  private static readonly TABLE = 'queue_entries';
+  private static readonly WRONG = 'called_byId';
+  private static readonly RIGHT = 'calledById';
+
+  public async up(q: QueryRunner): Promise<void> {
+    const { TABLE, WRONG, RIGHT } =
+      QueueEntryCalledByJoinColumnDrift1730083000000;
+
+    await q.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${WRONG}'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${RIGHT}'
+        ) THEN
+          ALTER TABLE "${TABLE}" RENAME COLUMN "${WRONG}" TO "${RIGHT}";
+        END IF;
+      END $$;
+    `);
+
+    // Post-condition: the correct column must now exist, and the wrong one
+    // must be gone. Neither present is real drift — fail loudly.
+    await q.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${RIGHT}'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: %.% is missing', '${TABLE}', '${RIGHT}';
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${WRONG}'
+        ) THEN
+          RAISE EXCEPTION 'Migration post-condition failed: %.% still exists alongside %', '${TABLE}', '${WRONG}', '${RIGHT}';
+        END IF;
+      END $$;
+    `);
+  }
+
+  /**
+   * Renames the column back to the (broken) name the original DDL produced.
+   * NOT destructive — no data is lost — but it RE-BREAKS the queue board
+   * against a migration-built database, so there is no reason to run it
+   * other than replaying the chain on a throwaway database.
+   */
+  public async down(q: QueryRunner): Promise<void> {
+    const { TABLE, WRONG, RIGHT } =
+      QueueEntryCalledByJoinColumnDrift1730083000000;
+
+    await q.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${RIGHT}'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = '${TABLE}' AND column_name = '${WRONG}'
+        ) THEN
+          ALTER TABLE "${TABLE}" RENAME COLUMN "${RIGHT}" TO "${WRONG}";
+        END IF;
+      END $$;
+    `);
+  }
+}

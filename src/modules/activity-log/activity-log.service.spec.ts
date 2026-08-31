@@ -239,14 +239,12 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
     expect(listParams).toContain(25);
   });
 
-  it('applies actor/action/entityType/entityId/date-range/free-text filters', async () => {
+  it('applies actor/action/date-range/free-text filters', async () => {
     await service.list(
       TENANT_ID,
       query({
         actorUserId: 'user-1',
         action: 'campaign.launched',
-        entityType: 'Campaign',
-        entityId: 'campaign-1',
         from: '2026-01-01T00:00:00.000Z',
         to: '2026-12-31T00:00:00.000Z',
         q: 'campaign',
@@ -256,8 +254,6 @@ describe('ActivityLogService (T189, FR-U007/FR-U008)', () => {
     const [sql] = dataSource.query.mock.calls[0];
     expect(sql).toContain('al."userId" =');
     expect(sql).toContain('al.action =');
-    expect(sql).toContain('al.entity_type =');
-    expect(sql).toContain('al.entity_id =');
     expect(sql).toContain('al.created_at >=');
     expect(sql).toContain('al.created_at <=');
     expect(sql).toContain('al.action ILIKE');

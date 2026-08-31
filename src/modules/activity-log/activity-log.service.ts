@@ -68,14 +68,6 @@ export class ActivityLogService {
       params.push(query.action);
       conditions.push(`al.action = $${params.length}`);
     }
-    if (query.entityType) {
-      params.push(query.entityType);
-      conditions.push(`al.entity_type = $${params.length}`);
-    }
-    if (query.entityId) {
-      params.push(query.entityId);
-      conditions.push(`al.entity_id = $${params.length}`);
-    }
     if (query.from) {
       params.push(new Date(query.from));
       conditions.push(`al.created_at >= $${params.length}`);
