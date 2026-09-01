@@ -39,7 +39,12 @@ import { PERMISSION, PermissionSlug } from './rbac.constants';
 export const RISK_LEVELS = ['low', 'medium', 'high', 'critical'] as const;
 export type RiskLevel = (typeof RISK_LEVELS)[number];
 
-export const PERMISSION_SCOPES = ['platform', 'tenant', 'branch', 'system'] as const;
+export const PERMISSION_SCOPES = [
+  'platform',
+  'tenant',
+  'branch',
+  'system',
+] as const;
 export type PermissionScope = (typeof PERMISSION_SCOPES)[number];
 
 export const PERMISSION_STATUSES = ['active', 'deprecated'] as const;
@@ -141,67 +146,92 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
 // Scope overrides (default is derived; override only the exceptions)
 // ---------------------------------------------------------------------------
 
-export const SCOPE_OVERRIDES: Partial<Record<PermissionSlug, PermissionScope>> = {
-  // (none required today — platform.* + tenants.manage are inferred below)
-};
+export const SCOPE_OVERRIDES: Partial<Record<PermissionSlug, PermissionScope>> =
+  {
+    // The only slug that operates at the BRANCH layer rather than the tenant
+    // one: holding it means "you act on the branch(es) you are assigned to",
+    // and — paired with the ABSENCE of the tenant-wide `branches.update` — it
+    // is what `isBranchRestricted` (rbac.constants.ts) reads to decide that a
+    // principal's whole session is branch-narrowed.
+    //
+    // Persisted onto `permissions.scope` by the seeder, so the staff
+    // Permission Preview can label the restriction from the SAME row the
+    // authorization decision is derived from, instead of re-deriving it from
+    // the slug string in the UI.
+    [PERMISSION.BRANCHES_UPDATE_OWN]: 'branch',
+  };
 
 // ---------------------------------------------------------------------------
 // Deprecated slugs (explicit administrative decision; empty until one is made)
 // ---------------------------------------------------------------------------
 
-export const DEPRECATED_SLUGS: ReadonlySet<PermissionSlug> = new Set<PermissionSlug>([]);
+export const DEPRECATED_SLUGS: ReadonlySet<PermissionSlug> =
+  new Set<PermissionSlug>([]);
 
 // ---------------------------------------------------------------------------
 // Human descriptions (a curated subset; the rest are intentionally undescribed
 // so the "missing description" audit finding surfaces real gaps to fill).
 // ---------------------------------------------------------------------------
 
-export const PERMISSION_DESCRIPTIONS: Partial<Record<PermissionSlug, string>> = {
-  [PERMISSION.DASHBOARD_ACCESS]:
-    'Entry to the clinic dashboard shell itself — grants no data access on its own; what a role can see/do once inside is governed by its other permissions.',
-  [PERMISSION.TENANTS_MANAGE]:
-    'Create, suspend and delete tenants (clinics). Platform-level control that spans every tenant.',
-  [PERMISSION.ROLES_MANAGE]:
-    'Create roles and assign permissions to them. Effectively confers the ability to grant any other permission.',
-  [PERMISSION.USERS_MANAGE]:
-    'Create, update and deactivate user accounts and their role assignments.',
-  [PERMISSION.PLATFORM_SETTINGS_MANAGE]:
-    'Change platform-wide system settings, including integration credentials and operational toggles.',
-  [PERMISSION.PLATFORM_SETTINGS_READ]:
-    'View platform-wide system settings (values may be redacted for secrets).',
-  [PERMISSION.REFUNDS_MANAGE]:
-    'Issue refunds against captured payments. Directly moves money out of the platform.',
-  [PERMISSION.PAYMENTS_MANAGE]:
-    'Capture, void and reconcile payments for a tenant.',
-  [PERMISSION.PAYMENTS_READ]: 'View payment records and their status.',
-  [PERMISSION.SETTLEMENTS_MANAGE]:
-    'Generate and manage settlement batches that pay tenants their net balance.',
-  [PERMISSION.INVOICES_MANAGE]: 'Create, edit and void customer invoices.',
-  [PERMISSION.BILLING_MANAGE]: 'Manage a tenant’s subscription billing and invoices.',
-  [PERMISSION.SUBSCRIPTION_MANAGE]: 'Change a tenant’s subscription plan and lifecycle.',
-  [PERMISSION.PLATFORM_API_KEYS_MANAGE]:
-    'Issue and revoke API keys used for programmatic platform access.',
-  [PERMISSION.PLATFORM_WEBHOOKS_MANAGE]: 'Configure outbound webhook endpoints and secrets.',
-  [PERMISSION.FEATUREFLAG_MANAGE]: 'Toggle feature flags that gate product capabilities.',
-  [PERMISSION.SERVICES_DELETE]: 'Permanently remove a bookable service from a tenant catalogue.',
-  [PERMISSION.APPOINTMENTS_MANAGE_ALL]:
-    'Full control over every appointment in the tenant, regardless of owner.',
-  [PERMISSION.STAFF_MANAGE]: 'Manage staff members, their profiles and employment status.',
-  [PERMISSION.CUSTOMERS_MANAGE]: 'Full control over customer records within the tenant.',
-  [PERMISSION.CRM_CUSTOMERS_MANAGE]: 'Manage CRM customer records, ownership and lifecycle.',
-  [PERMISSION.AI_MANAGE]: 'Configure the AI assistant, its agents, prompts and knowledge bases.',
-  [PERMISSION.REPORTS_READ]: 'View operational and financial reports.',
-  [PERMISSION.REPORTS_EXPORT]: 'Export reports to file — a potential data-exfiltration path.',
-  [PERMISSION.APPOINTMENTS_CREATE]: 'Book new appointments.',
-  [PERMISSION.APPOINTMENTS_READ]: 'View any appointment in the tenant.',
-  [PERMISSION.APPOINTMENTS_READ_OWN]:
-    'View only the appointments the current user owns (ownership enforced in the service layer).',
-  [PERMISSION.PROFILE_UPDATE_OWN]:
-    'Update the current user’s own profile (ownership enforced in the service layer).',
-  [PERMISSION.CUSTOMERS_READ]: 'View customer records.',
-  [PERMISSION.SERVICES_READ]: 'View the bookable service catalogue.',
-  [PERMISSION.STAFF_READ]: 'View staff members and their profiles.',
-};
+export const PERMISSION_DESCRIPTIONS: Partial<Record<PermissionSlug, string>> =
+  {
+    [PERMISSION.DASHBOARD_ACCESS]:
+      'Entry to the clinic dashboard shell itself — grants no data access on its own; what a role can see/do once inside is governed by its other permissions.',
+    [PERMISSION.TENANTS_MANAGE]:
+      'Create, suspend and delete tenants (clinics). Platform-level control that spans every tenant.',
+    [PERMISSION.ROLES_MANAGE]:
+      'Create roles and assign permissions to them. Effectively confers the ability to grant any other permission.',
+    [PERMISSION.USERS_MANAGE]:
+      'Create, update and deactivate user accounts and their role assignments.',
+    [PERMISSION.PLATFORM_SETTINGS_MANAGE]:
+      'Change platform-wide system settings, including integration credentials and operational toggles.',
+    [PERMISSION.PLATFORM_SETTINGS_READ]:
+      'View platform-wide system settings (values may be redacted for secrets).',
+    [PERMISSION.REFUNDS_MANAGE]:
+      'Issue refunds against captured payments. Directly moves money out of the platform.',
+    [PERMISSION.PAYMENTS_MANAGE]:
+      'Capture, void and reconcile payments for a tenant.',
+    [PERMISSION.PAYMENTS_READ]: 'View payment records and their status.',
+    [PERMISSION.SETTLEMENTS_MANAGE]:
+      'Generate and manage settlement batches that pay tenants their net balance.',
+    [PERMISSION.INVOICES_MANAGE]: 'Create, edit and void customer invoices.',
+    [PERMISSION.BILLING_MANAGE]:
+      'Manage a tenant’s subscription billing and invoices.',
+    [PERMISSION.SUBSCRIPTION_MANAGE]:
+      'Change a tenant’s subscription plan and lifecycle.',
+    [PERMISSION.PLATFORM_API_KEYS_MANAGE]:
+      'Issue and revoke API keys used for programmatic platform access.',
+    [PERMISSION.PLATFORM_WEBHOOKS_MANAGE]:
+      'Configure outbound webhook endpoints and secrets.',
+    [PERMISSION.FEATUREFLAG_MANAGE]:
+      'Toggle feature flags that gate product capabilities.',
+    [PERMISSION.SERVICES_DELETE]:
+      'Permanently remove a bookable service from a tenant catalogue.',
+    [PERMISSION.APPOINTMENTS_MANAGE_ALL]:
+      'Full control over every appointment in the tenant, regardless of owner.',
+    [PERMISSION.STAFF_MANAGE]:
+      'Manage staff members, their profiles and employment status.',
+    [PERMISSION.CUSTOMERS_MANAGE]:
+      'Full control over customer records within the tenant.',
+    [PERMISSION.CRM_CUSTOMERS_MANAGE]:
+      'Manage CRM customer records, ownership and lifecycle.',
+    [PERMISSION.AI_MANAGE]:
+      'Configure the AI assistant, its agents, prompts and knowledge bases.',
+    [PERMISSION.REPORTS_READ]: 'View operational and financial reports.',
+    [PERMISSION.REPORTS_EXPORT]:
+      'Export reports to file — a potential data-exfiltration path.',
+    [PERMISSION.APPOINTMENTS_CREATE]: 'Book new appointments.',
+    [PERMISSION.APPOINTMENTS_READ]: 'View any appointment in the tenant.',
+    [PERMISSION.APPOINTMENTS_READ_OWN]:
+      'View only the appointments the current user owns (ownership enforced in the service layer).',
+    [PERMISSION.PROFILE_UPDATE_OWN]:
+      'Update the current user’s own profile (ownership enforced in the service layer).',
+    [PERMISSION.BRANCHES_UPDATE_OWN]:
+      'Edit only the branch(es) this account is assigned to. Also marks the whole account as branch-restricted: appointments, queue, staff and activity are narrowed to those branches server-side.',
+    [PERMISSION.CUSTOMERS_READ]: 'View customer records.',
+    [PERMISSION.SERVICES_READ]: 'View the bookable service catalogue.',
+    [PERMISSION.STAFF_READ]: 'View staff members and their profiles.',
+  };
 
 // ---------------------------------------------------------------------------
 // Derivation helpers
@@ -209,7 +239,11 @@ export const PERMISSION_DESCRIPTIONS: Partial<Record<PermissionSlug, string>> = 
 
 /** Reads (and self-service) are low-risk by default; everything else medium. */
 function deriveBaseRisk(slug: string): RiskLevel {
-  if (/\.read(_own)?$/.test(slug) || slug.endsWith('_own') || slug.includes('.read')) {
+  if (
+    /\.read(_own)?$/.test(slug) ||
+    slug.endsWith('_own') ||
+    slug.includes('.read')
+  ) {
     return 'low';
   }
   return DEFAULT_RISK;
@@ -239,7 +273,9 @@ export interface PermissionMetadata {
 }
 
 /** Resolves the full metadata bundle for a slug (used by the seeder). */
-export function getPermissionMetadata(slug: PermissionSlug): PermissionMetadata {
+export function getPermissionMetadata(
+  slug: PermissionSlug,
+): PermissionMetadata {
   return {
     description: PERMISSION_DESCRIPTIONS[slug] ?? null,
     scope: getScope(slug),

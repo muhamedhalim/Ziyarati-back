@@ -54,6 +54,7 @@ import { CreateStaffRatingDto } from './dto/create-staff-rating.dto';
 import { AvailabilityQueryDto } from './dto/availability.query.dto';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
@@ -704,8 +705,14 @@ doctor-only staff picker).
   })
   @Get()
   @RequirePermissions(PERMISSION.STAFF_READ)
-  findAll(@Query() query: QueryStaffDto) {
-    return this.staff.findAll(this.ctx.requireTenantId(), query);
+  findAll(
+    @Query() query: QueryStaffDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.staff.findAll(this.ctx.requireTenantId(), query, {
+      id: user.id,
+      permissions: user.permissions,
+    });
   }
 
   @ApiOperation({

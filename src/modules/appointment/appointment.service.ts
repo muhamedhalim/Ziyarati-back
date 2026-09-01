@@ -43,6 +43,7 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 
 /** Authenticated principal's identity + permission set — enough to apply ownership scoping. */
 export interface AppointmentCaller {
@@ -189,6 +190,8 @@ export class AppointmentsService {
     /** Clinic-wide activity trail. Every call is best-effort and happens
      *  AFTER the owning transaction commits — see `recordAudit`. */
     private readonly audit: AppointmentAuditService,
+    /** The one authority on "which branches may this caller touch". */
+    private readonly branchScope: BranchScopeService,
   ) {}
 
   // ────────────────────── Activity / audit trail ─────────────────────────── //
@@ -280,7 +283,25 @@ export class AppointmentsService {
     }
 
     if (query.status) where.status = query.status;
-    if (query.branchId) where.branch = { id: query.branchId };
+
+    // ── Branch authorization, then the branch FILTER ──────────────────────
+    // Order matters. `query.branchId` is client input and is only ever a
+    // narrowing convenience; the SCOPE below is the boundary. A restricted
+    // caller who asks for a foreign branch is refused outright (403) rather
+    // than silently served their own — a silent substitution would make the
+    // UI show numbers that do not match what was asked for.
+    const branchScope = await this.branchScope.resolve(tenantId, caller);
+    if (query.branchId) {
+      this.branchScope.assertBranchAllowed(branchScope, query.branchId);
+      where.branch = { id: query.branchId };
+    } else {
+      // No requested branch: fall back to the caller's whole scope. For a
+      // tenant-wide caller this is `undefined` and the property is never set,
+      // so their query plan is byte-identical to before.
+      const scoped = this.branchScope.branchFilter(branchScope);
+      if (scoped) where.branch = scoped;
+    }
+
     if (query.customerId) where.customer = { id: query.customerId };
 
     if (query.from && query.to) {
@@ -343,6 +364,20 @@ export class AppointmentsService {
     if (caller && !caller.permissions.includes(PERMISSION.APPOINTMENTS_READ)) {
       const ownStaffId = await this.resolveCallerStaffId(tenantId, caller.id);
       if (!ownStaffId || appointment.staff?.id !== ownStaffId) {
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Appointment not found',
+        });
+      }
+    }
+
+    // Branch boundary for a single record (IDOR). 404, not 403: unlike a
+    // requested `branchId` filter, the id here identifies a RECORD, and a
+    // record outside the caller's branch must be indistinguishable from one
+    // that does not exist — the same discipline the ownership check above
+    // uses two lines up.
+    if (caller) {
+      const scope = await this.branchScope.resolve(tenantId, caller);
+      if (!this.branchScope.isAllowed(scope, appointment.branch?.id)) {
         throw new AppError(ErrorCode.NOT_FOUND, {
           message: 'Appointment not found',
         });
@@ -1222,7 +1257,25 @@ export class AppointmentsService {
 
   // ════════════════════════════ Private helpers ══════════════════════════════ //
 
-  /** Loads an appointment (minimal relations) for a write, tenant-scoped. */
+  /**
+   * Loads an appointment (minimal relations) for a write, tenant-scoped —
+   * AND branch-scoped.
+   *
+   * This is the single chokepoint every mutation reaches (update, cancel,
+   * reschedule, status change, notes, service edits), which is exactly why
+   * the branch boundary belongs here: one check covers all six instead of six
+   * checks that can each be forgotten. Without it a branch-restricted caller
+   * could cancel or reschedule another branch's appointment by UUID — the
+   * read path being scoped is not enough, because ids leak (emails, exports,
+   * a previous assignment).
+   *
+   * The principal comes from `resolveCurrent` (the request-scoped
+   * `TenantContextService` store) rather than a threaded parameter: two of
+   * the six callers also run for PATIENTS with `userId === null` and for
+   * background jobs, where there is no staff principal to thread. Those paths
+   * resolve to tenant-wide, which is correct — a patient acting on their own
+   * appointment is not a branch-restricted staff member.
+   */
   private async loadForWrite(
     manager: EntityManager,
     tenantId: string,
@@ -1237,9 +1290,28 @@ export class AppointmentsService {
         message: 'Appointment not found',
       });
     }
+
+    const scope = await this.branchScope.resolveCurrent(tenantId);
+    if (!this.branchScope.isAllowed(scope, appointment.branch?.id)) {
+      // 404 for the same reason as `findOne`: a record outside the caller's
+      // branch must not be distinguishable from one that does not exist.
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Appointment not found',
+      });
+    }
     return appointment;
   }
 
+  /**
+   * Validates a branch id supplied by the CLIENT — on create, and on the
+   * branch-reassignment path of `update`.
+   *
+   * Two independent checks, both required: the branch must belong to this
+   * tenant and be active (existing behaviour), and it must be inside the
+   * caller's branch scope (new). Without the second, a branch-restricted
+   * caller could book into — or move an appointment out to — a branch they do
+   * not run, which is a write-side escape from the read scoping above.
+   */
   private async assertBranch(
     manager: EntityManager,
     tenantId: string,
@@ -1253,6 +1325,10 @@ export class AppointmentsService {
         message: 'Branch not found or inactive for this clinic',
       });
     }
+    this.branchScope.assertBranchAllowed(
+      await this.branchScope.resolveCurrent(tenantId),
+      branchId,
+    );
   }
 
   private async assertCustomer(

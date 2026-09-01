@@ -27,11 +27,14 @@ import {
   PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
   RESERVED_PERMISSION_SLUGS,
   ROLE,
+  ROLES,
   ROLE_GATED_PERMISSION_SLUGS,
   ROLE_PERMISSIONS,
   UNENFORCED_PERMISSION_SLUGS,
   UNTRIAGED_COVERAGE_GAP_SLUGS,
+  isBranchRestricted,
 } from './rbac.constants';
+import { getScope } from './permission-metadata';
 
 const SRC_ROOT = path.join(__dirname, '..');
 
@@ -436,5 +439,174 @@ describe('Support Operations Console diagnostic permissions', () => {
 
   it('does not collapse into one broad slug — no platform.support.manage exists', () => {
     expect(ALL_PERMISSION_SLUGS).not.toContain('platform.support.manage');
+  });
+});
+
+/**
+ * ============================================================================
+ *  Branch Manager — the catalogue's first BRANCH-scoped role
+ * ============================================================================
+ *
+ * Two things must hold and keep holding:
+ *
+ *  1. The role is genuinely NARROWER than Operations Manager. It was derived
+ *     from `manager` by subtraction, and the subset assertion below is what
+ *     stops a future edit from quietly handing it a clinic-level capability —
+ *     the failure mode that would make it "the owner dashboard again".
+ *
+ *  2. `isBranchRestricted` answers TRUE for it and FALSE for every role that
+ *     existed before it. That predicate is the single input `BranchScopeService`
+ *     uses to narrow appointments, staff, the activity log and the dashboard
+ *     summary, so these assertions are the backstop on backward compatibility:
+ *     if any pre-existing role ever starts answering true, that role silently
+ *     stops seeing its own clinic.
+ */
+describe('branch_manager role (branch-scoped RBAC)', () => {
+  const branchManager = ROLE_PERMISSIONS[ROLE.BRANCH_MANAGER] as string[];
+  const manager = ROLE_PERMISSIONS[ROLE.MANAGER] as string[];
+
+  it('is in the role catalogue with a display name and description', () => {
+    const def = ROLES.find((r) => r.slug === ROLE.BRANCH_MANAGER);
+    expect(def).toBeDefined();
+    expect(def?.name).toBe('Branch Manager');
+    expect(def?.description).toBeTruthy();
+  });
+
+  it('is assignable to clinic staff — it must appear in GET /staff/assignable-roles', () => {
+    expect(NON_STAFF_ROLE_SLUGS).not.toContain(ROLE.BRANCH_MANAGER);
+  });
+
+  it('can reach the clinic workspace shell (holds dashboard.access)', () => {
+    expect(branchManager).toContain(PERMISSION.DASHBOARD_ACCESS);
+  });
+
+  it('holds branches.update_own and NOT the tenant-wide branches.update — the pair that makes it branch-restricted', () => {
+    expect(branchManager).toContain(PERMISSION.BRANCHES_UPDATE_OWN);
+    expect(branchManager).not.toContain(PERMISSION.BRANCHES_UPDATE);
+    expect(branchManager).not.toContain(PERMISSION.BRANCHES_CREATE);
+    expect(branchManager).not.toContain(PERMISSION.BRANCHES_DELETE);
+  });
+
+  it('grants nothing Operations Manager does not already grant, except branches.update_own', () => {
+    const extras = branchManager.filter((slug) => !manager.includes(slug));
+    expect(extras).toEqual([PERMISSION.BRANCHES_UPDATE_OWN]);
+  });
+
+  it('holds no financial, subscription, clinic-configuration or staff-provisioning permission', () => {
+    for (const slug of [
+      PERMISSION.PAYMENTS_READ,
+      PERMISSION.PAYMENTS_MANAGE,
+      PERMISSION.REFUNDS_MANAGE,
+      PERMISSION.INVOICES_READ,
+      PERMISSION.INVOICES_MANAGE,
+      PERMISSION.SETTLEMENTS_READ,
+      PERMISSION.STAFF_COMMISSION_READ,
+      PERMISSION.SUBSCRIPTION_READ,
+      PERMISSION.SUBSCRIPTION_MANAGE,
+      PERMISSION.BILLING_READ,
+      PERMISSION.BILLING_MANAGE,
+      PERMISSION.USAGE_READ,
+      PERMISSION.FEATUREFLAG_READ,
+      PERMISSION.BILLING_UPGRADE_READ,
+      PERMISSION.STAFF_CREATE,
+      PERMISSION.STAFF_UPDATE,
+      PERMISSION.STAFF_MANAGE,
+      PERMISSION.USERS_MANAGE,
+      PERMISSION.ROLES_MANAGE,
+      PERMISSION.SERVICES_CREATE,
+      PERMISSION.SERVICES_UPDATE,
+      PERMISSION.SERVICES_DELETE,
+      PERMISSION.AI_MANAGE,
+      PERMISSION.CLINICAL_RECORDS_READ,
+      PERMISSION.CLINICAL_RECORDS_MANAGE,
+    ]) {
+      expect(branchManager).not.toContain(slug);
+    }
+  });
+
+  /**
+   * `analytics.dashboard.read` is how FR-A016 spells "tenant-wide analytics";
+   * `analytics.reports.read` reaches `GET /analytics/reports/daily`, which is
+   * still tenant-wide (one row per branch per day, no scope resolution).
+   * Granting either would leak sibling branches' figures, so BOTH stay out
+   * until that endpoint is branch-scoped. This assertion is the reminder.
+   */
+  it('holds no analytics permission — the daily-report endpoints are still tenant-wide', () => {
+    expect(branchManager).not.toContain(PERMISSION.ANALYTICS_DASHBOARD_READ);
+    expect(branchManager).not.toContain(PERMISSION.ANALYTICS_REPORTS_READ);
+    expect(branchManager).not.toContain(PERMISSION.ANALYTICS_REPORTS_MANAGE);
+    expect(branchManager).not.toContain(PERMISSION.REPORTS_READ);
+  });
+
+  it('DOES hold the branch-operations surface it exists for', () => {
+    for (const slug of [
+      PERMISSION.APPOINTMENTS_READ,
+      PERMISSION.APPOINTMENTS_CREATE,
+      PERMISSION.APPOINTMENTS_UPDATE,
+      PERMISSION.APPOINTMENTS_CANCEL,
+      PERMISSION.APPOINTMENTS_RESCHEDULE,
+      PERMISSION.STAFF_READ,
+      PERMISSION.STAFF_SCHEDULE_MANAGE,
+      PERMISSION.SCHEDULING_SLOTS_MANAGE,
+      PERMISSION.CRM_CUSTOMERS_READ,
+      PERMISSION.CRM_CUSTOMERS_MANAGE,
+      PERMISSION.AUDIT_READ,
+    ]) {
+      expect(branchManager).toContain(slug);
+    }
+  });
+
+  describe('isBranchRestricted — the one rule every scoped query reads', () => {
+    it('is TRUE for branch_manager', () => {
+      expect(isBranchRestricted(branchManager)).toBe(true);
+    });
+
+    it('is FALSE for every role that existed before it — backward compatibility', () => {
+      for (const role of [
+        ROLE.OWNER,
+        ROLE.MANAGER,
+        ROLE.RECEPTIONIST,
+        ROLE.DOCTOR,
+        ROLE.CUSTOMER,
+        ROLE.AI_BOT,
+        ROLE.PLATFORM_SUPPORT,
+      ]) {
+        const grants = ROLE_PERMISSIONS[role] as string[];
+        expect(isBranchRestricted(grants)).toBe(false);
+      }
+    });
+
+    it('is TRUE for an arbitrary custom role granted branches.update_own — it is a permission rule, not a role list', () => {
+      expect(
+        isBranchRestricted([
+          PERMISSION.DASHBOARD_ACCESS,
+          PERMISSION.APPOINTMENTS_READ,
+          PERMISSION.BRANCHES_UPDATE_OWN,
+        ]),
+      ).toBe(true);
+    });
+
+    it('is FALSE when a caller holds BOTH slugs — the tenant-wide one always wins', () => {
+      expect(
+        isBranchRestricted([
+          PERMISSION.BRANCHES_UPDATE_OWN,
+          PERMISSION.BRANCHES_UPDATE,
+        ]),
+      ).toBe(false);
+    });
+
+    it('is FALSE for an empty permission set (no principal / system caller)', () => {
+      expect(isBranchRestricted([])).toBe(false);
+    });
+  });
+
+  /**
+   * The Permission Preview reports the branch restriction from
+   * `permissions.scope`, which the seeder copies from this registry. If the
+   * override is ever dropped, the preview silently stops telling a clinic
+   * owner that the role they are about to create is branch-restricted.
+   */
+  it('branches.update_own is registered at the branch scope layer, for the Permission Preview', () => {
+    expect(getScope(PERMISSION.BRANCHES_UPDATE_OWN)).toBe('branch');
   });
 });

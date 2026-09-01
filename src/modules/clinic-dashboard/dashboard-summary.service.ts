@@ -16,6 +16,10 @@ import { AccessControlService } from '../subscription-billing/access-control.ser
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { HANDOVER_STATUS } from '../ai/ai.constants';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import {
+  BranchScopeService,
+  type BranchScope,
+} from '../../core/branch-scope/branch-scope.service';
 
 /**
  * The four headline counts the clinic/reception dashboard renders.
@@ -32,6 +36,16 @@ export interface DashboardSummary {
   /** Echoes what the caller was actually allowed to see — never client-guessed. */
   scope: {
     appointments: 'ALL' | 'OWN' | 'NONE';
+    /**
+     * The BRANCH narrowing applied to this payload, resolved server-side from
+     * `branch_users` (never a request parameter — this endpoint takes none).
+     *
+     * `null` for a tenant-wide caller. For a branch-restricted one it is the
+     * exact branch ids counted, so the UI can state which branch the numbers
+     * are for instead of implying they are the whole clinic's — the specific
+     * confusion an unscoped dashboard creates for a Branch Manager.
+     */
+    branchIds: string[] | null;
   };
   generatedAt: string;
 }
@@ -113,6 +127,7 @@ export class DashboardSummaryService {
     private readonly tenants: Repository<Tenant>,
     private readonly cache: AnalyticsCacheService,
     private readonly access: AccessControlService,
+    private readonly branchScope: BranchScopeService,
   ) {}
 
   async get(
@@ -130,18 +145,27 @@ export class DashboardSummaryService {
         ? await this.resolveCallerStaffId(tenantId, user.id)
         : null;
 
-    const suffix = this.cacheSuffix(grants, ownStaffId);
+    // The BRANCH narrowing, on top of (not instead of) the permission
+    // narrowing above. Tenant-wide for every role that exists today except a
+    // branch-restricted one, so this is a no-op for owner/manager/
+    // receptionist/doctor and their cache entries are unchanged.
+    const branchScope = await this.branchScope.resolve(tenantId, user);
+
+    const suffix = this.cacheSuffix(grants, ownStaffId, branchScope);
 
     const counts = await this.cache.wrap(
       tenantId,
       CACHE_NS.DASHBOARD,
       suffix,
-      () => this.countAll(tenantId, grants, ownStaffId),
+      () => this.countAll(tenantId, grants, ownStaffId, branchScope),
     );
 
     return {
       ...counts,
-      scope: { appointments: grants.appointments },
+      scope: {
+        appointments: grants.appointments,
+        branchIds: branchScope.branchIds,
+      },
       generatedAt: new Date().toISOString(),
     };
   }
@@ -194,13 +218,25 @@ export class DashboardSummaryService {
   /**
    * Cache key must encode the caller's VISIBILITY, or a receptionist's cached
    * response could be served to a doctor whose scope is narrower.
+   *
+   * The branch scope is part of that visibility and is therefore part of the
+   * key: a Branch Manager must never be served the tenant-wide entry, and two
+   * managers of different branches must never share one. `all` (the
+   * tenant-wide marker) is a distinct value from any branch id list, and the
+   * ids are already sorted by `BranchScopeService`, so the same scope always
+   * produces the same key.
    */
-  private cacheSuffix(grants: Grants, ownStaffId: string | null): string {
+  private cacheSuffix(
+    grants: Grants,
+    ownStaffId: string | null,
+    branchScope: BranchScope,
+  ): string {
     const parts = [
       `a:${grants.appointments === 'OWN' ? `own:${ownStaffId ?? 'none'}` : grants.appointments}`,
       `c:${grants.customers ? 1 : 0}`,
       `s:${grants.staff ? 1 : 0}`,
       `h:${grants.handovers ? 1 : 0}`,
+      `b:${branchScope.branchIds === null ? 'all' : branchScope.branchIds.join(',') || 'none'}`,
     ];
     return `summary:${parts.join('|')}`;
   }
@@ -233,6 +269,7 @@ export class DashboardSummaryService {
     tenantId: string,
     grants: Grants,
     ownStaffId: string | null,
+    branchScope: BranchScope,
   ): Promise<Omit<DashboardSummary, 'scope' | 'generatedAt'>> {
     const qb = this.tenants
       .createQueryBuilder('t')
@@ -243,6 +280,13 @@ export class DashboardSummaryService {
       qb[selected ? 'addSelect' : 'select'](sql, alias);
       selected = true;
     };
+
+    // The branch narrowing, bound ONCE for every sub-select that can use it.
+    // A restricted caller assigned to no branch yields an empty array, and
+    // `= ANY('{}')` matches nothing — fail-closed, which is the correct answer
+    // (they are scoped to zero branches), never "fall back to tenant-wide".
+    const branchIds = branchScope.branchIds;
+    if (branchIds !== null) qb.setParameter('scopeBranchIds', branchIds);
 
     // A caller with `read_own` and no staff profile of their own sees 0 — the
     // same answer `AppointmentService.findAll` gives, not "all appointments".
@@ -257,10 +301,25 @@ export class DashboardSummaryService {
         );
         qb.setParameter('ownStaffId', ownStaffId);
       }
+      if (branchIds !== null) {
+        // `appointments.branchId` is NOT NULL and already covered by the
+        // `(tenantId, branchId, start_at)` index, so this narrows the same
+        // index scan rather than adding work.
+        sub.andWhere(
+          `a."${this.fk(this.appointments, 'branch')}" = ANY(:scopeBranchIds)`,
+        );
+      }
       add(`(${sub.getQuery()})`, 'appointments');
     }
 
     if (grants.customers) {
+      // NOT branch-narrowed: `customers` has no branch column. A patient
+      // belongs to the clinic, not to a location, and can be seen at any of
+      // them. Deriving "customers of my branch" would mean an EXISTS join
+      // through `appointments` — a different, weaker question ("has ever had
+      // an appointment here") on every dashboard load. Left tenant-wide
+      // deliberately, and stated here rather than left to be discovered:
+      // `crm.customers.read` is a tenant-wide grant for this role today.
       const sub = this.customers
         .createQueryBuilder('c')
         .select('COUNT(*)')
@@ -273,10 +332,27 @@ export class DashboardSummaryService {
         .createQueryBuilder('s')
         .select('COUNT(*)')
         .where(`s."${this.fk(this.staff, 'tenant')}" = :tenantId`);
+      if (branchIds !== null) {
+        // Staff carry no branch column of their own — the assignment lives on
+        // `branch_users`, keyed by the staff profile's USER. An EXISTS is the
+        // right shape here (not a join): it stops at the first matching row
+        // and cannot multiply the count for someone assigned to two branches,
+        // which a join would silently do.
+        sub.andWhere(
+          `EXISTS (
+             SELECT 1 FROM branch_users bu
+              WHERE bu."userId" = s."${this.fk(this.staff, 'user')}"
+                AND bu."branchId" = ANY(:scopeBranchIds)
+           )`,
+        );
+      }
       add(`(${sub.getQuery()})`, 'staff');
     }
 
     if (grants.handovers) {
+      // NOT branch-narrowed: `handover_requests` has no branch column either
+      // (a WhatsApp conversation is not bound to a location). Tenant-wide by
+      // necessity, not by oversight.
       const sub = this.handovers
         .createQueryBuilder('h')
         .select('COUNT(*)')

@@ -84,8 +84,15 @@ function build(options: { cached?: unknown } = {}) {
     },
   };
 
-  const branchUsers = {
-    find: jest.fn().mockResolvedValue([{ branch: { id: 'branch-b' } }]),
+  /**
+   * The shared `BranchScopeService` — which now owns the one `branch_users`
+   * lookup in the codebase — rather than the repository this suite used to
+   * hand in directly. The assertions below are unchanged in meaning: they
+   * still prove that branch-scope RESOLUTION happens on every call, before
+   * the cache is consulted, and is therefore never cached itself.
+   */
+  const branchScope = {
+    getMembershipBranchIds: jest.fn().mockResolvedValue(['branch-b']),
   };
   const tenantSettings = {
     findOne: jest.fn().mockResolvedValue({ currency: 'SAR' }),
@@ -93,7 +100,7 @@ function build(options: { cached?: unknown } = {}) {
 
   const service = new AdvancedAnalyticsService(
     aggregation as never,
-    branchUsers as never,
+    branchScope as never,
     tenantSettings as never,
     cache as never,
   );
@@ -103,7 +110,7 @@ function build(options: { cached?: unknown } = {}) {
     aggregation,
     cache,
     cacheKeys,
-    branchUsers,
+    branchScope,
     tenantSettings,
   };
 }
@@ -157,7 +164,7 @@ describe('AdvancedAnalyticsService — trend caching', () => {
 
   describe('authorization is never cached', () => {
     it('resolves branch scope BEFORE consulting the cache', async () => {
-      const { service, branchUsers } = build({
+      const { service, branchScope } = build({
         cached: { empty: true, data: [] },
       });
 
@@ -169,7 +176,7 @@ describe('AdvancedAnalyticsService — trend caching', () => {
 
       // Even on a hit, the caller's own branch membership was read. Skipping
       // this to save a query would mean the cache decided who sees what.
-      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+      expect(branchScope.getMembershipBranchIds).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a branch the caller is not assigned to, hit or miss', async () => {
@@ -266,13 +273,13 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
     });
 
     it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
-      const { service, branchUsers } = build({
+      const { service, branchScope } = build({
         cached: { ...ENVELOPE, empty: true },
       });
 
       await service.rates(TENANT, BRANCH_RESTRICTED, RANGE as never);
 
-      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+      expect(branchScope.getMembershipBranchIds).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a branch the caller is not assigned to, even on a hit', async () => {
@@ -316,13 +323,13 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
     });
 
     it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
-      const { service, branchUsers } = build({
+      const { service, branchScope } = build({
         cached: { ...ENVELOPE, empty: true },
       });
 
       await service.retention(TENANT, BRANCH_RESTRICTED, RANGE as never);
 
-      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+      expect(branchScope.getMembershipBranchIds).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a branch the caller is not assigned to, even on a hit', async () => {
@@ -358,7 +365,7 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
 
     it('resolves branch scope BEFORE consulting the cache, even on a hit', async () => {
       const cached = { envelope: ENVELOPE, rows: [] };
-      const { service, branchUsers } = build({ cached });
+      const { service, branchScope } = build({ cached });
 
       await service.performanceServices(
         TENANT,
@@ -366,7 +373,7 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
         PAGE_DTO as never,
       );
 
-      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+      expect(branchScope.getMembershipBranchIds).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a branch the caller is not assigned to, even on a hit', async () => {
@@ -438,7 +445,7 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
         rows: [],
         anyActivity: false,
       };
-      const { service, branchUsers } = build({ cached });
+      const { service, branchScope } = build({ cached });
 
       await service.performanceBranches(
         TENANT,
@@ -446,7 +453,7 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
         PAGE_DTO as never,
       );
 
-      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+      expect(branchScope.getMembershipBranchIds).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a branch the caller is not assigned to, even on a hit', async () => {
@@ -500,7 +507,7 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
         data: [],
         totalAppointments: 0,
       };
-      const { service, branchUsers } = build({ cached });
+      const { service, branchScope } = build({ cached });
 
       await service.performanceChannels(
         TENANT,
@@ -508,7 +515,7 @@ describe('AdvancedAnalyticsService — aggregate caching (T056, P8, CACHE-002)',
         PAGE_DTO as never,
       );
 
-      expect(branchUsers.find).toHaveBeenCalledTimes(1);
+      expect(branchScope.getMembershipBranchIds).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a branch the caller is not assigned to, even on a hit', async () => {

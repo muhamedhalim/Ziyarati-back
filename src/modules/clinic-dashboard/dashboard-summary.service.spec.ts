@@ -91,7 +91,7 @@ function makeRepo(
   };
 }
 
-function build(options: { aiAllowed?: boolean } = {}) {
+function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
   const recorded: RecordedQuery[] = [];
   const row = {
     appointments: '128',
@@ -100,13 +100,19 @@ function build(options: { aiAllowed?: boolean } = {}) {
     pendingHandovers: '2',
   };
 
-  const staffRepo = makeRepo('StaffProfile', recorded, row);
+  // `user` is the FK the branch narrowing joins `branch_users` on — staff
+  // carry no branch column of their own.
+  const staffRepo = makeRepo('StaffProfile', recorded, row, {
+    tenant: 'tenantId',
+    user: 'userId',
+  });
   const cacheKeys: string[] = [];
 
   const service = new DashboardSummaryService(
     makeRepo('Appointment', recorded, row, {
       tenant: 'tenantId',
       staff: 'staffId',
+      branch: 'branchId',
     }) as never,
     makeRepo('Customer', recorded, row) as never,
     staffRepo as never,
@@ -128,6 +134,14 @@ function build(options: { aiAllowed?: boolean } = {}) {
       resolve: jest
         .fn()
         .mockResolvedValue({ allowed: options.aiAllowed ?? true }),
+    } as never,
+    // BranchScopeService double. `branchIds: null` (the default) is a
+    // tenant-wide caller, which is what every pre-existing assertion in this
+    // suite models — so those assertions keep testing exactly what they did.
+    {
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ branchIds: options.branchIds ?? null }),
     } as never,
   );
 
@@ -310,6 +324,131 @@ describe('DashboardSummaryService', () => {
 
       const b = build();
       await b.service.get(TENANT, principal([...ALL_FOUR].reverse()));
+
+      expect(a.cacheKeys[0]).toEqual(b.cacheKeys[0]);
+    });
+  });
+});
+
+/**
+ * ============================================================================
+ *  Branch scoping — the Branch Manager's dashboard
+ * ============================================================================
+ *
+ * The defect this closes: a Branch Manager opened `/app/dashboard` and saw the
+ * clinic's totals, identical to the Owner's. These assertions pin the fix at
+ * the layer that matters — the SQL — rather than at the tiles that render it.
+ *
+ * They also pin the two counts that deliberately are NOT narrowed (customers,
+ * handovers: neither table has a branch column), so a later reader finds a
+ * stated decision instead of an apparent omission.
+ */
+describe('DashboardSummaryService — branch scoping', () => {
+  const BRANCH_A = 'branch-a';
+  const BRANCH_B = 'branch-b';
+
+  const appointmentsSql = (
+    recorded: { selects: { sql: string; alias: string }[] }[],
+  ) => recorded[0].selects.find((s) => s.alias === 'appointments')!.sql;
+  const staffSql = (
+    recorded: { selects: { sql: string; alias: string }[] }[],
+  ) => recorded[0].selects.find((s) => s.alias === 'staff')!.sql;
+
+  it('a tenant-wide caller composes the SAME SQL as before — no branch predicate at all', async () => {
+    const { service, recorded } = build();
+    await service.get(TENANT, principal(ALL_FOUR));
+
+    for (const select of recorded[0].selects) {
+      expect(select.sql).not.toContain('scopeBranchIds');
+    }
+    expect(recorded[0].params).not.toHaveProperty('scopeBranchIds');
+  });
+
+  it('narrows the appointment count to the caller’s branches', async () => {
+    const { service, recorded } = build({ branchIds: [BRANCH_A] });
+    await service.get(TENANT, principal(ALL_FOUR));
+
+    expect(appointmentsSql(recorded)).toContain(
+      'a."branchId" = ANY(:scopeBranchIds)',
+    );
+    expect(recorded[0].params.scopeBranchIds).toEqual([BRANCH_A]);
+  });
+
+  it('narrows the staff count through branch_users, with EXISTS so a two-branch member is not double counted', async () => {
+    const { service, recorded } = build({ branchIds: [BRANCH_A, BRANCH_B] });
+    await service.get(TENANT, principal(ALL_FOUR));
+
+    const sql = staffSql(recorded);
+    expect(sql).toContain('EXISTS');
+    expect(sql).toContain('branch_users');
+    expect(sql).toContain('bu."branchId" = ANY(:scopeBranchIds)');
+    expect(sql).toContain('bu."userId" = s."userId"');
+    expect(sql).not.toContain('JOIN branch_users');
+  });
+
+  it('leaves customers and pending handovers tenant-wide — neither table has a branch column', async () => {
+    const { service, recorded } = build({ branchIds: [BRANCH_A] });
+    await service.get(TENANT, principal(ALL_FOUR));
+
+    const customers = recorded[0].selects.find((s) => s.alias === 'customers')!;
+    const handovers = recorded[0].selects.find(
+      (s) => s.alias === 'pendingHandovers',
+    )!;
+    expect(customers.sql).not.toContain('scopeBranchIds');
+    expect(handovers.sql).not.toContain('scopeBranchIds');
+  });
+
+  it('echoes the applied branch scope on the response, so the UI can name it', async () => {
+    const { service } = build({ branchIds: [BRANCH_A] });
+    const result = await service.get(TENANT, principal(ALL_FOUR));
+    expect(result.scope.branchIds).toEqual([BRANCH_A]);
+  });
+
+  it('reports a null branch scope for a tenant-wide caller', async () => {
+    const { service } = build();
+    const result = await service.get(TENANT, principal(ALL_FOUR));
+    expect(result.scope.branchIds).toBeNull();
+  });
+
+  it('still narrows when the caller is assigned to NO branch — an empty ANY() matches nothing', async () => {
+    const { service, recorded } = build({ branchIds: [] });
+    const result = await service.get(TENANT, principal(ALL_FOUR));
+
+    expect(appointmentsSql(recorded)).toContain(
+      'a."branchId" = ANY(:scopeBranchIds)',
+    );
+    expect(recorded[0].params.scopeBranchIds).toEqual([]);
+    expect(result.scope.branchIds).toEqual([]);
+  });
+
+  describe('cache isolation', () => {
+    it('never serves the tenant-wide entry to a branch-restricted caller', async () => {
+      const wide = build();
+      await wide.service.get(TENANT, principal(ALL_FOUR));
+
+      const scoped = build({ branchIds: [BRANCH_A] });
+      await scoped.service.get(TENANT, principal(ALL_FOUR));
+
+      expect(wide.cacheKeys[0]).not.toEqual(scoped.cacheKeys[0]);
+      expect(wide.cacheKeys[0]).toContain('b:all');
+    });
+
+    it('gives two managers of DIFFERENT branches different cache keys', async () => {
+      const a = build({ branchIds: [BRANCH_A] });
+      await a.service.get(TENANT, principal(ALL_FOUR));
+
+      const b = build({ branchIds: [BRANCH_B] });
+      await b.service.get(TENANT, principal(ALL_FOUR));
+
+      expect(a.cacheKeys[0]).not.toEqual(b.cacheKeys[0]);
+    });
+
+    it('lets two managers of the SAME branch share one entry', async () => {
+      const a = build({ branchIds: [BRANCH_A] });
+      await a.service.get(TENANT, principal(ALL_FOUR));
+
+      const b = build({ branchIds: [BRANCH_A] });
+      await b.service.get(TENANT, principal(ALL_FOUR));
 
       expect(a.cacheKeys[0]).toEqual(b.cacheKeys[0]);
     });

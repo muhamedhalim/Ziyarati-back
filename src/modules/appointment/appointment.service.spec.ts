@@ -5,6 +5,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { AppointmentsService } from './appointment.service';
 import { AppointmentAuditService } from './appointment-audit.service';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { AppointmentService as AppointmentServiceEntity } from '../../entities/Calendar&Appointments/AppointmentService';
 import { AppointmentHistory } from '../../entities/Calendar&Appointments/AppointmentHistory';
@@ -137,6 +138,19 @@ describe('AppointmentsService', () => {
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: SubscriptionService, useValue: subscriptions },
         { provide: AppointmentAuditService, useValue: appointmentAudit },
+        // Tenant-wide (branchIds: null) — every principal this suite models
+        // predates branch scoping, so the service composes exactly the
+        // queries it did before, and these assertions keep their meaning.
+        {
+          provide: BranchScopeService,
+          useValue: {
+            resolve: jest.fn().mockResolvedValue({ branchIds: null }),
+            resolveCurrent: jest.fn().mockResolvedValue({ branchIds: null }),
+            isAllowed: () => true,
+            assertBranchAllowed: () => undefined,
+            branchFilter: () => undefined,
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(AppointmentsService);
