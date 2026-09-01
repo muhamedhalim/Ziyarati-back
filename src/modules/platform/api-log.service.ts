@@ -40,19 +40,27 @@ export class ApiLogService {
     private readonly logs: Repository<ApiLog>,
   ) {}
 
-  /** Ingestion seam (future middleware). Tenant optional (platform requests). */
-  record(tenantId: string | null, input: ApiLogInput): Promise<ApiLog> {
-    return this.logs.save(
-      this.logs.create({
-        tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
-        endpoint: input.endpoint,
-        method: input.method,
-        status_code: input.statusCode,
-        response_time_ms: input.responseTimeMs,
-        ip_address: input.ipAddress,
-        api_key_id: input.apiKeyId ?? undefined,
-      }),
-    );
+  /**
+   * Ingestion seam (ApiLoggingInterceptor). Tenant optional (platform requests).
+   *
+   * `insert()`, not `save()`. `save()` routes through the persistence executor,
+   * which wraps even a single new row in its own transaction — measured as
+   * BEGIN + INSERT + COMMIT, i.e. THREE statements and a pooled connection held
+   * across a transaction, for every logged request (~8,900 extra statements per
+   * 2,958-request baseline). `insert()` emits one statement and takes no
+   * transaction. Nothing is lost: this row is append-only, has no lifecycle
+   * hooks or subscribers, and the caller discards the return value.
+   */
+  async record(tenantId: string | null, input: ApiLogInput): Promise<void> {
+    await this.logs.insert({
+      tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
+      endpoint: input.endpoint,
+      method: input.method,
+      status_code: input.statusCode,
+      response_time_ms: input.responseTimeMs,
+      ip_address: input.ipAddress,
+      api_key_id: input.apiKeyId ?? undefined,
+    });
   }
 
   async list(tenantId: string, query: QueryApiLogsDto) {

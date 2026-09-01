@@ -112,8 +112,22 @@ export async function typeOrmFactory(
   });
 
   const enableSync = config.get<string>('TYPEORM_SYNCHRONIZE') === 'true';
-  const logging = config.get<string>('TYPEORM_LOGGING') === 'true';
   const synchronize = !isProduction && enableSync;
+
+  // Per-statement SQL logging. Production already refuses to boot with this on
+  // (env.validation.ts, AI-011) because it writes parameter values to stdout.
+  //
+  // Under NODE_ENV=test it is additionally forced OFF unless
+  // TYPEORM_LOGGING_IN_TEST is explicitly set. Reason, measured: the tracked
+  // `.env` in this repository carries TYPEORM_LOGGING=true, and any test
+  // harness that forgot to override it silently measured the logger instead of
+  // the application — at 80 it/s that inflated p95 from 58ms to 6,221ms and cut
+  // throughput from 168 to 156 req/s. A harness must not have to REMEMBER to
+  // turn this off; inheriting it is the failure mode, so test runs opt IN.
+  const isTest = config.get<string>('NODE_ENV') === 'test';
+  const logging =
+    config.get<string>('TYPEORM_LOGGING') === 'true' &&
+    (!isTest || config.get<string>('TYPEORM_LOGGING_IN_TEST') === 'true');
 
   if (isProduction && enableSync) {
     throw new Error('❌ TypeORM synchronize is NOT allowed in production');
