@@ -399,54 +399,129 @@ export class AppointmentsService {
     // this same seam is covered too (background paths never go through a guard).
     await this.subscriptions.assertBillableActionAllowed(tenantId);
 
+    // ── Phase 1: validation — deliberately OUTSIDE the transaction ──────────
+    //
+    // PERF (P0 booking remediation). Every read below used to run INSIDE the
+    // write transaction. That was not merely slow, it was a SELF-DEADLOCK:
+    // `AvailabilityService.evaluate` fans out to six sibling services
+    // (SchedulingRef, Holiday, BlockedSlot, StaffTimeOff, CalendarSlot,
+    // StaffSchedule) which each hold their OWN `@InjectRepository` handle and
+    // therefore check out their OWN connection from the same pool — while this
+    // transaction is already holding one. A booking in flight thus needs its
+    // transaction's connection PLUS at least one free connection in the pool.
+    // Measured: with `DB_POOL_MAX=1` a single, entirely uncontended booking
+    // fails after the full `connectionTimeoutMillis` with "timeout exceeded
+    // when trying to connect"; at pool >= 2 the same request completes in
+    // ~70ms. So N concurrent bookings, N >= pool size, deadlock every one of
+    // them — which is exactly the `idle in transaction = 10, active = 1,
+    // longest query 0.00s` signature the load test recorded at collapse.
+    //
+    // This is the same class of defect as FND-047 (see
+    // `typeorm.config.ts`'s `connectionTimeoutMillis` comment), which was
+    // fixed for `UsageService` by threading the manager through. The six
+    // services above were missed.
+    //
+    // WHY MOVING THIS OUT IS RACE-SAFE — it does not weaken double-booking
+    // protection by one bit, because the transaction never provided that
+    // protection:
+    //   * the guarantee is the `appointments_no_overlap` EXCLUSION constraint
+    //     (migration 1730001100000), which fires at INSERT — still inside the
+    //     transaction below, untouched. The loser of a race gets SQLSTATE
+    //     23P01 -> `SLOT_ALREADY_BOOKED`, exactly as before.
+    //   * under READ COMMITTED (the default here) each statement takes its own
+    //     fresh snapshot and takes no gap locks, so a SELECT issued as the
+    //     transaction's first statement sees precisely what the same SELECT
+    //     issued a moment earlier outside it would see. `AvailabilityService`'s
+    //     own docstring says this in three places: the occupancy check "can
+    //     never be race-safe under READ COMMITTED".
+    //   * the remaining checks (branch/customer/staff/service existence,
+    //     holidays, time off, blocked periods, working hours) race only against
+    //     concurrent CONFIGURATION edits, which the transaction locked no more
+    //     than a plain read does.
+    // The only thing that widens is the interval between "we checked" and "we
+    // insert" — and the outcome on losing that race is a 409 either way.
+    //
+    // Tenant isolation is unchanged: every predicate below still carries
+    // `tenant: { id: tenantId }`, and the branch-scope assertion still runs.
+    const reads = this.dataSource.manager;
+
+    // All references validated within the same tenant scope AND against the
+    // selected BRANCH — a service or doctor belonging to the clinic is not
+    // enough, it has to be offered/working at the branch being booked.
+    // Public AI bookings are additionally strict (see assertStaffAtBranch).
+    const strictBranchScope = dto.source === AppointmentSource.PUBLIC_AI;
+    // Also yields the branch `timezone` snapshotted onto the booking below, so
+    // the booked local wall-time stays stable if the branch is later moved to
+    // another timezone.
+    const branch = await this.assertBranch(reads, tenantId, dto.branchId);
+    await this.assertCustomer(reads, tenantId, dto.customerId);
+    await this.assertStaffAtBranch(
+      reads,
+      tenantId,
+      dto.branchId,
+      dto.staffId,
+      strictBranchScope,
+    );
+    const services = await this.loadServices(
+      reads,
+      tenantId,
+      dto.branchId,
+      dto.serviceIds,
+    );
+
+    const startAt = new Date(dto.startAt);
+    const { endAt, totalAmount } = this.computeWindowAndTotal(
+      startAt,
+      services,
+      dto.endAt,
+    );
+    // PD-6 (AI-027): the assistant's own booking sources reject a past
+    // startAt; every other source (MANUAL, PLATFORM) is unaffected.
+    const isAssistantSource =
+      dto.source === AppointmentSource.WHATSAPP_BOT ||
+      dto.source === AppointmentSource.PUBLIC_AI;
+    this.assertChronological(startAt, endAt, isAssistantSource);
+
+    // Single source of truth — validate REAL availability (working hours,
+    // calendar slots, blocked periods, holidays, staff time off / active flag,
+    // and existing appointment conflicts). No `manager`: see the note above —
+    // passing one bought no isolation and cost the pool deadlock.
+    await this.availability.assertBookable(
+      tenantId,
+      dto.branchId,
+      dto.staffId,
+      startAt,
+      endAt,
+    );
+
+    // Insured patients are never charged online — see AppointmentPaymentStatus.INSURANCE.
+    const paymentStatus = dto.hasInsurance
+      ? AppointmentPaymentStatus.INSURANCE
+      : AppointmentPaymentStatus.UNPAID;
+
+    // M-9: `status` used to be PENDING_PAYMENT unconditionally, while the only
+    // automatic route to CONFIRMED is a VERIFIED payment event
+    // (`applyPaymentOutcome`). So a booking with nothing to pay — insured,
+    // zero total, or a clinic that doesn't collect online — waited forever for
+    // a payment that could never arrive, and a staff member had to advance it
+    // by hand. Now the two axes agree: if no online payment is due, the
+    // booking is confirmed at creation. Insurance still never implies PAID;
+    // `payment_status` stays INSURANCE.
+    const paymentDue = await this.isOnlinePaymentDue(
+      reads,
+      tenantId,
+      dto.hasInsurance === true,
+      totalAmount,
+    );
+    const status = paymentDue
+      ? AppointmentStatus.PENDING_PAYMENT
+      : AppointmentStatus.CONFIRMED;
+
+    // ── Phase 2: the write — quota admission + the four INSERTs, nothing else ─
+    // Atomicity is unchanged: the usage increment and every row this booking
+    // creates still commit or roll back together, and a 23P01 from the
+    // exclusion constraint still undoes the increment.
     const created = await this.dataSource.transaction(async (manager) => {
-      // All references validated within the same tenant scope AND against the
-      // selected BRANCH — a service or doctor belonging to the clinic is not
-      // enough, it has to be offered/working at the branch being booked.
-      // Public AI bookings are additionally strict (see assertStaffAtBranch).
-      const strictBranchScope = dto.source === AppointmentSource.PUBLIC_AI;
-      await this.assertBranch(manager, tenantId, dto.branchId);
-      await this.assertCustomer(manager, tenantId, dto.customerId);
-      await this.assertStaffAtBranch(
-        manager,
-        tenantId,
-        dto.branchId,
-        dto.staffId,
-        strictBranchScope,
-      );
-      const services = await this.loadServices(
-        manager,
-        tenantId,
-        dto.branchId,
-        dto.serviceIds,
-      );
-
-      const startAt = new Date(dto.startAt);
-      const { endAt, totalAmount } = this.computeWindowAndTotal(
-        startAt,
-        services,
-        dto.endAt,
-      );
-      // PD-6 (AI-027): the assistant's own booking sources reject a past
-      // startAt; every other source (MANUAL, PLATFORM) is unaffected.
-      const isAssistantSource =
-        dto.source === AppointmentSource.WHATSAPP_BOT ||
-        dto.source === AppointmentSource.PUBLIC_AI;
-      this.assertChronological(startAt, endAt, isAssistantSource);
-
-      // Single source of truth — validate REAL availability (working hours,
-      // calendar slots, blocked periods, holidays, staff time off / active flag,
-      // and existing appointment conflicts). Runs inside this transaction so the
-      // double-booking check is race-safe.
-      await this.availability.assertBookable(
-        tenantId,
-        dto.branchId,
-        dto.staffId,
-        startAt,
-        endAt,
-        { manager },
-      );
-
       // FND-034: quota check-and-increment, atomic, INSIDE this transaction —
       // a rollback (any failure below, or a concurrent double-booking loss)
       // undoes the increment too; a second concurrent request blocks on the
@@ -472,36 +547,6 @@ export class AppointmentsService {
 
       const repo = manager.getRepository(Appointment);
 
-      // Snapshot the branch timezone so the booked local wall-time stays stable
-      // even if the branch timezone is later changed.
-      const branch = await manager.findOne(Branch, {
-        where: { id: dto.branchId, tenant: { id: tenantId } },
-        select: { id: true, timezone: true },
-      });
-
-      // Insured patients are never charged online — see AppointmentPaymentStatus.INSURANCE.
-      const paymentStatus = dto.hasInsurance
-        ? AppointmentPaymentStatus.INSURANCE
-        : AppointmentPaymentStatus.UNPAID;
-
-      // M-9: `status` used to be PENDING_PAYMENT unconditionally, while the only
-      // automatic route to CONFIRMED is a VERIFIED payment event
-      // (`applyPaymentOutcome`). So a booking with nothing to pay — insured,
-      // zero total, or a clinic that doesn't collect online — waited forever for
-      // a payment that could never arrive, and a staff member had to advance it
-      // by hand. Now the two axes agree: if no online payment is due, the
-      // booking is confirmed at creation. Insurance still never implies PAID;
-      // `payment_status` stays INSURANCE.
-      const paymentDue = await this.isOnlinePaymentDue(
-        manager,
-        tenantId,
-        dto.hasInsurance === true,
-        totalAmount,
-      );
-      const status = paymentDue
-        ? AppointmentStatus.PENDING_PAYMENT
-        : AppointmentStatus.CONFIRMED;
-
       const appointment = repo.create({
         tenant: { id: tenantId } as Tenant,
         branch: { id: dto.branchId } as Branch,
@@ -513,7 +558,7 @@ export class AppointmentsService {
         payment_status: paymentStatus,
         total_amount: totalAmount,
         currency: dto.currency ?? 'SAR',
-        booked_timezone: branch?.timezone,
+        booked_timezone: branch.timezone,
         notes: dto.notes,
         source: dto.source ?? AppointmentSource.MANUAL,
         booked_by: { id: userId } as User,
@@ -1316,11 +1361,16 @@ export class AppointmentsService {
     manager: EntityManager,
     tenantId: string,
     branchId: string,
-  ): Promise<void> {
-    const exists = await manager.getRepository(Branch).exists({
+  ): Promise<Branch> {
+    // Returns the row rather than `exists`: `create` also needs this branch's
+    // `timezone` to snapshot onto the booking, and used to read the SAME row a
+    // second time to get it. Identical predicate, identical failure mode, one
+    // round trip instead of two.
+    const branch = await manager.getRepository(Branch).findOne({
       where: { id: branchId, tenant: { id: tenantId }, is_active: true },
+      select: { id: true, timezone: true },
     });
-    if (!exists) {
+    if (!branch) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'Branch not found or inactive for this clinic',
       });
@@ -1329,6 +1379,7 @@ export class AppointmentsService {
       await this.branchScope.resolveCurrent(tenantId),
       branchId,
     );
+    return branch;
   }
 
   private async assertCustomer(

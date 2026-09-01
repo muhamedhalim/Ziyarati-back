@@ -1,0 +1,318 @@
+{
+  "generatedAt": "2026-09-01T18:29:12.758Z",
+  "profile": "default",
+  "rates": [
+    5,
+    10,
+    20,
+    40,
+    60,
+    70,
+    80,
+    90,
+    100,
+    110
+  ],
+  "stepDuration": "40s",
+  "steps": [
+    {
+      "rate_iterations_per_s": 5,
+      "requests": 415,
+      "p50_ms": 26.957469,
+      "p90_ms": 41.4752298,
+      "p95_ms": 48.021410499999995,
+      "p99_ms": 82.96700706,
+      "max_ms": 96.006801,
+      "error_rate": 0
+    },
+    {
+      "rate_iterations_per_s": 10,
+      "requests": 896,
+      "p50_ms": 24.8740125,
+      "p90_ms": 38.6119325,
+      "p95_ms": 43.81545625,
+      "p99_ms": 85.04830244999998,
+      "max_ms": 96.226389,
+      "error_rate": 0
+    },
+    {
+      "rate_iterations_per_s": 20,
+      "requests": 1694,
+      "p50_ms": 20.8051,
+      "p90_ms": 34.669192699999996,
+      "p95_ms": 39.1940467,
+      "p99_ms": 77.68819616999997,
+      "max_ms": 94.309141,
+      "error_rate": 0
+    },
+    {
+      "rate_iterations_per_s": 40,
+      "requests": 3250,
+      "p50_ms": 18.755408,
+      "p90_ms": 31.789590799999996,
+      "p95_ms": 38.51963225,
+      "p99_ms": 75.36102751999988,
+      "max_ms": 125.519348,
+      "error_rate": 0.0015384615384615385
+    },
+    {
+      "rate_iterations_per_s": 60,
+      "requests": 5006,
+      "p50_ms": 21.5007555,
+      "p90_ms": 40.851614999999995,
+      "p95_ms": 49.552333250000004,
+      "p99_ms": 87.15500789999993,
+      "max_ms": 322.224508,
+      "error_rate": 0
+    },
+    {
+      "rate_iterations_per_s": 70,
+      "requests": 5871,
+      "p50_ms": 23.890193,
+      "p90_ms": 47.139734,
+      "p95_ms": 60.699327,
+      "p99_ms": 111.74437820000004,
+      "max_ms": 232.045569,
+      "error_rate": 0
+    },
+    {
+      "rate_iterations_per_s": 80,
+      "requests": 6897,
+      "p50_ms": 33.33794,
+      "p90_ms": 81.30613780000009,
+      "p95_ms": 106.5563596,
+      "p99_ms": 176.09548188,
+      "max_ms": 506.331886,
+      "error_rate": 0.0013049151805132667
+    },
+    {
+      "rate_iterations_per_s": 90,
+      "requests": 7830,
+      "p50_ms": 37.8845005,
+      "p90_ms": 89.80507800000002,
+      "p95_ms": 116.5108533,
+      "p99_ms": 200.81205822,
+      "max_ms": 586.330247,
+      "error_rate": 0.002937420178799489
+    },
+    {
+      "rate_iterations_per_s": 100,
+      "requests": 8435,
+      "p50_ms": 117.216347,
+      "p90_ms": 382.5591506,
+      "p95_ms": 523.4673600999998,
+      "p99_ms": 936.0496647399996,
+      "max_ms": 2343.290408,
+      "error_rate": 0.00011855364552459988
+    },
+    {
+      "rate_iterations_per_s": 110,
+      "requests": 8764,
+      "p50_ms": 1698.746932,
+      "p90_ms": 3726.1454538999997,
+      "p95_ms": 5245.9505368,
+      "p99_ms": 9976.618736210014,
+      "max_ms": 14234.213249,
+      "error_rate": 0.0019397535371976267
+    }
+  ],
+  "totals": {
+    "http_reqs": 49132,
+    "http_req_failed_rate": 0.0011194333631848897,
+    "business_check_failed_rate": 0.0014675052410901468,
+    "rate_limited_429": 0,
+    "server_5xx": 0,
+    "timeouts": 55,
+    "dropped_iterations": 257
+  },
+  "endpoints": {
+    "public:booking:availability": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "auth:login": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:booking:select-branch": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:notes": {
+      "p95_ms": 2647.1218768499994,
+      "med_ms": 54.6568545
+    },
+    "public:booking:select-service": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:booking:doctors": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "analytics:performance:staff": {
+      "p95_ms": 3388.148596499998,
+      "med_ms": 32.034979
+    },
+    "crm:search:term": {
+      "p95_ms": 1959.3288393499995,
+      "med_ms": 25.3640635
+    },
+    "branches:list": {
+      "p95_ms": 1744.025972,
+      "med_ms": 32.259479
+    },
+    "services:list": {
+      "p95_ms": 1798.27841365,
+      "med_ms": 39.061751
+    },
+    "public:booking:services": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:clinics": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:list:deep": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "crm:search": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "notifications:inbox": {
+      "p95_ms": 2580.6617213499994,
+      "med_ms": 21.2034045
+    },
+    "public:booking:confirm": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "staff:list": {
+      "p95_ms": 3516.0793735,
+      "med_ms": 51.596097
+    },
+    "crm:tags": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:clinic:detail": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:status": {
+      "p95_ms": 3621.1453941500004,
+      "med_ms": 106.355449
+    },
+    "staff:doctors": {
+      "p95_ms": 4465.8424138,
+      "med_ms": 48.376107
+    },
+    "appointments:timeline": {
+      "p95_ms": 2643.2981222999992,
+      "med_ms": 56.938742500000004
+    },
+    "tenants:me": {
+      "p95_ms": 1765.7689929499998,
+      "med_ms": 30.8347595
+    },
+    "analytics:trend:appointments": {
+      "p95_ms": 1034.2860737999997,
+      "med_ms": 39.4478595
+    },
+    "public:booking:select-slot": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "activity:actions": {
+      "p95_ms": 871.8245845,
+      "med_ms": 25.26657
+    },
+    "crm:list": {
+      "p95_ms": 1974.036190999999,
+      "med_ms": 24.33904
+    },
+    "analytics:trend:revenue": {
+      "p95_ms": 1038.0472356499997,
+      "med_ms": 39.6600225
+    },
+    "public:booking:select-clinic": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "analytics:dashboard": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "notifications:unread": {
+      "p95_ms": 1772.7191805,
+      "med_ms": 25.164505
+    },
+    "public:booking:select-doctor": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:create": {
+      "p95_ms": 12346.138009449998,
+      "med_ms": 154.9609215
+    },
+    "appointments:list": {
+      "p95_ms": 2035.555865599999,
+      "med_ms": 41.985333
+    },
+    "staff:list:role": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "staff:lookup": {
+      "p95_ms": 3420.6041240000004,
+      "med_ms": 63.960611
+    },
+    "public:cities": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "dashboard": {
+      "p95_ms": 1014.7376799499999,
+      "med_ms": 35.275977999999995
+    },
+    "availability:windows": {
+      "p95_ms": 6988.978208399998,
+      "med_ms": 57.303637
+    },
+    "activity:list:search": {
+      "p95_ms": 1683.04600325,
+      "med_ms": 36.229884999999996
+    },
+    "public:booking:session": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "activity:list": {
+      "p95_ms": 1684.9842445,
+      "med_ms": 34.113115
+    },
+    "appointments:reminders": {
+      "p95_ms": 2658.4152622999995,
+      "med_ms": 55.767399
+    },
+    "tenants:targets": {
+      "p95_ms": 1807.01360425,
+      "med_ms": 51.274234
+    },
+    "crm:search:pathological": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:list:filtered": {
+      "p95_ms": 2062.0757338000003,
+      "med_ms": 36.44066
+    },
+    "appointments:detail": {
+      "p95_ms": 2025.0276034499993,
+      "med_ms": 34.8538135
+    }
+  }
+}

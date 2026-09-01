@@ -1,0 +1,46 @@
+# k6 load-test runner.
+#
+# The container CANNOT reach the host as `localhost` — inside the container that
+# is the container itself. `host.docker.internal` is the host, and is resolved
+# natively by Docker Desktop; the extra_hosts entry adds the same name on Linux
+# engines. Override BASE_URL to point at any other environment.
+#
+# Usage (from Ziyarati-back/):
+#   docker compose -f tests/load/docker-compose.yml run --rm k6 run /scripts/scenarios/smoke.js
+#
+# Secrets are passed through from the host environment and are never written
+# into this file or into any script.
+services:
+  k6:
+    image: grafana/k6:latest
+    volumes:
+      - .:/scripts:ro
+      - ./reports:/reports
+    working_dir: /scripts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BASE_URL: "${BASE_URL:-http://host.docker.internal:3001}"
+      TEST_PASSWORD: "${TEST_PASSWORD:?TEST_PASSWORD must be set in the host environment}"
+      TEST_EMAIL_DOMAIN: "${TEST_EMAIL_DOMAIN:-t1.local.test}"
+      TEST_TENANTS: "${TEST_TENANTS:-5}"
+      TEST_ROLES: "${TEST_ROLES:-owner,receptionist}"
+      # Optional switches (see each flow's docstring):
+      CACHE_BUST: "${CACHE_BUST:-false}"
+      BOOKING_CONFIRM: "${BOOKING_CONFIRM:-false}"
+      CRM_PATHOLOGICAL: "${CRM_PATHOLOGICAL:-false}"
+      # Scenario tunables. Every knob a scenario reads MUST be listed here —
+      # docker compose does not forward arbitrary host env into the container,
+      # so an unlisted variable is silently ignored and the scenario quietly
+      # runs its default instead (this cost a misleading contention run).
+      VUS: "${VUS:-}"
+      DURATION: "${DURATION:-}"
+      RATE: "${RATE:-}"
+      RATES: "${RATES:-}"
+      STEP_DURATION: "${STEP_DURATION:-}"
+      MIX_PROFILE: "${MIX_PROFILE:-}"
+      PEAK_RATE: "${PEAK_RATE:-}"
+      CONTEND_VUS: "${CONTEND_VUS:-}"
+      CONTEND_START: "${CONTEND_START:-}"
+      SOAK_RELOGIN: "${SOAK_RELOGIN:-}"
+      RELOGIN_AFTER_MS: "${RELOGIN_AFTER_MS:-}"

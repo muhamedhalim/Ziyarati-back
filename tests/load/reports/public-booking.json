@@ -1,0 +1,10 @@
+{
+  "generatedAt": "2026-09-01T16:39:09.137Z",
+  "rate": 10,
+  "confirmEnabled": false,
+  "http_reqs": 7202,
+  "error_rate": 0,
+  "rate_limited_429": 0,
+  "server_5xx": 0,
+  "endpoints": {}
+}

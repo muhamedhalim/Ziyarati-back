@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-09-01T16:54:11.256Z",
+  "baseRate": 20,
+  "peakRate": 130,
+  "pre": {
+    "p95_ms": 39.57462880000001,
+    "error_rate": null
+  },
+  "spike": {
+    "p95_ms": 14296.69316025,
+    "error_rate": null
+  },
+  "recovery": {
+    "p95_ms": 38.65750045,
+    "error_rate": 0.007082695252679939
+  },
+  "recovered": true,
+  "dropped_iterations": 3813,
+  "server_5xx": 2045,
+  "timeouts": 20
+}

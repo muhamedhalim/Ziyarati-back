@@ -1,0 +1,11 @@
+{
+  "generatedAt": "2026-09-01T18:47:10.798Z",
+  "rate": 12,
+  "created": 1111,
+  "conflict_409": 2170,
+  "quota_422": 0,
+  "server_5xx": 0,
+  "timeouts": 0,
+  "write_p95_ms": 69.2979416,
+  "note": "contention arm is expected to produce many 409 SLOT_ALREADY_BOOKED — exactly one winner per contested slot is correct behaviour, not a failure."
+}
