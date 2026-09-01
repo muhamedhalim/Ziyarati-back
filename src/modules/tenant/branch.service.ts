@@ -12,26 +12,14 @@ import { UpdateBranchDto } from './dto/update-branch.dto';
 import { AppError, ErrorCode } from '../../common/errors';
 import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
-import { AppRedisService } from '../../queue/app-redis.service';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 
 /** Caller identity for the branches.update_own ownership check (FND-017). */
 export interface BranchCaller {
   id: string;
   permissions: string[];
 }
-
-/**
- * Bounds staleness of the ABAC branch-membership cache below (FND-017): a
- * staff member reassigned to a different branch may still be able to update
- * their PREVIOUS branch, or be refused their NEW one, for up to this long.
- * TTL-only (no explicit invalidation on `StaffService.assignBranches`) is a
- * deliberate trade-off — this is an authorization-adjacent read, not a hard
- * security boundary (tenant isolation and possession of `branches.update`/
- * `_own` are still fully enforced regardless of staleness), so a short TTL is
- * ample without building a write-side invalidation pipeline for one query.
- */
-const BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS = 60;
 
 /**
  * Branches are a child aggregate of Tenant. EVERY method is scoped to a
@@ -47,7 +35,7 @@ export class BranchService {
     @InjectRepository(Appointment)
     private readonly appointments: Repository<Appointment>,
     private readonly usage: UsageService,
-    private readonly redis: AppRedisService,
+    private readonly branchScope: BranchScopeService,
   ) {}
 
   async create(tenantId: string, dto: CreateBranchDto): Promise<Branch> {
@@ -171,66 +159,30 @@ export class BranchService {
 
   // ─────────────────────── FND-017: branch ABAC ──────────────────────── //
 
+  /**
+   * The membership lookup that used to live here (the `branch_users` query
+   * plus its Redis cache) now lives in {@link BranchScopeService} — the one
+   * place in the codebase that answers "which branches is this user assigned
+   * to". Two other modules had grown their own uncached copies of it;
+   * consolidating there removed both and gave them the cache for free.
+   *
+   * FND-017 semantics are unchanged: possession of the tenant-wide
+   * `branches.update` is checked by `update` above, so only a caller holding
+   * just `branches.update_own` ever reaches here.
+   */
   private async assertOwnBranch(
     tenantId: string,
     branchId: string,
     userId: string,
   ): Promise<void> {
-    const ownBranchIds = await this.resolveOwnBranchIds(tenantId, userId);
+    const ownBranchIds = await this.branchScope.getMembershipBranchIds(
+      tenantId,
+      userId,
+    );
     if (!ownBranchIds.includes(branchId)) {
       throw new AppError(ErrorCode.PERMISSION_DENIED, {
         message: 'You can only update a branch you are assigned to',
       });
     }
-  }
-
-  /**
-   * Spec 014 (Clinic Platform Completion) — T145 (US11, FR-A016). Public
-   * entry point onto the SAME `branch_users` ABAC membership lookup FND-017
-   * already built for `branches.update_own`, so a second module (analytics)
-   * scoping a branch-restricted caller to their own branch(es) reuses the one
-   * real "which branches is this user assigned to" query — including its
-   * Redis cache — rather than re-deriving branch membership a second way.
-   */
-  getCallerBranchIds(tenantId: string, userId: string): Promise<string[]> {
-    return this.resolveOwnBranchIds(tenantId, userId);
-  }
-
-  /**
-   * The branch ids `userId` is assigned to in this tenant (via `branch_users`),
-   * Redis-cached with a tenant-qualified key (PR-006) so this ABAC check adds
-   * at most one scoped read per `BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS` window
-   * rather than one per request. Fails open to a real DB read on any cache
-   * error (`AppRedisService`'s own client already fails open at the connection
-   * level — this call site never lets a Redis hiccup turn into a 500).
-   */
-  private async resolveOwnBranchIds(
-    tenantId: string,
-    userId: string,
-  ): Promise<string[]> {
-    const cacheKey = `branch-membership:${tenantId}:${userId}`;
-    const cached = await this.redis.application.get(cacheKey).catch(() => null);
-    if (cached !== null) {
-      try {
-        return JSON.parse(cached) as string[];
-      } catch {
-        // Corrupt cache entry — fall through to a real read below.
-      }
-    }
-
-    const rows = await this.branchUsers.find({
-      where: { tenant: { id: tenantId }, user: { id: userId } },
-      relations: { branch: true },
-    });
-    const branchIds = rows.map((r) => r.branch.id);
-    await this.redis.application
-      .set(
-        cacheKey,
-        JSON.stringify(branchIds),
-        'EX',
-        BRANCH_MEMBERSHIP_CACHE_TTL_SECONDS,
-      )
-      .catch(() => undefined);
-    return branchIds;
   }
 }

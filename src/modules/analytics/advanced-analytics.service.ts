@@ -2,11 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { AppError, ErrorCode } from '../../common/errors';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 
 import { AnalyticsAggregationService } from './analytics-aggregation.service';
 import { AnalyticsCacheService, CACHE_NS } from './analytics-cache.service';
@@ -57,8 +57,7 @@ export interface ResolvedScope {
 export class AdvancedAnalyticsService {
   constructor(
     private readonly aggregation: AnalyticsAggregationService,
-    @InjectRepository(BranchUser)
-    private readonly branchUsers: Repository<BranchUser>,
+    private readonly branchScope: BranchScopeService,
     @InjectRepository(TenantSetting)
     private readonly tenantSettings: Repository<TenantSetting>,
     private readonly cache: AnalyticsCacheService,
@@ -117,14 +116,21 @@ export class AdvancedAnalyticsService {
       return {};
     }
 
-    const ownRows = await this.branchUsers.find({
-      where: { tenant: { id: tenantId }, user: { id: user.id } },
-      relations: { branch: true },
-    });
-    // Deterministic (id-ordered) — a branch-restricted caller with several
-    // assigned branches and no explicit `branchId` must always default to
-    // the SAME branch, never an order that varies per request.
-    const ownBranchIds = ownRows.map((r) => r.branch.id).sort();
+    // Membership comes from the shared `BranchScopeService` — the one
+    // `branch_users` lookup in the codebase — rather than a repository query
+    // owned here. Its result is already deterministic (id-ordered), which is
+    // what lets a branch-restricted caller with several assigned branches and
+    // no explicit `branchId` always default to the SAME branch, and it is
+    // Redis-cached, which this call site previously was not.
+    //
+    // Deliberately still keyed on `analytics.dashboard.read` above rather
+    // than `BranchScopeService.resolve`'s RBAC predicate: FR-A016 defines
+    // tenant-wide analytics by THAT slug, and switching rules here would
+    // change who sees clinic-wide figures.
+    const ownBranchIds = await this.branchScope.getMembershipBranchIds(
+      tenantId,
+      user.id,
+    );
 
     if (ownBranchIds.length === 0) {
       throw new AppError(ErrorCode.PERMISSION_DENIED, {
@@ -400,10 +406,7 @@ export class AdvancedAnalyticsService {
       async () => {
         const currency = await this.getCurrency(tenantId);
         const { priorFrom, priorTo } = priorPeriod(from, to);
-        const { start: chosenStart, end: chosenEnd } = this.instants(
-          from,
-          to,
-        );
+        const { start: chosenStart, end: chosenEnd } = this.instants(from, to);
         const { start: priorStart, end: priorEnd } = this.instants(
           priorFrom,
           priorTo,
@@ -428,9 +431,7 @@ export class AdvancedAnalyticsService {
           empty: false,
           retainedPatients: raw.retainedPatients,
           priorPeriodPatients: raw.priorPeriodPatients,
-          retentionRate: round2(
-            raw.retainedPatients / raw.priorPeriodPatients,
-          ),
+          retentionRate: round2(raw.retainedPatients / raw.priorPeriodPatients),
           repeatDistribution: raw.repeatDistribution,
         };
       },
@@ -464,7 +465,10 @@ export class AdvancedAnalyticsService {
           start,
           end,
         );
-        return { envelope: this.envelope(from, to, scope.branchId, currency), rows };
+        return {
+          envelope: this.envelope(from, to, scope.branchId, currency),
+          rows,
+        };
       },
     );
 
@@ -668,9 +672,7 @@ export class AdvancedAnalyticsService {
             source: r.source,
             appointments: r.appointments,
             completionRate:
-              r.appointments > 0
-                ? round2(r.completed / r.appointments)
-                : null,
+              r.appointments > 0 ? round2(r.completed / r.appointments) : null,
             revenue: r.revenue,
           }));
           return { envelope, excluded, data, totalAppointments };

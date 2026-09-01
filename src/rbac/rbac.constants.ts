@@ -487,6 +487,26 @@ export const ROLE = {
   SUPER_ADMIN: 'super_admin',
   OWNER: 'owner',
   MANAGER: 'manager',
+  /**
+   * Runs ONE branch (location) of a multi-branch clinic. Operationally close
+   * to `manager`, with two deliberate differences:
+   *
+   *  1. It holds `branches.update_own` INSTEAD of the tenant-wide
+   *     `branches.update`. That pair is not decoration — it is the machine-
+   *     readable definition of "this role is branch-restricted" (see
+   *     {@link isBranchRestricted}), and therefore what makes every
+   *     branch-scoped read/write on the backend narrow for this role and stay
+   *     tenant-wide for `owner`/`manager`.
+   *  2. It holds no financial, subscription/billing, clinic-configuration,
+   *     staff-provisioning, AI-configuration or tenant-wide analytics slug —
+   *     those are clinic-level concerns, not branch-level ones.
+   *
+   * Deliberately NOT granted `analytics.dashboard.read` (the tenant-wide
+   * analytics scope FR-A016 keys on) nor `analytics.reports.read`: the daily-
+   * report list endpoint is still tenant-wide, so granting the latter would
+   * leak other branches' rows. See the note on ROLE_PERMISSIONS below.
+   */
+  BRANCH_MANAGER: 'branch_manager',
   RECEPTIONIST: 'receptionist',
   DOCTOR: 'doctor',
   CUSTOMER: 'customer',
@@ -503,6 +523,33 @@ export const ROLE = {
 } as const;
 
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
+
+/**
+ * THE definition of "this principal may only see/act on its own branch(es)".
+ *
+ * Expressed as a PERMISSION predicate, never a role allow-list, so it holds
+ * for `branch_manager` AND for any tenant "Other" custom role delegated
+ * `branches.update_own` — without either one being named here.
+ *
+ * The rule reuses the ABAC pair FND-017 already established for
+ * `BranchService.update`: `branches.update` is the tenant-wide capability,
+ * `branches.update_own` the branch-restricted one. A principal holding the
+ * tenant-wide slug (owner, manager) is never restricted; a principal holding
+ * NEITHER (receptionist, doctor, ai-bot, patients, system/worker callers with
+ * no principal at all) is likewise never restricted — which is what keeps
+ * this change backward compatible for every role that exists today.
+ *
+ * Consumed by `BranchScopeService` (the only place that turns this predicate
+ * into an actual SQL narrowing) and mirrored — from the same permission data,
+ * not a copy of this list — by the staff Permission Preview, so "what the
+ * preview shows" and "what the API enforces" cannot drift.
+ */
+export function isBranchRestricted(permissions: readonly string[]): boolean {
+  return (
+    permissions.includes(PERMISSION.BRANCHES_UPDATE_OWN) &&
+    !permissions.includes(PERMISSION.BRANCHES_UPDATE)
+  );
+}
 
 /**
  * Reserved `roleSlug` sentinel for the "Other" option on the Add/Edit Staff
@@ -1336,6 +1383,12 @@ export const ROLES: RoleDef[] = [
     description: 'Supervises staff, appointments and customers for the clinic.',
   },
   {
+    slug: ROLE.BRANCH_MANAGER,
+    name: 'Branch Manager',
+    description:
+      'Runs one branch. Sees and manages only the branch(es) they are assigned to — appointments, queue, schedules, patients and the branch activity log. No clinic finances, billing, settings or staff provisioning.',
+  },
+  {
     slug: ROLE.RECEPTIONIST,
     name: 'Receptionist',
     description:
@@ -1641,6 +1694,123 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.BRANCHES_UPDATE,
     // T192 (spec 014, US14, FR-U009) — clinic management, alongside owner.
     // Deliberately NOT granted to receptionist or doctor.
+    PERMISSION.AUDIT_READ,
+  ],
+
+  /**
+   * Branch manager: the operations manager's day-to-day surface, narrowed to
+   * one location. Derived from `ROLE_PERMISSIONS[MANAGER]` by SUBTRACTION, so
+   * this role can never quietly out-grant the role it is modelled on.
+   *
+   * Removed vs. MANAGER, and why:
+   *   - `branches.create` / `branches.update`  → replaced by
+   *     `branches.update_own`. This swap is what makes {@link
+   *     isBranchRestricted} true for this role; it is load-bearing, not
+   *     cosmetic.
+   *   - `analytics.dashboard.read`             → the tenant-wide analytics
+   *     scope (FR-A016). Holding it would defeat the branch narrowing
+   *     `AdvancedAnalyticsService.resolveScope` already performs.
+   *   - `analytics.reports.read` / `.manage`,
+   *     `analytics.events.*`, `reports.read`   → `GET /analytics/reports/daily`
+   *     is still TENANT-WIDE (one row per branch per day, no scope
+   *     resolution). Granting the read would leak sibling branches' figures,
+   *     so it stays out until that endpoint is branch-scoped too.
+   *   - `staff.create` / `staff.update` / `staff.manage` → staff provisioning
+   *     has no branch constraint on its write path, so granting it would let
+   *     a branch manager create staff for another branch.
+   *   - `staff.commission.read`                → compensation is clinic-level.
+   *   - `services.create` / `.update`          → the service catalogue is
+   *     shared across branches.
+   *   - `subscription.read`, `billing.read`, `usage.read`, `featureflag.read`,
+   *     `billing_upgrade.read`                 → clinic-level commercial data.
+   *   - `clinical.records.read` / `.manage`    → an operations role, not a
+   *     clinical one; the curated privacy boundary stays owner/manager/doctor.
+   *   - `notification_templates.*`,
+   *     `notification_rules.*`, `campaigns.manage`,
+   *     `campaign_recipients.manage`           → clinic-wide configuration and
+   *     outbound marketing; read-only access is kept.
+   *   - `whatsapp.accounts.manage`,
+   *     `whatsapp.templates.manage`,
+   *     `whatsapp.webhooks.manage`, `ai.manage`,
+   *     `ai.agents.*`, `ai.knowledge.*`,
+   *     `ai.training.*`, `ai.prompts.*`        → channel/AI configuration is
+   *     clinic-wide; the conversational surface (reply, hand-over takeover)
+   *     is kept because that IS branch front-desk work.
+   *   - `platform.api-logs.read`,
+   *     `platform.webhooks.read`,
+   *     `platform.files.*`                     → developer/integration tooling.
+   *
+   * Kept from MANAGER: the full appointment lifecycle, queue (which reads
+   * `appointments.*`), scheduling, staff READ + schedule/time-off management,
+   * CRM, reviews, conversations/WhatsApp replies, support tickets,
+   * notifications read, and `audit.read` — every one of which is narrowed to
+   * the caller's branch(es) server-side (see `BranchScopeService`), except
+   * where the underlying entity has no branch at all (customers, handovers),
+   * which is documented at each call site rather than silently ignored.
+   */
+  [ROLE.BRANCH_MANAGER]: [
+    PERMISSION.DASHBOARD_ACCESS,
+    PERMISSION.APPOINTMENTS_CREATE,
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_UPDATE,
+    PERMISSION.APPOINTMENTS_RESCHEDULE,
+    PERMISSION.APPOINTMENTS_CANCEL,
+    PERMISSION.APPOINTMENTS_MANAGE_ALL,
+    PERMISSION.REVIEWS_READ,
+    PERMISSION.REVIEWS_MANAGE,
+    PERMISSION.CUSTOMERS_CREATE,
+    PERMISSION.CUSTOMERS_READ,
+    PERMISSION.CUSTOMERS_UPDATE,
+    PERMISSION.CUSTOMERS_MANAGE,
+    PERMISSION.CRM_CUSTOMERS_READ,
+    PERMISSION.CRM_CUSTOMERS_MANAGE,
+    PERMISSION.CRM_NOTES_READ,
+    PERMISSION.CRM_NOTES_MANAGE,
+    PERMISSION.CRM_TAGS_READ,
+    PERMISSION.CRM_TAGS_MANAGE,
+    PERMISSION.CRM_FILES_READ,
+    PERMISSION.CRM_FILES_MANAGE,
+    PERMISSION.SUPPORT_TICKETS_READ,
+    PERMISSION.SUPPORT_TICKETS_CREATE,
+    PERMISSION.SUPPORT_TICKETS_CLOSE,
+    PERMISSION.SUPPORT_TICKETS_REPLY,
+    PERMISSION.SUPPORT_TICKETS_REOPEN,
+    PERMISSION.SERVICES_READ,
+    PERMISSION.STAFF_READ,
+    PERMISSION.STAFF_SCHEDULE_MANAGE,
+    PERMISSION.STAFF_TIMEOFF_MANAGE,
+    PERMISSION.STAFF_RATING_READ,
+    PERMISSION.SCHEDULING_SLOTS_READ,
+    PERMISSION.SCHEDULING_SLOTS_MANAGE,
+    PERMISSION.SCHEDULING_BLOCKED_READ,
+    PERMISSION.SCHEDULING_BLOCKED_MANAGE,
+    PERMISSION.SCHEDULING_HOLIDAYS_READ,
+    PERMISSION.SCHEDULING_HOLIDAYS_MANAGE,
+    PERMISSION.SCHEDULING_AVAILABILITY_READ,
+    PERMISSION.NOTIFICATIONS_READ,
+    PERMISSION.CAMPAIGNS_READ,
+    PERMISSION.CAMPAIGN_RECIPIENTS_READ,
+    PERMISSION.CAMPAIGN_ANALYTICS_READ,
+    PERMISSION.WHATSAPP_SEND,
+    PERMISSION.WHATSAPP_ACCOUNTS_READ,
+    PERMISSION.WHATSAPP_TEMPLATES_READ,
+    PERMISSION.WHATSAPP_CONTACTS_READ,
+    PERMISSION.WHATSAPP_CONTACTS_MANAGE,
+    PERMISSION.WHATSAPP_ANALYTICS_READ,
+    PERMISSION.CONVERSATIONS_READ,
+    PERMISSION.CONVERSATIONS_MANAGE,
+    PERMISSION.MESSAGES_SEND,
+    PERMISSION.MESSAGES_READ,
+    PERMISSION.PARTICIPANTS_MANAGE,
+    PERMISSION.ATTACHMENTS_MANAGE,
+    PERMISSION.CONVERSATION_ANALYTICS_READ,
+    PERMISSION.AI_CONVERSATIONS_READ,
+    PERMISSION.AI_HANDOVER_READ,
+    PERMISSION.AI_HANDOVER_MANAGE,
+    // The branch-restriction marker (see `isBranchRestricted`) AND a real
+    // capability: a branch manager may edit their own branch's details.
+    PERMISSION.BRANCHES_UPDATE_OWN,
+    // Narrowed to the caller's branch(es) by `ActivityLogService`.
     PERMISSION.AUDIT_READ,
   ],
 

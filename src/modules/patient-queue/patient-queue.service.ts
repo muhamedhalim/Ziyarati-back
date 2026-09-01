@@ -6,7 +6,6 @@ import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialE
 import { QueueEntry } from '../../entities/Calendar&Appointments/QueueEntry';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
-import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
@@ -15,6 +14,7 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AppointmentsService } from '../appointment/appointment.service';
 import { zonedYmd, safeZone } from '../scheduling/timezone.util';
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import { CheckInQueueDto } from './dto/check-in-queue.dto';
 import { QueryQueueDto } from './dto/query-queue.dto';
 import { orderQueueEntries, type OrderableQueueEntry } from './queue-ordering';
@@ -103,10 +103,9 @@ export class PatientQueueService {
     private readonly appointments: Repository<Appointment>,
     @InjectRepository(Branch)
     private readonly branches: Repository<Branch>,
-    @InjectRepository(BranchUser)
-    private readonly branchUsers: Repository<BranchUser>,
     private readonly appointmentsService: AppointmentsService,
     private readonly activityAudit: ActivityAuditService,
+    private readonly branchScope: BranchScopeService,
   ) {}
 
   // ───────────────────────────── Check-in ────────────────────────────────── //
@@ -481,16 +480,22 @@ export class PatientQueueService {
 
   // ─────────────────────────────── Internals ─────────────────────────────── //
 
+  /**
+   * Delegates to the shared {@link BranchScopeService} rather than re-running
+   * the `branch_users` query this service used to own — same rows, now with
+   * the Redis cache this call site never had.
+   *
+   * Deliberately MEMBERSHIP, not `BranchScopeService.resolve`: FR-Q014's rule
+   * is "assigned to a branch ⇒ confined to it", which is stricter than the
+   * RBAC-permission rule and already applies to receptionists. Switching to
+   * the permission rule here would WIDEN a receptionist's queue reach — a
+   * regression, not a fix.
+   */
   private resolveOwnBranchIds(
     tenantId: string,
     userId: string,
   ): Promise<string[]> {
-    return this.branchUsers
-      .find({
-        where: { tenant: { id: tenantId }, user: { id: userId } },
-        relations: { branch: true },
-      })
-      .then((rows) => rows.map((r) => r.branch.id));
+    return this.branchScope.getMembershipBranchIds(tenantId, userId);
   }
 
   /** FR-Q014 — a branch-restricted caller may act on/see only their own branch(es). */

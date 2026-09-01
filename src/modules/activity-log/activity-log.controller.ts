@@ -15,6 +15,7 @@ import { TenantContextService } from '../../core/tenant-context/tenant-context.s
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { NoEntitlementRequired } from '../subscription-billing/decorators/no-entitlement-required.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 
 import { ActivityLogService } from './activity-log.service';
 import { QueryActivityLogDto } from './dto/query-activity-log.dto';
@@ -52,7 +53,24 @@ export class ActivityLogController {
   constructor(
     private readonly activityLog: ActivityLogService,
     private readonly ctx: TenantContextService,
+    private readonly branchScope: BranchScopeService,
   ) {}
+
+  /**
+   * Resolves the caller's branch scope and validates any REQUESTED branch
+   * against it, once, for both read routes.
+   *
+   * A requested branch outside the scope is refused here rather than being
+   * silently replaced by the caller's own — the filter control would
+   * otherwise display one branch while the rows came from another.
+   */
+  private async scopeFor(tenantId: string, requestedBranchId?: string) {
+    const scope = await this.branchScope.resolveCurrent(tenantId);
+    if (requestedBranchId) {
+      this.branchScope.assertBranchAllowed(scope, requestedBranchId);
+    }
+    return scope;
+  }
 
   @ApiOperation({
     summary: 'The clinic activity log',
@@ -73,7 +91,8 @@ export class ActivityLogController {
   @RequirePermissions(PERMISSION.AUDIT_READ)
   async list(@Query() query: QueryActivityLogDto) {
     const tenantId = this.ctx.requireTenantId();
-    return this.activityLog.list(tenantId, query);
+    const scope = await this.scopeFor(tenantId, query.branchId);
+    return this.activityLog.list(tenantId, query, scope);
   }
 
   @ApiOperation({
@@ -119,6 +138,7 @@ export class ActivityLogController {
   @RequirePermissions(PERMISSION.AUDIT_READ)
   async suggestions(@Query() query: QueryActivitySuggestionsDto) {
     const tenantId = this.ctx.requireTenantId();
-    return this.activityLog.suggestions(tenantId, query);
+    const scope = await this.scopeFor(tenantId);
+    return this.activityLog.suggestions(tenantId, query, scope);
   }
 }

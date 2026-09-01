@@ -13,6 +13,7 @@ import {
   ACTIVITY_SUGGESTION_LIMIT,
   ACTIVITY_SUGGESTION_SCAN_LIMIT,
 } from './activity-log.constants';
+import type { BranchScope } from '../../core/branch-scope/branch-scope.service';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T191 (US14, F14). The clinic-facing
@@ -100,7 +101,11 @@ export class ActivityLogService {
          LIMIT 1
       ) role ON TRUE`;
 
-  async list(tenantId: string, query: QueryActivityLogDto) {
+  async list(
+    tenantId: string,
+    query: QueryActivityLogDto,
+    scope: BranchScope = { branchIds: null },
+  ) {
     const conditions = [`al."tenantId" = $1`, `al.action = ANY($2)`];
     const params: unknown[] = [tenantId, [...ACTIVITY_VISIBLE_AUDIT_ACTIONS]];
 
@@ -112,6 +117,17 @@ export class ActivityLogService {
       params.push(query.action);
       conditions.push(`al.action = $${params.length}`);
     }
+    // The caller's branch AUTHORIZATION. Applied whether or not a branch was
+    // requested — `query.branchId` (below) can only narrow further, never
+    // widen, because the controller has already refused a requested branch
+    // outside this scope.
+    //
+    // NOTE the deliberate absence of an `OR al."branchId" IS NULL` escape:
+    // `audit_logs.branchId` is nullable (a role change or a campaign launch
+    // has no branch), and those un-branched rows are CLINIC-level events. A
+    // branch-restricted caller must not see them, so they fall outside the
+    // filter — which is the correct, conservative answer, not an oversight.
+    this.applyBranchScope(scope, conditions, params);
     if (query.branchId) {
       params.push(query.branchId);
       conditions.push(`al."branchId" = $${params.length}`);
@@ -236,7 +252,28 @@ export class ActivityLogService {
    * When pg_trgm is unavailable the three tiers still order correctly and
    * ties fall back to alphabetical — never an error.
    */
-  async suggestions(tenantId: string, query: QueryActivitySuggestionsDto) {
+  /**
+   * Appends the caller's branch narrowing to a positional-parameter query.
+   * A tenant-wide scope adds nothing at all, so the SQL a tenant-wide caller
+   * runs is byte-identical to what it was before branch scoping existed.
+   */
+  private applyBranchScope(
+    scope: BranchScope,
+    conditions: string[],
+    params: unknown[],
+  ): void {
+    if (scope.branchIds === null) return;
+    params.push(scope.branchIds);
+    // `= ANY('{}')` matches nothing — a restricted caller assigned to no
+    // branch sees an empty log, never the clinic's.
+    conditions.push(`al."branchId" = ANY($${params.length}::uuid[])`);
+  }
+
+  async suggestions(
+    tenantId: string,
+    query: QueryActivitySuggestionsDto,
+    scope: BranchScope = { branchIds: null },
+  ) {
     const term = searchTerm(query.q);
     if (!term) return { data: [] };
     // The RAW term drives the equality tier and `similarity()`; the ESCAPED
@@ -253,6 +290,12 @@ export class ActivityLogService {
       ACTIVITY_SUGGESTION_SCAN_LIMIT,
       Math.min(query.limit, ACTIVITY_SUGGESTION_LIMIT),
       `${term}%`,
+      // $8 — the caller's branch scope, or NULL for tenant-wide. Passed as a
+      // single parameter and tested with `$8 IS NULL OR …` in all four UNION
+      // arms rather than conditionally splicing SQL: the arms share one
+      // positional numbering, so a conditional predicate would have to
+      // renumber every parameter after it.
+      scope.branchIds,
     ];
     // Ranked within a tier by trigram similarity where the extension exists;
     // a constant elsewhere, which leaves the ORDER BY well-defined and lets
@@ -266,6 +309,7 @@ export class ActivityLogService {
            FROM audit_logs al
            JOIN users u ON u.id = al."userId"
           WHERE al."tenantId" = $1 AND al.action = ANY($2)
+            AND ($8::uuid[] IS NULL OR al."branchId" = ANY($8::uuid[]))
             AND u.full_name ILIKE $3
           LIMIT $5)
         UNION ALL
@@ -273,18 +317,21 @@ export class ActivityLogService {
            FROM audit_logs al
            JOIN users u ON u.id = al."userId"
           WHERE al."tenantId" = $1 AND al.action = ANY($2)
+            AND ($8::uuid[] IS NULL OR al."branchId" = ANY($8::uuid[]))
             AND u.email ILIKE $3
           LIMIT $5)
         UNION ALL
         (SELECT DISTINCT al.action AS value, 'action' AS kind
            FROM audit_logs al
           WHERE al."tenantId" = $1 AND al.action = ANY($2)
+            AND ($8::uuid[] IS NULL OR al."branchId" = ANY($8::uuid[]))
             AND al.action ILIKE $3
           LIMIT $5)
         UNION ALL
         (SELECT DISTINCT al.entity_label AS value, 'entity' AS kind
            FROM audit_logs al
           WHERE al."tenantId" = $1 AND al.action = ANY($2)
+            AND ($8::uuid[] IS NULL OR al."branchId" = ANY($8::uuid[]))
             AND al.entity_label ILIKE $3
           LIMIT $5)
       ),

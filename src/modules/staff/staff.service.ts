@@ -33,6 +33,7 @@ import {
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { EmailService } from '../email/email.service';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import {
   CUSTOM_ROLE_SENTINEL,
   OWNERSHIP_SCOPED_PERMISSIONS,
@@ -129,6 +130,7 @@ export class StaffService {
     private readonly storage: StorageService,
     private readonly usage: UsageService,
     private readonly email: EmailService,
+    private readonly branchScope: BranchScopeService,
   ) {}
 
   /**
@@ -578,7 +580,16 @@ export class StaffService {
     }
   }
 
-  async findAll(tenantId: string, query: QueryStaffDto) {
+  /**
+   * `caller` is optional so internal, non-HTTP callers (seeders, jobs) keep
+   * working unchanged; omitting it resolves to tenant-wide, exactly as
+   * before. The HTTP controller always supplies it.
+   */
+  async findAll(
+    tenantId: string,
+    query: QueryStaffDto,
+    caller?: { id: string; permissions: string[] },
+  ) {
     const where: Record<string, unknown> = { tenant: { id: tenantId } };
 
     if (query.search) where.title = ILike(`%${query.search}%`);
@@ -590,13 +601,37 @@ export class StaffService {
     // when both are given, the staff member must satisfy both (intersection).
     let allowedUserIds: string[] | null = null;
 
-    // Branch filter resolves through the branch_users join.
+    // The caller's branch AUTHORIZATION, resolved server-side. Distinct from
+    // `query.branchId` below, which is a client-supplied convenience filter:
+    // a requested branch outside the scope is refused rather than applied, so
+    // a branch-restricted caller can never enumerate another branch's roster
+    // by guessing a branch id.
+    const branchScope = await this.branchScope.resolve(
+      tenantId,
+      caller ?? null,
+    );
     if (query.branchId) {
+      this.branchScope.assertBranchAllowed(branchScope, query.branchId);
+    }
+
+    // Branch filter resolves through the branch_users join. The requested
+    // branch narrows within the scope; with none requested, the scope itself
+    // is the filter. A tenant-wide caller with no `branchId` skips both and
+    // runs the exact query they ran before.
+    const branchIdsToMatch = query.branchId
+      ? [query.branchId]
+      : branchScope.branchIds;
+    if (branchIdsToMatch !== null) {
       const links = await this.branchUsers.find({
-        where: { branch: { id: query.branchId }, tenant: { id: tenantId } },
+        where: {
+          branch: { id: In(branchIdsToMatch) },
+          tenant: { id: tenantId },
+        },
         relations: { user: true },
       });
-      allowedUserIds = links.map((l) => l.user.id);
+      // De-duplicated: a staff member assigned to two of the caller's
+      // branches would otherwise appear twice in the id list.
+      allowedUserIds = [...new Set(links.map((l) => l.user.id))];
     }
 
     // Role filter (e.g. `doctor`) resolves through the user_roles join,

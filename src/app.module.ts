@@ -63,6 +63,7 @@ import { PlatformUsageModule } from './modules/platform-usage/platform-usage.mod
 import { PlatformDashboardModule } from './modules/platform-dashboard/platform-dashboard.module';
 import { EmailModule } from './modules/email/email.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
+import { BranchScopeModule } from './core/branch-scope/branch-scope.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -118,7 +119,11 @@ import { validate } from './config/env.validation';
     // fail-open-vs-fail-closed rationale).
     ThrottlerModule.forRootAsync({
       inject: [AppRedisService, MetricsService, ConfigService],
-      useFactory: (appRedis: AppRedisService, metrics: MetricsService, config: ConfigService) => ({
+      useFactory: (
+        appRedis: AppRedisService,
+        metrics: MetricsService,
+        config: ConfigService,
+      ) => ({
         throttlers: [
           {
             name: 'default',
@@ -147,6 +152,10 @@ import { validate } from './config/env.validation';
     // Background-job producers (BullMQ): registers the queues so any service can
     // enqueue. The HTTP API NEVER runs workers — processors live in WorkerModule.
     QueueModule,
+    // Branch-scope authority — the sibling of TenantContextModule ("which
+    // tenant?" / "which branches inside it?"). Declared after QueueModule
+    // because it injects AppRedisService for its membership cache.
+    BranchScopeModule,
     HealthModule,
     MetricsModule,
     MetricsHttpModule,

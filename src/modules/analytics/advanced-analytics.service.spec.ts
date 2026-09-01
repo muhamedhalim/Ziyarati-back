@@ -47,6 +47,20 @@ import { AppointmentCancellation } from '../../entities/Calendar&Appointments/Ap
 import { Payment } from '../../entities/Payments/Payment';
 import { AiMessage } from '../../entities/AI Agent/AiMessage';
 import { Conversation } from '../../entities/Conversations/Conversation';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import type { AppRedisService } from '../../queue/app-redis.service';
+
+/**
+ * A Redis client that always rejects. `BranchScopeService` catches both the
+ * read and the write and falls through to a real database query, so this suite
+ * exercises the un-cached path deterministically — the same path production
+ * takes when `REDIS_URL` is unset.
+ */
+const FAILING_REDIS = {
+  get: () => Promise.reject(new Error('no redis in this suite')),
+  set: () => Promise.reject(new Error('no redis in this suite')),
+};
 import {
   AppointmentActionOrigin,
   AppointmentPaymentStatus,
@@ -107,7 +121,17 @@ describe('AdvancedAnalyticsService — metric conformance against raw tables (T1
     );
     advanced = new AdvancedAnalyticsService(
       aggregation,
-      ds.getRepository(BranchUser),
+      // Real `branch_users` rows, read through the shared BranchScopeService
+      // (which now owns that lookup) rather than the repository this suite
+      // used to hand in directly. Redis is absent here, so the service's own
+      // catch-and-fall-through path means every call reaches the database —
+      // the same behaviour the repository gave, and the production path when
+      // no REDIS_URL is configured.
+      new BranchScopeService(
+        ds.getRepository(BranchUser),
+        { application: FAILING_REDIS } as unknown as AppRedisService,
+        new TenantContextService(),
+      ),
       ds.getRepository(TenantSetting),
       // Pass-through cache: this suite asserts the SQL and the response
       // envelope, so every call must reach the aggregation engine. This is

@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
+import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { AppRedisService } from '../../queue/app-redis.service';
 import { PatientQueueService } from './patient-queue.service';
 import { QueueEntry } from '../../entities/Calendar&Appointments/QueueEntry';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
@@ -49,6 +52,22 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
           provide: ActivityAuditService,
           useValue: { record: jest.fn().mockResolvedValue(undefined) },
         },
+        // The REAL BranchScopeService over this suite's own `branchUsers`
+        // mock — FR-Q014's cases assert on rows returned from that mock, so
+        // keeping the real lookup keeps them testing the real path. Redis
+        // always rejects here, which makes the service fall through to the
+        // repository, deterministically.
+        BranchScopeService,
+        {
+          provide: AppRedisService,
+          useValue: {
+            application: {
+              get: jest.fn().mockRejectedValue(new Error('no redis')),
+              set: jest.fn().mockRejectedValue(new Error('no redis')),
+            },
+          },
+        },
+        { provide: TenantContextService, useValue: new TenantContextService() },
       ],
     }).compile();
     service = moduleRef.get(PatientQueueService);

@@ -4,7 +4,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { QueueEntry } from '../../entities/Calendar&Appointments/QueueEntry';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
-import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 
 import { PatientQueueService } from './patient-queue.service';
 import { PatientQueueController } from './patient-queue.controller';
@@ -25,7 +24,7 @@ import { ActivityLogModule } from '../activity-log/activity-log.module';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([QueueEntry, Appointment, Branch, BranchUser]),
+    TypeOrmModule.forFeature([QueueEntry, Appointment, Branch]),
     AppointmentModule,
     // The single clinic-wide audit INSERT path (ActivityAuditService).
     ActivityLogModule,

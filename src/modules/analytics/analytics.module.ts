@@ -19,10 +19,11 @@ import { Conversation } from '../../entities/Conversations/Conversation';
 import { CustomerReview } from '../../entities/CRM/CustomerReview';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 // Spec 014 (Clinic Platform Completion) — T145 (US11). Read-only here too:
-// AdvancedAnalyticsService only READS `branch_users` (to scope a
-// branch-restricted caller, FR-A016) and `tenant_settings` (the clinic's
-// configured currency, FR-A021) — it never mutates either.
-import { BranchUser } from '../../entities/Multi Branch/BranchUser';
+// AdvancedAnalyticsService READS `tenant_settings` for the clinic's
+// configured currency (FR-A021) and never mutates it. The `branch_users`
+// repository this module used to register for FR-A016 is gone: branch
+// membership now comes from the global `BranchScopeService`, the single
+// owner of that lookup.
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 
 import { AnalyticsEventService } from './analytics-event.service';
@@ -80,7 +81,6 @@ import { AdvancedAnalyticsController } from './advanced-analytics.controller';
       CustomerReview,
       StaffProfile,
       AppointmentCancellation,
-      BranchUser,
       TenantSetting,
     ]),
   ],
