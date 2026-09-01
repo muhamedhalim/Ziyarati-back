@@ -428,6 +428,45 @@ describe('Branch Manager — branch isolation (e2e)', () => {
       );
       expect(membership.branchId).toBe(fx.branchA);
     });
+
+    // ── Operations Manager retirement ─────────────────────────────────────
+    // `manager` ("Operations Manager") is retired from new-staff assignment
+    // in favor of `branch_manager`. These pin both enforcement surfaces: the
+    // selector no longer offers it, and a direct API call can't smuggle it
+    // in — mirroring how owner/super_admin/customer/ai-bot are already
+    // proven unreachable via this same allow-list.
+
+    it('does not offer manager (Operations Manager) in GET /staff/assignable-roles', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/staff/assignable-roles`)
+        .set(...asOwner())
+        .expect(200);
+
+      const roles = res.body as { slug: string }[];
+      expect(roles.find((r) => r.slug === ROLE.MANAGER)).toBeUndefined();
+    });
+
+    it('refuses to create a new staff member with roleSlug: manager', async () => {
+      const email = `new-mgr-${randomUUID().slice(0, 8)}@example.test`;
+      await request(e2e.app.getHttpServer())
+        .post(`${API}/staff/from-new-user`)
+        .set(...asOwner())
+        .send({
+          email,
+          fullName: 'Would-Be Manager',
+          roleSlug: ROLE.MANAGER,
+          title: 'Manager',
+        })
+        .expect(403);
+    });
+
+    it('refuses to update an existing staff member’s role to manager', async () => {
+      await request(e2e.app.getHttpServer())
+        .patch(`${API}/staff/${fx.staffAProfileId}`)
+        .set(...asOwner())
+        .send({ roleSlug: ROLE.MANAGER })
+        .expect(403);
+    });
   });
 
   // ── F. Branch isolation on reads ─────────────────────────────────────────

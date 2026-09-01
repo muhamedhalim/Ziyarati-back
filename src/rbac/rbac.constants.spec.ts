@@ -421,6 +421,11 @@ describe('Support Operations Console diagnostic permissions', () => {
     expect(NON_STAFF_ROLE_SLUGS).toContain(ROLE.PLATFORM_SUPPORT);
   });
 
+  it('manager (Operations Manager) is retired from staff assignment — branch_manager replaces it for new hires', () => {
+    expect(NON_STAFF_ROLE_SLUGS).toContain(ROLE.MANAGER);
+    expect(NON_STAFF_ROLE_SLUGS).not.toContain(ROLE.BRANCH_MANAGER);
+  });
+
   it('exposes exactly three write actions — and no bulk/retry-all/queue-administration slug exists', () => {
     const writes = PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS.filter(
       (s) => !s.includes('.read'),

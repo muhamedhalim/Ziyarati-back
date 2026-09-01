@@ -360,7 +360,7 @@ describe('RolesService', () => {
   });
 
   describe('findAssignableForStaff', () => {
-    it('excludes owner/super_admin/customer/ai-bot but keeps everything else', async () => {
+    it('excludes owner/super_admin/customer/ai-bot/manager but keeps everything else', async () => {
       roles.find.mockResolvedValueOnce([
         { id: 'r1', slug: ROLE.MANAGER },
         { id: 'r2', slug: ROLE.RECEPTIONIST },
@@ -369,22 +369,26 @@ describe('RolesService', () => {
         { id: 'r5', slug: ROLE.CUSTOMER },
         { id: 'r6', slug: ROLE.AI_BOT },
         { id: 'r7', slug: 'front-desk' }, // tenant custom role
+        { id: 'r8', slug: ROLE.BRANCH_MANAGER },
       ]);
 
       const result = await service.findAssignableForStaff(TENANT);
 
       expect(result.map((r) => r.slug)).toEqual([
-        ROLE.MANAGER,
         ROLE.RECEPTIONIST,
         'front-desk',
+        ROLE.BRANCH_MANAGER,
       ]);
     });
   });
 
   describe('findAssignableRoleBySlug', () => {
-    it('rejects super_admin/owner/customer/ai-bot without a DB lookup', async () => {
+    it('rejects super_admin/owner/customer/ai-bot/manager without a DB lookup', async () => {
       await expect(
         service.findAssignableRoleBySlug(ROLE.OWNER, TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      await expect(
+        service.findAssignableRoleBySlug(ROLE.MANAGER, TENANT),
       ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
       expect(roles.findOne).not.toHaveBeenCalled();
     });
