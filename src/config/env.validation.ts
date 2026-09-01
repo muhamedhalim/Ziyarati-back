@@ -26,6 +26,11 @@ export const validate = (config: Record<string, unknown>) => {
     // boot-time error, not a runtime risk. Unchanged outside production.
     TYPEORM_LOGGING: Joi.string().valid('true', 'false').default('false'),
 
+    // Opt-IN escape hatch for the NODE_ENV=test override in typeorm.config.ts.
+    // Without it, an inherited `TYPEORM_LOGGING=true` from a tracked `.env`
+    // silently turns every test/load run into a measurement of the logger.
+    TYPEORM_LOGGING_IN_TEST: Joi.string().valid('true', 'false'),
+
     // Default 15 (raised from 10 — Phase 0 correction, measured; see
     // docs/CACHING_QUEUES_AUDIT.md §0.3). Each deployment (API, critical
     // worker, dispatch worker — see WORKER_ROLE below) may override this

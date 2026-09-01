@@ -1,0 +1,15 @@
+{
+  "generatedAt": "2026-09-01T20:16:36.867Z",
+  "scenario": "baseline",
+  "rate": 8,
+  "duration": "90s",
+  "http_reqs": 2958,
+  "rps": 31.238358944156566,
+  "p50_ms": 35.1777885,
+  "p90_ms": 55.02909100000001,
+  "p95_ms": 58.82149285,
+  "p99_ms": 67.68169852999999,
+  "max_ms": 401.290762,
+  "error_rate": 0,
+  "business_check_failed": 0
+}
