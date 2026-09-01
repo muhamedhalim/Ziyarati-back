@@ -602,6 +602,12 @@ export function isSynthesizedCustomRoleName(name: string): boolean {
  * actor, respectively). Everything else — the remaining system roles plus any
  * of the tenant's own custom roles — is fair game, so a tenant's custom roles
  * appear in the staff role selector automatically, with no code change.
+ *
+ * `manager` ("Operations Manager") is retired from NEW staff assignment —
+ * `branch_manager` is the role for managing a branch going forward. The
+ * `manager` role definition, its permission grant, and any account that
+ * already holds it are untouched; this only stops it being offered or
+ * accepted for staff creation/update going forward.
  */
 export const NON_STAFF_ROLE_SLUGS: readonly RoleSlug[] = [
   ROLE.SUPER_ADMIN,
@@ -611,6 +617,8 @@ export const NON_STAFF_ROLE_SLUGS: readonly RoleSlug[] = [
   // Platform-level role — never a clinic staff role. Belongs only to a
   // tenantId = NULL user, provisioned exclusively via /platform/staff.
   ROLE.PLATFORM_SUPPORT,
+  // Retired from staff assignment in favor of branch_manager. See docblock.
+  ROLE.MANAGER,
 ];
 
 // ---------------------------------------------------------------------------

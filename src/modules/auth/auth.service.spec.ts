@@ -395,20 +395,13 @@ describe('AuthService', () => {
       expect(result).toEqual(expectedPrincipal);
     });
 
-    it('accepts an explicit assignable role (manager)', async () => {
-      dataSource.manager.findOne.mockResolvedValueOnce({
-        id: 'role-mgr',
-        slug: ROLE.MANAGER,
-      });
-      dataSource.manager.findOne.mockResolvedValueOnce(null); // no email clash
-      mockPrincipal(users, principalRow());
-
+    it("rejects manager — retired from this endpoint's assignable-role allow-list", async () => {
       await expect(
         service.createTenantUser(
           { ...dto, roleSlug: ROLE.MANAGER },
           'tenant-1',
         ),
-      ).resolves.toEqual(expectedPrincipal);
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
     });
 
     it('forbids staff creation without a tenant scope (super-admin actor)', async () => {

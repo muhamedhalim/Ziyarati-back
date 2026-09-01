@@ -13,11 +13,11 @@ import type { RoleSlug } from '../../../rbac/rbac.constants';
 /**
  * Roles a tenant admin may assign to staff. Privileged roles (`super_admin`,
  * `owner`) are intentionally excluded and can never be set through this DTO.
+ * `manager` ("Operations Manager") was retired from this list — it is no
+ * longer offered for new staff, superseded by `branch_manager` on the
+ * current staff-creation flow; existing `manager` accounts are unaffected.
  */
-export const ASSIGNABLE_STAFF_ROLES: RoleSlug[] = [
-  ROLE.MANAGER,
-  ROLE.RECEPTIONIST,
-];
+export const ASSIGNABLE_STAFF_ROLES: RoleSlug[] = [ROLE.RECEPTIONIST];
 
 /**
  * Payload for creating a staff member inside an EXISTING tenant. The tenant is
@@ -67,7 +67,7 @@ export class RegisterUserDto {
 
   @ApiPropertyOptional({
     description:
-      'Role to assign to the new user. Only `manager` and `receptionist` are allowed — privileged roles (`owner`, `super_admin`) are blocked. Defaults to `receptionist` when omitted.',
+      'Role to assign to the new user. Only `receptionist` is allowed — privileged roles (`owner`, `super_admin`) are blocked, and `manager` is retired from this endpoint. Defaults to `receptionist` when omitted.',
     enum: ASSIGNABLE_STAFF_ROLES,
     example: ROLE.RECEPTIONIST,
   })

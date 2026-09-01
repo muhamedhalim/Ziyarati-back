@@ -18,8 +18,15 @@ describe('RegisterUserDto validation', () => {
     expect(await errorsFor(base)).toHaveLength(0);
   });
 
-  it('accepts an assignable role (manager)', async () => {
-    expect(await errorsFor({ ...base, roleSlug: ROLE.MANAGER })).toHaveLength(0);
+  it('accepts an assignable role (receptionist)', async () => {
+    expect(
+      await errorsFor({ ...base, roleSlug: ROLE.RECEPTIONIST }),
+    ).toHaveLength(0);
+  });
+
+  it('rejects manager — retired from staff assignment via this endpoint', async () => {
+    const errors = await errorsFor({ ...base, roleSlug: ROLE.MANAGER });
+    expect(errors.some((e) => e.property === 'roleSlug')).toBe(true);
   });
 
   it('rejects a privileged role (owner) — cannot be set via the staff DTO', async () => {
