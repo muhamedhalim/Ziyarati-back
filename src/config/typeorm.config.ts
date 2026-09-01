@@ -206,8 +206,65 @@ export async function typeOrmFactory(
         'DB_POOL_CONNECTION_TIMEOUT',
         10000,
       ),
+      // ── Server-side backstops (P0 booking remediation) ───────────────────
+      //
+      // node-postgres applies both of these per connection at session setup,
+      // so they bound what a single session can do no matter which code path
+      // opened it. They are BACKSTOPS, not tuning knobs: the remediation
+      // itself is `AppointmentsService.create`'s transaction boundary. These
+      // exist so the NEXT path that leaks a transaction fails loudly and
+      // releases its connection, instead of holding a pool slot until someone
+      // notices — which is precisely how the booking defect presented
+      // (`idle in transaction` = the entire pool, `active` = 1).
+      //
+      // WHY MIGRATIONS ARE NOT AT RISK: they never run through this pool.
+      // `runMigrationsWithAdvisoryLock` builds its own short-lived DataSource,
+      // and the `migration:run` CLI uses `config/data-source.ts`; neither sets
+      // `extra`, so neither inherits these. A long `CREATE INDEX` or a table
+      // rewrite is structurally exempt rather than exempt by chosen value.
+      //
+      // CALIBRATION: across 1,090 `pg_stat_activity` samples taken during
+      // every load scenario (smoke, baseline, sweep, spike, soak, write), the
+      // longest ACTIVE statement observed was 0.000s. 30s therefore sits about
+      // three orders of magnitude above anything this workload produces. The
+      // worker gets a far larger ceiling because its jobs legitimately run
+      // bulk statements (campaign recipient expansion, analytics aggregation,
+      // retention sweeps) that the API never issues. Set either to `0` to
+      // disable, which is Postgres's own "no limit" value.
+      statement_timeout: timeoutMs(
+        config,
+        poolRole,
+        'DB_STATEMENT_TIMEOUT',
+        poolRole === 'worker' ? 120_000 : 30_000,
+      ),
+      idle_in_transaction_session_timeout: timeoutMs(
+        config,
+        poolRole,
+        'DB_IDLE_IN_TRANSACTION_TIMEOUT',
+        poolRole === 'worker' ? 120_000 : 60_000,
+      ),
     },
   } as TypeOrmModuleOptions;
+}
+
+/**
+ * Role-specific timeout, following the same precedence as {@link poolMax}:
+ * `API_<NAME>` / `WORKER_<NAME>` wins, then the shared `<NAME>`, then the
+ * built-in default. Returns milliseconds; `0` means "no limit" (Postgres's own
+ * semantics), so an operator can switch a backstop off without a code change.
+ */
+function timeoutMs(
+  config: ConfigService,
+  poolRole: 'api' | 'worker',
+  name: string,
+  fallback: number,
+): number {
+  const prefixed = config.get<number>(
+    `${poolRole === 'worker' ? 'WORKER' : 'API'}_${name}`,
+  );
+  if (prefixed !== undefined && prefixed !== null) return Number(prefixed);
+  const shared = config.get<number>(name);
+  return shared !== undefined && shared !== null ? Number(shared) : fallback;
 }
 
 /** Role-specific pool size, falling back to the shared `DB_POOL_MAX` (default 15) when unset. */

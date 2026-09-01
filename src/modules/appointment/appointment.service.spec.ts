@@ -172,7 +172,12 @@ describe('AppointmentsService', () => {
     } as any;
 
     const primeValidRefs = () => {
-      repo(Branch).exists.mockResolvedValue(true);
+      // One read, not two: `assertBranch` now returns the row so `create` can
+      // snapshot `timezone` from it instead of re-reading the same branch.
+      repo(Branch).findOne.mockResolvedValue({
+        id: 'b1',
+        timezone: 'Asia/Riyadh',
+      });
       repo(Customer).exists.mockResolvedValue(true);
       // Branch-scoped staff validation loads the profile (it also needs
       // `is_available_for_booking`), where it used to only `exists` on tenant.
@@ -186,7 +191,6 @@ describe('AppointmentsService', () => {
       repo(Service).find.mockResolvedValue([
         { id: 'svc1', duration_minutes: 30, base_price: 100, is_active: true },
       ]);
-      manager.findOne.mockResolvedValue({ id: 'b1', timezone: 'Asia/Riyadh' }); // timezone snapshot
       repo(Appointment).save.mockImplementation(async (e: any) => ({
         id: 'appt-1',
         ...e,
@@ -207,13 +211,20 @@ describe('AppointmentsService', () => {
         1,
         manager,
       );
+      // P0 booking remediation: NO `manager`. The availability engine fans out
+      // to six sibling services that each check out their own pooled
+      // connection; running it inside the write transaction meant a booking
+      // needed its transaction's connection PLUS a free one, so N concurrent
+      // bookings (N >= pool size) deadlocked. Passing a manager bought no
+      // isolation either way — the double-booking guarantee is the
+      // `appointments_no_overlap` EXCLUSION constraint at INSERT, not this
+      // check. See the comment on `create`.
       expect(availability.assertBookable).toHaveBeenCalledWith(
         TENANT,
         'b1',
         's1',
         expect.any(Date),
         expect.any(Date),
-        expect.objectContaining({ manager }),
       );
       // New bookings start UNPAID / PENDING_PAYMENT (the two axes are independent).
       const created = repo(Appointment).create.mock.calls[0][0];
@@ -354,14 +365,16 @@ describe('AppointmentsService', () => {
     });
 
     it('rejects a branch that does not belong to the tenant', async () => {
-      repo(Branch).exists.mockResolvedValue(false);
+      repo(Branch).findOne.mockResolvedValue(null);
       await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
         code: ErrorCode.NOT_FOUND,
       });
+      // ...and never opens a transaction to find that out.
+      expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
     it('rejects when one or more services are missing/inactive', async () => {
-      repo(Branch).exists.mockResolvedValue(true);
+      repo(Branch).findOne.mockResolvedValue({ id: 'b1', timezone: 'UTC' });
       repo(Customer).exists.mockResolvedValue(true);
       repo(StaffProfile).exists.mockResolvedValue(true);
       repo(Service).find.mockResolvedValue([]); // none found for the requested id
@@ -380,6 +393,68 @@ describe('AppointmentsService', () => {
       });
       // Availability is checked BEFORE the quota gate — a conflict never reaches it.
       expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
+      // ...and, since the P0 remediation, before any transaction is opened at
+      // all, so a refused booking never occupies a pooled connection.
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    /**
+     * P0 booking remediation — the transaction boundary itself is the
+     * behaviour under test, so it gets its own guard rather than living only
+     * as a comment.
+     *
+     * The defect: `AvailabilityService.evaluate` fans out to six sibling
+     * services, each holding its own `@InjectRepository` handle and therefore
+     * checking out its own pooled connection. Running that inside the write
+     * transaction meant one booking needed its transaction's connection PLUS a
+     * free one — measured with `DB_POOL_MAX=1`, a single uncontended booking
+     * failed with "timeout exceeded when trying to connect", and N concurrent
+     * bookings deadlocked whenever N reached the pool size.
+     *
+     * The rule this pins: NOTHING that reads may run inside the transaction.
+     * The transaction opens only after every validation has passed, and
+     * contains only the quota admission and this booking's own writes.
+     */
+    it('P0: opens the transaction only after validation, and holds no reads inside it', async () => {
+      primeValidRefs();
+
+      const order: string[] = [];
+      availability.assertBookable.mockImplementationOnce(async () => {
+        order.push('availability');
+      });
+      dataSource.transaction.mockImplementationOnce(async (cb: any) => {
+        order.push('transaction-open');
+        return cb(manager);
+      });
+
+      await service.create(TENANT, USER, dto);
+
+      // Every read resolved before a connection was ever pinned to a txn.
+      expect(order).toEqual(['availability', 'transaction-open']);
+      // The quota admission and the four inserts are what remains inside.
+      expect(usage.incrementIfWithinLimit).toHaveBeenCalledWith(
+        TENANT,
+        'APPOINTMENTS',
+        1,
+        manager,
+      );
+      expect(repo(Appointment).save).toHaveBeenCalled();
+    });
+
+    /**
+     * The branch row is read ONCE. It used to be read twice — `exists` for the
+     * tenant/active check, then a second `findOne` purely to snapshot
+     * `timezone` — on the same predicate, inside the transaction.
+     */
+    it('P0: reads the branch once and snapshots its timezone from that row', async () => {
+      primeValidRefs();
+
+      await service.create(TENANT, USER, dto);
+
+      expect(repo(Branch).findOne).toHaveBeenCalledTimes(1);
+      expect(repo(Appointment).create.mock.calls[0][0].booked_timezone).toBe(
+        'Asia/Riyadh',
+      );
     });
 
     // FND-012 — a VARIABLE-priced service currently books silently at price 0
@@ -1134,7 +1209,10 @@ describe('AppointmentsService', () => {
    */
   describe('activity audit trail', () => {
     const primeRefs = () => {
-      repo(Branch).exists.mockResolvedValue(true);
+      repo(Branch).findOne.mockResolvedValue({
+        id: 'b1',
+        timezone: 'Asia/Riyadh',
+      });
       repo(Customer).exists.mockResolvedValue(true);
       repo(StaffProfile).findOne.mockResolvedValue({
         id: 's1',
@@ -1144,7 +1222,6 @@ describe('AppointmentsService', () => {
       repo(Service).find.mockResolvedValue([
         { id: 'svc1', duration_minutes: 30, base_price: 100, is_active: true },
       ]);
-      manager.findOne.mockResolvedValue({ id: 'b1', timezone: 'Asia/Riyadh' });
       repo(Appointment).save.mockImplementation(async (e: any) => ({
         id: 'appt-1',
         ...e,

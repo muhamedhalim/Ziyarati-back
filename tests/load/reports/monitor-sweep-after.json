@@ -1,0 +1,4598 @@
+{
+  "generatedAt": "2026-09-01T18:19:59.550Z",
+  "intervalMs": 1000,
+  "sampleCount": 199,
+  "summary": {
+    "eventloop_lag_p99_max_s": 0.209453055,
+    "pg_active_connections_max": 5,
+    "pg_idle_in_transaction_max": 4,
+    "pg_waiting_on_lock_max": 0,
+    "heap_first_bytes": 95840320,
+    "heap_last_bytes": 202489384,
+    "heap_growth_bytes": 106649064,
+    "rss_first_bytes": 196300800,
+    "rss_last_bytes": 855150592,
+    "rss_growth_bytes": 658849792,
+    "cpu_user_seconds_delta": 209.45300000000015,
+    "db_queries_delta": 201151
+  },
+  "samples": [
+    {
+      "t": "2026-09-01T18:15:39.851Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 75.75,
+        "process_cpu_system_seconds_total": 10.625,
+        "process_cpu_seconds_total": 86.375,
+        "process_resident_memory_bytes": 196300800,
+        "nodejs_eventloop_lag_mean_seconds": 0.01588248309870887,
+        "nodejs_eventloop_lag_p90_seconds": 0.017973247,
+        "nodejs_eventloop_lag_p99_seconds": 0.024854527,
+        "nodejs_active_handles_total": 10,
+        "nodejs_heap_size_used_bytes": 95840320,
+        "db_queries_total": 25032
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:41.137Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 75.75,
+        "process_cpu_system_seconds_total": 10.625,
+        "process_cpu_seconds_total": 86.375,
+        "process_resident_memory_bytes": 196493312,
+        "nodejs_eventloop_lag_mean_seconds": 0.01580774708433735,
+        "nodejs_eventloop_lag_p90_seconds": 0.016113663,
+        "nodejs_eventloop_lag_p99_seconds": 0.021020671,
+        "nodejs_active_handles_total": 10,
+        "nodejs_heap_size_used_bytes": 95550344,
+        "db_queries_total": 25032
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:42.419Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 75.75,
+        "process_cpu_system_seconds_total": 10.641,
+        "process_cpu_seconds_total": 86.391,
+        "process_resident_memory_bytes": 197115904,
+        "nodejs_eventloop_lag_mean_seconds": 0.015554635851851852,
+        "nodejs_eventloop_lag_p90_seconds": 0.016203775,
+        "nodejs_eventloop_lag_p99_seconds": 0.019447807,
+        "nodejs_active_handles_total": 11,
+        "nodejs_heap_size_used_bytes": 96172520,
+        "db_queries_total": 25032
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:43.703Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 77.14,
+        "process_cpu_system_seconds_total": 10.703,
+        "process_cpu_seconds_total": 87.843,
+        "process_resident_memory_bytes": 210432000,
+        "nodejs_eventloop_lag_mean_seconds": 0.03960782351515152,
+        "nodejs_eventloop_lag_p90_seconds": 0.100990975,
+        "nodejs_eventloop_lag_p99_seconds": 0.209453055,
+        "nodejs_active_handles_total": 14,
+        "nodejs_heap_size_used_bytes": 97266712,
+        "db_queries_total": 25119
+      },
+      "pg": {
+        "active": 1,
+        "idle": 4,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 5,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:44.974Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 78.359,
+        "process_cpu_system_seconds_total": 10.719,
+        "process_cpu_seconds_total": 89.078,
+        "process_resident_memory_bytes": 217137152,
+        "nodejs_eventloop_lag_mean_seconds": 0.029479329959183675,
+        "nodejs_eventloop_lag_p90_seconds": 0.081526783,
+        "nodejs_eventloop_lag_p99_seconds": 0.208666623,
+        "nodejs_active_handles_total": 14,
+        "nodejs_heap_size_used_bytes": 115353616,
+        "db_queries_total": 25264
+      },
+      "pg": {
+        "active": 1,
+        "idle": 4,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 5,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:46.237Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 79.234,
+        "process_cpu_system_seconds_total": 10.734,
+        "process_cpu_seconds_total": 89.968,
+        "process_resident_memory_bytes": 240807936,
+        "nodejs_eventloop_lag_mean_seconds": 0.025821783414634147,
+        "nodejs_eventloop_lag_p90_seconds": 0.033587199,
+        "nodejs_eventloop_lag_p99_seconds": 0.208273407,
+        "nodejs_active_handles_total": 14,
+        "nodejs_heap_size_used_bytes": 125508232,
+        "db_queries_total": 25405
+      },
+      "pg": {
+        "active": 1,
+        "idle": 4,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 5,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:47.528Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 80.39,
+        "process_cpu_system_seconds_total": 10.812,
+        "process_cpu_seconds_total": 91.202,
+        "process_resident_memory_bytes": 269705216,
+        "nodejs_eventloop_lag_mean_seconds": 0.019279728280701753,
+        "nodejs_eventloop_lag_p90_seconds": 0.022626303,
+        "nodejs_eventloop_lag_p99_seconds": 0.082116607,
+        "nodejs_active_handles_total": 100,
+        "nodejs_heap_size_used_bytes": 146593928,
+        "db_queries_total": 25777
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:48.815Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 81.562,
+        "process_cpu_system_seconds_total": 11.219,
+        "process_cpu_seconds_total": 92.78099999999999,
+        "process_resident_memory_bytes": 355020800,
+        "nodejs_eventloop_lag_mean_seconds": 0.01820738258823529,
+        "nodejs_eventloop_lag_p90_seconds": 0.025657343,
+        "nodejs_eventloop_lag_p99_seconds": 0.027836415,
+        "nodejs_active_handles_total": 389,
+        "nodejs_heap_size_used_bytes": 131718976,
+        "db_queries_total": 26526
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:50.091Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 82.812,
+        "process_cpu_system_seconds_total": 11.594,
+        "process_cpu_seconds_total": 94.40599999999999,
+        "process_resident_memory_bytes": 384487424,
+        "nodejs_eventloop_lag_mean_seconds": 0.016755316053333334,
+        "nodejs_eventloop_lag_p90_seconds": 0.023986175,
+        "nodejs_eventloop_lag_p99_seconds": 0.028442623,
+        "nodejs_active_handles_total": 569,
+        "nodejs_heap_size_used_bytes": 179370440,
+        "db_queries_total": 27301
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:51.372Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 83.937,
+        "process_cpu_system_seconds_total": 12.016,
+        "process_cpu_seconds_total": 95.95299999999999,
+        "process_resident_memory_bytes": 437571584,
+        "nodejs_eventloop_lag_mean_seconds": 0.01587441558974359,
+        "nodejs_eventloop_lag_p90_seconds": 0.022298623,
+        "nodejs_eventloop_lag_p99_seconds": 0.026263551,
+        "nodejs_active_handles_total": 668,
+        "nodejs_heap_size_used_bytes": 267404304,
+        "db_queries_total": 28161
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:52.657Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 85.062,
+        "process_cpu_system_seconds_total": 12.484,
+        "process_cpu_seconds_total": 97.54599999999999,
+        "process_resident_memory_bytes": 496746496,
+        "nodejs_eventloop_lag_mean_seconds": 0.0161915904,
+        "nodejs_eventloop_lag_p90_seconds": 0.023265279,
+        "nodejs_eventloop_lag_p99_seconds": 0.029736959,
+        "nodejs_active_handles_total": 732,
+        "nodejs_heap_size_used_bytes": 322068632,
+        "db_queries_total": 29110
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:53.940Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 86.29599999999999,
+        "process_cpu_system_seconds_total": 12.844,
+        "process_cpu_seconds_total": 99.13999999999999,
+        "process_resident_memory_bytes": 554737664,
+        "nodejs_eventloop_lag_mean_seconds": 0.015839957873417722,
+        "nodejs_eventloop_lag_p90_seconds": 0.021692415,
+        "nodejs_eventloop_lag_p99_seconds": 0.029376511,
+        "nodejs_active_handles_total": 784,
+        "nodejs_heap_size_used_bytes": 376604912,
+        "db_queries_total": 30042
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:55.208Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 87.562,
+        "process_cpu_system_seconds_total": 13.155999999999999,
+        "process_cpu_seconds_total": 100.71799999999999,
+        "process_resident_memory_bytes": 611926016,
+        "nodejs_eventloop_lag_mean_seconds": 0.015618452543209876,
+        "nodejs_eventloop_lag_p90_seconds": 0.023576575,
+        "nodejs_eventloop_lag_p99_seconds": 0.029868031,
+        "nodejs_active_handles_total": 817,
+        "nodejs_heap_size_used_bytes": 432686112,
+        "db_queries_total": 31003
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:56.519Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 88.968,
+        "process_cpu_system_seconds_total": 13.453,
+        "process_cpu_seconds_total": 102.42099999999999,
+        "process_resident_memory_bytes": 659697664,
+        "nodejs_eventloop_lag_mean_seconds": 0.01610641723076923,
+        "nodejs_eventloop_lag_p90_seconds": 0.023625727,
+        "nodejs_eventloop_lag_p99_seconds": 0.028639231,
+        "nodejs_active_handles_total": 828,
+        "nodejs_heap_size_used_bytes": 166319264,
+        "db_queries_total": 31967
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:57.797Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 90.35900000000001,
+        "process_cpu_system_seconds_total": 13.734,
+        "process_cpu_seconds_total": 104.09299999999999,
+        "process_resident_memory_bytes": 660131840,
+        "nodejs_eventloop_lag_mean_seconds": 0.01540837180952381,
+        "nodejs_eventloop_lag_p90_seconds": 0.022315007,
+        "nodejs_eventloop_lag_p99_seconds": 0.025427967,
+        "nodejs_active_handles_total": 864,
+        "nodejs_heap_size_used_bytes": 191563968,
+        "db_queries_total": 33026
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:15:59.079Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 91.343,
+        "process_cpu_system_seconds_total": 14.125,
+        "process_cpu_seconds_total": 105.46799999999999,
+        "process_resident_memory_bytes": 660979712,
+        "nodejs_eventloop_lag_mean_seconds": 0.015121741108433735,
+        "nodejs_eventloop_lag_p90_seconds": 0.020545535,
+        "nodejs_eventloop_lag_p99_seconds": 0.025575423,
+        "nodejs_active_handles_total": 872,
+        "nodejs_heap_size_used_bytes": 256840448,
+        "db_queries_total": 34139
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:00.357Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 92.625,
+        "process_cpu_system_seconds_total": 14.391,
+        "process_cpu_seconds_total": 107.01599999999999,
+        "process_resident_memory_bytes": 662208512,
+        "nodejs_eventloop_lag_mean_seconds": 0.01635543169620253,
+        "nodejs_eventloop_lag_p90_seconds": 0.020365311,
+        "nodejs_eventloop_lag_p99_seconds": 0.033226751,
+        "nodejs_active_handles_total": 888,
+        "nodejs_heap_size_used_bytes": 307826312,
+        "db_queries_total": 35176
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:01.641Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 93.953,
+        "process_cpu_system_seconds_total": 14.609,
+        "process_cpu_seconds_total": 108.562,
+        "process_resident_memory_bytes": 662880256,
+        "nodejs_eventloop_lag_mean_seconds": 0.015668599898734176,
+        "nodejs_eventloop_lag_p90_seconds": 0.021954559,
+        "nodejs_eventloop_lag_p99_seconds": 0.024379391,
+        "nodejs_active_handles_total": 893,
+        "nodejs_heap_size_used_bytes": 355415544,
+        "db_queries_total": 36194
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:02.939Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 95.14,
+        "process_cpu_system_seconds_total": 14.844,
+        "process_cpu_seconds_total": 109.984,
+        "process_resident_memory_bytes": 663220224,
+        "nodejs_eventloop_lag_mean_seconds": 0.014168746666666666,
+        "nodejs_eventloop_lag_p90_seconds": 0.019316735,
+        "nodejs_eventloop_lag_p99_seconds": 0.028033023,
+        "nodejs_active_handles_total": 914,
+        "nodejs_heap_size_used_bytes": 431035360,
+        "db_queries_total": 37356
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:04.217Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 96.265,
+        "process_cpu_system_seconds_total": 15.078,
+        "process_cpu_seconds_total": 111.34299999999999,
+        "process_resident_memory_bytes": 672796672,
+        "nodejs_eventloop_lag_mean_seconds": 0.016329176615384616,
+        "nodejs_eventloop_lag_p90_seconds": 0.022233087,
+        "nodejs_eventloop_lag_p99_seconds": 0.028770303,
+        "nodejs_active_handles_total": 958,
+        "nodejs_heap_size_used_bytes": 486893360,
+        "db_queries_total": 38371
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0.000608
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:05.501Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 97.703,
+        "process_cpu_system_seconds_total": 15.453,
+        "process_cpu_seconds_total": 113.15599999999999,
+        "process_resident_memory_bytes": 719052800,
+        "nodejs_eventloop_lag_mean_seconds": 0.014471921287356323,
+        "nodejs_eventloop_lag_p90_seconds": 0.020594687,
+        "nodejs_eventloop_lag_p99_seconds": 0.024363007,
+        "nodejs_active_handles_total": 955,
+        "nodejs_heap_size_used_bytes": 147467464,
+        "db_queries_total": 39505
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:06.778Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 98.828,
+        "process_cpu_system_seconds_total": 15.796999999999999,
+        "process_cpu_seconds_total": 114.62499999999999,
+        "process_resident_memory_bytes": 719777792,
+        "nodejs_eventloop_lag_mean_seconds": 0.015283853879518073,
+        "nodejs_eventloop_lag_p90_seconds": 0.019873791,
+        "nodejs_eventloop_lag_p99_seconds": 0.023625727,
+        "nodejs_active_handles_total": 969,
+        "nodejs_heap_size_used_bytes": 194708208,
+        "db_queries_total": 40660
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:08.058Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 99.89,
+        "process_cpu_system_seconds_total": 16.186999999999998,
+        "process_cpu_seconds_total": 116.07699999999998,
+        "process_resident_memory_bytes": 720859136,
+        "nodejs_eventloop_lag_mean_seconds": 0.015364245853658537,
+        "nodejs_eventloop_lag_p90_seconds": 0.020119551,
+        "nodejs_eventloop_lag_p99_seconds": 0.024543231,
+        "nodejs_active_handles_total": 1013,
+        "nodejs_heap_size_used_bytes": 244122448,
+        "db_queries_total": 41788
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:09.337Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 101.203,
+        "process_cpu_system_seconds_total": 16.452999999999996,
+        "process_cpu_seconds_total": 117.65599999999998,
+        "process_resident_memory_bytes": 721514496,
+        "nodejs_eventloop_lag_mean_seconds": 0.015801088,
+        "nodejs_eventloop_lag_p90_seconds": 0.021118975,
+        "nodejs_eventloop_lag_p99_seconds": 0.025821183,
+        "nodejs_active_handles_total": 1041,
+        "nodejs_heap_size_used_bytes": 289846128,
+        "db_queries_total": 42862
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:11.357Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 103.421,
+        "process_cpu_system_seconds_total": 16.843999999999994,
+        "process_cpu_seconds_total": 120.26499999999997,
+        "process_resident_memory_bytes": 723648512,
+        "nodejs_eventloop_lag_mean_seconds": 0.015218306648275861,
+        "nodejs_eventloop_lag_p90_seconds": 0.020578303,
+        "nodejs_eventloop_lag_p99_seconds": 0.035094527,
+        "nodejs_active_handles_total": 1121,
+        "nodejs_heap_size_used_bytes": 387623088,
+        "db_queries_total": 44892
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:12.629Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 104.39,
+        "process_cpu_system_seconds_total": 16.999999999999993,
+        "process_cpu_seconds_total": 121.38999999999997,
+        "process_resident_memory_bytes": 726323200,
+        "nodejs_eventloop_lag_mean_seconds": 0.014302833777777777,
+        "nodejs_eventloop_lag_p90_seconds": 0.020348927,
+        "nodejs_eventloop_lag_p99_seconds": 0.023347199,
+        "nodejs_active_handles_total": 1137,
+        "nodejs_heap_size_used_bytes": 430708408,
+        "db_queries_total": 45860
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:13.902Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 105.375,
+        "process_cpu_system_seconds_total": 17.39099999999999,
+        "process_cpu_seconds_total": 122.76599999999998,
+        "process_resident_memory_bytes": 726495232,
+        "nodejs_eventloop_lag_mean_seconds": 0.014262789885057471,
+        "nodejs_eventloop_lag_p90_seconds": 0.018120703,
+        "nodejs_eventloop_lag_p99_seconds": 0.024002559,
+        "nodejs_active_handles_total": 1125,
+        "nodejs_heap_size_used_bytes": 502920008,
+        "db_queries_total": 47073
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:15.193Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 106.484,
+        "process_cpu_system_seconds_total": 17.76599999999999,
+        "process_cpu_seconds_total": 124.24999999999997,
+        "process_resident_memory_bytes": 755634176,
+        "nodejs_eventloop_lag_mean_seconds": 0.014137182921348315,
+        "nodejs_eventloop_lag_p90_seconds": 0.019513343,
+        "nodejs_eventloop_lag_p99_seconds": 0.024150015,
+        "nodejs_active_handles_total": 1129,
+        "nodejs_heap_size_used_bytes": 524521232,
+        "db_queries_total": 48306
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:16.475Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 108,
+        "process_cpu_system_seconds_total": 18.14099999999999,
+        "process_cpu_seconds_total": 126.14099999999998,
+        "process_resident_memory_bytes": 755146752,
+        "nodejs_eventloop_lag_mean_seconds": 0.0160851968,
+        "nodejs_eventloop_lag_p90_seconds": 0.022675455,
+        "nodejs_eventloop_lag_p99_seconds": 0.032391167,
+        "nodejs_active_handles_total": 1177,
+        "nodejs_heap_size_used_bytes": 200661880,
+        "db_queries_total": 49447
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:17.755Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 109.187,
+        "process_cpu_system_seconds_total": 18.53099999999999,
+        "process_cpu_seconds_total": 127.71799999999998,
+        "process_resident_memory_bytes": 755957760,
+        "nodejs_eventloop_lag_mean_seconds": 0.015238945927710844,
+        "nodejs_eventloop_lag_p90_seconds": 0.021938175,
+        "nodejs_eventloop_lag_p99_seconds": 0.026066943,
+        "nodejs_active_handles_total": 1249,
+        "nodejs_heap_size_used_bytes": 257884184,
+        "db_queries_total": 50551
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:19.039Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 110.437,
+        "process_cpu_system_seconds_total": 18.79699999999999,
+        "process_cpu_seconds_total": 129.23399999999998,
+        "process_resident_memory_bytes": 757035008,
+        "nodejs_eventloop_lag_mean_seconds": 0.014760194942528736,
+        "nodejs_eventloop_lag_p90_seconds": 0.019038207,
+        "nodejs_eventloop_lag_p99_seconds": 0.030146559,
+        "nodejs_active_handles_total": 1234,
+        "nodejs_heap_size_used_bytes": 298078888,
+        "db_queries_total": 51666
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:20.322Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 111.65599999999999,
+        "process_cpu_system_seconds_total": 19.10899999999999,
+        "process_cpu_seconds_total": 130.765,
+        "process_resident_memory_bytes": 757121024,
+        "nodejs_eventloop_lag_mean_seconds": 0.014368672744186045,
+        "nodejs_eventloop_lag_p90_seconds": 0.018563071,
+        "nodejs_eventloop_lag_p99_seconds": 0.023134207,
+        "nodejs_active_handles_total": 1251,
+        "nodejs_heap_size_used_bytes": 361301032,
+        "db_queries_total": 52827
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:21.589Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 112.74999999999999,
+        "process_cpu_system_seconds_total": 19.43699999999999,
+        "process_cpu_seconds_total": 132.18699999999998,
+        "process_resident_memory_bytes": 757825536,
+        "nodejs_eventloop_lag_mean_seconds": 0.015244522409638554,
+        "nodejs_eventloop_lag_p90_seconds": 0.020267007,
+        "nodejs_eventloop_lag_p99_seconds": 0.023691263,
+        "nodejs_active_handles_total": 1277,
+        "nodejs_heap_size_used_bytes": 399252256,
+        "db_queries_total": 54019
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:22.867Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 113.87499999999999,
+        "process_cpu_system_seconds_total": 19.67199999999999,
+        "process_cpu_seconds_total": 133.547,
+        "process_resident_memory_bytes": 758284288,
+        "nodejs_eventloop_lag_mean_seconds": 0.015166089365853659,
+        "nodejs_eventloop_lag_p90_seconds": 0.021495807,
+        "nodejs_eventloop_lag_p99_seconds": 0.028622847,
+        "nodejs_active_handles_total": 1308,
+        "nodejs_heap_size_used_bytes": 469241912,
+        "db_queries_total": 55194
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:24.148Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 114.96799999999999,
+        "process_cpu_system_seconds_total": 19.95299999999999,
+        "process_cpu_seconds_total": 134.921,
+        "process_resident_memory_bytes": 758767616,
+        "nodejs_eventloop_lag_mean_seconds": 0.01523843657142857,
+        "nodejs_eventloop_lag_p90_seconds": 0.022396927,
+        "nodejs_eventloop_lag_p99_seconds": 0.029261823,
+        "nodejs_active_handles_total": 1314,
+        "nodejs_heap_size_used_bytes": 539354832,
+        "db_queries_total": 56358
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:25.442Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 115.984,
+        "process_cpu_system_seconds_total": 20.31199999999999,
+        "process_cpu_seconds_total": 136.296,
+        "process_resident_memory_bytes": 766840832,
+        "nodejs_eventloop_lag_mean_seconds": 0.01568643564556962,
+        "nodejs_eventloop_lag_p90_seconds": 0.022134783,
+        "nodejs_eventloop_lag_p99_seconds": 0.033357823,
+        "nodejs_active_handles_total": 1326,
+        "nodejs_heap_size_used_bytes": 565732616,
+        "db_queries_total": 57319
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:26.738Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 117.5,
+        "process_cpu_system_seconds_total": 20.70299999999999,
+        "process_cpu_seconds_total": 138.203,
+        "process_resident_memory_bytes": 778641408,
+        "nodejs_eventloop_lag_mean_seconds": 0.01752717676712329,
+        "nodejs_eventloop_lag_p90_seconds": 0.026492927,
+        "nodejs_eventloop_lag_p99_seconds": 0.045055999,
+        "nodejs_active_handles_total": 1315,
+        "nodejs_heap_size_used_bytes": 208689568,
+        "db_queries_total": 58146
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:28.032Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 118.687,
+        "process_cpu_system_seconds_total": 20.92199999999999,
+        "process_cpu_seconds_total": 139.609,
+        "process_resident_memory_bytes": 779649024,
+        "nodejs_eventloop_lag_mean_seconds": 0.014662032183908045,
+        "nodejs_eventloop_lag_p90_seconds": 0.019283967,
+        "nodejs_eventloop_lag_p99_seconds": 0.027918335,
+        "nodejs_active_handles_total": 1264,
+        "nodejs_heap_size_used_bytes": 260643944,
+        "db_queries_total": 59390
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:29.305Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 119.703,
+        "process_cpu_system_seconds_total": 21.23399999999999,
+        "process_cpu_seconds_total": 140.937,
+        "process_resident_memory_bytes": 780795904,
+        "nodejs_eventloop_lag_mean_seconds": 0.013442854127659574,
+        "nodejs_eventloop_lag_p90_seconds": 0.017498111,
+        "nodejs_eventloop_lag_p99_seconds": 0.022872063,
+        "nodejs_active_handles_total": 1163,
+        "nodejs_heap_size_used_bytes": 265831712,
+        "db_queries_total": 60994
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:30.591Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 120.60900000000001,
+        "process_cpu_system_seconds_total": 21.624999999999993,
+        "process_cpu_seconds_total": 142.234,
+        "process_resident_memory_bytes": 780828672,
+        "nodejs_eventloop_lag_mean_seconds": 0.013297315404255319,
+        "nodejs_eventloop_lag_p90_seconds": 0.018825215,
+        "nodejs_eventloop_lag_p99_seconds": 0.025247743,
+        "nodejs_active_handles_total": 1081,
+        "nodejs_heap_size_used_bytes": 336638992,
+        "db_queries_total": 62836
+      },
+      "pg": {
+        "active": 2,
+        "idle": 7,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:31.874Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 121.421,
+        "process_cpu_system_seconds_total": 21.811999999999994,
+        "process_cpu_seconds_total": 143.233,
+        "process_resident_memory_bytes": 781225984,
+        "nodejs_eventloop_lag_mean_seconds": 0.012843483797979798,
+        "nodejs_eventloop_lag_p90_seconds": 0.017121279,
+        "nodejs_eventloop_lag_p99_seconds": 0.020201471,
+        "nodejs_active_handles_total": 1000,
+        "nodejs_heap_size_used_bytes": 333127392,
+        "db_queries_total": 64488
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:33.165Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 122.18700000000001,
+        "process_cpu_system_seconds_total": 22.061999999999994,
+        "process_cpu_seconds_total": 144.249,
+        "process_resident_memory_bytes": 780247040,
+        "nodejs_eventloop_lag_mean_seconds": 0.0160505344,
+        "nodejs_eventloop_lag_p90_seconds": 0.020692991,
+        "nodejs_eventloop_lag_p99_seconds": 0.030752767,
+        "nodejs_active_handles_total": 1109,
+        "nodejs_heap_size_used_bytes": 354680624,
+        "db_queries_total": 65275
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:34.435Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 123.32800000000002,
+        "process_cpu_system_seconds_total": 22.265999999999995,
+        "process_cpu_seconds_total": 145.594,
+        "process_resident_memory_bytes": 780525568,
+        "nodejs_eventloop_lag_mean_seconds": 0.015159197301204819,
+        "nodejs_eventloop_lag_p90_seconds": 0.022462463,
+        "nodejs_eventloop_lag_p99_seconds": 0.028311551,
+        "nodejs_active_handles_total": 987,
+        "nodejs_heap_size_used_bytes": 348793136,
+        "db_queries_total": 66252
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:35.735Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 124.46800000000002,
+        "process_cpu_system_seconds_total": 22.515999999999995,
+        "process_cpu_seconds_total": 146.98399999999998,
+        "process_resident_memory_bytes": 781332480,
+        "nodejs_eventloop_lag_mean_seconds": 0.015127712385542169,
+        "nodejs_eventloop_lag_p90_seconds": 0.021692415,
+        "nodejs_eventloop_lag_p99_seconds": 0.027410431,
+        "nodejs_active_handles_total": 749,
+        "nodejs_heap_size_used_bytes": 341440504,
+        "db_queries_total": 67198
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:37.022Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 125.68700000000001,
+        "process_cpu_system_seconds_total": 22.655999999999995,
+        "process_cpu_seconds_total": 148.343,
+        "process_resident_memory_bytes": 781471744,
+        "nodejs_eventloop_lag_mean_seconds": 0.015426981647058824,
+        "nodejs_eventloop_lag_p90_seconds": 0.020479999,
+        "nodejs_eventloop_lag_p99_seconds": 0.028016639,
+        "nodejs_active_handles_total": 520,
+        "nodejs_heap_size_used_bytes": 344521544,
+        "db_queries_total": 68269
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:38.307Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 126.96800000000002,
+        "process_cpu_system_seconds_total": 22.827999999999996,
+        "process_cpu_seconds_total": 149.796,
+        "process_resident_memory_bytes": 781746176,
+        "nodejs_eventloop_lag_mean_seconds": 0.014640913860465116,
+        "nodejs_eventloop_lag_p90_seconds": 0.019824639,
+        "nodejs_eventloop_lag_p99_seconds": 0.023248895,
+        "nodejs_active_handles_total": 495,
+        "nodejs_heap_size_used_bytes": 402408912,
+        "db_queries_total": 69387
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:39.580Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 128.07800000000003,
+        "process_cpu_system_seconds_total": 23.061999999999998,
+        "process_cpu_seconds_total": 151.14,
+        "process_resident_memory_bytes": 782401536,
+        "nodejs_eventloop_lag_mean_seconds": 0.015804078987341773,
+        "nodejs_eventloop_lag_p90_seconds": 0.022052863,
+        "nodejs_eventloop_lag_p99_seconds": 0.026460159,
+        "nodejs_active_handles_total": 511,
+        "nodejs_heap_size_used_bytes": 461433352,
+        "db_queries_total": 70357
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:40.869Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 129.28100000000003,
+        "process_cpu_system_seconds_total": 23.327999999999996,
+        "process_cpu_seconds_total": 152.60899999999998,
+        "process_resident_memory_bytes": 782483456,
+        "nodejs_eventloop_lag_mean_seconds": 0.015140181333333334,
+        "nodejs_eventloop_lag_p90_seconds": 0.020201471,
+        "nodejs_eventloop_lag_p99_seconds": 0.026755071,
+        "nodejs_active_handles_total": 547,
+        "nodejs_heap_size_used_bytes": 482863224,
+        "db_queries_total": 71576
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:42.446Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 130.78100000000003,
+        "process_cpu_system_seconds_total": 23.843999999999994,
+        "process_cpu_seconds_total": 154.62499999999997,
+        "process_resident_memory_bytes": 789995520,
+        "nodejs_eventloop_lag_mean_seconds": 0.015618760347826088,
+        "nodejs_eventloop_lag_p90_seconds": 0.022167551,
+        "nodejs_eventloop_lag_p99_seconds": 0.031342591,
+        "nodejs_active_handles_total": 635,
+        "nodejs_heap_size_used_bytes": 591538984,
+        "db_queries_total": 73149
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:43.724Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 132.12500000000003,
+        "process_cpu_system_seconds_total": 24.093999999999994,
+        "process_cpu_seconds_total": 156.21899999999997,
+        "process_resident_memory_bytes": 802230272,
+        "nodejs_eventloop_lag_mean_seconds": 0.014984023880597016,
+        "nodejs_eventloop_lag_p90_seconds": 0.020037631,
+        "nodejs_eventloop_lag_p99_seconds": 0.024477695,
+        "nodejs_active_handles_total": 670,
+        "nodejs_heap_size_used_bytes": 172323016,
+        "db_queries_total": 74007
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:45.013Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 133.29600000000002,
+        "process_cpu_system_seconds_total": 24.296999999999993,
+        "process_cpu_seconds_total": 157.59299999999996,
+        "process_resident_memory_bytes": 804237312,
+        "nodejs_eventloop_lag_mean_seconds": 0.015692269493975904,
+        "nodejs_eventloop_lag_p90_seconds": 0.021430271,
+        "nodejs_eventloop_lag_p99_seconds": 0.037257215,
+        "nodejs_active_handles_total": 724,
+        "nodejs_heap_size_used_bytes": 206579592,
+        "db_queries_total": 75028
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:46.300Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 134.46800000000002,
+        "process_cpu_system_seconds_total": 24.593999999999994,
+        "process_cpu_seconds_total": 159.06199999999995,
+        "process_resident_memory_bytes": 804261888,
+        "nodejs_eventloop_lag_mean_seconds": 0.014464309581395348,
+        "nodejs_eventloop_lag_p90_seconds": 0.019841023,
+        "nodejs_eventloop_lag_p99_seconds": 0.025346047,
+        "nodejs_active_handles_total": 756,
+        "nodejs_heap_size_used_bytes": 279993032,
+        "db_queries_total": 76152
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:47.576Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 135.67100000000002,
+        "process_cpu_system_seconds_total": 24.780999999999995,
+        "process_cpu_seconds_total": 160.45199999999994,
+        "process_resident_memory_bytes": 804397056,
+        "nodejs_eventloop_lag_mean_seconds": 0.014588120847058824,
+        "nodejs_eventloop_lag_p90_seconds": 0.021348351,
+        "nodejs_eventloop_lag_p99_seconds": 0.026411007,
+        "nodejs_active_handles_total": 770,
+        "nodejs_heap_size_used_bytes": 314383560,
+        "db_queries_total": 77238
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:48.857Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 136.79600000000002,
+        "process_cpu_system_seconds_total": 25.171999999999997,
+        "process_cpu_seconds_total": 161.96799999999993,
+        "process_resident_memory_bytes": 804470784,
+        "nodejs_eventloop_lag_mean_seconds": 0.01502962145882353,
+        "nodejs_eventloop_lag_p90_seconds": 0.020742143,
+        "nodejs_eventloop_lag_p99_seconds": 0.037093375,
+        "nodejs_active_handles_total": 784,
+        "nodejs_heap_size_used_bytes": 402057096,
+        "db_queries_total": 78287
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:50.146Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 137.82800000000003,
+        "process_cpu_system_seconds_total": 25.452999999999996,
+        "process_cpu_seconds_total": 163.28099999999992,
+        "process_resident_memory_bytes": 804483072,
+        "nodejs_eventloop_lag_mean_seconds": 0.014512919272727274,
+        "nodejs_eventloop_lag_p90_seconds": 0.019464191,
+        "nodejs_eventloop_lag_p99_seconds": 0.025067519,
+        "nodejs_active_handles_total": 796,
+        "nodejs_heap_size_used_bytes": 431516832,
+        "db_queries_total": 79430
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:51.440Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 139.03100000000003,
+        "process_cpu_system_seconds_total": 25.671999999999997,
+        "process_cpu_seconds_total": 164.70299999999992,
+        "process_resident_memory_bytes": 804995072,
+        "nodejs_eventloop_lag_mean_seconds": 0.015333203277108435,
+        "nodejs_eventloop_lag_p90_seconds": 0.022216703,
+        "nodejs_eventloop_lag_p99_seconds": 0.028246015,
+        "nodejs_active_handles_total": 828,
+        "nodejs_heap_size_used_bytes": 469804968,
+        "db_queries_total": 80500
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:52.731Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 140.45300000000003,
+        "process_cpu_system_seconds_total": 25.952999999999996,
+        "process_cpu_seconds_total": 166.40599999999992,
+        "process_resident_memory_bytes": 802729984,
+        "nodejs_eventloop_lag_mean_seconds": 0.014725596279069768,
+        "nodejs_eventloop_lag_p90_seconds": 0.020103167,
+        "nodejs_eventloop_lag_p99_seconds": 0.028164095,
+        "nodejs_active_handles_total": 845,
+        "nodejs_heap_size_used_bytes": 169387032,
+        "db_queries_total": 81527
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:54.024Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 141.73400000000004,
+        "process_cpu_system_seconds_total": 26.155999999999995,
+        "process_cpu_seconds_total": 167.88999999999993,
+        "process_resident_memory_bytes": 803401728,
+        "nodejs_eventloop_lag_mean_seconds": 0.015127443576470587,
+        "nodejs_eventloop_lag_p90_seconds": 0.022773759,
+        "nodejs_eventloop_lag_p99_seconds": 0.029835263,
+        "nodejs_active_handles_total": 879,
+        "nodejs_heap_size_used_bytes": 234931928,
+        "db_queries_total": 82699
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:55.310Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 142.87500000000003,
+        "process_cpu_system_seconds_total": 26.405999999999995,
+        "process_cpu_seconds_total": 169.28099999999992,
+        "process_resident_memory_bytes": 805982208,
+        "nodejs_eventloop_lag_mean_seconds": 0.01439744,
+        "nodejs_eventloop_lag_p90_seconds": 0.018808831,
+        "nodejs_eventloop_lag_p99_seconds": 0.023707647,
+        "nodejs_active_handles_total": 920,
+        "nodejs_heap_size_used_bytes": 266938976,
+        "db_queries_total": 83889
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:56.608Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 144.12500000000003,
+        "process_cpu_system_seconds_total": 26.640999999999995,
+        "process_cpu_seconds_total": 170.76599999999993,
+        "process_resident_memory_bytes": 806330368,
+        "nodejs_eventloop_lag_mean_seconds": 0.014938408096385542,
+        "nodejs_eventloop_lag_p90_seconds": 0.021299199,
+        "nodejs_eventloop_lag_p99_seconds": 0.024477695,
+        "nodejs_active_handles_total": 936,
+        "nodejs_heap_size_used_bytes": 317109736,
+        "db_queries_total": 85009
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:57.904Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 145.14000000000001,
+        "process_cpu_system_seconds_total": 26.890999999999995,
+        "process_cpu_seconds_total": 172.03099999999992,
+        "process_resident_memory_bytes": 806330368,
+        "nodejs_eventloop_lag_mean_seconds": 0.015036368372093024,
+        "nodejs_eventloop_lag_p90_seconds": 0.021266431,
+        "nodejs_eventloop_lag_p99_seconds": 0.027164671,
+        "nodejs_active_handles_total": 936,
+        "nodejs_heap_size_used_bytes": 369612488,
+        "db_queries_total": 86109
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:16:59.204Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 146.39000000000001,
+        "process_cpu_system_seconds_total": 27.155999999999995,
+        "process_cpu_seconds_total": 173.5459999999999,
+        "process_resident_memory_bytes": 806330368,
+        "nodejs_eventloop_lag_mean_seconds": 0.014507231632183908,
+        "nodejs_eventloop_lag_p90_seconds": 0.018923519,
+        "nodejs_eventloop_lag_p99_seconds": 0.025673727,
+        "nodejs_active_handles_total": 959,
+        "nodejs_heap_size_used_bytes": 433983792,
+        "db_queries_total": 87255
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:00.493Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 147.62500000000003,
+        "process_cpu_system_seconds_total": 27.358999999999995,
+        "process_cpu_seconds_total": 174.9839999999999,
+        "process_resident_memory_bytes": 807833600,
+        "nodejs_eventloop_lag_mean_seconds": 0.015168692705882354,
+        "nodejs_eventloop_lag_p90_seconds": 0.022593535,
+        "nodejs_eventloop_lag_p99_seconds": 0.033357823,
+        "nodejs_active_handles_total": 1006,
+        "nodejs_heap_size_used_bytes": 458325904,
+        "db_queries_total": 88479
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:01.775Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 148.93700000000004,
+        "process_cpu_system_seconds_total": 27.515999999999995,
+        "process_cpu_seconds_total": 176.4529999999999,
+        "process_resident_memory_bytes": 807952384,
+        "nodejs_eventloop_lag_mean_seconds": 0.013846235428571428,
+        "nodejs_eventloop_lag_p90_seconds": 0.019628031,
+        "nodejs_eventloop_lag_p99_seconds": 0.023003135,
+        "nodejs_active_handles_total": 1017,
+        "nodejs_heap_size_used_bytes": 502396064,
+        "db_queries_total": 89758
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0.011596
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:03.089Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 150.31200000000004,
+        "process_cpu_system_seconds_total": 27.827999999999996,
+        "process_cpu_seconds_total": 178.1399999999999,
+        "process_resident_memory_bytes": 805588992,
+        "nodejs_eventloop_lag_mean_seconds": 0.01565184,
+        "nodejs_eventloop_lag_p90_seconds": 0.024018943,
+        "nodejs_eventloop_lag_p99_seconds": 0.028934143,
+        "nodejs_active_handles_total": 1137,
+        "nodejs_heap_size_used_bytes": 189710344,
+        "db_queries_total": 90724
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:04.377Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 151.56200000000004,
+        "process_cpu_system_seconds_total": 28.140999999999995,
+        "process_cpu_seconds_total": 179.7029999999999,
+        "process_resident_memory_bytes": 805609472,
+        "nodejs_eventloop_lag_mean_seconds": 0.015230057931034484,
+        "nodejs_eventloop_lag_p90_seconds": 0.022102015,
+        "nodejs_eventloop_lag_p99_seconds": 0.029261823,
+        "nodejs_active_handles_total": 1244,
+        "nodejs_heap_size_used_bytes": 250564336,
+        "db_queries_total": 91731
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:05.661Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 152.73400000000004,
+        "process_cpu_system_seconds_total": 28.483999999999995,
+        "process_cpu_seconds_total": 181.21799999999988,
+        "process_resident_memory_bytes": 805642240,
+        "nodejs_eventloop_lag_mean_seconds": 0.015321437658536585,
+        "nodejs_eventloop_lag_p90_seconds": 0.021938175,
+        "nodejs_eventloop_lag_p99_seconds": 0.026329087,
+        "nodejs_active_handles_total": 1321,
+        "nodejs_heap_size_used_bytes": 302345680,
+        "db_queries_total": 92828
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:06.948Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 153.98400000000004,
+        "process_cpu_system_seconds_total": 28.671999999999993,
+        "process_cpu_seconds_total": 182.65599999999986,
+        "process_resident_memory_bytes": 806670336,
+        "nodejs_eventloop_lag_mean_seconds": 0.01501822780952381,
+        "nodejs_eventloop_lag_p90_seconds": 0.019808255,
+        "nodejs_eventloop_lag_p99_seconds": 0.025837567,
+        "nodejs_active_handles_total": 1375,
+        "nodejs_heap_size_used_bytes": 341121032,
+        "db_queries_total": 93958
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:08.215Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 155.17100000000005,
+        "process_cpu_system_seconds_total": 28.968999999999994,
+        "process_cpu_seconds_total": 184.13999999999987,
+        "process_resident_memory_bytes": 806932480,
+        "nodejs_eventloop_lag_mean_seconds": 0.015217775036144578,
+        "nodejs_eventloop_lag_p90_seconds": 0.021086207,
+        "nodejs_eventloop_lag_p99_seconds": 0.027672575,
+        "nodejs_active_handles_total": 1382,
+        "nodejs_heap_size_used_bytes": 395884120,
+        "db_queries_total": 95070
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:09.500Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 156.25000000000006,
+        "process_cpu_system_seconds_total": 29.233999999999995,
+        "process_cpu_seconds_total": 185.48399999999987,
+        "process_resident_memory_bytes": 807460864,
+        "nodejs_eventloop_lag_mean_seconds": 0.01494442465882353,
+        "nodejs_eventloop_lag_p90_seconds": 0.021807103,
+        "nodejs_eventloop_lag_p99_seconds": 0.024920063,
+        "nodejs_active_handles_total": 1414,
+        "nodejs_heap_size_used_bytes": 461313080,
+        "db_queries_total": 96217
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:10.790Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 157.37500000000006,
+        "process_cpu_system_seconds_total": 29.530999999999995,
+        "process_cpu_seconds_total": 186.90599999999986,
+        "process_resident_memory_bytes": 807960576,
+        "nodejs_eventloop_lag_mean_seconds": 0.015400318457831325,
+        "nodejs_eventloop_lag_p90_seconds": 0.019529727,
+        "nodejs_eventloop_lag_p99_seconds": 0.025853951,
+        "nodejs_active_handles_total": 1409,
+        "nodejs_heap_size_used_bytes": 485619248,
+        "db_queries_total": 97336
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:12.072Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 158.43700000000007,
+        "process_cpu_system_seconds_total": 29.827999999999996,
+        "process_cpu_seconds_total": 188.26499999999987,
+        "process_resident_memory_bytes": 807968768,
+        "nodejs_eventloop_lag_mean_seconds": 0.014294481454545455,
+        "nodejs_eventloop_lag_p90_seconds": 0.020054015,
+        "nodejs_eventloop_lag_p99_seconds": 0.023625727,
+        "nodejs_active_handles_total": 1402,
+        "nodejs_heap_size_used_bytes": 553481320,
+        "db_queries_total": 98573
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:13.873Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 160.56200000000007,
+        "process_cpu_system_seconds_total": 30.421999999999997,
+        "process_cpu_seconds_total": 190.98399999999987,
+        "process_resident_memory_bytes": 807649280,
+        "nodejs_eventloop_lag_mean_seconds": 0.013962871232876713,
+        "nodejs_eventloop_lag_p90_seconds": 0.020119551,
+        "nodejs_eventloop_lag_p99_seconds": 0.030900223,
+        "nodejs_active_handles_total": 1294,
+        "nodejs_heap_size_used_bytes": 231427648,
+        "db_queries_total": 101023
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:15.157Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 161.51500000000007,
+        "process_cpu_system_seconds_total": 30.577999999999996,
+        "process_cpu_seconds_total": 192.09299999999988,
+        "process_resident_memory_bytes": 807747584,
+        "nodejs_eventloop_lag_mean_seconds": 0.013122786077922078,
+        "nodejs_eventloop_lag_p90_seconds": 0.016596991,
+        "nodejs_eventloop_lag_p99_seconds": 0.023822335,
+        "nodejs_active_handles_total": 1231,
+        "nodejs_heap_size_used_bytes": 288143928,
+        "db_queries_total": 102535
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:16.425Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 162.25000000000009,
+        "process_cpu_system_seconds_total": 30.749999999999996,
+        "process_cpu_seconds_total": 192.9999999999999,
+        "process_resident_memory_bytes": 808513536,
+        "nodejs_eventloop_lag_mean_seconds": 0.013160828041237114,
+        "nodejs_eventloop_lag_p90_seconds": 0.017481727,
+        "nodejs_eventloop_lag_p99_seconds": 0.023920639,
+        "nodejs_active_handles_total": 1105,
+        "nodejs_heap_size_used_bytes": 258273768,
+        "db_queries_total": 104296
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:17.712Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 162.79600000000008,
+        "process_cpu_system_seconds_total": 30.890999999999995,
+        "process_cpu_seconds_total": 193.6869999999999,
+        "process_resident_memory_bytes": 808534016,
+        "nodejs_eventloop_lag_mean_seconds": 0.016128682666666665,
+        "nodejs_eventloop_lag_p90_seconds": 0.019283967,
+        "nodejs_eventloop_lag_p99_seconds": 0.028229631,
+        "nodejs_active_handles_total": 1157,
+        "nodejs_heap_size_used_bytes": 266478104,
+        "db_queries_total": 104739
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0.000204
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:18.984Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 163.92100000000008,
+        "process_cpu_system_seconds_total": 31.202999999999996,
+        "process_cpu_seconds_total": 195.1239999999999,
+        "process_resident_memory_bytes": 808611840,
+        "nodejs_eventloop_lag_mean_seconds": 0.0155664896,
+        "nodejs_eventloop_lag_p90_seconds": 0.021217279,
+        "nodejs_eventloop_lag_p99_seconds": 0.023937023,
+        "nodejs_active_handles_total": 1234,
+        "nodejs_heap_size_used_bytes": 295542072,
+        "db_queries_total": 105776
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:20.277Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 164.93700000000007,
+        "process_cpu_system_seconds_total": 31.499999999999996,
+        "process_cpu_seconds_total": 196.4369999999999,
+        "process_resident_memory_bytes": 808640512,
+        "nodejs_eventloop_lag_mean_seconds": 0.016355224303797468,
+        "nodejs_eventloop_lag_p90_seconds": 0.023035903,
+        "nodejs_eventloop_lag_p99_seconds": 0.025264127,
+        "nodejs_active_handles_total": 1057,
+        "nodejs_heap_size_used_bytes": 350472896,
+        "db_queries_total": 106646
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:21.557Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 165.95300000000006,
+        "process_cpu_system_seconds_total": 31.858999999999995,
+        "process_cpu_seconds_total": 197.8119999999999,
+        "process_resident_memory_bytes": 808648704,
+        "nodejs_eventloop_lag_mean_seconds": 0.015162792585365854,
+        "nodejs_eventloop_lag_p90_seconds": 0.021184511,
+        "nodejs_eventloop_lag_p99_seconds": 0.026148863,
+        "nodejs_active_handles_total": 876,
+        "nodejs_heap_size_used_bytes": 373972152,
+        "db_queries_total": 107686
+      },
+      "pg": {
+        "active": 2,
+        "idle": 6,
+        "idle_in_tx": 3,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:22.843Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 167.20300000000006,
+        "process_cpu_system_seconds_total": 32.218999999999994,
+        "process_cpu_seconds_total": 199.4219999999999,
+        "process_resident_memory_bytes": 808841216,
+        "nodejs_eventloop_lag_mean_seconds": 0.016173030075949366,
+        "nodejs_eventloop_lag_p90_seconds": 0.023445503,
+        "nodejs_eventloop_lag_p99_seconds": 0.030179327,
+        "nodejs_active_handles_total": 878,
+        "nodejs_heap_size_used_bytes": 428247808,
+        "db_queries_total": 108581
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:24.128Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 168.48400000000007,
+        "process_cpu_system_seconds_total": 32.49999999999999,
+        "process_cpu_seconds_total": 200.98399999999992,
+        "process_resident_memory_bytes": 808849408,
+        "nodejs_eventloop_lag_mean_seconds": 0.015469024395061728,
+        "nodejs_eventloop_lag_p90_seconds": 0.021725183,
+        "nodejs_eventloop_lag_p99_seconds": 0.029376511,
+        "nodejs_active_handles_total": 947,
+        "nodejs_heap_size_used_bytes": 483058336,
+        "db_queries_total": 109563
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:25.411Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 169.68700000000007,
+        "process_cpu_system_seconds_total": 32.74999999999999,
+        "process_cpu_seconds_total": 202.43699999999993,
+        "process_resident_memory_bytes": 808939520,
+        "nodejs_eventloop_lag_mean_seconds": 0.015531678024691358,
+        "nodejs_eventloop_lag_p90_seconds": 0.022151167,
+        "nodejs_eventloop_lag_p99_seconds": 0.024985599,
+        "nodejs_active_handles_total": 986,
+        "nodejs_heap_size_used_bytes": 557036208,
+        "db_queries_total": 110621
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:26.697Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 170.89000000000007,
+        "process_cpu_system_seconds_total": 33.01599999999999,
+        "process_cpu_seconds_total": 203.90599999999992,
+        "process_resident_memory_bytes": 821551104,
+        "nodejs_eventloop_lag_mean_seconds": 0.014615924363636363,
+        "nodejs_eventloop_lag_p90_seconds": 0.018612223,
+        "nodejs_eventloop_lag_p99_seconds": 0.023625727,
+        "nodejs_active_handles_total": 1009,
+        "nodejs_heap_size_used_bytes": 602792472,
+        "db_queries_total": 111720
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:27.971Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 172.31200000000007,
+        "process_cpu_system_seconds_total": 33.40599999999999,
+        "process_cpu_seconds_total": 205.71799999999993,
+        "process_resident_memory_bytes": 825401344,
+        "nodejs_eventloop_lag_mean_seconds": 0.0156709376,
+        "nodejs_eventloop_lag_p90_seconds": 0.022052863,
+        "nodejs_eventloop_lag_p99_seconds": 0.029474815,
+        "nodejs_active_handles_total": 1041,
+        "nodejs_heap_size_used_bytes": 200465056,
+        "db_queries_total": 112708
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:29.251Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 173.46800000000007,
+        "process_cpu_system_seconds_total": 33.733999999999995,
+        "process_cpu_seconds_total": 207.20199999999994,
+        "process_resident_memory_bytes": 825864192,
+        "nodejs_eventloop_lag_mean_seconds": 0.015059449976470587,
+        "nodejs_eventloop_lag_p90_seconds": 0.020316159,
+        "nodejs_eventloop_lag_p99_seconds": 0.024395775,
+        "nodejs_active_handles_total": 1041,
+        "nodejs_heap_size_used_bytes": 220916536,
+        "db_queries_total": 113830
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:30.544Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 174.5780000000001,
+        "process_cpu_system_seconds_total": 34.047,
+        "process_cpu_seconds_total": 208.62499999999994,
+        "process_resident_memory_bytes": 825958400,
+        "nodejs_eventloop_lag_mean_seconds": 0.014738227199999999,
+        "nodejs_eventloop_lag_p90_seconds": 0.020447231,
+        "nodejs_eventloop_lag_p99_seconds": 0.026755071,
+        "nodejs_active_handles_total": 1102,
+        "nodejs_heap_size_used_bytes": 304718520,
+        "db_queries_total": 114929
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:31.816Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 175.8280000000001,
+        "process_cpu_system_seconds_total": 34.266,
+        "process_cpu_seconds_total": 210.09399999999994,
+        "process_resident_memory_bytes": 827637760,
+        "nodejs_eventloop_lag_mean_seconds": 0.01568317945679012,
+        "nodejs_eventloop_lag_p90_seconds": 0.022937599,
+        "nodejs_eventloop_lag_p99_seconds": 0.028884991,
+        "nodejs_active_handles_total": 1129,
+        "nodejs_heap_size_used_bytes": 336854880,
+        "db_queries_total": 115927
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:33.112Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 176.9060000000001,
+        "process_cpu_system_seconds_total": 34.594,
+        "process_cpu_seconds_total": 211.49999999999994,
+        "process_resident_memory_bytes": 827654144,
+        "nodejs_eventloop_lag_mean_seconds": 0.016046920205128205,
+        "nodejs_eventloop_lag_p90_seconds": 0.021299199,
+        "nodejs_eventloop_lag_p99_seconds": 0.028147711,
+        "nodejs_active_handles_total": 1178,
+        "nodejs_heap_size_used_bytes": 401593960,
+        "db_queries_total": 117016
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:34.393Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 177.9840000000001,
+        "process_cpu_system_seconds_total": 34.953,
+        "process_cpu_seconds_total": 212.93699999999995,
+        "process_resident_memory_bytes": 827691008,
+        "nodejs_eventloop_lag_mean_seconds": 0.015514721523809524,
+        "nodejs_eventloop_lag_p90_seconds": 0.021200895,
+        "nodejs_eventloop_lag_p99_seconds": 0.027787263,
+        "nodejs_active_handles_total": 1251,
+        "nodejs_heap_size_used_bytes": 480622824,
+        "db_queries_total": 118131
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:35.714Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 179.00000000000009,
+        "process_cpu_system_seconds_total": 35.266000000000005,
+        "process_cpu_seconds_total": 214.26599999999996,
+        "process_resident_memory_bytes": 827752448,
+        "nodejs_eventloop_lag_mean_seconds": 0.014314329302325582,
+        "nodejs_eventloop_lag_p90_seconds": 0.019808255,
+        "nodejs_eventloop_lag_p99_seconds": 0.024346623,
+        "nodejs_active_handles_total": 1276,
+        "nodejs_heap_size_used_bytes": 495375512,
+        "db_queries_total": 119331
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:36.988Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 180.42100000000008,
+        "process_cpu_system_seconds_total": 35.59400000000001,
+        "process_cpu_seconds_total": 216.01499999999996,
+        "process_resident_memory_bytes": 827797504,
+        "nodejs_eventloop_lag_mean_seconds": 0.015990184585365854,
+        "nodejs_eventloop_lag_p90_seconds": 0.021987327,
+        "nodejs_eventloop_lag_p99_seconds": 0.029229055,
+        "nodejs_active_handles_total": 1353,
+        "nodejs_heap_size_used_bytes": 190091376,
+        "db_queries_total": 120304
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:38.261Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 181.5780000000001,
+        "process_cpu_system_seconds_total": 35.84400000000001,
+        "process_cpu_seconds_total": 217.42199999999997,
+        "process_resident_memory_bytes": 827920384,
+        "nodejs_eventloop_lag_mean_seconds": 0.01381945389010989,
+        "nodejs_eventloop_lag_p90_seconds": 0.018350079,
+        "nodejs_eventloop_lag_p99_seconds": 0.024641535,
+        "nodejs_active_handles_total": 1408,
+        "nodejs_heap_size_used_bytes": 228937896,
+        "db_queries_total": 121417
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:39.544Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 182.75000000000009,
+        "process_cpu_system_seconds_total": 36.12500000000001,
+        "process_cpu_seconds_total": 218.87499999999997,
+        "process_resident_memory_bytes": 828289024,
+        "nodejs_eventloop_lag_mean_seconds": 0.014751402666666667,
+        "nodejs_eventloop_lag_p90_seconds": 0.020938751,
+        "nodejs_eventloop_lag_p99_seconds": 0.026918911,
+        "nodejs_active_handles_total": 1432,
+        "nodejs_heap_size_used_bytes": 263735560,
+        "db_queries_total": 122541
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:40.821Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 183.9060000000001,
+        "process_cpu_system_seconds_total": 36.312000000000005,
+        "process_cpu_seconds_total": 220.21799999999996,
+        "process_resident_memory_bytes": 828399616,
+        "nodejs_eventloop_lag_mean_seconds": 0.015253849445783133,
+        "nodejs_eventloop_lag_p90_seconds": 0.020971519,
+        "nodejs_eventloop_lag_p99_seconds": 0.030343167,
+        "nodejs_active_handles_total": 1438,
+        "nodejs_heap_size_used_bytes": 340564608,
+        "db_queries_total": 123627
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:42.093Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 185.04600000000008,
+        "process_cpu_system_seconds_total": 36.531000000000006,
+        "process_cpu_seconds_total": 221.57699999999997,
+        "process_resident_memory_bytes": 828887040,
+        "nodejs_eventloop_lag_mean_seconds": 0.015117716837209303,
+        "nodejs_eventloop_lag_p90_seconds": 0.021708799,
+        "nodejs_eventloop_lag_p99_seconds": 0.029884415,
+        "nodejs_active_handles_total": 1429,
+        "nodejs_heap_size_used_bytes": 379848576,
+        "db_queries_total": 124748
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:43.380Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 186.0310000000001,
+        "process_cpu_system_seconds_total": 36.812000000000005,
+        "process_cpu_seconds_total": 222.84299999999996,
+        "process_resident_memory_bytes": 828907520,
+        "nodejs_eventloop_lag_mean_seconds": 0.014640979277108435,
+        "nodejs_eventloop_lag_p90_seconds": 0.019054591,
+        "nodejs_eventloop_lag_p99_seconds": 0.026705919,
+        "nodejs_active_handles_total": 1433,
+        "nodejs_heap_size_used_bytes": 426991256,
+        "db_queries_total": 126050
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:45.740Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 188.54600000000008,
+        "process_cpu_system_seconds_total": 37.219,
+        "process_cpu_seconds_total": 225.76499999999996,
+        "process_resident_memory_bytes": 829526016,
+        "nodejs_eventloop_lag_mean_seconds": 0.014616645033707864,
+        "nodejs_eventloop_lag_p90_seconds": 0.019988479,
+        "nodejs_eventloop_lag_p99_seconds": 0.031260671,
+        "nodejs_active_handles_total": 1492,
+        "nodejs_heap_size_used_bytes": 545852848,
+        "db_queries_total": 128396
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0.008944
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:47.031Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 189.8280000000001,
+        "process_cpu_system_seconds_total": 37.453,
+        "process_cpu_seconds_total": 227.28099999999995,
+        "process_resident_memory_bytes": 825438208,
+        "nodejs_eventloop_lag_mean_seconds": 0.015301538909090908,
+        "nodejs_eventloop_lag_p90_seconds": 0.020447231,
+        "nodejs_eventloop_lag_p99_seconds": 0.023232511,
+        "nodejs_active_handles_total": 1477,
+        "nodejs_heap_size_used_bytes": 165562704,
+        "db_queries_total": 129427
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:48.311Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 191.0310000000001,
+        "process_cpu_system_seconds_total": 37.641000000000005,
+        "process_cpu_seconds_total": 228.67199999999994,
+        "process_resident_memory_bytes": 827940864,
+        "nodejs_eventloop_lag_mean_seconds": 0.013919543652173912,
+        "nodejs_eventloop_lag_p90_seconds": 0.017645567,
+        "nodejs_eventloop_lag_p99_seconds": 0.030457855,
+        "nodejs_active_handles_total": 1473,
+        "nodejs_heap_size_used_bytes": 219745144,
+        "db_queries_total": 130816
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:49.591Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 192.2180000000001,
+        "process_cpu_system_seconds_total": 37.953,
+        "process_cpu_seconds_total": 230.17099999999994,
+        "process_resident_memory_bytes": 828252160,
+        "nodejs_eventloop_lag_mean_seconds": 0.014358016,
+        "nodejs_eventloop_lag_p90_seconds": 0.019415039,
+        "nodejs_eventloop_lag_p99_seconds": 0.023101439,
+        "nodejs_active_handles_total": 1480,
+        "nodejs_heap_size_used_bytes": 251765200,
+        "db_queries_total": 132110
+      },
+      "pg": {
+        "active": 3,
+        "idle": 7,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:50.865Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 193.4370000000001,
+        "process_cpu_system_seconds_total": 38.109,
+        "process_cpu_seconds_total": 231.54599999999994,
+        "process_resident_memory_bytes": 828485632,
+        "nodejs_eventloop_lag_mean_seconds": 0.014894128761904761,
+        "nodejs_eventloop_lag_p90_seconds": 0.019890175,
+        "nodejs_eventloop_lag_p99_seconds": 0.027557887,
+        "nodejs_active_handles_total": 1489,
+        "nodejs_heap_size_used_bytes": 331858784,
+        "db_queries_total": 133339
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:52.139Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 194.6090000000001,
+        "process_cpu_system_seconds_total": 38.422000000000004,
+        "process_cpu_seconds_total": 233.03099999999995,
+        "process_resident_memory_bytes": 829136896,
+        "nodejs_eventloop_lag_mean_seconds": 0.015579991493670887,
+        "nodejs_eventloop_lag_p90_seconds": 0.022478847,
+        "nodejs_eventloop_lag_p99_seconds": 0.027525119,
+        "nodejs_active_handles_total": 1476,
+        "nodejs_heap_size_used_bytes": 372682624,
+        "db_queries_total": 134516
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:53.444Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 195.6560000000001,
+        "process_cpu_system_seconds_total": 38.797000000000004,
+        "process_cpu_seconds_total": 234.45299999999995,
+        "process_resident_memory_bytes": 829431808,
+        "nodejs_eventloop_lag_mean_seconds": 0.01517207161904762,
+        "nodejs_eventloop_lag_p90_seconds": 0.021561343,
+        "nodejs_eventloop_lag_p99_seconds": 0.025411583,
+        "nodejs_active_handles_total": 1481,
+        "nodejs_heap_size_used_bytes": 440667456,
+        "db_queries_total": 135623
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:54.730Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 196.92100000000008,
+        "process_cpu_system_seconds_total": 39.047000000000004,
+        "process_cpu_seconds_total": 235.96799999999993,
+        "process_resident_memory_bytes": 829939712,
+        "nodejs_eventloop_lag_mean_seconds": 0.014029645913043478,
+        "nodejs_eventloop_lag_p90_seconds": 0.018644991,
+        "nodejs_eventloop_lag_p99_seconds": 0.023265279,
+        "nodejs_active_handles_total": 1405,
+        "nodejs_heap_size_used_bytes": 456571856,
+        "db_queries_total": 136894
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:56.010Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 198.18700000000007,
+        "process_cpu_system_seconds_total": 39.219,
+        "process_cpu_seconds_total": 237.40599999999992,
+        "process_resident_memory_bytes": 830758912,
+        "nodejs_eventloop_lag_mean_seconds": 0.015060005012048192,
+        "nodejs_eventloop_lag_p90_seconds": 0.020348927,
+        "nodejs_eventloop_lag_p99_seconds": 0.025968639,
+        "nodejs_active_handles_total": 1399,
+        "nodejs_heap_size_used_bytes": 533423144,
+        "db_queries_total": 138071
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:57.302Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 199.23400000000007,
+        "process_cpu_system_seconds_total": 39.516,
+        "process_cpu_seconds_total": 238.74999999999991,
+        "process_resident_memory_bytes": 830758912,
+        "nodejs_eventloop_lag_mean_seconds": 0.015731687024390244,
+        "nodejs_eventloop_lag_p90_seconds": 0.021774335,
+        "nodejs_eventloop_lag_p99_seconds": 0.025919487,
+        "nodejs_active_handles_total": 1383,
+        "nodejs_heap_size_used_bytes": 556088384,
+        "db_queries_total": 139269
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:58.592Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 200.43700000000007,
+        "process_cpu_system_seconds_total": 39.812,
+        "process_cpu_seconds_total": 240.2489999999999,
+        "process_resident_memory_bytes": 848539648,
+        "nodejs_eventloop_lag_mean_seconds": 0.013151829333333333,
+        "nodejs_eventloop_lag_p90_seconds": 0.017268735,
+        "nodejs_eventloop_lag_p99_seconds": 0.024346623,
+        "nodejs_active_handles_total": 1305,
+        "nodejs_heap_size_used_bytes": 641307880,
+        "db_queries_total": 140832
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:17:59.879Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 201.87500000000006,
+        "process_cpu_system_seconds_total": 40.172,
+        "process_cpu_seconds_total": 242.0469999999999,
+        "process_resident_memory_bytes": 853057536,
+        "nodejs_eventloop_lag_mean_seconds": 0.0133234688,
+        "nodejs_eventloop_lag_p90_seconds": 0.017219583,
+        "nodejs_eventloop_lag_p99_seconds": 0.022364159,
+        "nodejs_active_handles_total": 1239,
+        "nodejs_heap_size_used_bytes": 197655408,
+        "db_queries_total": 142363
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:01.146Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 202.93700000000007,
+        "process_cpu_system_seconds_total": 40.5,
+        "process_cpu_seconds_total": 243.4369999999999,
+        "process_resident_memory_bytes": 853278720,
+        "nodejs_eventloop_lag_mean_seconds": 0.013449194442105263,
+        "nodejs_eventloop_lag_p90_seconds": 0.019218431,
+        "nodejs_eventloop_lag_p99_seconds": 0.025985023,
+        "nodejs_active_handles_total": 1145,
+        "nodejs_heap_size_used_bytes": 210535520,
+        "db_queries_total": 144287
+      },
+      "pg": {
+        "active": 2,
+        "idle": 5,
+        "idle_in_tx": 4,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:02.424Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 203.56200000000007,
+        "process_cpu_system_seconds_total": 40.641,
+        "process_cpu_seconds_total": 244.2029999999999,
+        "process_resident_memory_bytes": 853344256,
+        "nodejs_eventloop_lag_mean_seconds": 0.013112192,
+        "nodejs_eventloop_lag_p90_seconds": 0.016793599,
+        "nodejs_eventloop_lag_p99_seconds": 0.021561343,
+        "nodejs_active_handles_total": 1139,
+        "nodejs_heap_size_used_bytes": 239174896,
+        "db_queries_total": 145534
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:03.702Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 204.59300000000007,
+        "process_cpu_system_seconds_total": 40.969,
+        "process_cpu_seconds_total": 245.5619999999999,
+        "process_resident_memory_bytes": 854179840,
+        "nodejs_eventloop_lag_mean_seconds": 0.017597800563380284,
+        "nodejs_eventloop_lag_p90_seconds": 0.025509887,
+        "nodejs_eventloop_lag_p99_seconds": 0.033079295,
+        "nodejs_active_handles_total": 1224,
+        "nodejs_heap_size_used_bytes": 261099848,
+        "db_queries_total": 146311
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:04.990Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 205.5780000000001,
+        "process_cpu_system_seconds_total": 41.281,
+        "process_cpu_seconds_total": 246.8589999999999,
+        "process_resident_memory_bytes": 854261760,
+        "nodejs_eventloop_lag_mean_seconds": 0.015840563199999998,
+        "nodejs_eventloop_lag_p90_seconds": 0.022249471,
+        "nodejs_eventloop_lag_p99_seconds": 0.028770303,
+        "nodejs_active_handles_total": 1183,
+        "nodejs_heap_size_used_bytes": 297368360,
+        "db_queries_total": 147221
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:06.263Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 206.6400000000001,
+        "process_cpu_system_seconds_total": 41.641,
+        "process_cpu_seconds_total": 248.2809999999999,
+        "process_resident_memory_bytes": 854265856,
+        "nodejs_eventloop_lag_mean_seconds": 0.015340655036144579,
+        "nodejs_eventloop_lag_p90_seconds": 0.021708799,
+        "nodejs_eventloop_lag_p99_seconds": 0.028917759,
+        "nodejs_active_handles_total": 1010,
+        "nodejs_heap_size_used_bytes": 320987424,
+        "db_queries_total": 148124
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:07.533Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 207.8430000000001,
+        "process_cpu_system_seconds_total": 41.906,
+        "process_cpu_seconds_total": 249.74899999999988,
+        "process_resident_memory_bytes": 854290432,
+        "nodejs_eventloop_lag_mean_seconds": 0.015167088390243904,
+        "nodejs_eventloop_lag_p90_seconds": 0.021954559,
+        "nodejs_eventloop_lag_p99_seconds": 0.027017215,
+        "nodejs_active_handles_total": 902,
+        "nodejs_heap_size_used_bytes": 372331768,
+        "db_queries_total": 149133
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:08.811Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 208.95300000000012,
+        "process_cpu_system_seconds_total": 42.172,
+        "process_cpu_seconds_total": 251.1249999999999,
+        "process_resident_memory_bytes": 854294528,
+        "nodejs_eventloop_lag_mean_seconds": 0.014553859011764704,
+        "nodejs_eventloop_lag_p90_seconds": 0.018841599,
+        "nodejs_eventloop_lag_p99_seconds": 0.022315007,
+        "nodejs_active_handles_total": 986,
+        "nodejs_heap_size_used_bytes": 447243384,
+        "db_queries_total": 150222
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:10.096Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 210.0930000000001,
+        "process_cpu_system_seconds_total": 42.483999999999995,
+        "process_cpu_seconds_total": 252.57699999999988,
+        "process_resident_memory_bytes": 854360064,
+        "nodejs_eventloop_lag_mean_seconds": 0.0148897792,
+        "nodejs_eventloop_lag_p90_seconds": 0.019628031,
+        "nodejs_eventloop_lag_p99_seconds": 0.026230783,
+        "nodejs_active_handles_total": 1050,
+        "nodejs_heap_size_used_bytes": 473808880,
+        "db_queries_total": 151320
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:11.384Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 211.3120000000001,
+        "process_cpu_system_seconds_total": 42.702999999999996,
+        "process_cpu_seconds_total": 254.01499999999987,
+        "process_resident_memory_bytes": 854974464,
+        "nodejs_eventloop_lag_mean_seconds": 0.015101655903614458,
+        "nodejs_eventloop_lag_p90_seconds": 0.020332543,
+        "nodejs_eventloop_lag_p99_seconds": 0.023691263,
+        "nodejs_active_handles_total": 1090,
+        "nodejs_heap_size_used_bytes": 535024912,
+        "db_queries_total": 152508
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:12.658Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 212.7810000000001,
+        "process_cpu_system_seconds_total": 43.031,
+        "process_cpu_seconds_total": 255.81199999999987,
+        "process_resident_memory_bytes": 851144704,
+        "nodejs_eventloop_lag_mean_seconds": 0.01536749268292683,
+        "nodejs_eventloop_lag_p90_seconds": 0.020938751,
+        "nodejs_eventloop_lag_p99_seconds": 0.036503551,
+        "nodejs_active_handles_total": 1121,
+        "nodejs_heap_size_used_bytes": 181784152,
+        "db_queries_total": 153532
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:13.934Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 213.8900000000001,
+        "process_cpu_system_seconds_total": 43.327999999999996,
+        "process_cpu_seconds_total": 257.21799999999985,
+        "process_resident_memory_bytes": 851718144,
+        "nodejs_eventloop_lag_mean_seconds": 0.015615570172839505,
+        "nodejs_eventloop_lag_p90_seconds": 0.020316159,
+        "nodejs_eventloop_lag_p99_seconds": 0.027688959,
+        "nodejs_active_handles_total": 1176,
+        "nodejs_heap_size_used_bytes": 224641592,
+        "db_queries_total": 154529
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:15.224Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 215.0620000000001,
+        "process_cpu_system_seconds_total": 43.562,
+        "process_cpu_seconds_total": 258.62399999999985,
+        "process_resident_memory_bytes": 851959808,
+        "nodejs_eventloop_lag_mean_seconds": 0.016293782974358975,
+        "nodejs_eventloop_lag_p90_seconds": 0.022642687,
+        "nodejs_eventloop_lag_p99_seconds": 0.030638079,
+        "nodejs_active_handles_total": 1247,
+        "nodejs_heap_size_used_bytes": 293778392,
+        "db_queries_total": 155570
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:16.505Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 216.25000000000009,
+        "process_cpu_system_seconds_total": 43.843999999999994,
+        "process_cpu_seconds_total": 260.0939999999999,
+        "process_resident_memory_bytes": 853291008,
+        "nodejs_eventloop_lag_mean_seconds": 0.016359796363636363,
+        "nodejs_eventloop_lag_p90_seconds": 0.023035903,
+        "nodejs_eventloop_lag_p99_seconds": 0.035520511,
+        "nodejs_active_handles_total": 1283,
+        "nodejs_heap_size_used_bytes": 331522856,
+        "db_queries_total": 156577
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:18.688Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 218.42100000000008,
+        "process_cpu_system_seconds_total": 44.37499999999999,
+        "process_cpu_seconds_total": 262.7959999999999,
+        "process_resident_memory_bytes": 853385216,
+        "nodejs_eventloop_lag_mean_seconds": 0.014864030024691359,
+        "nodejs_eventloop_lag_p90_seconds": 0.020037631,
+        "nodejs_eventloop_lag_p99_seconds": 0.029245439,
+        "nodejs_active_handles_total": 1266,
+        "nodejs_heap_size_used_bytes": 463126360,
+        "db_queries_total": 158831
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:19.967Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 219.35900000000007,
+        "process_cpu_system_seconds_total": 44.577999999999996,
+        "process_cpu_seconds_total": 263.9369999999999,
+        "process_resident_memory_bytes": 853389312,
+        "nodejs_eventloop_lag_mean_seconds": 0.01504695717647059,
+        "nodejs_eventloop_lag_p90_seconds": 0.021102591,
+        "nodejs_eventloop_lag_p99_seconds": 0.024625151,
+        "nodejs_active_handles_total": 1286,
+        "nodejs_heap_size_used_bytes": 475953728,
+        "db_queries_total": 159830
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:21.245Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 220.37500000000006,
+        "process_cpu_system_seconds_total": 44.922,
+        "process_cpu_seconds_total": 265.2969999999999,
+        "process_resident_memory_bytes": 853422080,
+        "nodejs_eventloop_lag_mean_seconds": 0.014537989953488373,
+        "nodejs_eventloop_lag_p90_seconds": 0.019005439,
+        "nodejs_eventloop_lag_p99_seconds": 0.025526271,
+        "nodejs_active_handles_total": 1377,
+        "nodejs_heap_size_used_bytes": 524455176,
+        "db_queries_total": 160988
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:22.523Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 221.92100000000005,
+        "process_cpu_system_seconds_total": 45.141,
+        "process_cpu_seconds_total": 267.0619999999999,
+        "process_resident_memory_bytes": 854110208,
+        "nodejs_eventloop_lag_mean_seconds": 0.01562401501234568,
+        "nodejs_eventloop_lag_p90_seconds": 0.022626303,
+        "nodejs_eventloop_lag_p99_seconds": 0.029392895,
+        "nodejs_active_handles_total": 1411,
+        "nodejs_heap_size_used_bytes": 179596544,
+        "db_queries_total": 161948
+      },
+      "pg": {
+        "active": 5,
+        "idle": 5,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:23.805Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 223.28100000000006,
+        "process_cpu_system_seconds_total": 45.375,
+        "process_cpu_seconds_total": 268.6559999999999,
+        "process_resident_memory_bytes": 854114304,
+        "nodejs_eventloop_lag_mean_seconds": 0.015577088,
+        "nodejs_eventloop_lag_p90_seconds": 0.021676031,
+        "nodejs_eventloop_lag_p99_seconds": 0.029655039,
+        "nodejs_active_handles_total": 1419,
+        "nodejs_heap_size_used_bytes": 270748656,
+        "db_queries_total": 162996
+      },
+      "pg": {
+        "active": 3,
+        "idle": 7,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:25.084Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 224.29600000000005,
+        "process_cpu_system_seconds_total": 45.781,
+        "process_cpu_seconds_total": 270.0769999999999,
+        "process_resident_memory_bytes": 854138880,
+        "nodejs_eventloop_lag_mean_seconds": 0.015509984395061727,
+        "nodejs_eventloop_lag_p90_seconds": 0.022134783,
+        "nodejs_eventloop_lag_p99_seconds": 0.031064063,
+        "nodejs_active_handles_total": 1430,
+        "nodejs_heap_size_used_bytes": 311511936,
+        "db_queries_total": 164176
+      },
+      "pg": {
+        "active": 4,
+        "idle": 6,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:26.381Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 225.57800000000006,
+        "process_cpu_system_seconds_total": 46,
+        "process_cpu_seconds_total": 271.57799999999986,
+        "process_resident_memory_bytes": 854159360,
+        "nodejs_eventloop_lag_mean_seconds": 0.01397874778021978,
+        "nodejs_eventloop_lag_p90_seconds": 0.018382847,
+        "nodejs_eventloop_lag_p99_seconds": 0.026968063,
+        "nodejs_active_handles_total": 1407,
+        "nodejs_heap_size_used_bytes": 336293936,
+        "db_queries_total": 165457
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:27.681Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 226.78100000000006,
+        "process_cpu_system_seconds_total": 46.328,
+        "process_cpu_seconds_total": 273.10899999999987,
+        "process_resident_memory_bytes": 854589440,
+        "nodejs_eventloop_lag_mean_seconds": 0.015324647619047619,
+        "nodejs_eventloop_lag_p90_seconds": 0.020447231,
+        "nodejs_eventloop_lag_p99_seconds": 0.027754495,
+        "nodejs_active_handles_total": 1398,
+        "nodejs_heap_size_used_bytes": 407738064,
+        "db_queries_total": 166551
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:28.973Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 228.03100000000006,
+        "process_cpu_system_seconds_total": 46.547000000000004,
+        "process_cpu_seconds_total": 274.57799999999986,
+        "process_resident_memory_bytes": 854626304,
+        "nodejs_eventloop_lag_mean_seconds": 0.01554441869879518,
+        "nodejs_eventloop_lag_p90_seconds": 0.022577151,
+        "nodejs_eventloop_lag_p99_seconds": 0.030343167,
+        "nodejs_active_handles_total": 1389,
+        "nodejs_heap_size_used_bytes": 479783576,
+        "db_queries_total": 167668
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:30.256Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 229.23400000000007,
+        "process_cpu_system_seconds_total": 46.719,
+        "process_cpu_seconds_total": 275.95299999999986,
+        "process_resident_memory_bytes": 854630400,
+        "nodejs_eventloop_lag_mean_seconds": 0.015084690285714285,
+        "nodejs_eventloop_lag_p90_seconds": 0.019202047,
+        "nodejs_eventloop_lag_p99_seconds": 0.028721151,
+        "nodejs_active_handles_total": 1340,
+        "nodejs_heap_size_used_bytes": 489498240,
+        "db_queries_total": 168840
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:31.536Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 230.37500000000006,
+        "process_cpu_system_seconds_total": 46.859,
+        "process_cpu_seconds_total": 277.23399999999987,
+        "process_resident_memory_bytes": 854630400,
+        "nodejs_eventloop_lag_mean_seconds": 0.015190942476190475,
+        "nodejs_eventloop_lag_p90_seconds": 0.022298623,
+        "nodejs_eventloop_lag_p99_seconds": 0.030146559,
+        "nodejs_active_handles_total": 1333,
+        "nodejs_heap_size_used_bytes": 565513088,
+        "db_queries_total": 169984
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:32.823Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 231.45300000000006,
+        "process_cpu_system_seconds_total": 47.172000000000004,
+        "process_cpu_seconds_total": 278.6249999999999,
+        "process_resident_memory_bytes": 854872064,
+        "nodejs_eventloop_lag_mean_seconds": 0.0156914176,
+        "nodejs_eventloop_lag_p90_seconds": 0.021921791,
+        "nodejs_eventloop_lag_p99_seconds": 0.029442047,
+        "nodejs_active_handles_total": 1288,
+        "nodejs_heap_size_used_bytes": 636133432,
+        "db_queries_total": 171121
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:34.107Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 232.89000000000007,
+        "process_cpu_system_seconds_total": 47.453,
+        "process_cpu_seconds_total": 280.3429999999999,
+        "process_resident_memory_bytes": 853458944,
+        "nodejs_eventloop_lag_mean_seconds": 0.016495762285714286,
+        "nodejs_eventloop_lag_p90_seconds": 0.023642111,
+        "nodejs_eventloop_lag_p99_seconds": 0.038436863,
+        "nodejs_active_handles_total": 1321,
+        "nodejs_heap_size_used_bytes": 195312968,
+        "db_queries_total": 172095
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:35.397Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 234.23400000000007,
+        "process_cpu_system_seconds_total": 47.781000000000006,
+        "process_cpu_seconds_total": 282.01499999999993,
+        "process_resident_memory_bytes": 854540288,
+        "nodejs_eventloop_lag_mean_seconds": 0.014883177411764705,
+        "nodejs_eventloop_lag_p90_seconds": 0.020643839,
+        "nodejs_eventloop_lag_p99_seconds": 0.025165823,
+        "nodejs_active_handles_total": 1304,
+        "nodejs_heap_size_used_bytes": 259145104,
+        "db_queries_total": 173286
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:36.670Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 235.39000000000007,
+        "process_cpu_system_seconds_total": 48.031000000000006,
+        "process_cpu_seconds_total": 283.42099999999994,
+        "process_resident_memory_bytes": 854568960,
+        "nodejs_eventloop_lag_mean_seconds": 0.014730501953488372,
+        "nodejs_eventloop_lag_p90_seconds": 0.018317311,
+        "nodejs_eventloop_lag_p99_seconds": 0.024854527,
+        "nodejs_active_handles_total": 1306,
+        "nodejs_heap_size_used_bytes": 317374680,
+        "db_queries_total": 174529
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:37.958Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 236.67100000000008,
+        "process_cpu_system_seconds_total": 48.328,
+        "process_cpu_seconds_total": 284.9989999999999,
+        "process_resident_memory_bytes": 854642688,
+        "nodejs_eventloop_lag_mean_seconds": 0.015938446222222222,
+        "nodejs_eventloop_lag_p90_seconds": 0.023412735,
+        "nodejs_eventloop_lag_p99_seconds": 0.029704191,
+        "nodejs_active_handles_total": 1330,
+        "nodejs_heap_size_used_bytes": 350263344,
+        "db_queries_total": 175626
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:39.232Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 237.75000000000009,
+        "process_cpu_system_seconds_total": 48.734,
+        "process_cpu_seconds_total": 286.4839999999999,
+        "process_resident_memory_bytes": 854749184,
+        "nodejs_eventloop_lag_mean_seconds": 0.014805284571428571,
+        "nodejs_eventloop_lag_p90_seconds": 0.021446655,
+        "nodejs_eventloop_lag_p99_seconds": 0.027115519,
+        "nodejs_active_handles_total": 1400,
+        "nodejs_heap_size_used_bytes": 432204224,
+        "db_queries_total": 176704
+      },
+      "pg": {
+        "active": 2,
+        "idle": 8,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:40.522Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 238.75000000000009,
+        "process_cpu_system_seconds_total": 49.062000000000005,
+        "process_cpu_seconds_total": 287.8119999999999,
+        "process_resident_memory_bytes": 854769664,
+        "nodejs_eventloop_lag_mean_seconds": 0.014242344269662923,
+        "nodejs_eventloop_lag_p90_seconds": 0.018972671,
+        "nodejs_eventloop_lag_p99_seconds": 0.025493503,
+        "nodejs_active_handles_total": 1417,
+        "nodejs_heap_size_used_bytes": 486011512,
+        "db_queries_total": 177933
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:41.822Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 240.0620000000001,
+        "process_cpu_system_seconds_total": 49.328,
+        "process_cpu_seconds_total": 289.3899999999999,
+        "process_resident_memory_bytes": 854978560,
+        "nodejs_eventloop_lag_mean_seconds": 0.01402302008888889,
+        "nodejs_eventloop_lag_p90_seconds": 0.019464191,
+        "nodejs_eventloop_lag_p99_seconds": 0.028082175,
+        "nodejs_active_handles_total": 1388,
+        "nodejs_heap_size_used_bytes": 516989072,
+        "db_queries_total": 179240
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:43.132Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 241.2340000000001,
+        "process_cpu_system_seconds_total": 49.484,
+        "process_cpu_seconds_total": 290.71799999999985,
+        "process_resident_memory_bytes": 855371776,
+        "nodejs_eventloop_lag_mean_seconds": 0.013240737959183674,
+        "nodejs_eventloop_lag_p90_seconds": 0.017350655,
+        "nodejs_eventloop_lag_p99_seconds": 0.024117247,
+        "nodejs_active_handles_total": 1355,
+        "nodejs_heap_size_used_bytes": 560315120,
+        "db_queries_total": 180714
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:44.397Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 242.62500000000009,
+        "process_cpu_system_seconds_total": 49.812000000000005,
+        "process_cpu_seconds_total": 292.43699999999984,
+        "process_resident_memory_bytes": 852951040,
+        "nodejs_eventloop_lag_mean_seconds": 0.014277919640449438,
+        "nodejs_eventloop_lag_p90_seconds": 0.019939327,
+        "nodejs_eventloop_lag_p99_seconds": 0.028819455,
+        "nodejs_active_handles_total": 1326,
+        "nodejs_heap_size_used_bytes": 168164304,
+        "db_queries_total": 182239
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:45.675Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 243.6090000000001,
+        "process_cpu_system_seconds_total": 50.172000000000004,
+        "process_cpu_seconds_total": 293.78099999999984,
+        "process_resident_memory_bytes": 853475328,
+        "nodejs_eventloop_lag_mean_seconds": 0.013562216087912088,
+        "nodejs_eventloop_lag_p90_seconds": 0.019169279,
+        "nodejs_eventloop_lag_p99_seconds": 0.025821183,
+        "nodejs_active_handles_total": 1268,
+        "nodejs_heap_size_used_bytes": 234384968,
+        "db_queries_total": 183891
+      },
+      "pg": {
+        "active": 1,
+        "idle": 6,
+        "idle_in_tx": 4,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:46.959Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 244.2030000000001,
+        "process_cpu_system_seconds_total": 50.312000000000005,
+        "process_cpu_seconds_total": 294.5149999999998,
+        "process_resident_memory_bytes": 853704704,
+        "nodejs_eventloop_lag_mean_seconds": 0.013436432168421053,
+        "nodejs_eventloop_lag_p90_seconds": 0.017530879,
+        "nodejs_eventloop_lag_p99_seconds": 0.023412735,
+        "nodejs_active_handles_total": 1161,
+        "nodejs_heap_size_used_bytes": 259419776,
+        "db_queries_total": 185370
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:48.233Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 245.17100000000008,
+        "process_cpu_system_seconds_total": 50.547000000000004,
+        "process_cpu_seconds_total": 295.7179999999998,
+        "process_resident_memory_bytes": 854290432,
+        "nodejs_eventloop_lag_mean_seconds": 0.014931158325581397,
+        "nodejs_eventloop_lag_p90_seconds": 0.020496383,
+        "nodejs_eventloop_lag_p99_seconds": 0.029671423,
+        "nodejs_active_handles_total": 1333,
+        "nodejs_heap_size_used_bytes": 247511208,
+        "db_queries_total": 186202
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:49.668Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 246.4530000000001,
+        "process_cpu_system_seconds_total": 51.094,
+        "process_cpu_seconds_total": 297.5469999999998,
+        "process_resident_memory_bytes": 854786048,
+        "nodejs_eventloop_lag_mean_seconds": 0.015938098196078433,
+        "nodejs_eventloop_lag_p90_seconds": 0.023019519,
+        "nodejs_eventloop_lag_p99_seconds": 0.031211519,
+        "nodejs_active_handles_total": 1197,
+        "nodejs_heap_size_used_bytes": 286374704,
+        "db_queries_total": 187362
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:50.954Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 247.4060000000001,
+        "process_cpu_system_seconds_total": 51.328,
+        "process_cpu_seconds_total": 298.7339999999998,
+        "process_resident_memory_bytes": 854798336,
+        "nodejs_eventloop_lag_mean_seconds": 0.01587296,
+        "nodejs_eventloop_lag_p90_seconds": 0.020725759,
+        "nodejs_eventloop_lag_p99_seconds": 0.028622847,
+        "nodejs_active_handles_total": 1065,
+        "nodejs_heap_size_used_bytes": 322429792,
+        "db_queries_total": 188119
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:52.267Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 248.4680000000001,
+        "process_cpu_system_seconds_total": 51.641000000000005,
+        "process_cpu_seconds_total": 300.1089999999998,
+        "process_resident_memory_bytes": 854827008,
+        "nodejs_eventloop_lag_mean_seconds": 0.015468173879518073,
+        "nodejs_eventloop_lag_p90_seconds": 0.021626879,
+        "nodejs_eventloop_lag_p99_seconds": 0.029016063,
+        "nodejs_active_handles_total": 865,
+        "nodejs_heap_size_used_bytes": 380968592,
+        "db_queries_total": 189069
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:53.547Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 249.5930000000001,
+        "process_cpu_system_seconds_total": 51.922000000000004,
+        "process_cpu_seconds_total": 301.5149999999998,
+        "process_resident_memory_bytes": 854855680,
+        "nodejs_eventloop_lag_mean_seconds": 0.015439286857142857,
+        "nodejs_eventloop_lag_p90_seconds": 0.022003711,
+        "nodejs_eventloop_lag_p99_seconds": 0.033210367,
+        "nodejs_active_handles_total": 926,
+        "nodejs_heap_size_used_bytes": 444557504,
+        "db_queries_total": 190142
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:54.819Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 250.8120000000001,
+        "process_cpu_system_seconds_total": 52.234,
+        "process_cpu_seconds_total": 303.0459999999998,
+        "process_resident_memory_bytes": 855625728,
+        "nodejs_eventloop_lag_mean_seconds": 0.01513520761904762,
+        "nodejs_eventloop_lag_p90_seconds": 0.022200319,
+        "nodejs_eventloop_lag_p99_seconds": 0.028459007,
+        "nodejs_active_handles_total": 1005,
+        "nodejs_heap_size_used_bytes": 464861608,
+        "db_queries_total": 191228
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:56.102Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 252.00000000000009,
+        "process_cpu_system_seconds_total": 52.484,
+        "process_cpu_seconds_total": 304.4839999999998,
+        "process_resident_memory_bytes": 855646208,
+        "nodejs_eventloop_lag_mean_seconds": 0.01546112,
+        "nodejs_eventloop_lag_p90_seconds": 0.020905983,
+        "nodejs_eventloop_lag_p99_seconds": 0.025903103,
+        "nodejs_active_handles_total": 1147,
+        "nodejs_heap_size_used_bytes": 533198760,
+        "db_queries_total": 192209
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:57.395Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 253.46800000000007,
+        "process_cpu_system_seconds_total": 52.797000000000004,
+        "process_cpu_seconds_total": 306.2649999999998,
+        "process_resident_memory_bytes": 850821120,
+        "nodejs_eventloop_lag_mean_seconds": 0.01513514865116279,
+        "nodejs_eventloop_lag_p90_seconds": 0.021610495,
+        "nodejs_eventloop_lag_p99_seconds": 0.027066367,
+        "nodejs_active_handles_total": 1237,
+        "nodejs_heap_size_used_bytes": 142762360,
+        "db_queries_total": 193256
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:58.685Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 254.50000000000009,
+        "process_cpu_system_seconds_total": 53.141000000000005,
+        "process_cpu_seconds_total": 307.6409999999998,
+        "process_resident_memory_bytes": 852586496,
+        "nodejs_eventloop_lag_mean_seconds": 0.015350016,
+        "nodejs_eventloop_lag_p90_seconds": 0.021364735,
+        "nodejs_eventloop_lag_p99_seconds": 0.026951679,
+        "nodejs_active_handles_total": 1347,
+        "nodejs_heap_size_used_bytes": 207009576,
+        "db_queries_total": 194160
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:18:59.972Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 255.75000000000009,
+        "process_cpu_system_seconds_total": 53.312000000000005,
+        "process_cpu_seconds_total": 309.0619999999998,
+        "process_resident_memory_bytes": 853028864,
+        "nodejs_eventloop_lag_mean_seconds": 0.01563448195121951,
+        "nodejs_eventloop_lag_p90_seconds": 0.022462463,
+        "nodejs_eventloop_lag_p99_seconds": 0.029523967,
+        "nodejs_active_handles_total": 1373,
+        "nodejs_heap_size_used_bytes": 247808600,
+        "db_queries_total": 195240
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:01.253Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 257.03100000000006,
+        "process_cpu_system_seconds_total": 53.453,
+        "process_cpu_seconds_total": 310.4839999999998,
+        "process_resident_memory_bytes": 853553152,
+        "nodejs_eventloop_lag_mean_seconds": 0.014599028363636364,
+        "nodejs_eventloop_lag_p90_seconds": 0.019070975,
+        "nodejs_eventloop_lag_p99_seconds": 0.030212095,
+        "nodejs_active_handles_total": 1361,
+        "nodejs_heap_size_used_bytes": 324488616,
+        "db_queries_total": 196480
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:02.545Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 258.18700000000007,
+        "process_cpu_system_seconds_total": 53.859,
+        "process_cpu_seconds_total": 312.0459999999998,
+        "process_resident_memory_bytes": 853553152,
+        "nodejs_eventloop_lag_mean_seconds": 0.01456165664367816,
+        "nodejs_eventloop_lag_p90_seconds": 0.019152895,
+        "nodejs_eventloop_lag_p99_seconds": 0.025772031,
+        "nodejs_active_handles_total": 1390,
+        "nodejs_heap_size_used_bytes": 367313136,
+        "db_queries_total": 197694
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:03.829Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 259.28100000000006,
+        "process_cpu_system_seconds_total": 54.156,
+        "process_cpu_seconds_total": 313.43699999999984,
+        "process_resident_memory_bytes": 853770240,
+        "nodejs_eventloop_lag_mean_seconds": 0.014586138482758622,
+        "nodejs_eventloop_lag_p90_seconds": 0.019628031,
+        "nodejs_eventloop_lag_p99_seconds": 0.026492927,
+        "nodejs_active_handles_total": 1385,
+        "nodejs_heap_size_used_bytes": 425349312,
+        "db_queries_total": 198907
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:05.126Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 260.43700000000007,
+        "process_cpu_system_seconds_total": 54.452999999999996,
+        "process_cpu_seconds_total": 314.8899999999998,
+        "process_resident_memory_bytes": 853913600,
+        "nodejs_eventloop_lag_mean_seconds": 0.015098002285714285,
+        "nodejs_eventloop_lag_p90_seconds": 0.019857407,
+        "nodejs_eventloop_lag_p99_seconds": 0.023576575,
+        "nodejs_active_handles_total": 1402,
+        "nodejs_heap_size_used_bytes": 458114504,
+        "db_queries_total": 200078
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:06.408Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 261.5780000000001,
+        "process_cpu_system_seconds_total": 54.781,
+        "process_cpu_seconds_total": 316.3589999999998,
+        "process_resident_memory_bytes": 853962752,
+        "nodejs_eventloop_lag_mean_seconds": 0.015596768780487805,
+        "nodejs_eventloop_lag_p90_seconds": 0.021020671,
+        "nodejs_eventloop_lag_p99_seconds": 0.025624575,
+        "nodejs_active_handles_total": 1405,
+        "nodejs_heap_size_used_bytes": 507559512,
+        "db_queries_total": 201134
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:07.699Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 262.68700000000007,
+        "process_cpu_system_seconds_total": 55.016,
+        "process_cpu_seconds_total": 317.7029999999998,
+        "process_resident_memory_bytes": 854097920,
+        "nodejs_eventloop_lag_mean_seconds": 0.014605253149425287,
+        "nodejs_eventloop_lag_p90_seconds": 0.020561919,
+        "nodejs_eventloop_lag_p99_seconds": 0.024428543,
+        "nodejs_active_handles_total": 1476,
+        "nodejs_heap_size_used_bytes": 585828256,
+        "db_queries_total": 202226
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:08.968Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 264.2180000000001,
+        "process_cpu_system_seconds_total": 55.406,
+        "process_cpu_seconds_total": 319.6239999999998,
+        "process_resident_memory_bytes": 852090880,
+        "nodejs_eventloop_lag_mean_seconds": 0.015965741367088608,
+        "nodejs_eventloop_lag_p90_seconds": 0.022757375,
+        "nodejs_eventloop_lag_p99_seconds": 0.032260095,
+        "nodejs_active_handles_total": 1508,
+        "nodejs_heap_size_used_bytes": 225177672,
+        "db_queries_total": 203347
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:10.244Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 265.37500000000006,
+        "process_cpu_system_seconds_total": 55.656,
+        "process_cpu_seconds_total": 321.0309999999998,
+        "process_resident_memory_bytes": 852156416,
+        "nodejs_eventloop_lag_mean_seconds": 0.015012668952380952,
+        "nodejs_eventloop_lag_p90_seconds": 0.021954559,
+        "nodejs_eventloop_lag_p99_seconds": 0.027688959,
+        "nodejs_active_handles_total": 1485,
+        "nodejs_heap_size_used_bytes": 247947656,
+        "db_queries_total": 204601
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:11.515Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 266.42100000000005,
+        "process_cpu_system_seconds_total": 55.875,
+        "process_cpu_seconds_total": 322.29599999999976,
+        "process_resident_memory_bytes": 852291584,
+        "nodejs_eventloop_lag_mean_seconds": 0.01450123745882353,
+        "nodejs_eventloop_lag_p90_seconds": 0.019283967,
+        "nodejs_eventloop_lag_p99_seconds": 0.022265855,
+        "nodejs_active_handles_total": 1494,
+        "nodejs_heap_size_used_bytes": 318836000,
+        "db_queries_total": 205745
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:12.814Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 267.75000000000006,
+        "process_cpu_system_seconds_total": 56.156,
+        "process_cpu_seconds_total": 323.9059999999998,
+        "process_resident_memory_bytes": 853315584,
+        "nodejs_eventloop_lag_mean_seconds": 0.014878084413793104,
+        "nodejs_eventloop_lag_p90_seconds": 0.020938751,
+        "nodejs_eventloop_lag_p99_seconds": 0.026738687,
+        "nodejs_active_handles_total": 1503,
+        "nodejs_heap_size_used_bytes": 352117616,
+        "db_queries_total": 206946
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:14.089Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 268.85900000000004,
+        "process_cpu_system_seconds_total": 56.422,
+        "process_cpu_seconds_total": 325.2809999999998,
+        "process_resident_memory_bytes": 853839872,
+        "nodejs_eventloop_lag_mean_seconds": 0.014703049788235294,
+        "nodejs_eventloop_lag_p90_seconds": 0.021135359,
+        "nodejs_eventloop_lag_p99_seconds": 0.029507583,
+        "nodejs_active_handles_total": 1490,
+        "nodejs_heap_size_used_bytes": 421701232,
+        "db_queries_total": 208011
+      },
+      "pg": {
+        "active": 1,
+        "idle": 7,
+        "idle_in_tx": 3,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:15.372Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 269.89000000000004,
+        "process_cpu_system_seconds_total": 56.75,
+        "process_cpu_seconds_total": 326.63999999999976,
+        "process_resident_memory_bytes": 853901312,
+        "nodejs_eventloop_lag_mean_seconds": 0.014820484517647059,
+        "nodejs_eventloop_lag_p90_seconds": 0.019955711,
+        "nodejs_eventloop_lag_p99_seconds": 0.025100287,
+        "nodejs_active_handles_total": 1502,
+        "nodejs_heap_size_used_bytes": 482155584,
+        "db_queries_total": 209227
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:16.651Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 271.17100000000005,
+        "process_cpu_system_seconds_total": 57,
+        "process_cpu_seconds_total": 328.17099999999976,
+        "process_resident_memory_bytes": 853917696,
+        "nodejs_eventloop_lag_mean_seconds": 0.01524254843373494,
+        "nodejs_eventloop_lag_p90_seconds": 0.023216127,
+        "nodejs_eventloop_lag_p99_seconds": 0.027852799,
+        "nodejs_active_handles_total": 1466,
+        "nodejs_heap_size_used_bytes": 533549336,
+        "db_queries_total": 210394
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 2,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:17.935Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 272.29600000000005,
+        "process_cpu_system_seconds_total": 57.25,
+        "process_cpu_seconds_total": 329.54599999999976,
+        "process_resident_memory_bytes": 854253568,
+        "nodejs_eventloop_lag_mean_seconds": 0.015042023619047619,
+        "nodejs_eventloop_lag_p90_seconds": 0.019791871,
+        "nodejs_eventloop_lag_p99_seconds": 0.031129599,
+        "nodejs_active_handles_total": 1485,
+        "nodejs_heap_size_used_bytes": 561268936,
+        "db_queries_total": 211633
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:19.216Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 273.7180000000001,
+        "process_cpu_system_seconds_total": 57.547,
+        "process_cpu_seconds_total": 331.26499999999976,
+        "process_resident_memory_bytes": 853676032,
+        "nodejs_eventloop_lag_mean_seconds": 0.014581006712643677,
+        "nodejs_eventloop_lag_p90_seconds": 0.019431423,
+        "nodejs_eventloop_lag_p99_seconds": 0.027000831,
+        "nodejs_active_handles_total": 1482,
+        "nodejs_heap_size_used_bytes": 210251216,
+        "db_queries_total": 212772
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:21.691Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 276.2340000000001,
+        "process_cpu_system_seconds_total": 58.172,
+        "process_cpu_seconds_total": 334.4059999999998,
+        "process_resident_memory_bytes": 854265856,
+        "nodejs_eventloop_lag_mean_seconds": 0.014807422593406594,
+        "nodejs_eventloop_lag_p90_seconds": 0.021282815,
+        "nodejs_eventloop_lag_p99_seconds": 0.027033599,
+        "nodejs_active_handles_total": 1499,
+        "nodejs_heap_size_used_bytes": 326365272,
+        "db_queries_total": 215291
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:22.978Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 277.2030000000001,
+        "process_cpu_system_seconds_total": 58.468999999999994,
+        "process_cpu_seconds_total": 335.6719999999998,
+        "process_resident_memory_bytes": 855965696,
+        "nodejs_eventloop_lag_mean_seconds": 0.014502882742857144,
+        "nodejs_eventloop_lag_p90_seconds": 0.019005439,
+        "nodejs_eventloop_lag_p99_seconds": 0.025526271,
+        "nodejs_active_handles_total": 1478,
+        "nodejs_heap_size_used_bytes": 345818144,
+        "db_queries_total": 216297
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:24.256Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 278.3590000000001,
+        "process_cpu_system_seconds_total": 58.78099999999999,
+        "process_cpu_seconds_total": 337.1399999999998,
+        "process_resident_memory_bytes": 856002560,
+        "nodejs_eventloop_lag_mean_seconds": 0.01448245581395349,
+        "nodejs_eventloop_lag_p90_seconds": 0.019120127,
+        "nodejs_eventloop_lag_p99_seconds": 0.027410431,
+        "nodejs_active_handles_total": 1494,
+        "nodejs_heap_size_used_bytes": 424662672,
+        "db_queries_total": 217555
+      },
+      "pg": {
+        "active": 1,
+        "idle": 9,
+        "idle_in_tx": 1,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:25.532Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 279.4530000000001,
+        "process_cpu_system_seconds_total": 59.14099999999999,
+        "process_cpu_seconds_total": 338.5939999999998,
+        "process_resident_memory_bytes": 856059904,
+        "nodejs_eventloop_lag_mean_seconds": 0.014341062471910112,
+        "nodejs_eventloop_lag_p90_seconds": 0.018890751,
+        "nodejs_eventloop_lag_p99_seconds": 0.025362431,
+        "nodejs_active_handles_total": 1508,
+        "nodejs_heap_size_used_bytes": 473821232,
+        "db_queries_total": 218802
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:26.814Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 280.5930000000001,
+        "process_cpu_system_seconds_total": 59.49999999999999,
+        "process_cpu_seconds_total": 340.09299999999985,
+        "process_resident_memory_bytes": 856141824,
+        "nodejs_eventloop_lag_mean_seconds": 0.014784632470588236,
+        "nodejs_eventloop_lag_p90_seconds": 0.019496959,
+        "nodejs_eventloop_lag_p99_seconds": 0.025460735,
+        "nodejs_active_handles_total": 1494,
+        "nodejs_heap_size_used_bytes": 510246736,
+        "db_queries_total": 219944
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:28.093Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 281.8430000000001,
+        "process_cpu_system_seconds_total": 59.67199999999999,
+        "process_cpu_seconds_total": 341.5149999999999,
+        "process_resident_memory_bytes": 856289280,
+        "nodejs_eventloop_lag_mean_seconds": 0.014140220404494383,
+        "nodejs_eventloop_lag_p90_seconds": 0.020168703,
+        "nodejs_eventloop_lag_p99_seconds": 0.025837567,
+        "nodejs_active_handles_total": 1447,
+        "nodejs_heap_size_used_bytes": 574680864,
+        "db_queries_total": 221414
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:29.378Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 283.25000000000006,
+        "process_cpu_system_seconds_total": 59.99999999999999,
+        "process_cpu_seconds_total": 343.2499999999999,
+        "process_resident_memory_bytes": 852123648,
+        "nodejs_eventloop_lag_mean_seconds": 0.013847017739130435,
+        "nodejs_eventloop_lag_p90_seconds": 0.020037631,
+        "nodejs_eventloop_lag_p99_seconds": 0.030195711,
+        "nodejs_active_handles_total": 1413,
+        "nodejs_heap_size_used_bytes": 137604144,
+        "db_queries_total": 222867
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:30.650Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 284.51500000000004,
+        "process_cpu_system_seconds_total": 60.327999999999996,
+        "process_cpu_seconds_total": 344.8429999999999,
+        "process_resident_memory_bytes": 854708224,
+        "nodejs_eventloop_lag_mean_seconds": 0.013537544258064516,
+        "nodejs_eventloop_lag_p90_seconds": 0.020742143,
+        "nodejs_eventloop_lag_p99_seconds": 0.025903103,
+        "nodejs_active_handles_total": 1312,
+        "nodejs_heap_size_used_bytes": 222343032,
+        "db_queries_total": 224710
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0.000604
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:31.927Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.06200000000007,
+        "process_cpu_system_seconds_total": 60.452999999999996,
+        "process_cpu_seconds_total": 345.51499999999993,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.013395342821052631,
+        "nodejs_eventloop_lag_p90_seconds": 0.017170431,
+        "nodejs_eventloop_lag_p99_seconds": 0.023560191,
+        "nodejs_active_handles_total": 1222,
+        "nodejs_heap_size_used_bytes": 189922096,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:33.206Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.0780000000001,
+        "process_cpu_system_seconds_total": 60.452999999999996,
+        "process_cpu_seconds_total": 345.53099999999995,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.016707362594594596,
+        "nodejs_eventloop_lag_p90_seconds": 0.018677759,
+        "nodejs_eventloop_lag_p99_seconds": 0.022020095,
+        "nodejs_active_handles_total": 1111,
+        "nodejs_heap_size_used_bytes": 190634784,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:34.493Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1090000000001,
+        "process_cpu_system_seconds_total": 60.468999999999994,
+        "process_cpu_seconds_total": 345.578,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.016538690493506494,
+        "nodejs_eventloop_lag_p90_seconds": 0.018595839,
+        "nodejs_eventloop_lag_p99_seconds": 0.021954559,
+        "nodejs_active_handles_total": 768,
+        "nodejs_heap_size_used_bytes": 191483352,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:35.768Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1090000000001,
+        "process_cpu_system_seconds_total": 60.51599999999999,
+        "process_cpu_seconds_total": 345.625,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.01657486296103896,
+        "nodejs_eventloop_lag_p90_seconds": 0.018661375,
+        "nodejs_eventloop_lag_p99_seconds": 0.020299775,
+        "nodejs_active_handles_total": 510,
+        "nodejs_heap_size_used_bytes": 192249032,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:37.045Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1250000000001,
+        "process_cpu_system_seconds_total": 60.51599999999999,
+        "process_cpu_seconds_total": 345.641,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.016631430736842104,
+        "nodejs_eventloop_lag_p90_seconds": 0.018219007,
+        "nodejs_eventloop_lag_p99_seconds": 0.020742143,
+        "nodejs_active_handles_total": 258,
+        "nodejs_heap_size_used_bytes": 193084544,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:38.330Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1250000000001,
+        "process_cpu_system_seconds_total": 60.593999999999994,
+        "process_cpu_seconds_total": 345.719,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.01673094227027027,
+        "nodejs_eventloop_lag_p90_seconds": 0.019349503,
+        "nodejs_eventloop_lag_p99_seconds": 0.022413311,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 194018584,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:39.610Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1250000000001,
+        "process_cpu_system_seconds_total": 60.593999999999994,
+        "process_cpu_seconds_total": 345.719,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.016689710545454546,
+        "nodejs_eventloop_lag_p90_seconds": 0.018825215,
+        "nodejs_eventloop_lag_p99_seconds": 0.022609919,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 194537968,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:40.906Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1250000000001,
+        "process_cpu_system_seconds_total": 60.593999999999994,
+        "process_cpu_seconds_total": 345.719,
+        "process_resident_memory_bytes": 855146496,
+        "nodejs_eventloop_lag_mean_seconds": 0.01669276294736842,
+        "nodejs_eventloop_lag_p90_seconds": 0.018464767,
+        "nodejs_eventloop_lag_p99_seconds": 0.022069247,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 195060968,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:42.188Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1250000000001,
+        "process_cpu_system_seconds_total": 60.593999999999994,
+        "process_cpu_seconds_total": 345.719,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01664470774025974,
+        "nodejs_eventloop_lag_p90_seconds": 0.018726911,
+        "nodejs_eventloop_lag_p99_seconds": 0.021839871,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 195612576,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:43.463Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1250000000001,
+        "process_cpu_system_seconds_total": 60.593999999999994,
+        "process_cpu_seconds_total": 345.719,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.016669965473684212,
+        "nodejs_eventloop_lag_p90_seconds": 0.018006015,
+        "nodejs_eventloop_lag_p99_seconds": 0.022331391,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 196131536,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:44.738Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1400000000001,
+        "process_cpu_system_seconds_total": 60.593999999999994,
+        "process_cpu_seconds_total": 345.734,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.016756459243243243,
+        "nodejs_eventloop_lag_p90_seconds": 0.019726335,
+        "nodejs_eventloop_lag_p99_seconds": 0.024100863,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 196650168,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:46.030Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1400000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.74899999999997,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.016652314597402598,
+        "nodejs_eventloop_lag_p90_seconds": 0.019103743,
+        "nodejs_eventloop_lag_p99_seconds": 0.023511039,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 197169056,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:47.312Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1400000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.74899999999997,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.016468952103896106,
+        "nodejs_eventloop_lag_p90_seconds": 0.017956863,
+        "nodejs_eventloop_lag_p99_seconds": 0.022118399,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 197688704,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:48.626Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1560000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.765,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01666021052631579,
+        "nodejs_eventloop_lag_p90_seconds": 0.018382847,
+        "nodejs_eventloop_lag_p99_seconds": 0.022118399,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 198207432,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:49.938Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1560000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.765,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.0162015744,
+        "nodejs_eventloop_lag_p90_seconds": 0.018022399,
+        "nodejs_eventloop_lag_p99_seconds": 0.020496383,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 198730096,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:51.228Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1560000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.765,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01671045651948052,
+        "nodejs_eventloop_lag_p90_seconds": 0.018972671,
+        "nodejs_eventloop_lag_p99_seconds": 0.022036479,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 199322288,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:52.515Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1560000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.765,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.016703222025974025,
+        "nodejs_eventloop_lag_p90_seconds": 0.018464767,
+        "nodejs_eventloop_lag_p99_seconds": 0.021757951,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 199848472,
+        "db_queries_total": 226182
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:53.818Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1710000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.78,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01662114244155844,
+        "nodejs_eventloop_lag_p90_seconds": 0.018317311,
+        "nodejs_eventloop_lag_p99_seconds": 0.023068671,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 200409528,
+        "db_queries_total": 226183
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:55.104Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1870000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.796,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01667508547368421,
+        "nodejs_eventloop_lag_p90_seconds": 0.018235391,
+        "nodejs_eventloop_lag_p99_seconds": 0.023412735,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 200928680,
+        "db_queries_total": 226183
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:56.429Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1870000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.796,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01661890825974026,
+        "nodejs_eventloop_lag_p90_seconds": 0.019103743,
+        "nodejs_eventloop_lag_p99_seconds": 0.022855679,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 201447408,
+        "db_queries_total": 226183
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:57.727Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.1870000000001,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.796,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01643823311392405,
+        "nodejs_eventloop_lag_p90_seconds": 0.018300927,
+        "nodejs_eventloop_lag_p99_seconds": 0.020496383,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 201965904,
+        "db_queries_total": 226183
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    },
+    {
+      "t": "2026-09-01T18:19:59.021Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 285.20300000000015,
+        "process_cpu_system_seconds_total": 60.608999999999995,
+        "process_cpu_seconds_total": 345.812,
+        "process_resident_memory_bytes": 855150592,
+        "nodejs_eventloop_lag_mean_seconds": 0.01671566961038961,
+        "nodejs_eventloop_lag_p90_seconds": 0.018677759,
+        "nodejs_eventloop_lag_p99_seconds": 0.021233663,
+        "nodejs_active_handles_total": 19,
+        "nodejs_heap_size_used_bytes": 202489384,
+        "db_queries_total": 226183
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      }
+    }
+  ]
+}

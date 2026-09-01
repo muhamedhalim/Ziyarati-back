@@ -1,0 +1,16 @@
+{
+  "generatedAt": "2026-09-01T17:04:31.090Z",
+  "rate": 40,
+  "duration": "10m",
+  "http_reqs": 50831,
+  "rps": 84.0637930914285,
+  "p50_ms": 17.79114,
+  "p95_ms": 37.671689,
+  "p99_ms": 72.7235042,
+  "max_ms": 355.400615,
+  "error_rate": 0.005370738328972478,
+  "business_check_failed": 0.00020362451639177357,
+  "server_5xx": 0,
+  "timeouts": 5,
+  "note": "Memory/event-loop drift is NOT visible here — correlate with the /api/v1/metrics samples taken during this window."
+}
