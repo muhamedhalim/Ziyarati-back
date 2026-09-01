@@ -19,6 +19,7 @@ import {
 } from './patient-queue.service';
 import { CheckInQueueDto } from './dto/check-in-queue.dto';
 import { QueryQueueDto } from './dto/query-queue.dto';
+import { Branch } from '../../entities/SaaS-Core/Branch';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
@@ -59,6 +60,13 @@ export class PatientQueueController {
     @CurrentUser('id') userId: string,
   ): Promise<QueueListResult> {
     return this.queue.list(this.ctx.requireTenantId(), userId, dto);
+  }
+
+  /** The branches this caller may pick in the queue's branch selector (FR-Q014). */
+  @Get('branches')
+  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
+  myBranches(@CurrentUser('id') userId: string): Promise<Branch[]> {
+    return this.queue.myBranches(this.ctx.requireTenantId(), userId);
   }
 
   @Post('check-in')

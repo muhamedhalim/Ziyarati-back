@@ -16,6 +16,7 @@ import { PasswordReset } from './entities/Auth&RBAC/PasswordReset';
 import { AuthTokenMaintenanceService } from './modules/auth/auth-token-maintenance.service';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
+import { BranchScopeModule } from './core/branch-scope/branch-scope.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -249,6 +250,13 @@ const WORKER_PROVIDERS =
       PasswordReset,
     ]),
     TenantContextModule,
+    // `@Global()` in AppModule, same as TenantContextModule above — but that
+    // only makes it ambient within AppModule's own tree. WorkerModule is a
+    // separate application root (bootstrapped via `createApplicationContext`,
+    // not AppModule), so it must import this explicitly too, or any consumer
+    // reached from here (e.g. AdvancedAnalyticsService via AnalyticsModule)
+    // fails to resolve BranchScopeService at boot.
+    BranchScopeModule,
     // Workers decrypt tenant provider credentials on the send path, so the
     // worker root needs this exactly as much as the API root does.
     CryptoModule,

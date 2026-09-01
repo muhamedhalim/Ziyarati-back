@@ -525,6 +525,43 @@ describe('Branch Manager — branch isolation (e2e)', () => {
     });
   });
 
+  describe('queue — branch picker', () => {
+    it('offers the manager only their own branch, never the sibling one', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/queue/branches`)
+        .set(...asManager())
+        .expect(200);
+
+      const ids = res.body.map((b: { id: string }) => b.id);
+      expect(ids).toEqual([fx.branchA]);
+    });
+
+    it('offers the owner every branch — tenant-wide behaviour is unchanged', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/queue/branches`)
+        .set(...asOwner())
+        .expect(200);
+
+      const ids = res.body.map((b: { id: string }) => b.id);
+      expect(ids).toEqual(expect.arrayContaining([fx.branchA, fx.branchB]));
+    });
+
+    it('never offers a branch the manager would then be refused on GET /queue', async () => {
+      const picker = await request(e2e.app.getHttpServer())
+        .get(`${API}/queue/branches`)
+        .set(...asManager())
+        .expect(200);
+
+      for (const branch of picker.body as { id: string }[]) {
+        await request(e2e.app.getHttpServer())
+          .get(`${API}/queue`)
+          .query({ branchId: branch.id })
+          .set(...asManager())
+          .expect(200);
+      }
+    });
+  });
+
   // ── IDOR: a record id from another branch ────────────────────────────────
 
   describe('appointments — single record (IDOR)', () => {

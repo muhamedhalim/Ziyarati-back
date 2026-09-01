@@ -144,4 +144,33 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
     expect(result.data[0].id).toBe('qe-1');
     expect(result.data[0].position).toBe(1);
   });
+
+  describe('myBranches (FR-Q014)', () => {
+    it('returns every tenant branch for a caller with no branch assignment', async () => {
+      branchUsers.find.mockResolvedValueOnce([]);
+      branches.find.mockResolvedValueOnce([{ id: 'b1' }, { id: 'b2' }]);
+
+      const result = await service.myBranches(TENANT, USER);
+
+      expect(branches.find).toHaveBeenCalledWith({
+        where: { tenant: { id: TENANT } },
+        order: { created_at: 'ASC' },
+      });
+      expect(result).toEqual([{ id: 'b1' }, { id: 'b2' }]);
+    });
+
+    it('narrows to only the assigned branches for a branch-restricted caller', async () => {
+      branchUsers.find.mockResolvedValueOnce([
+        { branch: { id: BRANCH } },
+      ]);
+      branches.find.mockResolvedValueOnce([{ id: BRANCH }]);
+
+      const result = await service.myBranches(TENANT, USER);
+
+      const call = branches.find.mock.calls[0][0];
+      expect(call.where.tenant).toEqual({ id: TENANT });
+      expect(call.where.id).toMatchObject({ _value: [BRANCH] });
+      expect(result).toEqual([{ id: BRANCH }]);
+    });
+  });
 });

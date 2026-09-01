@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 
 import { QueueEntry } from '../../entities/Calendar&Appointments/QueueEntry';
@@ -256,6 +256,25 @@ export class PatientQueueService {
       limit,
       asOf: new Date().toISOString(),
     };
+  }
+
+  /**
+   * The branches this caller's queue picker may offer. Mirrors
+   * `assertOwnBranch`'s FR-Q014 rule exactly — assigned-to-some-branch
+   * callers get only those branches, everyone else (no `branch_users` rows)
+   * gets the whole tenant — so a branch returned here is guaranteed to be
+   * one `list()` will actually accept. Keeps the frontend picker from ever
+   * offering a branch that only 403s once selected.
+   */
+  async myBranches(tenantId: string, userId: string): Promise<Branch[]> {
+    const ownIds = await this.resolveOwnBranchIds(tenantId, userId);
+    return this.branches.find({
+      where: {
+        tenant: { id: tenantId },
+        ...(ownIds.length > 0 ? { id: In(ownIds) } : {}),
+      },
+      order: { created_at: 'ASC' },
+    });
   }
 
   // ───────────────────────────── Transitions ─────────────────────────────── //
