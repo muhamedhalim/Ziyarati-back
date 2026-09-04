@@ -45,6 +45,9 @@ export const options = {
     },
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
+  // 100 accounts x bcrypt cost-12 login + a tenant-context fan-out each: the 60s
+  // default kills the run in setup() at TEST_TENANTS=50, with no results at all.
+  setupTimeout: '600s',
   thresholds: {
     'http_req_failed': ['rate<0.01'],
     'business_check_failed': ['rate<0.01'],
@@ -68,7 +71,22 @@ export default function (data) {
     const now = Date.now();
     // Stagger by VU so 400 VUs do not all pay bcrypt in the same second.
     const jitter = (__VU % 60) * 1000;
-    if (!vuSession || now - vuSessionAt > RELOGIN_AFTER_MS + jitter) {
+    // The clock starts at SETUP, not at this VU's first iteration.
+    //
+    // `!vuSession ||` used to force a login the first time every VU ran — even
+    // though setup() had already handed it a perfectly valid session. With
+    // `preAllocatedVUs = RATE * 3` that is a few hundred bcrypt cost-12 logins
+    // in the opening seconds, and bcrypt BLOCKS the single event loop: measured
+    // at RATE=80, the soak delivered 12-17 it/s against a target of 80 for its
+    // first five minutes while the API's own event-loop lag read ~0 (it was not
+    // overloaded — it was serialised behind bcrypt), and VUs that timed out
+    // retried the login every iteration, sustaining the storm.
+    //
+    // Anchoring to `data.startedAt` means the first re-login happens one full
+    // RELOGIN_AFTER_MS into the run, staggered, which is what the jitter was
+    // always for.
+    if (!vuSessionAt) vuSessionAt = data.startedAt;
+    if (now - vuSessionAt > RELOGIN_AFTER_MS + jitter) {
       const accounts = accountList();
       const fresh = login(accounts[(__VU - 1) % accounts.length]);
       if (fresh && fresh.access) {

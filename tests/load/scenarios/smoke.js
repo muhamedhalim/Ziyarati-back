@@ -23,6 +23,7 @@ import { publicDiscovery, bookingFunnel } from '../flows/booking.js';
 const STEP = 'smoke';
 
 export const options = {
+  setupTimeout: '600s',
   scenarios: {
     smoke: {
       executor: 'constant-vus',

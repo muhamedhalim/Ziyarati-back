@@ -3,19 +3,24 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { HealthController } from './health.controller';
 import { QueueService } from '../queue/queue.service';
 import { DataSource } from 'typeorm';
+import { SchemaGuardRegistry } from '../config/schema-guard.registry';
 
 describe('HealthController', () => {
   let controller: HealthController;
   let queues: { redisPing: jest.Mock; queueCounts: jest.Mock };
   let dataSource: { query: jest.Mock };
+  let schemaGuards: SchemaGuardRegistry;
 
   beforeEach(() => {
     queues = { redisPing: jest.fn(), queueCounts: jest.fn() };
     dataSource = { query: jest.fn() };
+    schemaGuards = new SchemaGuardRegistry();
     controller = new HealthController(
       queues as unknown as QueueService,
       dataSource as unknown as DataSource,
+      schemaGuards,
     );
+    delete process.env.SCHEMA_GUARD_FAIL_READINESS;
   });
 
   afterEach(() => jest.useRealTimers());
@@ -38,6 +43,10 @@ describe('HealthController', () => {
         status: 'ok',
         database: { status: 'up' },
         redis: { status: 'up', latencyMs: 5 },
+        // P0.3 SCHEMA-004: counts only, never an object or table name — this
+        // route is @Public() and naming a missing uniqueness guard would tell
+        // an anonymous caller exactly which duplicate to attempt.
+        schemaGuards: { status: 'ok', requiredChecked: 0, requiredFailed: 0 },
       });
     });
 
@@ -55,14 +64,18 @@ describe('HealthController', () => {
       dataSource.query.mockRejectedValueOnce(new Error('connection refused'));
       queues.redisPing.mockResolvedValueOnce(5);
 
-      await expect(controller.readiness()).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await expect(controller.readiness()).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
     });
 
     it('returns 503 when Redis is down but the DB is up', async () => {
       dataSource.query.mockResolvedValueOnce([{ '?column?': 1 }]);
       queues.redisPing.mockRejectedValueOnce(new Error('redis down'));
 
-      await expect(controller.readiness()).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await expect(controller.readiness()).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
     });
 
     it('answers within the fixed timeout instead of hanging when Redis is slow/unresponsive (Phase 0 — see original audit M6/C2)', async () => {

@@ -1,5 +1,7 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+
+import { SchemaGuardRegistry } from '../../config/schema-guard.registry';
 
 /**
  * Idempotently ensures the free-access-override ledger, and the Pricing
@@ -36,12 +38,13 @@ import { DataSource } from 'typeorm';
  */
 @Injectable()
 export class PlatformBillingBootstrap implements OnApplicationBootstrap {
-  private readonly logger = new Logger('PlatformBillingBootstrap');
-
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly guards: SchemaGuardRegistry,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    await this.run(
+    await this.require(
       'free_access_overrides table',
       `
       CREATE TABLE IF NOT EXISTS free_access_overrides (
@@ -69,7 +72,7 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
     );
 
     // ── tenant_entitlement_ledger — verbatim from 1730043000000 ────────────
-    await this.run(
+    await this.require(
       'tenant_entitlement_ledger table',
       `
       CREATE TABLE IF NOT EXISTS "tenant_entitlement_ledger" (
@@ -104,7 +107,7 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
       'tenant_entitlement_ledger tenant/metric/kind index',
       `CREATE INDEX IF NOT EXISTS "IDX_tenant_entitlement_ledger_tenant_metric_kind" ON "tenant_entitlement_ledger" ("tenantId", "metric", "kind")`,
     );
-    await this.run(
+    await this.require(
       'tenant_entitlement_ledger source-purchase unique (one grant per purchase)',
       `
       CREATE UNIQUE INDEX IF NOT EXISTS "UQ_tenant_entitlement_ledger_source_purchase"
@@ -112,7 +115,7 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
       WHERE "sourcePurchaseId" IS NOT NULL AND "direction" = 'grant'
     `,
     );
-    await this.run(
+    await this.require(
       'tenant_entitlement_ledger source-refund unique (one reversal per refund)',
       `
       CREATE UNIQUE INDEX IF NOT EXISTS "UQ_tenant_entitlement_ledger_source_refund"
@@ -122,7 +125,7 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
     );
 
     // ── tenant_metric_credits — verbatim from 1730043000000 ────────────────
-    await this.run(
+    await this.require(
       'tenant_metric_credits table',
       `
       CREATE TABLE IF NOT EXISTS "tenant_metric_credits" (
@@ -141,11 +144,26 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
     );
   }
 
+  /**
+   * A DB-enforced integrity guard. Failure is an ERROR and degrades readiness
+   * (`SchemaGuardRegistry`) — never a `warn` that scrolls past.
+   */
+  private async require(label: string, sql: string): Promise<void> {
+    await this.guards.ensure({
+      owner: 'PlatformBillingBootstrap',
+      label,
+      criticality: 'required',
+      run: () => this.dataSource.query(sql),
+    });
+  }
+
+  /** A performance index. Losing one costs latency, not correctness. */
   private async run(label: string, sql: string): Promise<void> {
-    try {
-      await this.dataSource.query(sql);
-    } catch (err) {
-      this.logger.warn(`Skipped "${label}": ${(err as Error).message}`);
-    }
+    await this.guards.ensure({
+      owner: 'PlatformBillingBootstrap',
+      label,
+      criticality: 'optional',
+      run: () => this.dataSource.query(sql),
+    });
   }
 }

@@ -1,4 +1,9 @@
 # Ziyarati Backend — Architecture (Code-Derived)
+
+> **Scope note (2026-09-02):** This document covers the backend (`Ziyarati-back`) only and is not
+> kept in sync with the codebase. For a code-verified, cross-repository architecture reference —
+> including the frontend, infrastructure, security boundaries and drift detection — see
+> `docs/architecture/` in the workspace repository.
 main.ts
 │
 ├── NestFactory

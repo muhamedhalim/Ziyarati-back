@@ -42,6 +42,12 @@ async function boot() {
     entities: [join(process.cwd(), 'src', 'entities', '**', '!(*.spec).{ts,js}')],
     migrations: [join(process.cwd(), 'src', 'migrations', '!(*.spec).{ts,js}')],
     synchronize: false,
+    // P0.3: REQUIRED. Several migrations set `transaction = false` for
+    // `CREATE INDEX CONCURRENTLY`, and TypeORM refuses to combine a
+    // per-migration override with the default global mode 'all' — so without
+    // this, `runMigrations()` throws, `available` stays false, and every test
+    // below silently no-ops. Matches src/config/data-source.ts.
+    migrationsTransactionMode: 'each' as const,
   });
   await ds.initialize();
   await ds.runMigrations();

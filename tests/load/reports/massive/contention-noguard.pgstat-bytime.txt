@@ -1,0 +1,29 @@
+ total_ms | calls | mean_ms |  rows  |                                                                         query                                                                          
+----------+-------+---------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------
+    27083 |   596 |   45.44 |    596 | UPDATE "subscription_usage" SET "appointments_used" = "appointments_used" + $1, "updated_at" = now() WHERE "tenant_id" = $2 AND "period_month" = $3 AN
+     8327 |   596 |   13.97 |      7 | INSERT INTO "subscription_usage"("id", "tenant_id", "subscription_id", "period_month", "ai_tokens_used", "whatsapp_messages_used", "appointments_used"
+     7003 |  1626 |    4.31 | 490072 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+     2243 |  2376 |    0.94 | 268973 | SELECT "u"."id" AS "userId", "u"."is_active" AS "userIsActive", "u"."email" AS "userEmail", "u"."full_name" AS "userFullName", "t"."id" AS "tenantId",
+     1067 |   350 |    3.05 |  84400 | SELECT "UserRole"."id" AS "UserRole_id", "UserRole"."assigned_at" AS "UserRole_assigned_at", "UserRole"."userId" AS "UserRole_userId", "UserRole"."rol
+      352 |   596 |    0.59 |    596 | INSERT INTO "appointments"("id", "start_at", "end_at", "status", "payment_status", "total_amount", "currency", "booked_timezone", "notes", "source", "
+      319 |   596 |    0.53 |    596 | INSERT INTO "audit_logs"("id", "action", "entity_type", "entity_id", "entity_label", "old_values", "new_values", "ip_address", "created_at", "tenantId
+      272 |  1626 |    0.17 |   4878 | SELECT "schedule"."id" AS "schedule_id", "schedule"."day_of_week" AS "schedule_day_of_week", "schedule"."start_time" AS "schedule_start_time", "schedu
+      209 |  1626 |    0.13 |   1626 | SELECT "WorkingHour"."id" AS "WorkingHour_id", "WorkingHour"."day_of_week" AS "WorkingHour_day_of_week", "WorkingHour"."start_time" AS "WorkingHour_st
+      111 |  3212 |    0.03 |   3212 | SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."title" AS "StaffProfile_title", "StaffProfile"."bio" AS "StaffProfile_bio", "StaffPro
+      110 |  7252 |    0.02 |   7252 | SELECT 1 FROM ONLY "public"."users" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x
+       90 |   596 |    0.15 |    596 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+       89 |  1586 |    0.06 |   1586 | SELECT $5 AS "row_exists" FROM (SELECT $6 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $7 FROM "staff_schedules" "StaffSchedule" LEFT JOIN "ten
+       87 |  3212 |    0.03 |   3212 | SELECT DISTINCT "distinctAlias"."StaffProfile_id" AS "ids_StaffProfile_id" FROM (SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."titl
+       85 |  1626 |    0.05 |   1626 | SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."address" AS "Branch_address", "Branch"."city_id" AS "Branch_city_id",
+       83 |   596 |    0.14 |    596 | INSERT INTO "appointment_status_logs"("id", "status", "triggered_by", "created_at", "appointmentId", "tenantId") VALUES (DEFAULT, $1, $2, DEFAULT, $3,
+       80 |  1586 |    0.05 |   1586 | SELECT $4 AS "row_exists" FROM (SELECT $5 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $6 FROM "staff_schedules" "StaffSchedule" LEFT JOIN "sta
+       75 |   596 |    0.13 |    596 | INSERT INTO "appointment_history"("id", "changed_by", "old_status", "new_status", "note", "created_at", "appointmentId", "tenantId") VALUES (DEFAULT, 
+       69 |  1626 |    0.04 |   1626 | SELECT $3 AS "row_exists" FROM (SELECT $4 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $5 FROM "branches" "Branch" LEFT JOIN "tenants" "Branch_
+       68 |  1626 |    0.04 |   1626 | SELECT DISTINCT "distinctAlias"."Branch_id" AS "ids_Branch_id" FROM (SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."
+       67 |  1586 |    0.04 |   1586 | SELECT DISTINCT "distinctAlias"."TenantSetting_id" AS "ids_TenantSetting_id" FROM (SELECT "TenantSetting"."id" AS "TenantSetting_id", "TenantSetting".
+       64 |   350 |    0.18 |   1500 | SELECT "UserRole"."id" AS "UserRole_id", "UserRole"."assigned_at" AS "UserRole_assigned_at", "UserRole"."userId" AS "UserRole_userId", "UserRole"."rol
+       56 |  1586 |    0.04 |   1586 | SELECT "Branch"."id" AS "Branch_id", "Branch"."timezone" AS "Branch_timezone" FROM "branches" "Branch" LEFT JOIN "tenants" "Branch__Branch_tenant" ON 
+       56 |  1049 |    0.05 |  23078 | SELECT "FeatureDefinition"."id" AS "FeatureDefinition_id", "FeatureDefinition"."feature_key" AS "FeatureDefinition_feature_key", "FeatureDefinition"."
+       55 |  1586 |    0.03 |   1586 | SELECT "TenantSetting"."id" AS "TenantSetting_id", "TenantSetting"."enforce_staff_working_hours" AS "TenantSetting_enforce_staff_working_hours" FROM "
+(25 rows)
+

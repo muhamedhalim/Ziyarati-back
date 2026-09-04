@@ -1,0 +1,50 @@
+P0.3 — conflicting-data pre-check, all 43 guards x 4 live databases (2026-09-03)
+
+For each guard: present? / rows in the backing table / rows ALREADY violating the rule.
+
+guard                                             dev                 e2e                 perf                perf_t2             
+appointments_no_overlap                           present r=24 c=0    present r=32 c=0    present r=60015 c=0 present r=900000 c=0
+uq_refund_idem                                    present r=20 c=0    present r=0 c=0     present r=0 c=0     present r=0 c=0     
+uq_refund_gateway_id                              present r=20 c=0    present r=0 c=0     present r=0 c=0     present r=0 c=0     
+uq_txn_webhook_event                              present r=66 c=0    present r=0 c=0     present r=1 c=0     present r=0 c=0     
+uq_payments_appointment_pending                   present r=55 c=0    present r=0 c=0     present r=40013 c=0 present r=600000 c=0
+uq_settlement_adj_refund                          present r=0 c=0     present r=0 c=0     present r=0 c=0     present r=0 c=0     
+UQ_resource_purchases_tenant_idempotency          ABSENT  r=0 c=0     present r=0 c=0     present r=0 c=0     no-table            
+UQ_sub_invoice_webhook_event                      ABSENT  r=1 c=0     present r=0 c=0     present r=0 c=0     column-absent       
+UQ_sub_invoice_period                             ABSENT  r=1 c=0     present r=0 c=0     present r=0 c=0     column-absent       
+UQ_tenant_entitlement_ledger_source_purchase      present r=0 c=0     present r=0 c=0     present r=0 c=0     no-table            
+UQ_tenant_entitlement_ledger_source_refund        present r=0 c=0     present r=0 c=0     present r=0 c=0     no-table            
+UQ_integration_inbound_events_replay              ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+uq_message_wa_id                                  present r=3 c=0     present r=0 c=0     present r=160000 c=0present r=2400000 c=0
+uq_message_status                                 present r=3 c=0     present r=0 c=0     present r=0 c=0     present r=0 c=0     
+UQ_integration_oauth_states_state                 ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+uq_ai_tool_call_idem                              present r=127 c=0   present r=0 c=0     present r=0 c=0     present r=0 c=0     
+uq_user_email_global                              ABSENT  r=52 c=0    present r=28 c=0    ABSENT  r=381 c=0   present r=3501 c=0  
+ck_user_email_lowercase                           ABSENT  r=52 c=0    present r=28 c=0    ABSENT  r=381 c=0   present r=3501 c=0  
+UQ_customers_tenant_email                         ABSENT  r=41 c=0    present r=31 c=0    present r=15012 c=0 present r=200000 c=0
+UQ_customers_tenant_national_id                   ABSENT  r=41 c=0    present r=31 c=0    present r=15012 c=0 column-absent       
+UQ_email_suppressions_tenant_email                ABSENT  r=0 c=0     present r=0 c=0     present r=0 c=0     no-table            
+UQ_email_logs_idempotency                         ABSENT  r=23 c=0    present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_notification_logs_source_ref                   ABSENT  r=3 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_scheduled_notifications_source_ref             ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_scheduled_notifications_provider_ref           ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_campaign_recipients_provider_ref               ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+uq_recipient_run_customer                         present r=0 c=0     present r=0 c=0     present r=0 c=0     present r=0 c=0     
+UQ_in_app_notifications_recipient_dedupe          ABSENT  r=9 c=0     present r=0 c=0     present r=0 c=0     no-table            
+UQ_subscription_usage_tenant_period_unsubscribed  ABSENT  r=207 c=189 present r=18 c=0    present r=50 c=0    ABSENT  r=0 c=0     
+uq_dashboard_metric                               present r=234 c=0   present r=0 c=0     present r=357 c=0   present r=3500 c=0  
+UQ_integration_id_map_external                    ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_integration_id_map_internal                    ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_integration_conflicts_open                     ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_integration_sync_active                        ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_integration_staff_provisioning_open            ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_integration_webhook_endpoints_connection       ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_billing_upgrade_requests_active_target         present r=0 c=0     present r=0 c=0     present r=0 c=0     present r=0 c=0     
+UQ_tenant_usage_limit_overrides_active            present r=0 c=0     present r=0 c=0     present r=0 c=0     present r=0 c=0     
+UQ_feature_definitions_key                        ABSENT  r=22 c=0    present r=22 c=0    ABSENT  r=22 c=0    present r=10 c=0    
+UQ_support_tickets_ticket_number                  ABSENT  r=4 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+UQ_customer_segments_tenant_name_live             ABSENT  r=0 c=0     present r=0 c=0     present r=0 c=0     no-table            
+uq_ai_kb_source_content_hash                      ABSENT  r=2 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+uq_ai_batch_item_source_chunk                     ABSENT  r=0 c=0     present r=0 c=0     ABSENT  r=0 c=0     present r=0 c=0     
+
+Only ONE conflict in 172 checks: UQ_subscription_usage_tenant_period_unsubscribed on dev, 189 excess rows.

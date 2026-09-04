@@ -110,6 +110,40 @@ export function sweepReportingThresholds(steps) {
     t[`http_req_duration{step:${s}}`] = ['p(95)<600000'];
     t[`http_req_failed{step:${s}}`] = ['rate<=1'];
     t[`endpoint_latency{step:${s}}`] = ['p(95)<600000'];
+    // Per-endpoint AND per-step, for the SLO-bearing endpoints only.
+    //
+    // Without this cross product a sweep can say "p95 degraded at rate N" but
+    // not "which endpoint class breached its own SLO at rate N" — and the SLOs
+    // in LATENCY above are per class, not global, so the aggregate cannot be
+    // scored against them at all. Restricted to the eight endpoints that carry
+    // a class SLO: the full 47-endpoint cross product would be ~470 sub-metrics
+    // for no extra answer.
+    for (const e of SLO_ENDPOINTS) {
+      t[`endpoint_latency{step:${s},endpoint:${e}}`] = ['p(95)<600000'];
+    }
   }
   return t;
 }
+
+/** The endpoints that carry a class SLO, and the class each is measured against. */
+export const SLO_ENDPOINTS = [
+  'dashboard',
+  'appointments:list',
+  'staff:list',
+  'activity:list',
+  'crm:search:term',
+  'availability:windows',
+  'appointments:create',
+  'auth:login',
+];
+
+export const SLO_CLASS_OF = {
+  'dashboard': 'cached_read',
+  'appointments:list': 'list_read',
+  'staff:list': 'list_read',
+  'activity:list': 'list_read',
+  'crm:search:term': 'search_read',
+  'availability:windows': 'availability',
+  'appointments:create': 'write',
+  'auth:login': 'auth',
+};

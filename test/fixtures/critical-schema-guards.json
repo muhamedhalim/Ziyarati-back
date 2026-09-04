@@ -1,0 +1,306 @@
+{
+  "generatedBy": "P0.3 (2026-09-03) — derived from a database built by running the full migration chain from empty on PostgreSQL 18.",
+  "guards": [
+    {
+      "severity": "P0",
+      "name": "appointments_no_overlap",
+      "kind": "constraint",
+      "purpose": "double-booking guard (the only race-safe one)",
+      "definition": "EXCLUDE USING gist (\"staffId\" WITH =, tstzrange(start_at, end_at, '[)'::text) WITH &&) WHERE (((status <> ALL (ARRAY['CANCELLED'::appointments_status_enum, 'NO_SHOW'::appointments_status_enum])) AND (deleted_at IS NULL)))"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_refund_idem",
+      "kind": "index",
+      "purpose": "refund idempotency — duplicate refunds if lost",
+      "definition": "CREATE UNIQUE INDEX uq_refund_idem ON public.refunds USING btree (\"tenantId\", idempotency_key) WHERE (idempotency_key IS NOT NULL)"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_refund_gateway_id",
+      "kind": "index",
+      "purpose": "refund gateway id uniqueness",
+      "definition": "CREATE UNIQUE INDEX uq_refund_gateway_id ON public.refunds USING btree (gateway_refund_id) WHERE (gateway_refund_id IS NOT NULL)"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_txn_webhook_event",
+      "kind": "index",
+      "purpose": "payment webhook dedup — double-credit if lost",
+      "definition": "CREATE UNIQUE INDEX uq_txn_webhook_event ON public.transactions USING btree (gateway_transaction_id) WHERE (((type)::text = 'webhook'::text) AND (gateway_transaction_id IS NOT NULL))"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_payments_appointment_pending",
+      "kind": "index",
+      "purpose": "one pending payment per appointment",
+      "definition": "CREATE UNIQUE INDEX uq_payments_appointment_pending ON public.payments USING btree (\"appointmentId\") WHERE ((status = 'PENDING'::payments_status_enum) AND (\"appointmentId\" IS NOT NULL))"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_settlement_adj_refund",
+      "kind": "index",
+      "purpose": "settlement adjustment dedup",
+      "definition": "CREATE UNIQUE INDEX uq_settlement_adj_refund ON public.settlement_adjustments USING btree (refund_id) WHERE (refund_id IS NOT NULL)"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_resource_purchases_tenant_idempotency",
+      "kind": "index",
+      "purpose": "resource purchase idempotency (charges money)",
+      "definition": "CREATE UNIQUE INDEX \"UQ_resource_purchases_tenant_idempotency\" ON public.resource_purchases USING btree (\"tenantId\", idempotency_key)"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_sub_invoice_webhook_event",
+      "kind": "index",
+      "purpose": "billing webhook dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_sub_invoice_webhook_event\" ON public.subscription_invoices USING btree (webhook_event_id) WHERE (webhook_event_id IS NOT NULL)"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_sub_invoice_period",
+      "kind": "index",
+      "purpose": "one non-void invoice per period",
+      "definition": "CREATE UNIQUE INDEX \"UQ_sub_invoice_period\" ON public.subscription_invoices USING btree (subscription_id, period_start) WHERE (status <> 'VOID'::subscription_invoices_status_enum)"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_tenant_entitlement_ledger_source_purchase",
+      "kind": "index",
+      "purpose": "entitlement ledger purchase dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_tenant_entitlement_ledger_source_purchase\" ON public.tenant_entitlement_ledger USING btree (\"sourcePurchaseId\") WHERE ((\"sourcePurchaseId\" IS NOT NULL) AND ((direction)::text = 'grant'::text))"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_tenant_entitlement_ledger_source_refund",
+      "kind": "index",
+      "purpose": "entitlement ledger refund dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_tenant_entitlement_ledger_source_refund\" ON public.tenant_entitlement_ledger USING btree (\"sourceRefundId\") WHERE (\"sourceRefundId\" IS NOT NULL)"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_integration_inbound_events_replay",
+      "kind": "index",
+      "purpose": "inbound webhook replay protection",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_inbound_events_replay\" ON public.integration_inbound_events USING btree (\"tenantId\", \"endpointId\", provider_event_id)"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_message_wa_id",
+      "kind": "index",
+      "purpose": "WhatsApp message dedup",
+      "definition": "CREATE UNIQUE INDEX uq_message_wa_id ON public.messages USING btree (\"tenantId\", wa_message_id) WHERE (wa_message_id IS NOT NULL)"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_message_status",
+      "kind": "index",
+      "purpose": "WhatsApp status-callback dedup",
+      "definition": "CREATE UNIQUE INDEX uq_message_status ON public.message_status_logs USING btree (\"messageId\", status)"
+    },
+    {
+      "severity": "P0",
+      "name": "UQ_integration_oauth_states_state",
+      "kind": "index",
+      "purpose": "OAuth state replay protection",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_oauth_states_state\" ON public.integration_oauth_states USING btree (state)"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_ai_tool_call_idem",
+      "kind": "index",
+      "purpose": "AI tool-call idempotency",
+      "definition": "CREATE UNIQUE INDEX uq_ai_tool_call_idem ON public.ai_tool_calls USING btree (tenant_id, idempotency_key)"
+    },
+    {
+      "severity": "P0",
+      "name": "uq_user_email_global",
+      "kind": "index",
+      "purpose": "global unique login email",
+      "definition": "CREATE UNIQUE INDEX uq_user_email_global ON public.users USING btree (email) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL))"
+    },
+    {
+      "severity": "P0",
+      "name": "ck_user_email_lowercase",
+      "kind": "constraint",
+      "purpose": "email normalisation (pairs with the above)",
+      "definition": "CHECK (((email IS NULL) OR ((email)::text = lower((email)::text))))"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_customers_tenant_email",
+      "kind": "index",
+      "purpose": "one customer per tenant email",
+      "definition": "CREATE UNIQUE INDEX \"UQ_customers_tenant_email\" ON public.customers USING btree (\"tenantId\", email) WHERE (deleted_at IS NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_customers_tenant_national_id",
+      "kind": "index",
+      "purpose": "one customer per tenant national id",
+      "definition": "CREATE UNIQUE INDEX \"UQ_customers_tenant_national_id\" ON public.customers USING btree (\"tenantId\", national_id) WHERE ((national_id IS NOT NULL) AND (deleted_at IS NULL))"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_email_suppressions_tenant_email",
+      "kind": "index",
+      "purpose": "unsubscribe suppression (compliance)",
+      "definition": "CREATE UNIQUE INDEX \"UQ_email_suppressions_tenant_email\" ON public.email_suppressions USING btree (tenant_id, email)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_email_logs_idempotency",
+      "kind": "index",
+      "purpose": "outbound email idempotency",
+      "definition": "CREATE UNIQUE INDEX \"UQ_email_logs_idempotency\" ON public.email_logs USING btree (idempotency_key)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_notification_logs_source_ref",
+      "kind": "index",
+      "purpose": "notification dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_notification_logs_source_ref\" ON public.notification_logs USING btree (source_ref) WHERE (source_ref IS NOT NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_scheduled_notifications_source_ref",
+      "kind": "index",
+      "purpose": "scheduled notification dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_scheduled_notifications_source_ref\" ON public.scheduled_notifications USING btree (source_ref) WHERE (source_ref IS NOT NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_scheduled_notifications_provider_ref",
+      "kind": "index",
+      "purpose": "provider ref dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_scheduled_notifications_provider_ref\" ON public.scheduled_notifications USING btree (provider_ref) WHERE (provider_ref IS NOT NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_campaign_recipients_provider_ref",
+      "kind": "index",
+      "purpose": "campaign provider ref dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_campaign_recipients_provider_ref\" ON public.campaign_recipients USING btree (provider_ref) WHERE (provider_ref IS NOT NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "uq_recipient_run_customer",
+      "kind": "index",
+      "purpose": "one campaign recipient per run",
+      "definition": "CREATE UNIQUE INDEX uq_recipient_run_customer ON public.campaign_recipients USING btree (\"runId\", \"customerId\")"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_in_app_notifications_recipient_dedupe",
+      "kind": "index",
+      "purpose": "in-app notification dedup",
+      "definition": "CREATE UNIQUE INDEX \"UQ_in_app_notifications_recipient_dedupe\" ON public.in_app_notifications USING btree (recipient_user_id, dedupe_key) WHERE (dedupe_key IS NOT NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_subscription_usage_tenant_period_unsubscribed",
+      "kind": "index",
+      "purpose": "one usage row per tenant period",
+      "definition": "CREATE UNIQUE INDEX \"UQ_subscription_usage_tenant_period_unsubscribed\" ON public.subscription_usage USING btree (tenant_id, period_month) WHERE (subscription_id IS NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "uq_dashboard_metric",
+      "kind": "index",
+      "purpose": "dashboard metric dedup",
+      "definition": "CREATE UNIQUE INDEX uq_dashboard_metric ON public.dashboard_metrics USING btree (\"tenantId\", metric_key, period)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_integration_id_map_external",
+      "kind": "index",
+      "purpose": "sync identity map (external)",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_id_map_external\" ON public.integration_id_map USING btree (\"tenantId\", \"connectionId\", resource_type, external_id) WHERE (unlinked_at IS NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_integration_id_map_internal",
+      "kind": "index",
+      "purpose": "sync identity map (internal)",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_id_map_internal\" ON public.integration_id_map USING btree (\"tenantId\", \"connectionId\", resource_type, internal_resource_id) WHERE (unlinked_at IS NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_integration_conflicts_open",
+      "kind": "index",
+      "purpose": "one open conflict per resource",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_conflicts_open\" ON public.integration_conflicts USING btree (\"tenantId\", \"connectionId\", resource_type, external_id) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'resolving'::character varying, 'stale'::character varying])::text[]))"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_integration_sync_active",
+      "kind": "index",
+      "purpose": "one active sync per resource",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_sync_active\" ON public.integration_sync_jobs USING btree (\"tenantId\", \"connectionId\", resource_type, direction) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[]))"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_integration_staff_provisioning_open",
+      "kind": "index",
+      "purpose": "one open provisioning per staff",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_staff_provisioning_open\" ON public.integration_staff_provisioning USING btree (\"tenantId\", \"connectionId\", external_id) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'ambiguous'::character varying])::text[]))"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_integration_webhook_endpoints_connection",
+      "kind": "index",
+      "purpose": "one webhook endpoint per connection",
+      "definition": "CREATE UNIQUE INDEX \"UQ_integration_webhook_endpoints_connection\" ON public.integration_webhook_endpoints USING btree (\"connectionId\")"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_billing_upgrade_requests_active_target",
+      "kind": "index",
+      "purpose": "one active upgrade request per target",
+      "definition": "CREATE UNIQUE INDEX \"UQ_billing_upgrade_requests_active_target\" ON public.billing_upgrade_requests USING btree (\"tenantId\", COALESCE(feature_key, usage_metric)) WHERE ((status)::text = ANY ((ARRAY['pending_review'::character varying, 'awaiting_owner_approval'::character varying, 'payment_processing'::character varying, 'payment_failed'::character varying])::text[]))"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_tenant_usage_limit_overrides_active",
+      "kind": "index",
+      "purpose": "one active override per limit",
+      "definition": "CREATE UNIQUE INDEX \"UQ_tenant_usage_limit_overrides_active\" ON public.tenant_usage_limit_overrides USING btree (\"tenantId\", metric) WHERE (is_active = true)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_feature_definitions_key",
+      "kind": "index",
+      "purpose": "feature key uniqueness",
+      "definition": "CREATE UNIQUE INDEX \"UQ_feature_definitions_key\" ON public.feature_definitions USING btree (feature_key)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_support_tickets_ticket_number",
+      "kind": "constraint",
+      "purpose": "ticket number uniqueness",
+      "definition": "UNIQUE (ticket_number)"
+    },
+    {
+      "severity": "P1",
+      "name": "UQ_customer_segments_tenant_name_live",
+      "kind": "index",
+      "purpose": "segment name uniqueness",
+      "definition": "CREATE UNIQUE INDEX \"UQ_customer_segments_tenant_name_live\" ON public.customer_segments USING btree (\"tenantId\", name) WHERE (deleted_at IS NULL)"
+    },
+    {
+      "severity": "P1",
+      "name": "uq_ai_kb_source_content_hash",
+      "kind": "index",
+      "purpose": "knowledge-base content dedup",
+      "definition": "CREATE UNIQUE INDEX uq_ai_kb_source_content_hash ON public.ai_knowledge_bases USING btree (\"tenantId\", \"agentId\", COALESCE(source_id, '00000000-0000-0000-0000-000000000000'::uuid), content_hash)"
+    },
+    {
+      "severity": "P1",
+      "name": "uq_ai_batch_item_source_chunk",
+      "kind": "index",
+      "purpose": "AI batch item dedup",
+      "definition": "CREATE UNIQUE INDEX uq_ai_batch_item_source_chunk ON public.ai_batch_items USING btree (batch_job_id, source_type, source_id, chunk_index)"
+    }
+  ]
+}

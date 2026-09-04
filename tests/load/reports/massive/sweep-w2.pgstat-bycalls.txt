@@ -1,0 +1,29 @@
+ calls | total_ms | mean_ms |  rows   |                                                                         query                                                                          
+-------+----------+---------+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------
+ 60292 |      799 |    0.01 |   60292 | SELECT $2 FROM ONLY "public"."users" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x
+ 32014 |    20835 |    0.65 | 2973938 | SELECT "u"."id" AS "userId", "u"."is_active" AS "userIsActive", "u"."email" AS "userEmail", "u"."full_name" AS "userFullName", "t"."id" AS "tenantId",
+ 16562 |      450 |    0.03 |   16562 | SELECT DISTINCT "distinctAlias"."StaffProfile_id" AS "ids_StaffProfile_id" FROM (SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."titl
+ 16562 |      571 |    0.03 |   16562 | SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."title" AS "StaffProfile_title", "StaffProfile"."bio" AS "StaffProfile_bio", "StaffPro
+ 11546 |       64 |    0.01 |       0 | SELECT "StaffTimeOff"."id" AS "StaffTimeOff_id", "StaffTimeOff"."start_date" AS "StaffTimeOff_start_date", "StaffTimeOff"."end_date" AS "StaffTimeOff_
+ 11546 |      347 |    0.03 |   11546 | SELECT DISTINCT "distinctAlias"."Branch_id" AS "ids_Branch_id" FROM (SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."
+ 11546 |      110 |    0.01 |       0 | SELECT "h"."id" AS "h_id", "h"."name" AS "h_name", "h"."date" AS "h_date", "h"."is_recurring" AS "h_is_recurring", "h"."created_at" AS "h_created_at",
+ 11546 |      126 |    0.01 |       0 | SELECT "b"."id" AS "b_id", "b"."start_time" AS "b_start_time", "b"."end_time" AS "b_end_time", "b"."reason" AS "b_reason", "b"."created_at" AS "b_crea
+ 11546 |     1953 |    0.17 |    4320 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+ 11546 |     1775 |    0.15 |   11546 | SELECT "WorkingHour"."id" AS "WorkingHour_id", "WorkingHour"."day_of_week" AS "WorkingHour_day_of_week", "WorkingHour"."start_time" AS "WorkingHour_st
+ 11546 |      108 |    0.01 |       0 | SELECT "CalendarSlot"."id" AS "CalendarSlot_id", "CalendarSlot"."start_time" AS "CalendarSlot_start_time", "CalendarSlot"."end_time" AS "CalendarSlot_
+ 11546 |       93 |    0.01 |       0 | SELECT $5 AS "row_exists" FROM (SELECT $6 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $7 FROM "staff_time_off" "StaffTimeOff" LEFT JOIN "staff
+ 11546 |      427 |    0.04 |   11546 | SELECT $3 AS "row_exists" FROM (SELECT $4 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $5 FROM "branches" "Branch" LEFT JOIN "tenants" "Branch_
+ 11546 |      508 |    0.04 |   11546 | SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."address" AS "Branch_address", "Branch"."city_id" AS "Branch_city_id",
+ 11546 |     2297 |    0.20 |   34638 | SELECT "schedule"."id" AS "schedule_id", "schedule"."day_of_week" AS "schedule_day_of_week", "schedule"."start_time" AS "schedule_start_time", "schedu
+ 10419 |       65 |    0.01 |       0 | SELECT "FeaturePlan"."id" AS "FeaturePlan_id", "FeaturePlan"."feature_key" AS "FeaturePlan_feature_key", "FeaturePlan"."plan_id" AS "FeaturePlan_plan_
+ 10419 |      495 |    0.05 |  229218 | SELECT "FeatureDefinition"."id" AS "FeatureDefinition_id", "FeatureDefinition"."feature_key" AS "FeatureDefinition_feature_key", "FeatureDefinition"."
+ 10419 |      266 |    0.03 |       0 | SELECT "FeatureFlag"."id" AS "FeatureFlag_id", "FeatureFlag"."feature_key" AS "FeatureFlag_feature_key", "FeatureFlag"."is_enabled" AS "FeatureFlag_is
+ 10232 |       11 |    0.00 |       0 | START TRANSACTION
+ 10232 |       12 |    0.00 |       0 | COMMIT
+  7231 |      318 |    0.04 |    7231 | SELECT DISTINCT "distinctAlias"."TenantSetting_id" AS "ids_TenantSetting_id" FROM (SELECT "TenantSetting"."id" AS "TenantSetting_id", "TenantSetting".
+  7231 |      267 |    0.04 |    7231 | SELECT "TenantSetting"."id" AS "TenantSetting_id", "TenantSetting"."booking_confirmation" AS "TenantSetting_booking_confirmation", "TenantSetting"."pa
+  6168 |      253 |    0.04 |    6168 | SELECT DISTINCT "distinctAlias"."Appointment_id" AS "ids_Appointment_id" FROM (SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at"
+  6168 |      937 |    0.15 |    6168 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+  5016 |      689 |    0.14 |       0 | INSERT INTO "subscription_usage"("id", "tenant_id", "subscription_id", "period_month", "ai_tokens_used", "whatsapp_messages_used", "appointments_used"
+(25 rows)
+

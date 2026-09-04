@@ -1,0 +1,49 @@
+=== 32 OBJECTS FUNCTIONALLY LOST TO SYNCHRONIZE ===
+TYPE               OBJECT                                        MIGRATION  BOOTSTRAP
+UNIQUE INDEX       uq_ai_batch_item_source_chunk                 yes        none
+UNIQUE INDEX       uq_ai_kb_source_content_hash                  yes        none
+UNIQUE INDEX       UQ_campaign_recipients_provider_ref           yes        none
+UNIQUE INDEX       UQ_email_suppressions_tenant_email            yes        none
+UNIQUE INDEX       UQ_in_app_notifications_recipient_dedupe      yes        none
+UNIQUE INDEX       UQ_integration_conflicts_open                 yes        none
+UNIQUE INDEX       UQ_integration_id_map_external                yes        none
+UNIQUE INDEX       UQ_integration_id_map_internal                yes        none
+UNIQUE INDEX       UQ_integration_inbound_events_replay          yes        none
+UNIQUE INDEX       UQ_integration_oauth_states_state             yes        none
+UNIQUE INDEX       UQ_integration_staff_provisioning_open        yes        none
+UNIQUE INDEX       UQ_integration_sync_active                    yes        none
+UNIQUE INDEX       UQ_integration_webhook_endpoints_connection   yes        none
+UNIQUE INDEX       UQ_notification_logs_source_ref               yes        none
+CHECK              CHK_resource_price_catalog_max_quantity       NO         none
+CHECK              CHK_resource_price_catalog_min_quantity       NO         none
+CHECK              CHK_resource_price_catalog_unit_price_minor   NO         none
+CHECK              CHK_resource_purchases_delta_units            NO         none
+CHECK              CHK_resource_purchases_quantity               NO         none
+CHECK              CHK_resource_purchases_total_minor            NO         none
+CHECK              CHK_resource_purchases_unit_price_minor       NO         none
+CHECK              CHK_resource_purchases_unit_size              NO         none
+UNIQUE INDEX       UQ_resource_purchases_tenant_idempotency      yes        none
+UNIQUE INDEX       UQ_scheduled_notifications_provider_ref       yes        none
+UNIQUE INDEX       UQ_scheduled_notifications_source_ref         yes        none
+UNIQUE INDEX       UQ_sub_invoice_period                         yes        none
+UNIQUE INDEX       UQ_sub_invoice_webhook_event                  yes        none
+CHECK              CHK_subscription_plans_custom_cycle_value_posiyes        none
+UNIQUE INDEX       UQ_subscription_usage_tenant_period_unsubscribyes        none
+UNIQUE CONSTRAINT  UQ_support_tickets_ticket_number              NO         none
+CHECK              ck_user_email_lowercase                       yes        none
+UNIQUE INDEX       uq_user_email_global                          yes        none
+
+=== 11 SURVIVE BUT WERE RENAMED / RECREATED ===
+UNIQUE INDEX       UQ_customer_segments_tenant_name_live         yes        none
+UNIQUE INDEX       UQ_customers_tenant_email                     yes        none
+UNIQUE INDEX       UQ_customers_tenant_national_id               yes        none
+UNIQUE INDEX       UQ_email_logs_idempotency                     yes        none
+UNIQUE INDEX       UQ_feature_definitions_key                    yes        none
+UNIQUE INDEX       UQ_feature_deps_key_req                       NO         none
+UNIQUE CONSTRAINT  UQ_feature_deps_key_req                       NO         none
+UNIQUE INDEX       UQ_feature_plans_key_plan                     NO         none
+UNIQUE CONSTRAINT  UQ_feature_plans_key_plan                     NO         none
+UNIQUE INDEX       UQ_resource_price_catalog_item_key            yes        none
+UNIQUE INDEX       UQ_support_tickets_ticket_number              NO         none
+
+=== 0 EXIST WITH NO MIGRATION — BOOTSTRAP IS THE ONLY SOURCE ===

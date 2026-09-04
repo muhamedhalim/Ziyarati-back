@@ -218,3 +218,76 @@ SELECT 'appointments in future', count(*) FROM appointments WHERE start_at >= no
 UNION ALL
 SELECT 'appointments today',     count(*) FROM appointments
   WHERE start_at >= date_trunc('day', now()) AND start_at < date_trunc('day', now()) + INTERVAL '1 day';
+
+-- ---------------------------------------------------------------------------
+-- 8. MULTI-TENANT LOGIN COVERAGE  (added for the massive-scale phase)
+--
+--    The perf seed gives real, known-password logins to only the FIRST FIVE
+--    tenants (`perf.{owner,receptionist,doctor}.t{0..4}`). Every other tenant
+--    has users, but they carry a DIFFERENT bcrypt hash whose plaintext this
+--    suite does not hold — so a "multi-tenant" run was really a 5-tenant run,
+--    and the tenant-isolation and hotspot scenarios had almost no spread to
+--    measure. `pg_stat_activity` cannot tell you that; only the account list can.
+--
+--    This promotes one Clinic Owner and one Receptionist in EVERY remaining
+--    perf tenant to the same credentials, by:
+--      a) copying the EXISTING hash from perf.owner.t0 — the plaintext is never
+--         needed, read, or written here, and no new secret is introduced; and
+--      b) renaming them onto the `perf.{role}.t{N}@t1.local.test` pattern that
+--         `helpers/auth.js#accountList()` already generates, so the helper works
+--         unchanged at TEST_TENANTS=50.
+--
+--    Idempotent (guarded on the target email not already existing) and scoped
+--    strictly to slugs matching `perf-t1-tenant-%`.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  known_hash TEXT;
+BEGIN
+  SELECT password_hash INTO known_hash
+  FROM users WHERE email = 'perf.owner.t0@t1.local.test';
+  IF known_hash IS NULL THEN
+    RAISE NOTICE 'perf.owner.t0 missing - skipping multi-tenant login promotion';
+    RETURN;
+  END IF;
+
+  -- One owner + one receptionist per tenant, chosen deterministically (lowest
+  -- id) so a re-run picks the same person rather than churning the dataset.
+  WITH target AS (
+    SELECT DISTINCT ON (t.id, r.name)
+           u.id AS user_id,
+           r.name AS role_name,
+           split_part(t.slug, '-', 4) AS tenant_ix
+    FROM tenants t
+    JOIN users u  ON u."tenantId" = t.id
+    JOIN user_roles ur ON ur."userId" = u.id
+    JOIN roles r  ON r.id = ur."roleId"
+    WHERE t.slug LIKE 'perf-t1-tenant-%'
+      AND r.name IN ('Clinic Owner', 'Receptionist')
+      AND u.email LIKE 'perf.t1.user%'
+    ORDER BY t.id, r.name, u.id
+  )
+  UPDATE users u
+  SET email = CASE target.role_name
+                WHEN 'Clinic Owner' THEN 'perf.owner.t'        || target.tenant_ix || '@t1.local.test'
+                ELSE                     'perf.receptionist.t' || target.tenant_ix || '@t1.local.test'
+              END,
+      password_hash = known_hash,
+      is_active = true
+  FROM target
+  WHERE u.id = target.user_id
+    AND NOT EXISTS (
+      SELECT 1 FROM users x
+      WHERE x.email = CASE target.role_name
+                        WHEN 'Clinic Owner' THEN 'perf.owner.t'        || target.tenant_ix || '@t1.local.test'
+                        ELSE                     'perf.receptionist.t' || target.tenant_ix || '@t1.local.test'
+                      END
+    );
+END $$;
+
+SELECT 'loggable owner accounts'        AS check, count(*) FROM users WHERE email LIKE 'perf.owner.t%@t1.local.test'
+UNION ALL
+SELECT 'loggable receptionist accounts',       count(*) FROM users WHERE email LIKE 'perf.receptionist.t%@t1.local.test'
+UNION ALL
+SELECT 'distinct tenants covered',             count(DISTINCT "tenantId") FROM users
+  WHERE email LIKE 'perf.owner.t%@t1.local.test' OR email LIKE 'perf.receptionist.t%@t1.local.test';

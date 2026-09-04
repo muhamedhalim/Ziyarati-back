@@ -1,0 +1,116 @@
+[AiPgVector] "vector" extension is not available on this Postgres server. AI semantic search (RAG) requires it — install pgvector, or set AI_PGVECTOR_ENABLED=false to explicitly run on keyword-only retrieval. Continuing (non-production) — RAG falls back to keyword search.
+M-03: 0 already-expired non-terminal subscription(s) found — backfilling to PAST_DUE with a fresh grace window from now().
+M-03: backfilled 0 row(s) to PAST_DUE.
+FND-020: backfilled dlq_recorded_at for 0 existing dead-lettered recipient(s).
+InvoiceCurrency: per-tenant backfill report (0 tenant(s) affected):
+✓ ran 133 migrations from empty DB
+✗ ReadPathIndexes down drops IDX_appointments_tenant_start_at
+✓ ReadPathIndexes up recreates IDX_appointments_tenant_start_at
+✓ ReadPathIndexes second up run does not throw
+✓ M3 down (no data) is a harmless no-op
+✓ M3 up (no data) is a harmless no-op
+✓ M3 second up run does not throw
+✗ M2 down drops ai_execution_metrics.correlation_id
+✗ M2 down drops ai_execution_metrics.actor_user_id
+✗ M2 down drops IDX_aiexec_correlation
+✗ M1 down drops ai_tool_calls.correlation_id
+✗ M1 down drops ai_tool_calls.actor_user_id
+✗ M1 down drops ai_tool_calls.resource_tenant_id
+✗ M1 down drops idx_ai_tool_calls_correlation
+✗ M1 down drops idx_ai_tool_calls_actor
+✗ M1 down drops idx_ai_tool_calls_resource_tenant
+✗ M1 down drops idx_ai_tool_calls_retention
+✓ re-applied M1/M2/M3 (idempotent)
+✓ M1/M2 second up run does not throw
+✓ ai_batch_jobs table
+✓ ai_batch_items table
+✓ tenant_ai_deployments table
+✓ ai_cost_entries table (was missing in dev)
+✓ ai_batch_jobs.correlation_id
+✓ ai_batch_jobs.next_poll_at
+✓ ai_batch_jobs.poll_attempts
+✓ ai_batch_items.chunk_index
+✓ ai_cost_entries.execution_mode
+✓ ai_cost_entries.region
+✓ ai_cost_entries.batch_job_id
+✓ ai_cost_logs.batch_embedding_tokens
+✓ ai_batch_jobs.status default 'PREPARING'
+✓ ai_cost_entries.execution_mode default 'STANDARD'
+✓ uq_ai_batch_job_idempotency
+✓ uq_ai_batch_item_custom_id
+✓ uq_ai_batch_item_source_chunk index
+✓ idx_ai_batch_jobs_active index
+✓ idx_ai_cost_mode index
+✓ inserted job defaults status to PREPARING
+✓ duplicate (job, source, chunk_index) rejected
+✓ deleting a job CASCADE-deletes its items
+✓ legacy cost insert defaults execution_mode to STANDARD
+✗ down migration drops ai_batch_jobs
+✗ down migration drops tenant_ai_deployments
+✗ down migration drops ai_cost_entries.execution_mode
+✓ re-applied up migration (idempotent)
+✓ customers.opted_out_at
+✓ customers.opt_out_source
+✓ customers.opted_out_at is nullable (no backfill)
+✓ M-05 down does NOT drop customers.opted_out_at (R-DB6 — cease use, never drop)
+✓ M-05 down does NOT drop customers.opt_out_source (R-DB6)
+✓ re-applied M-05 (idempotent)
+✓ UQ_customers_tenant_email index exists and is valid
+✓ old global UQ_8536b8b85c06969f84f0c098b03 constraint dropped
+✗ M-01 down (no conflicts) restores UQ_8536b8b85c06969f84f0c098b03
+✗ M-01 down (no conflicts) drops UQ_customers_tenant_email
+✓ re-applied M-01 (idempotent)
+✗ M-01 down REFUSES rollback when a cross-tenant email duplicate exists
+✗ refusal message names the documented asymmetry and the conflicting email
+✓ refused rollback left UQ_customers_tenant_email intact (no partial/corrupt state)
+✓ refused rollback did NOT restore the old global constraint
+✓ UQ_sub_invoice_open_per_subscription index exists and is valid
+verify-migrations error: QueryFailedError: null value in column "period_start" of relation "subscription_invoices" violates not-null constraint
+    at PostgresQueryRunner.query (D:\projects\Ziyarati-full\Ziyarati-back\src\driver\postgres\PostgresQueryRunner.ts:345:19)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async DataSource.query (D:\projects\Ziyarati-full\Ziyarati-back\src\data-source\DataSource.ts:521:20)
+    at async main (D:\projects\Ziyarati-full\Ziyarati-back\scripts\verify-migrations.ts:541:3) {
+  query: "INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')",
+  parameters: [ 'verify-tenant-1788370606696', 'verify-sub-1788370606696' ],
+  driverError: error: null value in column "period_start" of relation "subscription_invoices" violates not-null constraint
+      at D:\projects\Ziyarati-full\Ziyarati-back\node_modules\pg\lib\client.js:646:17
+      at processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async PostgresQueryRunner.query (D:\projects\Ziyarati-full\Ziyarati-back\src\driver\postgres\PostgresQueryRunner.ts:274:25)
+      at async DataSource.query (D:\projects\Ziyarati-full\Ziyarati-back\src\data-source\DataSource.ts:521:20)
+      at async main (D:\projects\Ziyarati-full\Ziyarati-back\scripts\verify-migrations.ts:541:3) {
+    length: 419,
+    severity: 'ERROR',
+    code: '23502',
+    detail: 'Failing row contains (d3466738-b2a2-4005-b7d7-fa08c8f54e13, verify-tenant-1788370606696, verify-sub-1788370606696, 10.00, OPEN, null, null, null, null, null, null, null, null, 0, null, null, null).',
+    hint: undefined,
+    position: undefined,
+    internalPosition: undefined,
+    internalQuery: undefined,
+    where: undefined,
+    schema: 'public',
+    table: 'subscription_invoices',
+    column: 'period_start',
+    dataType: undefined,
+    constraint: undefined,
+    file: 'execMain.c',
+    line: '2213',
+    routine: 'ReportNotNullViolationError'
+  },
+  length: 419,
+  severity: 'ERROR',
+  code: '23502',
+  detail: 'Failing row contains (d3466738-b2a2-4005-b7d7-fa08c8f54e13, verify-tenant-1788370606696, verify-sub-1788370606696, 10.00, OPEN, null, null, null, null, null, null, null, null, 0, null, null, null).',
+  hint: undefined,
+  position: undefined,
+  internalPosition: undefined,
+  internalQuery: undefined,
+  where: undefined,
+  schema: 'public',
+  table: 'subscription_invoices',
+  column: 'period_start',
+  dataType: undefined,
+  constraint: undefined,
+  file: 'execMain.c',
+  line: '2213',
+  routine: 'ReportNotNullViolationError'
+}

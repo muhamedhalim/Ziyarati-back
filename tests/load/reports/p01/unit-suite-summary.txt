@@ -1,0 +1,26 @@
+FAIL src/rbac/rbac.constants.spec.ts
+  ● RBAC catalogue-coverage invariant (FND-010) › none of the three exception sets contain a stale entry (a slug that actually IS referenced elsewhere)
+FAIL src/modules/ai/tools/ai-tool-dispatch.clinic-questions.spec.ts
+  ● search_public_availability — never a dead end › caps daysAhead at the anonymous horizon however large the model asks for
+FAIL src/config/env.validation.spec.ts
+  ● env.validation › payments fail-fast (production) › FAILS the boot in production when the real provider has no credentials
+  ● env.validation › payments fail-fast (production) › names ONLY the missing variables, never values
+  ● env.validation › payments fail-fast (production) › boots in production once the essential payment variables are set
+  ● env.validation › payments fail-fast (production) › boots keyless outside production (Noop dev flow)
+  ● env.validation › payments fail-fast (production) › rejects an unknown PAYMENT_PROVIDER
+FAIL src/queue/failsafe-throttler-storage.spec.ts (6.761 s)
+  ● FailsafeThrottlerStorage › stays bounded under 100,000 distinct trackers while Redis is unavailable (SC-010) — no unbounded Map, no O(n²) timer-array blowup
+FAIL rbac/rbac.constants.spec.ts
+  ● RBAC catalogue-coverage invariant (FND-010) › none of the three exception sets contain a stale entry (a slug that actually IS referenced elsewhere)
+FAIL modules/ai/tools/ai-tool-dispatch.clinic-questions.spec.ts
+  ● search_public_availability — never a dead end › caps daysAhead at the anonymous horizon however large the model asks for
+FAIL config/env.validation.spec.ts
+  ● env.validation › payments fail-fast (production) › FAILS the boot in production when the real provider has no credentials
+  ● env.validation › payments fail-fast (production) › names ONLY the missing variables, never values
+  ● env.validation › payments fail-fast (production) › boots in production once the essential payment variables are set
+  ● env.validation › payments fail-fast (production) › boots keyless outside production (Noop dev flow)
+  ● env.validation › payments fail-fast (production) › rejects an unknown PAYMENT_PROVIDER
+FAIL queue/failsafe-throttler-storage.spec.ts (6.761 s)
+  ● FailsafeThrottlerStorage › stays bounded under 100,000 distinct trackers while Redis is unavailable (SC-010) — no unbounded Map, no O(n²) timer-array blowup
+Test Suites: 4 failed, 2 skipped, 430 passed, 434 of 436 total
+Tests:       8 failed, 59 skipped, 5872 passed, 5939 total

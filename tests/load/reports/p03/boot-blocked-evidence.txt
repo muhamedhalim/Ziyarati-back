@@ -1,0 +1,17 @@
+INTEGRITY GUARD BLOCKED BY EXISTING DATA — "messages wa_message_id unique" (ConversationsSchemaBootstrap): 
+
+readiness (blocked):  {"status":"degraded","database":{"status":"up"},"redis":{"status":"up","latencyMs":2},"schemaGuards":{"status":"degraded","requiredChecked":21,"requiredFailed":1}}
+messages before boot: 2
+messages after  boot: 2      <- RULE 9: nothing deleted
+uq_message_wa_id:     absent (correctly - it cannot be installed while duplicates exist)
+
+readiness (after the two conflicting rows were removed):
+                      {"status":"ok","database":{"status":"up"},"redis":{"status":"up","latencyMs":2},"schemaGuards":{"status":"ok","requiredChecked":21,"requiredFailed":0}}
+uq_message_wa_id:     installed
+SchemaGuard errors:   0
+
+OLD BEHAVIOUR on identical data, reconstructed verbatim and rolled back:
+  DELETE FROM messages a USING messages b
+   WHERE a.ctid > b.ctid AND a."tenantId" = b."tenantId"
+     AND a.wa_message_id = b.wa_message_id AND a.wa_message_id IS NOT NULL;
+  DELETE 1     -> would have left messages=1, one patient message destroyed, reported nowhere.

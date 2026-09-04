@@ -44,3 +44,13 @@ services:
       CONTEND_START: "${CONTEND_START:-}"
       SOAK_RELOGIN: "${SOAK_RELOGIN:-}"
       RELOGIN_AFTER_MS: "${RELOGIN_AFTER_MS:-}"
+      # Massive-scale phase knobs. Same rule as above: unlisted = silently ignored.
+      LEVELS: "${LEVELS:-}"
+      RAMP: "${RAMP:-}"
+      HOLD: "${HOLD:-}"
+      GAP: "${GAP:-}"
+      PROBE_RATE: "${PROBE_RATE:-}"
+      THINK_MS: "${THINK_MS:-}"
+      TENANT_SKEW: "${TENANT_SKEW:-}"
+      RUN_TAG: "${RUN_TAG:-}"
+      ISOLATION_PROBE: "${ISOLATION_PROBE:-}"

@@ -38,12 +38,33 @@
 # sole registered provider and its supports() is hardcoded true — so "no worker"
 # plus "no whatsapp_accounts rows" is the guarantee. Do not start the worker.
 
+#  -Workers N / -PoolMax N   Explicit knobs for the massive-scale phase's
+#                           API_CLUSTER_WORKERS and pool-sensitivity
+#                           experiments. Both default to "leave unset", so a
+#                           plain invocation is byte-identical to before: the
+#                           process count and pool size stay whatever .env and
+#                           the code defaults say. They are experiment
+#                           parameters, NOT recommended values — the connection
+#                           budget (Workers x PoolMax, plus the worker process
+#                           and any other consumer, against Postgres's own
+#                           max_connections) has to be recalculated for every
+#                           combination before it is used anywhere real.
+param(
+  [int]$Workers = 0,
+  [int]$PoolMax = 0
+)
+
 $ErrorActionPreference = 'Stop'
 
 $env:DATABASE_URL   = 'postgres://postgres:postgres@127.0.0.1:5434/ziyarati_perf'
 $env:REDIS_URL      = 'redis://127.0.0.1:6380'
 $env:PORT           = '3001'
 $env:NODE_ENV       = 'test'
+
+if ($Workers -gt 0) { $env:API_CLUSTER_WORKERS = "$Workers" }
+else { Remove-Item Env:\API_CLUSTER_WORKERS -ErrorAction SilentlyContinue }
+if ($PoolMax -gt 0) { $env:API_DB_POOL_MAX = "$PoolMax" }
+else { Remove-Item Env:\API_DB_POOL_MAX -ErrorAction SilentlyContinue }
 
 $env:TYPEORM_SYNCHRONIZE = 'false'
 $env:TYPEORM_LOGGING     = 'false'
@@ -62,7 +83,9 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $log  = Join-Path $PSScriptRoot 'reports\api.log'
 New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
 
-Write-Output "Starting API (load-test config) from $root"
+$cfg = "workers=$(if ($env:API_CLUSTER_WORKERS) { $env:API_CLUSTER_WORKERS } else { '1 (unset)' })" +
+       " poolMax=$(if ($env:API_DB_POOL_MAX) { $env:API_DB_POOL_MAX } else { 'from .env/default' })"
+Write-Output "Starting API (load-test config) from $root  [$cfg]"
 Start-Process -FilePath 'node' -ArgumentList 'dist/src/main' `
   -WorkingDirectory $root `
   -RedirectStandardOutput $log `

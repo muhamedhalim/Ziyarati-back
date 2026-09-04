@@ -1,0 +1,267 @@
+indexes:     A=454 B=381
+constraints: A=1474 B=1440
+
+### FUNCTIONALLY LOST INDEXES (77) — not present in B under ANY name
+  index   IDX_ai_agents_role
+           ai_agents (role)
+  index   idx_ai_batch_jobs_active
+           ai_batch_jobs (next_poll_at, status)  WHERE ((status)::text <> ALL ((ARRAY['COMPLETED'::character varying, 'FAILED'::character varying, 'EXPIRED'::character varying, 'CANCELLED'::character varying])::text[]))
+  index   idx_ai_batch_jobs_correlation
+           ai_batch_jobs (correlation_id)  WHERE (correlation_id IS NOT NULL)
+  index   idx_ai_batch_jobs_source
+           ai_batch_jobs (tenant_id, source_type, source_id)  WHERE (source_id IS NOT NULL)
+  index   IDX_ai_conversations_channel
+           ai_conversations (channel)
+  index   IDX_ai_memories_expires
+           ai_memories (expires_at)
+  index   idx_ai_metrics_attribution
+           ai_execution_metrics ("tenantId", feature, channel, created_at)
+  index   IDX_aiexec_correlation
+           ai_execution_metrics (correlation_id)  WHERE (correlation_id IS NOT NULL)
+  index   IDX_aiexec_created
+           ai_execution_metrics (created_at)
+  index   IDX_aiexec_tenant
+           ai_execution_metrics ("tenantId")
+  index   IDX_appointment_services_tenant_service
+           appointment_services ("tenantId", "serviceId")
+  index   IDX_audit_logs_action_trgm
+           audit_logs (action gin_trgm_ops)
+  index   IDX_audit_logs_entity_label_trgm
+           audit_logs (entity_label gin_trgm_ops)
+  index   idx_branches_city_active
+           branches (city_id)  WHERE (deleted_at IS NULL)
+  index   IDX_conversations_owner_type
+           conversations (owner_type)
+  index   IDX_customer_notes_conversation
+           customer_notes ("conversationId")
+  index   IDX_customers_tenant_birthday
+           customers ("tenantId", date_part('doy'::text, date_of_birth))  WHERE (date_of_birth IS NOT NULL)
+  index   IDX_feature_flags_tenant_source
+           feature_flags ("tenantId", source)
+  index   idx_password_resets_expires_at
+           password_resets (expires_at)
+  index   idx_password_resets_token_hash
+           password_resets (token_hash)
+  index   IDX_patient_action_links_tenant
+           patient_action_links ("tenantId")
+  index   IDX_payments_settlement_status
+           payments (settlement_status)
+  index   idx_refresh_tokens_expires_at
+           refresh_tokens (expires_at)
+  index   idx_refresh_tokens_family_active
+           refresh_tokens (family_id)  WHERE (revoked_at IS NULL)
+  index   idx_refresh_tokens_user_active
+           refresh_tokens ("userId")  WHERE (revoked_at IS NULL)
+  index   idx_service_prices_branch_active
+           service_prices ("branchId", is_active)
+  index   idx_staff_schedules_branch_active
+           staff_schedules ("branchId", is_active)
+  index   IDX_subscription_usage_tenant_period
+           subscription_usage (tenant_id, period_month)
+  index   IDX_users_email_trgm
+           users (email gin_trgm_ops)
+  index   IDX_users_full_name_trgm
+           users (full_name gin_trgm_ops)
+  index   IDX_whatsapp_contacts_ai_conversation
+           whatsapp_contacts (ai_conversation_id)
+  index   IDX_workflow_runs_tenant
+           workflow_runs ("tenantId")
+  index   IDX_workflows_tenant
+           workflows ("tenantId")
+  index   IX_api_keys_expires_at
+           api_keys (expires_at)
+  index   IX_api_keys_tenantId
+           api_keys ("tenantId")
+  index   IX_api_logs_api_key_id
+           api_logs (api_key_id)
+  index   IX_api_logs_created
+           api_logs (created_at)
+  index   IX_audit_logs_created_at
+           audit_logs (created_at)
+  index   IX_in_app_notifications_recipient_unread
+           in_app_notifications (recipient_user_id)  WHERE (read_at IS NULL)
+  index   IX_integration_conflicts_reason
+           integration_conflicts ("tenantId", reason, status)
+  index   IX_integration_idempotency_expires
+           integration_idempotency_keys (expires_at)
+  index   IX_integration_import_jobs_status
+           integration_import_jobs (status)
+  index   IX_integration_inbound_events_received
+           integration_inbound_events ("tenantId", received_at)
+  index   IX_notification_logs_created
+           notification_logs (created_at)
+  index   IX_notification_logs_tenant_created_status
+           notification_logs ("tenantId", created_at, status)
+  index   IX_notification_rules_tenant_trigger_active
+           notification_rules ("tenantId", trigger_event, is_active)
+  index   IX_scheduled_notifications_status_scheduled
+           scheduled_notifications (status, scheduled_at)
+  index   IX_scheduled_notifications_tenant_status_scheduled
+           scheduled_notifications ("tenantId", status, scheduled_at)
+  index   IX_subscriptions_ends_at
+           subscriptions (ends_at)
+  index   IX_subscriptions_status_ends_at
+           subscriptions (status, ends_at)
+  index   IX_tenant_approval_events_created_at
+           tenant_approval_events (created_at)
+  index   IX_tenants_approval_status
+           tenants (approval_status)
+  index   IX_tenants_created_at
+           tenants (created_at)
+  index   IX_verification_docs_pending
+           tenant_verification_documents ("tenantId")  WHERE ((status = 'PENDING'::tenant_verification_documents_status_enum) AND (deleted_at IS NULL))
+  index   IX_webhook_logs_created
+           webhook_logs (created_at)
+  index   IX_whatsapp_accounts_connection_status
+           whatsapp_accounts (connection_status)  WHERE (deleted_at IS NULL)
+  UNIQUE  uq_ai_batch_item_source_chunk
+           ai_batch_items (batch_job_id, source_type, source_id, chunk_index)
+  UNIQUE  uq_ai_kb_source_content_hash
+           ai_knowledge_bases ("tenantId", "agentId", COALESCE(source_id, '00000000-0000-0000-0000-000000000000'::uuid), content_hash)
+  UNIQUE  UQ_campaign_recipients_provider_ref
+           campaign_recipients (provider_ref)  WHERE (provider_ref IS NOT NULL)
+  UNIQUE  UQ_email_suppressions_tenant_email
+           email_suppressions (tenant_id, email)
+  UNIQUE  UQ_in_app_notifications_recipient_dedupe
+           in_app_notifications (recipient_user_id, dedupe_key)  WHERE (dedupe_key IS NOT NULL)
+  UNIQUE  UQ_integration_conflicts_open
+           integration_conflicts ("tenantId", "connectionId", resource_type, external_id)  WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'resolving'::character varying, 'stale'::character varying])::text[]))
+  UNIQUE  UQ_integration_id_map_external
+           integration_id_map ("tenantId", "connectionId", resource_type, external_id)  WHERE (unlinked_at IS NULL)
+  UNIQUE  UQ_integration_id_map_internal
+           integration_id_map ("tenantId", "connectionId", resource_type, internal_resource_id)  WHERE (unlinked_at IS NULL)
+  UNIQUE  UQ_integration_inbound_events_replay
+           integration_inbound_events ("tenantId", "endpointId", provider_event_id)
+  UNIQUE  UQ_integration_oauth_states_state
+           integration_oauth_states (state)
+  UNIQUE  UQ_integration_staff_provisioning_open
+           integration_staff_provisioning ("tenantId", "connectionId", external_id)  WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'ambiguous'::character varying])::text[]))
+  UNIQUE  UQ_integration_sync_active
+           integration_sync_jobs ("tenantId", "connectionId", resource_type, direction)  WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[]))
+  UNIQUE  UQ_integration_webhook_endpoints_connection
+           integration_webhook_endpoints ("connectionId")
+  UNIQUE  UQ_notification_logs_source_ref
+           notification_logs (source_ref)  WHERE (source_ref IS NOT NULL)
+  UNIQUE  UQ_resource_purchases_tenant_idempotency
+           resource_purchases ("tenantId", idempotency_key)
+  UNIQUE  UQ_scheduled_notifications_provider_ref
+           scheduled_notifications (provider_ref)  WHERE (provider_ref IS NOT NULL)
+  UNIQUE  UQ_scheduled_notifications_source_ref
+           scheduled_notifications (source_ref)  WHERE (source_ref IS NOT NULL)
+  UNIQUE  UQ_sub_invoice_period
+           subscription_invoices (subscription_id, period_start)  WHERE (status <> 'VOID'::subscription_invoices_status_enum)
+  UNIQUE  UQ_sub_invoice_webhook_event
+           subscription_invoices (webhook_event_id)  WHERE (webhook_event_id IS NOT NULL)
+  UNIQUE  UQ_subscription_usage_tenant_period_unsubscribed
+           subscription_usage (tenant_id, period_month)  WHERE (subscription_id IS NULL)
+  UNIQUE  uq_user_email_global
+           users (email)  WHERE ((deleted_at IS NULL) AND (email IS NOT NULL))
+
+### FUNCTIONALLY LOST CONSTRAINTS (50)
+  [c] resource_price_catalog.CHK_resource_price_catalog_max_quantity
+        CHECK (((max_quantity IS NULL) OR (max_quantity >= min_quantity)))
+  [c] resource_price_catalog.CHK_resource_price_catalog_min_quantity
+        CHECK ((min_quantity >= 1))
+  [c] resource_price_catalog.CHK_resource_price_catalog_unit_price_minor
+        CHECK ((unit_price_minor >= 0))
+  [c] resource_purchases.CHK_resource_purchases_delta_units
+        CHECK ((delta_units > 0))
+  [c] resource_purchases.CHK_resource_purchases_quantity
+        CHECK ((quantity > 0))
+  [c] resource_purchases.CHK_resource_purchases_total_minor
+        CHECK ((total_minor > 0))
+  [c] resource_purchases.CHK_resource_purchases_unit_price_minor
+        CHECK ((unit_price_minor > 0))
+  [c] resource_purchases.CHK_resource_purchases_unit_size
+        CHECK ((unit_size > 0))
+  [c] subscription_plans.CHK_subscription_plans_custom_cycle_value_positive
+        CHECK (((custom_cycle_value IS NULL) OR (custom_cycle_value > 0)))
+  [c] users.ck_user_email_lowercase
+        CHECK (((email IS NULL) OR ((email)::text = lower((email)::text))))
+  [f] ai_batch_items.ai_batch_items_batch_job_id_fkey
+        FOREIGN KEY (batch_job_id) REFERENCES ai_batch_jobs(id) ON DELETE CASCADE
+  [f] ai_batch_items.ai_batch_items_tenant_id_fkey
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+  [f] ai_batch_jobs.ai_batch_jobs_tenant_id_fkey
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+  [f] api_logs.FK_api_logs_api_key_id
+        FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+  [f] clinical_entry_revisions.FK_clinical_entry_revisions_changed_by
+        FOREIGN KEY ("changed_byId") REFERENCES users(id)
+  [f] customer_segments.FK_customer_segments_created_by
+        FOREIGN KEY ("created_byId") REFERENCES users(id) ON DELETE SET NULL
+  [f] customer_segments.FK_customer_segments_tenant
+        FOREIGN KEY ("tenantId") REFERENCES tenants(id) ON DELETE CASCADE
+  [f] patient_action_links.FK_patient_action_links_waitlist_offer
+        FOREIGN KEY (waitlist_offer) REFERENCES waitlist_offers(id)
+  [f] support_tickets.FK_support_tickets_tenant
+        FOREIGN KEY ("tenantId") REFERENCES tenants(id) ON DELETE CASCADE
+  [f] tenant_ai_deployments.tenant_ai_deployments_tenant_id_fkey
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+  [n] billing_upgrade_request_events.billing_upgrade_request_events_requestId_not_null
+        NOT NULL "requestId"
+  [n] clinical_access_logs.clinical_access_logs_customerId_not_null
+        NOT NULL "customerId"
+  [n] clinical_access_logs.clinical_access_logs_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] clinical_access_logs.clinical_access_logs_userId_not_null
+        NOT NULL "userId"
+  [n] clinical_encounters.clinical_encounters_authorId_not_null
+        NOT NULL "authorId"
+  [n] clinical_encounters.clinical_encounters_customerId_not_null
+        NOT NULL "customerId"
+  [n] clinical_encounters.clinical_encounters_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] clinical_entries.clinical_entries_authorId_not_null
+        NOT NULL "authorId"
+  [n] clinical_entries.clinical_entries_customerId_not_null
+        NOT NULL "customerId"
+  [n] clinical_entries.clinical_entries_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] clinical_entry_revisions.clinical_entry_revisions_changed_byId_not_null
+        NOT NULL "changed_byId"
+  [n] clinical_entry_revisions.clinical_entry_revisions_entryId_not_null
+        NOT NULL "entryId"
+  [n] clinical_entry_revisions.clinical_entry_revisions_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] customer_segments.customer_segments_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] email_suppressions.email_suppressions_tenant_id_not_null
+        NOT NULL tenant_id
+  [n] patient_action_links.patient_action_links_appointmentId_not_null
+        NOT NULL "appointmentId"
+  [n] patient_action_links.patient_action_links_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] queue_entries.queue_entries_appointmentId_not_null
+        NOT NULL "appointmentId"
+  [n] queue_entries.queue_entries_branchId_not_null
+        NOT NULL "branchId"
+  [n] queue_entries.queue_entries_customerId_not_null
+        NOT NULL "customerId"
+  [n] queue_entries.queue_entries_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] support_ticket_events.support_ticket_events_ticketId_not_null
+        NOT NULL "ticketId"
+  [n] waitlist_entries.waitlist_entries_customerId_not_null
+        NOT NULL "customerId"
+  [n] waitlist_entries.waitlist_entries_serviceId_not_null
+        NOT NULL "serviceId"
+  [n] waitlist_entries.waitlist_entries_tenantId_not_null
+        NOT NULL "tenantId"
+  [n] waitlist_offers.waitlist_offers_branchId_not_null
+        NOT NULL "branchId"
+  [n] waitlist_offers.waitlist_offers_entryId_not_null
+        NOT NULL "entryId"
+  [n] waitlist_offers.waitlist_offers_staffId_not_null
+        NOT NULL "staffId"
+  [n] waitlist_offers.waitlist_offers_tenantId_not_null
+        NOT NULL "tenantId"
+  [u] support_tickets.UQ_support_tickets_ticket_number
+        UNIQUE (ticket_number)
+
+### NEW INDEXES INTRODUCED BY SYNCHRONIZE (5)
+  UNIQUE  IDX_90398930d9c2eda2bb150ece58  ai_knowledge_bases ("tenantId", "agentId", source_id, content_hash)
+  index   IDX_a3dc7c455caf9e47e6b5998f73  ai_execution_metrics (feature)
+  index   IDX_a5d6277b53ff29474fa0510a9e  ai_execution_metrics (correlation_id)
+  UNIQUE  UQ_7c6e2a78ea61f45fdcb94e54a2c  scheduled_notifications (provider_ref)
+  UNIQUE  UQ_90a88c8e3585fdf5d42baf55e9d  campaign_recipients (provider_ref)

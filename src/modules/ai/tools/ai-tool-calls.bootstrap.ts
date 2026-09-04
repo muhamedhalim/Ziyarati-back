@@ -1,5 +1,7 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+
+import { SchemaGuardRegistry } from '../../../config/schema-guard.registry';
 
 /**
  * Idempotently ensures the `ai_tool_calls` table — the audit + idempotency ledger
@@ -35,9 +37,10 @@ import { DataSource } from 'typeorm';
  */
 @Injectable()
 export class AiToolCallsBootstrap implements OnApplicationBootstrap {
-  private readonly logger = new Logger('AiToolCallsBootstrap');
-
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly guards: SchemaGuardRegistry,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     const runner = this.dataSource.createQueryRunner();
@@ -144,15 +147,34 @@ export class AiToolCallsBootstrap implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * A DB-enforced integrity guard. Failure is an ERROR and degrades readiness
+   * (`SchemaGuardRegistry`) — never a `warn` that scrolls past.
+   */
+  private async require(
+    runner: { query(sql: string): Promise<unknown> },
+    label: string,
+    sql: string,
+  ): Promise<void> {
+    await this.guards.ensure({
+      owner: 'AiToolCallsBootstrap',
+      label,
+      criticality: 'required',
+      run: () => runner.query(sql),
+    });
+  }
+
+  /** A performance index. Losing one costs latency, not correctness. */
   private async run(
     runner: { query(sql: string): Promise<unknown> },
     label: string,
     sql: string,
   ): Promise<void> {
-    try {
-      await runner.query(sql);
-    } catch (err) {
-      this.logger.warn(`Skipped "${label}": ${(err as Error).message}`);
-    }
+    await this.guards.ensure({
+      owner: 'AiToolCallsBootstrap',
+      label,
+      criticality: 'optional',
+      run: () => runner.query(sql),
+    });
   }
 }

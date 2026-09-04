@@ -91,14 +91,23 @@ export function authWrite(session, extraTags) {
  */
 export function loadTenantContext(session) {
   const p = authGet(session, { name: 'setup/context' });
-  const branches = http.get(`${BASE}/api/v1/branches`, p);
-  const staff = http.get(`${BASE}/api/v1/staff?page=1&limit=20`, p);
-  const customers = http.get(`${BASE}/api/v1/crm/customers?page=1&limit=20`, p);
-  const services = http.get(`${BASE}/api/v1/services/lookup`, p);
+
+  // BATCHED, not sequential. At TEST_TENANTS=50 this runs for 100 sessions, and
+  // 6-7 serial round trips each pushed setup() past k6's 60s setupTimeout — the
+  // run then dies in setup with no results at all. Two batched waves instead of
+  // ~7 serial requests keeps the whole fan-out well inside the budget.
+  const wave = http.batch([
+    ['GET', `${BASE}/api/v1/branches`, null, p],
+    ['GET', `${BASE}/api/v1/staff?page=1&limit=20`, null, p],
+    ['GET', `${BASE}/api/v1/crm/customers?page=1&limit=20`, null, p],
+    ['GET', `${BASE}/api/v1/services/lookup`, null, p],
+  ]);
+  const [branches, staff, customers, services] = wave;
 
   const pick = (res, path) => {
-    if (res.status !== 200) return [];
-    const b = res.json();
+    if (!res || res.status !== 200) return [];
+    let b;
+    try { b = res.json(); } catch (e) { return []; }
     const arr = path ? b[path] : b;
     return Array.isArray(arr) ? arr.map((x) => x.id) : [];
   };
@@ -111,10 +120,16 @@ export function loadTenantContext(session) {
   // pairing them arbitrarily would turn both scenarios into a 409 generator that
   // measures nothing. Resolve the real membership per branch instead.
   const pairs = [];
-  for (const branchId of branchIds) {
-    const res = http.get(`${BASE}/api/v1/staff?branchId=${branchId}&limit=50`, p);
-    const ids = pick(res, 'data');
-    if (ids.length) pairs.push({ branchId, staffIds: ids });
+  if (branchIds.length) {
+    const perBranch = http.batch(
+      branchIds.map((branchId) => [
+        'GET', `${BASE}/api/v1/staff?branchId=${branchId}&limit=50`, null, p,
+      ]),
+    );
+    for (let i = 0; i < branchIds.length; i++) {
+      const ids = pick(perBranch[i], 'data');
+      if (ids.length) pairs.push({ branchId: branchIds[i], staffIds: ids });
+    }
   }
 
   return Object.assign({}, session, {
@@ -161,9 +176,33 @@ export function buildSessions() {
   return sessions;
 }
 
-/** Deterministically assigns a VU to one session so tenant context is stable. */
+/**
+ * Deterministically assigns a VU to one session so tenant context is stable.
+ *
+ * TENANT_SKEW (0..1) models the SAME-TENANT HOTSPOT: that fraction of VUs is
+ * pinned to sessions[0]'s tenant while the rest spread evenly. Real clinics are
+ * not uniformly busy, and several costs here are per-tenant rather than global —
+ * the usage-counter row a booking locks, the 60s Redis dashboard cache key, and
+ * every tenant-scoped index prefix. A perfectly uniform spread hides all three.
+ * The skew decision is a pure function of the VU id, so a run is reproducible
+ * and the same VUs are the hot ones every time.
+ */
+const TENANT_SKEW = Number(__ENV.TENANT_SKEW || 0);
+
 export function sessionFor(sessions, vu) {
+  if (TENANT_SKEW > 0) {
+    const h = ((vu * 2654435761) >>> 0) % 1000;
+    if (h < TENANT_SKEW * 1000) return sessions[0];
+  }
   return sessions[(vu - 1) % sessions.length];
+}
+
+/** A session guaranteed NOT to share `session`'s tenant — for isolation probes. */
+export function otherTenantSession(sessions, session) {
+  for (let i = 0; i < sessions.length; i++) {
+    if (sessions[i].tenantId !== session.tenantId) return sessions[i];
+  }
+  return null;
 }
 
 export { BASE };
