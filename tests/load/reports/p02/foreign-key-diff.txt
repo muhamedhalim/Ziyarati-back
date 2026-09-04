@@ -1,0 +1,27 @@
+foreign keys: migrations=297  after synchronize=297
+
+### PRESENT AFTER SYNCHRONIZE, ABSENT FROM THE MIGRATION CHAIN (10)
+    => dev/test enforce these; PRODUCTION DOES NOT.
+  ai_execution_metrics               FOREIGN KEY ("tenantId") REFERENCES tenants(id)
+  ai_memories                        FOREIGN KEY ("tenantId") REFERENCES tenants(id)
+  clinical_entry_revisions           FOREIGN KEY ("changedById") REFERENCES users(id)
+  customer_notes                     FOREIGN KEY ("conversationId") REFERENCES conversations(id)
+  customer_segments                  FOREIGN KEY ("createdById") REFERENCES users(id)
+  customer_segments                  FOREIGN KEY ("tenantId") REFERENCES tenants(id)
+  handover_requests                  FOREIGN KEY (transferred_from_id) REFERENCES users(id)
+  support_tickets                    FOREIGN KEY ("tenantId") REFERENCES tenants(id)
+  workflow_runs                      FOREIGN KEY ("tenantId") REFERENCES tenants(id)
+  workflows                          FOREIGN KEY ("tenantId") REFERENCES tenants(id)
+
+### PRESENT IN THE MIGRATION CHAIN, REMOVED BY SYNCHRONIZE (10)
+    => production enforces these; dev/test DO NOT.
+  ai_batch_items                     FOREIGN KEY (batch_job_id) REFERENCES ai_batch_jobs(id) ON DELETE CASCADE
+  ai_batch_items                     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+  ai_batch_jobs                      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+  api_logs                           FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+  clinical_entry_revisions           FOREIGN KEY ("changed_byId") REFERENCES users(id)
+  customer_segments                  FOREIGN KEY ("created_byId") REFERENCES users(id) ON DELETE SET NULL
+  customer_segments                  FOREIGN KEY ("tenantId") REFERENCES tenants(id) ON DELETE CASCADE
+  patient_action_links               FOREIGN KEY (waitlist_offer) REFERENCES waitlist_offers(id)
+  support_tickets                    FOREIGN KEY ("tenantId") REFERENCES tenants(id) ON DELETE CASCADE
+  tenant_ai_deployments              FOREIGN KEY (tenant_id) REFERENCES tenants(id)

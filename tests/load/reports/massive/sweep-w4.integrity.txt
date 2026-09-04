@@ -1,0 +1,59 @@
+Pager usage is off.
+--- 1. DOUBLE BOOKING (expected: 0) ---
+ overlapping_active_pairs 
+--------------------------
+                        0
+(1 row)
+
+--- 1b. DOUBLE BOOKING among rows THIS SUITE created (expected: 0) ---
+ overlapping_k6_pairs 
+----------------------
+                    0
+(1 row)
+
+--- 2. DOUBLE-BOOKING GUARD INSTALLED (expected: 1 row) ---
+         conname         |                                                                                                          definition                                                                                                           
+-------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ appointments_no_overlap | EXCLUDE USING gist ("staffId" WITH =, tstzrange(start_at, end_at, '[)'::text) WITH &&) WHERE (((status <> ALL (ARRAY['CANCELLED'::appointments_status_enum, 'NO_SHOW'::appointments_status_enum])) AND (deleted_at IS NULL)))
+(1 row)
+
+--- 3. TENANT ISOLATION of created rows (expected: 0 each) ---
+ branch_tenant_mismatch | customer_tenant_mismatch | staff_tenant_mismatch | k6_rows_checked 
+------------------------+--------------------------+-----------------------+-----------------
+                      0 |                        0 |                     0 |            4916
+(1 row)
+
+--- 4. ORPHANS / MISSING CHILD ROWS (expected: 0 each) ---
+ orphan_appt_services | orphan_status_logs | orphan_history | k6_missing_status_log | k6_missing_history | k6_null_fk 
+----------------------+--------------------+----------------+-----------------------+--------------------+------------
+                    0 |                  0 |              0 |                     0 |                  0 |          0
+(1 row)
+
+--- 5. STATUS DISTRIBUTION of created rows (expected: CONFIRMED / IN_PROGRESS only) ---
+  status   | count 
+-----------+-------
+ CONFIRMED |  4916
+(1 row)
+
+--- 6. QUOTA COUNTERS vs reality, top 5 tenants by k6 volume ---
+       slug        | k6_appointments | appointments_used_counter 
+-------------------+-----------------+---------------------------
+ perf-t1-tenant-18 |             124 |                       738
+ perf-t1-tenant-1  |             118 |                      3645
+ perf-t1-tenant-0  |             115 |                      4056
+ perf-t1-tenant-2  |             115 |                      3629
+ perf-t1-tenant-5  |             115 |                       751
+(5 rows)
+
+--- 7. EXTERNAL SIDE-EFFECT SURFACE (expected: 0 everywhere) ---
+ notification_rules | webhook_endpoints | workflows | live_whatsapp_accounts | recent_scheduled_notifications | recent_payments | recent_payment_links 
+--------------------+-------------------+-----------+------------------------+--------------------------------+-----------------+----------------------
+                  0 |                 0 |         0 |                      0 |                              0 |               0 |                    0
+(1 row)
+
+--- 8. TOTALS ---
+ appointments_total | appointments_k6 | api_logs | db_size 
+--------------------+-----------------+----------+---------
+              64931 |            4916 |     1516 | 254 MB
+(1 row)
+

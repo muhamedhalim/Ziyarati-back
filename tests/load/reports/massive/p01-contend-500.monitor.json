@@ -1,0 +1,818 @@
+{
+  "generatedAt": "2026-09-02T17:42:09.806Z",
+  "intervalMs": 2000,
+  "sampleCount": 16,
+  "summary": {
+    "eventloop_lag_p99_max_s": 0.135135231,
+    "pg_active_connections_max": 6,
+    "pg_idle_in_transaction_max": 4,
+    "pg_waiting_on_lock_max": 4,
+    "heap_first_bytes": 100466104,
+    "heap_last_bytes": 358388552,
+    "heap_growth_bytes": 257922448,
+    "rss_first_bytes": 169914368,
+    "rss_last_bytes": 744263680,
+    "rss_growth_bytes": 574349312,
+    "cpu_user_seconds_delta": 32.031,
+    "db_queries_delta": 64348,
+    "generator_cpu_percent_max": 206.48,
+    "generator_cpu_percent_last": 6.23,
+    "generator_cpu_percent_ceiling": 1600,
+    "queue_wait_first": 0,
+    "queue_wait_last": 0,
+    "queue_wait_max": 0,
+    "deadlocks_delta": 0,
+    "ungranted_locks_max": 5
+  },
+  "samples": [
+    {
+      "t": "2026-09-02T17:41:11.631Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 2.9060000000000006,
+        "process_cpu_system_seconds_total": 0.7810000000000001,
+        "process_cpu_seconds_total": 3.687000000000001,
+        "process_resident_memory_bytes": 169914368,
+        "nodejs_eventloop_lag_mean_seconds": 0.016463059301587302,
+        "nodejs_eventloop_lag_p90_seconds": 0.018907135,
+        "nodejs_eventloop_lag_p99_seconds": 0.022822911,
+        "nodejs_active_handles_total": 11,
+        "nodejs_heap_size_used_bytes": 100466104,
+        "db_queries_total": 138
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6239528,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2453425,
+        "ping_ok": true
+      },
+      "generator": {
+        "error": "no_k6_container"
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=1"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:13.978Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 2.9060000000000006,
+        "process_cpu_system_seconds_total": 0.7970000000000002,
+        "process_cpu_seconds_total": 3.703000000000001,
+        "process_resident_memory_bytes": 169914368,
+        "nodejs_eventloop_lag_mean_seconds": 0.016219616,
+        "nodejs_eventloop_lag_p90_seconds": 0.018317311,
+        "nodejs_eventloop_lag_p99_seconds": 0.024494079,
+        "nodejs_active_handles_total": 11,
+        "nodejs_heap_size_used_bytes": 100494816,
+        "db_queries_total": 138
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6240328,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2605416,
+        "ping_ok": true
+      },
+      "generator": {
+        "error": "no_k6_container"
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=1"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:17.483Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 2.9060000000000006,
+        "process_cpu_system_seconds_total": 0.7970000000000002,
+        "process_cpu_seconds_total": 3.703000000000001,
+        "process_resident_memory_bytes": 169914368,
+        "nodejs_eventloop_lag_mean_seconds": 0.016617792,
+        "nodejs_eventloop_lag_p90_seconds": 0.019070975,
+        "nodejs_eventloop_lag_p99_seconds": 0.023298047,
+        "nodejs_active_handles_total": 11,
+        "nodejs_heap_size_used_bytes": 100518640,
+        "db_queries_total": 138
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6241128,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2908064,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 4.05,
+        "rows": [
+          {
+            "cpu_percent": 4.05,
+            "mem": "146.8MiB / 93.61GiB",
+            "net": "68kB / 16.9kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=1"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:21.578Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 4.265000000000001,
+        "process_cpu_system_seconds_total": 1.0310000000000001,
+        "process_cpu_seconds_total": 5.296000000000001,
+        "process_resident_memory_bytes": 192937984,
+        "nodejs_eventloop_lag_mean_seconds": 0.01599247582608696,
+        "nodejs_eventloop_lag_p90_seconds": 0.018300927,
+        "nodejs_eventloop_lag_p99_seconds": 0.030801919,
+        "nodejs_active_handles_total": 25,
+        "nodejs_heap_size_used_bytes": 110307896,
+        "db_queries_total": 401
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 9,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6272976,
+        "connected_clients": 8,
+        "ops_per_sec": 12,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.249882,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 1.87,
+        "rows": [
+          {
+            "cpu_percent": 1.87,
+            "mem": "147.3MiB / 93.61GiB",
+            "net": "90.6kB / 24.4kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=8"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:25.076Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 4.625000000000001,
+        "process_cpu_system_seconds_total": 1.187,
+        "process_cpu_seconds_total": 5.812000000000001,
+        "process_resident_memory_bytes": 201207808,
+        "nodejs_eventloop_lag_mean_seconds": 0.015734689476923077,
+        "nodejs_eventloop_lag_p90_seconds": 0.018530303,
+        "nodejs_eventloop_lag_p99_seconds": 0.023052287,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 113185688,
+        "db_queries_total": 581
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 9,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6255704,
+        "connected_clients": 8,
+        "ops_per_sec": 7,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2659641,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 1.3,
+        "rows": [
+          {
+            "cpu_percent": 1.3,
+            "mem": "147.6MiB / 93.61GiB",
+            "net": "99.6kB / 26.8kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=8"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:29.121Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 4.625000000000001,
+        "process_cpu_system_seconds_total": 1.187,
+        "process_cpu_seconds_total": 5.812000000000001,
+        "process_resident_memory_bytes": 201207808,
+        "nodejs_eventloop_lag_mean_seconds": 0.016468486826666667,
+        "nodejs_eventloop_lag_p90_seconds": 0.019267583,
+        "nodejs_eventloop_lag_p99_seconds": 0.022331391,
+        "nodejs_active_handles_total": 20,
+        "nodejs_heap_size_used_bytes": 114164248,
+        "db_queries_total": 581
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 9,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6234936,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2582735,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 1.4,
+        "rows": [
+          {
+            "cpu_percent": 1.4,
+            "mem": "147.8MiB / 93.61GiB",
+            "net": "100kB / 27kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=8"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:33.195Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 4.640000000000001,
+        "process_cpu_system_seconds_total": 1.203,
+        "process_cpu_seconds_total": 5.843000000000001,
+        "process_resident_memory_bytes": 201211904,
+        "nodejs_eventloop_lag_mean_seconds": 0.016263201032258066,
+        "nodejs_eventloop_lag_p90_seconds": 0.018530303,
+        "nodejs_eventloop_lag_p99_seconds": 0.022675455,
+        "nodejs_active_handles_total": 18,
+        "nodejs_heap_size_used_bytes": 115170720,
+        "db_queries_total": 581
+      },
+      "pg": {
+        "active": 1,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 9,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6235736,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2566901,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 206.48,
+        "rows": [
+          {
+            "cpu_percent": 206.48,
+            "mem": "221MiB / 93.61GiB",
+            "net": "235kB / 646kB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=8"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:37.213Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 8.172,
+        "process_cpu_system_seconds_total": 1.984,
+        "process_cpu_seconds_total": 10.156,
+        "process_resident_memory_bytes": 420433920,
+        "nodejs_eventloop_lag_mean_seconds": 0.012317153882352942,
+        "nodejs_eventloop_lag_p90_seconds": 0.016482303,
+        "nodejs_eventloop_lag_p99_seconds": 0.027164671,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 239387856,
+        "db_queries_total": 5226
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6236360,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2574906,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 0.78,
+        "rows": [
+          {
+            "cpu_percent": 0.78,
+            "mem": "220.8MiB / 93.61GiB",
+            "net": "235kB / 647kB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=7"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:41.267Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 11.687,
+        "process_cpu_system_seconds_total": 2.765,
+        "process_cpu_seconds_total": 14.452,
+        "process_resident_memory_bytes": 515227648,
+        "nodejs_eventloop_lag_mean_seconds": 0.011180552677966102,
+        "nodejs_eventloop_lag_p90_seconds": 0.013320191,
+        "nodejs_eventloop_lag_p99_seconds": 0.017711103,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 352653112,
+        "db_queries_total": 13784
+      },
+      "pg": {
+        "active": 6,
+        "idle": 0,
+        "idle_in_tx": 4,
+        "waiting_on_lock": 4,
+        "total": 11,
+        "longest_active_s": 0.020217
+      },
+      "redis": {
+        "used_memory_bytes": 6253560,
+        "connected_clients": 8,
+        "ops_per_sec": 98,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2604546,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 17.1,
+        "rows": [
+          {
+            "cpu_percent": 17.1,
+            "mem": "223MiB / 93.61GiB",
+            "net": "898kB / 927kB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 5,
+        "wait_events": "Client:ClientRead=4,Lock:transactionid=3,Lock:tuple=2"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:45.281Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 14.764999999999999,
+        "process_cpu_system_seconds_total": 3.4530000000000003,
+        "process_cpu_seconds_total": 18.218,
+        "process_resident_memory_bytes": 576638976,
+        "nodejs_eventloop_lag_mean_seconds": 0.012352237268292682,
+        "nodejs_eventloop_lag_p90_seconds": 0.015155199,
+        "nodejs_eventloop_lag_p99_seconds": 0.019382271,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 402777024,
+        "db_queries_total": 18211
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6237160,
+        "connected_clients": 8,
+        "ops_per_sec": 379,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2859651,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 0.61,
+        "rows": [
+          {
+            "cpu_percent": 0.61,
+            "mem": "230.3MiB / 93.61GiB",
+            "net": "1.49MB / 1.18MB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=8"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:49.306Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 18.811999999999998,
+        "process_cpu_system_seconds_total": 4.109,
+        "process_cpu_seconds_total": 22.921,
+        "process_resident_memory_bytes": 615084032,
+        "nodejs_eventloop_lag_mean_seconds": 0.012781581212903226,
+        "nodejs_eventloop_lag_p90_seconds": 0.017432575,
+        "nodejs_eventloop_lag_p99_seconds": 0.023429119,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 231121720,
+        "db_queries_total": 27846
+      },
+      "pg": {
+        "active": 4,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6238360,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.277237,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 33.62,
+        "rows": [
+          {
+            "cpu_percent": 33.62,
+            "mem": "241MiB / 93.61GiB",
+            "net": "2.06MB / 1.49MB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=7"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:53.350Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 21.999999999999996,
+        "process_cpu_system_seconds_total": 5.078,
+        "process_cpu_seconds_total": 27.078,
+        "process_resident_memory_bytes": 623104000,
+        "nodejs_eventloop_lag_mean_seconds": 0.013571103030303032,
+        "nodejs_eventloop_lag_p90_seconds": 0.019349503,
+        "nodejs_eventloop_lag_p99_seconds": 0.040861695,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 369343008,
+        "db_queries_total": 34681
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6276952,
+        "connected_clients": 9,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2614067,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 0.92,
+        "rows": [
+          {
+            "cpu_percent": 0.92,
+            "mem": "248.2MiB / 93.61GiB",
+            "net": "2.4MB / 1.67MB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=8"
+      }
+    },
+    {
+      "t": "2026-09-02T17:41:57.367Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 25.561999999999998,
+        "process_cpu_system_seconds_total": 6.187,
+        "process_cpu_seconds_total": 31.749,
+        "process_resident_memory_bytes": 680632320,
+        "nodejs_eventloop_lag_mean_seconds": 0.015678074591549296,
+        "nodejs_eventloop_lag_p90_seconds": 0.017170431,
+        "nodejs_eventloop_lag_p99_seconds": 0.135135231,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 467179520,
+        "db_queries_total": 44970
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6245336,
+        "connected_clients": 8,
+        "ops_per_sec": 399,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2493519,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 6.44,
+        "rows": [
+          {
+            "cpu_percent": 6.44,
+            "mem": "249.2MiB / 93.61GiB",
+            "net": "3.31MB / 2.16MB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=9"
+      }
+    },
+    {
+      "t": "2026-09-02T17:42:01.414Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 29.577999999999996,
+        "process_cpu_system_seconds_total": 6.797,
+        "process_cpu_seconds_total": 36.375,
+        "process_resident_memory_bytes": 737533952,
+        "nodejs_eventloop_lag_mean_seconds": 0.011333163885714285,
+        "nodejs_eventloop_lag_p90_seconds": 0.013393919,
+        "nodejs_eventloop_lag_p99_seconds": 0.020250623,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 212200400,
+        "db_queries_total": 51466
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6239960,
+        "connected_clients": 8,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2591866,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 0.7,
+        "rows": [
+          {
+            "cpu_percent": 0.7,
+            "mem": "249.7MiB / 93.61GiB",
+            "net": "3.31MB / 2.16MB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=10"
+      }
+    },
+    {
+      "t": "2026-09-02T17:42:05.443Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 33.187,
+        "process_cpu_system_seconds_total": 7.468999999999999,
+        "process_cpu_seconds_total": 40.656,
+        "process_resident_memory_bytes": 735793152,
+        "nodejs_eventloop_lag_mean_seconds": 0.024884898341463412,
+        "nodejs_eventloop_lag_p90_seconds": 0.057737215,
+        "nodejs_eventloop_lag_p99_seconds": 0.100335615,
+        "nodejs_active_handles_total": 519,
+        "nodejs_heap_size_used_bytes": 291308496,
+        "db_queries_total": 59306
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6249160,
+        "connected_clients": 8,
+        "ops_per_sec": 286,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2671471,
+        "ping_ok": true
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 6.23,
+        "rows": [
+          {
+            "cpu_percent": 6.23,
+            "mem": "251.7MiB / 93.61GiB",
+            "net": "4.35MB / 2.41MB",
+            "pids": 22
+          }
+        ]
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=9"
+      }
+    },
+    {
+      "t": "2026-09-02T17:42:07.798Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 34.937,
+        "process_cpu_system_seconds_total": 7.999999999999999,
+        "process_cpu_seconds_total": 42.937,
+        "process_resident_memory_bytes": 744263680,
+        "nodejs_eventloop_lag_mean_seconds": 0.016424033947826086,
+        "nodejs_eventloop_lag_p90_seconds": 0.019988479,
+        "nodejs_eventloop_lag_p99_seconds": 0.025870335,
+        "nodejs_active_handles_total": 20,
+        "nodejs_heap_size_used_bytes": 358388552,
+        "db_queries_total": 64486
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "used_memory_bytes": 6288152,
+        "connected_clients": 9,
+        "ops_per_sec": 2,
+        "blocked_clients": 0,
+        "queue_wait": 0,
+        "queue_active": 0,
+        "queue_delayed": 15,
+        "ping_roundtrip_seconds": 0.2433921,
+        "ping_ok": true
+      },
+      "generator": {
+        "error": "no_k6_container"
+      },
+      "locks": {
+        "deadlocks": 0,
+        "ungranted_locks": 0,
+        "wait_events": "Client:ClientRead=10"
+      }
+    }
+  ]
+}

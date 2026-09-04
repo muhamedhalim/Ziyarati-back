@@ -23,7 +23,9 @@
  *
  * Reads configuration from the process environment ONLY (no dotenv, no .env
  * file inside the image). Never prints a connection string, credential or
- * certificate.
+ * certificate. It runs NO Joi validation by design, so it validates the one
+ * variable whose misreading is silently dangerous — NODE_ENV — itself; see
+ * `assertKnownNodeEnv` (P0.3 SCHEMA-007).
  */
 import 'reflect-metadata';
 
@@ -51,8 +53,33 @@ function safeTarget(): string {
   }
 }
 
+/**
+ * P0.3 SCHEMA-007. This entrypoint deliberately sits outside the Nest /
+ * ConfigModule graph and therefore runs no Joi validation, so `NODE_ENV`
+ * arrives here exactly as the platform set it — including typos. Certificate
+ * policy (`config/database-ssl.ts`) now fails closed on an unrecognised value,
+ * but silently treating `PRODUCTION` as production while the rest of the
+ * deployment treats it as something else is still a configuration bug worth
+ * refusing outright. Joi accepts exactly three values; so does this.
+ */
+function assertKnownNodeEnv(): void {
+  const raw = process.env.NODE_ENV;
+  if (raw === undefined || raw === '') return; // unset — same as Joi's default
+  const allowed = ['development', 'production', 'test'];
+  if (!allowed.includes(raw)) {
+    throw new Error(
+      `NODE_ENV is "${raw}", which is not one of ${allowed.join(', ')}. ` +
+        `Refusing to run migrations: a value this entrypoint does not recognise ` +
+        `(a case difference or stray whitespace included) means the migration job ` +
+        `and the application may not agree on TLS or environment policy. ` +
+        `Set NODE_ENV to the exact intended value.`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const command = parseCommand(process.argv);
+  assertKnownNodeEnv();
 
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is not set — cannot run migrations.');

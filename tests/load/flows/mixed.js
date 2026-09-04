@@ -60,6 +60,45 @@ const PROFILES = {
     ['appointment-status', 14],
     ['staff-list', 6],
   ],
+  /**
+   * `prod-mix` — the massive-scale phase's production-style distribution.
+   *
+   * The brief specified shares at the REQUEST level (25% dashboard, 20%
+   * availability, 15% creation, ...). These weights are per ITERATION, and an
+   * iteration is 1-6 requests, so a weight is target_share / requests_per_action
+   * rather than the share itself — copying the percentages straight into this
+   * table would have produced roughly 6% dashboard traffic, not 25%.
+   *
+   *   action                requests/iter   -> resulting request share
+   *   dashboard             4.5 (6 owner / 3 receptionist)   ~24%
+   *   availability          1                                ~20%
+   *   appointment-create    1                                ~15%
+   *   crm-search/list       1                                ~10%
+   *   appointments list+detail  3 / 5                        ~9%
+   *   staff-list            2                                ~5%
+   *   notification-poll     1                                ~5%
+   *   analytics (staff perf) 1, owner-only                   ~3%
+   *   filtered + activity   1 / 5                            ~4%
+   *
+   * This deliberately books ~2.5x more often than `default`, whose write share
+   * was derived from what a receptionist actually does. `default` is the honest
+   * model of today's product; `prod-mix` is the brief's stress-weighted model.
+   * Both were run — see the report's workload-distribution section.
+   */
+  'prod-mix': [
+    ['availability', 40],
+    ['appointment-create', 30],
+    ['crm-search', 12],
+    ['dashboard', 11],
+    ['notification-poll', 10],
+    ['staff-performance', 10],
+    ['crm-list', 8],
+    ['staff-list', 5],
+    ['appointments-filtered', 4],
+    ['appointments-list', 3],
+    ['appointment-detail', 2],
+    ['activity', 1],
+  ],
   'read-only': [
     ['notification-poll', 24],
     ['appointments-list', 18],

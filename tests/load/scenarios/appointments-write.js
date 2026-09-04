@@ -54,6 +54,9 @@ export const options = {
     },
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
+  // 100 accounts x bcrypt cost-12 login + a tenant-context fan-out each: the 60s
+  // default kills the run in setup() at TEST_TENANTS=50, with no results at all.
+  setupTimeout: '600s',
   thresholds: {
     // Only the throughput arm has a latency SLO; contention is about
     // correctness under a race, not speed.

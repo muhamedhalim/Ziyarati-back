@@ -1,0 +1,29 @@
+ total_ms | calls | mean_ms |  rows  |                                                                         query                                                                          
+----------+-------+---------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------
+     7679 |   505 |   15.21 |    505 | UPDATE "subscription_usage" SET "appointments_used" = "appointments_used" + $1, "updated_at" = now() WHERE "tenant_id" = $2 AND "period_month" = $3 AN
+     6741 |   505 |   13.35 |      0 | INSERT INTO "subscription_usage"("id", "tenant_id", "subscription_id", "period_month", "ai_tokens_used", "whatsapp_messages_used", "appointments_used"
+     1747 |  2243 |    0.78 | 286551 | SELECT "u"."id" AS "userId", "u"."is_active" AS "userIsActive", "u"."email" AS "userEmail", "u"."full_name" AS "userFullName", "t"."id" AS "tenantId",
+      397 |  2229 |    0.18 |   1721 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+      377 |  2229 |    0.17 |   6687 | SELECT "schedule"."id" AS "schedule_id", "schedule"."day_of_week" AS "schedule_day_of_week", "schedule"."start_time" AS "schedule_start_time", "schedu
+      221 |  2229 |    0.10 |   2229 | SELECT "WorkingHour"."id" AS "WorkingHour_id", "WorkingHour"."day_of_week" AS "WorkingHour_day_of_week", "WorkingHour"."start_time" AS "WorkingHour_st
+      154 |  4452 |    0.03 |   4452 | SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."title" AS "StaffProfile_title", "StaffProfile"."bio" AS "StaffProfile_bio", "StaffPro
+      127 |  2229 |    0.06 |   2229 | SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."address" AS "Branch_address", "Branch"."city_id" AS "Branch_city_id",
+      124 |  4452 |    0.03 |   4452 | SELECT DISTINCT "distinctAlias"."StaffProfile_id" AS "ids_StaffProfile_id" FROM (SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."titl
+      107 |  2229 |    0.05 |   2229 | SELECT DISTINCT "distinctAlias"."Branch_id" AS "ids_Branch_id" FROM (SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."
+      103 |  2223 |    0.05 |   2223 | SELECT $5 AS "row_exists" FROM (SELECT $6 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $7 FROM "staff_schedules" "StaffSchedule" LEFT JOIN "ten
+       94 |  2346 |    0.04 |  51612 | SELECT "FeatureDefinition"."id" AS "FeatureDefinition_id", "FeatureDefinition"."feature_key" AS "FeatureDefinition_feature_key", "FeatureDefinition"."
+       90 |  2223 |    0.04 |   2223 | SELECT $4 AS "row_exists" FROM (SELECT $5 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $6 FROM "staff_schedules" "StaffSchedule" LEFT JOIN "sta
+       81 |  2229 |    0.04 |   2229 | SELECT $3 AS "row_exists" FROM (SELECT $4 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $5 FROM "branches" "Branch" LEFT JOIN "tenants" "Branch_
+       77 |  2223 |    0.03 |   2223 | SELECT "Branch"."id" AS "Branch_id", "Branch"."timezone" AS "Branch_timezone" FROM "branches" "Branch" LEFT JOIN "tenants" "Branch__Branch_tenant" ON 
+       75 |  2223 |    0.03 |   2223 | SELECT DISTINCT "distinctAlias"."TenantSetting_id" AS "ids_TenantSetting_id" FROM (SELECT "TenantSetting"."id" AS "TenantSetting_id", "TenantSetting".
+       69 |  2223 |    0.03 |   2223 | SELECT DISTINCT "distinctAlias"."Branch_id" AS "ids_Branch_id" FROM (SELECT "Branch"."id" AS "Branch_id", "Branch"."timezone" AS "Branch_timezone" FRO
+       65 |  2223 |    0.03 |   2223 | SELECT "TenantSetting"."id" AS "TenantSetting_id", "TenantSetting"."enforce_staff_working_hours" AS "TenantSetting_enforce_staff_working_hours" FROM "
+       54 |  2223 |    0.02 |   2223 | SELECT $3 AS "row_exists" FROM (SELECT $4 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $5 FROM "customers" "Customer" LEFT JOIN "tenants" "Cust
+       53 |  2346 |    0.02 |      0 | SELECT "FeatureFlag"."id" AS "FeatureFlag_id", "FeatureFlag"."feature_key" AS "FeatureFlag_feature_key", "FeatureFlag"."is_enabled" AS "FeatureFlag_is
+       23 |  2223 |    0.01 |      0 | SELECT DISTINCT "distinctAlias"."Subscription_id" AS "ids_Subscription_id", "distinctAlias"."Subscription_created_at" FROM (SELECT "Subscription"."id"
+       20 |     6 |    3.26 |   1368 | SELECT "UserRole"."id" AS "UserRole_id", "UserRole"."assigned_at" AS "UserRole_assigned_at", "UserRole"."userId" AS "UserRole_userId", "UserRole"."rol
+       18 |  2229 |    0.01 |      0 | SELECT "b"."id" AS "b_id", "b"."start_time" AS "b_start_time", "b"."end_time" AS "b_end_time", "b"."reason" AS "b_reason", "b"."created_at" AS "b_crea
+       16 |  2229 |    0.01 |      0 | SELECT "StaffTimeOff"."id" AS "StaffTimeOff_id", "StaffTimeOff"."start_date" AS "StaffTimeOff_start_date", "StaffTimeOff"."end_date" AS "StaffTimeOff_
+       16 |    33 |    0.50 |     33 | SELECT (SELECT deadlocks FROM pg_stat_database WHERE datname=$1) AS deadlocks, (SELECT count(*) FROM pg_locks WHERE NOT granted) AS ungranted_locks, (
+(25 rows)
+

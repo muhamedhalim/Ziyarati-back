@@ -20,6 +20,16 @@ export const validate = (config: Record<string, unknown>) => {
 
     TYPEORM_SYNCHRONIZE: Joi.string().valid('true', 'false').default('false'),
 
+    // P0.3 RULE 3 / RULE 11.7. Waives the guard that refuses to boot with
+    // synchronize on against a database the migration chain provisioned (a
+    // non-empty `migrations` table). Only reachable when TYPEORM_SYNCHRONIZE
+    // is already true, which production refuses outright — so this can never
+    // widen production behaviour. Every boot that uses it logs a warning
+    // naming what may be dropped.
+    TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
+
     // AI-011: raw SQL logging (parameter values included) writes tenant data
     // and secrets to console output. The production fail-fast below (mirroring
     // the AUTH_EXPOSE_RESET_TOKEN pattern) makes enabling this in production a
@@ -30,6 +40,17 @@ export const validate = (config: Record<string, unknown>) => {
     // Without it, an inherited `TYPEORM_LOGGING=true` from a tracked `.env`
     // silently turns every test/load run into a measurement of the logger.
     TYPEORM_LOGGING_IN_TEST: Joi.string().valid('true', 'false'),
+
+    // P0.3 SCHEMA-004 / RULE 5. When a REQUIRED DB-enforced integrity guard
+    // could not be installed at boot, readiness always reports
+    // status="degraded" with a count (never an object name — the route is
+    // public). This escalates that to HTTP 503 for an orchestrator that
+    // routes traffic on readiness and wants fail-closed behaviour. Default
+    // false: pulling every instance out of rotation turns a missing index
+    // into a total outage, which is not automatically the better trade.
+    SCHEMA_GUARD_FAIL_READINESS: Joi.string()
+      .valid('true', 'false')
+      .default('false'),
 
     // Default 15 (raised from 10 — Phase 0 correction, measured; see
     // docs/CACHING_QUEUES_AUDIT.md §0.3). Each deployment (API, critical

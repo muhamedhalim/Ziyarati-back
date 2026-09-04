@@ -1,5 +1,7 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+
+import { SchemaGuardRegistry } from '../../config/schema-guard.registry';
 
 /**
  * Idempotently ensures the two partial UNIQUE indexes this domain relies on
@@ -11,29 +13,51 @@ import { DataSource } from 'typeorm';
  */
 @Injectable()
 export class BillingUpgradeBootstrap implements OnApplicationBootstrap {
-  private readonly logger = new Logger('BillingUpgradeBootstrap');
-
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly guards: SchemaGuardRegistry,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    await this.run('one active billing-upgrade request per tenant+target', `
+    await this.require(
+      'one active billing-upgrade request per tenant+target',
+      `
       CREATE UNIQUE INDEX IF NOT EXISTS "UQ_billing_upgrade_requests_active_target"
       ON "billing_upgrade_requests" ("tenantId", COALESCE("feature_key", "usage_metric"))
       WHERE "status" IN ('pending_review', 'awaiting_owner_approval', 'payment_processing', 'payment_failed')
-    `);
+    `,
+    );
 
-    await this.run('one active usage-limit override per tenant+metric', `
+    await this.require(
+      'one active usage-limit override per tenant+metric',
+      `
       CREATE UNIQUE INDEX IF NOT EXISTS "UQ_tenant_usage_limit_overrides_active"
       ON "tenant_usage_limit_overrides" ("tenantId", "metric")
       WHERE "is_active" = true
-    `);
+    `,
+    );
   }
 
+  /**
+   * A DB-enforced integrity guard. Failure is an ERROR and degrades readiness
+   * (`SchemaGuardRegistry`) — never a `warn` that scrolls past.
+   */
+  private async require(label: string, sql: string): Promise<void> {
+    await this.guards.ensure({
+      owner: 'BillingUpgradeBootstrap',
+      label,
+      criticality: 'required',
+      run: () => this.dataSource.query(sql),
+    });
+  }
+
+  /** A performance index. Losing one costs latency, not correctness. */
   private async run(label: string, sql: string): Promise<void> {
-    try {
-      await this.dataSource.query(sql);
-    } catch (err) {
-      this.logger.warn(`Skipped "${label}": ${(err as Error).message}`);
-    }
+    await this.guards.ensure({
+      owner: 'BillingUpgradeBootstrap',
+      label,
+      criticality: 'optional',
+      run: () => this.dataSource.query(sql),
+    });
   }
 }

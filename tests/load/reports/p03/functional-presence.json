@@ -1,0 +1,262 @@
+{
+ "e2e": {
+  "byName": 43,
+  "byShapeOnly": [],
+  "trulyAbsent": []
+ },
+ "perf_t2": {
+  "byName": 33,
+  "byShapeOnly": [],
+  "trulyAbsent": [
+   {
+    "guard": "UQ_resource_purchases_tenant_idempotency",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_sub_invoice_webhook_event",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_sub_invoice_period",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_tenant_entitlement_ledger_source_purchase",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_tenant_entitlement_ledger_source_refund",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_customers_tenant_national_id",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_email_suppressions_tenant_email",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_in_app_notifications_recipient_dedupe",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_subscription_usage_tenant_period_unsubscribed",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_customer_segments_tenant_name_live",
+    "sev": "P1"
+   }
+  ]
+ },
+ "perf": {
+  "byName": 24,
+  "byShapeOnly": [
+   {
+    "guard": "UQ_email_logs_idempotency",
+    "foundAs": "IDX_34e9ffce289c74b1ebc3a1faf3",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_feature_definitions_key",
+    "foundAs": "IDX_1a7b47099f7f9185e8869f42d8",
+    "sev": "P1"
+   }
+  ],
+  "trulyAbsent": [
+   {
+    "guard": "UQ_integration_inbound_events_replay",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_integration_oauth_states_state",
+    "sev": "P0"
+   },
+   {
+    "guard": "uq_user_email_global",
+    "sev": "P0"
+   },
+   {
+    "guard": "ck_user_email_lowercase",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_notification_logs_source_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_scheduled_notifications_source_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_scheduled_notifications_provider_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_campaign_recipients_provider_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_id_map_external",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_id_map_internal",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_conflicts_open",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_sync_active",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_staff_provisioning_open",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_webhook_endpoints_connection",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_support_tickets_ticket_number",
+    "sev": "P1"
+   },
+   {
+    "guard": "uq_ai_kb_source_content_hash",
+    "sev": "P1"
+   },
+   {
+    "guard": "uq_ai_batch_item_source_chunk",
+    "sev": "P1"
+   }
+  ]
+ },
+ "dev": {
+  "byName": 15,
+  "byShapeOnly": [
+   {
+    "guard": "UQ_customers_tenant_email",
+    "foundAs": "IDX_fbd833f031b18a738d3fb881ea",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_customers_tenant_national_id",
+    "foundAs": "IDX_ce3ee439834cb618d55e009e08",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_email_logs_idempotency",
+    "foundAs": "IDX_34e9ffce289c74b1ebc3a1faf3",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_feature_definitions_key",
+    "foundAs": "IDX_1a7b47099f7f9185e8869f42d8",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_customer_segments_tenant_name_live",
+    "foundAs": "IDX_4220fb0edd652faf395a40df59",
+    "sev": "P1"
+   }
+  ],
+  "trulyAbsent": [
+   {
+    "guard": "UQ_resource_purchases_tenant_idempotency",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_sub_invoice_webhook_event",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_sub_invoice_period",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_integration_inbound_events_replay",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_integration_oauth_states_state",
+    "sev": "P0"
+   },
+   {
+    "guard": "uq_user_email_global",
+    "sev": "P0"
+   },
+   {
+    "guard": "ck_user_email_lowercase",
+    "sev": "P0"
+   },
+   {
+    "guard": "UQ_email_suppressions_tenant_email",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_notification_logs_source_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_scheduled_notifications_source_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_scheduled_notifications_provider_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_campaign_recipients_provider_ref",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_in_app_notifications_recipient_dedupe",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_subscription_usage_tenant_period_unsubscribed",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_id_map_external",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_id_map_internal",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_conflicts_open",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_sync_active",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_staff_provisioning_open",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_integration_webhook_endpoints_connection",
+    "sev": "P1"
+   },
+   {
+    "guard": "UQ_support_tickets_ticket_number",
+    "sev": "P1"
+   },
+   {
+    "guard": "uq_ai_kb_source_content_hash",
+    "sev": "P1"
+   },
+   {
+    "guard": "uq_ai_batch_item_source_chunk",
+    "sev": "P1"
+   }
+  ]
+ }
+}

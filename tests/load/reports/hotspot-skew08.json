@@ -1,0 +1,241 @@
+{
+  "generatedAt": "2026-09-02T15:14:02.653Z",
+  "runTag": "hotspot-skew08",
+  "config": {
+    "levels": [
+      500
+    ],
+    "ramp": "20s",
+    "hold": "60s",
+    "gap": "20s",
+    "probeRate": 5,
+    "thinkMs": 3000,
+    "profile": "prod-mix",
+    "tenantSkew": 0.8,
+    "baseUrl": "http://host.docker.internal:3001"
+  },
+  "levels": [
+    {
+      "vus": 500,
+      "requests": 11141,
+      "achieved_rps": 123.78888888888889,
+      "p50_ms": 910.319986,
+      "p95_ms": 5903.257864,
+      "p99_ms": 6372.055641400001,
+      "max_ms": 30000.664869,
+      "error_rate": 0.0012566196930257607,
+      "recovery_p95_ms": 135.93869265,
+      "recovery_error_rate": 0.025974025974025976
+    }
+  ],
+  "totals": {
+    "http_reqs": 12145,
+    "http_req_failed_rate": 0.0014820913956360643,
+    "business_check_failed_rate": 0.002230610844200412,
+    "rate_limited_429": 0,
+    "client_4xx": 0,
+    "server_5xx": 0,
+    "timeouts_or_conn": 16,
+    "dropped_iterations": 0,
+    "appt_created": 1599,
+    "appt_conflict_409": 2,
+    "appt_quota_422": 0,
+    "vus_max": 520,
+    "iterations": 7168
+  },
+  "tenantIsolation": {
+    "probes": 501,
+    "violations": 0,
+    "denied_rate": 1
+  },
+  "endpoints": {
+    "public:booking:doctors": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:booking:session": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "activity:actions": {
+      "p95_ms": 575.9398642499999,
+      "med_ms": 439.4680605
+    },
+    "appointments:status": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "analytics:dashboard": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:booking:services": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "analytics:trend:revenue": {
+      "p95_ms": 1290.2309186,
+      "med_ms": 447.40826
+    },
+    "crm:search:pathological": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "tenants:me": {
+      "p95_ms": 1027.8073476,
+      "med_ms": 813.644332
+    },
+    "staff:list:role": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "staff:list": {
+      "p95_ms": 2126.749139,
+      "med_ms": 1679.204017
+    },
+    "appointments:detail": {
+      "p95_ms": 1309.56778025,
+      "med_ms": 850.963352
+    },
+    "crm:tags": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:timeline": {
+      "p95_ms": 1563.45122015,
+      "med_ms": 1275.0409675
+    },
+    "appointments:reminders": {
+      "p95_ms": 1538.61997195,
+      "med_ms": 1260.7135695000002
+    },
+    "analytics:trend:appointments": {
+      "p95_ms": 1245.9383159999998,
+      "med_ms": 446.970423
+    },
+    "appointments:create": {
+      "p95_ms": 6476.07643085,
+      "med_ms": 5662.0689514999995
+    },
+    "appointments:list:filtered": {
+      "p95_ms": 1250.00873,
+      "med_ms": 850.000858
+    },
+    "staff:lookup": {
+      "p95_ms": 2115.5797972999994,
+      "med_ms": 1722.8909840000001
+    },
+    "notifications:unread": {
+      "p95_ms": 1024.8627836,
+      "med_ms": 810.486601
+    },
+    "public:booking:select-branch": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "services:list": {
+      "p95_ms": 1060.2050685499999,
+      "med_ms": 838.408694
+    },
+    "auth:login": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "staff:doctors": {
+      "p95_ms": 2601.3363584,
+      "med_ms": 2028.609915
+    },
+    "public:booking:select-clinic": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "analytics:performance:staff": {
+      "p95_ms": 1725.962834,
+      "med_ms": 1236.863908
+    },
+    "availability:windows": {
+      "p95_ms": 3843.453766,
+      "med_ms": 3235.0773405
+    },
+    "public:clinics": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:clinic:detail": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "branches:list": {
+      "p95_ms": 1290.9206835999998,
+      "med_ms": 840.7379145
+    },
+    "public:booking:availability": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "crm:search:term": {
+      "p95_ms": 1286.86078175,
+      "med_ms": 830.984197
+    },
+    "tenants:targets": {
+      "p95_ms": 1133.1602798,
+      "med_ms": 849.69013
+    },
+    "public:cities": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:notes": {
+      "p95_ms": 1537.4517141,
+      "med_ms": 1260.356853
+    },
+    "public:booking:select-service": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "appointments:list": {
+      "p95_ms": 1314.1033082,
+      "med_ms": 842.278206
+    },
+    "crm:list": {
+      "p95_ms": 1283.261165,
+      "med_ms": 829.8795275
+    },
+    "public:booking:confirm": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "crm:search": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "activity:list:search": {
+      "p95_ms": 1096.94976425,
+      "med_ms": 865.2659705000001
+    },
+    "notifications:inbox": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:booking:select-slot": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "activity:list": {
+      "p95_ms": 1071.6339784,
+      "med_ms": 833.2236325
+    },
+    "dashboard": {
+      "p95_ms": 936.9275948999998,
+      "med_ms": 448.831279
+    },
+    "appointments:list:deep": {
+      "p95_ms": 0,
+      "med_ms": 0
+    },
+    "public:booking:select-doctor": {
+      "p95_ms": 0,
+      "med_ms": 0
+    }
+  }
+}

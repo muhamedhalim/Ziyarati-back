@@ -1,0 +1,1687 @@
+{
+  "generatedAt": "2026-09-02T13:36:43.392Z",
+  "intervalMs": 2000,
+  "sampleCount": 41,
+  "summary": {
+    "eventloop_lag_p99_max_s": 0.212991999,
+    "pg_active_connections_max": 3,
+    "pg_idle_in_transaction_max": 0,
+    "pg_waiting_on_lock_max": 0,
+    "heap_first_bytes": 102961040,
+    "heap_last_bytes": 264505264,
+    "heap_growth_bytes": 161544224,
+    "rss_first_bytes": 707489792,
+    "rss_last_bytes": 576061440,
+    "rss_growth_bytes": -131428352,
+    "cpu_user_seconds_delta": 69.10900000000002,
+    "db_queries_delta": 30438,
+    "generator_cpu_percent_max": 42.89,
+    "generator_cpu_percent_last": 6.36,
+    "generator_cpu_percent_ceiling": 1600
+  },
+  "samples": [
+    {
+      "t": "2026-09-02T13:34:12.119Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 127.79700000000004,
+        "process_cpu_system_seconds_total": 12.219000000000003,
+        "process_cpu_seconds_total": 140.01599999999993,
+        "process_resident_memory_bytes": 707489792,
+        "nodejs_eventloop_lag_mean_seconds": 0.015956582617179214,
+        "nodejs_eventloop_lag_p90_seconds": 0.016629759,
+        "nodejs_eventloop_lag_p99_seconds": 0.024346623,
+        "nodejs_active_handles_total": 10,
+        "nodejs_heap_size_used_bytes": 102961040,
+        "db_queries_total": 83477
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "error": "no_k6_container"
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:14.460Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 127.79700000000004,
+        "process_cpu_system_seconds_total": 12.219000000000003,
+        "process_cpu_seconds_total": 140.01599999999993,
+        "process_resident_memory_bytes": 707489792,
+        "nodejs_eventloop_lag_mean_seconds": 0.016112298666666667,
+        "nodejs_eventloop_lag_p90_seconds": 0.018890751,
+        "nodejs_eventloop_lag_p99_seconds": 0.025690111,
+        "nodejs_active_handles_total": 10,
+        "nodejs_heap_size_used_bytes": 103441728,
+        "db_queries_total": 83477
+      },
+      "pg": {
+        "active": 1,
+        "idle": 1,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 2,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "error": "no_k6_container"
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:18.758Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 129.01600000000005,
+        "process_cpu_system_seconds_total": 12.265000000000002,
+        "process_cpu_seconds_total": 141.28099999999992,
+        "process_resident_memory_bytes": 708046848,
+        "nodejs_eventloop_lag_mean_seconds": 0.024673574019801983,
+        "nodejs_eventloop_lag_p90_seconds": 0.023625727,
+        "nodejs_eventloop_lag_p99_seconds": 0.206176255,
+        "nodejs_active_handles_total": 20,
+        "nodejs_heap_size_used_bytes": 146937128,
+        "db_queries_total": 83564
+      },
+      "pg": {
+        "active": 1,
+        "idle": 7,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 8,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 2.61,
+        "rows": [
+          {
+            "cpu_percent": 2.61,
+            "mem": "71MiB / 93.61GiB",
+            "net": "228kB / 48.4kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:22.804Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 132.76600000000005,
+        "process_cpu_system_seconds_total": 12.359000000000002,
+        "process_cpu_seconds_total": 145.12499999999991,
+        "process_resident_memory_bytes": 707051520,
+        "nodejs_eventloop_lag_mean_seconds": 0.03553352894915254,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.207880191,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 161775800,
+        "db_queries_total": 83972
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.49,
+        "rows": [
+          {
+            "cpu_percent": 3.49,
+            "mem": "74.72MiB / 93.61GiB",
+            "net": "523kB / 110kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:26.256Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 136.84400000000005,
+        "process_cpu_system_seconds_total": 12.500000000000002,
+        "process_cpu_seconds_total": 149.3439999999999,
+        "process_resident_memory_bytes": 225435648,
+        "nodejs_eventloop_lag_mean_seconds": 0.036136277333333335,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.208273407,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 99884256,
+        "db_queries_total": 84346
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.21,
+        "rows": [
+          {
+            "cpu_percent": 3.21,
+            "mem": "76.21MiB / 93.61GiB",
+            "net": "749kB / 158kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:30.312Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 140.23500000000004,
+        "process_cpu_system_seconds_total": 12.656000000000002,
+        "process_cpu_seconds_total": 152.8909999999999,
+        "process_resident_memory_bytes": 263561216,
+        "nodejs_eventloop_lag_mean_seconds": 0.03790900289361702,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.212336639,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 96734984,
+        "db_queries_total": 84694
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.29,
+        "rows": [
+          {
+            "cpu_percent": 3.29,
+            "mem": "77.2MiB / 93.61GiB",
+            "net": "1.04MB / 222kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:33.760Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 143.86000000000004,
+        "process_cpu_system_seconds_total": 12.812000000000003,
+        "process_cpu_seconds_total": 156.6719999999999,
+        "process_resident_memory_bytes": 294543360,
+        "nodejs_eventloop_lag_mean_seconds": 0.03716112910091743,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.212991999,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 148996736,
+        "db_queries_total": 85106
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 2.56,
+        "rows": [
+          {
+            "cpu_percent": 2.56,
+            "mem": "77.44MiB / 93.61GiB",
+            "net": "1.25MB / 269kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:37.199Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 146.82800000000003,
+        "process_cpu_system_seconds_total": 12.859000000000004,
+        "process_cpu_seconds_total": 159.6869999999999,
+        "process_resident_memory_bytes": 324947968,
+        "nodejs_eventloop_lag_mean_seconds": 0.03777670981818182,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.209584127,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 161086648,
+        "db_queries_total": 85404
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 2.83,
+        "rows": [
+          {
+            "cpu_percent": 2.83,
+            "mem": "78.68MiB / 93.61GiB",
+            "net": "1.51MB / 325kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:41.259Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 149.92200000000003,
+        "process_cpu_system_seconds_total": 13.031000000000004,
+        "process_cpu_seconds_total": 162.9529999999999,
+        "process_resident_memory_bytes": 350638080,
+        "nodejs_eventloop_lag_mean_seconds": 0.036809062927835055,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.209846271,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 162730976,
+        "db_queries_total": 85771
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.34,
+        "rows": [
+          {
+            "cpu_percent": 3.34,
+            "mem": "79.9MiB / 93.61GiB",
+            "net": "1.8MB / 389kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:44.703Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 153.42200000000003,
+        "process_cpu_system_seconds_total": 13.156000000000004,
+        "process_cpu_seconds_total": 166.5779999999999,
+        "process_resident_memory_bytes": 367783936,
+        "nodejs_eventloop_lag_mean_seconds": 0.034683574237288135,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.210108415,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 184426304,
+        "db_queries_total": 86183
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.29,
+        "rows": [
+          {
+            "cpu_percent": 3.29,
+            "mem": "81.64MiB / 93.61GiB",
+            "net": "2.02MB / 436kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:48.767Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 156.15600000000003,
+        "process_cpu_system_seconds_total": 13.406000000000004,
+        "process_cpu_seconds_total": 169.5619999999999,
+        "process_resident_memory_bytes": 387153920,
+        "nodejs_eventloop_lag_mean_seconds": 0.03560391736263736,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.210632703,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 201913448,
+        "db_queries_total": 86489
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.16,
+        "rows": [
+          {
+            "cpu_percent": 3.16,
+            "mem": "83.39MiB / 93.61GiB",
+            "net": "2.29MB / 497kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:52.807Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 159.75000000000003,
+        "process_cpu_system_seconds_total": 13.625000000000004,
+        "process_cpu_seconds_total": 173.3749999999999,
+        "process_resident_memory_bytes": 409694208,
+        "nodejs_eventloop_lag_mean_seconds": 0.0381036976146789,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.212205567,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 223273272,
+        "db_queries_total": 86901
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.04,
+        "rows": [
+          {
+            "cpu_percent": 3.04,
+            "mem": "84.89MiB / 93.61GiB",
+            "net": "2.58MB / 558kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:34:56.260Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 163.17200000000003,
+        "process_cpu_system_seconds_total": 13.703000000000003,
+        "process_cpu_seconds_total": 176.8749999999999,
+        "process_resident_memory_bytes": 426651648,
+        "nodejs_eventloop_lag_mean_seconds": 0.03628568380952381,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.210108415,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 264192208,
+        "db_queries_total": 87280
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3,
+        "rows": [
+          {
+            "cpu_percent": 3,
+            "mem": "84.87MiB / 93.61GiB",
+            "net": "2.81MB / 605kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:00.330Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 166.29700000000003,
+        "process_cpu_system_seconds_total": 13.922000000000002,
+        "process_cpu_seconds_total": 180.21899999999988,
+        "process_resident_memory_bytes": 448593920,
+        "nodejs_eventloop_lag_mean_seconds": 0.03720013069473684,
+        "nodejs_eventloop_lag_p90_seconds": 0.101056511,
+        "nodejs_eventloop_lag_p99_seconds": 0.209453055,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 260538368,
+        "db_queries_total": 87615
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.1,
+        "rows": [
+          {
+            "cpu_percent": 3.1,
+            "mem": "84.61MiB / 93.61GiB",
+            "net": "3.11MB / 668kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:03.770Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 169.92200000000003,
+        "process_cpu_system_seconds_total": 14.094000000000003,
+        "process_cpu_seconds_total": 184.01599999999988,
+        "process_resident_memory_bytes": 471359488,
+        "nodejs_eventloop_lag_mean_seconds": 0.03766459889908257,
+        "nodejs_eventloop_lag_p90_seconds": 0.101122047,
+        "nodejs_eventloop_lag_p99_seconds": 0.212467711,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 282089000,
+        "db_queries_total": 88023
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.01,
+        "rows": [
+          {
+            "cpu_percent": 3.01,
+            "mem": "85.36MiB / 93.61GiB",
+            "net": "3.33MB / 715kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:07.180Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 172.75000000000003,
+        "process_cpu_system_seconds_total": 14.406000000000002,
+        "process_cpu_seconds_total": 187.15599999999986,
+        "process_resident_memory_bytes": 487972864,
+        "nodejs_eventloop_lag_mean_seconds": 0.034428861935483876,
+        "nodejs_eventloop_lag_p90_seconds": 0.100990975,
+        "nodejs_eventloop_lag_p99_seconds": 0.208535551,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 324796432,
+        "db_queries_total": 88381
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.12,
+        "rows": [
+          {
+            "cpu_percent": 3.12,
+            "mem": "85.08MiB / 93.61GiB",
+            "net": "3.59MB / 769kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:11.256Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 174.87500000000003,
+        "process_cpu_system_seconds_total": 14.703000000000003,
+        "process_cpu_seconds_total": 189.57799999999986,
+        "process_resident_memory_bytes": 511422464,
+        "nodejs_eventloop_lag_mean_seconds": 0.02015770819047619,
+        "nodejs_eventloop_lag_p90_seconds": 0.018333695,
+        "nodejs_eventloop_lag_p99_seconds": 0.207880191,
+        "nodejs_active_handles_total": 23,
+        "nodejs_heap_size_used_bytes": 321339240,
+        "db_queries_total": 88827
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 7.57,
+        "rows": [
+          {
+            "cpu_percent": 7.57,
+            "mem": "88.32MiB / 93.61GiB",
+            "net": "3.9MB / 876kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:14.743Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 175.67200000000003,
+        "process_cpu_system_seconds_total": 14.969000000000003,
+        "process_cpu_seconds_total": 190.64099999999985,
+        "process_resident_memory_bytes": 520708096,
+        "nodejs_eventloop_lag_mean_seconds": 0.013374202980392156,
+        "nodejs_eventloop_lag_p90_seconds": 0.016261119,
+        "nodejs_eventloop_lag_p99_seconds": 0.025313279,
+        "nodejs_active_handles_total": 35,
+        "nodejs_heap_size_used_bytes": 361274376,
+        "db_queries_total": 89323
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 42.89,
+        "rows": [
+          {
+            "cpu_percent": 42.89,
+            "mem": "90.55MiB / 93.61GiB",
+            "net": "4.01MB / 908kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:18.786Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 176.34400000000002,
+        "process_cpu_system_seconds_total": 15.187000000000003,
+        "process_cpu_seconds_total": 191.53099999999984,
+        "process_resident_memory_bytes": 534568960,
+        "nodejs_eventloop_lag_mean_seconds": 0.013543296,
+        "nodejs_eventloop_lag_p90_seconds": 0.017006591,
+        "nodejs_eventloop_lag_p99_seconds": 0.023134207,
+        "nodejs_active_handles_total": 61,
+        "nodejs_heap_size_used_bytes": 338556640,
+        "db_queries_total": 89925
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 12.31,
+        "rows": [
+          {
+            "cpu_percent": 12.31,
+            "mem": "118.7MiB / 93.61GiB",
+            "net": "4.25MB / 971kB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:22.839Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 177.61,
+        "process_cpu_system_seconds_total": 15.515000000000002,
+        "process_cpu_seconds_total": 193.12499999999983,
+        "process_resident_memory_bytes": 554426368,
+        "nodejs_eventloop_lag_mean_seconds": 0.013124891517915311,
+        "nodejs_eventloop_lag_p90_seconds": 0.016318463,
+        "nodejs_eventloop_lag_p99_seconds": 0.026181631,
+        "nodejs_active_handles_total": 91,
+        "nodejs_heap_size_used_bytes": 361297496,
+        "db_queries_total": 91024
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 6.89,
+        "rows": [
+          {
+            "cpu_percent": 6.89,
+            "mem": "134.9MiB / 93.61GiB",
+            "net": "4.66MB / 1.06MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:26.298Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 178.93800000000002,
+        "process_cpu_system_seconds_total": 15.890000000000002,
+        "process_cpu_seconds_total": 194.82799999999983,
+        "process_resident_memory_bytes": 551120896,
+        "nodejs_eventloop_lag_mean_seconds": 0.013201916653594771,
+        "nodejs_eventloop_lag_p90_seconds": 0.016048127,
+        "nodejs_eventloop_lag_p99_seconds": 0.024018943,
+        "nodejs_active_handles_total": 105,
+        "nodejs_heap_size_used_bytes": 157667472,
+        "db_queries_total": 92074
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 6.5,
+        "rows": [
+          {
+            "cpu_percent": 6.5,
+            "mem": "138.4MiB / 93.61GiB",
+            "net": "4.98MB / 1.12MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:30.354Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 179.81300000000002,
+        "process_cpu_system_seconds_total": 16.203000000000003,
+        "process_cpu_seconds_total": 196.01599999999982,
+        "process_resident_memory_bytes": 552820736,
+        "nodejs_eventloop_lag_mean_seconds": 0.013066804965517242,
+        "nodejs_eventloop_lag_p90_seconds": 0.016875519,
+        "nodejs_eventloop_lag_p99_seconds": 0.023019519,
+        "nodejs_active_handles_total": 100,
+        "nodejs_heap_size_used_bytes": 140937256,
+        "db_queries_total": 93029
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 7.62,
+        "rows": [
+          {
+            "cpu_percent": 7.62,
+            "mem": "143.9MiB / 93.61GiB",
+            "net": "5.4MB / 1.2MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:33.806Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 180.76600000000002,
+        "process_cpu_system_seconds_total": 16.515000000000004,
+        "process_cpu_seconds_total": 197.2809999999998,
+        "process_resident_memory_bytes": 555581440,
+        "nodejs_eventloop_lag_mean_seconds": 0.013180145915857606,
+        "nodejs_eventloop_lag_p90_seconds": 0.016007167,
+        "nodejs_eventloop_lag_p99_seconds": 0.022495231,
+        "nodejs_active_handles_total": 118,
+        "nodejs_heap_size_used_bytes": 156851656,
+        "db_queries_total": 94146
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 9.02,
+        "rows": [
+          {
+            "cpu_percent": 9.02,
+            "mem": "148.6MiB / 93.61GiB",
+            "net": "5.68MB / 1.28MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:37.263Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 181.70300000000003,
+        "process_cpu_system_seconds_total": 16.687000000000005,
+        "process_cpu_seconds_total": 198.38999999999982,
+        "process_resident_memory_bytes": 555716608,
+        "nodejs_eventloop_lag_mean_seconds": 0.012965608727272726,
+        "nodejs_eventloop_lag_p90_seconds": 0.016220159,
+        "nodejs_eventloop_lag_p99_seconds": 0.022953983,
+        "nodejs_active_handles_total": 130,
+        "nodejs_heap_size_used_bytes": 188497672,
+        "db_queries_total": 95069
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 6.59,
+        "rows": [
+          {
+            "cpu_percent": 6.59,
+            "mem": "151.6MiB / 93.61GiB",
+            "net": "5.93MB / 1.34MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:41.328Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 182.48500000000004,
+        "process_cpu_system_seconds_total": 16.922000000000004,
+        "process_cpu_seconds_total": 199.4069999999998,
+        "process_resident_memory_bytes": 556003328,
+        "nodejs_eventloop_lag_mean_seconds": 0.013594527244094488,
+        "nodejs_eventloop_lag_p90_seconds": 0.017448959,
+        "nodejs_eventloop_lag_p99_seconds": 0.024674303,
+        "nodejs_active_handles_total": 107,
+        "nodejs_heap_size_used_bytes": 202275688,
+        "db_queries_total": 95896
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 4.55,
+        "rows": [
+          {
+            "cpu_percent": 4.55,
+            "mem": "155.3MiB / 93.61GiB",
+            "net": "6.18MB / 1.4MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:44.774Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 183.26600000000005,
+        "process_cpu_system_seconds_total": 17.094000000000005,
+        "process_cpu_seconds_total": 200.35999999999981,
+        "process_resident_memory_bytes": 554758144,
+        "nodejs_eventloop_lag_mean_seconds": 0.013809831183673469,
+        "nodejs_eventloop_lag_p90_seconds": 0.016228351,
+        "nodejs_eventloop_lag_p99_seconds": 0.023953407,
+        "nodejs_active_handles_total": 74,
+        "nodejs_heap_size_used_bytes": 214828312,
+        "db_queries_total": 96616
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 3.27,
+        "rows": [
+          {
+            "cpu_percent": 3.27,
+            "mem": "157.3MiB / 93.61GiB",
+            "net": "6.26MB / 1.42MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:48.775Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 183.46900000000005,
+        "process_cpu_system_seconds_total": 17.156000000000006,
+        "process_cpu_seconds_total": 200.6249999999998,
+        "process_resident_memory_bytes": 556363776,
+        "nodejs_eventloop_lag_mean_seconds": 0.014792650573913043,
+        "nodejs_eventloop_lag_p90_seconds": 0.016392191,
+        "nodejs_eventloop_lag_p99_seconds": 0.022593535,
+        "nodejs_active_handles_total": 55,
+        "nodejs_heap_size_used_bytes": 209717376,
+        "db_queries_total": 96877
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 12.23,
+        "rows": [
+          {
+            "cpu_percent": 12.23,
+            "mem": "166.6MiB / 93.61GiB",
+            "net": "6.36MB / 1.44MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:52.842Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 183.93800000000005,
+        "process_cpu_system_seconds_total": 17.297000000000004,
+        "process_cpu_seconds_total": 201.23499999999981,
+        "process_resident_memory_bytes": 556412928,
+        "nodejs_eventloop_lag_mean_seconds": 0.014583545435897436,
+        "nodejs_eventloop_lag_p90_seconds": 0.017334271,
+        "nodejs_eventloop_lag_p99_seconds": 0.024395775,
+        "nodejs_active_handles_total": 52,
+        "nodejs_heap_size_used_bytes": 221904712,
+        "db_queries_total": 97248
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 2.97,
+        "rows": [
+          {
+            "cpu_percent": 2.97,
+            "mem": "169.4MiB / 93.61GiB",
+            "net": "6.51MB / 1.47MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:35:56.320Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 184.26600000000005,
+        "process_cpu_system_seconds_total": 17.484000000000005,
+        "process_cpu_seconds_total": 201.7499999999998,
+        "process_resident_memory_bytes": 556519424,
+        "nodejs_eventloop_lag_mean_seconds": 0.014738595246376813,
+        "nodejs_eventloop_lag_p90_seconds": 0.017072127,
+        "nodejs_eventloop_lag_p99_seconds": 0.023248895,
+        "nodejs_active_handles_total": 49,
+        "nodejs_heap_size_used_bytes": 226533560,
+        "db_queries_total": 97574
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 5.35,
+        "rows": [
+          {
+            "cpu_percent": 5.35,
+            "mem": "169.9MiB / 93.61GiB",
+            "net": "6.58MB / 1.49MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:00.389Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 184.75000000000006,
+        "process_cpu_system_seconds_total": 17.750000000000007,
+        "process_cpu_seconds_total": 202.4999999999998,
+        "process_resident_memory_bytes": 556822528,
+        "nodejs_eventloop_lag_mean_seconds": 0.013887726522088353,
+        "nodejs_eventloop_lag_p90_seconds": 0.017055743,
+        "nodejs_eventloop_lag_p99_seconds": 0.024641535,
+        "nodejs_active_handles_total": 74,
+        "nodejs_heap_size_used_bytes": 220668552,
+        "db_queries_total": 98030
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 40.17,
+        "rows": [
+          {
+            "cpu_percent": 40.17,
+            "mem": "236.3MiB / 93.61GiB",
+            "net": "6.83MB / 1.56MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:03.840Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 186.09400000000005,
+        "process_cpu_system_seconds_total": 18.156000000000006,
+        "process_cpu_seconds_total": 204.2499999999998,
+        "process_resident_memory_bytes": 556978176,
+        "nodejs_eventloop_lag_mean_seconds": 0.01214806352238806,
+        "nodejs_eventloop_lag_p90_seconds": 0.015720447,
+        "nodejs_eventloop_lag_p99_seconds": 0.022888447,
+        "nodejs_active_handles_total": 117,
+        "nodejs_heap_size_used_bytes": 225185912,
+        "db_queries_total": 99427
+      },
+      "pg": {
+        "active": 3,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 12,
+        "longest_active_s": 0.009995
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 9.89,
+        "rows": [
+          {
+            "cpu_percent": 9.89,
+            "mem": "239.6MiB / 93.61GiB",
+            "net": "7.28MB / 1.67MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:07.288Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 187.56300000000005,
+        "process_cpu_system_seconds_total": 18.375000000000007,
+        "process_cpu_seconds_total": 205.9379999999998,
+        "process_resident_memory_bytes": 559120384,
+        "nodejs_eventloop_lag_mean_seconds": 0.012069393902097901,
+        "nodejs_eventloop_lag_p90_seconds": 0.015785983,
+        "nodejs_eventloop_lag_p99_seconds": 0.023592959,
+        "nodejs_active_handles_total": 188,
+        "nodejs_heap_size_used_bytes": 252825968,
+        "db_queries_total": 101342
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 9.42,
+        "rows": [
+          {
+            "cpu_percent": 9.42,
+            "mem": "246.8MiB / 93.61GiB",
+            "net": "7.96MB / 1.81MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:11.337Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 188.84400000000005,
+        "process_cpu_system_seconds_total": 18.875000000000007,
+        "process_cpu_seconds_total": 207.7189999999998,
+        "process_resident_memory_bytes": 560640000,
+        "nodejs_eventloop_lag_mean_seconds": 0.011830575275261324,
+        "nodejs_eventloop_lag_p90_seconds": 0.015499263,
+        "nodejs_eventloop_lag_p99_seconds": 0.023117823,
+        "nodejs_active_handles_total": 187,
+        "nodejs_heap_size_used_bytes": 265557984,
+        "db_queries_total": 103524
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0.000658
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 9.75,
+        "rows": [
+          {
+            "cpu_percent": 9.75,
+            "mem": "254.3MiB / 93.61GiB",
+            "net": "8.56MB / 1.95MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:14.774Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 190.75000000000006,
+        "process_cpu_system_seconds_total": 19.156000000000006,
+        "process_cpu_seconds_total": 209.9059999999998,
+        "process_resident_memory_bytes": 565653504,
+        "nodejs_eventloop_lag_mean_seconds": 0.012114090666666666,
+        "nodejs_eventloop_lag_p90_seconds": 0.015613951,
+        "nodejs_eventloop_lag_p99_seconds": 0.023216127,
+        "nodejs_active_handles_total": 173,
+        "nodejs_heap_size_used_bytes": 253262696,
+        "db_queries_total": 105707
+      },
+      "pg": {
+        "active": 2,
+        "idle": 9,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 10.3,
+        "rows": [
+          {
+            "cpu_percent": 10.3,
+            "mem": "261.8MiB / 93.61GiB",
+            "net": "9.26MB / 2.08MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:18.806Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 192.18800000000005,
+        "process_cpu_system_seconds_total": 19.625000000000007,
+        "process_cpu_seconds_total": 211.81299999999982,
+        "process_resident_memory_bytes": 568102912,
+        "nodejs_eventloop_lag_mean_seconds": 0.012322216228571428,
+        "nodejs_eventloop_lag_p90_seconds": 0.015867903,
+        "nodejs_eventloop_lag_p99_seconds": 0.024051711,
+        "nodejs_active_handles_total": 209,
+        "nodejs_heap_size_used_bytes": 277174376,
+        "db_queries_total": 107651
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 10,
+        "rows": [
+          {
+            "cpu_percent": 10,
+            "mem": "271.5MiB / 93.61GiB",
+            "net": "9.97MB / 2.25MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:22.851Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 193.78100000000003,
+        "process_cpu_system_seconds_total": 19.953000000000007,
+        "process_cpu_seconds_total": 213.7339999999998,
+        "process_resident_memory_bytes": 569954304,
+        "nodejs_eventloop_lag_mean_seconds": 0.012164343388379205,
+        "nodejs_eventloop_lag_p90_seconds": 0.015810559,
+        "nodejs_eventloop_lag_p99_seconds": 0.022675455,
+        "nodejs_active_handles_total": 216,
+        "nodejs_heap_size_used_bytes": 249739592,
+        "db_queries_total": 110111
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 12.51,
+        "rows": [
+          {
+            "cpu_percent": 12.51,
+            "mem": "281.2MiB / 93.61GiB",
+            "net": "10.7MB / 2.41MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:26.269Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 195.26600000000005,
+        "process_cpu_system_seconds_total": 20.390000000000008,
+        "process_cpu_seconds_total": 215.6559999999998,
+        "process_resident_memory_bytes": 571588608,
+        "nodejs_eventloop_lag_mean_seconds": 0.012582171912772586,
+        "nodejs_eventloop_lag_p90_seconds": 0.016048127,
+        "nodejs_eventloop_lag_p99_seconds": 0.025788415,
+        "nodejs_active_handles_total": 206,
+        "nodejs_heap_size_used_bytes": 285433672,
+        "db_queries_total": 112151
+      },
+      "pg": {
+        "active": 3,
+        "idle": 8,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 8.16,
+        "rows": [
+          {
+            "cpu_percent": 8.16,
+            "mem": "287.2MiB / 93.61GiB",
+            "net": "11.1MB / 2.5MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:30.336Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 195.95300000000006,
+        "process_cpu_system_seconds_total": 20.56200000000001,
+        "process_cpu_seconds_total": 216.51499999999982,
+        "process_resident_memory_bytes": 572841984,
+        "nodejs_eventloop_lag_mean_seconds": 0.013177689302325582,
+        "nodejs_eventloop_lag_p90_seconds": 0.016318463,
+        "nodejs_eventloop_lag_p99_seconds": 0.022593535,
+        "nodejs_active_handles_total": 148,
+        "nodejs_heap_size_used_bytes": 259902920,
+        "db_queries_total": 113043
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 4.82,
+        "rows": [
+          {
+            "cpu_percent": 4.82,
+            "mem": "289.7MiB / 93.61GiB",
+            "net": "11.3MB / 2.54MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:33.819Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 196.37500000000006,
+        "process_cpu_system_seconds_total": 20.65600000000001,
+        "process_cpu_seconds_total": 217.0309999999998,
+        "process_resident_memory_bytes": 574861312,
+        "nodejs_eventloop_lag_mean_seconds": 0.014773470608695652,
+        "nodejs_eventloop_lag_p90_seconds": 0.016637951,
+        "nodejs_eventloop_lag_p99_seconds": 0.023986175,
+        "nodejs_active_handles_total": 66,
+        "nodejs_heap_size_used_bytes": 266007160,
+        "db_queries_total": 113420
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 5.81,
+        "rows": [
+          {
+            "cpu_percent": 5.81,
+            "mem": "291.4MiB / 93.61GiB",
+            "net": "11.4MB / 2.57MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:37.292Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 196.67200000000005,
+        "process_cpu_system_seconds_total": 20.797000000000008,
+        "process_cpu_seconds_total": 217.4689999999998,
+        "process_resident_memory_bytes": 575217664,
+        "nodejs_eventloop_lag_mean_seconds": 0.014808580376068376,
+        "nodejs_eventloop_lag_p90_seconds": 0.017285119,
+        "nodejs_eventloop_lag_p99_seconds": 0.024788991,
+        "nodejs_active_handles_total": 64,
+        "nodejs_heap_size_used_bytes": 269553352,
+        "db_queries_total": 113668
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 2.73,
+        "rows": [
+          {
+            "cpu_percent": 2.73,
+            "mem": "291.9MiB / 93.61GiB",
+            "net": "11.5MB / 2.59MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    },
+    {
+      "t": "2026-09-02T13:36:41.386Z",
+      "metrics": {
+        "process_cpu_user_seconds_total": 196.90600000000006,
+        "process_cpu_system_seconds_total": 20.90600000000001,
+        "process_cpu_seconds_total": 217.81199999999978,
+        "process_resident_memory_bytes": 576061440,
+        "nodejs_eventloop_lag_mean_seconds": 0.014927543965367966,
+        "nodejs_eventloop_lag_p90_seconds": 0.017088511,
+        "nodejs_eventloop_lag_p99_seconds": 0.024248319,
+        "nodejs_active_handles_total": 51,
+        "nodejs_heap_size_used_bytes": 264505264,
+        "db_queries_total": 113915
+      },
+      "pg": {
+        "active": 1,
+        "idle": 10,
+        "idle_in_tx": 0,
+        "waiting_on_lock": 0,
+        "total": 11,
+        "longest_active_s": 0
+      },
+      "redis": {
+        "error": "redis_unreachable"
+      },
+      "generator": {
+        "containers": 1,
+        "cpu_percent_total": 6.36,
+        "rows": [
+          {
+            "cpu_percent": 6.36,
+            "mem": "297.4MiB / 93.61GiB",
+            "net": "11.6MB / 2.61MB",
+            "pids": 21
+          }
+        ]
+      },
+      "locks": {
+        "error": "pg_unreachable"
+      }
+    }
+  ]
+}

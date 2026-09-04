@@ -1,0 +1,29 @@
+ total_ms | calls | mean_ms |  rows   |                                                                         query                                                                          
+----------+-------+---------+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------
+     7839 | 12074 |    0.65 | 1122190 | SELECT "u"."id" AS "userId", "u"."is_active" AS "userIsActive", "u"."email" AS "userEmail", "u"."full_name" AS "userFullName", "t"."id" AS "tenantId",
+     2188 |   843 |    2.60 |  205612 | SELECT "UserRole"."id" AS "UserRole_id", "UserRole"."assigned_at" AS "UserRole_assigned_at", "UserRole"."userId" AS "UserRole_userId", "UserRole"."rol
+      786 |  3970 |    0.20 |   11910 | SELECT "schedule"."id" AS "schedule_id", "schedule"."day_of_week" AS "schedule_day_of_week", "schedule"."start_time" AS "schedule_start_time", "schedu
+      616 |  1632 |    0.38 |    1632 | INSERT INTO "appointments"("id", "start_at", "end_at", "status", "payment_status", "total_amount", "currency", "booked_timezone", "notes", "source", "
+      592 |  3970 |    0.15 |    3970 | SELECT "WorkingHour"."id" AS "WorkingHour_id", "WorkingHour"."day_of_week" AS "WorkingHour_day_of_week", "WorkingHour"."start_time" AS "WorkingHour_st
+      559 |  3970 |    0.14 |    1551 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+      524 |   697 |    0.75 |    2030 | SELECT DISTINCT "distinctAlias"."Customer_id" AS "ids_Customer_id", "distinctAlias"."Customer_created_at" FROM (SELECT "Customer"."id" AS "Customer_id
+      505 |  1632 |    0.31 |    1632 | INSERT INTO "audit_logs"("id", "action", "entity_type", "entity_id", "entity_label", "old_values", "new_values", "ip_address", "created_at", "tenantId
+      434 |  1632 |    0.27 |       0 | INSERT INTO "subscription_usage"("id", "tenant_id", "subscription_id", "period_month", "ai_tokens_used", "whatsapp_messages_used", "appointments_used"
+      359 |   312 |    1.15 |     312 | SELECT COUNT(DISTINCT("Appointment"."id")) AS "cnt" FROM "appointments" "Appointment" LEFT JOIN "branches" "Appointment__Appointment_branch" ON "Appoi
+      287 |  1976 |    0.15 |    1976 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+      270 | 19684 |    0.01 |   19684 | SELECT $2 FROM ONLY "public"."users" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x
+      248 |   285 |    0.87 |    2076 | SELECT "staff"."id" AS "staffId", "u"."full_name" AS "name", COUNT(*) AS "total", COUNT(*) FILTER (WHERE "a"."status" = $1) AS "completed", COUNT(*) F
+      226 |  1632 |    0.14 |    1632 | INSERT INTO "appointment_status_logs"("id", "status", "triggered_by", "created_at", "appointmentId", "tenantId") VALUES (DEFAULT, $1, $2, DEFAULT, $3,
+      221 |   223 |    0.99 |    4460 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+      201 |  1632 |    0.12 |    1632 | INSERT INTO "appointment_history"("id", "changed_by", "old_status", "new_status", "note", "created_at", "appointmentId", "tenantId") VALUES (DEFAULT, 
+      196 |  1632 |    0.12 |    1632 | UPDATE "subscription_usage" SET "appointments_used" = "appointments_used" + $1, "updated_at" = now() WHERE "tenant_id" = $2 AND "period_month" = $3 AN
+      193 |  5602 |    0.03 |    5602 | SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."title" AS "StaffProfile_title", "StaffProfile"."bio" AS "StaffProfile_bio", "StaffPro
+      174 |  3970 |    0.04 |    3970 | SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."address" AS "Branch_address", "Branch"."city_id" AS "Branch_city_id",
+      152 |  3190 |    0.05 |   70180 | SELECT "FeatureDefinition"."id" AS "FeatureDefinition_id", "FeatureDefinition"."feature_key" AS "FeatureDefinition_feature_key", "FeatureDefinition"."
+      148 |  5602 |    0.03 |    5602 | SELECT DISTINCT "distinctAlias"."StaffProfile_id" AS "ids_StaffProfile_id" FROM (SELECT "StaffProfile"."id" AS "StaffProfile_id", "StaffProfile"."titl
+      147 |   843 |    0.17 |    4148 | SELECT "UserRole"."id" AS "UserRole_id", "UserRole"."assigned_at" AS "UserRole_assigned_at", "UserRole"."userId" AS "UserRole_userId", "UserRole"."rol
+      126 |   212 |    0.60 |    2120 | SELECT "Appointment"."id" AS "Appointment_id", "Appointment"."start_at" AS "Appointment_start_at", "Appointment"."end_at" AS "Appointment_end_at", "Ap
+      120 |  3970 |    0.03 |    3970 | SELECT $3 AS "row_exists" FROM (SELECT $4 AS dummy_column) "dummy_table" WHERE EXISTS (SELECT $5 FROM "branches" "Branch" LEFT JOIN "tenants" "Branch_
+      115 |  3970 |    0.03 |    3970 | SELECT DISTINCT "distinctAlias"."Branch_id" AS "ids_Branch_id" FROM (SELECT "Branch"."id" AS "Branch_id", "Branch"."name" AS "Branch_name", "Branch"."
+(25 rows)
+

@@ -11,6 +11,7 @@ import {
   JoinColumn,
   Index,
   Check,
+  Exclusion,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
@@ -45,6 +46,41 @@ import { decimalTransformer } from '../../common/transformers/decimal.transforme
 @Index(['tenant', 'start_at'])
 @Check('appointments_end_after_start', '"end_at" > "start_at"')
 @Check('appointments_total_nonneg', '"total_amount" IS NULL OR "total_amount" >= 0')
+/**
+ * P0.1 — the race-proof double-booking guard, declared here so that TypeORM
+ * KNOWS ABOUT IT.
+ *
+ * The constraint is created by migration (`AppointmentNoOverlap
+ * 1730001100000`, repaired by `AppointmentNoOverlapRepair1730088000000`) and
+ * that remains its source of truth for production, where `synchronize` is a
+ * hard boot error. This decorator exists for a different reason: TypeORM's
+ * schema synchronizer drops every EXCLUDE constraint it finds in the database
+ * but not in entity metadata (`RdbmsSchemaBuilder.dropOldExclusions`). Until
+ * this declaration existed, EVERY `TYPEORM_SYNCHRONIZE=true` boot silently
+ * issued
+ *
+ *     ALTER TABLE "appointments" DROP CONSTRAINT "appointments_no_overlap"
+ *
+ * against a correctly-migrated database, leaving the `migrations` row in place
+ * and the guarantee gone — which is exactly how a 500-VU contention run put 495
+ * appointments into one doctor's 15-minute slot, all HTTP 201.
+ *
+ * The synchronizer matches exclusion constraints BY NAME, so the name here MUST
+ * stay byte-identical to the migration's. The expression is everything after
+ * `EXCLUDE` (see `PostgresQueryRunner.createExclusionConstraintSql`) and is
+ * kept character-for-character in step with the migration, so a database built
+ * by `synchronize` gets the SAME guard rather than a lookalike.
+ *
+ * Consequence worth knowing: on a synchronize-built database that already
+ * contains overlapping rows, boot now FAILS on this ALTER instead of quietly
+ * permitting double-booking. That is the intended trade — and it cannot affect
+ * production, which never synchronizes.
+ */
+@Exclusion(
+  'appointments_no_overlap',
+  `USING gist ("staffId" WITH =, tstzrange("start_at", "end_at", '[)') WITH &&) ` +
+    `WHERE (status NOT IN ('CANCELLED','NO_SHOW') AND deleted_at IS NULL)`,
+)
 export class Appointment {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

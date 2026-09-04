@@ -1,0 +1,5 @@
+ziyarati (dev, 118 migrations)     -> REFUSED: TYPEORM_SYNCHRONIZE=true, but the target database has 118 applied migration(s) — it is provisioned and owned by the migration chain.
+ziyarati_e2e (132 migrations)      -> REFUSED: TYPEORM_SYNCHRONIZE=true, but the target database has 132 applied migration(s) — it is provisioned and owned by the migration chain.
+ziyarati_perf (133 migrations)     -> REFUSED: TYPEORM_SYNCHRONIZE=true, but the target database has 133 applied migration(s) — it is provisioned and owned by the migration chain.
+ziyarati_perf_t2 (75 migrations)   -> REFUSED: TYPEORM_SYNCHRONIZE=true, but the target database has 75 applied migration(s) — it is provisioned and owned by the migration chain.
+p03_virgin (never migrated)        -> ALLOWED (synchronize=true)

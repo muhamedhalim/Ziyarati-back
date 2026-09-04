@@ -9,6 +9,44 @@ export interface DatabaseSslEnv {
 }
 
 /**
+ * The three values Joi accepts for `NODE_ENV` (`env.validation.ts`). Anything
+ * else reaching {@link isProductionEnv} is a typo or an unvalidated code path,
+ * and is treated as production.
+ */
+const KNOWN_NON_PRODUCTION = new Set(['development', 'test']);
+
+/**
+ * "Is this a production environment?", answered so that an unrecognised value
+ * FAILS CLOSED (P0.3 SCHEMA-007).
+ *
+ * This used to be `env.NODE_ENV === 'production'` — an exact, case-sensitive
+ * comparison. Reached through a normal API/worker boot that is safe, because
+ * Joi has already restricted `NODE_ENV` to `development|production|test` and
+ * `ConfigService.get` returns the validated value. But `src/migrate.ts` —
+ * the documented separate release-step migration runner for Railway / Fly /
+ * ECS / Kubernetes Jobs — deliberately reads `process.env` directly and runs
+ * NO Joi validation at all. Measured through the compiled factory: `PRODUCTION`,
+ * `production ` (trailing space) and `prod` all took the non-production branch
+ * and returned `false`, i.e. connected to the production database with
+ * certificate verification entirely disabled, while succeeding silently.
+ *
+ * The fix is deliberately asymmetric. Values are normalised (trimmed,
+ * lower-cased) so obvious variants resolve correctly, and anything still
+ * unrecognised is treated as PRODUCTION — which forces the caller to supply a
+ * CA and therefore fails loudly, instead of quietly downgrading TLS. Getting
+ * this wrong in the safe direction costs a clear boot error in a dev
+ * environment with a mistyped variable; getting it wrong in the other
+ * direction costs an unauthenticated production database connection.
+ */
+export function isProductionEnv(nodeEnv: string | undefined): boolean {
+  const normalised = String(nodeEnv ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalised === '') return false; // genuinely unset — local development
+  return !KNOWN_NON_PRODUCTION.has(normalised);
+}
+
+/**
  * Single shared PostgreSQL TLS policy (ZT-012), sourced from ONE place and
  * called from all three production connection sites — the migration
  * `DataSource` (`run-migrations-with-lock.ts`, opens the FIRST connection of
@@ -38,7 +76,7 @@ export interface DatabaseSslEnv {
  * it.
  */
 export function databaseSslOptions(env: DatabaseSslEnv): boolean | TlsOptions {
-  const isProduction = env.NODE_ENV === 'production';
+  const isProduction = isProductionEnv(env.NODE_ENV);
   if (!isProduction) return false;
 
   const inlineCert = String(env.DB_SSL_CA_CERT ?? '').trim();

@@ -20,6 +20,7 @@ import { BranchScopeModule } from './core/branch-scope/branch-scope.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { SchemaGuardModule } from './config/schema-guard.module';
 import { MetricsService } from './metrics/metrics.service';
 import {
   bullPrefix,
@@ -262,6 +263,8 @@ const WORKER_PROVIDERS =
     CryptoModule,
     QueueModule,
     MetricsModule,
+
+    SchemaGuardModule,
     // `QueueModule` only calls `BullModule.forRootAsync` (shared config, no
     // per-queue registration — see its docstring). That alone never activates
     // `@nestjs/bullmq`'s `BullRegistrar`/`BullExplorer`: those are provided by

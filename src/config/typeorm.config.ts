@@ -1,11 +1,17 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
-import { AdvancedConsoleLogger, type Logger as TypeOrmLogger, type QueryRunner } from 'typeorm';
+import {
+  AdvancedConsoleLogger,
+  DataSource,
+  type Logger as TypeOrmLogger,
+  type QueryRunner,
+} from 'typeorm';
 import { join } from 'node:path';
+import type { TlsOptions } from 'node:tls';
 
 import { runMigrationsWithAdvisoryLock } from './run-migrations-with-lock';
-import { databaseSslOptions } from './database-ssl';
+import { databaseSslOptions, isProductionEnv } from './database-ssl';
 import { MetricsService } from '../metrics/metrics.service';
 import { getCurrentRequestRoute } from '../core/tenant-context/tenant-context.service';
 
@@ -41,7 +47,11 @@ export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
     this.delegate = new AdvancedConsoleLogger(logging);
   }
 
-  logQuery(query: string, parameters?: unknown[], queryRunner?: QueryRunner): void {
+  logQuery(
+    query: string,
+    parameters?: unknown[],
+    queryRunner?: QueryRunner,
+  ): void {
     this.metrics.recordDbQuery(getCurrentRequestRoute() ?? 'unknown');
     this.delegate.logQuery(query, parameters, queryRunner);
   }
@@ -52,10 +62,20 @@ export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
     parameters?: unknown[],
     queryRunner?: QueryRunner,
   ): void {
-    this.delegate.logQueryError(error as string, query, parameters, queryRunner);
+    this.delegate.logQueryError(
+      error as string,
+      query,
+      parameters,
+      queryRunner,
+    );
   }
 
-  logQuerySlow(time: number, query: string, parameters?: unknown[], queryRunner?: QueryRunner): void {
+  logQuerySlow(
+    time: number,
+    query: string,
+    parameters?: unknown[],
+    queryRunner?: QueryRunner,
+  ): void {
     this.delegate.logQuerySlow(time, query, parameters, queryRunner);
   }
 
@@ -67,7 +87,11 @@ export class MetricsAwareTypeOrmLogger implements TypeOrmLogger {
     this.delegate.logMigration(message, queryRunner);
   }
 
-  log(level: 'log' | 'info' | 'warn', message: unknown, queryRunner?: QueryRunner): void {
+  log(
+    level: 'log' | 'info' | 'warn',
+    message: unknown,
+    queryRunner?: QueryRunner,
+  ): void {
     this.delegate.log(level, message, queryRunner);
   }
 }
@@ -95,7 +119,13 @@ export async function typeOrmFactory(
 ): Promise<TypeOrmModuleOptions> {
   const logger = new Logger('TypeORM');
 
-  const isProduction = config.get<string>('NODE_ENV') === 'production';
+  // P0.3 SCHEMA-007: `isProductionEnv` rather than `=== 'production'`, so an
+  // unrecognised NODE_ENV takes the PRODUCTION branch (refusing synchronize,
+  // demanding a CA) instead of the permissive one. Unreachable through a normal
+  // boot — Joi restricts NODE_ENV to development|production|test and
+  // `ConfigService.get` returns the validated value — but this factory is also
+  // driven directly by tooling and tests that bypass that validation.
+  const isProduction = isProductionEnv(config.get<string>('NODE_ENV'));
   const databaseUrl = config.get<string>('DATABASE_URL');
   if (!databaseUrl) {
     throw new Error('❌ DATABASE_URL is missing in .env');
@@ -133,6 +163,23 @@ export async function typeOrmFactory(
     throw new Error('❌ TypeORM synchronize is NOT allowed in production');
   }
   if (synchronize) {
+    // P0.3 RULE 3 / RULE 11.7 — the SECOND line of defence, for the case the
+    // `NODE_ENV=production` guard above cannot see.
+    //
+    // P0.2 measured what one `TYPEORM_SYNCHRONIZE=true` boot does to a
+    // fully-migrated schema: 178 DROP INDEX, 120 DROP CONSTRAINT, 23 DROP
+    // COLUMN, 28 DROP NOT NULL — a net loss of 32 integrity guards and the
+    // DATA in 23 columns, including a clinical audit trail. The guard above
+    // only stops that when `NODE_ENV` says production. It does nothing for the
+    // genuinely dangerous middle ground: a staging, QA, demo, restored-from-
+    // backup or shared-team database that is provisioned by migrations and
+    // holds real data, but is booted with `NODE_ENV=development`.
+    //
+    // A populated `migrations` table is the precise, checkable signal that a
+    // database is migration-owned and therefore persistent. A throwaway dev
+    // database created BY synchronize has no such table (synchronize skips the
+    // migration chain entirely), so the ordinary local workflow is untouched.
+    await assertSynchronizeIsSafeForTarget(databaseUrl, ssl, config, logger);
     logger.warn('⚠️ TypeORM synchronize ENABLED (DEV ONLY)');
   }
 
@@ -189,9 +236,16 @@ export async function typeOrmFactory(
     // the on/off + level behavior `logging` used to provide is reproduced by
     // constructing the logger with the identical value below.
     logger: metrics
-      ? new MetricsAwareTypeOrmLogger(metrics, logging ? ['query', 'error', 'warn'] : ['error'])
+      ? new MetricsAwareTypeOrmLogger(
+          metrics,
+          logging ? ['query', 'error', 'warn'] : ['error'],
+        )
       : undefined,
-    logging: metrics ? undefined : logging ? ['query', 'error', 'warn'] : ['error'],
+    logging: metrics
+      ? undefined
+      : logging
+        ? ['query', 'error', 'warn']
+        : ['error'],
     ssl,
     extra: {
       // Default raised 10 → 15 (Phase 0 correction, measured — see
@@ -259,6 +313,93 @@ export async function typeOrmFactory(
       ),
     },
   } as TypeOrmModuleOptions;
+}
+
+/** Env var that waives {@link assertSynchronizeIsSafeForTarget}. */
+export const SYNCHRONIZE_MIGRATED_DB_OVERRIDE =
+  'TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB';
+
+/**
+ * Refuses to boot with `synchronize` on against a database that migrations
+ * provisioned (P0.3 RULE 3 / RULE 11.7).
+ *
+ * WHY A ROW COUNT AND NOT A HEURISTIC: a database whose `migrations` table
+ * holds at least one row was built, at some point, by the migration chain.
+ * Every schema object those migrations created that entity metadata does not
+ * describe — every partial unique index, every CHECK, every raw-SQL table —
+ * is one the synchronizer will DROP. That is not a risk assessment; P0.2
+ * measured it. Conversely a database with no `migrations` table has only ever
+ * been built by synchronize, so there is nothing for synchronize to destroy
+ * and the check passes silently.
+ *
+ * WHY IT THROWS RATHER THAN DOWNGRADING TO MIGRATIONS: silently switching a
+ * developer's box from synchronize to migrations would run 133 migrations
+ * against their database without being asked. Refusing states the problem and
+ * leaves the choice — rebuild, or set the override — to a human.
+ *
+ * FAILS OPEN ON AN UNREACHABLE DATABASE, deliberately: if the connection
+ * itself is broken, the DataSource that follows will fail with the real
+ * error, which is far more useful than this check's guess at one.
+ */
+async function assertSynchronizeIsSafeForTarget(
+  databaseUrl: string,
+  ssl: boolean | TlsOptions,
+  config: ConfigService,
+  logger: Logger,
+): Promise<void> {
+  if (config.get<string>(SYNCHRONIZE_MIGRATED_DB_OVERRIDE) === 'true') {
+    logger.warn(
+      `⚠️ ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}=true — synchronize is permitted against a ` +
+        `migration-provisioned database. Every schema object not described by entity ` +
+        `metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be ` +
+        `DROPPED on this boot.`,
+    );
+    return;
+  }
+
+  const probe = new DataSource({
+    type: 'postgres',
+    url: databaseUrl,
+    ssl,
+    logging: false,
+  });
+  let migrationCount: number | null = null;
+  try {
+    await probe.initialize();
+    const rows = (await probe.query(
+      `SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public' AND tablename = 'migrations'`,
+    )) as Array<{ n: number }>;
+    if ((rows[0]?.n ?? 0) > 0) {
+      const applied = (await probe.query(
+        `SELECT count(*)::int AS n FROM public.migrations`,
+      )) as Array<{ n: number }>;
+      migrationCount = applied[0]?.n ?? 0;
+    } else {
+      migrationCount = 0;
+    }
+  } catch {
+    migrationCount = null; // unreachable — let the real DataSource report why
+  } finally {
+    if (probe.isInitialized) await probe.destroy();
+  }
+
+  if (migrationCount !== null && migrationCount > 0) {
+    throw new Error(
+      `❌ TYPEORM_SYNCHRONIZE=true, but the target database has ${migrationCount} applied ` +
+        `migration(s) — it is provisioned and owned by the migration chain.\n\n` +
+        `   Refusing to boot. A synchronize run against a migrated schema DROPS every ` +
+        `object entity metadata does not describe. Measured on this schema (P0.2): 178 ` +
+        `DROP INDEX, 120 DROP CONSTRAINT, 23 DROP COLUMN, 28 DROP NOT NULL — a net loss of ` +
+        `32 integrity guards plus the DATA in 23 columns, one of which is a clinical audit ` +
+        `trail. Re-running the migrations afterwards repairs nothing: they are already ` +
+        `recorded as applied.\n\n` +
+        `   Choose one:\n` +
+        `     • set TYPEORM_SYNCHRONIZE=false  — let migrations own this schema (recommended)\n` +
+        `     • point DATABASE_URL at a throwaway database with no migration history\n` +
+        `     • set ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}=true — accept the destruction knowingly\n\n` +
+        `   See tests/load/reports/P0.3_SCHEMA_REMEDIATION_PLAN.md.`,
+    );
+  }
 }
 
 /**

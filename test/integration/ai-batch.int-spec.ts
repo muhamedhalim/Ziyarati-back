@@ -53,6 +53,12 @@ async function boot() {
     ],
     migrations: [join(process.cwd(), 'src', 'migrations', '!(*.spec).{ts,js}')],
     synchronize: false,
+    // P0.3: REQUIRED. Several migrations set `transaction = false` for
+    // `CREATE INDEX CONCURRENTLY`, and TypeORM refuses to combine a
+    // per-migration override with the default global mode 'all' — so without
+    // this, `runMigrations()` throws, `available` stays false, and every test
+    // below silently no-ops. Matches src/config/data-source.ts.
+    migrationsTransactionMode: 'each' as const,
   });
   await ds.initialize();
   await ds.runMigrations();
@@ -444,8 +450,15 @@ describe('Data residency — real Postgres, fail-closed (no OpenAI)', () => {
         enc as never,
         deployments as never,
       );
+      // `publicContext`, not `context` — `AppError`'s property is
+      // `publicContext` and `AiDataResidencyService` sets it there
+      // (ai-data-residency.service.ts:161), as its own unit spec asserts.
+      // This assertion had the wrong property name and always would have
+      // failed; nobody saw it because the whole suite silently no-opped until
+      // P0.3 fixed `migrationsTransactionMode` above. The behaviour under test
+      // was always correct — the service does fail closed.
       await expect(svc.resolve(tenant)).rejects.toMatchObject({
-        context: { reason: 'AI_COMPLIANCE_ROUTE_UNAVAILABLE' },
+        publicContext: { reason: 'AI_COMPLIANCE_ROUTE_UNAVAILABLE' },
       });
     },
   );

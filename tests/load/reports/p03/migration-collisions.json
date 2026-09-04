@@ -1,0 +1,11 @@
+[
+ {
+  "round": 0,
+  "migration": "PatientActionLinks1730063000000",
+  "error": "relation \"patient_action_links\" already exists"
+ },
+ {
+  "round": 1,
+  "status": "CHAIN COMPLETED"
+ }
+]
