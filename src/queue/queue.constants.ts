@@ -101,6 +101,13 @@ export const JOB = {
   NOTIFICATIONS_DISPATCH: 'notifications.dispatch',
   NOTIFICATIONS_REAP: 'notifications.reap',
   NOTIFICATIONS_DLQ: 'notifications.dlq',
+  /** P1.5 (MS-007) — durable, outbox-driven reminder scheduling for a newly
+   *  created appointment. Written to `outbox_jobs` in the SAME transaction
+   *  as the appointment row (`AppointmentsService.create`), so it commits
+   *  or rolls back atomically with the booking — never a listener racing a
+   *  saturated pool for a connection after the fact. Consumed by
+   *  `NotificationsProcessor` (same queue reminders already live on). */
+  REMINDERS_SCHEDULE: 'reminders.schedule',
   WHATSAPP_SEND: 'whatsapp.send',
   WHATSAPP_RETRY: 'whatsapp.retry',
   WHATSAPP_WEBHOOK_PROCESS: 'whatsapp.webhookProcess',

@@ -70,7 +70,15 @@ export class AiToolCallsBootstrap implements OnApplicationBootstrap {
         )
       `,
       );
-      await this.run(
+      // P0.5 / P04-001 correction: this is a P0 guard in the curated
+      // contract (`critical-schema-guards.json`) — it is the ONLY thing
+      // preventing a retried/duplicated AI-executed booking action from
+      // running twice (see the class docstring). It was previously created
+      // via `this.run` (`criticality: 'optional'`), which meant its absence
+      // never degraded readiness. `this.require` makes its absence an ERROR
+      // that readiness surfaces, matching every other idempotency guard in
+      // this codebase (`uq_refund_idem`, `uq_txn_webhook_event`, ...).
+      await this.require(
         runner,
         'ai_tool_calls idempotency unique',
         `

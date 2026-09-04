@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 
 import { AuthService } from './auth.service';
 import { LoginProtectionService } from './login-protection.service';
@@ -34,7 +34,7 @@ import {
 } from '../../../test/utils/mock-factories';
 
 // bcrypt is mocked module-wide: unit tests must never run real 12-round hashing.
-jest.mock('bcryptjs');
+jest.mock('bcrypt');
 
 /** A live-principal user row as loaded by buildAuthenticatedUser (with relations). */
 const principalRow = () => ({
@@ -586,9 +586,14 @@ describe('AuthService', () => {
         password: 'pw',
       } as any);
 
-      expect(users.save).toHaveBeenCalledWith(
-        expect.objectContaining({ last_login_at: expect.any(Date) }),
+      // P1.2 — a targeted UPDATE of last_login_at, not a full-entity save
+      // (which would re-write the password_hash validateCredentials just
+      // SELECTed, for no reason).
+      expect(users.update).toHaveBeenCalledWith(
+        { id: credUser.id },
+        { last_login_at: expect.any(Date) },
       );
+      expect(users.save).not.toHaveBeenCalled();
       expect(result.user).toEqual(expectedPrincipal);
     });
 
@@ -1768,7 +1773,7 @@ describe('AuthService', () => {
       bcryptCompare.mockResolvedValueOnce(true);
     };
 
-    it('parses a unit-less TTL ("900") as seconds', async () => {
+    it('parses a unit-less TTL ("900") as seconds, ±10% P1.2 jitter', async () => {
       primeLogin();
       const svc = buildWithConfig({
         JWT_ACCESS_TTL: '900',
@@ -1778,7 +1783,32 @@ describe('AuthService', () => {
         email: 'a@b.com',
         password: 'pw',
       } as any);
-      expect(result.expiresIn).toBe(900); // 900s → 900_000ms → /1000
+      // 900s → 900_000ms base, jittered ±10% (P1.2 / MS-008 — de-synchronizes
+      // a cohort's token expiry so a mass session-expiry event doesn't
+      // produce a mass-reauth burst). Exact 900 is no longer expected.
+      expect(result.expiresIn).toBeGreaterThanOrEqual(810);
+      expect(result.expiresIn).toBeLessThanOrEqual(990);
+    });
+
+    it('applies jitter freshly on every issuance — two logins are not forced to the same TTL', async () => {
+      primeLogin();
+      const svc = buildWithConfig({
+        JWT_ACCESS_TTL: '900',
+        JWT_REFRESH_TTL: '7d',
+      });
+      const seen = new Set<number>();
+      for (let i = 0; i < 20; i++) {
+        primeLogin();
+        const result = await svc.login({
+          email: 'a@b.com',
+          password: 'pw',
+        } as any);
+        seen.add(result.expiresIn);
+      }
+      // Overwhelmingly unlikely to collapse to a single value across 20
+      // independent draws from a continuous ±10% range unless jitter isn't
+      // actually being applied per-call.
+      expect(seen.size).toBeGreaterThan(1);
     });
 
     it('treats an unparseable TTL as 0 (defensive no-match branch)', async () => {

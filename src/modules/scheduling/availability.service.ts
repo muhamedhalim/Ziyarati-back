@@ -12,6 +12,8 @@ import {
 
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
+import { Branch } from '../../entities/SaaS-Core/Branch';
+import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { SchedulingRefService } from './scheduling-ref.service';
@@ -93,6 +95,22 @@ export interface AssertBookableOptions {
   excludeAppointmentId?: string;
   /** Run the occupancy (double-booking) check inside the caller's transaction. */
   manager?: EntityManager;
+  /**
+   * P2 (Phase 6) — skip `SchedulingRefService.getBranch`/`getStaff` when the
+   * caller already loaded these exact tenant-owned rows a moment ago
+   * (`AppointmentsService.create`'s own `assertBranch`/`assertStaffAtBranch`
+   * validate the SAME ids against the SAME tenant immediately before calling
+   * here). Optional and additive: a caller that doesn't pass these keeps
+   * today's behaviour exactly — `evaluate` loads them itself, as before.
+   * Only `branch.timezone` / `staff.is_available_for_booking` /
+   * `staff.booking_buffer_minutes` are read from these, so any fetch shape
+   * that includes those three fields is sufficient.
+   */
+  preloadedBranch?: Pick<Branch, 'timezone'>;
+  preloadedStaff?: Pick<
+    StaffProfile,
+    'is_available_for_booking' | 'booking_buffer_minutes'
+  >;
 }
 
 interface OccupancyOptions {
@@ -643,9 +661,19 @@ export class AvailabilityService {
     end: Date,
     opts: AssertBookableOptions = {},
   ): Promise<BookabilityResult> {
+    // P2 (Phase 6) — `create()`'s own Phase-1 validation already loaded these
+    // exact tenant-owned rows moments ago; re-fetching them here (as this
+    // used to, unconditionally) was measured as 4 duplicate SQL statements
+    // per booking (2 DISTINCT-then-hydrate pairs). Every other caller
+    // (reschedule, the availability-check/validate read endpoints) doesn't
+    // pass these and gets the exact original behaviour.
     const [branch, staff] = await Promise.all([
-      this.refs.getBranch(tenantId, branchId),
-      this.refs.getStaff(tenantId, staffId),
+      opts.preloadedBranch
+        ? Promise.resolve(opts.preloadedBranch)
+        : this.refs.getBranch(tenantId, branchId),
+      opts.preloadedStaff
+        ? Promise.resolve(opts.preloadedStaff)
+        : this.refs.getStaff(tenantId, staffId),
     ]);
     const zone = safeZone(branch.timezone);
     const staffInactive = !staff.is_available_for_booking;

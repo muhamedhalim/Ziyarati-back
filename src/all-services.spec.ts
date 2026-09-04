@@ -12,7 +12,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 
 jest.mock('openai');
-jest.mock('bcryptjs');
+jest.mock('bcrypt');
 
 function autoMock(): any {
   const fn = function () {

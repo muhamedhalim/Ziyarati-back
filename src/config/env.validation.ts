@@ -1,6 +1,10 @@
 import * as Joi from 'joi';
 
-import { AI_MODEL_IDS_ALL } from '../modules/ai/routing/ai-model-registry';
+import {
+  AI_MODEL_IDS_ALL,
+  DEFAULT_AI_MODEL_ID,
+  defaultModelForTier,
+} from '../modules/ai/routing/ai-model-registry';
 
 export const validate = (config: Record<string, unknown>) => {
   const schema = Joi.object({
@@ -20,14 +24,22 @@ export const validate = (config: Record<string, unknown>) => {
 
     TYPEORM_SYNCHRONIZE: Joi.string().valid('true', 'false').default('false'),
 
-    // P0.3 RULE 3 / RULE 11.7. Waives the guard that refuses to boot with
-    // synchronize on against a database the migration chain provisioned (a
-    // non-empty `migrations` table). Only reachable when TYPEORM_SYNCHRONIZE
-    // is already true, which production refuses outright — so this can never
-    // widen production behaviour. Every boot that uses it logs a warning
-    // naming what may be dropped.
+    // P0.3 RULE 3 / RULE 11.7, scoped P0.6 (SCHEMA-011). Waives the guard
+    // that refuses to boot with synchronize on against a database the
+    // migration chain provisioned (a non-empty `migrations` table). Only
+    // reachable when TYPEORM_SYNCHRONIZE is already true, which production
+    // refuses outright — so this can never widen production behaviour.
+    //
+    // P0.6: a bare `true` used to waive the guard for WHATEVER database
+    // `DATABASE_URL` happened to name — a `.env` copied to, or a
+    // `DATABASE_URL` repointed at, a staging/QA/restored-backup database
+    // would silently inherit the waiver too. The value must now be the
+    // TARGET DATABASE'S OWN NAME (see `assertSynchronizeIsSafeForTarget` in
+    // `typeorm.config.ts`, which also requires a loopback host) — `'true'`
+    // is rejected below, at validation time, before any DB connection is
+    // even attempted.
     TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: Joi.string()
-      .valid('true', 'false')
+      .allow('')
       .default('false'),
 
     // AI-011: raw SQL logging (parameter values included) writes tenant data
@@ -85,6 +97,15 @@ export const validate = (config: Record<string, unknown>) => {
     // docs/PERFORMANCE_INFRASTRUCTURE.md's PERF-INFRA-003 section for the
     // measured evidence this is based on.
     API_CLUSTER_WORKERS: Joi.number().integer().min(1).max(8).default(1),
+
+    // P1.1 — OPTIONAL, purely informational. This application has no way to
+    // read Postgres's own `max_connections` setting, so the boot-time
+    // capacity estimate in cluster-bootstrap.ts falls back to a fixed
+    // threshold guess when this is unset. Supplying the real value (`SHOW
+    // max_connections;`, run by an operator — read-only) turns that guess
+    // into a precise percentage. See
+    // tests/load/reports/P1.1_CAPACITY_WORKSHEET.md.
+    DB_MAX_CONNECTIONS: Joi.number().integer().min(10),
 
     // Redis / BullMQ. REQUIRED — the @Global QueueModule constructs
     // `ProducerQueues` (which throws without a REDIS_URL) unconditionally in
@@ -509,7 +530,14 @@ export const validate = (config: Record<string, unknown>) => {
     // All optional: with no key the AI falls back to the Noop provider and RAG
     // degrades to keyword search, so the app still boots & runs.
     OPENAI_API_KEY: Joi.string().allow('', null),
-    OPENAI_CHAT_MODEL: Joi.string().default('gpt-4o'),
+    // Constrained to the registry. This was free text defaulting to 'gpt-4o',
+    // and it is the model `OpenAiChatProvider` applies when a request names
+    // none — so it was a way for a single environment variable to put an
+    // unauthorized model in front of live traffic, outranking every
+    // application-level gate. Platform policy is not env-overridable.
+    OPENAI_CHAT_MODEL: Joi.string()
+      .valid(...AI_MODEL_IDS_ALL)
+      .default(DEFAULT_AI_MODEL_ID),
     OPENAI_EMBEDDING_MODEL: Joi.string().default('text-embedding-3-small'),
     // Must match the vector(N) column dimension created by the pgvector bootstrap.
     OPENAI_EMBEDDING_DIM: Joi.number().default(1536),
@@ -573,17 +601,26 @@ export const validate = (config: Record<string, unknown>) => {
     // compatibility spec. That is a deliberate, reversible, single-variable act,
     // unlike the tenant-facing surfaces (agent DTO, ai.default_model), which stay
     // GA-only.
+    // Tier-preserving migration of the previous 'gpt-4.1-mini' default: that
+    // model was the registry's first ECONOMY entry and GPT-5.6 Luna is the
+    // ECONOMY entry of the permitted set. Derived, so retiring a model moves
+    // this with it instead of leaving a literal that no longer validates.
     AI_ECONOMY_MODEL: Joi.string()
       .valid(...AI_MODEL_IDS_ALL)
-      .default('gpt-4.1-mini'),
+      .default(defaultModelForTier('ECONOMY')),
     AI_POWERFUL_MODEL: Joi.string()
       .valid(...AI_MODEL_IDS_ALL)
       .allow('', null),
-    // How a model string PERSISTED on an agent row (ai_agents.model) is treated
-    // when it is not in the registry. 'true' (default) → ignore it and fall back
-    // to the tier default, logging once; 'false' → pass it through unchanged
-    // (legacy behaviour, for an operator mid-migration). The agent DTO blocks new
-    // unregistered writes either way.
+    // Whether an unregistered model string PERSISTED on an agent row
+    // (ai_agents.model) is ANNOUNCED when it is ignored. 'true' (default) logs
+    // it once per distinct value; 'false' ignores it silently.
+    //
+    // It used to also decide WHETHER it was ignored — 'false' passed the stored
+    // string through to the provider unchanged. It no longer can: an operator
+    // variable must not be able to re-open the platform's model policy, and the
+    // pass-through was the escape hatch that made that possible. The agent DTO
+    // blocks new unregistered writes, and migration AiModelPolicyLunaTerra
+    // rewrote the ones that already existed.
     AI_MODEL_ROUTING_STRICT: Joi.string()
       .valid('true', 'false')
       .default('true'),
@@ -753,6 +790,13 @@ export const validate = (config: Record<string, unknown>) => {
     // own `config.get(..., 10000)` fallback stays the source of the default.
     DB_POOL_CONNECTION_TIMEOUT: Joi.number().integer().min(1),
 
+    // P1.3 — `DbPoolMetricsService`'s sample interval (db_pool_total/idle/
+    // waiting gauges). Its own `config.get(..., 15000)` fallback stays the
+    // source of the default. A cheap in-process property read (`pg-pool`'s
+    // own counters, no query) — no need to make this configurably slow for
+    // load reasons the way DLQ/queue-depth polling is.
+    DB_POOL_METRICS_POLL_MS: Joi.number().integer().min(1000),
+
     // Discrete connection parts — read ONLY by `seed/data-source.ts`, and ONLY
     // when DATABASE_URL is unset (dev/CLI). Never set in production.
     DB_HOST: Joi.string().allow('', null),
@@ -827,9 +871,16 @@ export const validate = (config: Record<string, unknown>) => {
     INTEGRATION_ALLOW_PRIVATE_BASE_URL: Joi.string().valid('true', 'false'),
     INTEGRATION_OAUTH_TEST_PROVIDER: Joi.string().valid('true', 'false'),
 
-    // Attachment vision model + the two prompt sub-budgets that were added
-    // after the AI block above was written.
-    AI_ATTACHMENT_VISION_MODEL: Joi.string(),
+    // The two prompt sub-budgets that were added after the AI block above was
+    // written.
+    //
+    // `AI_ATTACHMENT_VISION_MODEL` used to sit here. It was read at exactly one
+    // call site (`GuestAttachmentExtractionService.extractImage`), which now
+    // routes through `AiModelRouterService` like every other AI call, so the
+    // variable has no reader left and is deliberately not carried forward as a
+    // dead knob that looks like it still selects a model. `allowUnknown: true`
+    // means a stale value left in an operator's `.env` is ignored rather than
+    // failing boot.
     AI_PROMPT_ATTACHMENT_TOKENS: Joi.number().integer().min(0),
     AI_PROMPT_BOOKING_CONTEXT_TOKENS: Joi.number().integer().min(0),
 
@@ -846,6 +897,27 @@ export const validate = (config: Record<string, unknown>) => {
 
   if (error) {
     throw new Error(`❌ Env validation error: ${error.message}`);
+  }
+
+  // ── Synchronize-migrated-DB waiver contract (P0.6 / SCHEMA-011) ───────────
+  // Rejected here, unconditionally, regardless of NODE_ENV or
+  // TYPEORM_SYNCHRONIZE — `true` is simply never a valid value for this
+  // variable under the new contract, so there is no case where letting it
+  // through and failing later (inside `assertSynchronizeIsSafeForTarget`,
+  // only reached when synchronize is actually on against a migrated DB) is
+  // more correct than failing here, at boot, immediately.
+  if (value.TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB === 'true') {
+    throw new Error(
+      `❌ Env validation error: TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=true is ` +
+        `no longer accepted (P0.6) — a bare boolean waived the migrated-database ` +
+        `guard for WHATEVER database DATABASE_URL happened to name, which meant ` +
+        `a .env copied elsewhere, or a repointed DATABASE_URL, silently inherited ` +
+        `the waiver too. Set it to the exact database name from your ` +
+        `DATABASE_URL instead (e.g. "ziyarati") — the waiver now applies ONLY to ` +
+        `that specific database, and only when it is reached over a loopback ` +
+        `host (localhost/127.0.0.1/::1). See ` +
+        `tests/load/reports/P0.4_PRODUCTION_REPAIR_PLAN.md § 1.`,
+    );
   }
 
   // ── API documentation gating defaults (ZT-001) ────────────────────────────

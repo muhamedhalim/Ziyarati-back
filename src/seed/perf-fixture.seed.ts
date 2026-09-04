@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import { DataSource } from 'typeorm';
 import { SeedDataSource } from './data-source';
 import { logger } from './seed.logger';

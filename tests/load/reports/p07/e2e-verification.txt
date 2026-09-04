@@ -1,0 +1,121 @@
+Pager usage is off.
+Timing is on.
+
+=== 0. TARGET ==============================================================
+   database   |                                                      postgres_version                                                      
+--------------+----------------------------------------------------------------------------------------------------------------------------
+ ziyarati_e2e | PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit
+(1 row)
+
+Time: 1.067 ms
+
+=== 1. COLUMN SHAPE — type, nullability, per table =========================
+       table_name        | column_name |     data_type     | is_nullable 
+-------------------------+-------------+-------------------+-------------
+ admin_notifications     | tenant_id   | uuid              | YES
+ ai_execution_metrics    | tenantId    | uuid              | YES
+ ai_kb_embeddings        | tenant_id   | uuid              | NO
+ ai_memories             | tenantId    | uuid              | YES
+ ai_memory_embeddings    | tenant_id   | uuid              | NO
+ ai_tool_calls           | tenant_id   | uuid              | NO
+ email_logs              | tenant_id   | uuid              | YES
+ free_access_overrides   | tenant_id   | uuid              | NO
+ settlement_adjustments  | tenant_id   | uuid              | NO
+ subscription_invoices   | tenant_id   | character varying | NO
+ subscription_usage      | tenant_id   | character varying | NO
+ tenant_counters         | tenant_id   | uuid              | NO
+ verification_audit_logs | tenant_id   | uuid              | NO
+ workflow_runs           | tenantId    | uuid              | YES
+ workflows               | tenantId    | uuid              | YES
+(15 rows)
+
+Time: 46.876 ms
+
+=== 2. ORPHAN COUNTS — non-null tenant reference naming no row in tenants ===
+       table_name        | total_rows | orphans 
+-------------------------+------------+---------
+ admin_notifications     |          0 |       0
+ ai_execution_metrics    |          0 |       0
+ ai_kb_embeddings        |          0 |       0
+ ai_memories             |          0 |       0
+ ai_memory_embeddings    |          0 |       0
+ ai_tool_calls           |          0 |       0
+ email_logs              |          0 |       0
+ free_access_overrides   |          0 |       0
+ settlement_adjustments  |          0 |       0
+ subscription_invoices   |          0 |       0
+ subscription_usage      |         20 |      20
+ tenant_counters         |          0 |       0
+ verification_audit_logs |          0 |       0
+ workflow_runs           |          0 |       0
+ workflows               |          0 |       0
+(15 rows)
+
+Time: 45.783 ms
+
+=== 3. NON-UUID-SHAPED VALUES — the two varchar columns only ===============
+      table_name       | non_uuid_shaped 
+-----------------------+-----------------
+ subscription_invoices |               0
+ subscription_usage    |               0
+(2 rows)
+
+Time: 1.383 ms
+
+=== 4. EXISTING INDEXES on the tenant column ================================
+        tablename        |                    indexname                     |                                                                                 indexdef                                                                                  
+-------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ ai_execution_metrics    | IDX_aiexec_tenant                                | CREATE INDEX "IDX_aiexec_tenant" ON public.ai_execution_metrics USING btree ("tenantId")
+ ai_execution_metrics    | idx_ai_metrics_attribution                       | CREATE INDEX idx_ai_metrics_attribution ON public.ai_execution_metrics USING btree ("tenantId", feature, channel, created_at)
+ ai_kb_embeddings        | idx_ai_kb_emb_tenant_agent                       | CREATE INDEX idx_ai_kb_emb_tenant_agent ON public.ai_kb_embeddings USING btree (tenant_id, agent_id)
+ ai_memories             | IDX_ai_memories_tenant_customer                  | CREATE INDEX "IDX_ai_memories_tenant_customer" ON public.ai_memories USING btree ("tenantId", customer_id)
+ ai_memory_embeddings    | idx_ai_mem_emb_tenant                            | CREATE INDEX idx_ai_mem_emb_tenant ON public.ai_memory_embeddings USING btree (tenant_id, customer_id)
+ ai_tool_calls           | idx_ai_tool_calls_actor                          | CREATE INDEX idx_ai_tool_calls_actor ON public.ai_tool_calls USING btree (tenant_id, actor_user_id, created_at) WHERE (actor_user_id IS NOT NULL)
+ ai_tool_calls           | idx_ai_tool_calls_conv                           | CREATE INDEX idx_ai_tool_calls_conv ON public.ai_tool_calls USING btree (tenant_id, ai_conversation_id, created_at)
+ ai_tool_calls           | idx_ai_tool_calls_resource_tenant                | CREATE INDEX idx_ai_tool_calls_resource_tenant ON public.ai_tool_calls USING btree (resource_tenant_id) WHERE (resource_tenant_id IS NOT NULL)
+ ai_tool_calls           | uq_ai_tool_call_idem                             | CREATE UNIQUE INDEX uq_ai_tool_call_idem ON public.ai_tool_calls USING btree (tenant_id, idempotency_key)
+ email_logs              | IDX_email_logs_tenant_created                    | CREATE INDEX "IDX_email_logs_tenant_created" ON public.email_logs USING btree (tenant_id, created_at)
+ free_access_overrides   | idx_free_override_tenant_status                  | CREATE INDEX idx_free_override_tenant_status ON public.free_access_overrides USING btree (tenant_id, status)
+ settlement_adjustments  | idx_settlement_adj_open                          | CREATE INDEX idx_settlement_adj_open ON public.settlement_adjustments USING btree (tenant_id, status) WHERE ((status)::text = 'OPEN'::text)
+ subscription_usage      | IDX_subscription_usage_tenant_period             | CREATE INDEX "IDX_subscription_usage_tenant_period" ON public.subscription_usage USING btree (tenant_id, period_month)
+ subscription_usage      | UQ_subscription_usage_tenant_period_unsubscribed | CREATE UNIQUE INDEX "UQ_subscription_usage_tenant_period_unsubscribed" ON public.subscription_usage USING btree (tenant_id, period_month) WHERE (subscription_id IS NULL)
+ tenant_counters         | tenant_counters_pkey                             | CREATE UNIQUE INDEX tenant_counters_pkey ON public.tenant_counters USING btree (tenant_id, name)
+ verification_audit_logs | IDX_verif_audit_tenant                           | CREATE INDEX "IDX_verif_audit_tenant" ON public.verification_audit_logs USING btree (tenant_id)
+ verification_audit_logs | IDX_verif_audit_tenant_created                   | CREATE INDEX "IDX_verif_audit_tenant_created" ON public.verification_audit_logs USING btree (tenant_id, created_at)
+ workflow_runs           | IDX_workflow_runs_tenant                         | CREATE INDEX "IDX_workflow_runs_tenant" ON public.workflow_runs USING btree ("tenantId")
+ workflows               | IDX_workflows_tenant                             | CREATE INDEX "IDX_workflows_tenant" ON public.workflows USING btree ("tenantId")
+(19 rows)
+
+Time: 11.219 ms
+
+=== 5. TABLE SIZE — informs lock/VALIDATE cost, not a verdict ===============
+       table_name        | approx_row_count | total_size 
+-------------------------+------------------+------------
+ subscription_usage      |                3 | 80 kB
+ ai_kb_embeddings        |                0 | 40 kB
+ tenant_counters         |                0 | 16 kB
+ settlement_adjustments  |                0 | 32 kB
+ ai_tool_calls           |                0 | 64 kB
+ verification_audit_logs |                0 | 32 kB
+ admin_notifications     |                0 | 24 kB
+ email_logs              |                0 | 40 kB
+ ai_memories             |                0 | 32 kB
+ workflows               |                0 | 32 kB
+ workflow_runs           |                0 | 32 kB
+ ai_execution_metrics    |                0 | 80 kB
+ free_access_overrides   |                0 | 24 kB
+ subscription_invoices   |                0 | 40 kB
+ ai_memory_embeddings    |                0 | 40 kB
+(15 rows)
+
+Time: 17.700 ms
+
+=== 6. EXISTING FK ON workflow_runs, for reference ==========================
+          conname          |                              definition                               
+---------------------------+-----------------------------------------------------------------------
+ FK_workflow_runs_workflow | FOREIGN KEY ("workflowId") REFERENCES workflows(id) ON DELETE CASCADE
+(1 row)
+
+Time: 0.696 ms
+
+Done. No row was inserted, updated or deleted by this script.

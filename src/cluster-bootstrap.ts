@@ -72,24 +72,19 @@ export function runClustered(runWorker: () => void | Promise<void>): void {
     return;
   }
 
-  const poolMaxHint = Number(
-    process.env.API_DB_POOL_MAX ?? process.env.DB_POOL_MAX ?? 15,
-  );
+  const estimate = estimateDbConnections({
+    numWorkers,
+    apiPoolMaxEnv: process.env.API_DB_POOL_MAX,
+    workerPoolMaxEnv: process.env.WORKER_DB_POOL_MAX,
+    dbPoolMaxEnv: process.env.DB_POOL_MAX,
+    maxConnectionsEnv: process.env.DB_MAX_CONNECTIONS,
+  });
+
   logger.log(
     `Primary pid=${process.pid} starting ${numWorkers} API worker process(es) ` +
-      `(API_CLUSTER_WORKERS=${numWorkers}). Estimated DB connections: ` +
-      `${numWorkers} × ${poolMaxHint} (per-worker pool) = ${numWorkers * poolMaxHint}. ` +
-      `Verify this fits Postgres's own max_connections alongside the worker ` +
-      `process and any other deployment.`,
+      `(API_CLUSTER_WORKERS=${numWorkers}). ${estimate.summary}`,
   );
-  if (numWorkers * poolMaxHint > 50) {
-    logger.warn(
-      `Estimated API DB connections (${numWorkers * poolMaxHint}) is high — ` +
-        `consider lowering API_DB_POOL_MAX to keep the total comfortable ` +
-        `under Postgres's max_connections once the worker process and any ` +
-        `other consumer are also counted.`,
-    );
-  }
+  if (estimate.warning) logger.warn(estimate.warning);
 
   let shuttingDown = false;
   let expectedExits = 0;
@@ -168,4 +163,87 @@ export function runClustered(runWorker: () => void | Promise<void>): void {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+export interface DbConnectionEstimateInput {
+  numWorkers: number;
+  apiPoolMaxEnv: string | undefined;
+  workerPoolMaxEnv: string | undefined;
+  dbPoolMaxEnv: string | undefined;
+  maxConnectionsEnv: string | undefined;
+}
+
+export interface DbConnectionEstimate {
+  estimatedConnections: number;
+  /** Always present — the boot-time `logger.log` line's content. */
+  summary: string;
+  /** Present only when the estimate crosses its threshold. */
+  warning: string | undefined;
+}
+
+/**
+ * P1.1 (2026-09-04) — pure connection-capacity estimator, extracted from
+ * `runClustered` so the formula and its threshold logic are unit-testable
+ * without mocking Node's `cluster`/`process` internals.
+ *
+ * `apiPoolMax`/`workerPoolMax` mirror `typeorm.config.ts`'s own
+ * `poolMax('api'|'worker', ...)` fallback exactly (role-specific var, else
+ * `DB_POOL_MAX`, else 15) so this estimate can never disagree with what the
+ * factory actually configures. Both are included — not just the API's own
+ * share — because the two together are what actually contends for
+ * Postgres's `max_connections`, and an operator sizing this needs the whole
+ * picture.
+ *
+ * ×2 ON THE API TERM ONLY, DELIBERATELY: a rolling restart briefly runs the
+ * OLD and NEW set of API workers at once (the orchestrator keeps the old
+ * ones accepting connections until the new ones report healthy), so
+ * steady-state demand understates the real peak an operator needs headroom
+ * for by roughly double, on the API side specifically — the worker root is
+ * a single long-lived process per deployment, not typically rolled the same
+ * way, so its own pool is not doubled here.
+ *
+ * `maxConnectionsEnv` (`DB_MAX_CONNECTIONS`) is OPTIONAL and purely
+ * informational — this application has no way to read Postgres's own
+ * setting. Supplied: warns above 80% of it. Unsupplied: falls back to a
+ * fixed `> 50` guess, same threshold this estimator used before P1.1. See
+ * `tests/load/reports/P1.1_CAPACITY_WORKSHEET.md`.
+ */
+export function estimateDbConnections(
+  input: DbConnectionEstimateInput,
+): DbConnectionEstimate {
+  const dbPoolMax = Number(input.dbPoolMaxEnv ?? 15);
+  const apiPoolMax = Number(input.apiPoolMaxEnv ?? dbPoolMax);
+  const workerPoolMax = Number(input.workerPoolMaxEnv ?? dbPoolMax);
+  const estimatedConnections =
+    input.numWorkers * apiPoolMax * 2 + workerPoolMax;
+  const maxConnections = input.maxConnectionsEnv
+    ? Number(input.maxConnectionsEnv)
+    : undefined;
+
+  const summary =
+    `Estimated peak DB connections: ${input.numWorkers} × ${apiPoolMax} × 2 ` +
+    `(API, rolling-restart headroom) + ${workerPoolMax} (worker) = ${estimatedConnections}` +
+    (maxConnections
+      ? ` — against DB_MAX_CONNECTIONS=${maxConnections} (${Math.round((estimatedConnections / maxConnections) * 100)}%).`
+      : `. Set DB_MAX_CONNECTIONS to compare against Postgres's real ceiling ` +
+        `instead of this fixed-threshold guess — see ` +
+        `tests/load/reports/P1.1_CAPACITY_WORKSHEET.md.`);
+
+  let warning: string | undefined;
+  if (maxConnections && estimatedConnections > maxConnections * 0.8) {
+    warning =
+      `Estimated peak DB connections (${estimatedConnections}) is above 80% of ` +
+      `DB_MAX_CONNECTIONS=${maxConnections} — lower API_DB_POOL_MAX/WORKER_DB_POOL_MAX ` +
+      `or API_CLUSTER_WORKERS, or raise Postgres's own max_connections, before this ` +
+      `deployment runs under real concurrent load. See ` +
+      `tests/load/reports/P1.1_CAPACITY_WORKSHEET.md.`;
+  } else if (!maxConnections && estimatedConnections > 50) {
+    warning =
+      `Estimated peak DB connections (${estimatedConnections}) is high — consider ` +
+      `lowering API_DB_POOL_MAX/WORKER_DB_POOL_MAX to keep the total comfortable ` +
+      `under Postgres's max_connections. Set DB_MAX_CONNECTIONS for a precise ` +
+      `comparison instead of this fixed-threshold guess.`;
+  }
+
+  return { estimatedConnections, summary, warning };
 }

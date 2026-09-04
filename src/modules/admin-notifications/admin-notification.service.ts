@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { AdminNotification } from '../../entities/SaaS-Core/AdminNotification';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 export interface CreateAdminNotificationInput {
   type: string;
@@ -29,7 +30,10 @@ export class AdminNotificationService {
         type: input.type,
         title: input.title,
         body: input.body,
-        tenant_id: input.tenantId,
+        // P0.7: tenant_id is now the join column of a relation (see
+        // AdminNotification.ts), not a plain scalar — set via a partial
+        // Tenant reference, same pattern AiExecutionMetric/AiMemory already use.
+        tenant: input.tenantId ? ({ id: input.tenantId } as Tenant) : undefined,
         data: input.data,
         is_read: false,
       }),

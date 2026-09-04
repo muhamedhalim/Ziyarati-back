@@ -1066,4 +1066,46 @@ describe('env.validation', () => {
       });
     });
   });
+
+  describe('TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB (P0.6 / SCHEMA-011)', () => {
+    it('defaults to "false" when unset', () => {
+      expect(validate({ ...base }).TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB).toBe(
+        'false',
+      );
+    });
+
+    it('REJECTS a bare "true" — the old, unscoped contract is no longer accepted', () => {
+      expect(() =>
+        validate({
+          ...base,
+          TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'true',
+        }),
+      ).toThrow(/no longer accepted/);
+    });
+
+    it('accepts an arbitrary database name — the new contract, scoped by typeorm.config.ts', () => {
+      const value = validate({
+        ...base,
+        TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'ziyarati',
+      });
+      expect(value.TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB).toBe('ziyarati');
+    });
+
+    it('accepts an empty string (no waiver)', () => {
+      const value = validate({
+        ...base,
+        TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: '',
+      });
+      expect(value.TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB).toBe('');
+    });
+
+    it('rejects "true" even in production, even though the waiver can never reach a production boot — the value itself is simply invalid', () => {
+      expect(() =>
+        validate({
+          ...prodBase,
+          TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'true',
+        }),
+      ).toThrow(/no longer accepted/);
+    });
+  });
 });

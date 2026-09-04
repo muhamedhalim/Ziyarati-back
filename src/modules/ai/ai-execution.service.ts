@@ -259,6 +259,25 @@ export class AiExecutionService {
   }
 
   /**
+   * The platform's configured model — `ai.default_model` from
+   * `/platform/system-settings` — handed to the router as the default it lands
+   * on when nothing more specific applies.
+   *
+   * The exact counterpart of `resolveTemperature` above, and it exists for the
+   * same reason: the guest/public widget runs against the discovery tenant with
+   * no `AiAgent` row, so without this the setting would govern only agents
+   * created after it was changed, and the widget would run on whatever
+   * `OPENAI_CHAT_MODEL` said. That is what made the setting a seed value rather
+   * than the platform's model configuration.
+   *
+   * `getTyped` is served from `SystemSettingService`'s 30 s in-process cache, so
+   * this adds no per-message query (see the caching note on that class).
+   */
+  private async resolveDefaultModel(): Promise<string> {
+    return this.platformSettings.getTyped<string>(SettingKey.AI_DEFAULT_MODEL);
+  }
+
+  /**
    * Maps a failed turn to the error the caller sees WITHOUT losing the real
    * cause. Both turn paths (`sendMessage`, `streamMessage`) used to collapse
    * any non-`AppError` into a bare INTERNAL_ERROR and drop the original
@@ -519,6 +538,7 @@ export class AiExecutionService {
         tenantId,
         conversationId: aiConversationId,
         legacyModel: agent?.model,
+        platformDefaultModel: await this.resolveDefaultModel(),
         feature: featureForMetric,
         route,
         processing: {
@@ -529,7 +549,8 @@ export class AiExecutionService {
       });
       // `definition` is present only when routing is active; on the flag-off
       // path the registry is consulted directly so per-model budgeting applies
-      // either way. Undefined for an unregistered model → global fallback.
+      // either way. Always resolves now: `routed.model` is guaranteed to be a
+      // registered id on every branch.
       const modelDefinition = routed.definition ?? findModel(routed.model);
       const temperature = await this.resolveTemperature(agent);
 
@@ -1498,6 +1519,7 @@ export class AiExecutionService {
         tenantId,
         conversationId: aiConversationId,
         legacyModel: agent?.model,
+        platformDefaultModel: await this.resolveDefaultModel(),
         feature: featureForMetric,
         route,
         processing: {

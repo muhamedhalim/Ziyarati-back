@@ -2,6 +2,8 @@ import { ConfigService } from '@nestjs/config';
 
 import { GuestAttachmentExtractionService } from './guest-attachment-extraction.service';
 import type { AiProviderFactory } from '../../ai/providers/ai-provider.factory';
+import { AiModelRouterService } from '../../ai/routing/ai-model-router.service';
+import { AI_MODEL_IDS } from '../../ai/routing/ai-model-registry';
 import { MAX_ATTACHMENT_TEXT_CHARS } from '../../ai-attachment/ai-attachment.constants';
 
 /**
@@ -72,14 +74,21 @@ const PNG = Buffer.concat([
 describe('GuestAttachmentExtractionService', () => {
   let complete: jest.Mock;
   let providers: { resolve: jest.Mock };
+  let router: AiModelRouterService;
   let service: GuestAttachmentExtractionService;
 
   beforeEach(() => {
     complete = jest.fn().mockResolvedValue({ content: 'Haemoglobin 9.1 g/dL' });
     providers = { resolve: jest.fn().mockReturnValue({ name: 'openai', complete }) };
+    // The REAL router, not a stub: the point of routing this call site is that
+    // it can no longer pick a model of its own, and a stub that returns
+    // whatever the test says would assert nothing about that.
+    router = new AiModelRouterService(
+      new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
+    );
     service = new GuestAttachmentExtractionService(
       providers as unknown as AiProviderFactory,
-      { get: (_k: string, fallback?: unknown) => fallback } as unknown as ConfigService,
+      router,
     );
   });
 
@@ -159,6 +168,45 @@ describe('GuestAttachmentExtractionService', () => {
       );
       const result = await service.extract(PNG, 'image/png', { tenantId: 't' });
       expect(result.text).toBe('');
+    });
+  });
+
+  /**
+   * This vision pass was the one AI execution path in the codebase that chose
+   * its own model, reading `AI_ATTACHMENT_VISION_MODEL` (default `gpt-4o`)
+   * straight from the environment and handing it to the provider. Restricting
+   * the registry would not have touched it.
+   */
+  describe('model policy', () => {
+    it('dispatches a permitted model, chosen by the router and not by this service', async () => {
+      await service.extract(PNG, 'image/png', { tenantId: 't' });
+      const dispatched = providers.resolve.mock.calls[0][0];
+      expect(AI_MODEL_IDS).toContain(dispatched);
+      expect(complete.mock.calls[0][0].model).toBe(dispatched);
+    });
+
+    it('omits temperature for a model that rejects one, instead of sending 0', async () => {
+      // The call hard-coded `temperature: 0`, and the permitted models return
+      // 400 for ANY explicit temperature — so this is what stops every image
+      // upload from failing outright.
+      await service.extract(PNG, 'image/png', { tenantId: 't' });
+      const request = complete.mock.calls[0][0];
+      expect(request.temperature).toBeUndefined();
+      expect(request.supportsTemperature).toBe(false);
+      expect(request.reasoningEffort).toBe('none');
+    });
+
+    it('reads no model configuration of its own', () => {
+      // Structural, because the failure mode is a re-added env lookup that no
+      // behavioural test would notice: the router would still be called, and
+      // its answer would just be ignored. Matches on the READ, not on the old
+      // variable's name — the docblock still names it as history.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const source: string = require('node:fs').readFileSync(
+        require.resolve('./guest-attachment-extraction.service.ts'),
+        'utf8',
+      );
+      expect(source).not.toMatch(/config\.get|ConfigService|process\.env/);
     });
   });
 });

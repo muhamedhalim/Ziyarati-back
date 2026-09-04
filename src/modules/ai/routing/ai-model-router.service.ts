@@ -5,11 +5,14 @@ import { createHash } from 'node:crypto';
 import { AppError, ErrorCode } from '../../../common/errors';
 import {
   AI_COMPLIANCE_ROUTE_UNAVAILABLE,
+  AI_MODEL_NOT_PERMITTED,
   AiExecutionMode,
 } from '../execution/ai-execution.constants';
 import {
   AI_MODEL_REGISTRY_GA,
   AiModelDefinition,
+  allowedModelId,
+  defaultModelForTier,
   findModel,
   modelsForTier,
 } from './ai-model-registry';
@@ -29,6 +32,21 @@ export interface ModelRouteInput {
   route: string;
   complexity?: 'STANDARD' | 'HIGH';
   /**
+   * The PLATFORM default — `ai.default_model`, read by the caller through
+   * `SystemSettingService`'s 30 s cache (see
+   * `AiExecutionService.resolveDefaultModel()`), so no AI message adds a query.
+   *
+   * Passed IN rather than read here so `resolve()` stays synchronous and pure;
+   * this is the same shape `temperature` already travels in. It is what makes
+   * `/platform/system-settings` the CENTRAL model configuration rather than a
+   * seed applied once at agent-creation time: with routing off (the shipped
+   * state) it is the model every agent without a pinned one now runs on.
+   *
+   * An unallowed value here is ignored like any other — the setting is
+   * enum-validated on write, so that can only be a row predating the policy.
+   */
+  platformDefaultModel?: string;
+  /**
    * Resolved INDEPENDENTLY of this router (see AiProcessingPolicyService) and
    * passed in so the model decision can be validated against it. Omitted ⇒ no
    * capability constraint is applied.
@@ -37,7 +55,13 @@ export interface ModelRouteInput {
 }
 
 export interface ModelRouteDecision {
-  model: string | undefined;
+  /**
+   * ALWAYS an allowed, canonical model id — never `undefined`, and never a
+   * string outside `AI_MODEL_REGISTRY`, on ANY branch including the flag-off
+   * one. `assertAllowed()` at the bottom of this class is what makes that
+   * unfalsifiable rather than merely intended.
+   */
+  model: string;
   routed: boolean;
   reason: string;
   /**
@@ -57,10 +81,19 @@ export interface ModelRouteDecision {
  * change without touching a workload's processing policy, and vice versa.
  *
  * Rollback contract: with `AI_MODEL_ROUTING_ENABLED=false` (or a tenant outside
- * the rollout percentage) this returns exactly what it returned before any of
- * the registry work existed — same three fields, same values, no registry
- * lookup, no capability check, no throw. Disabling the flag is a complete
- * revert with no deploy.
+ * the rollout percentage) this returns the stored model unchanged — same three
+ * fields, same values, no capability check, no throw. Disabling the flag is
+ * still a complete revert with no deploy.
+ *
+ * MODEL POLICY OUTRANKS THE ROLLBACK CONTRACT. The one thing the flag-off path
+ * no longer does is hand back a model that is not in `AI_MODEL_REGISTRY`. That
+ * used to be the widest hole in the platform's model policy and it was open in
+ * exactly the shipped configuration: with routing off, a `gpt-4o` string sitting
+ * on an agent row went straight to the provider, so restricting the registry
+ * alone would have changed nothing for any existing clinic. Every value that is
+ * still legal comes back byte-identical; an illegal one is replaced by the
+ * platform default instead of being forwarded. A feature flag is a rollout
+ * control, not an authorization bypass.
  */
 @Injectable()
 export class AiModelRouterService {
@@ -70,9 +103,58 @@ export class AiModelRouterService {
 
   constructor(private readonly config: ConfigService) {}
 
+  /**
+   * The public entry point. Delegates to `route()` and then re-checks the
+   * answer against the registry.
+   *
+   * The re-check is deliberate belt-and-braces: `route()` has several branches
+   * and a future one could forget the policy, so the invariant is asserted at
+   * the single exit rather than trusted at each return. It throws instead of
+   * silently correcting, because reaching it means the routing code itself is
+   * wrong and a quiet substitution would hide that.
+   */
   resolve(input: ModelRouteInput): ModelRouteDecision {
+    const decision = this.route(input);
+    const allowed = allowedModelId(decision.model);
+    if (!allowed) {
+      this.logger.error(
+        `Model router produced "${decision.model}" (reason=${decision.reason}), ` +
+          `which is not a permitted platform model. Refusing the turn.`,
+      );
+      throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+        message:
+          'The AI model configured for this request is not permitted by platform policy. ' +
+          'The request was refused rather than sent to the provider.',
+        publicContext: { reason: AI_MODEL_NOT_PERMITTED },
+        internalContext: {
+          tenantId: input.tenantId,
+          producedModel: decision.model,
+          reason: decision.reason,
+        },
+      });
+    }
+    return { ...decision, model: allowed };
+  }
+
+  private route(input: ModelRouteInput): ModelRouteDecision {
     if (!this.enabled() || !this.inRollout(input)) {
-      return { model: input.legacyModel, routed: false, reason: 'legacy_flag' };
+      const stored = allowedModelId(input.legacyModel);
+      if (stored) {
+        // The pre-existing contract, byte for byte, for every legal value.
+        return { model: stored, routed: false, reason: 'legacy_flag' };
+      }
+      // No stored model, or one the platform no longer permits. Either way the
+      // turn runs on the platform default rather than on whatever string the
+      // row happened to hold.
+      const fallback = this.policyDefault('ECONOMY', input);
+      if (input.legacyModel) this.warnDisallowed(input, fallback);
+      return {
+        model: fallback,
+        routed: fallback !== input.legacyModel,
+        reason: input.legacyModel
+          ? 'legacy_flag_policy_default'
+          : 'legacy_flag',
+      };
     }
 
     const powerful =
@@ -84,21 +166,18 @@ export class AiModelRouterService {
       powerful ? 'AI_POWERFUL_MODEL' : 'AI_ECONOMY_MODEL',
     );
 
-    const preferred =
-      findModel(configured) ?? this.legacyDefinition(input) ?? undefined;
     const baseReason = powerful ? 'powerful_route' : 'economy_route';
-
-    if (!preferred) {
-      // Nothing resolvable: neither the configured tier model nor the stored
-      // one is registered. Preserve the pre-registry fallback (hand back the
-      // legacy value and let the provider apply its own default) rather than
-      // failing a turn over a configuration gap.
-      return {
-        model: configured || input.legacyModel,
-        routed: (configured || input.legacyModel) !== input.legacyModel,
-        reason: `${baseReason}_unregistered`,
-      };
-    }
+    // Order: the operator's tier variable, then the model stored on the agent
+    // row, then the platform setting, then the tier's own registry default.
+    // `findModel` on each step is what makes every one of them allow-listed —
+    // the previous `_unregistered` branch forwarded `configured || legacyModel`
+    // verbatim, which is precisely how an unallowed env value reached the
+    // provider. There is no longer a branch that can return an unregistered id.
+    const preferred =
+      findModel(configured) ??
+      this.legacyDefinition(input) ??
+      findModel(input.platformDefaultModel) ??
+      findModel(this.policyDefault(tier, input))!;
 
     const chosen = this.satisfyingProcessing(preferred, tier, input);
     return {
@@ -112,20 +191,53 @@ export class AiModelRouterService {
   }
 
   /**
+   * The allowed model to land on when nothing configured resolves: the platform
+   * setting if it is (still) allowed, else the tier's registry default.
+   *
+   * Guaranteed to return an allowed id, so it is the floor under every branch
+   * of `resolve()`.
+   */
+  private policyDefault(
+    tier: AiModelDefinition['tier'],
+    input: ModelRouteInput,
+  ): string {
+    return (
+      allowedModelId(input.platformDefaultModel) ?? defaultModelForTier(tier)
+    );
+  }
+
+  /** One warning per distinct disallowed value, not one per turn. */
+  private warnDisallowed(input: ModelRouteInput, replacement: string): void {
+    const stored = input.legacyModel!;
+    if (this.warnedModels.has(stored)) return;
+    this.warnedModels.add(stored);
+    this.logger.warn(
+      `Model "${stored}" stored on an agent row is not permitted by platform ` +
+        `policy (tenant ${input.tenantId}); running "${replacement}" instead. ` +
+        `Migration AiModelPolicyLunaTerra rewrites these rows — a value still ` +
+        `appearing here was written after it ran.`,
+    );
+  }
+
+  /**
    * The model stored on the agent row, resolved through the registry.
    *
-   * Under `AI_MODEL_ROUTING_STRICT` (default) an unregistered value is IGNORED
-   * — it is a string a clinic admin could once type freely, and passing it to
-   * the provider produced either a hard error or an UNPRICED cost row. Logged
-   * once per distinct value so the gap is visible without flooding the log on a
-   * hot conversation.
+   * A value outside `AI_MODEL_REGISTRY` is always IGNORED here — it is a string
+   * a clinic admin could once type freely, and passing it to the provider
+   * produced either a hard error or an UNPRICED cost row. Logged once per
+   * distinct value so the gap is visible without flooding the log on a hot
+   * conversation.
+   *
+   * `AI_MODEL_ROUTING_STRICT=false` used to make this pass the stored string
+   * through unchanged. It no longer can: an operator variable must not be able
+   * to re-open the platform's model policy. What the flag still controls is
+   * whether the substitution is announced in the log.
    */
   private legacyDefinition(input: ModelRouteInput): AiModelDefinition | undefined {
     if (!input.legacyModel) return undefined;
     const found = findModel(input.legacyModel);
     if (found) return found;
-    if (!this.strict()) return undefined;
-    if (!this.warnedModels.has(input.legacyModel)) {
+    if (this.strict() && !this.warnedModels.has(input.legacyModel)) {
       this.warnedModels.add(input.legacyModel);
       this.logger.warn(
         `Ignoring unregistered model "${input.legacyModel}" stored on an agent ` +

@@ -253,3 +253,104 @@ describe('typeOrmFactory — synchronize is refused in production (P0.3 / SCHEMA
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P0.6 / SCHEMA-011 — the migrated-database waiver is scoped to one database
+// on one machine, not a bare boolean.
+//
+// Every case below reaches `assertSynchronizeIsSafeForTarget` with
+// TYPEORM_SYNCHRONIZE=true against a NON-production NODE_ENV — the
+// production guard (tested above) already refuses synchronize before this
+// function is ever reached, so it is not re-proven here. Every REJECTED case
+// short-circuits before any DB connection is attempted (a name/host mismatch
+// is caught from the URL string alone), so no live Postgres is needed for
+// them. The ACCEPTED case also never reaches the DB — a valid waiver returns
+// before the migrated-database probe — so it needs no live Postgres either;
+// what happens when there is genuinely NO waiver against a real migrated or
+// virgin database is covered by `test/integration/synchronize-guard.int-spec.ts`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('typeOrmFactory — the synchronize-migrated-DB waiver is scoped (P0.6)', () => {
+  const devEnv = { NODE_ENV: 'development', TYPEORM_SYNCHRONIZE: 'true' };
+
+  it('REJECTS a bare "true" — the old, unscoped contract', async () => {
+    const config = createMockConfigService({
+      ...devEnv,
+      DATABASE_URL: 'postgres://user:pass@127.0.0.1:5432/mydb',
+      TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'true',
+    });
+    await expect(typeOrmFactory(config as any)).rejects.toThrow(
+      /is no longer accepted/,
+    );
+  });
+
+  it('REJECTS a waiver naming a DIFFERENT database than DATABASE_URL', async () => {
+    const config = createMockConfigService({
+      ...devEnv,
+      DATABASE_URL: 'postgres://user:pass@127.0.0.1:5432/mydb',
+      TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'someone_elses_db',
+    });
+    await expect(typeOrmFactory(config as any)).rejects.toThrow(
+      /but DATABASE_URL names database "mydb"/,
+    );
+  });
+
+  it('REJECTS a matching database name on a NON-loopback host', async () => {
+    const config = createMockConfigService({
+      ...devEnv,
+      DATABASE_URL: 'postgres://user:pass@staging.internal:5432/mydb',
+      TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'mydb',
+    });
+    await expect(typeOrmFactory(config as any)).rejects.toThrow(
+      /its host is "staging\.internal", not loopback/,
+    );
+  });
+
+  it('REJECTS a matching database name on a Docker Compose service-name host', async () => {
+    // The exact shape docker-compose.prod.yml uses for its `postgres` service
+    // — refused here even though that stack is additionally blocked by
+    // NODE_ENV=production, because the waiver itself must never trust it.
+    const config = createMockConfigService({
+      ...devEnv,
+      DATABASE_URL: 'postgres://user:pass@postgres:5432/mydb',
+      TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'mydb',
+    });
+    await expect(typeOrmFactory(config as any)).rejects.toThrow(
+      /its host is "postgres", not loopback/,
+    );
+  });
+
+  // The URL's own syntax, not the bare `hostname` `URL` reports back — an
+  // IPv6 loopback MUST be bracketed in the URL itself (RFC 3986); `new
+  // URL(...).hostname` then reports it back unbracketed (`::1`), which is
+  // the form `LOOPBACK_HOSTS` actually needs to contain.
+  it.each([
+    ['localhost', 'postgres://user:pass@localhost:5432/mydb'],
+    ['127.0.0.1', 'postgres://user:pass@127.0.0.1:5432/mydb'],
+    ['[::1]', 'postgres://user:pass@[::1]:5432/mydb'],
+  ])(
+    'ACCEPTS a matching database name on loopback host %s',
+    async (_label, databaseUrl) => {
+      const config = createMockConfigService({
+        ...devEnv,
+        DATABASE_URL: databaseUrl,
+        TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'mydb',
+      });
+      const options = await typeOrmFactory(config as any);
+      expect((options as { synchronize: boolean }).synchronize).toBe(true);
+    },
+  );
+
+  it('treats "false" (the Joi default) as no waiver, not a database named "false"', async () => {
+    // Reaches the real migrated-DB probe against an unreachable host, which
+    // FAILS OPEN (by design — see the function's own docstring) rather than
+    // throwing, so this still resolves without a live Postgres.
+    const config = createMockConfigService({
+      ...devEnv,
+      DATABASE_URL: 'postgres://user:pass@127.0.0.1:59999/mydb',
+      TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'false',
+    });
+    const options = await typeOrmFactory(config as any);
+    expect((options as { synchronize: boolean }).synchronize).toBe(true);
+  });
+});

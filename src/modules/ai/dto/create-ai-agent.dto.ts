@@ -33,7 +33,7 @@ export class CreateAiAgentDto {
    */
   @ApiPropertyOptional({
     description: 'Model identifier. Must be one of the platform-registered models.',
-    example: 'gpt-4.1-mini',
+    example: 'gpt-5.6-luna',
     enum: AI_MODEL_IDS,
     maxLength: 100,
   })

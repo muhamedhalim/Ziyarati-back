@@ -4,7 +4,11 @@ import {
   Column,
   CreateDateColumn,
   Index,
+  ManyToOne,
+  JoinColumn,
 } from 'typeorm';
+
+import { Tenant } from '../SaaS-Core/Tenant';
 
 /**
  * Every outbound email attempt — delivery logging + observability + idempotency.
@@ -13,13 +17,24 @@ import {
  */
 @Entity('email_logs')
 @Index(['status', 'created_at'])
-@Index(['tenant_id', 'created_at'])
+@Index(['tenant', 'created_at']) // P0.7: property renamed tenant_id -> tenant; same underlying column
 export class EmailLog {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ type: 'uuid', nullable: true })
-  tenant_id?: string;
+  /**
+   * P0.7: was a plain `@Column`; now a relation so the FK
+   * `1730089000000-TenantIsolationForeignKeys` adds on this same `tenant_id`
+   * column is entity-declared — otherwise a `TYPEORM_SYNCHRONIZE=true` boot
+   * would DROP it as "old". Column name/nullability unchanged (`@JoinColumn`
+   * pins `tenant_id`, not TypeORM's camelCase default); the `@Index` above
+   * still refers to it by its column name, which `@JoinColumn` preserves.
+   * The two write sites in `email-delivery.service.ts` are updated alongside
+   * this.
+   */
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant?: Tenant;
 
   @Column()
   to_address!: string;

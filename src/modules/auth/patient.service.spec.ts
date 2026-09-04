@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 
 import { PatientService } from './patient.service';
 import { Patient } from '../../entities/Patients/Patient';
@@ -15,7 +15,7 @@ import {
   MockRepository,
 } from '../../../test/utils/mock-factories';
 
-jest.mock('bcryptjs');
+jest.mock('bcrypt');
 
 describe('PatientService', () => {
   let service: PatientService;

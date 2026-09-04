@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomBytes, randomUUID } from 'crypto';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import { DataSource, EntityManager, IsNull, Repository } from 'typeorm';
 
 import { User } from '../../entities/Auth&RBAC/User';
@@ -378,8 +378,13 @@ export class AuthService {
       );
     }
 
-    user.last_login_at = new Date();
-    await this.users.save(user);
+    // P1.2 — a targeted UPDATE of the one column that actually changed,
+    // instead of `save()`'ing the whole entity `validateCredentials` loaded
+    // (10 selected columns, `password_hash` among them — `.save()` writes
+    // every mapped column back, re-writing the hash it just read for no
+    // reason). `issueAuthResult` below only ever needs `user.id`, which this
+    // never touches.
+    await this.users.update({ id: user.id }, { last_login_at: new Date() });
 
     return this.issueAuthResult(user.id, context);
   }
@@ -476,11 +481,33 @@ export class AuthService {
       });
     }
 
+    // P1.2 — `uq_user_email_global` (P0.5 curated guard) enforces at most
+    // one non-deleted user per email GLOBALLY, so `candidates` should never
+    // hold more than one row with a password hash today — this loop's
+    // "email shared across clinics" case (still handled, never removed: the
+    // password disambiguates) is the pre-uq_user_email_global shape. A
+    // second active candidate now means that guard is actually missing —
+    // the exact same invariant `forgotPassword`'s own multiplicity check
+    // (below) already guards, and the same `recordAuthRecoveryEvent`
+    // signal, so the two paths that can observe this loss report it
+    // identically rather than two different ad-hoc signals for one cause.
+    const activeCandidates = candidates.filter(
+      (u): u is User & { password_hash: string } =>
+        !!u.password_hash && u.is_active,
+    );
+    if (activeCandidates.length > 1) {
+      this.metrics.recordAuthRecoveryEvent('multiplicity_violation');
+      this.logger.warn(
+        `${activeCandidates.length} active users share email "${normalizedEmail}"` +
+          `${tenantSlug ? ` in tenant "${tenantSlug}"` : ''} — uq_user_email_global ` +
+          `may be missing. Login still resolves correctly by password.`,
+      );
+    }
+
     // Uniform failure — never reveal whether the email, tenant, activation state
     // or password was the mismatch. The password disambiguates when more than
     // one account shares the email across clinics.
-    for (const user of candidates) {
-      if (!user.password_hash || !user.is_active) continue;
+    for (const user of activeCandidates) {
       if (await bcrypt.compare(password, user.password_hash)) {
         return user;
       }
@@ -1473,6 +1500,36 @@ export class AuthService {
     const accessTtl = this.config.get<string>('JWT_ACCESS_TTL', '15m');
     const refreshTtl = this.config.get<string>('JWT_REFRESH_TTL', '7d');
 
+    // P1.2 (MS-008) — ±10% jitter on the ACCESS token's actual lifetime only
+    // (never the refresh token, already naturally staggered by per-login
+    // rotation). A population of clients that authenticated together —
+    // normal traffic, or every session invalidated at once by a deploy or a
+    // Redis flush — otherwise expires together too, producing exactly the
+    // synchronized mass-reauth burst MS-008 measured: 400 simultaneous
+    // logins serialized bcrypt work into minutes of blocked event loop.
+    // Freshly randomized on EVERY issuance (not derived from the user id),
+    // because the goal is de-synchronizing a COHORT's expiry moments, not
+    // giving one user a stable-but-different TTL. `accessTtlSeconds` is
+    // used for BOTH the actual JWT `exp` claim and the `expiresIn` the
+    // client is told, so they can never disagree.
+    //
+    // A base of 0 (JWT_ACCESS_TTL unparseable by `ttlToMs`'s defensive
+    // no-match branch) is left as exactly 0, not jittered up to 1 — that is
+    // a pre-existing, deliberately-tested fallback (a misconfigured TTL
+    // fails toward an immediately-expired token, not a token that silently
+    // lives for ~1 second), and jitter must never change what a
+    // misconfiguration produces.
+    const baseAccessTtlMs = this.ttlToMs(accessTtl);
+    const accessTtlSeconds =
+      baseAccessTtlMs === 0
+        ? 0
+        : Math.max(
+            1,
+            Math.round(
+              (baseAccessTtlMs * (1 + (Math.random() * 0.2 - 0.1))) / 1000,
+            ),
+          );
+
     const accessPayload: JwtPayload = {
       sub: userId,
       tenantId,
@@ -1480,7 +1537,7 @@ export class AuthService {
     };
     const accessToken = await this.jwt.signAsync(accessPayload, {
       secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-      expiresIn: accessTtl as JwtSignOptions['expiresIn'],
+      expiresIn: accessTtlSeconds,
     });
 
     // Reserve the refresh-token row id so it can be embedded as the jti. On a
@@ -1517,7 +1574,7 @@ export class AuthService {
       accessToken,
       refreshToken,
       tokenType: 'Bearer',
-      expiresIn: Math.floor(this.ttlToMs(accessTtl) / 1000),
+      expiresIn: accessTtlSeconds,
     };
   }
 

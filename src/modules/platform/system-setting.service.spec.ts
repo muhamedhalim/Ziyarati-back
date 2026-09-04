@@ -4,8 +4,8 @@ import { BadRequestException } from '@nestjs/common';
 
 import { SystemSettingService } from './system-setting.service';
 import { SettingKey } from './settings.registry';
+import { AI_MODEL_IDS } from '../ai/routing/ai-model-registry';
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
-import { ErrorCode } from '../../common/errors';
 import { createMockRepository, MockRepository } from '../../../test/utils/mock-factories';
 import { PlatformAdminAuditService } from './platform-admin-audit.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -33,107 +33,24 @@ describe('SystemSettingService', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  it('creates a setting with a unique key', async () => {
-    settings.findOne.mockResolvedValueOnce(null);
-    settings.save.mockResolvedValueOnce({ id: 's1' });
-    await expect(service.create({ key: 'k', value: { a: 1 } } as any)).resolves.toEqual({ id: 's1' });
-  });
-
-  it('rejects a duplicate key', async () => {
-    settings.findOne.mockResolvedValueOnce({ id: 'existing' });
-    await expect(service.create({ key: 'k' } as any)).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
-  });
-
-  it('updates value and re-checks key uniqueness on rename', async () => {
-    settings.findOne
-      .mockResolvedValueOnce({ id: 's1', key: 'old', value: {} }) // get
-      .mockResolvedValueOnce(null); // key unique
+  // FND-015 — upsertByKey previously wrote NO audit entry and captured no
+  // actor. It now records at the service seam so no controller can bypass it.
+  it('FND-015: audits a successful upsertByKey with the acting super admin and the before/after value', async () => {
+    settings.findOne.mockResolvedValueOnce({ id: 's1', key: SettingKey.MAINTENANCE_MODE, value: false });
     settings.save.mockImplementationOnce(async (s: any) => s);
-    const res = await service.update('s1', { key: 'new', value: { b: 2 } } as any);
-    expect(res).toEqual(expect.objectContaining({ key: 'new', value: { b: 2 } }));
-  });
 
-  it('get throws when the setting does not exist', async () => {
-    settings.findOne.mockResolvedValueOnce(null);
-    await expect(service.get('x')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
-  });
+    await service.upsertByKey(SettingKey.MAINTENANCE_MODE, true);
 
-  it('removes and lists settings', async () => {
-    settings.findOne.mockResolvedValueOnce({ id: 's1' });
-    await expect(service.remove('s1')).resolves.toEqual({ id: 's1', deleted: true });
-
-    settings.findAndCount.mockResolvedValueOnce([[{ id: 's1' }], 1]);
-    await expect(service.list({ page: 1, limit: 10, key: 'bil' } as any)).resolves.toMatchObject({ total: 1 });
-  });
-
-  // FND-015 — these mutations previously wrote NO audit entry and captured no
-  // actor. Each now records at the service seam so no controller can bypass it.
-  describe('FND-015 — audit trail', () => {
-    it('audits a successful create with the acting super admin and the after-value', async () => {
-      settings.findOne.mockResolvedValueOnce(null);
-      settings.save.mockResolvedValueOnce({ id: 's1', key: 'k', value: { a: 1 } });
-
-      await service.create({ key: 'k', value: { a: 1 } } as any);
-
-      expect(audit.record).toHaveBeenCalledTimes(1);
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userId: 'super-admin-1',
-          entityType: 'system_setting',
-          entityId: 's1',
-          before: null,
-          after: { key: 'k', value: { a: 1 } },
-        }),
-      );
-    });
-
-    it('audits a successful update with both the before and after value', async () => {
-      settings.findOne
-        .mockResolvedValueOnce({ id: 's1', key: 'billing.mode', value: { mode: 'free' } })
-        .mockResolvedValueOnce(null); // key unique on rename
-      settings.save.mockImplementationOnce(async (s: any) => s);
-
-      await service.update('s1', { key: 'billing.mode', value: { mode: 'paid' } } as any);
-
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userId: 'super-admin-1',
-          entityType: 'system_setting',
-          entityId: 's1',
-          before: { key: 'billing.mode', value: { mode: 'free' } },
-          after: { key: 'billing.mode', value: { mode: 'paid' } },
-        }),
-      );
-    });
-
-    it('audits a successful delete with the removed value as "before" and null "after"', async () => {
-      settings.findOne.mockResolvedValueOnce({ id: 's1', key: 'k', value: { a: 1 } });
-
-      await service.remove('s1');
-
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userId: 'super-admin-1',
-          entityType: 'system_setting',
-          entityId: 's1',
-          before: { key: 'k', value: { a: 1 } },
-          after: null,
-        }),
-      );
-    });
-
-    it('audits a REJECTED create too (AD-14: both success and refusal are recorded)', async () => {
-      settings.findOne.mockResolvedValueOnce({ id: 'existing', key: 'k' });
-      await expect(service.create({ key: 'k' } as any)).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: 'platform_admin.system_setting.create_rejected',
-          userId: 'super-admin-1',
-          entityType: 'system_setting',
-          entityId: 'existing',
-        }),
-      );
-    });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'platform_admin.system_setting.upsert',
+        userId: 'super-admin-1',
+        entityType: 'system_setting',
+        entityId: 's1',
+        before: { key: SettingKey.MAINTENANCE_MODE, value: false },
+        after: { key: SettingKey.MAINTENANCE_MODE, value: true },
+      }),
+    );
   });
 
   // ai.default_temperature is the registry's only 'number' entry with a
@@ -194,5 +111,104 @@ describe('SystemSettingService', () => {
         service.upsertByKey(SettingKey.TENANT_QUOTA_GB, 7),
       ).resolves.toMatchObject({ value: 7 });
     });
+  });
+});
+
+/**
+ * `/platform/system-settings` as the model-policy write boundary.
+ *
+ * The page renders `GET /platform/settings/typed` verbatim — it holds no model
+ * list of its own — so what the registry permits is exactly what the dropdown
+ * offers. These cases are about the OTHER direction: a request that never went
+ * near the page.
+ */
+describe('SystemSettingService — ai.default_model policy', () => {
+  let settings: { findOne: jest.Mock; save: jest.Mock; create: jest.Mock; remove: jest.Mock; findAndCount: jest.Mock };
+  let service: SystemSettingService;
+
+  beforeEach(() => {
+    settings = {
+      findOne: jest.fn().mockResolvedValue(null),
+      save: jest.fn().mockImplementation(async (row) => ({ id: 's1', ...row })),
+      create: jest.fn().mockImplementation((row) => row),
+      remove: jest.fn(),
+      findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    };
+    service = new SystemSettingService(
+      settings as any,
+      { record: jest.fn() } as any,
+      { getUser: () => ({ id: 'admin-1' }) } as any,
+    );
+  });
+
+  it.each([...AI_MODEL_IDS])('accepts %s', async (model) => {
+    await expect(
+      service.upsertByKey(SettingKey.AI_DEFAULT_MODEL, model),
+    ).resolves.toMatchObject({ value: model });
+  });
+
+  it.each([
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-5.6-sol',
+    'claude-3-opus',
+    'GPT-5.6-LUNA',
+    '',
+    null,
+  ])('rejects %p at the typed endpoint', async (model) => {
+    await expect(
+      service.upsertByKey(SettingKey.AI_DEFAULT_MODEL, model),
+    ).rejects.toThrow(/must be one of/);
+    expect(settings.save).not.toHaveBeenCalled();
+  });
+
+  /**
+   * DIRECT API MANIPULATION. `upsertByKey` is the ONLY way to write a
+   * registry-defined setting, so it is the only place the enum validator has to
+   * hold. Asserted structurally as well as behaviourally: a second write path
+   * that skipped `validateValue` — the free-form raw KV editor used to be
+   * exactly that — would re-open the policy without any of the cases above
+   * failing.
+   */
+  it('has no write path that skips the registry validator', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const source: string = require('node:fs').readFileSync(
+      require.resolve('./system-setting.service.ts'),
+      'utf8',
+    );
+    // `upsertByKey` validates before it does anything else...
+    expect(source).toMatch(
+      /async upsertByKey\([^)]*\)[^{]*\{\s*this\.validateValue\(key, value\);/,
+    );
+    // ...and it is the only method that persists a row, so there is no second
+    // way in. Both halves matter: the first without the second was true while
+    // the raw KV editor existed alongside it.
+    const savingMethods = [...source.matchAll(/^ {2}(?:async )?(\w+)\(/gm)]
+      .map((m) => m[1])
+      .filter((name) => {
+        const start = source.indexOf(`${name}(`);
+        const body = source.slice(start, source.indexOf('\n  }', start));
+        return body.includes('this.settings.save(');
+      });
+    expect(savingMethods).toEqual(['upsertByKey']);
+  });
+
+  it('offers exactly the permitted models to the dropdown, with no client-side list', () => {
+    const definition = service.getRegistry()[SettingKey.AI_DEFAULT_MODEL];
+    expect(definition.type).toBe('enum');
+    expect([...(definition.allowedValues ?? [])].sort()).toEqual(
+      [...AI_MODEL_IDS].sort(),
+    );
+    // And its own default has to be one of them, or a fresh install would ship
+    // a value its own validator refuses.
+    expect(AI_MODEL_IDS).toContain(definition.default);
+  });
+
+  it('serves the platform default with no row present, so a fresh install is valid', async () => {
+    settings.findOne.mockResolvedValue(null);
+    const value = await service.getTyped<string>(SettingKey.AI_DEFAULT_MODEL);
+    expect(AI_MODEL_IDS).toContain(value);
   });
 });

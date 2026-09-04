@@ -5,12 +5,12 @@
  * optional validation constraints. The service validates writes against this
  * registry; the controller exposes it so the frontend can render the correct
  * control type without hard-coding field definitions.
- *
- * Keys NOT in this registry are treated as raw developer KV pairs and receive
- * no type validation (the legacy free-form path stays available).
  */
 
-import { AI_MODEL_IDS } from '../ai/routing/ai-model-registry';
+import {
+  AI_MODEL_IDS,
+  defaultModelForTier,
+} from '../ai/routing/ai-model-registry';
 
 export enum SettingKey {
   MAINTENANCE_MODE    = 'platform.maintenance_mode',
@@ -118,11 +118,28 @@ export const SETTINGS_REGISTRY: Readonly<Record<SettingKey, SettingDefinition>> 
     // unregistered model at write time, reusing the existing enum validator
     // rather than adding a bespoke check. Was free text, which let a super admin
     // set a model no provider supports and no price catalog can price.
+    //
+    // `allowedValues` is `AI_MODEL_IDS` — the registry's GA set — so restricting
+    // the registry restricts this dropdown, this validator and the agent DTO in
+    // one edit. The value never appears in this file, and the frontend never
+    // holds a model list of its own: `/platform/system-settings` renders exactly
+    // what `GET /platform/settings/typed` returns.
     type: 'enum',
     category: 'ai',
     label: 'Default AI Model',
-    description: 'Default AI model for new agents that do not specify a model explicitly.',
-    default: 'gpt-4o',
+    // Widened wording, matching what the setting now actually governs. It is
+    // still the seed for a new agent's `model`, but it is ALSO handed to
+    // `AiModelRouterService` on every turn as the default an agent without a
+    // pinned model runs on — which is what makes this page the platform's
+    // central model configuration rather than a value applied once at creation.
+    description:
+      'The AI model the platform runs on. Seeds new agents, and is the model used by any agent — including the public booking widget, which has no agent row — that has no model of its own.',
+    // Tier-preserving migration of the previous 'gpt-4o': that model was the
+    // registry's POWERFUL entry, and GPT-5.6 Terra is the POWERFUL entry of the
+    // permitted set. Picking the cheaper Luna here would have been a silent
+    // capability downgrade for every clinic; a super admin can still switch to
+    // it in one click on this page.
+    default: defaultModelForTier('POWERFUL'),
     allowedValues: AI_MODEL_IDS,
   },
   [SettingKey.AI_DEFAULT_TEMP]: {

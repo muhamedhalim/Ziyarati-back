@@ -53,6 +53,13 @@ export interface NotificationDispatchJob extends BaseJobData {
   tenantId: string;
   notificationId: string;
 }
+/** P1.5 (MS-007) — outbox-driven, durable reminder scheduling for one
+ *  newly-created appointment. See `queue.constants.ts`'s `REMINDERS_SCHEDULE`
+ *  docstring for why this exists instead of a listener-only path. */
+export interface RemindersScheduleJob extends BaseJobData {
+  tenantId: string;
+  appointmentId: string;
+}
 /** Maintenance sweep: re-enqueue due-but-unsent + reclaim stale PROCESSING. */
 export type NotificationReapJob = BaseJobData;
 /** Dead-letter envelope for an exhausted transient dispatch. */

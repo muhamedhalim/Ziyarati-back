@@ -60,7 +60,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
  *    history + replay). Actual HTTP delivery runs in the worker process
  *    (WebhookDeliveryProcessor) — see worker.module.ts.
  *  - File-upload metadata — quota + URL safety enforced (storage external).
- *  - Platform settings — super-admin only, typed registry + raw KV fallback.
+ *  - Platform settings — super-admin only, typed registry.
  *  - Retention — PlatformMaintenanceService purges aged logs (worker job).
  *
  * TWO ownership models: TENANT-OWNED (ApiKey/ApiLog/WebhookLog/WebhookEndpoint/

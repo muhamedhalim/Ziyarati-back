@@ -3,7 +3,10 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 
 import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
-import { NotificationDispatchJob } from '../../queue/job-data.interface';
+import {
+  NotificationDispatchJob,
+  RemindersScheduleJob,
+} from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -11,6 +14,7 @@ import { WorkerAuthorizationService } from '../../queue/worker-authorization.ser
 import { QueueService } from '../../queue/queue.service';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { NotificationDispatchService } from '../../modules/notifications/notification-dispatch.service';
+import { ReminderSchedulerService } from '../../modules/notifications/reminder-scheduler.service';
 import { InternalNotificationReadService } from '../../modules/notifications/internal/internal-notification-read.service';
 import { MetricsService } from '../../metrics/metrics.service';
 
@@ -33,6 +37,19 @@ const REAP_LOCK_TTL_MS = 45_000;
  *      Lock-guarded: an overlapping reap run doubles the DB scan/enqueue load
  *      exactly when the system is already slow (M9) — not a correctness risk
  *      (the reclaim itself is a conditional `UPDATE`), just wasted work.
+ *  - reminders.schedule     : P1.5 (MS-007) — durable, outbox-driven
+ *      reminder scheduling for a newly-created appointment (see
+ *      `AppointmentsService.create`'s transaction, and
+ *      `queue.constants.ts`'s `REMINDERS_SCHEDULE` docstring for why this
+ *      replaced a post-commit listener read). Calls the SAME idempotent
+ *      `ReminderSchedulerService.scheduleFor` the listener already called —
+ *      a transient failure throws and BullMQ retries (the queue's default
+ *      5 attempts, exponential backoff); an exhausted retry budget is
+ *      logged (generic `onFailed` branch below) but NOT DLQ-parked —
+ *      deliberately smaller in scope than the dispatch path's DLQ+replay
+ *      machinery, since 5 retries already closes the measured gap (0
+ *      retries today) without building a new replay UI this finding never
+ *      asked for.
  */
 @Processor(QUEUE.NOTIFICATIONS, { concurrency: workerConcurrency() })
 export class NotificationsProcessor extends WorkerHost {
@@ -53,6 +70,10 @@ export class NotificationsProcessor extends WorkerHost {
      * collaborator after it.
      */
     private readonly inApp: InternalNotificationReadService,
+    /** P1.5 (MS-007) — consumes `reminders.schedule`, the outbox-driven
+     *  replacement for `ReminderListener.onCreated`'s post-commit read.
+     *  Appended for the same reason as `inApp` above. */
+    private readonly reminders: ReminderSchedulerService,
   ) {
     super();
   }
@@ -100,6 +121,30 @@ export class NotificationsProcessor extends WorkerHost {
       } finally {
         await this.lock.release(REAP_LOCK_KEY, lockToken);
       }
+    }
+
+    if (job.name === JOB.REMINDERS_SCHEDULE) {
+      const remindersData = job.data as RemindersScheduleJob;
+      validateJobPayload(job.name, remindersData);
+      this.logger.log(
+        `[cid=${remindersData.correlationId ?? '-'}] reminders.schedule tenant=${remindersData.tenantId} ` +
+          `appointment=${remindersData.appointmentId} attempt=${job.attemptsMade + 1}`,
+      );
+      return runInTenantContext(
+        this.ctx,
+        this.authz,
+        job.name,
+        remindersData,
+        // `scheduleFor` is already idempotent (unique `source_ref` per lead
+        // time — see its own docstring), so a BullMQ retry after a
+        // transient failure here is safe: it schedules whatever lead times
+        // haven't been claimed yet and silently no-ops the rest.
+        () =>
+          this.reminders.scheduleFor(
+            remindersData.tenantId,
+            remindersData.appointmentId,
+          ),
+      );
     }
 
     const data = job.data as NotificationDispatchJob;

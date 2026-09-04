@@ -15,7 +15,7 @@
 import './utils/login-protection-env.setup';
 
 import { createHash } from 'crypto';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import type { Redis } from 'ioredis';
 

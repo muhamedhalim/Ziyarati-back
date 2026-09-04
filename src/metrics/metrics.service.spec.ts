@@ -29,6 +29,22 @@ describe('MetricsService (M14)', () => {
     expect(body).toContain('42');
   });
 
+  it('renders the three db_pool_* gauges from a single setDbPoolStats call (P1.3)', async () => {
+    service.setDbPoolStats({ total: 15, idle: 10, waiting: 2 });
+    const body = await service.render();
+    expect(body).toContain('db_pool_total 15');
+    expect(body).toContain('db_pool_idle 10');
+    expect(body).toContain('db_pool_waiting 2');
+  });
+
+  it('db_pool_waiting reflects the LATEST sample, not an accumulated total (it is a gauge, not a counter)', async () => {
+    service.setDbPoolStats({ total: 15, idle: 5, waiting: 8 });
+    service.setDbPoolStats({ total: 15, idle: 15, waiting: 0 });
+    const body = await service.render();
+    expect(body).toContain('db_pool_waiting 0');
+    expect(body).not.toContain('db_pool_waiting 8');
+  });
+
   it('renders cache_operations_total labeled by cache name and hit/miss result', async () => {
     service.recordCacheOperation('analytics', 'hit');
     service.recordCacheOperation('embedding', 'miss');

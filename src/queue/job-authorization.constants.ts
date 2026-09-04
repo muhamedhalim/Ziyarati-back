@@ -85,6 +85,14 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
     featureKey: FeatureKey.NOTIFICATIONS,
   },
   [JOB.NOTIFICATIONS_REAP]: SYSTEM,
+  // P1.5 (MS-007) — same queue, same capability as NOTIFICATIONS_DISPATCH
+  // above: this job only writes the `ScheduledNotification` rows that
+  // eventually flow through that exact dispatch path, so it is gated on the
+  // same entitlement rather than a new one.
+  [JOB.REMINDERS_SCHEDULE]: {
+    tier: 'tenant',
+    featureKey: FeatureKey.NOTIFICATIONS,
+  },
   [JOB.WHATSAPP_SEND]: { tier: 'tenant', featureKey: FeatureKey.WHATSAPP },
   [JOB.WHATSAPP_RETRY]: { tier: 'tenant', featureKey: FeatureKey.WHATSAPP },
   // Own type declares `tenantId: string | null` — null is a legitimate,

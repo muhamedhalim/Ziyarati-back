@@ -4,7 +4,10 @@
  * Builds a throwaway database by running the full migration chain from empty,
  * then asserts that PostgreSQL's own catalog contains every critical integrity
  * guard, with the exact definition the contract records
- * (`test/fixtures/critical-schema-guards.json`, 43 objects).
+ * (`src/config/schema-guards/critical-schema-guards.json`, 43 objects — moved
+ * from `test/fixtures/` in P0.5 so the SAME file also drives the runtime
+ * `SchemaGuardCatalogService`; this test and the app boot check against one
+ * source, never two that could drift).
  *
  * WHAT THIS CATCHES that nothing else did:
  *
@@ -37,7 +40,7 @@ import { join } from 'node:path';
 import { Client } from 'pg';
 import { DataSource } from 'typeorm';
 
-import contract from '../fixtures/critical-schema-guards.json';
+import contract from '../../src/config/schema-guards/critical-schema-guards.json';
 
 const TEST_DB =
   process.env.INTEGRATION_TEST_DB_SCHEMA ?? 'ziyarati_inttest_schema';

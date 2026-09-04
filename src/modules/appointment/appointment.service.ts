@@ -21,7 +21,9 @@ import { AppointmentNote } from '../../entities/Calendar&Appointments/Appointmen
 import { AppointmentReschedule } from '../../entities/Calendar&Appointments/AppointmentReschedule';
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { leadMinutesFromReminderSourceRef } from '../notifications/reminder-scheduler.service';
+import { QUEUE, JOB } from '../../queue/queue.constants';
 import { AppointmentActionOrigin } from '../../entities/enums';
 
 import { Branch } from '../../entities/SaaS-Core/Branch';
@@ -455,7 +457,7 @@ export class AppointmentsService {
     // another timezone.
     const branch = await this.assertBranch(reads, tenantId, dto.branchId);
     await this.assertCustomer(reads, tenantId, dto.customerId);
-    await this.assertStaffAtBranch(
+    const staff = await this.assertStaffAtBranch(
       reads,
       tenantId,
       dto.branchId,
@@ -486,12 +488,18 @@ export class AppointmentsService {
     // calendar slots, blocked periods, holidays, staff time off / active flag,
     // and existing appointment conflicts). No `manager`: see the note above —
     // passing one bought no isolation and cost the pool deadlock.
+    //
+    // P2 (Phase 6): `branch`/`staff` above already validated these exact
+    // tenant-owned rows — passing them through skips AvailabilityService's
+    // own redundant re-fetch of the identical rows (measured: 4 duplicate
+    // statements per booking before this change).
     await this.availability.assertBookable(
       tenantId,
       dto.branchId,
       dto.staffId,
       startAt,
       endAt,
+      { preloadedBranch: branch, preloadedStaff: staff },
     );
 
     // Insured patients are never charged online — see AppointmentPaymentStatus.INSURANCE.
@@ -575,6 +583,31 @@ export class AppointmentsService {
         status,
         userId,
         'Appointment created',
+      );
+
+      // P1.5 (MS-007) — reminder scheduling as a transactional outbox row,
+      // on the SAME `manager` this whole transaction already holds, not a
+      // new connection. Closes the exact loss the load test measured:
+      // `ReminderListener.onCreated` (still handles CONFIRMED/CANCELLED/
+      // COMPLETED/NO_SHOW/RESCHEDULED, untouched) needed 3-4 fresh DB reads
+      // AFTER this transaction committed, competing for a pool connection
+      // against live request traffic — under saturation it lost that race
+      // and the reminder was silently never scheduled, with the booking
+      // itself already returned 201. Writing this row costs one INSERT on
+      // a connection already held; it commits or rolls back with the
+      // booking, and `NotificationsProcessor` (worker, its own separate
+      // pool, BullMQ retries + DLQ on exhaustion) does the actual
+      // `ReminderSchedulerService.scheduleFor` work — the same idempotent
+      // method the listener already called, so nothing about HOW reminders
+      // get scheduled changes, only WHEN the read work happens and what
+      // guarantees it if that read work fails the first time.
+      await manager.save(
+        manager.create(OutboxJob, {
+          queue: QUEUE.NOTIFICATIONS,
+          job_name: JOB.REMINDERS_SCHEDULE,
+          dedupe_key: `reminders-schedule-${saved.id}`,
+          payload: { tenantId, appointmentId: saved.id },
+        }),
       );
 
       return saved;
@@ -1422,7 +1455,7 @@ export class AppointmentsService {
     branchId: string,
     staffId: string,
     strict: boolean,
-  ): Promise<void> {
+  ): Promise<StaffProfile> {
     const staff = await manager.getRepository(StaffProfile).findOne({
       where: { id: staffId, tenant: { id: tenantId } },
     });
@@ -1440,7 +1473,7 @@ export class AppointmentsService {
         is_active: true,
       },
     });
-    if (atBranch) return;
+    if (atBranch) return staff;
 
     if (!strict) {
       const anywhere = await manager.getRepository(StaffSchedule).exists({
@@ -1450,7 +1483,7 @@ export class AppointmentsService {
           is_active: true,
         },
       });
-      if (!anywhere) return;
+      if (!anywhere) return staff;
     }
 
     throw new AppError(ErrorCode.CONFLICT, {

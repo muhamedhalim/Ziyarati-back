@@ -106,6 +106,51 @@ describe('AvailabilityService.assertBookable', () => {
     await expect(assert()).resolves.toBeUndefined();
   });
 
+  // P2 (Phase 6) — `create()` already validated these exact rows a moment
+  // earlier; skipping the re-fetch when the caller supplies them is the
+  // measured 4-statement-per-booking reduction. Every OTHER test in this
+  // file calls `assert()` with `{}` and so still exercises the original
+  // unconditional `refs.getBranch`/`getStaff` path unchanged.
+  describe('preloaded branch/staff (P2 / Phase 6)', () => {
+    it('skips refs.getBranch/getStaff entirely when both are supplied, and still evaluates correctly', async () => {
+      fullDaySlot();
+      await expect(
+        service.assertBookable(TENANT, BRANCH, STAFF, START, END, {
+          preloadedBranch: { timezone: 'UTC' },
+          preloadedStaff: {
+            is_available_for_booking: true,
+            booking_buffer_minutes: 0,
+          },
+        }),
+      ).resolves.toBeUndefined();
+      expect(refs.getBranch).not.toHaveBeenCalled();
+      expect(refs.getStaff).not.toHaveBeenCalled();
+    });
+
+    it('still rejects an inactive preloaded staff member — the field is actually read, not ignored', async () => {
+      fullDaySlot();
+      await expect(
+        service.assertBookable(TENANT, BRANCH, STAFF, START, END, {
+          preloadedStaff: {
+            is_available_for_booking: false,
+            booking_buffer_minutes: 0,
+          },
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.STAFF_NOT_AVAILABLE });
+      // No `preloadedBranch` in this case — falls back to refs.getBranch,
+      // proving the two preload fields are independent, not all-or-nothing.
+      expect(refs.getBranch).toHaveBeenCalled();
+      expect(refs.getStaff).not.toHaveBeenCalled();
+    });
+
+    it('falls back to refs.getBranch/getStaff exactly as before when neither is supplied', async () => {
+      fullDaySlot();
+      await expect(assert()).resolves.toBeUndefined();
+      expect(refs.getBranch).toHaveBeenCalledWith(TENANT, BRANCH);
+      expect(refs.getStaff).toHaveBeenCalledWith(TENANT, STAFF);
+    });
+  });
+
   it('rejects when the staff member is not bookable', async () => {
     fullDaySlot();
     refs.getStaff.mockResolvedValueOnce({

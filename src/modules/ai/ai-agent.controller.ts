@@ -61,7 +61,7 @@ const S_AGENT = {
   properties: {
     id: { type: 'string', format: 'uuid' },
     name: { type: 'string', nullable: true, example: 'Reception Assistant' },
-    model: { type: 'string', nullable: true, example: 'gpt-4o-mini' },
+    model: { type: 'string', nullable: true, example: 'gpt-5.6-luna' },
     system_prompt: { type: 'string', nullable: true },
     temperature: { type: 'number', example: 0.2 },
     is_active: { type: 'boolean', example: true },

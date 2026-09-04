@@ -1,5 +1,5 @@
 import { EntityManager, IsNull } from 'typeorm';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import { Role } from '../entities/Auth&RBAC/Role';
 import { User } from '../entities/Auth&RBAC/User';
 import { UserRole } from '../entities/Auth&RBAC/UserRole';

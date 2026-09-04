@@ -6,6 +6,7 @@ import { DataSource, Repository } from 'typeorm';
 import { ILike } from 'typeorm';
 
 import { EmailLog } from '../../entities/System/EmailLog';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { EmailSendJob } from '../../queue/job-data.interface';
 import { EmailProviderFactory } from './providers/email-provider.factory';
 import { resolveEmailConfig } from './email.config';
@@ -127,11 +128,13 @@ export class EmailDeliveryService {
         log = this.logs.create({
           idempotency_key: job.idempotencyKey,
           to_address: toAddr,
-          tenant_id: job.tenantId ?? undefined,
+          // P0.7: tenant_id is now the join column of a relation (see
+          // EmailLog.ts), not a plain scalar.
+          tenant: job.tenantId ? ({ id: job.tenantId } as Tenant) : undefined,
         });
       }
       log.to_address = toAddr;
-      log.tenant_id = job.tenantId ?? log.tenant_id;
+      if (job.tenantId) log.tenant = { id: job.tenantId } as Tenant;
       log.template = job.template;
       log.subject = subject;
       log.locale = locale;

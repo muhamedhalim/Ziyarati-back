@@ -18,7 +18,7 @@ export class AiAgentFilterDto {
   @MaxLength(255)
   search?: string;
 
-  @ApiPropertyOptional({ description: 'Filter by model.', example: 'gpt-4o-mini', maxLength: 100 })
+  @ApiPropertyOptional({ description: 'Filter by model.', example: 'gpt-5.6-luna', maxLength: 100 })
   @IsOptional()
   @IsString()
   @MaxLength(100)

@@ -2,6 +2,8 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
+import { SchemaGuardRegistry } from '../../config/schema-guard.registry';
+
 /**
  * The `EXCLUDE USING gist` constraint created by the `AppointmentNoOverlap`
  * migration. It is the ONLY thing that makes concurrent booking safe: an
@@ -40,12 +42,25 @@ const OVERLAP_CONSTRAINT = 'appointments_no_overlap';
  * property; refusing to boot over it would turn a degraded API into a dead one,
  * which is strictly worse for a clinic mid-day. Operators get an unmissable
  * error line with the actual cause and the fix.
+ *
+ * P0.5 / P04-001: also reports into `SchemaGuardRegistry`, so the ONE guard
+ * this service already detects reliably (and has since P0.1) is no longer
+ * invisible to `GET /system/health/readiness` — closing the single most
+ * important row of the P0.4 blind-spot finding. `SchemaGuardCatalogService`
+ * independently checks the same guard by definition-shape as part of the
+ * full 43-guard contract; the two are deliberately not merged into one
+ * check — this one's targeted `pg_constraint.conname` lookup and its
+ * detailed, guard-specific remediation message predate and are kept
+ * alongside the generic one, not replaced by it.
  */
 @Injectable()
 export class SchedulingIntegrityService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SchedulingIntegrityService.name);
 
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly guards: SchemaGuardRegistry,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     const present = await this.overlapConstraintExists();
@@ -57,9 +72,20 @@ export class SchedulingIntegrityService implements OnApplicationBootstrap {
       this.logger.log(
         `Double-booking guard verified: EXCLUSION constraint "${OVERLAP_CONSTRAINT}" is installed.`,
       );
+      await this.guards.ensure({
+        owner: 'SchedulingIntegrityService',
+        label: OVERLAP_CONSTRAINT,
+        criticality: 'required',
+        run: () => Promise.resolve(),
+      });
       return;
     }
 
+    const detail =
+      `EXCLUSION constraint "${OVERLAP_CONSTRAINT}" is not installed on "appointments". ` +
+      `Concurrent bookings for the same staff member and overlapping window can BOTH ` +
+      `succeed. Run "npm run migration:run" — AppointmentNoOverlapRepair1730088000000 ` +
+      `reinstalls it and is idempotent.`;
     this.logger.error(
       `⚠️ MISSING DOUBLE-BOOKING GUARD — the EXCLUSION constraint "${OVERLAP_CONSTRAINT}" ` +
         `is not installed on "appointments". Concurrent bookings for the same staff member ` +
@@ -72,6 +98,12 @@ export class SchedulingIntegrityService implements OnApplicationBootstrap {
         `error names how many and the query that lists them. Resolve those first — never ` +
         `delete booking rows to force the constraint through.`,
     );
+    await this.guards.ensure({
+      owner: 'SchedulingIntegrityService',
+      label: OVERLAP_CONSTRAINT,
+      criticality: 'required',
+      run: () => Promise.reject(new Error(detail)),
+    });
   }
 
   /** `true` / `false`, or `null` when the check itself could not run. */

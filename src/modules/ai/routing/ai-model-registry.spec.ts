@@ -8,6 +8,9 @@ import {
   AI_MODEL_REGISTRY,
   AI_MODEL_REGISTRY_GA,
   AI_SELECTABLE_MODELS,
+  DEFAULT_AI_MODEL_ID,
+  allowedModelId,
+  defaultModelForTier,
   findModel,
   isKnownModel,
   modelsForTier,
@@ -91,21 +94,55 @@ describe('AI_MODEL_REGISTRY', () => {
     },
   );
 
-  it('resolves ids and aliases case- and whitespace-insensitively', () => {
-    expect(findModel('  GPT-4O  ')?.id).toBe('gpt-4o');
-    expect(findModel('gpt-4.1-mini-2025-04-14')?.id).toBe('gpt-4.1-mini');
+  it('resolves ids case- and whitespace-insensitively', () => {
+    expect(findModel('  GPT-5.6-LUNA  ')?.id).toBe('gpt-5.6-luna');
+    expect(findModel(' Gpt-5.6-Terra')?.id).toBe('gpt-5.6-terra');
     expect(findModel('gpt-does-not-exist')).toBeUndefined();
     expect(findModel(undefined)).toBeUndefined();
     expect(findModel(null)).toBeUndefined();
-    expect(isKnownModel('gpt-4o-2024-11-20')).toBe(true);
     expect(isKnownModel('claude-3')).toBe(false);
-    // Verified against GET /v1/models on 2026-08-19: these are NOT real ids.
-    // 'gpt-4o-latest' was registered as an alias and does not exist.
-    expect(isKnownModel('gpt-4o-latest')).toBe(false);
-    // Real, but deliberately unaliased — it is priced at roughly double the
-    // current gpt-4o snapshots, so aliasing it would mis-price it. UNPRICED is
-    // the honest outcome.
-    expect(isKnownModel('gpt-4o-2024-05-13')).toBe(false);
+  });
+
+  /**
+   * The GPT-4.x family is GONE from the registry, ids AND aliases.
+   *
+   * Asserted as its own case because the failure it guards against is not a
+   * typo — it is someone re-adding one of these to "support an existing
+   * clinic", which would silently re-open every gate at once: the agent DTO,
+   * the `ai.default_model` dropdown, the model env vars and the dispatch gate
+   * are all derived from this list.
+   */
+  it('does not register any GPT-4.x model, by id or by dated snapshot', () => {
+    for (const retired of [
+      'gpt-4o',
+      'gpt-4o-mini',
+      'gpt-4.1',
+      'gpt-4.1-mini',
+      'gpt-4.1-nano',
+      'gpt-4-turbo',
+      'gpt-5-mini',
+      'gpt-4o-2024-08-06',
+      'gpt-4o-2024-11-20',
+      'gpt-4.1-mini-2025-04-14',
+      'gpt-4o-mini-2024-07-18',
+    ]) {
+      expect(isKnownModel(retired)).toBe(false);
+      expect(findModel(retired)).toBeUndefined();
+      expect(AI_MODEL_IDS).not.toContain(retired);
+      expect(AI_MODEL_IDS_ALL).not.toContain(retired);
+    }
+  });
+
+  /**
+   * …but they are still PRICED. Retiring a model must not retroactively make
+   * the cost ledger unable to re-read the rows it already wrote against it.
+   * The two facts are independent by design: the catalog prices a past turn,
+   * the registry authorizes a future one.
+   */
+  it('keeps pricing the retired GPT-4.x models it no longer authorizes', () => {
+    for (const retired of ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini']) {
+      expect(prices.quoteChat('openai', retired, 1_000, 1_000).status).toBe('PRICED');
+    }
   });
 
   it('offers at least one ECONOMY model — the routing default depends on it', () => {
@@ -147,21 +184,17 @@ describe('AI_MODEL_REGISTRY', () => {
  */
 describe('AI_MODEL_REGISTRY — the supported model set', () => {
   const EXPECTED = [
-    { id: 'gpt-4o', displayName: 'GPT-4o' },
-    { id: 'gpt-4o-mini', displayName: 'GPT-4o Mini' },
-    { id: 'gpt-4.1', displayName: 'GPT-4.1' },
-    { id: 'gpt-4.1-mini', displayName: 'GPT-4.1 Mini' },
     { id: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna' },
     { id: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra' },
   ];
 
-  it('registers exactly the six supported models', () => {
+  it('registers exactly two models — GPT-5.6 Luna and GPT-5.6 Terra', () => {
     expect([...AI_MODEL_IDS_ALL].sort()).toEqual(
       EXPECTED.map((m) => m.id).sort(),
     );
   });
 
-  it('makes all six tenant-selectable', () => {
+  it('makes both — and only both — tenant-selectable', () => {
     // AI_MODEL_IDS backs the agent DTO, the ai.default_model platform setting
     // and GET /ai/agents/models. One list, three enforcement points.
     expect([...AI_MODEL_IDS].sort()).toEqual(EXPECTED.map((m) => m.id).sort());
@@ -187,6 +220,41 @@ describe('AI_MODEL_REGISTRY — the supported model set', () => {
     const names = AI_MODEL_REGISTRY.map((m) => m.displayName);
     expect(new Set(names).size).toBe(names.length);
     expect(names.every((n) => n.trim().length > 0)).toBe(true);
+  });
+
+  /**
+   * The picker the super admin actually sees at /platform/system-settings, and
+   * the one a clinic sees at GET /ai/agents/models, are the same two rows —
+   * labelled with the product names the policy is written in.
+   */
+  it('offers exactly "GPT-5.6 Luna" and "GPT-5.6 Terra" to every picker', () => {
+    expect(AI_SELECTABLE_MODELS.map((m) => m.displayName).sort()).toEqual([
+      'GPT-5.6 Luna',
+      'GPT-5.6 Terra',
+    ]);
+  });
+
+  /**
+   * The two ends of the policy, stated as one law: whatever is permitted must
+   * be a tier the router can automatically land on, and both tiers must be
+   * occupied — otherwise a fallback would have nowhere legal to go.
+   */
+  it('covers both routing tiers, so no fallback can be homeless', () => {
+    expect(modelsForTier('ECONOMY').map((m) => m.id)).toEqual(['gpt-5.6-luna']);
+    expect(modelsForTier('POWERFUL').map((m) => m.id)).toEqual(['gpt-5.6-terra']);
+    expect(DEFAULT_AI_MODEL_ID).toBe('gpt-5.6-luna');
+    expect(defaultModelForTier('POWERFUL')).toBe('gpt-5.6-terra');
+    // STANDARD has no member; it must still resolve to a permitted model
+    // rather than to undefined.
+    expect(AI_MODEL_IDS).toContain(defaultModelForTier('STANDARD'));
+  });
+
+  it('canonicalizes through allowedModelId and refuses everything else', () => {
+    expect(allowedModelId(' GPT-5.6-Luna ')).toBe('gpt-5.6-luna');
+    expect(allowedModelId('gpt-5.6-terra')).toBe('gpt-5.6-terra');
+    for (const denied of ['gpt-4o', 'gpt-5.6-sol', 'claude-3', '', null, undefined]) {
+      expect(allowedModelId(denied)).toBeUndefined();
+    }
   });
 
   it('rejects the alias claims that were verified NOT to exist', () => {
@@ -336,15 +404,18 @@ describe('AI_MODEL_REGISTRY — GPT-5.6 capability contract', () => {
     }
   });
 
-  it('keeps GPT-5.6 out of the GPT-4.x behaviour it must not inherit', () => {
-    for (const model of AI_MODEL_REGISTRY.filter(
-      (m) => !m.id.startsWith('gpt-5.6'),
-    )) {
-      // Every GPT-4.x model still takes a temperature and sends no effort, so
-      // promoting GPT-5.6 changed nothing about how they are dispatched.
-      expect(model.supportsTemperature).toBe(true);
-      expect(model.reasoningEffort).toBeUndefined();
-      expect(model.cacheWriteMultiplier).toBeUndefined();
+  /**
+   * Every permitted model is now a reasoning model, so the provider's
+   * temperature-omitting branch is not a special case any more — it is the ONLY
+   * path a real request takes. Asserted as a whole-registry property rather
+   * than per-id, so it keeps holding whichever GPT-5.6 member is registered.
+   */
+  it('leaves no model that would be dispatched with an explicit temperature', () => {
+    expect(AI_MODEL_REGISTRY.length).toBeGreaterThan(0);
+    for (const model of AI_MODEL_REGISTRY) {
+      expect(model.supportsTemperature).toBe(false);
+      expect(model.reasoningEffort).toBe('none');
+      expect(model.id.startsWith('gpt-5.6')).toBe(true);
     }
   });
 });
