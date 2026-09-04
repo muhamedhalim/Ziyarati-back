@@ -1,0 +1,41 @@
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=true — synchronize is permitted against a migration-provisioned database. Every schema object not described by entity metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be DROPPED on this boot.[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TypeORM synchronize ENABLED (DEV ONLY)[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=true — synchronize is permitted against a migration-provisioned database. Every schema object not described by entity metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be DROPPED on this boot.[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TypeORM synchronize ENABLED (DEV ONLY)[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=true — synchronize is permitted against a migration-provisioned database. Every schema object not described by entity metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be DROPPED on this boot.[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TypeORM synchronize ENABLED (DEV ONLY)[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=true — synchronize is permitted against a migration-provisioned database. Every schema object not described by entity metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be DROPPED on this boot.[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TypeORM synchronize ENABLED (DEV ONLY)[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TypeORM synchronize ENABLED (DEV ONLY)[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=true — synchronize is permitted against a migration-provisioned database. Every schema object not described by entity metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be DROPPED on this boot.[39m
+[33m[Nest] 17548  - [39m09/04/2026, 5:22:55 PM [33m   WARN[39m [38;5;3m[TypeORM] [39m[33m⚠️ TypeORM synchronize ENABLED (DEV ONLY)[39m
+NODE_ENV    SYNC  OVERRIDE DB        role    OUTCOME
+----------------------------------------------------------------------------------------------------------------------------------
+production  true  true     migrated  api     REFUSED: ❌ TypeORM synchronize is NOT allowed in production
+production  true  true     migrated  worker  REFUSED: ❌ TypeORM synchronize is NOT allowed in production
+production  true  false    migrated  api     REFUSED: ❌ TypeORM synchronize is NOT allowed in production
+PRODUCTION  true  true     migrated  api     REFUSED: ❌ TypeORM synchronize is NOT allowed in production
+prod        true  true     migrated  api     REFUSED: ❌ TypeORM synchronize is NOT allowed in production
+staging     true  true     migrated  api     REFUSED: ❌ TypeORM synchronize is NOT allowed in production
+development true  false    migrated  api     REFUSED: ❌ TYPEORM_SYNCHRONIZE=true, but the target database has 3 applied migration(s)
+development true  true     migrated  api     ALLOWED synchronize=true
+development true  true     migrated  worker  ALLOWED synchronize=true
+test        true  true     migrated  api     ALLOWED synchronize=true
+(unset)     true  true     migrated  api     ALLOWED synchronize=true
+development true  false    virgin    api     ALLOWED synchronize=true
+development true  true     virgin    api     ALLOWED synchronize=true
+
+questions asked, in order:
+   1. can the override rescue synchronize in production?
+   2. same question for the worker root
+   3. baseline production guard
+   4. case variation still refused? (P03-011)
+   5. abbreviation still refused?
+   6. an UNRECOGNISED NODE_ENV — fails closed?
+   7. the P0.3 migrated-DB guard, override off
+   8. *** THE HOLE: override on, persistent migrated DB
+   9. *** same, worker root
+  10. override on under NODE_ENV=test
+  11. NODE_ENV entirely unset (P03-011 residual gap)
+  12. ordinary local workflow — must still work
+  13. override on a virgin DB — no-op

@@ -2,25 +2,15 @@ import {
   BadRequestException,
   Body,
   Controller,
-  Delete,
   Get,
-  HttpCode,
-  HttpStatus,
   Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
   Put,
-  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBody,
-  ApiConflictResponse,
-  ApiCreatedResponse,
   ApiForbiddenResponse,
-  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
@@ -29,9 +19,6 @@ import {
 } from '@nestjs/swagger';
 
 import { SystemSettingService } from './system-setting.service';
-import { CreateSystemSettingDto } from './dto/create-system-setting.dto';
-import { UpdateSystemSettingDto } from './dto/update-system-setting.dto';
-import { QuerySystemSettingsDto } from './dto/query-system-settings.dto';
 import { UpsertTypedSettingDto } from './dto/upsert-typed-setting.dto';
 import { KNOWN_SETTING_KEYS, SettingKey } from './settings.registry';
 
@@ -57,11 +44,8 @@ const S_ERROR = {
  * tenant — these control platform-wide behavior. Tenants can never reach this
  * controller, so there is no TenantContext usage here.
  *
- * Two tiers:
- *  - Typed endpoints (`/typed`, `/registry`, `/by-key/:key`): operate on the
- *    known settings defined in SETTINGS_REGISTRY with schema validation.
- *  - Raw CRUD (`POST /`, `GET /`, `PATCH /:id`, `DELETE /:id`): legacy free-form
- *    KV access used by the advanced developer editor.
+ * Typed endpoints only (`/typed`, `/registry`, `/by-key/:key`): operate on the
+ * known settings defined in SETTINGS_REGISTRY with schema validation.
  */
 @ApiTags('Platform System Settings')
 @ApiBearerAuth('JWT-auth')
@@ -118,137 +102,8 @@ export class SystemSettingController {
   @Put('by-key/:key')
   upsertByKey(@Param('key') key: string, @Body() dto: UpsertTypedSettingDto) {
     if (!KNOWN_SETTING_KEYS.has(key)) {
-      throw new BadRequestException(
-        `Unknown setting key: "${key}". Use POST /platform/settings for raw keys.`,
-      );
+      throw new BadRequestException(`Unknown setting key: "${key}".`);
     }
     return this.settings.upsertByKey(key as SettingKey, dto.value);
-  }
-
-  // ────────────────────── Raw CRUD endpoints ──────────────────────────────  //
-
-  @ApiOperation({
-    summary: 'Create a system setting (super admin)',
-    description:
-      '**Platform-only — SUPER ADMIN.** `key` is unique; `value` is any JSON.',
-  })
-  @ApiCreatedResponse({ description: 'Setting created.' })
-  @ApiUnauthorizedResponse({
-    description: 'Missing or invalid access token.',
-    schema: S_ERROR,
-  })
-  @ApiForbiddenResponse({
-    description: 'Caller is not a super admin.',
-    schema: S_ERROR,
-  })
-  @ApiConflictResponse({
-    description: 'Setting key already exists.',
-    schema: S_ERROR,
-  })
-  @Post()
-  create(@Body() dto: CreateSystemSettingDto) {
-    return this.settings.create(dto);
-  }
-
-  @ApiOperation({
-    summary: 'List system settings (super admin)',
-    description:
-      '**Platform-only — SUPER ADMIN.** Optional key search + pagination.',
-  })
-  @ApiOkResponse({ description: 'Paginated settings.' })
-  @ApiUnauthorizedResponse({
-    description: 'Missing or invalid access token.',
-    schema: S_ERROR,
-  })
-  @ApiForbiddenResponse({
-    description: 'Caller is not a super admin.',
-    schema: S_ERROR,
-  })
-  @Get()
-  list(@Query() query: QuerySystemSettingsDto) {
-    return this.settings.list(query);
-  }
-
-  @ApiOperation({
-    summary: 'Get a system setting (super admin)',
-    description: '**Platform-only — SUPER ADMIN.**',
-  })
-  @ApiParam({
-    name: 'id',
-    description: 'Setting UUID',
-    type: 'string',
-    format: 'uuid',
-  })
-  @ApiOkResponse({ description: 'Setting details.' })
-  @ApiUnauthorizedResponse({
-    description: 'Missing or invalid access token.',
-    schema: S_ERROR,
-  })
-  @ApiForbiddenResponse({
-    description: 'Caller is not a super admin.',
-    schema: S_ERROR,
-  })
-  @ApiNotFoundResponse({ description: 'Setting not found.', schema: S_ERROR })
-  @Get(':id')
-  get(@Param('id', ParseUUIDPipe) id: string) {
-    return this.settings.get(id);
-  }
-
-  @ApiOperation({
-    summary: 'Update a system setting (super admin)',
-    description: '**Platform-only — SUPER ADMIN.** Update key and/or value.',
-  })
-  @ApiParam({
-    name: 'id',
-    description: 'Setting UUID',
-    type: 'string',
-    format: 'uuid',
-  })
-  @ApiOkResponse({ description: 'Setting updated.' })
-  @ApiUnauthorizedResponse({
-    description: 'Missing or invalid access token.',
-    schema: S_ERROR,
-  })
-  @ApiForbiddenResponse({
-    description: 'Caller is not a super admin.',
-    schema: S_ERROR,
-  })
-  @ApiNotFoundResponse({ description: 'Setting not found.', schema: S_ERROR })
-  @ApiConflictResponse({
-    description: 'Setting key already exists.',
-    schema: S_ERROR,
-  })
-  @Patch(':id')
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateSystemSettingDto,
-  ) {
-    return this.settings.update(id, dto);
-  }
-
-  @ApiOperation({
-    summary: 'Delete a system setting (super admin)',
-    description: '**Platform-only — SUPER ADMIN.**',
-  })
-  @ApiParam({
-    name: 'id',
-    description: 'Setting UUID',
-    type: 'string',
-    format: 'uuid',
-  })
-  @ApiOkResponse({ description: 'Setting deleted.' })
-  @ApiUnauthorizedResponse({
-    description: 'Missing or invalid access token.',
-    schema: S_ERROR,
-  })
-  @ApiForbiddenResponse({
-    description: 'Caller is not a super admin.',
-    schema: S_ERROR,
-  })
-  @ApiNotFoundResponse({ description: 'Setting not found.', schema: S_ERROR })
-  @Delete(':id')
-  @HttpCode(HttpStatus.OK)
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.settings.remove(id);
   }
 }

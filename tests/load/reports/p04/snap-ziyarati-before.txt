@@ -1,0 +1,3 @@
+catalog_md5=6cf52189bb8220e190812cda478c5a6a
+rowcount_md5=b6b8f9bc8e1472356cab8aa8dd1325aa
+tup_ins=894 tup_upd=61 tup_del=914

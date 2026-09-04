@@ -17,14 +17,18 @@ describe('Arabic/English AI evaluation harness (mocked providers only)', () => {
     expect(built.messages.at(-1)?.content).toContain(fixture.turns.at(-1));
     expect(built.telemetry.estimatedInputTokens).toBeLessThanOrEqual(12_000);
 
+    // Rollback: with routing off, an agent's own permitted model is what runs.
+    // The stored value used to be `gpt-4o` here; a model outside the platform
+    // allow-list is now replaced rather than passed through, so this fixture
+    // pins the behaviour that actually still exists.
     const rollback = new AiModelRouterService(new ConfigService({
       AI_MODEL_ROUTING_ENABLED: 'false', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
-      AI_ECONOMY_MODEL: 'gpt-4.1-mini',
+      AI_ECONOMY_MODEL: 'gpt-5.6-luna',
     }));
     expect(rollback.resolve({
       tenantId: 'eval-tenant', conversationId: fixture.id,
-      legacyModel: 'gpt-4o', feature: fixture.capability,
+      legacyModel: 'gpt-5.6-terra', feature: fixture.capability,
       route: `ai.chat.${fixture.channel.toLowerCase()}`,
-    }).model).toBe('gpt-4o');
+    }).model).toBe('gpt-5.6-terra');
   });
 });

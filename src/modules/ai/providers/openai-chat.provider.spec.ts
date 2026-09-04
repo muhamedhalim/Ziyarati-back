@@ -1,5 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiChatProvider } from './openai-chat.provider';
+import {
+  AI_MODEL_IDS,
+  DEFAULT_AI_MODEL_ID,
+} from '../routing/ai-model-registry';
 
 describe('OpenAiChatProvider (mocked SDK)', () => {
   it('sets an explicit timeout, disables SDK retries, caps output, and captures cached tokens', async () => {
@@ -210,5 +214,67 @@ describe('OpenAiChatProvider — model capability handling', () => {
     // Zero, not undefined: the cost path multiplies this, and "no data" and
     // "no cache writes" must not price differently.
     expect(result.cacheWriteTokens).toBe(0);
+  });
+});
+
+/**
+ * The provider used to answer `supports()` with `model.startsWith('gpt-')`,
+ * which made every past, future and misspelled GPT id dispatchable — and its
+ * `OPENAI_CHAT_MODEL` default was a hard-coded `gpt-4o` applied whenever a
+ * request named no model at all. Both are now registry-backed.
+ */
+describe('OpenAiChatProvider — model policy', () => {
+  function provider(config: Record<string, unknown> = {}) {
+    return new OpenAiChatProvider(
+      new ConfigService({ OPENAI_API_KEY: 'sk-test', ...config }),
+    );
+  }
+
+  it.each([...AI_MODEL_IDS])('supports the permitted model %s', (model) => {
+    expect(provider().supports(model)).toBe(true);
+  });
+
+  it.each([
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4-turbo',
+    'gpt-5.6-sol',
+    'gpt-9-imaginary',
+    'claude-3-opus',
+  ])('does not support %s — "gpt-" is no longer a wildcard', (model) => {
+    expect(provider().supports(model)).toBe(false);
+  });
+
+  it('supports an absent model (the provider default then applies)', () => {
+    expect(provider().supports()).toBe(true);
+  });
+
+  it('supports nothing at all without an API key, so the factory can fall back', () => {
+    const keyless = new OpenAiChatProvider(new ConfigService({}));
+    expect(keyless.supports(AI_MODEL_IDS[0])).toBe(false);
+  });
+
+  it('ignores an OPENAI_CHAT_MODEL naming a model the platform does not permit', () => {
+    // Joi refuses this at boot; this is the second line, for a process that got
+    // around validation. The value must not become the model every
+    // model-less request runs on.
+    const p = provider({ OPENAI_CHAT_MODEL: 'gpt-4o' });
+    expect((p as unknown as { defaultModel: string }).defaultModel).toBe(
+      DEFAULT_AI_MODEL_ID,
+    );
+  });
+
+  it.each([...AI_MODEL_IDS])('honours OPENAI_CHAT_MODEL=%s', (model) => {
+    const p = provider({ OPENAI_CHAT_MODEL: model });
+    expect((p as unknown as { defaultModel: string }).defaultModel).toBe(model);
+  });
+
+  it('defaults to a permitted model when OPENAI_CHAT_MODEL is unset', () => {
+    expect(
+      (provider() as unknown as { defaultModel: string }).defaultModel,
+    ).toBe(DEFAULT_AI_MODEL_ID);
+    expect(AI_MODEL_IDS).toContain(DEFAULT_AI_MODEL_ID);
   });
 });

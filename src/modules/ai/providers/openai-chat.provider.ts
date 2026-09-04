@@ -10,9 +10,13 @@ import {
 } from './ai-provider.interface';
 import { OpenAiRequestPolicy } from './openai-request-policy';
 import { OpenAiClientProvider } from './openai-client.provider';
+import {
+  DEFAULT_AI_MODEL_ID,
+  allowedModelId,
+} from '../routing/ai-model-registry';
 
 /**
- * OpenAI Chat Completions provider (GPT-4o / GPT-4.1 family).
+ * OpenAI Chat Completions provider (the GPT-5.6 family).
  *
  * Real token accounting comes from the API `usage` object. Supports streaming
  * (SSE) via `stream()`. When `OPENAI_API_KEY` is absent, `supports()` returns
@@ -34,7 +38,12 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     private readonly clients?: OpenAiClientProvider,
   ) {
     const apiKey = config.get<string>('OPENAI_API_KEY');
-    this.defaultModel = config.get<string>('OPENAI_CHAT_MODEL', 'gpt-4o');
+    // `OPENAI_CHAT_MODEL` is Joi-validated against the registry at boot, so in
+    // a real process this is already an allowed id. It is re-checked here
+    // because this provider is also constructed directly in unit tests with a
+    // hand-built ConfigService that never went through Joi — and because an
+    // env var must never be the way a disallowed model reaches the API.
+    this.defaultModel = this.allowedDefault(config.get<string>('OPENAI_CHAT_MODEL'));
     const timeout = Number(config.get('OPENAI_REQUEST_TIMEOUT_MS', 30_000));
     this.policy = new OpenAiRequestPolicy(
       Number(config.get('OPENAI_PROVIDER_MAX_RETRIES', 2)),
@@ -45,8 +54,33 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     if (apiKey) this.client = new OpenAI({ apiKey, timeout, maxRetries: 0 });
   }
 
+  /**
+   * `model.startsWith('gpt-')` used to stand in for "OpenAI can serve this",
+   * which made every past, future and misspelled GPT id dispatchable. The
+   * registry is the real answer to that question and is now consulted directly,
+   * so this method reports provider capability and enforces platform policy with
+   * one lookup instead of a prefix guess.
+   */
   supports(model?: string): boolean {
-    return !!this.client && (!model || model.startsWith('gpt-'));
+    return !!this.client && (!model || allowedModelId(model) !== undefined);
+  }
+
+  /**
+   * Falls back to the registry's own default when the configured chat model is
+   * missing or not permitted. Warns rather than throws: a bad value here must
+   * not stop the process from booting, and the platform default is always a
+   * safe model to serve.
+   */
+  private allowedDefault(configured?: string): string {
+    const allowed = allowedModelId(configured);
+    if (allowed) return allowed;
+    if (configured) {
+      this.logger.warn(
+        `OPENAI_CHAT_MODEL="${configured}" is not a permitted platform model; ` +
+          `using "${DEFAULT_AI_MODEL_ID}" instead.`,
+      );
+    }
+    return DEFAULT_AI_MODEL_ID;
   }
 
   /**

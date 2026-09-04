@@ -38,12 +38,17 @@ describe('ReminderListener (T052, S3)', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  it('CREATED: schedules reminders for the appointment', async () => {
-    await listener.onCreated({
-      tenantId: TENANT,
-      appointmentId: APPT,
-    } as never);
-    expect(reminders.scheduleFor).toHaveBeenCalledWith(TENANT, APPT);
+  // P1.5 (MS-007): CREATED is deliberately NOT wired to this listener any
+  // more — the auto-confirm path now schedules reminders via a
+  // transactional outbox row written inside `AppointmentsService.create`'s
+  // own transaction (see `notifications.processor.spec.ts`'s
+  // `reminders.schedule` coverage for that path). This pins the absence:
+  // if a future change accidentally reintroduces an `onCreated` handler,
+  // this test fails loudly instead of the reminder silently double-firing.
+  it('CREATED is not handled by this listener (moved to the outbox — P1.5)', () => {
+    expect(
+      (listener as unknown as { onCreated?: unknown }).onCreated,
+    ).toBeUndefined();
   });
 
   it('CONFIRMED: schedules reminders too (the manual-confirm path)', async () => {

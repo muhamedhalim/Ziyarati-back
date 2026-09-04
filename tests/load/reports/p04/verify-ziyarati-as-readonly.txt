@@ -1,0 +1,205 @@
+Pager usage is off.
+
+=== 0. TARGET ==============================================================
+ database_name |       postgres_version        |          checked_at           | migrations_table_present 
+---------------+-------------------------------+-------------------------------+--------------------------
+ ziyarati      | 18.6 (Debian 18.6-1.pgdg12+2) | 2026-09-04 14:18:38.501573+00 |                        1
+(1 row)
+
+CREATE VIEW
+CREATE VIEW
+CREATE VIEW
+CREATE VIEW
+
+=== 1. MACHINE-READABLE STATUS (one line, parse this in CI) ================
+                                                                   p03_status                                                                   
+------------------------------------------------------------------------------------------------------------------------------------------------
+ P03_STATUS=CRITICAL P0_PASS=11 P0_FAIL=7 P0_MISMATCH=0 P0_RENAMED=0 P1_PASS=4 P1_FAIL=16 P1_MISMATCH=0 P1_RENAMED=5 ENFORCED_TOTAL=20 TOTAL=43
+(1 row)
+
+
+=== 2. PER-OBJECT VERDICT (failures first) =================================
+ severity |                     obj_name                     |     verdict      |                    purpose                     
+----------+--------------------------------------------------+------------------+------------------------------------------------
+ P0       | ck_user_email_lowercase                          | FAIL             | email normalisation (pairs with the above)
+ P0       | UQ_integration_inbound_events_replay             | FAIL             | inbound webhook replay protection
+ P0       | UQ_integration_oauth_states_state                | FAIL             | OAuth state replay protection
+ P0       | UQ_resource_purchases_tenant_idempotency         | FAIL             | resource purchase idempotency (charges money)
+ P0       | UQ_sub_invoice_period                            | FAIL             | one non-void invoice per period
+ P0       | UQ_sub_invoice_webhook_event                     | FAIL             | billing webhook dedup
+ P0       | uq_user_email_global                             | FAIL             | global unique login email
+ P1       | uq_ai_batch_item_source_chunk                    | FAIL             | AI batch item dedup
+ P1       | uq_ai_kb_source_content_hash                     | FAIL             | knowledge-base content dedup
+ P1       | UQ_campaign_recipients_provider_ref              | FAIL             | campaign provider ref dedup
+ P1       | UQ_email_suppressions_tenant_email               | FAIL             | unsubscribe suppression (compliance)
+ P1       | UQ_in_app_notifications_recipient_dedupe         | FAIL             | in-app notification dedup
+ P1       | UQ_integration_conflicts_open                    | FAIL             | one open conflict per resource
+ P1       | UQ_integration_id_map_external                   | FAIL             | sync identity map (external)
+ P1       | UQ_integration_id_map_internal                   | FAIL             | sync identity map (internal)
+ P1       | UQ_integration_staff_provisioning_open           | FAIL             | one open provisioning per staff
+ P1       | UQ_integration_sync_active                       | FAIL             | one active sync per resource
+ P1       | UQ_integration_webhook_endpoints_connection      | FAIL             | one webhook endpoint per connection
+ P1       | UQ_notification_logs_source_ref                  | FAIL             | notification dedup
+ P1       | UQ_scheduled_notifications_provider_ref          | FAIL             | provider ref dedup
+ P1       | UQ_scheduled_notifications_source_ref            | FAIL             | scheduled notification dedup
+ P1       | UQ_subscription_usage_tenant_period_unsubscribed | FAIL             | one usage row per tenant period
+ P1       | UQ_support_tickets_ticket_number                 | FAIL             | ticket number uniqueness
+ P1       | UQ_customer_segments_tenant_name_live            | ENFORCED_RENAMED | segment name uniqueness
+ P1       | UQ_customers_tenant_email                        | ENFORCED_RENAMED | one customer per tenant email
+ P1       | UQ_customers_tenant_national_id                  | ENFORCED_RENAMED | one customer per tenant national id
+ P1       | UQ_email_logs_idempotency                        | ENFORCED_RENAMED | outbound email idempotency
+ P1       | UQ_feature_definitions_key                       | ENFORCED_RENAMED | feature key uniqueness
+ P0       | appointments_no_overlap                          | PASS             | double-booking guard (the only race-safe one)
+ P0       | uq_ai_tool_call_idem                             | PASS             | AI tool-call idempotency
+ P0       | uq_message_status                                | PASS             | WhatsApp status-callback dedup
+ P0       | uq_message_wa_id                                 | PASS             | WhatsApp message dedup
+ P0       | uq_payments_appointment_pending                  | PASS             | one pending payment per appointment
+ P0       | uq_refund_gateway_id                             | PASS             | refund gateway id uniqueness
+ P0       | uq_refund_idem                                   | PASS             | refund idempotency — duplicate refunds if lost
+ P0       | uq_settlement_adj_refund                         | PASS             | settlement adjustment dedup
+ P0       | UQ_tenant_entitlement_ledger_source_purchase     | PASS             | entitlement ledger purchase dedup
+ P0       | UQ_tenant_entitlement_ledger_source_refund       | PASS             | entitlement ledger refund dedup
+ P0       | uq_txn_webhook_event                             | PASS             | payment webhook dedup — double-credit if lost
+ P1       | UQ_billing_upgrade_requests_active_target        | PASS             | one active upgrade request per target
+ P1       | uq_dashboard_metric                              | PASS             | dashboard metric dedup
+ P1       | uq_recipient_run_customer                        | PASS             | one campaign recipient per run
+ P1       | UQ_tenant_usage_limit_overrides_active           | PASS             | one active override per limit
+(43 rows)
+
+
+=== 3. FAILURES IN FULL (expected vs actual) ===============================
+ severity |                     obj_name                     |       problem        |                                                                                                                                             expected                                                                                                                                              |                          actual                          
+----------+--------------------------------------------------+----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+----------------------------------------------------------
+ P0       | ck_user_email_lowercase                          | ABSENT               | CHECK (((email IS NULL) OR ((email)::text = lower((email)::text))))                                                                                                                                                                                                                               | (nothing - object does not exist)
+ P0       | UQ_integration_inbound_events_replay             | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_inbound_events_replay" ON public.integration_inbound_events USING btree ("tenantId", "endpointId", provider_event_id)                                                                                                                                         | (nothing - object does not exist)
+ P0       | UQ_integration_oauth_states_state                | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_oauth_states_state" ON public.integration_oauth_states USING btree (state)                                                                                                                                                                                    | (nothing - object does not exist)
+ P0       | UQ_resource_purchases_tenant_idempotency         | ABSENT               | CREATE UNIQUE INDEX "UQ_resource_purchases_tenant_idempotency" ON public.resource_purchases USING btree ("tenantId", idempotency_key)                                                                                                                                                             | (nothing - object does not exist)
+ P0       | UQ_sub_invoice_period                            | ABSENT               | CREATE UNIQUE INDEX "UQ_sub_invoice_period" ON public.subscription_invoices USING btree (subscription_id, period_start) WHERE (status <> 'VOID'::subscription_invoices_status_enum)                                                                                                               | (nothing - object does not exist)
+ P0       | UQ_sub_invoice_webhook_event                     | ABSENT               | CREATE UNIQUE INDEX "UQ_sub_invoice_webhook_event" ON public.subscription_invoices USING btree (webhook_event_id) WHERE (webhook_event_id IS NOT NULL)                                                                                                                                            | (nothing - object does not exist)
+ P0       | uq_user_email_global                             | ABSENT               | CREATE UNIQUE INDEX uq_user_email_global ON public.users USING btree (email) WHERE ((deleted_at IS NULL) AND (email IS NOT NULL))                                                                                                                                                                 | (nothing - object does not exist)
+ P1       | uq_ai_batch_item_source_chunk                    | ABSENT               | CREATE UNIQUE INDEX uq_ai_batch_item_source_chunk ON public.ai_batch_items USING btree (batch_job_id, source_type, source_id, chunk_index)                                                                                                                                                        | (nothing - object does not exist)
+ P1       | uq_ai_kb_source_content_hash                     | ABSENT               | CREATE UNIQUE INDEX uq_ai_kb_source_content_hash ON public.ai_knowledge_bases USING btree ("tenantId", "agentId", COALESCE(source_id, '00000000-0000-0000-0000-000000000000'::uuid), content_hash)                                                                                                | (nothing - object does not exist)
+ P1       | UQ_campaign_recipients_provider_ref              | ABSENT               | CREATE UNIQUE INDEX "UQ_campaign_recipients_provider_ref" ON public.campaign_recipients USING btree (provider_ref) WHERE (provider_ref IS NOT NULL)                                                                                                                                               | (nothing - object does not exist)
+ P1       | UQ_customer_segments_tenant_name_live            | ENFORCED, WRONG NAME | CREATE UNIQUE INDEX "UQ_customer_segments_tenant_name_live" ON public.customer_segments USING btree ("tenantId", name) WHERE (deleted_at IS NULL)                                                                                                                                                 | ENFORCED under the name "IDX_4220fb0edd652faf395a40df59"
+ P1       | UQ_customers_tenant_email                        | ENFORCED, WRONG NAME | CREATE UNIQUE INDEX "UQ_customers_tenant_email" ON public.customers USING btree ("tenantId", email) WHERE (deleted_at IS NULL)                                                                                                                                                                    | ENFORCED under the name "IDX_fbd833f031b18a738d3fb881ea"
+ P1       | UQ_customers_tenant_national_id                  | ENFORCED, WRONG NAME | CREATE UNIQUE INDEX "UQ_customers_tenant_national_id" ON public.customers USING btree ("tenantId", national_id) WHERE ((national_id IS NOT NULL) AND (deleted_at IS NULL))                                                                                                                        | ENFORCED under the name "IDX_ce3ee439834cb618d55e009e08"
+ P1       | UQ_email_logs_idempotency                        | ENFORCED, WRONG NAME | CREATE UNIQUE INDEX "UQ_email_logs_idempotency" ON public.email_logs USING btree (idempotency_key)                                                                                                                                                                                                | ENFORCED under the name "IDX_34e9ffce289c74b1ebc3a1faf3"
+ P1       | UQ_email_suppressions_tenant_email               | ABSENT               | CREATE UNIQUE INDEX "UQ_email_suppressions_tenant_email" ON public.email_suppressions USING btree (tenant_id, email)                                                                                                                                                                              | (nothing - object does not exist)
+ P1       | UQ_feature_definitions_key                       | ENFORCED, WRONG NAME | CREATE UNIQUE INDEX "UQ_feature_definitions_key" ON public.feature_definitions USING btree (feature_key)                                                                                                                                                                                          | ENFORCED under the name "IDX_1a7b47099f7f9185e8869f42d8"
+ P1       | UQ_in_app_notifications_recipient_dedupe         | ABSENT               | CREATE UNIQUE INDEX "UQ_in_app_notifications_recipient_dedupe" ON public.in_app_notifications USING btree (recipient_user_id, dedupe_key) WHERE (dedupe_key IS NOT NULL)                                                                                                                          | (nothing - object does not exist)
+ P1       | UQ_integration_conflicts_open                    | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_conflicts_open" ON public.integration_conflicts USING btree ("tenantId", "connectionId", resource_type, external_id) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'resolving'::character varying, 'stale'::character varying])::text[])) | (nothing - object does not exist)
+ P1       | UQ_integration_id_map_external                   | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_id_map_external" ON public.integration_id_map USING btree ("tenantId", "connectionId", resource_type, external_id) WHERE (unlinked_at IS NULL)                                                                                                                | (nothing - object does not exist)
+ P1       | UQ_integration_id_map_internal                   | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_id_map_internal" ON public.integration_id_map USING btree ("tenantId", "connectionId", resource_type, internal_resource_id) WHERE (unlinked_at IS NULL)                                                                                                       | (nothing - object does not exist)
+ P1       | UQ_integration_staff_provisioning_open           | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_staff_provisioning_open" ON public.integration_staff_provisioning USING btree ("tenantId", "connectionId", external_id) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'ambiguous'::character varying])::text[]))                          | (nothing - object does not exist)
+ P1       | UQ_integration_sync_active                       | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_sync_active" ON public.integration_sync_jobs USING btree ("tenantId", "connectionId", resource_type, direction) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[]))                                    | (nothing - object does not exist)
+ P1       | UQ_integration_webhook_endpoints_connection      | ABSENT               | CREATE UNIQUE INDEX "UQ_integration_webhook_endpoints_connection" ON public.integration_webhook_endpoints USING btree ("connectionId")                                                                                                                                                            | (nothing - object does not exist)
+ P1       | UQ_notification_logs_source_ref                  | ABSENT               | CREATE UNIQUE INDEX "UQ_notification_logs_source_ref" ON public.notification_logs USING btree (source_ref) WHERE (source_ref IS NOT NULL)                                                                                                                                                         | (nothing - object does not exist)
+ P1       | UQ_scheduled_notifications_provider_ref          | ABSENT               | CREATE UNIQUE INDEX "UQ_scheduled_notifications_provider_ref" ON public.scheduled_notifications USING btree (provider_ref) WHERE (provider_ref IS NOT NULL)                                                                                                                                       | (nothing - object does not exist)
+ P1       | UQ_scheduled_notifications_source_ref            | ABSENT               | CREATE UNIQUE INDEX "UQ_scheduled_notifications_source_ref" ON public.scheduled_notifications USING btree (source_ref) WHERE (source_ref IS NOT NULL)                                                                                                                                             | (nothing - object does not exist)
+ P1       | UQ_subscription_usage_tenant_period_unsubscribed | ABSENT               | CREATE UNIQUE INDEX "UQ_subscription_usage_tenant_period_unsubscribed" ON public.subscription_usage USING btree (tenant_id, period_month) WHERE (subscription_id IS NULL)                                                                                                                         | (nothing - object does not exist)
+ P1       | UQ_support_tickets_ticket_number                 | ABSENT               | UNIQUE (ticket_number)                                                                                                                                                                                                                                                                            | (nothing - object does not exist)
+(28 rows)
+
+
+=== 4. NON-INDEX GUARDS: extensions, trigger, function ====================
+                       guard                        | verdict |                                         purpose                                          
+----------------------------------------------------+---------+------------------------------------------------------------------------------------------
+ EXTENSION btree_gist                               | PASS    | required by appointments_no_overlap
+ EXTENSION pg_trgm                                  | FAIL    | required by the trigram search indexes
+ TRIGGER transactions_no_mutate                     | PASS    | transactions ledger is append-only (blocks UPDATE/DELETE)
+ FUNCTION trg_transactions_immutable                | PASS    | the function the trigger above calls
+ CONSTRAINT appointments_no_overlap IS an EXCLUSION | PASS    | P0.1: a same-named btree index would pass a naive presence check while enforcing nothing
+(5 rows)
+
+
+=== 5. CONFLICTING DATA — can a missing guard even be installed? ===========
+CREATE VIEW
+
+-- 5a. The checks to run. Each row is a self-contained, read-only query.
+--     Run only the rows whose guard shows FAIL in §2 — the rest are
+--     conflict-free by construction, and skipping them avoids the scan.
+                     obj_name                     | verdict |           table_name           |              unit               |                                                                                                                                                                                                                          check_sql                                                                                                                                                                                                                           
+--------------------------------------------------+---------+--------------------------------+---------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ ck_user_email_lowercase                          | FAIL    | users                          | rows with a non-lowercase email | SELECT count(*) FROM users WHERE ((email IS NULL) OR (email::text = lower(email::text))) IS FALSE
+ UQ_integration_inbound_events_replay             | FAIL    | integration_inbound_events     | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_inbound_events WHERE ("tenantId") IS NOT NULL AND ("endpointId") IS NOT NULL AND (provider_event_id) IS NOT NULL GROUP BY "tenantId", "endpointId", provider_event_id HAVING count(*) > 1) x
+ UQ_integration_oauth_states_state                | FAIL    | integration_oauth_states       | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_oauth_states WHERE (state) IS NOT NULL GROUP BY state HAVING count(*) > 1) x
+ UQ_resource_purchases_tenant_idempotency         | FAIL    | resource_purchases             | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.resource_purchases WHERE ("tenantId") IS NOT NULL AND (idempotency_key) IS NOT NULL GROUP BY "tenantId", idempotency_key HAVING count(*) > 1) x
+ UQ_sub_invoice_period                            | FAIL    | subscription_invoices          | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.subscription_invoices WHERE (status <> 'VOID'::subscription_invoices_status_enum) AND (subscription_id) IS NOT NULL AND (period_start) IS NOT NULL GROUP BY subscription_id, period_start HAVING count(*) > 1) x
+ UQ_sub_invoice_webhook_event                     | FAIL    | subscription_invoices          | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.subscription_invoices WHERE (webhook_event_id IS NOT NULL) AND (webhook_event_id) IS NOT NULL GROUP BY webhook_event_id HAVING count(*) > 1) x
+ uq_user_email_global                             | FAIL    | users                          | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.users WHERE ((deleted_at IS NULL) AND (email IS NOT NULL)) AND (email) IS NOT NULL GROUP BY email HAVING count(*) > 1) x
+ uq_ai_batch_item_source_chunk                    | FAIL    | ai_batch_items                 | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.ai_batch_items WHERE (batch_job_id) IS NOT NULL AND (source_type) IS NOT NULL AND (source_id) IS NOT NULL AND (chunk_index) IS NOT NULL GROUP BY batch_job_id, source_type, source_id, chunk_index HAVING count(*) > 1) x
+ uq_ai_kb_source_content_hash                     | FAIL    | ai_knowledge_bases             | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.ai_knowledge_bases WHERE ("tenantId") IS NOT NULL AND ("agentId") IS NOT NULL AND (COALESCE(source_id, '00000000-0000-0000-0000-000000000000'::uuid)) IS NOT NULL AND (content_hash) IS NOT NULL GROUP BY "tenantId", "agentId", COALESCE(source_id, '00000000-0000-0000-0000-000000000000'::uuid), content_hash HAVING count(*) > 1) x
+ UQ_campaign_recipients_provider_ref              | FAIL    | campaign_recipients            | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.campaign_recipients WHERE (provider_ref IS NOT NULL) AND (provider_ref) IS NOT NULL GROUP BY provider_ref HAVING count(*) > 1) x
+ UQ_email_suppressions_tenant_email               | FAIL    | email_suppressions             | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.email_suppressions WHERE (tenant_id) IS NOT NULL AND (email) IS NOT NULL GROUP BY tenant_id, email HAVING count(*) > 1) x
+ UQ_in_app_notifications_recipient_dedupe         | FAIL    | in_app_notifications           | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.in_app_notifications WHERE (dedupe_key IS NOT NULL) AND (recipient_user_id) IS NOT NULL AND (dedupe_key) IS NOT NULL GROUP BY recipient_user_id, dedupe_key HAVING count(*) > 1) x
+ UQ_integration_conflicts_open                    | FAIL    | integration_conflicts          | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_conflicts WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'resolving'::character varying, 'stale'::character varying])::text[])) AND ("tenantId") IS NOT NULL AND ("connectionId") IS NOT NULL AND (resource_type) IS NOT NULL AND (external_id) IS NOT NULL GROUP BY "tenantId", "connectionId", resource_type, external_id HAVING count(*) > 1) x
+ UQ_integration_id_map_external                   | FAIL    | integration_id_map             | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_id_map WHERE (unlinked_at IS NULL) AND ("tenantId") IS NOT NULL AND ("connectionId") IS NOT NULL AND (resource_type) IS NOT NULL AND (external_id) IS NOT NULL GROUP BY "tenantId", "connectionId", resource_type, external_id HAVING count(*) > 1) x
+ UQ_integration_id_map_internal                   | FAIL    | integration_id_map             | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_id_map WHERE (unlinked_at IS NULL) AND ("tenantId") IS NOT NULL AND ("connectionId") IS NOT NULL AND (resource_type) IS NOT NULL AND (internal_resource_id) IS NOT NULL GROUP BY "tenantId", "connectionId", resource_type, internal_resource_id HAVING count(*) > 1) x
+ UQ_integration_staff_provisioning_open           | FAIL    | integration_staff_provisioning | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_staff_provisioning WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'ambiguous'::character varying])::text[])) AND ("tenantId") IS NOT NULL AND ("connectionId") IS NOT NULL AND (external_id) IS NOT NULL GROUP BY "tenantId", "connectionId", external_id HAVING count(*) > 1) x
+ UQ_integration_sync_active                       | FAIL    | integration_sync_jobs          | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_sync_jobs WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[])) AND ("tenantId") IS NOT NULL AND ("connectionId") IS NOT NULL AND (resource_type) IS NOT NULL AND (direction) IS NOT NULL GROUP BY "tenantId", "connectionId", resource_type, direction HAVING count(*) > 1) x
+ UQ_integration_webhook_endpoints_connection      | FAIL    | integration_webhook_endpoints  | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.integration_webhook_endpoints WHERE ("connectionId") IS NOT NULL GROUP BY "connectionId" HAVING count(*) > 1) x
+ UQ_notification_logs_source_ref                  | FAIL    | notification_logs              | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.notification_logs WHERE (source_ref IS NOT NULL) AND (source_ref) IS NOT NULL GROUP BY source_ref HAVING count(*) > 1) x
+ UQ_scheduled_notifications_provider_ref          | FAIL    | scheduled_notifications        | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.scheduled_notifications WHERE (provider_ref IS NOT NULL) AND (provider_ref) IS NOT NULL GROUP BY provider_ref HAVING count(*) > 1) x
+ UQ_scheduled_notifications_source_ref            | FAIL    | scheduled_notifications        | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.scheduled_notifications WHERE (source_ref IS NOT NULL) AND (source_ref) IS NOT NULL GROUP BY source_ref HAVING count(*) > 1) x
+ UQ_subscription_usage_tenant_period_unsubscribed | FAIL    | subscription_usage             | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM public.subscription_usage WHERE (subscription_id IS NULL) AND (tenant_id) IS NOT NULL AND (period_month) IS NOT NULL GROUP BY tenant_id, period_month HAVING count(*) > 1) x
+ UQ_support_tickets_ticket_number                 | FAIL    | support_tickets                | excess rows                     | SELECT coalesce(sum(n) - count(*), 0) FROM ( SELECT count(*) n FROM support_tickets WHERE ticket_number IS NOT NULL GROUP BY ticket_number HAVING count(*) > 1) x
+(23 rows)
+
+
+-- 5b. Executes every check above automatically. Read-only (SELECT count).
+--     Comment this block out if you would rather run 5a by hand.
+psql:/tmp/p03.sql:363: NOTICE:  clear     ck_user_email_lowercase                           0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_inbound_events_replay              0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_oauth_states_state                 0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_resource_purchases_tenant_idempotency          0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_sub_invoice_period                             0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_sub_invoice_webhook_event                      0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     uq_user_email_global                              0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     uq_ai_batch_item_source_chunk                     0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     uq_ai_kb_source_content_hash                      0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_campaign_recipients_provider_ref               0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_email_suppressions_tenant_email                0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_in_app_notifications_recipient_dedupe          0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_conflicts_open                     0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_id_map_external                    0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_id_map_internal                    0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_staff_provisioning_open            0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_sync_active                        0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_integration_webhook_endpoints_connection       0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_notification_logs_source_ref                   0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_scheduled_notifications_provider_ref           0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_scheduled_notifications_source_ref             0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  BLOCKED   UQ_subscription_usage_tenant_period_unsubscribed  189 excess rows in subscription_usage  <- the guard CANNOT be created until this is resolved
+psql:/tmp/p03.sql:363: NOTICE:  clear     UQ_support_tickets_ticket_number                  0 conflicts - installable now
+psql:/tmp/p03.sql:363: NOTICE:  --> 1 guard(s) BLOCKED by existing data. Each needs a documented business decision
+psql:/tmp/p03.sql:363: NOTICE:      before any migration can install it. See P0.3_REPAIR_RUNBOOK.md section 3.
+DO
+
+=== 6. TENANT ISOLATION: tenant-scoped tables with no FK to tenants ========
+       table_name        | column_name |     data_type     |                       status                        
+-------------------------+-------------+-------------------+-----------------------------------------------------
+ admin_notifications     | tenant_id   | uuid              | NO FK
+ ai_batch_items          | tenant_id   | uuid              | NO FK
+ ai_batch_jobs           | tenant_id   | uuid              | NO FK
+ ai_kb_embeddings        | tenant_id   | uuid              | NO FK
+ ai_memory_embeddings    | tenant_id   | uuid              | NO FK
+ ai_tool_calls           | tenant_id   | uuid              | NO FK
+ email_logs              | tenant_id   | uuid              | NO FK
+ free_access_overrides   | tenant_id   | uuid              | NO FK
+ settlement_adjustments  | tenant_id   | uuid              | NO FK
+ subscription_invoices   | tenant_id   | character varying | NO FK - and impossible without a column type change
+ subscription_usage      | tenant_id   | character varying | NO FK - and impossible without a column type change
+ tenant_ai_deployments   | tenant_id   | uuid              | NO FK
+ tenant_counters         | tenant_id   | uuid              | NO FK
+ verification_audit_logs | tenant_id   | uuid              | NO FK
+(14 rows)
+
+(no rows above = every tenant-scoped table has a tenant foreign key)
+
+=== 7. MIGRATION HISTORY (context only - NOT a verdict) ====================
+ has_migrations_table | total_indexes | total_foreign_keys 
+----------------------+---------------+--------------------
+                    1 |           387 |                299
+(1 row)
+
+

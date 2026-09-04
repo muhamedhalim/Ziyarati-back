@@ -16,7 +16,7 @@
  * and that primitive is defined exactly once.
  */
 import request from 'supertest';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 

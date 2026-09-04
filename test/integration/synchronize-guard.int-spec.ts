@@ -19,6 +19,12 @@
  * `NODE_ENV=production` guard does not see a staging, QA, demo or
  * restored-from-backup database booted as `development`.
  *
+ * P0.6 / SCHEMA-011 ALSO PROVES HERE (not just at the unit level): the
+ * migrated-DB waiver (`SYNCHRONIZE_MIGRATED_DB_OVERRIDE`) is scoped to the
+ * ONE database it names — a waiver naming a different database still
+ * refuses, against this same real migrated database, exactly as if no
+ * waiver were set at all.
+ *
  * Runs against throwaway DBs created from DATABASE_URL. Skips cleanly if the
  * DB is unreachable.
  *
@@ -165,14 +171,36 @@ describe('typeOrmFactory — synchronize against a migration-provisioned databas
     60_000,
   );
 
+  // ── P0.6 / SCHEMA-011 — the waiver must name THIS database exactly ────────
+  // (loopback-host scoping is proven in `typeorm.config.spec.ts` at the unit
+  // level, since it is pure URL-string parsing and needs no live database;
+  // what only a real DB can prove is that a correctly-named waiver actually
+  // reaches and short-circuits the real migrated-database probe below.)
+
   runIf(
-    `permits it when ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}=true — the escape hatch is explicit, never implicit`,
+    `still REFUSES when ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE} names a DIFFERENT database — a bare boolean is no longer enough`,
     async () => {
       const config = configFor({
         NODE_ENV: 'development',
         DATABASE_URL: urlFor(MIGRATED_DB),
         TYPEORM_SYNCHRONIZE: 'true',
-        [SYNCHRONIZE_MIGRATED_DB_OVERRIDE]: 'true',
+        [SYNCHRONIZE_MIGRATED_DB_OVERRIDE]: 'some_other_database',
+      });
+      await expect(typeOrmFactory(config)).rejects.toThrow(
+        /the waiver value must equal the TARGET database's own name/,
+      );
+    },
+    60_000,
+  );
+
+  runIf(
+    `permits it when ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE} names THIS exact database on loopback — the escape hatch is explicit and scoped, never implicit or portable`,
+    async () => {
+      const config = configFor({
+        NODE_ENV: 'development',
+        DATABASE_URL: urlFor(MIGRATED_DB),
+        TYPEORM_SYNCHRONIZE: 'true',
+        [SYNCHRONIZE_MIGRATED_DB_OVERRIDE]: MIGRATED_DB,
       });
       const options = await typeOrmFactory(config);
       expect((options as { synchronize: boolean }).synchronize).toBe(true);

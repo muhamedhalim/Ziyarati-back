@@ -259,6 +259,44 @@ export class MetricsService {
     this.dbQueries.inc({ route });
   }
 
+  /**
+   * P1.3 — the three `pg-pool` gauges (`totalCount`/`idleCount`/`waitingCount`)
+   * sampled once per interval by `DbPoolMetricsService`, in whichever process
+   * root has a pool (API and worker each have their own — this service is
+   * registered in both). Deliberately three separate gauges rather than one
+   * labelled by state: `waiting` in particular is the one an alert should
+   * fire on directly (`waiting > 0` sustained means every checked-out
+   * connection is busy and requests are queueing for one), and a single
+   * metric name with a stable query is easier to alert on than a labelled
+   * one. No route/tenant/query-text label on any of them — process-wide pool
+   * state only, same public-safety posture as `dbQueries` above.
+   */
+  private readonly dbPoolTotal = new Gauge({
+    name: 'db_pool_total',
+    help: 'Total connections currently held by the DB pool (in use + idle).',
+    registers: [this.registry],
+  });
+  private readonly dbPoolIdle = new Gauge({
+    name: 'db_pool_idle',
+    help: 'Connections in the DB pool that are open but not checked out.',
+    registers: [this.registry],
+  });
+  private readonly dbPoolWaiting = new Gauge({
+    name: 'db_pool_waiting',
+    help: 'Callers currently queued waiting for a DB pool connection to free up. Sustained > 0 means the pool is saturated.',
+    registers: [this.registry],
+  });
+
+  setDbPoolStats(stats: {
+    total: number;
+    idle: number;
+    waiting: number;
+  }): void {
+    this.dbPoolTotal.set(stats.total);
+    this.dbPoolIdle.set(stats.idle);
+    this.dbPoolWaiting.set(stats.waiting);
+  }
+
   get contentType(): string {
     return this.registry.contentType;
   }

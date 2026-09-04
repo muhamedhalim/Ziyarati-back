@@ -32,6 +32,7 @@ interface RequiredFields {
  */
 const REQUIRED_FIELDS: Partial<Record<string, RequiredFields>> = {
   [JOB.NOTIFICATIONS_DISPATCH]: { strings: ['notificationId'] },
+  [JOB.REMINDERS_SCHEDULE]: { strings: ['appointmentId'] },
   [JOB.WHATSAPP_SEND]: { strings: ['templateId'] },
   [JOB.WHATSAPP_RETRY]: { strings: ['templateId'] },
   [JOB.WHATSAPP_WEBHOOK_PROCESS]: { strings: ['webhookEventId'] },

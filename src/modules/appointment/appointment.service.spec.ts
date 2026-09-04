@@ -14,6 +14,8 @@ import { AppointmentNote } from '../../entities/Calendar&Appointments/Appointmen
 import { AppointmentReschedule } from '../../entities/Calendar&Appointments/AppointmentReschedule';
 import { AppointmentCancellation } from '../../entities/Calendar&Appointments/AppointmentCancellation';
 import { ScheduledNotification } from '../../entities/Notifications/ScheduledNotification';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
+import { QUEUE, JOB } from '../../queue/queue.constants';
 import { AppointmentActionOrigin } from '../../entities/enums';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Customer } from '../../entities/CRM/Customer';
@@ -219,12 +221,20 @@ describe('AppointmentsService', () => {
       // isolation either way — the double-booking guarantee is the
       // `appointments_no_overlap` EXCLUSION constraint at INSERT, not this
       // check. See the comment on `create`.
+      // P2 (Phase 6): the branch/staff rows validation just loaded are
+      // threaded through as `preloaded*`, so AvailabilityService doesn't
+      // re-fetch the identical rows a second time (measured: 4 duplicate
+      // statements per booking before this change).
       expect(availability.assertBookable).toHaveBeenCalledWith(
         TENANT,
         'b1',
         's1',
         expect.any(Date),
         expect.any(Date),
+        {
+          preloadedBranch: { id: 'b1', timezone: 'Asia/Riyadh' },
+          preloadedStaff: { id: 's1', is_available_for_booking: true },
+        },
       );
       // New bookings start UNPAID / PENDING_PAYMENT (the two axes are independent).
       const created = repo(Appointment).create.mock.calls[0][0];
@@ -492,6 +502,46 @@ describe('AppointmentsService', () => {
       ]);
 
       await expect(service.create(TENANT, USER, dto)).resolves.toBeDefined();
+    });
+
+    // P1.5 (MS-007) — the outbox write is the actual durability fix; prove it
+    // lands on the SAME manager as the appointment insert, not a fresh
+    // connection, and that a rolled-back booking never leaves a stray job.
+    it('[P1.5] writes a reminders.schedule outbox row on the SAME transaction manager as the appointment', async () => {
+      primeValidRefs();
+
+      await service.create(TENANT, USER, dto);
+
+      expect(manager.create).toHaveBeenCalledWith(
+        OutboxJob,
+        expect.objectContaining({
+          queue: QUEUE.NOTIFICATIONS,
+          job_name: JOB.REMINDERS_SCHEDULE,
+          dedupe_key: 'reminders-schedule-appt-1',
+          payload: { tenantId: TENANT, appointmentId: 'appt-1' },
+        }),
+      );
+      expect(manager.save).toHaveBeenCalledWith(
+        expect.objectContaining({ job_name: JOB.REMINDERS_SCHEDULE }),
+      );
+    });
+
+    it('[P1.5] never writes the outbox row when the transaction rolls back (quota exceeded)', async () => {
+      primeValidRefs();
+      usage.incrementIfWithinLimit.mockResolvedValueOnce({
+        applied: false,
+        used: 10,
+        limit: 10,
+      });
+
+      await expect(service.create(TENANT, USER, dto)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+
+      expect(manager.create).not.toHaveBeenCalledWith(
+        OutboxJob,
+        expect.anything(),
+      );
     });
   });
 

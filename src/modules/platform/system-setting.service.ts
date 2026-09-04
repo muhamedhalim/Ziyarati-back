@@ -1,16 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, ILike, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 
 import { SystemSetting } from '../../entities/System&Lookup/SystemSetting';
-import { AppError, ErrorCode } from '../../common/errors';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 
-import { CreateSystemSettingDto } from './dto/create-system-setting.dto';
-import { UpdateSystemSettingDto } from './dto/update-system-setting.dto';
-import { QuerySystemSettingsDto } from './dto/query-system-settings.dto';
 import {
-  KNOWN_SETTING_KEYS,
   SETTINGS_REGISTRY,
   SettingDefinition,
   SettingKey,
@@ -29,8 +24,7 @@ import {
  * `value` is free-form JSON.
  *
  * Typed settings (keys defined in SETTINGS_REGISTRY) are validated against their
- * schema on every write. Raw (unregistered) keys remain free-form for developer
- * use via the advanced editor.
+ * schema on every write.
  */
 @Injectable()
 export class SystemSettingService {
@@ -131,95 +125,6 @@ export class SystemSettingService {
     return SETTINGS_REGISTRY;
   }
 
-  // ──────────────────────── Raw CRUD (legacy) ───────────────────────────── //
-
-  async create(dto: CreateSystemSettingDto): Promise<SystemSetting> {
-    await this.assertKeyUnique(dto.key);
-    if (KNOWN_SETTING_KEYS.has(dto.key)) {
-      this.validateValue(dto.key as SettingKey, dto.value);
-    }
-    const result = await this.settings.save(
-      this.settings.create({ key: dto.key, value: dto.value }),
-    );
-    await this.audit.record({
-      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_CREATE,
-      userId: this.actorId(),
-      entityType: 'system_setting',
-      entityId: result.id,
-      before: null,
-      after: { key: result.key, value: result.value },
-    });
-    return result;
-  }
-
-  async update(
-    id: string,
-    dto: UpdateSystemSettingDto,
-  ): Promise<SystemSetting> {
-    const setting = await this.get(id);
-    const before = { key: setting.key, value: setting.value };
-    if (dto.key && dto.key !== setting.key) {
-      await this.assertKeyUnique(dto.key);
-      setting.key = dto.key;
-    }
-    if (dto.value !== undefined) {
-      const finalKey = setting.key;
-      if (KNOWN_SETTING_KEYS.has(finalKey)) {
-        this.validateValue(finalKey as SettingKey, dto.value);
-      }
-      setting.value = dto.value;
-    }
-    const result = await this.settings.save(setting);
-    this.typedCache.delete(setting.key);
-    await this.audit.record({
-      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_UPDATE,
-      userId: this.actorId(),
-      entityType: 'system_setting',
-      entityId: result.id,
-      before,
-      after: { key: result.key, value: result.value },
-    });
-    return result;
-  }
-
-  async remove(id: string) {
-    const setting = await this.get(id);
-    await this.settings.remove(setting);
-    this.typedCache.delete(setting.key);
-    await this.audit.record({
-      action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_DELETE,
-      userId: this.actorId(),
-      entityType: 'system_setting',
-      entityId: id,
-      before: { key: setting.key, value: setting.value },
-      after: null,
-    });
-    return { id, deleted: true };
-  }
-
-  async get(id: string): Promise<SystemSetting> {
-    const setting = await this.settings.findOne({ where: { id } });
-    if (!setting) {
-      throw new AppError(ErrorCode.NOT_FOUND, {
-        message: 'System setting not found',
-      });
-    }
-    return setting;
-  }
-
-  async list(query: QuerySystemSettingsDto) {
-    const where: FindOptionsWhere<SystemSetting> = {};
-    if (query.key) where.key = ILike(`%${query.key}%`);
-
-    const [data, total] = await this.settings.findAndCount({
-      where,
-      order: { key: 'ASC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
-    });
-    return { data, total, page: query.page, limit: query.limit };
-  }
-
   // ─────────────────────────── Private helpers ──────────────────────────── //
 
   private validateValue(key: SettingKey, value: unknown): void {
@@ -269,23 +174,5 @@ export class SystemSettingService {
   /** The acting super admin, when this call has an HTTP caller (ALS-scoped). */
   private actorId(): string | undefined {
     return this.tenantContext.getUser()?.id;
-  }
-
-  /** FND-015: a refused key-collision is audited too (AD-14) — `entityId` is the row already holding the key, when known. */
-  private async assertKeyUnique(key: string, entityId: string | null = null): Promise<void> {
-    const existing = await this.settings.findOne({ where: { key } });
-    if (existing) {
-      await this.audit.record({
-        action: PLATFORM_ADMIN_AUDIT_ACTION.SETTING_CREATE_REJECTED,
-        userId: this.actorId(),
-        entityType: 'system_setting',
-        entityId: entityId ?? existing.id,
-        before: null,
-        after: { attemptedKey: key, result: 'rejected: key already exists' },
-      });
-      throw new AppError(ErrorCode.CONFLICT, {
-        message: 'A system setting with this key already exists',
-      });
-    }
   }
 }

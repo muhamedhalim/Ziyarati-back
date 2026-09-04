@@ -155,6 +155,21 @@ export const FEATURE_BATCH_DISABLED_BEHAVIOR: Readonly<
 export const AI_COMPLIANCE_ROUTE_UNAVAILABLE =
   'AI_COMPLIANCE_ROUTE_UNAVAILABLE';
 
+/**
+ * Stable error reason surfaced when a request names an AI model the platform
+ * does not permit (see `AI_MODEL_REGISTRY`).
+ *
+ * Deliberately a distinct sentinel from the compliance one above: "no model can
+ * serve this region" and "this model is not allowed here at all" are different
+ * operator problems with different fixes, and collapsing them would make the
+ * second look like a residency outage.
+ *
+ * It carries no model id — the rejected value goes to `internalContext` and the
+ * log only. A client that guessed a model name learns whether it was accepted,
+ * never which other names exist.
+ */
+export const AI_MODEL_NOT_PERMITTED = 'AI_MODEL_NOT_PERMITTED';
+
 /** OpenAI Batch API endpoints a batch job may target. */
 export const AI_BATCH_ENDPOINT = {
   EMBEDDINGS: '/v1/embeddings',

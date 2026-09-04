@@ -6,7 +6,6 @@ import {
   AppointmentCancelledEvent,
   AppointmentCompletedEvent,
   AppointmentConfirmedEvent,
-  AppointmentCreatedEvent,
   AppointmentNoShowEvent,
   AppointmentRescheduledEvent,
 } from '../../events/appointment.events';
@@ -22,10 +21,23 @@ import { NotificationSchedulerService } from './notification-scheduler.service';
  * Bridges the already-emitted appointment lifecycle events to
  * `ReminderSchedulerService`. Adds no new event class, no new queue.
  *
- * - CREATED/CONFIRMED → schedule (idempotent — see
- *   `ReminderSchedulerService.scheduleFor`'s own note; covers both the
- *   AUTO-confirm path, where CREATED already implies CONFIRMED, and the
- *   MANUAL-confirm path, where an appointment can sit PENDING for a while).
+ * - CONFIRMED → schedule (idempotent — see `ReminderSchedulerService.
+ *   scheduleFor`'s own note). Covers the MANUAL-confirm path, where an
+ *   appointment sits PENDING_PAYMENT for a while before a staff action (or
+ *   a verified payment) confirms it. **CREATED is deliberately NOT handled
+ *   here as of P1.5 (MS-007)** — the AUTO-confirm path (CREATED already
+ *   implies CONFIRMED) now schedules reminders via a transactional outbox
+ *   row written inside `AppointmentsService.create`'s own transaction,
+ *   consumed by `NotificationsProcessor`'s `reminders.schedule` job. That
+ *   closes what this listener could not: it needed 3-4 fresh DB reads
+ *   AFTER the booking transaction already committed, competing for a pool
+ *   connection against live request traffic — under saturation it lost
+ *   that race and the reminder was silently never scheduled (MS-007,
+ *   measured: ~2.5% of bookings at the load test's saturated levels). A
+ *   CONFIRMED transition happens later, one appointment at a time via a
+ *   deliberate action, never in the same booking-creation burst — it kept
+ *   the simpler listener path rather than being moved too, since it was
+ *   never observed to have this problem.
  * - CANCELLED/COMPLETED/NO_SHOW → cancel every pending reminder.
  * - RESCHEDULED → cancel or move every pending reminder to the new anchor,
  *   THEN re-run `scheduleFor` so a lead time that was originally too close
@@ -40,11 +52,6 @@ export class ReminderListener {
     private readonly reminders: ReminderSchedulerService,
     private readonly scheduler: NotificationSchedulerService,
   ) {}
-
-  @OnEvent(APPOINTMENT_EVENT.CREATED)
-  async onCreated(event: AppointmentCreatedEvent): Promise<void> {
-    await this.schedule(event.tenantId, event.appointmentId);
-  }
 
   @OnEvent(APPOINTMENT_EVENT.CONFIRMED)
   async onConfirmed(event: AppointmentConfirmedEvent): Promise<void> {

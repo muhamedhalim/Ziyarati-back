@@ -4,41 +4,224 @@ import { AI_MODEL_IDS, findModel } from './ai-model-registry';
 
 describe('AiModelRouterService', () => {
   const input = {
-    tenantId: 'tenant-1', conversationId: 'conv-1', legacyModel: 'gpt-4o',
+    tenantId: 'tenant-1', conversationId: 'conv-1', legacyModel: 'gpt-5.6-terra',
     feature: 'chat', route: 'ai.chat.api',
   };
 
   it('rolls back to the legacy model immediately when the feature flag is off', () => {
     const router = new AiModelRouterService(new ConfigService({
       AI_MODEL_ROUTING_ENABLED: 'false', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
-      AI_ECONOMY_MODEL: 'gpt-4.1-mini',
+      AI_ECONOMY_MODEL: 'gpt-5.6-luna',
     }));
-    expect(router.resolve(input)).toEqual({ model: 'gpt-4o', routed: false, reason: 'legacy_flag' });
+    expect(router.resolve(input)).toEqual({ model: 'gpt-5.6-terra', routed: false, reason: 'legacy_flag' });
   });
 
   it('uses the economy model for standard routes and the powerful model only for explicit complexity', () => {
     const router = new AiModelRouterService(new ConfigService({
       AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
-      AI_ECONOMY_MODEL: 'gpt-4.1-mini', AI_POWERFUL_MODEL: 'gpt-4o',
+      AI_ECONOMY_MODEL: 'gpt-5.6-luna', AI_POWERFUL_MODEL: 'gpt-5.6-terra',
     }));
-    expect(router.resolve(input).model).toBe('gpt-4.1-mini');
-    expect(router.resolve({ ...input, complexity: 'HIGH' }).model).toBe('gpt-4o');
+    expect(router.resolve(input).model).toBe('gpt-5.6-luna');
+    expect(router.resolve({ ...input, complexity: 'HIGH' }).model).toBe('gpt-5.6-terra');
   });
 
   it('makes rollout deterministic per tenant and conversation', () => {
     const router = new AiModelRouterService(new ConfigService({
       AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 50,
-      AI_ECONOMY_MODEL: 'gpt-4.1-mini',
+      AI_ECONOMY_MODEL: 'gpt-5.6-luna',
     }));
     expect(router.resolve(input)).toEqual(router.resolve(input));
   });
 });
 
 /**
- * Registry-backed behaviour. Kept in its own block so the three cases above —
- * which encode the pre-registry contract and the rollback guarantee — stay
- * untouched: with the flag off, `resolve()` must still return exactly
- * `{ model, routed, reason }` and nothing more.
+ * PLATFORM MODEL POLICY — the property the whole feature exists to guarantee:
+ * `resolve()` returns a permitted model on EVERY branch, in every
+ * configuration, for every input. These are the cases that used to hand an
+ * arbitrary string back to the caller, which then handed it to the provider.
+ */
+describe('AiModelRouterService — model policy', () => {
+  const base = {
+    tenantId: 'tenant-1',
+    conversationId: 'conv-1',
+    feature: 'chat',
+    route: 'ai.chat.api',
+  };
+
+  /** Every meaningful shape of the flag/rollout/tier configuration space. */
+  const CONFIGS: Array<[string, Record<string, unknown>]> = [
+    ['routing off', { AI_MODEL_ROUTING_ENABLED: 'false' }],
+    ['routing off, non-strict', { AI_MODEL_ROUTING_ENABLED: 'false', AI_MODEL_ROUTING_STRICT: 'false' }],
+    ['routing on, no tier models configured', { AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100 }],
+    ['routing on, economy configured', { AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100, AI_ECONOMY_MODEL: 'gpt-5.6-luna' }],
+    ['routing on, powerful route', { AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100, AI_POWERFUL_ROUTES: 'ai.chat.api' }],
+    ['routing on, 0% rollout', { AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 0 }],
+    ['routing on, strict off', { AI_MODEL_ROUTING_ENABLED: 'true', AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100, AI_MODEL_ROUTING_STRICT: 'false' }],
+  ];
+
+  /**
+   * Values a request could carry: a retired model, an invented one, the "Sol"
+   * id from the policy brief that this platform never registered, a
+   * different-vendor id, an outright hostile string, and nothing at all.
+   */
+  const DISALLOWED = [
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-5.6-sol',
+    'gpt-4o-2024-08-06',
+    'claude-3-opus',
+    'totally-made-up-model',
+    '',
+    undefined,
+  ];
+
+  describe.each(CONFIGS)('with %s', (_label, cfg) => {
+    it.each(DISALLOWED)(
+      'never returns %p — the platform default takes over',
+      (legacyModel) => {
+        const router = new AiModelRouterService(new ConfigService(cfg));
+        const decision = router.resolve({
+          ...base,
+          legacyModel: legacyModel as string | undefined,
+        });
+        expect(AI_MODEL_IDS).toContain(decision.model);
+        expect(decision.model).not.toBe(legacyModel);
+      },
+    );
+
+    it.each([...AI_MODEL_IDS])('always lands on a permitted model when %s is stored', (id) => {
+      const router = new AiModelRouterService(new ConfigService(cfg));
+      expect(AI_MODEL_IDS).toContain(router.resolve({ ...base, legacyModel: id }).model);
+    });
+  });
+
+  /**
+   * The specific hole this closed. In the SHIPPED configuration — routing off —
+   * the stored string was returned untouched and went straight to the provider,
+   * so restricting the registry alone would have changed nothing for any clinic
+   * that already had `gpt-4o` on its agent row.
+   */
+  it('replaces a disallowed stored model even with routing OFF', () => {
+    const off = new AiModelRouterService(
+      new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
+    );
+    const decision = off.resolve({ ...base, legacyModel: 'gpt-4o' });
+    expect(decision.model).toBe('gpt-5.6-luna');
+    expect(decision.routed).toBe(true);
+    expect(decision.reason).toBe('legacy_flag_policy_default');
+  });
+
+  /**
+   * `AI_MODEL_ROUTING_STRICT=false` used to mean "pass the stored string
+   * through unchanged". An operator variable must not be a way back around the
+   * platform policy.
+   */
+  it('does not let AI_MODEL_ROUTING_STRICT=false re-open the policy', () => {
+    const lax = new AiModelRouterService(
+      new ConfigService({
+        AI_MODEL_ROUTING_ENABLED: 'true',
+        AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
+        AI_MODEL_ROUTING_STRICT: 'false',
+      }),
+    );
+    expect(AI_MODEL_IDS).toContain(lax.resolve({ ...base, legacyModel: 'gpt-4o' }).model);
+  });
+
+  /**
+   * A tier variable naming a model outside the registry is refused by Joi at
+   * boot. This asserts the second line: even if one reaches the service (a
+   * hand-built ConfigService, a process started around validation), it is
+   * ignored rather than obeyed.
+   */
+  it('ignores a tier environment variable naming a disallowed model', () => {
+    const router = new AiModelRouterService(
+      new ConfigService({
+        AI_MODEL_ROUTING_ENABLED: 'true',
+        AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
+        AI_ECONOMY_MODEL: 'gpt-4o',
+        AI_POWERFUL_MODEL: 'gpt-4o',
+      }),
+    );
+    expect(router.resolve(base).model).toBe('gpt-5.6-luna');
+    expect(router.resolve({ ...base, complexity: 'HIGH' }).model).toBe('gpt-5.6-terra');
+  });
+
+  /**
+   * `/platform/system-settings` reaching the router is what makes it the
+   * CENTRAL configuration rather than a value applied once at agent creation.
+   */
+  describe('ai.default_model as the platform default', () => {
+    function off() {
+      return new AiModelRouterService(
+        new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
+      );
+    }
+
+    it('runs the platform setting when no model is pinned and routing is off', () => {
+      expect(
+        off().resolve({ ...base, platformDefaultModel: 'gpt-5.6-terra' }).model,
+      ).toBe('gpt-5.6-terra');
+    });
+
+    it('lets an agent own permitted model win over the platform default', () => {
+      expect(
+        off().resolve({
+          ...base,
+          legacyModel: 'gpt-5.6-luna',
+          platformDefaultModel: 'gpt-5.6-terra',
+        }).model,
+      ).toBe('gpt-5.6-luna');
+    });
+
+    it('falls back to the platform default when the pinned model is disallowed', () => {
+      expect(
+        off().resolve({
+          ...base,
+          legacyModel: 'gpt-4o',
+          platformDefaultModel: 'gpt-5.6-terra',
+        }).model,
+      ).toBe('gpt-5.6-terra');
+    });
+
+    it('ignores a disallowed platform default rather than obeying it', () => {
+      // Only reachable for a `system_settings` row written before the setting
+      // became an enum — the write path is validated.
+      expect(
+        off().resolve({ ...base, platformDefaultModel: 'gpt-5.6-sol' }).model,
+      ).toBe('gpt-5.6-luna');
+    });
+
+    it('is outranked by the operator tier variable when routing is ON', () => {
+      // Routing is the more specific decision; the platform setting is the
+      // default it falls back to, not a ceiling over it.
+      const on = new AiModelRouterService(
+        new ConfigService({
+          AI_MODEL_ROUTING_ENABLED: 'true',
+          AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
+          AI_ECONOMY_MODEL: 'gpt-5.6-terra',
+        }),
+      );
+      expect(
+        on.resolve({ ...base, platformDefaultModel: 'gpt-5.6-luna' }).model,
+      ).toBe('gpt-5.6-terra');
+    });
+  });
+
+  it('canonicalizes casing and whitespace, so the dispatched id is exact', () => {
+    const off = new AiModelRouterService(
+      new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
+    );
+    expect(off.resolve({ ...base, legacyModel: '  GPT-5.6-Luna ' }).model).toBe(
+      'gpt-5.6-luna',
+    );
+  });
+});
+
+/**
+ * Registry-backed behaviour. Kept in its own block so the three cases at the
+ * top — which encode the rollout/rollback contract — stay untouched.
  */
 describe('AiModelRouterService — registry and capability validation', () => {
   const base = {
@@ -53,17 +236,17 @@ describe('AiModelRouterService — registry and capability validation', () => {
       new ConfigService({
         AI_MODEL_ROUTING_ENABLED: 'true',
         AI_MODEL_ROUTING_ROLLOUT_PERCENT: 100,
-        AI_ECONOMY_MODEL: 'gpt-4.1-mini',
-        AI_POWERFUL_MODEL: 'gpt-4o',
+        AI_ECONOMY_MODEL: 'gpt-5.6-luna',
+        AI_POWERFUL_MODEL: 'gpt-5.6-terra',
         ...overrides,
       }),
     );
   }
 
-  it('returns the chosen model’s definition when routing is active', () => {
-    const decision = router().resolve({ ...base, legacyModel: 'gpt-4o' });
-    expect(decision.model).toBe('gpt-4.1-mini');
-    expect(decision.definition?.id).toBe('gpt-4.1-mini');
+  it('returns the chosen model definition when routing is active', () => {
+    const decision = router().resolve({ ...base, legacyModel: 'gpt-5.6-terra' });
+    expect(decision.model).toBe('gpt-5.6-luna');
+    expect(decision.definition?.id).toBe('gpt-5.6-luna');
     expect(decision.definition?.contextWindowTokens).toBeGreaterThan(0);
   });
 
@@ -71,19 +254,17 @@ describe('AiModelRouterService — registry and capability validation', () => {
     const off = new AiModelRouterService(
       new ConfigService({ AI_MODEL_ROUTING_ENABLED: 'false' }),
     );
-    expect(off.resolve({ ...base, legacyModel: 'gpt-4o' }).definition).toBeUndefined();
+    expect(off.resolve({ ...base, legacyModel: 'gpt-5.6-terra' }).definition).toBeUndefined();
   });
 
   /**
    * The flag-off path returning no definition is deliberate (above), but it
    * leaves the execution layer to recover the capabilities itself — it does so
-   * with `routed.definition ?? findModel(routed.model)`
-   * (ai-execution.service.ts:452, :1335). That fallback is the ONLY thing
-   * carrying `supportsTemperature: false` to the provider for a tenant that
-   * pinned a GPT-5.6 model on its agent row, because routing is off in
-   * production. If it were ever dropped, the provider would send `temperature`
-   * and every one of that clinic's turns would 400 — a total outage for them,
-   * and invisible to everyone else.
+   * with `routed.definition ?? findModel(routed.model)`. That fallback is the
+   * ONLY thing carrying `supportsTemperature: false` to the provider, because
+   * routing is off in production. If it were ever dropped, the provider would
+   * send `temperature` and EVERY turn would 400 — a total outage, now that
+   * every permitted model is a reasoning model.
    */
   it.each(AI_MODEL_IDS)(
     'lets the execution layer recover %s capabilities with routing OFF',
@@ -97,40 +278,44 @@ describe('AiModelRouterService — registry and capability validation', () => {
       const definition = routed.definition ?? findModel(routed.model);
       expect(definition?.id).toBe(id);
       // The two fields the provider branches on.
-      expect(typeof definition?.supportsTemperature).toBe('boolean');
-      if (definition?.supportsTemperature === false) {
-        expect(definition.reasoningEffort).toBe('none');
-      }
+      expect(definition?.supportsTemperature).toBe(false);
+      expect(definition?.reasoningEffort).toBe('none');
     },
   );
 
-  it('ignores an unregistered model stored on an agent row under strict mode', () => {
+  it('ignores an unregistered model stored on an agent row', () => {
     const decision = router().resolve({ ...base, legacyModel: 'totally-made-up-model' });
-    expect(decision.model).toBe('gpt-4.1-mini');
+    expect(decision.model).toBe('gpt-5.6-luna');
     expect(decision.routed).toBe(true);
   });
 
-  it('resolves a dated snapshot alias stored on an agent row to its canonical model', () => {
-    // Powerful route so the stored model is the one under test, not the tier default.
+  it('honours a permitted stored model for a powerful route', () => {
     const decision = router({ AI_POWERFUL_ROUTES: 'ai.chat.api', AI_POWERFUL_MODEL: '' })
-      .resolve({ ...base, legacyModel: 'gpt-4o-2024-08-06' });
-    expect(decision.model).toBe('gpt-4o');
+      .resolve({ ...base, legacyModel: 'gpt-5.6-terra' });
+    expect(decision.model).toBe('gpt-5.6-terra');
+    expect(decision.definition?.supportsTemperature).toBe(false);
   });
 
   it('escalates to the powerful model for a configured route', () => {
     const decision = router({ AI_POWERFUL_ROUTES: 'ai.chat.api' }).resolve(base);
-    expect(decision.model).toBe('gpt-4o');
+    expect(decision.model).toBe('gpt-5.6-terra');
     expect(decision.reason).toContain('powerful_route');
   });
 
-  describe('GPT-5.6 as a routing target', () => {
+  it('falls back to the tier own registry default when no tier model is configured', () => {
+    const r = router({ AI_ECONOMY_MODEL: '', AI_POWERFUL_MODEL: '' });
+    expect(r.resolve(base).model).toBe('gpt-5.6-luna');
+    expect(r.resolve({ ...base, complexity: 'HIGH' }).model).toBe('gpt-5.6-terra');
+  });
+
+  describe('GPT-5.6 capability flags', () => {
     /**
-     * Selecting a GPT-5.6 model must carry its capability flags through the
-     * decision, because the provider reads them off the definition to decide
-     * whether to send `temperature` at all. A decision that resolved the id but
-     * dropped the flags would 400 on every request.
+     * Selecting a model must carry its capability flags through the decision,
+     * because the provider reads them off the definition to decide whether to
+     * send `temperature` at all. A decision that resolved the id but dropped
+     * the flags would 400 on every request.
      */
-    it('carries the capability flags when a GPT-5.6 model is configured', () => {
+    it('carries the capability flags with the decision', () => {
       const decision = router({ AI_ECONOMY_MODEL: 'gpt-5.6-luna' }).resolve(base);
       expect(decision.model).toBe('gpt-5.6-luna');
       expect(decision.definition?.supportsTemperature).toBe(false);
@@ -140,58 +325,7 @@ describe('AiModelRouterService — registry and capability validation', () => {
       expect(decision.definition?.reasoningEffort).toBe('none');
     });
 
-    /**
-     * The whole point of Phase 8, asserted rather than assumed: a model being
-     * SELECTABLE is not the same as a model being ROUTED TO. With the shipped
-     * tier configuration, nothing automatic lands on GPT-5.6 — a clinic reaches
-     * it only by naming it, and an operator only by changing a tier variable.
-     */
-    it('never routes to GPT-5.6 automatically under the shipped tier config', () => {
-      const r = router(); // AI_ECONOMY_MODEL=gpt-4.1-mini, AI_POWERFUL_MODEL=gpt-4o
-      expect(r.resolve(base).model).toBe('gpt-4.1-mini');
-      expect(r.resolve({ ...base, complexity: 'HIGH' }).model).toBe('gpt-4o');
-      expect(
-        r.resolve({ ...base, legacyModel: 'totally-made-up-model' }).model,
-      ).toBe('gpt-4.1-mini');
-    });
-
-    /**
-     * A tenant that HAS pinned GPT-5.6 on its agent row keeps it: the stored
-     * value is a registered model, so the strict-mode fallback must not fire.
-     */
-    it('honours GPT-5.6 stored on an agent row for a powerful route', () => {
-      const decision = router({ AI_POWERFUL_ROUTES: 'ai.chat.api', AI_POWERFUL_MODEL: '' })
-        .resolve({ ...base, legacyModel: 'gpt-5.6-terra' });
-      expect(decision.model).toBe('gpt-5.6-terra');
-      expect(decision.definition?.supportsTemperature).toBe(false);
-    });
-
-    /**
-     * Substitution still prefers the cheapest tier model that fits, and the
-     * registry's order puts the GPT-4.x models first — so promoting GPT-5.6 did
-     * not quietly redirect the existing residency substitution path.
-     */
-    it('still substitutes to gpt-4.1-mini, not GPT-5.6, for an EU residency turn', () => {
-      const decision = router({ AI_ECONOMY_MODEL: 'gpt-4o-mini' }).resolve({
-        ...base,
-        // gpt-4o-mini is not residency-eligible, so a substitution must happen.
-        processing: {
-          executionMode: 'STANDARD' as const,
-          residencyRequired: true,
-          region: 'eu',
-        },
-      });
-      expect(decision.model).toBe('gpt-4.1-mini');
-    });
-
-    /**
-     * 'ae' is served by the GPT-5.6 family alone. This case USED to fail closed,
-     * because reaching for an unproven model to satisfy a compliance constraint
-     * is worse than refusing. Now that the family is GA — live-verified against
-     * this codebase's exact request shape — serving the region is the correct
-     * outcome, and refusing would be an outage with no safety benefit.
-     */
-    it('serves an AE residency turn from the GPT-5.6 family', () => {
+    it('serves an AE residency turn — the GPT-5.6 family is what covers it', () => {
       const decision = router().resolve({
         ...base,
         processing: {
@@ -202,7 +336,6 @@ describe('AiModelRouterService — registry and capability validation', () => {
       });
       expect(decision.model).toMatch(/^gpt-5\.6-/);
       expect(decision.definition?.supportedResidencyRegions).toContain('ae');
-      expect(decision.reason).toContain('capability_substituted');
     });
   });
 
@@ -215,19 +348,29 @@ describe('AiModelRouterService — registry and capability validation', () => {
 
     it('passes a model straight through when it satisfies the constraints', () => {
       const decision = router().resolve({ ...base, processing: standardGlobal });
-      expect(decision.model).toBe('gpt-4.1-mini');
+      expect(decision.model).toBe('gpt-5.6-luna');
       expect(decision.reason).not.toContain('substituted');
     });
 
-    it('substitutes a residency-capable model rather than dropping the residency requirement', () => {
-      // gpt-4o-mini is registered but is NOT residency-eligible.
-      const decision = router({ AI_ECONOMY_MODEL: 'gpt-4o-mini' }).resolve({
-        ...base,
-        processing: { executionMode: 'STANDARD', residencyRequired: true, region: 'eu' },
-      });
-      expect(decision.model).not.toBe('gpt-4o-mini');
-      expect(decision.definition?.supportedResidencyRegions).toContain('eu');
-      expect(decision.reason).toContain('capability_substituted');
+    /**
+     * Substitution is currently UNREACHABLE, and that is a property of the
+     * permitted set rather than of the mechanism: both models declare the same
+     * execution modes and the same residency regions, so no satisfiable
+     * constraint can rule one out and leave the other. The mechanism is kept —
+     * a future model with a narrower capability set will need it — and this
+     * test pins the reason, so its disappearance from coverage is a recorded
+     * fact rather than a silent gap.
+     */
+    it('needs no substitution: every permitted model has the same capabilities', () => {
+      for (const region of ['us', 'eu', 'ae']) {
+        for (const id of AI_MODEL_IDS) {
+          const model = findModel(id)!;
+          expect(model.supportedResidencyRegions).toContain(region);
+          expect(model.supportedExecutionModes).toEqual(
+            expect.arrayContaining(['STANDARD', 'BATCH']),
+          );
+        }
+      }
     });
 
     it('refuses when no registered model supports the required region', () => {
@@ -270,7 +413,7 @@ describe('AiModelRouterService — registry and capability validation', () => {
       expect(() =>
         off.resolve({
           ...base,
-          legacyModel: 'gpt-4o',
+          legacyModel: 'gpt-5.6-terra',
           processing: {
             executionMode: 'STANDARD',
             residencyRequired: true,

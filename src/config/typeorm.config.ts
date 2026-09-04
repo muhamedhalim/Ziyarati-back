@@ -315,9 +315,25 @@ export async function typeOrmFactory(
   } as TypeOrmModuleOptions;
 }
 
-/** Env var that waives {@link assertSynchronizeIsSafeForTarget}. */
+/**
+ * Env var that waives {@link assertSynchronizeIsSafeForTarget} — P0.6
+ * SCOPE: the value must equal the TARGET DATABASE'S OWN NAME (from
+ * `DATABASE_URL`'s path) and the host must be loopback. See
+ * {@link assertSynchronizeIsSafeForTarget}'s docstring for why.
+ */
 export const SYNCHRONIZE_MIGRATED_DB_OVERRIDE =
   'TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB';
+
+/** `localhost` / IPv4 / bracketed-or-bare IPv6 loopback — every host pattern
+ *  actually used by a local or disposable-test Postgres in this repository
+ *  (`.env`, `.env.example`, `docker-compose.yml`, `test/jest-e2e.env.js`,
+ *  `scripts/perf/start-local-stack.md` — surveyed P0.6, all `127.0.0.1`).
+ *  `docker-compose.prod.yml`'s `postgres` Compose-network hostname is
+ *  deliberately NOT here: that stack sets `NODE_ENV=production`, which the
+ *  guard above this function already refuses unconditionally, and a
+ *  Docker-network service name is exactly the kind of host a waiver must
+ *  NOT reach — it is one hop from a staging/QA deployment. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 /**
  * Refuses to boot with `synchronize` on against a database that migrations
@@ -340,6 +356,29 @@ export const SYNCHRONIZE_MIGRATED_DB_OVERRIDE =
  * FAILS OPEN ON AN UNREACHABLE DATABASE, deliberately: if the connection
  * itself is broken, the DataSource that follows will fail with the real
  * error, which is far more useful than this check's guess at one.
+ *
+ * THE WAIVER IS SCOPED TO ONE DATABASE ON ONE MACHINE (P0.6 / SCHEMA-011).
+ * P0.3 shipped the waiver as a bare boolean — `=true` waived this guard for
+ * WHATEVER database `DATABASE_URL` happened to name at boot. Measured (P0.4,
+ * driving this exact factory across 13 cases): it can never reach a
+ * `NODE_ENV=production` boot (the guard above this one runs first and is
+ * unconditional), but it CAN waive the guard for a staging, QA, demo,
+ * restored-backup or shared-team database booted as `development`/`test`/
+ * unset — precisely the population this whole check exists to protect,
+ * because a boolean travels with the developer's `.env` (by being copied),
+ * not with the one database it was ever actually meant for.
+ *
+ * The fix does not remove the escape hatch — P03-004 already proved
+ * converting a synchronize-built database to migrations-first does not work,
+ * so a working local workflow still needs one. It removes the ability for
+ * that hatch to silently follow a `DATABASE_URL` it was never scoped to:
+ * the value must equal the TARGET database's own name (so a `.env` copied
+ * elsewhere waives nothing there unless someone also renames that database
+ * to match), and the connection must be to a LOOPBACK host (so the same
+ * `.env` pointed at any remote, shared or Docker-network-hostnamed database
+ * — the exact shape a staging box or a Docker Compose service takes —
+ * waives nothing either). A single developer's own named local database is
+ * still exactly as easy to synchronize as before this change.
  */
 async function assertSynchronizeIsSafeForTarget(
   databaseUrl: string,
@@ -347,12 +386,56 @@ async function assertSynchronizeIsSafeForTarget(
   config: ConfigService,
   logger: Logger,
 ): Promise<void> {
-  if (config.get<string>(SYNCHRONIZE_MIGRATED_DB_OVERRIDE) === 'true') {
+  // Defense in depth: `env.validation.ts` already rejects a literal `true`
+  // at boot, before this factory is ever reached — but this factory is also
+  // driven directly by tooling and tests that bypass that validation (see
+  // SCHEMA-007's identical rationale on `isProductionEnv`, above), so the
+  // rejection is repeated here rather than assumed.
+  //
+  // `'false'` (the Joi default) and an unset/empty value both mean "no
+  // waiver" — normalized to `''` so the truthy check below only fires for an
+  // actual database-name value.
+  const rawWaiver = String(
+    config.get<string>(SYNCHRONIZE_MIGRATED_DB_OVERRIDE) ?? '',
+  ).trim();
+  const waiver = rawWaiver === 'false' ? '' : rawWaiver;
+
+  if (waiver) {
+    if (waiver === 'true') {
+      throw new Error(
+        `❌ ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}=true is no longer accepted — set it to the ` +
+          `exact database name from DATABASE_URL instead. See env.validation.ts.`,
+      );
+    }
+
+    const { name: target, hostname } = parseDatabaseUrl(databaseUrl);
+
+    if (waiver !== target) {
+      throw new Error(
+        `❌ ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}="${waiver}", but DATABASE_URL names ` +
+          `database "${target}" — the waiver value must equal the TARGET database's own ` +
+          `name exactly (P0.6: a bare boolean used to waive this guard for whatever ` +
+          `database happened to be configured, which is precisely how a waiver meant for ` +
+          `one developer's local database could silently apply to a staging/QA/restored-` +
+          `backup one). Set ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}="${target}" if this really ` +
+          `is the one disposable database it was meant for.`,
+      );
+    }
+    if (!LOOPBACK_HOSTS.has(hostname)) {
+      throw new Error(
+        `❌ ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}="${waiver}" names the correct database, but ` +
+          `its host is "${hostname}", not loopback (localhost/127.0.0.1/::1). The waiver is ` +
+          `restricted to a database reachable only from THIS machine — a remote host, a ` +
+          `Docker Compose service name, or any shared/staging address is exactly the case ` +
+          `this restriction exists to refuse, even if the database name happens to match.`,
+      );
+    }
+
     logger.warn(
-      `⚠️ ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}=true — synchronize is permitted against a ` +
-        `migration-provisioned database. Every schema object not described by entity ` +
-        `metadata (partial unique indexes, CHECK constraints, raw-SQL tables) may be ` +
-        `DROPPED on this boot.`,
+      `⚠️ ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}="${waiver}" — synchronize is permitted against ` +
+        `this ONE migration-provisioned database on loopback. Every schema object not ` +
+        `described by entity metadata (partial unique indexes, CHECK constraints, raw-SQL ` +
+        `tables) may be DROPPED on this boot.`,
     );
     return;
   }
@@ -396,9 +479,31 @@ async function assertSynchronizeIsSafeForTarget(
         `   Choose one:\n` +
         `     • set TYPEORM_SYNCHRONIZE=false  — let migrations own this schema (recommended)\n` +
         `     • point DATABASE_URL at a throwaway database with no migration history\n` +
-        `     • set ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}=true — accept the destruction knowingly\n\n` +
-        `   See tests/load/reports/P0.3_SCHEMA_REMEDIATION_PLAN.md.`,
+        `     • set ${SYNCHRONIZE_MIGRATED_DB_OVERRIDE}="${parseDatabaseUrl(databaseUrl).name || '<database name>'}" ` +
+        `(P0.6: must name THIS database exactly, and DATABASE_URL's host must be loopback) ` +
+        `— accept the destruction knowingly, for this one database only\n\n` +
+        `   See tests/load/reports/P0.3_SCHEMA_REMEDIATION_PLAN.md and ` +
+        `tests/load/reports/P0.4_PRODUCTION_REPAIR_PLAN.md § 1.`,
     );
+  }
+}
+
+/** Best-effort `{name, hostname}` from a `postgres://user:pass@host:port/name`
+ *  URL — never throws; a malformed `databaseUrl` has already produced, or is
+ *  about to produce, its own clearer error from the real DataSource, so this
+ *  helper's only job is to not add a second, worse one. */
+function parseDatabaseUrl(databaseUrl: string): {
+  name: string;
+  hostname: string;
+} {
+  try {
+    const parsed = new URL(databaseUrl);
+    return {
+      name: parsed.pathname.replace(/^\//, ''),
+      hostname: parsed.hostname,
+    };
+  } catch {
+    return { name: '', hostname: '' };
   }
 }
 

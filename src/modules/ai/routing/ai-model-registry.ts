@@ -6,7 +6,8 @@ import { AI_EXECUTION_MODE, AiExecutionMode } from '../execution/ai-execution.co
  * Before this existed, four subsystems each guessed model facts independently:
  *  - `OpenAiChatProvider.supports()` assumed any `gpt-*` id works and that every
  *    model accepts a custom `temperature` (false for the GPT-5.x family, which
- *    rejects any non-default value and would 400 on every request).
+ *    rejects any non-default value and would 400 on every request). It now asks
+ *    this registry instead, so `gpt-*` is no longer a wildcard.
  *  - `AiPromptBudgetService` assumed ONE global context window
  *    (`AI_MODEL_CONTEXT_WINDOW_TOKENS`, 16384) for every model.
  *  - `AiPriceCatalogService` holds rates but no capabilities.
@@ -117,92 +118,35 @@ const BOTH_MODES: readonly AiExecutionMode[] = [
  * eligible for regional processing, never that any legal guarantee applies (see
  * TenantAiDeployment's own docblock).
  */
-const US_EU: readonly string[] = ['us', 'eu'];
-/** The GPT-5.6 family's regional-processing list also covers the UAE. */
+/** The GPT-5.6 family's regional-processing list covers the UAE as well as US/EU. */
 const US_EU_AE: readonly string[] = ['us', 'eu', 'ae'];
 
 /**
- * Stage 1 model set: non-reasoning, `temperature`-accepting, Chat Completions
- * models that are drop-in for the current provider request shape. The GPT-5.x
- * family is deliberately absent until the provider learns to omit `temperature`
- * and send `reasoning_effort` (plan Phase 7).
+ * THE PLATFORM MODEL ALLOW-LIST.
+ *
+ * Exactly two models are permitted anywhere in this platform:
+ *
+ *   gpt-5.6-luna  — "GPT-5.6 Luna"   (ECONOMY tier)
+ *   gpt-5.6-terra — "GPT-5.6 Terra"  (POWERFUL tier)
+ *
+ * Nothing else may be stored on an agent row, named in an environment
+ * variable, selected in `/platform/system-settings`, chosen by the router, or
+ * dispatched to a provider. Every one of those gates is DERIVED from this
+ * array (see `AI_MODEL_IDS` / `AI_MODEL_IDS_ALL` / `allowedModelId`), so
+ * this list is the one place the policy is written down.
+ *
+ * The GPT-4.x family (`gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`) was
+ * removed here. It is deliberately still PRICED in `AiPriceCatalogService`:
+ * historical `ai_cost_entries` rows were written against those ids and must
+ * keep pricing identically when the ledger is re-read. A catalog entry prices
+ * a past turn; it has never made a model selectable — only this array does.
+ * Migration `AiModelPolicyLunaTerra` rewrites every persisted GPT-4.x value.
  */
 export const AI_MODEL_REGISTRY: readonly AiModelDefinition[] = [
-  {
-    id: 'gpt-4.1-mini',
-    displayName: 'GPT-4.1 Mini',
-    provider: 'openai',
-    releaseStage: 'GA',
-    tier: 'ECONOMY',
-    aliases: ['gpt-4.1-mini-2025-04-14'],
-    contextWindowTokens: 1_047_576,
-    maxOutputTokens: 32_768,
-    supportsTools: true,
-    supportsStreaming: true,
-    supportsStructuredOutputs: true,
-    supportsTemperature: true,
-    supportedExecutionModes: BOTH_MODES,
-    supportedResidencyRegions: US_EU,
-  },
-  {
-    id: 'gpt-4o-mini',
-    displayName: 'GPT-4o Mini',
-    provider: 'openai',
-    releaseStage: 'GA',
-    tier: 'ECONOMY',
-    aliases: ['gpt-4o-mini-2024-07-18'],
-    contextWindowTokens: 128_000,
-    maxOutputTokens: 16_384,
-    supportsTools: true,
-    supportsStreaming: true,
-    supportsStructuredOutputs: true,
-    supportsTemperature: true,
-    supportedExecutionModes: BOTH_MODES,
-    // Not on the published regional-processing model list — deliberately omitted
-    // so a residency-required turn can never select it.
-  },
-  {
-    id: 'gpt-4.1',
-    displayName: 'GPT-4.1',
-    provider: 'openai',
-    releaseStage: 'GA',
-    tier: 'STANDARD',
-    aliases: ['gpt-4.1-2025-04-14'],
-    contextWindowTokens: 1_047_576,
-    maxOutputTokens: 32_768,
-    supportsTools: true,
-    supportsStreaming: true,
-    supportsStructuredOutputs: true,
-    supportsTemperature: true,
-    supportedExecutionModes: BOTH_MODES,
-    supportedResidencyRegions: US_EU,
-  },
-  {
-    id: 'gpt-4o',
-    displayName: 'GPT-4o',
-    provider: 'openai',
-    releaseStage: 'GA',
-    tier: 'POWERFUL',
-    // Verified against GET /v1/models on 2026-08-19. 'gpt-4o-latest' was listed
-    // here and does NOT exist; a snapshot the API can never return is a claim of
-    // coverage this table does not actually have. 'gpt-4o-2024-05-13' is real but
-    // deliberately EXCLUDED — it is priced at $5/$10 per M, double the current
-    // snapshots, so aliasing it here would mis-price it. Absent, it is UNPRICED,
-    // which is the honest outcome.
-    aliases: ['gpt-4o-2024-08-06', 'gpt-4o-2024-11-20'],
-    contextWindowTokens: 128_000,
-    maxOutputTokens: 16_384,
-    supportsTools: true,
-    supportsStreaming: true,
-    supportsStructuredOutputs: true,
-    supportsTemperature: true,
-    supportedExecutionModes: BOTH_MODES,
-    supportedResidencyRegions: US_EU,
-  },
-
   // ── GPT-5.6 family ─────────────────────────────────────────────────────────
-  // Reasoning models. Three facts make them different in kind from everything
-  // above, and all are encoded here rather than discovered at runtime:
+  // Reasoning models. Two facts make them different in kind from the GPT-4.x
+  // family this list used to also carry, and both are encoded here rather than
+  // discovered at runtime:
   //
   //  1. `supportsTemperature: false` — the family rejects ANY non-default
   //     temperature. `OpenAiChatProvider` always sent `temperature: 0.2`, so
@@ -343,4 +287,42 @@ export const AI_MODEL_REGISTRY_GA: readonly AiModelDefinition[] =
 /** The GA models of a tier, cheapest-first is the registry's own order. */
 export function modelsForTier(tier: AiModelDefinition['tier']): AiModelDefinition[] {
   return AI_MODEL_REGISTRY_GA.filter((m) => m.tier === tier);
+}
+
+// ───────────────────────────── Model policy ─────────────────────────────── //
+
+/**
+ * Canonicalize an id/alias to an ALLOWED model id, or `undefined`.
+ *
+ * The one predicate the whole platform's model policy is expressed with:
+ * membership of `AI_MODEL_REGISTRY`. It returns the CANONICAL id rather than a
+ * boolean so a caller cannot accidentally forward the raw string it was handed
+ * — `allowedModelId(' GPT-5.6-Luna ')` is `'gpt-5.6-luna'`, and everything else
+ * is `undefined`.
+ */
+export function allowedModelId(id?: string | null): string | undefined {
+  return findModel(id)?.id;
+}
+
+/**
+ * The model a decision falls back to when nothing else resolves to an allowed
+ * one — the registry's own first ECONOMY entry (`gpt-5.6-luna`).
+ *
+ * It exists so `AiModelRouterService` has somewhere legal to land in EVERY
+ * branch, including the ones that used to hand an unregistered string straight
+ * through to the provider. Derived, never written down twice: retiring the
+ * cheapest model moves this with it.
+ */
+export const DEFAULT_AI_MODEL_ID: string = (
+  modelsForTier('ECONOMY')[0] ?? AI_MODEL_REGISTRY_GA[0]
+).id;
+
+/**
+ * The tier's own default, falling back to {@link DEFAULT_AI_MODEL_ID} for a
+ * tier no model currently occupies (today: STANDARD). Used by the router so
+ * "no configured tier model" degrades to an allowed model of the right weight
+ * instead of to whatever string happened to be stored.
+ */
+export function defaultModelForTier(tier: AiModelDefinition['tier']): string {
+  return (modelsForTier(tier)[0] ?? findModel(DEFAULT_AI_MODEL_ID)!).id;
 }

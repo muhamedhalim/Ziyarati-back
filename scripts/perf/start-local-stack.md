@@ -20,12 +20,14 @@ node processes do not — this repeats each session. Steps, in order:
    Node fully buffers stdout when it's not a TTY, so a `nohup`-redirected log can appear
    empty for 30-40s while the app is genuinely still inside `BootstrapSeeder` — don't kill
    and retry during that window, just wait). Required env, **exported, never written into
-   the tracked `.env`**:
+   the local (gitignored, untracked) `.env`**:
    - `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5434/ziyarati_perf`
    - `REDIS_URL=redis://127.0.0.1:6380`
    - `PORT=3001` (API only)
    - `NODE_ENV=development` (production crashes — SSL — see environments.md)
-   - `TYPEORM_SYNCHRONIZE=false` (the tracked `.env` has this `true`; must be overridden)
+   - `TYPEORM_SYNCHRONIZE=false` (the local `.env` has this `true`; must be overridden — it also
+     sets `TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB=ziyarati`, P0.6-scoped to that ONE database on
+     loopback, which is irrelevant here since synchronize is off for this stack anyway)
 
    API: `node dist/src/main` · Worker: `node dist/src/worker` (both from `Ziyarati-back/`,
    both need a fresh `npm run build` first if source changed since the last build).

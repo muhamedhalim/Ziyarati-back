@@ -1,5 +1,5 @@
 import { EntityManager, IsNull } from 'typeorm';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 
 import { Tenant } from '../entities/SaaS-Core/Tenant';
 import { Branch } from '../entities/SaaS-Core/Branch';

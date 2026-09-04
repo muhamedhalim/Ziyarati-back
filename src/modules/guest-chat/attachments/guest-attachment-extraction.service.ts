@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 
 import { AiProviderFactory } from '../../ai/providers/ai-provider.factory';
+import { AiModelRouterService } from '../../ai/routing/ai-model-router.service';
+import { findModel } from '../../ai/routing/ai-model-registry';
 import {
   ATTACHMENT_EXTRACTION_TIMEOUT_MS,
   MAX_ATTACHMENT_TEXT_CHARS,
@@ -59,7 +60,11 @@ export class GuestAttachmentExtractionService {
 
   constructor(
     private readonly providers: AiProviderFactory,
-    private readonly config: ConfigService,
+    // The SAME model decision every other AI call goes through. This pass used
+    // to read `AI_ATTACHMENT_VISION_MODEL` straight from the environment and
+    // hand the result to the provider, which made it the one execution path in
+    // the codebase that could run a model the platform had not authorized.
+    private readonly modelRouter: AiModelRouterService,
   ) {}
 
   async extract(
@@ -142,15 +147,29 @@ export class GuestAttachmentExtractionService {
     mimeType: string,
     tenantId: string,
   ): Promise<string> {
-    const model = this.config.get<string>(
-      'AI_ATTACHMENT_VISION_MODEL',
-      'gpt-4o',
-    );
+    // Routed, not configured. `conversationId` is the tenant id because an
+    // upload has no conversation yet — it only feeds the rollout hash, and a
+    // stable value keeps a tenant's uploads on one side of a partial rollout.
+    const routed = this.modelRouter.resolve({
+      tenantId,
+      conversationId: tenantId,
+      feature: 'attachment_extraction',
+      route: 'ai.attachment.extract',
+    });
+    const model = routed.model;
+    // Capabilities must travel with the request here exactly as they do on a
+    // chat turn. This call hard-coded `temperature: 0`, and the GPT-5.6 family
+    // returns 400 for ANY explicit temperature — so without reading these two
+    // flags off the definition, every image upload would fail the moment the
+    // platform's model became a reasoning one.
+    const definition = routed.definition ?? findModel(model);
     const provider = this.providers.resolve(model);
     const result = await provider.complete({
       tenantId,
       model,
-      temperature: 0,
+      ...(definition?.supportsTemperature === false ? {} : { temperature: 0 }),
+      supportsTemperature: definition?.supportsTemperature,
+      reasoningEffort: definition?.reasoningEffort,
       feature: 'attachment_extraction',
       route: 'ai.attachment.extract',
       channel: 'API',

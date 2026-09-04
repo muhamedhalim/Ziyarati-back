@@ -23,7 +23,7 @@ import './utils/auth-abuse-degradation-env.setup';
 
 import { Logger } from '@nestjs/common';
 import { createHash } from 'crypto';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import type { Redis } from 'ioredis';
 

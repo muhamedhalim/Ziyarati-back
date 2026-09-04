@@ -28,6 +28,7 @@ describe('NotificationsProcessor — reap sweep lock guard (M9)', () => {
       lock as unknown as DistributedLockService,
       metrics as any,
       inApp as any,
+      {} as any,
     );
     return { processor, lock, dispatch, metrics, inApp };
   };
@@ -123,6 +124,8 @@ describe('NotificationsProcessor — onFailed DLQ gate (§18 test-plan #20)', ()
       {} as any,
       {} as any,
       { setWorkerHeartbeat: jest.fn() } as any,
+      {} as any,
+      {} as any,
     );
     return { processor, dispatch, queue };
   };
@@ -184,5 +187,90 @@ describe('NotificationsProcessor — onFailed DLQ gate (§18 test-plan #20)', ()
         attemptsMade: 1,
       }),
     );
+  });
+});
+
+// P1.5 (MS-007) — the outbox-driven replacement for
+// `ReminderListener.onCreated`'s post-commit read. See
+// `queue.constants.ts`'s `REMINDERS_SCHEDULE` docstring and
+// `appointment.service.ts`'s outbox write for the other two ends of this
+// path; this covers the consuming side.
+describe('NotificationsProcessor — reminders.schedule (P1.5 / MS-007)', () => {
+  const build = () => {
+    const reminders = { scheduleFor: jest.fn().mockResolvedValue(undefined) };
+    const ctx = {
+      run: jest.fn((fn: () => unknown) => fn()),
+      setPrincipal: jest.fn(),
+      setCorrelationId: jest.fn(),
+    };
+    const authz = { assertAuthorized: jest.fn().mockResolvedValue(undefined) };
+    const processor = new NotificationsProcessor(
+      {} as any,
+      {} as any,
+      ctx as any,
+      authz as any,
+      {} as any,
+      { setWorkerHeartbeat: jest.fn() } as any,
+      {} as any,
+      reminders as any,
+    );
+    return { processor, reminders, ctx, authz };
+  };
+
+  const job = (data: Record<string, unknown>, attemptsMade = 0) =>
+    ({
+      name: JOB.REMINDERS_SCHEDULE,
+      id: 'job-1',
+      attemptsMade,
+      data,
+    }) as any;
+
+  it('calls ReminderSchedulerService.scheduleFor with the tenant and appointment from the job payload', async () => {
+    const { processor, reminders } = build();
+
+    await processor.process(job({ tenantId: 't1', appointmentId: 'appt-1' }));
+
+    expect(reminders.scheduleFor).toHaveBeenCalledWith('t1', 'appt-1');
+  });
+
+  it('runs inside the tenant context with authorization checked first', async () => {
+    const { processor, ctx, authz } = build();
+
+    await processor.process(job({ tenantId: 't1', appointmentId: 'appt-1' }));
+
+    expect(authz.assertAuthorized).toHaveBeenCalledWith(
+      JOB.REMINDERS_SCHEDULE,
+      expect.objectContaining({ tenantId: 't1', appointmentId: 'appt-1' }),
+    );
+    expect(ctx.run).toHaveBeenCalled();
+  });
+
+  it('rejects a payload missing appointmentId with UnrecoverableError (permanent — DLQ path, not a retry)', async () => {
+    const { processor, reminders } = build();
+
+    await expect(
+      processor.process(job({ tenantId: 't1' })),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(reminders.scheduleFor).not.toHaveBeenCalled();
+  });
+
+  it('propagates a transient scheduleFor failure so BullMQ retries (never swallowed)', async () => {
+    const { processor, reminders } = build();
+    reminders.scheduleFor.mockRejectedValueOnce(new Error('db timeout'));
+
+    await expect(
+      processor.process(job({ tenantId: 't1', appointmentId: 'appt-1' })),
+    ).rejects.toThrow('db timeout');
+  });
+
+  it('never confuses a reminders.schedule job for a notifications.dispatch one — no notificationId is required or read', async () => {
+    const { processor, reminders } = build();
+
+    // No `notificationId` anywhere in this payload — if the dispatch branch
+    // were reached instead, `validateJobPayload` would throw
+    // UnrecoverableError for the missing field.
+    await processor.process(job({ tenantId: 't1', appointmentId: 'appt-1' }));
+
+    expect(reminders.scheduleFor).toHaveBeenCalledTimes(1);
   });
 });

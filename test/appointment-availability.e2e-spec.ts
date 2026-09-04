@@ -34,6 +34,8 @@ import {
 } from './utils/whatsapp-e2e-app';
 
 import { Appointment } from '../src/entities/Calendar&Appointments/Appointment';
+import { OutboxJob } from '../src/entities/Campaigns/OutboxJob';
+import { QUEUE, JOB } from '../src/queue/queue.constants';
 import { BlockedSlot } from '../src/entities/Calendar&Appointments/BlockedSlot';
 import { Holiday } from '../src/entities/Calendar&Appointments/Holiday';
 import { Branch } from '../src/entities/SaaS-Core/Branch';
@@ -290,6 +292,29 @@ describe('Appointment staff-availability enforcement (container-backed) — real
     expect(res.body.data?.start_at ?? res.body.start_at).toBeDefined();
   });
 
+  // P1.5 (MS-007) — real Postgres, real HTTP: the durability fix itself is
+  // that this row exists the instant the booking transaction commits, not
+  // that a listener eventually gets around to reading it back. Mirrors the
+  // established outbox-row check in `webhooks.e2e-spec.ts` for the sibling
+  // `appointment.created` → webhook path.
+  it('[P1.5] a successful booking writes a reminders.schedule outbox row in the same commit', async () => {
+    const res = await book(clinic, at('10:00'));
+    expect(res.status).toBe(201);
+    const appointmentId = res.body.data?.id ?? res.body.id;
+
+    const outboxRow = await e2e.dataSource.getRepository(OutboxJob).findOne({
+      where: { job_name: JOB.REMINDERS_SCHEDULE, queue: QUEUE.NOTIFICATIONS },
+      order: { created_at: 'DESC' },
+    });
+
+    expect(outboxRow).toBeTruthy();
+    expect(outboxRow!.dedupe_key).toBe(`reminders-schedule-${appointmentId}`);
+    expect(outboxRow!.payload).toMatchObject({
+      tenantId: clinic.owner.tenantId,
+      appointmentId,
+    });
+  });
+
   // ─────────────────────── Working-hours enforcement ───────────────────── //
 
   it('rejects a window outside the configured working hours', async () => {
@@ -492,6 +517,39 @@ describe('Appointment staff-availability enforcement (container-backed) — real
       ErrorCode.SLOT_ALREADY_BOOKED,
       ErrorCode.STAFF_NOT_AVAILABLE,
     ]).toContain(loser.body.code);
+
+    const rows = await e2e.dataSource.getRepository(Appointment).find({
+      where: { tenant: { id: clinic.owner.tenantId } },
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  // P2 (Phase 6): threading the already-validated branch/staff rows through
+  // to AvailabilityService (instead of it re-fetching them) touches nothing
+  // about the race itself — same predicate, same rows, same transaction
+  // boundary — but this is the concrete proof, not just that reasoning: 20
+  // requests for the exact same slot, fired together, must still admit
+  // exactly one winner with zero 5xx and only clean 409s for the rest.
+  it('[P2] 20 concurrent bookings for the same staff/window: exactly one winner, zero 5xx, only clean 409s', async () => {
+    const CONCURRENCY = 20;
+    const results = await Promise.all(
+      Array.from({ length: CONCURRENCY }, () => book(clinic, at('10:00'))),
+    );
+
+    const serverErrors = results.filter((r) => r.status >= 500);
+    expect(serverErrors).toEqual([]);
+
+    const winners = results.filter((r) => r.status === 201);
+    const losers = results.filter((r) => r.status !== 201);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(CONCURRENCY - 1);
+    for (const loser of losers) {
+      expect(loser.status).toBe(409);
+      expect([
+        ErrorCode.SLOT_ALREADY_BOOKED,
+        ErrorCode.STAFF_NOT_AVAILABLE,
+      ]).toContain(loser.body.code);
+    }
 
     const rows = await e2e.dataSource.getRepository(Appointment).find({
       where: { tenant: { id: clinic.owner.tenantId } },

@@ -32,15 +32,22 @@ describe('CreateAiAgentDto — model allow-list', () => {
   });
 
   it.each([
+    // The retired GPT-4.x family — the models this platform no longer permits.
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'gpt-4.1-mini',
     'gpt-4-turbo',
+    // Never registered here at all.
+    'gpt-5.6-sol',
     'claude-3-opus',
     'not-a-model',
     // Casing and whitespace are NOT normalised at the write boundary. `findModel`
     // is lenient so a value the provider echoes back still prices; a value being
     // PERSISTED has to be the canonical id exactly, or two rows mean the same
     // model and only one of them matches on a later exact comparison.
-    'GPT-4O',
-    'gpt-4o ',
+    'GPT-5.6-LUNA',
+    'gpt-5.6-luna ',
   ])('rejects unregistered model "%s"', async (model) => {
     const errors = propertyErrors(await errorsFor({ model }), 'model');
     expect(errors).toHaveLength(1);
@@ -49,7 +56,8 @@ describe('CreateAiAgentDto — model allow-list', () => {
 
   it('rejects a dated snapshot alias — only canonical ids may be persisted', async () => {
     // Aliases resolve for PRICING and capability lookup, but storing one would
-    // pin an agent to a snapshot that silently ages out.
+    // pin an agent to a snapshot that silently ages out. The permitted models
+    // publish no snapshots at all, so a retired one is the realistic case.
     const errors = propertyErrors(await errorsFor({ model: 'gpt-4o-2024-08-06' }), 'model');
     expect(errors).toHaveLength(1);
   });
@@ -78,8 +86,8 @@ describe('CreateAiAgentDto — model allow-list', () => {
   });
 
   /**
-   * The point of the promotion: both GPT-5.6 models are now first-class stored
-   * agent configuration, not just operator-selectable by env.
+   * The two permitted models, and the whole of the permitted set: both are
+   * first-class stored agent configuration.
    */
   it.each(['gpt-5.6-luna', 'gpt-5.6-terra'])(
     'accepts %s as a persisted agent model',
@@ -123,12 +131,32 @@ describe('CreateAiAgentDto — model allow-list', () => {
     ).toHaveLength(1);
     expect(
       propertyErrors(await errorsFor({ model: 'gpt-4o' }, UpdateAiAgentDto), 'model'),
+    ).toHaveLength(1);
+    expect(
+      propertyErrors(await errorsFor({ model: 'gpt-5.6-luna' }, UpdateAiAgentDto), 'model'),
     ).toHaveLength(0);
   });
 
-  it('leaves the other fields’ validation untouched', async () => {
-    const errors = await errorsFor({ model: 'gpt-4o', temperature: 5 });
+  it('leaves the other fields validation untouched', async () => {
+    const errors = await errorsFor({ model: 'gpt-5.6-luna', temperature: 5 });
     expect(propertyErrors(errors, 'model')).toHaveLength(0);
     expect(propertyErrors(errors, 'temperature')).toHaveLength(1);
+  });
+
+  /**
+   * DIRECT API MANIPULATION. A clinic admin who bypasses the dashboard and
+   * PATCHes `model` straight onto the endpoint is refused here, before the
+   * value can ever be persisted — and even if it somehow were, the router
+   * ignores it and the provider factory refuses to dispatch it. Three
+   * independent layers, none of which is the UI.
+   */
+  it('refuses a hand-crafted request naming a third model', async () => {
+    for (const forged of ['gpt-5.6-sol', 'gpt-4o', 'o3-mini', 'gemini-2.0-pro']) {
+      const errors = propertyErrors(await errorsFor({ model: forged }), 'model');
+      expect(errors).toHaveLength(1);
+      expect(JSON.stringify(errors[0].constraints)).toContain(
+        'model must be one of: gpt-5.6-luna, gpt-5.6-terra',
+      );
+    }
   });
 });
