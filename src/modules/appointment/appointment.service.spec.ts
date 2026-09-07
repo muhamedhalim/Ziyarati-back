@@ -868,8 +868,20 @@ describe('AppointmentsService', () => {
 
       const arg = appointments.findAndCount.mock.calls[0][0];
       expect(arg.where.services).toEqual({
-        service: { id: In(['svc-1', 'svc-2']) },
+        service: { id: In(['svc-1', 'svc-2']), tenant: { id: TENANT } },
       });
+    });
+
+    it('never matches a service id belonging to another tenant (tenant pinned on the join, not just the top-level scope)', async () => {
+      appointments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.findAll(
+        TENANT,
+        { page: 1, limit: 10, serviceIds: ['foreign-svc'] } as any,
+        FULL_ACCESS_CALLER,
+      );
+
+      const arg = appointments.findAndCount.mock.calls[0][0];
+      expect(arg.where.services.service.tenant).toEqual({ id: TENANT });
     });
 
     it('omits the services filter entirely when serviceIds is not provided', async () => {
