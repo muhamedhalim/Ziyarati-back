@@ -307,7 +307,15 @@ export class AppointmentsService {
     if (query.customerId) where.customer = { id: query.customerId };
 
     if (query.serviceIds?.length) {
-      where.services = { service: { id: In(query.serviceIds) } };
+      // `tenant` here is belt-and-suspenders on top of the top-level
+      // `where.tenant` scope above: even if a caller passes another clinic's
+      // service id, an appointment can never join to it (appointments only
+      // ever link services from their own tenant), but pinning it explicitly
+      // means this filter's correctness never depends on that write-path
+      // invariant holding elsewhere.
+      where.services = {
+        service: { id: In(query.serviceIds), tenant: { id: tenantId } },
+      };
     }
 
     if (query.from && query.to) {
