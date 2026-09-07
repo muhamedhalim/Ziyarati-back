@@ -1,5 +1,6 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsArray,
   IsEnum,
   IsInt,
   IsISO8601,
@@ -51,6 +52,17 @@ export class QueryAppointmentsDto {
   @IsOptional()
   @IsUUID()
   customerId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter to appointments having ANY of these service ids.',
+    type: [String],
+    format: 'uuid',
+  })
+  @IsOptional()
+  @Transform(({ value }) => (Array.isArray(value) ? value : [value]))
+  @IsArray()
+  @IsUUID('all', { each: true })
+  serviceIds?: string[];
 
   @ApiPropertyOptional({
     description: 'Lower bound (inclusive) on `start_at`. ISO-8601.',

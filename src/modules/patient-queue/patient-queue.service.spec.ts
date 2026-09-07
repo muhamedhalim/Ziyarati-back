@@ -145,6 +145,49 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
     expect(result.data[0].position).toBe(1);
   });
 
+  it('adds a staff filter to the where clause when staffId is supplied (FR-Q013)', async () => {
+    branches.findOne.mockResolvedValueOnce({
+      id: BRANCH,
+      timezone: 'Asia/Riyadh',
+    });
+    branchUsers.find.mockResolvedValueOnce([]); // tenant-wide caller — no branch restriction
+    entries.find.mockResolvedValueOnce([]);
+
+    await service.list(TENANT, USER, {
+      branchId: BRANCH,
+      date: '2032-04-14',
+      staffId: 'staff-1',
+    } as any);
+
+    expect(entries.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenant: { id: TENANT },
+          branch: { id: BRANCH },
+          business_date: '2032-04-14',
+          staff: { id: 'staff-1' },
+        }),
+      }),
+    );
+  });
+
+  it('omits the staff filter from the where clause when staffId is not supplied', async () => {
+    branches.findOne.mockResolvedValueOnce({
+      id: BRANCH,
+      timezone: 'Asia/Riyadh',
+    });
+    branchUsers.find.mockResolvedValueOnce([]);
+    entries.find.mockResolvedValueOnce([]);
+
+    await service.list(TENANT, USER, {
+      branchId: BRANCH,
+      date: '2032-04-14',
+    } as any);
+
+    const call = entries.find.mock.calls[0][0];
+    expect(call.where.staff).toBeUndefined();
+  });
+
   describe('myBranches (FR-Q014)', () => {
     it('returns every tenant branch for a caller with no branch assignment', async () => {
       branchUsers.find.mockResolvedValueOnce([]);

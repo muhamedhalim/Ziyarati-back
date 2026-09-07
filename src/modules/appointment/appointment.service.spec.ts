@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { DataSource } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { AppointmentsService } from './appointment.service';
@@ -856,6 +856,32 @@ describe('AppointmentsService', () => {
           staff: { id: 's1' },
         }),
       );
+    });
+
+    it('filters by serviceIds (ANY-of match) when provided', async () => {
+      appointments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.findAll(
+        TENANT,
+        { page: 1, limit: 10, serviceIds: ['svc-1', 'svc-2'] } as any,
+        FULL_ACCESS_CALLER,
+      );
+
+      const arg = appointments.findAndCount.mock.calls[0][0];
+      expect(arg.where.services).toEqual({
+        service: { id: In(['svc-1', 'svc-2']) },
+      });
+    });
+
+    it('omits the services filter entirely when serviceIds is not provided', async () => {
+      appointments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.findAll(
+        TENANT,
+        { page: 1, limit: 10 } as any,
+        FULL_ACCESS_CALLER,
+      );
+
+      const arg = appointments.findAndCount.mock.calls[0][0];
+      expect(arg.where.services).toBeUndefined();
     });
   });
 
