@@ -306,8 +306,9 @@ The staff member cannot take this window. Two distinct codes:
 **Protected — requires \`appointments.read\` OR \`appointments.read_own\`. Clinic must be active.**
 
 Returns a paginated list of the clinic's appointments. All filters
-(\`status\`, \`branchId\`, \`staffId\`, \`customerId\`, \`from\`/\`to\` date range)
-are applied ON TOP OF the mandatory tenant scope.
+(\`status\`, \`branchId\`, \`staffId\`, \`customerId\`, \`serviceIds\`,
+\`from\`/\`to\` date range) are applied ON TOP OF the mandatory tenant scope.
+\`serviceIds\` matches an appointment having ANY of the given service ids.
 
 **Ownership scoping:** a caller who holds only \`appointments.read_own\`
 (currently: \`doctor\`) is FORCED to their own StaffProfile's appointments —

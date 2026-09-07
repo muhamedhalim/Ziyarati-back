@@ -13,6 +13,7 @@ import { decimalTransformer } from '../../common/transformers/decimal.transforme
 
 @Entity('appointment_services')
 @Index(['appointment'])
+@Index(['service'])
 export class AppointmentService {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

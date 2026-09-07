@@ -306,6 +306,10 @@ export class AppointmentsService {
 
     if (query.customerId) where.customer = { id: query.customerId };
 
+    if (query.serviceIds?.length) {
+      where.services = { service: { id: In(query.serviceIds) } };
+    }
+
     if (query.from && query.to) {
       where.start_at = Between(new Date(query.from), new Date(query.to));
     } else if (query.from) {
