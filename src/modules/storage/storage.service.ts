@@ -6,6 +6,7 @@ import {
   DeleteObjectCommand,
   HeadObjectCommand,
   GetObjectCommand,
+  type GetObjectCommandOutput,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createHash, randomUUID } from 'node:crypto';
@@ -127,7 +128,9 @@ export class StorageService {
   /** Strip any path component + unsafe chars from a user-supplied filename. */
   sanitizeFilename(name: string): string {
     const base = name.split(/[\\/]/).pop() ?? name;
-    const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_{2,}/g, '_');
+    const cleaned = base
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/_{2,}/g, '_');
     return cleaned.slice(0, 200) || 'file';
   }
 
@@ -200,7 +203,12 @@ export class StorageService {
     // signature the bytes must match it, under every policy.
     assertPolicyContent(input.buffer, input.mimeType, policy);
 
-    const key = this.buildKey(input.tenantId, input.docType, input.mimeType, policy);
+    const key = this.buildKey(
+      input.tenantId,
+      input.docType,
+      input.mimeType,
+      policy,
+    );
     const sha256 = sha256Hex(input.buffer);
 
     await this.getClient().send(
@@ -260,17 +268,35 @@ export class StorageService {
   }
 
   /** Server-side private read used by trusted ingestion pipelines. */
-  async downloadObject(key: string, tenantId: string, maxBytes: number): Promise<Buffer> {
+  async downloadObject(
+    key: string,
+    tenantId: string,
+    maxBytes: number,
+  ): Promise<Buffer> {
     this.assertKeyBelongsToTenant(key, tenantId);
-    const head = await this.getClient().send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
-    if ((head.ContentLength ?? 0) <= 0 || (head.ContentLength ?? 0) > maxBytes) {
-      throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Stored file is empty or exceeds the indexing size limit.' });
+    const head = await this.getClient().send(
+      new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    if (
+      (head.ContentLength ?? 0) <= 0 ||
+      (head.ContentLength ?? 0) > maxBytes
+    ) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Stored file is empty or exceeds the indexing size limit.',
+      });
     }
-    const result = await this.getClient().send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
-    if (!result.Body) throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Stored file has no readable body.' });
+    const result = await this.getClient().send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    if (!result.Body)
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Stored file has no readable body.',
+      });
     const bytes = await result.Body.transformToByteArray();
     if (bytes.byteLength > maxBytes) {
-      throw new AppError(ErrorCode.BAD_REQUEST, { message: 'Stored file exceeds the indexing size limit.' });
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Stored file exceeds the indexing size limit.',
+      });
     }
     return Buffer.from(bytes);
   }
@@ -280,5 +306,56 @@ export class StorageService {
     await this.getClient().send(
       new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );
+  }
+
+  /**
+   * Marketplace BE-3 (T099, contract C12) — server-side object STREAM read.
+   * Distinct from `getSignedDownloadUrl` (a presigned URL — never appropriate
+   * for a public-facing proxy, since it would hand the private bucket's URL
+   * to the browser/CDN) and from `downloadObject` (buffers the whole object
+   * into memory for a trusted server-side pipeline). The public avatar proxy
+   * needs the bytes to forward, never the URL, so it streams straight
+   * through instead of buffering.
+   */
+  async getObjectStream(
+    key: string,
+    tenantId: string,
+  ): Promise<{
+    body: NodeJS.ReadableStream;
+    contentType: string;
+    contentLength?: number;
+    etag?: string;
+  }> {
+    this.assertKeyBelongsToTenant(key, tenantId);
+    let result: GetObjectCommandOutput;
+    try {
+      result = await this.getClient().send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } catch (err) {
+      // A referenced key with no live object behind it (deleted from the
+      // bucket out from under a still-referencing row, or similar) is
+      // "not found" to every caller, not a server failure — most visibly
+      // for T099's public avatar proxy, where this must be the SAME 404 as
+      // an ineligible/unknown doctor, never a raw 500 with provider detail.
+      if ((err as { name?: string })?.name === 'NoSuchKey') {
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Object not found',
+          cause: err,
+        });
+      }
+      throw err;
+    }
+    if (!result.Body) {
+      throw new AppError(ErrorCode.INTERNAL_ERROR, {
+        message: 'Stored object has no readable body.',
+      });
+    }
+    return {
+      body: result.Body as NodeJS.ReadableStream,
+      contentType: result.ContentType ?? 'application/octet-stream',
+      contentLength: result.ContentLength,
+      etag: result.ETag,
+    };
   }
 }

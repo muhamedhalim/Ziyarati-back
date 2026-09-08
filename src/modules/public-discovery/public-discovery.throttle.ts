@@ -65,3 +65,71 @@ export const PUBLIC_DISCOVERY_MARKETPLACE_CLINIC_THROTTLE = {
     ttl: 60_000,
   },
 };
+
+/** GET — the specialty index (C3). Small, cacheable, changes rarely. */
+export const PUBLIC_DISCOVERY_SPECIALTIES_LIMIT = 60;
+
+export const PUBLIC_DISCOVERY_SPECIALTIES_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_SPECIALTIES_LIMIT,
+    ttl: 60_000,
+  },
+};
+
+/** GET — a single specialty's paginated clinics/doctors (C4). */
+export const PUBLIC_DISCOVERY_SPECIALTY_DETAIL_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_SPECIALTY_DETAIL_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_SPECIALTY_DETAIL_LIMIT,
+    ttl: 60_000,
+  },
+};
+
+/** GET — doctor search (C5). Same enumeration-risk shape as clinic search. */
+export const PUBLIC_DISCOVERY_DOCTORS_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_DOCTORS_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_DOCTORS_LIMIT,
+    ttl: 60_000,
+  },
+};
+
+/** GET — single doctor detail by slug (C6). */
+export const PUBLIC_DISCOVERY_DOCTOR_DETAIL_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_DOCTOR_DETAIL_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_DOCTOR_DETAIL_LIMIT,
+    ttl: 60_000,
+  },
+};
+
+/** GET — a doctor's avatar image (C12). Generous: a doctor listing/profile
+ *  page can request several of these per view, and the response itself
+ *  carries a 300s/3600s cache (`Cache-Control`), so real traffic mostly
+ *  never reaches the origin at all. */
+export const PUBLIC_DISCOVERY_DOCTOR_AVATAR_LIMIT = 120;
+
+export const PUBLIC_DISCOVERY_DOCTOR_AVATAR_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_DOCTOR_AVATAR_LIMIT,
+    ttl: 60_000,
+  },
+};

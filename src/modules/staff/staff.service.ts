@@ -16,6 +16,7 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
 import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
+import { slugify, uniqueSlug } from '../../common/utils/slugify.util';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto } from './dto/query-staff.dto';
@@ -282,6 +283,36 @@ export class StaffService {
 
   // ───────────────────────────── Profile CRUD ────────────────────────────── //
 
+  /**
+   * Marketplace BE-2 (T060) — assigns `public_slug` for a NEW staff profile.
+   * Pre-check narrows the candidate (queries only `base`/`base-%` rows, not
+   * the whole table); the actual race-safety backstop is the caller's own
+   * retry-on-`UQ_staff_profiles_public_slug`-violation loop around the
+   * INSERT, since two concurrent requests could both pass this pre-check for
+   * the same candidate.
+   */
+  private async generatePublicSlug(
+    fullName: string | undefined | null,
+  ): Promise<string> {
+    const base = slugify(fullName ?? '', 'doctor');
+    const rows: { public_slug: string }[] = await this.dataSource.query(
+      `SELECT public_slug FROM staff_profiles WHERE public_slug = $1 OR public_slug LIKE $2`,
+      [base, `${base}-%`],
+    );
+    const taken = new Set(rows.map((r) => r.public_slug));
+    return uniqueSlug(base, (candidate) => taken.has(candidate));
+  }
+
+  /** `error` came from a `staff_profiles` INSERT that violated a unique
+   *  constraint — true only when it was specifically `public_slug`. */
+  private isPublicSlugConflict(error: unknown): boolean {
+    return (
+      isUniqueViolation(error) &&
+      (error as { constraint?: string }).constraint ===
+        'UQ_staff_profiles_public_slug'
+    );
+  }
+
   async create(tenantId: string, dto: CreateStaffDto): Promise<StaffProfile> {
     const user = await this.users.findOne({
       where: { id: dto.userId, tenant: { id: tenantId } },
@@ -309,30 +340,44 @@ export class StaffService {
       this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
     }
 
-    const profile = this.staff.create({
-      tenant: { id: tenantId } as Tenant,
-      user: { id: dto.userId } as User,
-      title: dto.title,
-      bio: dto.bio,
-      avatar_storage_key: dto.avatarStorageKey,
-      booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
-      is_available_for_booking: dto.isAvailableForBooking ?? true,
-    });
-    let saved: StaffProfile;
-    try {
-      saved = await this.staff.save(profile);
-    } catch (error) {
-      // The pre-insert existence check gives a clear response for ordinary
-      // duplicate requests. The unique index remains the race-safe backstop
-      // when two requests pass that check concurrently.
-      if (isUniqueViolation(error)) {
-        throw new AppError(ErrorCode.CONFLICT, {
-          message: 'This user already has a staff profile',
-        });
+    let saved: StaffProfile | undefined;
+    const MAX_SLUG_ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
+      const publicSlug = await this.generatePublicSlug(user.full_name);
+      const profile = this.staff.create({
+        tenant: { id: tenantId } as Tenant,
+        user: { id: dto.userId } as User,
+        title: dto.title,
+        bio: dto.bio,
+        avatar_storage_key: dto.avatarStorageKey,
+        booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
+        is_available_for_booking: dto.isAvailableForBooking ?? true,
+        public_slug: publicSlug,
+      });
+      try {
+        saved = await this.staff.save(profile);
+        break;
+      } catch (error) {
+        // Two independent unique constraints can fail this INSERT:
+        // `user_id` (the pre-insert existence check above gives the clear
+        // response for the ordinary case; this is the race-safe backstop
+        // when two requests pass that check concurrently) and, now,
+        // `public_slug` (this generation loop's own race backstop — retry
+        // with a freshly regenerated candidate rather than surface a
+        // confusing conflict to the caller for an internal implementation
+        // detail they never supplied).
+        if (this.isPublicSlugConflict(error) && attempt < MAX_SLUG_ATTEMPTS) {
+          continue;
+        }
+        if (isUniqueViolation(error)) {
+          throw new AppError(ErrorCode.CONFLICT, {
+            message: 'This user already has a staff profile',
+          });
+        }
+        throw error;
       }
-      throw error;
     }
-    return this.findOne(tenantId, saved.id);
+    return this.findOne(tenantId, saved!.id);
   }
 
   /**
@@ -448,6 +493,15 @@ export class StaffService {
           tenantId,
         );
 
+        // Marketplace BE-2 (T060): this insert lives inside the same
+        // transaction as the new User row, so it cannot retry-on-conflict
+        // the way `create()`'s standalone insert does (a failed statement
+        // aborts the whole Postgres transaction) — the live pre-check in
+        // `generatePublicSlug` is the collision-avoidance here; a genuinely
+        // simultaneous race on this rarer "create user + staff together"
+        // path surfaces as an ordinary failed request the caller retries,
+        // not a silent data-integrity issue.
+        const publicSlug = await this.generatePublicSlug(dto.fullName);
         const profile = await manager.save(
           manager.getRepository(StaffProfile).create({
             tenant: { id: tenantId } as Tenant,
@@ -457,6 +511,7 @@ export class StaffService {
             avatar_storage_key: dto.avatarStorageKey,
             booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
             is_available_for_booking: dto.isAvailableForBooking ?? true,
+            public_slug: publicSlug,
           }),
         );
 
