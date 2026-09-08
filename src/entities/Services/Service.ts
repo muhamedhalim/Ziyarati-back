@@ -14,6 +14,7 @@ import { Tenant } from '../SaaS-Core/Tenant';
 import { ServiceCategory } from './ServiceCategory';
 import { ServicePrice } from './ServicePrice';
 import { ServiceResource } from './ServiceResource';
+import { Specialty } from '../System&Lookup/Specialty';
 
 export enum PricingType {
   FIXED = 'FIXED',
@@ -31,13 +32,9 @@ export class Service {
   })
   tenant!: Tenant;
 
-  @ManyToOne(
-    () => ServiceCategory,
-    (category) => category.services,
-    {
-      nullable: true,
-    },
-  )
+  @ManyToOne(() => ServiceCategory, (category) => category.services, {
+    nullable: true,
+  })
   category?: ServiceCategory;
 
   @Column()
@@ -51,6 +48,14 @@ export class Service {
 
   @Column()
   duration_minutes!: number;
+
+  /** Marketplace BE-1: which specialty this service belongs to (at most one). Nullable so unclassified services keep working. */
+  @ManyToOne(() => Specialty, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @Index()
+  specialty?: Specialty | null;
 
   @Column({
     type: 'enum',
@@ -72,16 +77,10 @@ export class Service {
   })
   is_active!: boolean;
 
-  @OneToMany(
-    () => ServicePrice,
-    (price) => price.service,
-  )
+  @OneToMany(() => ServicePrice, (price) => price.service)
   prices!: ServicePrice[];
 
-  @OneToMany(
-    () => ServiceResource,
-    (resource) => resource.service,
-  )
+  @OneToMany(() => ServiceResource, (resource) => resource.service)
   resources!: ServiceResource[];
 
   @CreateDateColumn()

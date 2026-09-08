@@ -27,6 +27,7 @@ import { FileUploadService } from './file-upload.service';
 import { SystemSettingService } from './system-setting.service';
 import { PlatformMaintenanceService } from './platform-maintenance.service';
 import { MaintenanceGuard } from './guards/maintenance.guard';
+import { PlatformSpecialtiesService } from './platform-specialties.service';
 
 import { ApiKeyController } from './api-key.controller';
 import { ApiLogController } from './api-log.controller';
@@ -35,6 +36,7 @@ import { WebhookEndpointController } from './webhook-endpoint.controller';
 import { WebhookDeliveryController } from './webhook-delivery.controller';
 import { FileUploadController } from './file-upload.controller';
 import { SystemSettingController } from './system-setting.controller';
+import { PlatformSpecialtiesController } from './platform-specialties.controller';
 
 import { ApiKeyAuthGuard } from './guards/api-key-auth.guard';
 import { IntegrationScopeGuard } from './guards/integration-scope.guard';
@@ -101,6 +103,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     WebhookDeliveryController,
     FileUploadController,
     SystemSettingController,
+    PlatformSpecialtiesController,
   ],
   providers: [
     ApiKeyService,
@@ -116,6 +119,7 @@ import { ApiLoggingInterceptor } from './interceptors/api-logging.interceptor';
     SystemSettingService,
     PlatformMaintenanceService,
     MaintenanceGuard,
+    PlatformSpecialtiesService,
     ApiKeyAuthGuard,
     IntegrationScopeGuard,
     { provide: APP_INTERCEPTOR, useClass: ApiLoggingInterceptor },

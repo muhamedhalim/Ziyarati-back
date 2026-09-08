@@ -10,6 +10,7 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
   Index,
+  Unique,
 } from 'typeorm';
 
 import { User } from '../Auth&RBAC/User';
@@ -22,6 +23,7 @@ import { StaffRating } from './StaffRating';
 
 @Entity('staff_profiles')
 @Index(['tenant'])
+@Unique('UQ_staff_profiles_public_slug', ['public_slug'])
 export class StaffProfile {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -32,6 +34,17 @@ export class StaffProfile {
 
   @ManyToOne(() => Tenant)
   tenant!: Tenant;
+
+  /**
+   * Marketplace BE-2 (T060) — stable, GLOBALLY unique public identifier for
+   * the flat `/doctors/[doctorSlug]` route (the route has no clinic segment,
+   * so per-tenant uniqueness would not be enough — two clinics' "Dr. Ahmed
+   * Ali" are a real collision). Name-derived at creation with deterministic
+   * numeric disambiguation (`StaffService`), backfilled for existing rows by
+   * migration. Assigned once; a later name change does NOT repoint it.
+   */
+  @Column({ type: 'varchar', length: 160 })
+  public_slug!: string;
 
   @Column({ nullable: true })
   title?: string;
@@ -73,34 +86,19 @@ export class StaffProfile {
   })
   is_available_for_booking!: boolean;
 
-  @OneToMany(
-    () => StaffService,
-    (staffService) => staffService.staff,
-  )
+  @OneToMany(() => StaffService, (staffService) => staffService.staff)
   staffServices!: StaffService[];
 
-  @OneToMany(
-    () => StaffSchedule,
-    (schedule) => schedule.staff,
-  )
+  @OneToMany(() => StaffSchedule, (schedule) => schedule.staff)
   schedules!: StaffSchedule[];
 
-  @OneToMany(
-    () => StaffTimeOff,
-    (timeOff) => timeOff.staff,
-  )
+  @OneToMany(() => StaffTimeOff, (timeOff) => timeOff.staff)
   timeOffs!: StaffTimeOff[];
 
-  @OneToMany(
-    () => StaffCommission,
-    (commission) => commission.staff,
-  )
+  @OneToMany(() => StaffCommission, (commission) => commission.staff)
   commissions!: StaffCommission[];
 
-  @OneToMany(
-    () => StaffRating,
-    (rating) => rating.staff,
-  )
+  @OneToMany(() => StaffRating, (rating) => rating.staff)
   ratings!: StaffRating[];
 
   @CreateDateColumn()

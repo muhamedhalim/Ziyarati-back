@@ -1,4 +1,5 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiOkResponse,
   ApiOperation,
@@ -8,12 +9,19 @@ import {
 import { Throttle } from '@nestjs/throttler';
 
 import { PublicDiscoveryService } from './public-discovery.service';
+import { StorageService } from '../storage/storage.service';
 import { Public } from '../auth/decorators/public.decorator';
+import { AppError, ErrorCode } from '../../common/errors';
 import {
   PUBLIC_DISCOVERY_CITIES_THROTTLE,
   PUBLIC_DISCOVERY_CLINICS_THROTTLE,
   PUBLIC_DISCOVERY_CLINIC_DETAIL_THROTTLE,
   PUBLIC_DISCOVERY_MARKETPLACE_CLINIC_THROTTLE,
+  PUBLIC_DISCOVERY_SPECIALTIES_THROTTLE,
+  PUBLIC_DISCOVERY_SPECIALTY_DETAIL_THROTTLE,
+  PUBLIC_DISCOVERY_DOCTORS_THROTTLE,
+  PUBLIC_DISCOVERY_DOCTOR_DETAIL_THROTTLE,
+  PUBLIC_DISCOVERY_DOCTOR_AVATAR_THROTTLE,
 } from './public-discovery.throttle';
 
 /**
@@ -24,7 +32,10 @@ import {
 @ApiTags('Public Discovery')
 @Controller('public/discovery')
 export class PublicDiscoveryController {
-  constructor(private readonly discovery: PublicDiscoveryService) {}
+  constructor(
+    private readonly discovery: PublicDiscoveryService,
+    private readonly storage: StorageService,
+  ) {}
 
   @Public()
   @ApiOperation({
@@ -77,7 +88,10 @@ export class PublicDiscoveryController {
       return this.discovery.searchClinics(q, undefined, cityId);
     }
     const parsedPage = Math.max(1, parseInt(page ?? '1', 10) || 1);
-    const parsedPageSize = Math.min(Math.max(1, parseInt(pageSize ?? '24', 10) || 24), 24);
+    const parsedPageSize = Math.min(
+      Math.max(1, parseInt(pageSize ?? '24', 10) || 24),
+      24,
+    );
     return this.discovery.searchClinics(q, undefined, cityId, {
       page: parsedPage,
       pageSize: parsedPageSize,
@@ -101,7 +115,8 @@ export class PublicDiscoveryController {
 
   @Public()
   @ApiOperation({
-    summary: 'Marketplace clinic projection: branches, services (per-branch priced), doctors',
+    summary:
+      'Marketplace clinic projection: branches, services (per-branch priced), doctors',
     description:
       'Contract C2b — a SEPARATE, Marketplace-only projection. Never edits the frozen ' +
       'clinicDetail()/searchClinics() the AI calls in-process (P3). Every collection is ' +
@@ -119,7 +134,8 @@ export class PublicDiscoveryController {
     @Query('doctorsPage') doctorsPage?: string,
     @Query('doctorsPageSize') doctorsPageSize?: string,
   ) {
-    const toInt = (v: string | undefined) => (v === undefined ? undefined : parseInt(v, 10) || undefined);
+    const toInt = (v: string | undefined) =>
+      v === undefined ? undefined : parseInt(v, 10) || undefined;
     return this.discovery.marketplaceClinicDetail(idOrSlug, {
       branchesPage: toInt(branchesPage),
       branchesPageSize: toInt(branchesPageSize),
@@ -128,5 +144,146 @@ export class PublicDiscoveryController {
       doctorsPage: toInt(doctorsPage),
       doctorsPageSize: toInt(doctorsPageSize),
     });
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'List specialties with at least one eligible clinic',
+    description:
+      'Contract C3. Names are returned as both nameAr/nameEn (P5) — the client selects; no ' +
+      'Accept-Language negotiation. A specialty with zero eligible clinics is absent, not empty.',
+  })
+  @ApiOkResponse({
+    description: 'Specialties with at least one publicly bookable clinic.',
+  })
+  @Throttle(PUBLIC_DISCOVERY_SPECIALTIES_THROTTLE)
+  @Get('specialties')
+  specialties() {
+    return this.discovery.listSpecialties();
+  }
+
+  @Public()
+  @ApiOperation({
+    summary:
+      'Specialty detail: clinics and doctors, city-filterable, paginated',
+    description:
+      'Contract C4. An unknown slug 404s. A slug that exists but currently has zero eligible ' +
+      'clinics returns 200 with empty collections instead — a 404 there would be ' +
+      'indistinguishable from a bad slug.',
+  })
+  @ApiQuery({ name: 'cityId', required: false, format: 'uuid' })
+  @ApiQuery({ name: 'clinicsPage', required: false, type: Number })
+  @ApiQuery({ name: 'clinicsPageSize', required: false, type: Number })
+  @ApiQuery({ name: 'doctorsPage', required: false, type: Number })
+  @ApiQuery({ name: 'doctorsPageSize', required: false, type: Number })
+  @ApiOkResponse({
+    description: 'Specialty detail with paginated clinics and doctors.',
+  })
+  @Throttle(PUBLIC_DISCOVERY_SPECIALTY_DETAIL_THROTTLE)
+  @Get('specialties/:slug')
+  specialtyDetail(
+    @Param('slug') slug: string,
+    @Query('cityId') cityId?: string,
+    @Query('clinicsPage') clinicsPage?: string,
+    @Query('clinicsPageSize') clinicsPageSize?: string,
+    @Query('doctorsPage') doctorsPage?: string,
+    @Query('doctorsPageSize') doctorsPageSize?: string,
+  ) {
+    const toInt = (v: string | undefined) =>
+      v === undefined ? undefined : parseInt(v, 10) || undefined;
+    return this.discovery.specialtyDetail(slug, {
+      cityId,
+      clinicsPage: toInt(clinicsPage),
+      clinicsPageSize: toInt(clinicsPageSize),
+      doctorsPage: toInt(doctorsPage),
+      doctorsPageSize: toInt(doctorsPageSize),
+    });
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Search doctors across clinics',
+    description:
+      'Contract C5. Only staff of eligible clinics, available-for-booking, not soft-deleted. ' +
+      '`avatarUrl` is always the C12 proxy URL, never a signed storage URL, and is present only ' +
+      'when the doctor actually has a stored avatar.',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'cityId', required: false, format: 'uuid' })
+  @ApiQuery({ name: 'specialtySlug', required: false })
+  @ApiQuery({ name: 'clinicSlug', required: false })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @ApiOkResponse({ description: 'Matching doctors, paginated.' })
+  @Throttle(PUBLIC_DISCOVERY_DOCTORS_THROTTLE)
+  @Get('doctors')
+  doctors(
+    @Query('q') q?: string,
+    @Query('cityId') cityId?: string,
+    @Query('specialtySlug') specialtySlug?: string,
+    @Query('clinicSlug') clinicSlug?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const toInt = (v: string | undefined) =>
+      v === undefined ? undefined : parseInt(v, 10) || undefined;
+    return this.discovery.searchDoctors({
+      q,
+      cityId,
+      specialtySlug,
+      clinicSlug,
+      page: toInt(page),
+      pageSize: toInt(pageSize),
+    });
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Doctor detail by slug',
+    description:
+      "Contract C6. `branches` feeds FR-083's context-depth decision. `avatarUrl` is always the " +
+      'C12 proxy URL. Never exposed: user email/phone, schedules, booking_buffer_minutes, ' +
+      'commissions, internal ratings, or any presigned storage URL.',
+  })
+  @ApiOkResponse({ description: 'Doctor detail.' })
+  @Throttle(PUBLIC_DISCOVERY_DOCTOR_DETAIL_THROTTLE)
+  @Get('doctors/:slug')
+  doctorDetail(@Param('slug') slug: string) {
+    return this.discovery.doctorDetail(slug);
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: "A doctor's avatar image",
+    description:
+      'Contract C12. STREAMS the private R2 object — never a redirect, never the presigned URL ' +
+      '(that would hand the private bucket URL to the browser/CDN). Eligibility (clinic ' +
+      'APPROVED/active/opted-in, doctor available-for-booking) is re-checked on every request. ' +
+      'An ineligible doctor, an unknown slug, and a doctor with no stored avatar are all the ' +
+      'SAME 404 — never distinguishable from one another.',
+  })
+  @Throttle(PUBLIC_DISCOVERY_DOCTOR_AVATAR_THROTTLE)
+  @Get('doctors/:slug/avatar')
+  async doctorAvatar(
+    @Param('slug') slug: string,
+    @Res({ passthrough: false }) res: Response,
+  ): Promise<void> {
+    const source = await this.discovery.resolveDoctorAvatarSource(slug);
+    if (!source) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Doctor not found' });
+    }
+    const { body, contentType, contentLength, etag } =
+      await this.storage.getObjectStream(source.storageKey, source.tenantId);
+    res.status(200);
+    res.setHeader('Content-Type', contentType);
+    if (contentLength !== undefined)
+      res.setHeader('Content-Length', String(contentLength));
+    if (etag) res.setHeader('ETag', etag);
+    res.setHeader(
+      'Cache-Control',
+      'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400',
+    );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    (body as import('stream').Readable).pipe(res);
   }
 }

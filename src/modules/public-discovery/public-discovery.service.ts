@@ -217,7 +217,9 @@ export class PublicDiscoveryService {
     const city = cityId?.trim() || null;
     const paginated = Boolean(pagination);
     const page = paginated ? Math.max(1, pagination!.page) : 1;
-    const pageSize = paginated ? Math.min(Math.max(1, pagination!.pageSize), 24) : Math.min(limit, 24);
+    const pageSize = paginated
+      ? Math.min(Math.max(1, pagination!.pageSize), 24)
+      : Math.min(limit, 24);
     const offset = (page - 1) * pageSize;
 
     const rows = await this.dataSource.query(
@@ -451,48 +453,54 @@ export class PublicDiscoveryService {
 
     const clinicId = tenant.id as string;
 
-    const [branchRows, branchCount, serviceRows, serviceCount, doctorRows, doctorCount] =
-      await Promise.all([
-        this.dataSource.query(
-          `SELECT b.id, b.name, b.address, b.phone, b.timezone, b.city_id, c.name_ar AS city_ar, c.name_en AS city_en
+    const [
+      branchRows,
+      branchCount,
+      serviceRows,
+      serviceCount,
+      doctorRows,
+      doctorCount,
+    ] = await Promise.all([
+      this.dataSource.query(
+        `SELECT b.id, b.name, b.address, b.phone, b.timezone, b.city_id, c.name_ar AS city_ar, c.name_en AS city_en
              FROM branches b
              LEFT JOIN cities c ON c.id = b.city_id
             WHERE b."tenantId" = $1 AND b.is_active = true AND b.deleted_at IS NULL
             ORDER BY b.name LIMIT $2 OFFSET $3`,
-          [clinicId, bSize, (bPage - 1) * bSize],
-        ),
-        this.dataSource.query(
-          `SELECT COUNT(*)::int AS total FROM branches
+        [clinicId, bSize, (bPage - 1) * bSize],
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*)::int AS total FROM branches
             WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
-          [clinicId],
-        ),
-        this.dataSource.query(
-          `SELECT id, name, description, duration_minutes FROM services
+        [clinicId],
+      ),
+      this.dataSource.query(
+        `SELECT id, name, description, duration_minutes FROM services
             WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL
             ORDER BY name LIMIT $2 OFFSET $3`,
-          [clinicId, sSize, (sPage - 1) * sSize],
-        ),
-        this.dataSource.query(
-          `SELECT COUNT(*)::int AS total FROM services
+        [clinicId, sSize, (sPage - 1) * sSize],
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*)::int AS total FROM services
             WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
-          [clinicId],
-        ),
-        this.dataSource.query(
-          `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
+        [clinicId],
+      ),
+      this.dataSource.query(
+        `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
              FROM staff_profiles sp
              LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
             WHERE sp."tenantId" = $1
               AND sp.deleted_at IS NULL
               AND sp.is_available_for_booking = true
             ORDER BY name LIMIT $2 OFFSET $3`,
-          [clinicId, dSize, (dPage - 1) * dSize],
-        ),
-        this.dataSource.query(
-          `SELECT COUNT(*)::int AS total FROM staff_profiles
+        [clinicId, dSize, (dPage - 1) * dSize],
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*)::int AS total FROM staff_profiles
             WHERE "tenantId" = $1 AND deleted_at IS NULL AND is_available_for_booking = true`,
-          [clinicId],
-        ),
-      ]);
+        [clinicId],
+      ),
+    ]);
 
     // Per-branch prices for exactly the services on this page — mirrors
     // BRANCH_OFFERS_SERVICE's "explicit configuration wins" rule: a service
@@ -501,23 +509,30 @@ export class PublicDiscoveryService {
     // every ACTIVE branch of the clinic, not just the current page of
     // branches (P7 — paginating branches must never silently truncate a
     // service's price list to whichever branches happen to be on this page).
-    const serviceIds = serviceRows.map((s: Record<string, unknown>) => s.id as string);
-    const [priceRows, allBranchRows]: [Record<string, unknown>[], Record<string, unknown>[]] =
-      await Promise.all([
-        serviceIds.length
-          ? this.dataSource.query(
-              `SELECT sp."serviceId" AS service_id, sp."branchId" AS branch_id, sp.price
+    const serviceIds = serviceRows.map(
+      (s: Record<string, unknown>) => s.id as string,
+    );
+    const [priceRows, allBranchRows]: [
+      Record<string, unknown>[],
+      Record<string, unknown>[],
+    ] = await Promise.all([
+      serviceIds.length
+        ? this.dataSource.query(
+            `SELECT sp."serviceId" AS service_id, sp."branchId" AS branch_id, sp.price
                  FROM service_prices sp
                 WHERE sp."serviceId" = ANY($1::uuid[]) AND sp.is_active = true`,
-              [serviceIds],
-            )
-          : Promise.resolve([]),
-        this.dataSource.query(
-          `SELECT id FROM branches WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
-          [clinicId],
-        ),
-      ]);
-    const pricesByService = new Map<string, { branchId: string; price: number }[]>();
+            [serviceIds],
+          )
+        : Promise.resolve([]),
+      this.dataSource.query(
+        `SELECT id FROM branches WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
+        [clinicId],
+      ),
+    ]);
+    const pricesByService = new Map<
+      string,
+      { branchId: string; price: number }[]
+    >();
     for (const row of priceRows) {
       const list = pricesByService.get(row.service_id as string) ?? [];
       list.push({ branchId: row.branch_id as string, price: n(row.price) });
@@ -541,7 +556,10 @@ export class PublicDiscoveryService {
           name: b.name as string,
           address: (b.address as string) ?? null,
           city: b.city_id
-            ? { nameAr: (b.city_ar as string) ?? null, nameEn: (b.city_en as string) ?? null }
+            ? {
+                nameAr: (b.city_ar as string) ?? null,
+                nameEn: (b.city_en as string) ?? null,
+              }
             : null,
           phone: (b.phone as string) ?? null,
           timezone: (b.timezone as string) || 'UTC',
@@ -555,7 +573,10 @@ export class PublicDiscoveryService {
           const perBranch = pricesByService.get(s.id as string);
           const prices = perBranch?.length
             ? perBranch
-            : allBranchIds.map((branchId) => ({ branchId, price: n(s.base_price) }));
+            : allBranchIds.map((branchId) => ({
+                branchId,
+                price: n(s.base_price),
+              }));
           return {
             id: s.id as string,
             name: s.name as string,
@@ -581,7 +602,11 @@ export class PublicDiscoveryService {
       },
       // Empty until the specialty domain model lands (T051-T056, Phase 7) —
       // omitted-as-empty, not stubbed with invented data (Constitution XXIII).
-      specialties: [] as { slug: string; nameAr: string | null; nameEn: string | null }[],
+      specialties: [] as {
+        slug: string;
+        nameAr: string | null;
+        nameEn: string | null;
+      }[],
     };
   }
 
@@ -905,6 +930,428 @@ export class PublicDiscoveryService {
       worksAtBranch: true,
       note: 'This is the recurring roster, not free time. Existing bookings, blocked periods, holidays and leave are NOT subtracted — use the availability tool for bookable slots.',
     };
+  }
+
+  /**
+   * Marketplace contract C3 — the specialty index. Only specialties with at
+   * least one eligible clinic (via `tenant_specialties`) are returned, so the
+   * index never advertises a dead end (US5 scenario 1). Names are returned as
+   * both `nameAr`/`nameEn` — the client selects, matching `listCities()`'s
+   * precedent; no `Accept-Language` negotiation (C11's single-key caching
+   * depends on a locale-neutral response).
+   */
+  async listSpecialties(): Promise<
+    { slug: string; nameAr: string; nameEn: string; clinicCount: number }[]
+  > {
+    const rows = await this.dataSource.query(
+      `SELECT sp.slug, sp.name_ar, sp.name_en,
+              COUNT(DISTINCT t.id)::int AS clinic_count
+         FROM specialties sp
+         JOIN tenant_specialties ts2 ON ts2."specialtyId" = sp.id
+         JOIN tenants t ON t.id = ts2."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE sp.is_active = true
+          AND ${ELIGIBLE_CLINIC}
+        GROUP BY sp.id, sp.slug, sp.name_ar, sp.name_en, sp.sort_order
+       HAVING COUNT(DISTINCT t.id) > 0
+        ORDER BY sp.sort_order ASC, sp.name_en ASC NULLS LAST`,
+    );
+    return rows.map((r: Record<string, unknown>) => ({
+      slug: r.slug as string,
+      nameAr: r.name_ar as string,
+      nameEn: r.name_en as string,
+      clinicCount: n(r.clinic_count),
+    }));
+  }
+
+  /**
+   * Marketplace contract C4 — specialty detail: clinics and doctors
+   * associated with it, city-filterable, paginated. A specialty whose `slug`
+   * does not exist at all 404s (a genuinely bad slug); a specialty that
+   * exists but currently has zero eligible clinics returns 200 with empty
+   * collections instead — a 404 there would be indistinguishable from a bad
+   * slug (US5 scenario 3).
+   */
+  async specialtyDetail(
+    slug: string,
+    opts: {
+      cityId?: string;
+      clinicsPage?: number;
+      clinicsPageSize?: number;
+      doctorsPage?: number;
+      doctorsPageSize?: number;
+    } = {},
+  ) {
+    const [specialty] = await this.dataSource.query(
+      `SELECT id, slug, name_ar, name_en FROM specialties WHERE slug = $1 AND is_active = true`,
+      [slug.trim()],
+    );
+    if (!specialty) {
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Specialty not found',
+      });
+    }
+
+    const city = opts.cityId?.trim() || null;
+    const clinicsPage = Math.max(1, opts.clinicsPage ?? 1);
+    const clinicsPageSize = Math.min(
+      Math.max(1, opts.clinicsPageSize ?? 24),
+      24,
+    );
+    const doctorsPage = Math.max(1, opts.doctorsPage ?? 1);
+    const doctorsPageSize = Math.min(
+      Math.max(1, opts.doctorsPageSize ?? 24),
+      24,
+    );
+
+    const [clinicRows, [{ clinicTotal }], doctorRows, [{ doctorTotal }]] =
+      await Promise.all([
+        this.dataSource.query(
+          `SELECT DISTINCT t.id, t.name, t.slug, t.logo_url,
+                  (SELECT COUNT(*)::int FROM branches b
+                    WHERE b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL) AS branches
+             FROM tenants t
+             JOIN tenant_specialties ts2 ON ts2."tenantId" = t.id AND ts2."specialtyId" = $1
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE ${ELIGIBLE_CLINIC}
+              AND ($3::uuid IS NULL
+                   OR EXISTS (SELECT 1 FROM branches cb
+                               WHERE cb."tenantId" = t.id AND cb.is_active = true
+                                 AND cb.deleted_at IS NULL AND cb.city_id = $3::uuid))
+            ORDER BY t.name ASC
+            LIMIT $2::int OFFSET (($4::int - 1) * $2::int)`,
+          [specialty.id, clinicsPageSize, city, clinicsPage],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(DISTINCT t.id)::int AS "clinicTotal"
+             FROM tenants t
+             JOIN tenant_specialties ts2 ON ts2."tenantId" = t.id AND ts2."specialtyId" = $1
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE ${ELIGIBLE_CLINIC}
+              AND ($2::uuid IS NULL
+                   OR EXISTS (SELECT 1 FROM branches cb
+                               WHERE cb."tenantId" = t.id AND cb.is_active = true
+                                 AND cb.deleted_at IS NULL AND cb.city_id = $2::uuid))`,
+          [specialty.id, city],
+        ),
+        this.dataSource.query(
+          `SELECT DISTINCT sf.id, sf.title, t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug
+             FROM staff_profiles sf
+             JOIN staff_specialties ss2 ON ss2."staffId" = sf.id AND ss2."specialtyId" = $1
+             JOIN tenants t ON t.id = sf."tenantId"
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE sf.deleted_at IS NULL
+              AND sf.is_available_for_booking = true
+              AND ${ELIGIBLE_CLINIC}
+              AND ($3::uuid IS NULL
+                   OR EXISTS (SELECT 1 FROM branches cb
+                               WHERE cb."tenantId" = t.id AND cb.is_active = true
+                                 AND cb.deleted_at IS NULL AND cb.city_id = $3::uuid))
+            ORDER BY sf.title ASC NULLS LAST
+            LIMIT $2::int OFFSET (($4::int - 1) * $2::int)`,
+          [specialty.id, doctorsPageSize, city, doctorsPage],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(DISTINCT sf.id)::int AS "doctorTotal"
+             FROM staff_profiles sf
+             JOIN staff_specialties ss2 ON ss2."staffId" = sf.id AND ss2."specialtyId" = $1
+             JOIN tenants t ON t.id = sf."tenantId"
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE sf.deleted_at IS NULL
+              AND sf.is_available_for_booking = true
+              AND ${ELIGIBLE_CLINIC}
+              AND ($2::uuid IS NULL
+                   OR EXISTS (SELECT 1 FROM branches cb
+                               WHERE cb."tenantId" = t.id AND cb.is_active = true
+                                 AND cb.deleted_at IS NULL AND cb.city_id = $2::uuid))`,
+          [specialty.id, city],
+        ),
+      ]);
+
+    return {
+      specialty: {
+        slug: specialty.slug as string,
+        nameAr: specialty.name_ar as string,
+        nameEn: specialty.name_en as string,
+      },
+      clinics: {
+        items: clinicRows.map((r: Record<string, unknown>) => ({
+          id: r.id as string,
+          name: r.name as string,
+          slug: r.slug as string,
+          logoUrl: (r.logo_url as string) ?? null,
+          branchCount: n(r.branches),
+        })),
+        total: n(clinicTotal),
+        page: clinicsPage,
+        pageSize: clinicsPageSize,
+      },
+      doctors: {
+        items: doctorRows.map((r: Record<string, unknown>) => ({
+          id: r.id as string,
+          title: (r.title as string) ?? null,
+          clinic: {
+            id: r.tenant_id as string,
+            name: r.tenant_name as string,
+            slug: r.tenant_slug as string,
+          },
+        })),
+        total: n(doctorTotal),
+        page: doctorsPage,
+        pageSize: doctorsPageSize,
+      },
+    };
+  }
+
+  /**
+   * Marketplace BE-2 (T061, contract C5) — cross-clinic doctor search.
+   * Only staff of eligible clinics, available-for-booking, not soft-deleted.
+   * `avatarUrl` is ALWAYS the C12 proxy URL, INCLUDING the `api/v1` global
+   * prefix (`app.setGlobalPrefix('api/v1')` in main.ts) — the Marketplace's
+   * `next.config.ts` rewrite only proxies `/api/:path*`, so a path missing
+   * that prefix would 404 on the frontend, not reach this backend at all
+   * (found and fixed live during T063) — never `staff.service.ts`'s
+   * presigned URL (P2/FR-086) — and is present
+   * only when the doctor actually has a stored avatar, so the frontend can
+   * render initials without ever probing the proxy speculatively.
+   */
+  async searchDoctors(filters: {
+    q?: string;
+    cityId?: string;
+    specialtySlug?: string;
+    clinicSlug?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const like = filters.q?.trim() ? `%${filters.q.trim()}%` : null;
+    const city = filters.cityId?.trim() || null;
+    const specialtySlug = filters.specialtySlug?.trim() || null;
+    const clinicSlug = filters.clinicSlug?.trim() || null;
+    const page = Math.max(1, filters.page ?? 1);
+    const pageSize = Math.min(Math.max(1, filters.pageSize ?? 24), 24);
+
+    // Independently-numbered WHERE fragments per query — a shared fragment
+    // string reused across two queries with different param orders is a
+    // real, easy-to-get-wrong trap (parameter numbers must match THAT
+    // query's own array), so each is spelled out rather than shared.
+    const [rows, [{ total }]] = await Promise.all([
+      this.dataSource.query(
+        `SELECT sp.id, sp.public_slug, sp.title, sp.avatar_storage_key,
+                u.full_name, t.name AS tenant_name, t.slug AS tenant_slug
+           FROM staff_profiles sp
+           JOIN users u ON u.id = sp.user_id
+           JOIN tenants t ON t.id = sp."tenantId"
+           LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+          WHERE sp.deleted_at IS NULL
+            AND sp.is_available_for_booking = true
+            AND ${ELIGIBLE_CLINIC}
+            AND ($2::text IS NULL OR u.full_name ILIKE $2)
+            AND ($3::uuid IS NULL
+                 OR EXISTS (SELECT 1 FROM branches cb
+                             WHERE cb."tenantId" = t.id AND cb.is_active = true
+                               AND cb.deleted_at IS NULL AND cb.city_id = $3::uuid))
+            AND ($4::text IS NULL
+                 OR EXISTS (SELECT 1 FROM staff_specialties ss3
+                             JOIN specialties sp3 ON sp3.id = ss3."specialtyId"
+                             WHERE ss3."staffId" = sp.id AND sp3.slug = $4))
+            AND ($5::text IS NULL OR t.slug = $5)
+          ORDER BY u.full_name ASC NULLS LAST
+          LIMIT $1::int OFFSET (($6::int - 1) * $1::int)`,
+        [pageSize, like, city, specialtySlug, clinicSlug, page],
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*)::int AS total
+           FROM staff_profiles sp
+           JOIN users u ON u.id = sp.user_id
+           JOIN tenants t ON t.id = sp."tenantId"
+           LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+          WHERE sp.deleted_at IS NULL
+            AND sp.is_available_for_booking = true
+            AND ${ELIGIBLE_CLINIC}
+            AND ($1::text IS NULL OR u.full_name ILIKE $1)
+            AND ($2::uuid IS NULL
+                 OR EXISTS (SELECT 1 FROM branches cb
+                             WHERE cb."tenantId" = t.id AND cb.is_active = true
+                               AND cb.deleted_at IS NULL AND cb.city_id = $2::uuid))
+            AND ($3::text IS NULL
+                 OR EXISTS (SELECT 1 FROM staff_specialties ss3
+                             JOIN specialties sp3 ON sp3.id = ss3."specialtyId"
+                             WHERE ss3."staffId" = sp.id AND sp3.slug = $3))
+            AND ($4::text IS NULL OR t.slug = $4)`,
+        [like, city, specialtySlug, clinicSlug],
+      ),
+    ]);
+
+    const staffIds = rows.map((r: Record<string, unknown>) => r.id as string);
+    const specialtiesByStaff = await this.specialtiesForStaff(staffIds);
+
+    const items = rows.map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      slug: r.public_slug as string,
+      name: (r.full_name as string) ?? null,
+      title: (r.title as string) ?? null,
+      avatarUrl: r.avatar_storage_key
+        ? `/api/v1/public/discovery/doctors/${r.public_slug}/avatar`
+        : null,
+      clinic: { name: r.tenant_name as string, slug: r.tenant_slug as string },
+      specialties: specialtiesByStaff.get(r.id as string) ?? [],
+    }));
+
+    return { items, total: n(total), page, pageSize };
+  }
+
+  /**
+   * Marketplace BE-2 (T061, contract C6) — doctor detail by public slug.
+   * `branches` feeds FR-083's context-depth decision (exactly one branch ⇒
+   * the Marketplace can pre-set it unambiguously). DTO is an ALLOW-LIST —
+   * user email/phone, schedules, `booking_buffer_minutes`, commissions and
+   * internal ratings are never selected in the first place, not merely
+   * omitted from the mapping.
+   */
+  async doctorDetail(slug: string) {
+    const rows = await this.dataSource.query(
+      `SELECT sp.id, sp.public_slug, sp.title, sp.bio, sp.avatar_storage_key,
+              u.full_name, t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+              t.default_currency AS currency
+         FROM staff_profiles sp
+         JOIN users u ON u.id = sp.user_id
+         JOIN tenants t ON t.id = sp."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE sp.public_slug = $1
+          AND sp.deleted_at IS NULL
+          AND sp.is_available_for_booking = true
+          AND ${ELIGIBLE_CLINIC}`,
+      [slug.trim()],
+    );
+    const doctor = rows[0] as Record<string, unknown> | undefined;
+    if (!doctor) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Doctor not found' });
+    }
+
+    const [branches, specialties, services] = await Promise.all([
+      this.dataSource.query(
+        `SELECT DISTINCT b.id, b.name, b.address, c.name_ar AS city_ar, c.name_en AS city_en
+           FROM staff_schedules ssc
+           JOIN branches b ON b.id = ssc."branchId" AND b.is_active = true AND b.deleted_at IS NULL
+           LEFT JOIN cities c ON c.id = b.city_id
+          WHERE ssc."staffId" = $1 AND ssc.is_active = true
+          ORDER BY b.name ASC`,
+        [doctor.id],
+      ),
+      this.specialtiesForStaff([doctor.id as string]).then(
+        (m) => m.get(doctor.id as string) ?? [],
+      ),
+      // `services` has NO `slug` column at all yet (verified against the
+      // entity — same documented gap T025 hit for C2b's services[]; a
+      // migration+backfill is needed before this can carry a real slug, and
+      // it is not yet scheduled as a task). `slug: null` here is honest
+      // about that, not a placeholder pretending otherwise.
+      this.dataSource.query(
+        `SELECT DISTINCT s.id, s.name, s.duration_minutes, s.base_price
+           FROM staff_services stf
+           JOIN services s ON s.id = stf."serviceId" AND s.is_active = true AND s.deleted_at IS NULL
+          WHERE stf."staffId" = $1
+          ORDER BY s.name ASC`,
+        [doctor.id],
+      ),
+    ]);
+
+    return {
+      id: doctor.id as string,
+      slug: doctor.public_slug as string,
+      name: (doctor.full_name as string) ?? null,
+      title: (doctor.title as string) ?? null,
+      bio: (doctor.bio as string) ?? null,
+      avatarUrl: doctor.avatar_storage_key
+        ? `/api/v1/public/discovery/doctors/${doctor.public_slug}/avatar`
+        : null,
+      clinic: {
+        id: doctor.tenant_id as string,
+        name: doctor.tenant_name as string,
+        slug: doctor.tenant_slug as string,
+        currency: doctor.currency as string,
+      },
+      branches: branches.map((b: Record<string, unknown>) => ({
+        id: b.id as string,
+        name: b.name as string,
+        address: (b.address as string) ?? null,
+        city:
+          b.city_en || b.city_ar
+            ? {
+                nameAr: (b.city_ar as string) ?? null,
+                nameEn: (b.city_en as string) ?? null,
+              }
+            : null,
+      })),
+      specialties,
+      services: services.map((s: Record<string, unknown>) => ({
+        id: s.id as string,
+        slug: null as string | null,
+        name: s.name as string,
+        durationMinutes: n(s.duration_minutes),
+        price: s.base_price !== null ? Number(s.base_price) : null,
+      })),
+    };
+  }
+
+  /** Bulk-loads `{slug, nameAr, nameEn}` specialties per staff id (P5 — bilingual, client selects). */
+  private async specialtiesForStaff(
+    staffIds: string[],
+  ): Promise<Map<string, { slug: string; nameAr: string; nameEn: string }[]>> {
+    const result = new Map<
+      string,
+      { slug: string; nameAr: string; nameEn: string }[]
+    >();
+    if (staffIds.length === 0) return result;
+    const rows = await this.dataSource.query(
+      `SELECT ss."staffId" AS staff_id, sp.slug, sp.name_ar, sp.name_en
+         FROM staff_specialties ss
+         JOIN specialties sp ON sp.id = ss."specialtyId"
+        WHERE ss."staffId" = ANY($1::uuid[])
+        ORDER BY sp.sort_order ASC`,
+      [staffIds],
+    );
+    for (const r of rows as Record<string, unknown>[]) {
+      const staffId = r.staff_id as string;
+      const list = result.get(staffId) ?? [];
+      list.push({
+        slug: r.slug as string,
+        nameAr: r.name_ar as string,
+        nameEn: r.name_en as string,
+      });
+      result.set(staffId, list);
+    }
+    return result;
+  }
+
+  /**
+   * Marketplace BE-3 (T099, contract C12) — resolves an eligible doctor's
+   * `avatar_storage_key` for the streaming proxy. Re-checks eligibility
+   * PER REQUEST (never cached): clinic APPROVED/active/undeleted/opted-in,
+   * staff available-for-booking/undeleted. Returns `null` for an unknown
+   * slug, an ineligible doctor, or a doctor with no stored avatar — the
+   * controller maps every one of those to the SAME 404, so they are
+   * indistinguishable from the outside (SC-019).
+   */
+  async resolveDoctorAvatarSource(
+    slug: string,
+  ): Promise<{ tenantId: string; storageKey: string } | null> {
+    const rows = await this.dataSource.query(
+      `SELECT sp."tenantId" AS tenant_id, sp.avatar_storage_key
+         FROM staff_profiles sp
+         JOIN tenants t ON t.id = sp."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE sp.public_slug = $1
+          AND sp.deleted_at IS NULL
+          AND sp.is_available_for_booking = true
+          AND ${ELIGIBLE_CLINIC}`,
+      [slug.trim()],
+    );
+    const row = rows[0] as
+      | { tenant_id: string; avatar_storage_key: string | null }
+      | undefined;
+    if (!row || !row.avatar_storage_key) return null;
+    return { tenantId: row.tenant_id, storageKey: row.avatar_storage_key };
   }
 
   /** Owning tenant of a branch that is publicly bookable RIGHT NOW. Fails closed. */
