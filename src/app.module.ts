@@ -3,7 +3,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { MarketplaceThrottlerGuard } from './common/throttler/marketplace-throttler.guard';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 
 import { AppRedisService } from './queue/app-redis.service';
@@ -217,9 +218,17 @@ import { validate } from './config/env.validation';
   providers: [
     // Runs first: cheap IP-bucketed rejection before any auth/DB work, and the
     // only guard that also applies to @Public() routes.
+    //
+    // Contract C11 (Marketplace, P1 remediation): subclasses the stock
+    // ThrottlerGuard to key PublicDiscoveryController's routes per-visitor
+    // instead of per-IP when a valid platform API key + visitor id are
+    // presented — see that guard's own docstring. Every other controller's
+    // throttling (including PublicBookingController) is completely
+    // unaffected; this only overrides `getTracker()`, and only elevates for
+    // one specific controller class.
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: MarketplaceThrottlerGuard,
     },
     {
       provide: APP_GUARD,

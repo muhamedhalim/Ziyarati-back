@@ -9,7 +9,11 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import { QueryApiKeysDto } from './dto/query-api-keys.dto';
 import { generateApiKey, hashApiKey, keyPrefix } from './platform.constants';
-import { assertScopesGrantable, normalizeScopes } from './integration-scopes.constants';
+import {
+  assertScopesGrantable,
+  normalizeScopes,
+  INTEGRATION_SCOPE_REQUIRES,
+} from './integration-scopes.constants';
 import { ApiKeyAuditService, API_KEY_AUDIT_ACTION } from './api-key-audit.service';
 
 /** API key with the secret hash stripped — the shape returned to clients. */
@@ -91,6 +95,56 @@ export class ApiKeyService {
       expiresAt: dto.expiresAt ?? null,
     });
     // Plaintext returned exactly once — it is never stored or retrievable later.
+    return { ...this.toSafe(saved), apiKey: plaintext };
+  }
+
+  /**
+   * Contract C11 — issues a PLATFORM-level key (`tenant` left unset, per the
+   * entity's own "NULL = platform-level key" contract). Deliberately separate
+   * from `create()`: a platform key belongs to no tenant, so
+   * `assertScopesGrantable`'s tenant-held-permission model cannot apply to it
+   * — every scope this method grants MUST be one `INTEGRATION_SCOPE_REQUIRES`
+   * has no entry for (see that map's own docstring), and the caller MUST be a
+   * super-admin. There is no HTTP route for this — it is invoked once,
+   * operationally, via `scripts/mint-marketplace-api-key.ts`.
+   */
+  async createPlatformKey(
+    dto: Pick<CreateApiKeyDto, 'name' | 'permissions' | 'expiresAt'>,
+    actor: Pick<ApiKeyActor, 'userId' | 'isSuperAdmin' | 'ip'>,
+  ): Promise<SafeApiKey & { apiKey: string }> {
+    if (!actor.isSuperAdmin) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'Only a super-admin may issue a platform-level API key',
+      });
+    }
+    const scopes = normalizeScopes(dto.permissions);
+    const tenantScoped = scopes.filter((s) => INTEGRATION_SCOPE_REQUIRES[s]);
+    if (tenantScoped.length > 0) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Platform keys may not carry tenant-scoped permission(s): ${tenantScoped.join(', ')}`,
+      });
+    }
+
+    const { plaintext, hash } = generateApiKey();
+    const saved = await this.keys.save(
+      this.keys.create({
+        // `tenant` intentionally omitted — undefined, never `{ id: null }`,
+        // so TypeORM writes a genuine NULL join column.
+        name: dto.name,
+        key_hash: hash,
+        key_prefix: keyPrefix(plaintext),
+        permissions: scopes,
+        expires_at: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+        is_active: true,
+      }),
+    );
+    this.logger.log(`Platform API key ${saved.id} created (scopes: ${scopes.join(', ')})`);
+    await this.audit.record(API_KEY_AUDIT_ACTION.CREATE, null, actor.userId, saved.id, actor.ip, {
+      name: dto.name ?? null,
+      scopes,
+      expiresAt: dto.expiresAt ?? null,
+      platformLevel: true,
+    });
     return { ...this.toSafe(saved), apiKey: plaintext };
   }
 

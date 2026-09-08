@@ -33,9 +33,14 @@ export class ApiKeyAuditService {
     private readonly auditLogs: Repository<AuditLog>,
   ) {}
 
+  /**
+   * `tenantId` is `null` only for a platform-level key (contract C11 — no
+   * tenant owns it). `AuditLog.tenant` is itself nullable for exactly this
+   * case.
+   */
   async record(
     action: ApiKeyAuditAction,
-    tenantId: string,
+    tenantId: string | null,
     userId: string | undefined,
     keyId: string,
     ip: string | undefined,
@@ -44,7 +49,7 @@ export class ApiKeyAuditService {
     try {
       await this.auditLogs.save(
         this.auditLogs.create({
-          tenant: { id: tenantId } as Tenant,
+          tenant: tenantId ? ({ id: tenantId } as Tenant) : undefined,
           user: userId ? ({ id: userId } as User) : undefined,
           action,
           entity_type: 'ApiKey',

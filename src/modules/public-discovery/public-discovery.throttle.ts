@@ -49,3 +49,19 @@ export const PUBLIC_DISCOVERY_CLINIC_DETAIL_THROTTLE = {
     ttl: 60_000,
   },
 };
+
+/** GET — the Marketplace's enriched clinic projection (contract C2b). Same
+ *  ceiling as clinic detail; `MarketplaceThrottlerGuard` (contract C11)
+ *  elevates it per-visitor when a valid platform key + visitor id are
+ *  presented — this number is the fallback for every other caller. */
+export const PUBLIC_DISCOVERY_MARKETPLACE_CLINIC_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_MARKETPLACE_CLINIC_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_MARKETPLACE_CLINIC_LIMIT,
+    ttl: 60_000,
+  },
+};

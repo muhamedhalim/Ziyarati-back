@@ -273,4 +273,59 @@ describe('ApiKeyService', () => {
       expect(keys.update).toHaveBeenCalledWith({ id: 'k1' }, { last_used_at: expect.any(Date) });
     });
   });
+
+  describe('createPlatformKey (contract C11)', () => {
+    it('refuses a non-super-admin caller', async () => {
+      await expect(
+        service.createPlatformKey(
+          { permissions: [INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY] },
+          { userId: 'u1', isSuperAdmin: false },
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(keys.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses a tenant-scoped permission on a platform key', async () => {
+      await expect(
+        service.createPlatformKey(
+          { permissions: [INTEGRATION_SCOPE.SERVICES_READ] },
+          { userId: 'u1', isSuperAdmin: true },
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(keys.save).not.toHaveBeenCalled();
+    });
+
+    it('creates a key with tenant omitted (NULL join column) for a super-admin caller', async () => {
+      keys.save.mockImplementationOnce(async (k: any) => ({ ...k, id: 'plat-1' }));
+
+      const res = await service.createPlatformKey(
+        { name: 'Marketplace', permissions: [INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY] },
+        { userId: 'super-1', isSuperAdmin: true },
+      );
+
+      expect(res.apiKey).toEqual(expect.any(String));
+      expect((res as Record<string, unknown>).key_hash).toBeUndefined();
+      const createdEntity = keys.save.mock.calls[0][0];
+      expect(createdEntity.tenant).toBeUndefined();
+      expect(createdEntity.permissions).toEqual([INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY]);
+    });
+
+    it("records the audit entry with a null tenant, never the caller's own tenant", async () => {
+      keys.save.mockImplementationOnce(async (k: any) => ({ ...k, id: 'plat-1' }));
+
+      await service.createPlatformKey(
+        { permissions: [INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY] },
+        { userId: 'super-1', isSuperAdmin: true },
+      );
+
+      expect(audit.record).toHaveBeenCalledWith(
+        API_KEY_AUDIT_ACTION.CREATE,
+        null,
+        'super-1',
+        'plat-1',
+        undefined,
+        expect.objectContaining({ platformLevel: true }),
+      );
+    });
+  });
 });

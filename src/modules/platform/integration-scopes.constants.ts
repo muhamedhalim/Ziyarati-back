@@ -27,6 +27,14 @@ export const INTEGRATION_SCOPE = {
   SERVICES_WRITE: 'integration.services.write',
   STAFF_WRITE: 'integration.staff.write',
   APPOINTMENTS_WRITE: 'integration.appointments.write',
+
+  // Marketplace contract C11 — deliberately NOT tenant-scoped: this key
+  // authenticates the book.ziyaratech.com frontend's server-rendered discovery
+  // reads for elevated, per-visitor throttling (MarketplaceThrottlerGuard). It
+  // grants no tenant data access at all — see INTEGRATION_SCOPE_REQUIRES below,
+  // where it is deliberately absent from the map and only issuable via
+  // `ApiKeyService.createPlatformKey()` (super-admin only, no tenant).
+  MARKETPLACE_DISCOVERY: 'marketplace:discovery',
 } as const;
 
 export type IntegrationScope =
@@ -41,8 +49,13 @@ export const INTEGRATION_SCOPES: IntegrationScope[] =
  * key can never carry more access than its issuer. Read scopes (Phase 1) map to
  * the matching read permission; write scopes (Phase 3) map to the write/create
  * permission.
+ *
+ * `MARKETPLACE_DISCOVERY` has NO entry here, deliberately: it maps to no
+ * tenant-held permission at all, so `assertScopesGrantable` always treats it as
+ * ungrantable for a non-super-admin caller (the `missing` check below), and it
+ * is only ever issued via the super-admin-only `createPlatformKey` bypass.
  */
-export const INTEGRATION_SCOPE_REQUIRES: Record<IntegrationScope, PermissionSlug> = {
+export const INTEGRATION_SCOPE_REQUIRES: Partial<Record<IntegrationScope, PermissionSlug>> = {
   [INTEGRATION_SCOPE.SERVICES_READ]: PERMISSION.SERVICES_READ,
   [INTEGRATION_SCOPE.STAFF_READ]: PERMISSION.STAFF_READ,
   [INTEGRATION_SCOPE.AVAILABILITY_READ]: PERMISSION.SCHEDULING_AVAILABILITY_READ,

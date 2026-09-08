@@ -721,6 +721,215 @@ describe('AiRealtimeGateway — ai:tool progress', () => {
 });
 
 /**
+ * `ai:done`'s `bookingConfirmation` field — the ZiyaraTech Marketplace's
+ * confirmation card needs the AI-booked appointment's structured data
+ * (appointmentId, status, times, payment) without trusting anything the
+ * model paraphrased in its text reply. Before this, `book_public_appointment`
+ * computed the exact same data (`lastTool.result`) and the gateway dropped it
+ * on the floor before building `done` — a booking-capable client had no way
+ * to render a real confirmation at all.
+ */
+describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
+  const TENANT_ID = 't1';
+
+  function build(streamResult: Record<string, unknown>) {
+    const orchestrator = {
+      handleStream: jest.fn().mockResolvedValue(streamResult),
+    };
+    const tenantContext = new TenantContextService();
+    const gateway = new AiRealtimeGateway(
+      {} as unknown as WsAuthService,
+      orchestrator as unknown as AiOrchestratorService,
+      tenantContext,
+      { create: jest.fn() } as unknown as HandoverRequestService,
+      { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
+      {} as unknown as AgentPresenceService,
+      {
+        canAccess: jest.fn().mockResolvedValue(true),
+      } as unknown as AiConversationAccessService,
+      {
+        resolve: jest.fn().mockResolvedValue({
+          allowed: true,
+          tenantId: TENANT_ID,
+          featureKey: FeatureKey.AI_ASSISTANT,
+          source: AccessSource.FEATURE_OVERRIDE,
+          quotaPolicy: QuotaPolicy.UNMETERED_BY_PLAN,
+        }),
+        shouldBlock: jest.fn().mockReturnValue(true),
+      } as unknown as AccessControlService,
+      {
+        checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }),
+      } as unknown as AiWsRateLimitService,
+    );
+    return gateway;
+  }
+
+  const guest = (): Socket =>
+    ({
+      id: 'sock-1',
+      data: {
+        tenantId: TENANT_ID,
+        userId: 'guest-1',
+        user: {
+          id: 'guest-1',
+          tenantId: TENANT_ID,
+          roles: [],
+          permissions: [],
+          guest: true,
+        },
+      },
+      emit: jest.fn(),
+      join: jest.fn(),
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      rooms: new Set<string>(),
+    }) as unknown as Socket;
+
+  function doneEmit(client: Socket) {
+    return (client.emit as jest.Mock).mock.calls.find(
+      (c) => c[0] === AI_EVENT.DONE,
+    )?.[1];
+  }
+
+  const BOOKED_RESULT = {
+    success: true,
+    appointmentId: 'appt-1',
+    status: 'CONFIRMED',
+    paymentStatus: 'UNPAID',
+    startAt: '2026-09-10T09:00:00.000Z',
+    endAt: '2026-09-10T09:30:00.000Z',
+    totalAmount: 250,
+    currency: 'SAR',
+    hasInsurance: false,
+    timezone: 'Asia/Riyadh',
+  };
+
+  it('forwards the booking data when the last tool call was a successful book_public_appointment', async () => {
+    const gateway = build({
+      aiConversationId: 'conv-1',
+      reply: { content: 'You are all set for Tuesday at 9am.' },
+      usage: {},
+      streamed: true,
+      lastTool: { name: 'book_public_appointment', result: BOOKED_RESULT },
+    });
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'book me in' });
+
+    expect(doneEmit(client).bookingConfirmation).toEqual({
+      appointmentId: 'appt-1',
+      status: 'CONFIRMED',
+      paymentStatus: 'UNPAID',
+      startAt: '2026-09-10T09:00:00.000Z',
+      endAt: '2026-09-10T09:30:00.000Z',
+      totalAmount: 250,
+      currency: 'SAR',
+      hasInsurance: false,
+      timezone: 'Asia/Riyadh',
+    });
+  });
+
+  it('includes paymentLink when one was created (an uninsured booking)', async () => {
+    const gateway = build({
+      aiConversationId: 'conv-1',
+      reply: { content: 'You are all set.' },
+      usage: {},
+      streamed: true,
+      lastTool: {
+        name: 'book_public_appointment',
+        result: {
+          ...BOOKED_RESULT,
+          paymentLink: {
+            token: 'tok-1',
+            amount: 250,
+            currency: 'SAR',
+            expiresAt: '2026-09-11T00:00:00.000Z',
+          },
+        },
+      },
+    });
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'book me in' });
+
+    expect(doneEmit(client).bookingConfirmation.paymentLink).toEqual({
+      token: 'tok-1',
+      amount: 250,
+      currency: 'SAR',
+      expiresAt: '2026-09-11T00:00:00.000Z',
+    });
+  });
+
+  it('omits paymentLink for an insured booking, never inventing one', async () => {
+    const gateway = build({
+      aiConversationId: 'conv-1',
+      reply: { content: 'You are all set — covered by your insurance.' },
+      usage: {},
+      streamed: true,
+      lastTool: {
+        name: 'book_public_appointment',
+        result: { ...BOOKED_RESULT, hasInsurance: true },
+      },
+    });
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'book me in' });
+
+    expect(doneEmit(client).bookingConfirmation).not.toHaveProperty(
+      'paymentLink',
+    );
+  });
+
+  it('omits bookingConfirmation when the last tool was not the booking tool', async () => {
+    const gateway = build({
+      aiConversationId: 'conv-1',
+      reply: { content: 'Here are the clinics in Riyadh.' },
+      usage: {},
+      streamed: true,
+      lastTool: { name: 'search_clinics', result: { clinics: [] } },
+    });
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'find me a clinic' });
+
+    expect(doneEmit(client)).not.toHaveProperty('bookingConfirmation');
+  });
+
+  it('omits bookingConfirmation when the booking attempt failed', async () => {
+    // A failed attempt (validation error, slot just taken) carries no
+    // booking fields to forward — and must never be misreported as success.
+    const gateway = build({
+      aiConversationId: 'conv-1',
+      reply: { content: 'That slot was just taken — here are other times.' },
+      usage: {},
+      streamed: true,
+      lastTool: {
+        name: 'book_public_appointment',
+        result: { success: false, error: 'Slot no longer available.' },
+      },
+    });
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'book me in' });
+
+    expect(doneEmit(client)).not.toHaveProperty('bookingConfirmation');
+  });
+
+  it('omits bookingConfirmation when the turn called no tool at all', async () => {
+    const gateway = build({
+      aiConversationId: 'conv-1',
+      reply: { content: 'Hi! How can I help?' },
+      usage: {},
+      streamed: true,
+    });
+    const client = guest();
+
+    await gateway.onMessage(client, { content: 'hello' });
+
+    expect(doneEmit(client)).not.toHaveProperty('bookingConfirmation');
+  });
+});
+
+/**
  * Attachment ids on a socket frame.
  *
  * Socket.IO frames never pass through the global `ValidationPipe`, so whatever

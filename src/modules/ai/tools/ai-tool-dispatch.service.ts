@@ -1829,6 +1829,12 @@ export class AiToolDispatchService {
             totalAmount: appt.total_amount ?? null,
             currency: appt.currency,
             hasInsurance,
+            // The booked branch's own IANA timezone — `findOne()` already
+            // loads the `branch` relation, so this is free. A booking-capable
+            // client (the ZiyaraTech Marketplace) needs this to label the
+            // appointment time correctly; guessing the visitor's browser
+            // timezone would be wrong whenever it differs from the clinic's.
+            timezone: appt.branch.timezone,
             ...(paymentLink ? { paymentLink } : {}),
           },
         };
