@@ -298,6 +298,16 @@ export const validate = (config: Record<string, unknown>) => {
     // means host-only cookies, the existing default.
     COOKIE_DOMAIN: Joi.string().hostname(),
 
+    // Contract C10 (Marketplace) — per-cookie override for the TWO anonymous
+    // patient cookies only: `guest_token` (guest-chat.controller.ts) and
+    // `booking_session_id` (public-booking.controller.ts). `CookieService`
+    // (access_token/refresh_token/csrf_token, the STAFF session cookies) is
+    // never touched by these — see that file's own docstring. Defaulting to
+    // the existing global COOKIE_SAMESITE/COOKIE_DOMAIN values means no
+    // current deployment changes behaviour until these are explicitly set.
+    PUBLIC_COOKIE_SAMESITE: Joi.string().valid('lax', 'strict', 'none'),
+    PUBLIC_COOKIE_DOMAIN: Joi.string().hostname(),
+
     // Password-reset token lifetime, minutes (auth.service.ts:577). A
     // simple static default (unlike the two above) — matches the file's
     // existing plain `.default()` idiom, and is byte-identical to the
@@ -967,6 +977,19 @@ export const validate = (config: Record<string, unknown>) => {
         `"production", so cookies would be issued without the Secure attribute. ` +
         `Browsers reject SameSite=None without Secure outright. Use "lax" or ` +
         `"strict" outside production, or run with NODE_ENV=production.`,
+    );
+  }
+
+  // Same rule, mirrored for the Marketplace's two public cookies (contract C10).
+  if (
+    value.PUBLIC_COOKIE_SAMESITE === 'none' &&
+    value.NODE_ENV !== 'production'
+  ) {
+    throw new Error(
+      `❌ Env validation error: PUBLIC_COOKIE_SAMESITE is "none" but NODE_ENV is ` +
+        `not "production", so guest_token/booking_session_id would be issued ` +
+        `without the Secure attribute. Use "lax" or "strict" outside production, ` +
+        `or run with NODE_ENV=production.`,
     );
   }
 

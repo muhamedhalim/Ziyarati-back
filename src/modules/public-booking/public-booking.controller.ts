@@ -273,12 +273,25 @@ export class PublicBookingController {
     return { conversationId, principal };
   }
 
+  /**
+   * Contract C10 — `booking_session_id` is the other anonymous patient cookie
+   * `PUBLIC_COOKIE_SAMESITE`/`PUBLIC_COOKIE_DOMAIN` scope independently from the
+   * staff session cookies. Each defaults to the existing global
+   * `COOKIE_SAMESITE`/`COOKIE_DOMAIN` value, so no current deployment changes
+   * behaviour until the public-specific vars are explicitly set.
+   */
   private cookieOptions(): CookieOptions {
     return {
       httpOnly: true,
       secure: this.config.get<string>('NODE_ENV') === 'production',
-      sameSite: this.config.get<string>('COOKIE_SAMESITE', 'lax') as CookieOptions['sameSite'],
-      domain: this.config.get<string>('COOKIE_DOMAIN') || undefined,
+      sameSite: this.config.get<string>(
+        'PUBLIC_COOKIE_SAMESITE',
+        this.config.get<string>('COOKIE_SAMESITE', 'lax'),
+      ) as CookieOptions['sameSite'],
+      domain:
+        this.config.get<string>('PUBLIC_COOKIE_DOMAIN') ||
+        this.config.get<string>('COOKIE_DOMAIN') ||
+        undefined,
       path: '/',
     };
   }

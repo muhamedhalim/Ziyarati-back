@@ -8,19 +8,43 @@ import {
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { ErrorCode } from '../../common/errors';
 
+// Contract C11 (Marketplace) — `marketplace:discovery` is deliberately a
+// different KIND of scope from every `integration.*` one: it grants no
+// tenant data access at all (it only elevates public discovery throttling
+// for a platform-level key), so it has no tenant-held permission to map to
+// and does not follow the `integration.` naming convention that signals
+// "tenant-scoped integration privilege". It is excluded from the two
+// blanket assertions below by name, with its own dedicated assertions
+// immediately after — never silently swept into either loop.
+const TENANT_SCOPED_ONLY = INTEGRATION_SCOPES.filter(
+  (s) => s !== INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY,
+);
+
 describe('integration-scopes.constants', () => {
-  it('never reuses an internal RBAC permission slug as a scope value', () => {
+  it('never reuses an internal RBAC permission slug as a scope value (tenant-scoped integration scopes)', () => {
     const internalSlugs = new Set(Object.values(PERMISSION));
-    for (const scope of INTEGRATION_SCOPES) {
+    for (const scope of TENANT_SCOPED_ONLY) {
       expect(internalSlugs.has(scope as never)).toBe(false);
       expect(scope.startsWith('integration.')).toBe(true);
     }
   });
 
-  it('maps every scope to a real internal permission slug', () => {
-    for (const scope of INTEGRATION_SCOPES) {
+  it('maps every tenant-scoped integration scope to a real internal permission slug', () => {
+    for (const scope of TENANT_SCOPED_ONLY) {
       expect(Object.values(PERMISSION)).toContain(INTEGRATION_SCOPE_REQUIRES[scope]);
     }
+  });
+
+  it('marketplace:discovery is namespaced outside integration.* and has NO permission mapping (contract C11)', () => {
+    expect(INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY.startsWith('integration.')).toBe(false);
+    expect(INTEGRATION_SCOPE_REQUIRES[INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY]).toBeUndefined();
+  });
+
+  it('marketplace:discovery can never be granted through the ordinary tenant-scoped grant check, even by a caller with every permission', () => {
+    const everyPermission = Object.values(PERMISSION);
+    expect(() =>
+      assertScopesGrantable([INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY], everyPermission, false),
+    ).toThrow(expect.objectContaining({ code: ErrorCode.FORBIDDEN }));
   });
 
   describe('normalizeScopes', () => {

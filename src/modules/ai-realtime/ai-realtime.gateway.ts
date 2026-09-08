@@ -28,6 +28,34 @@ import { normalizeException } from '../../common/errors/error-normalizer';
 import { ErrorCode } from '../../common/errors/error-code';
 import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
 import { parseAllowedOrigins } from '../../config/cors-origins';
+import { AI_PUBLIC_TOOL } from '../ai/tools/ai-public-booking-tools.constants';
+
+/**
+ * Wire shape of `book_public_appointment`'s successful `toolResult` (see
+ * `AiToolDispatchService.bookPublicAppointment`), forwarded on `ai:done` so a
+ * booking-capable client can render a confirmation without trusting anything
+ * the model said in its text reply. `paymentLink` carries no URL — only the
+ * fields the payment-link service actually returns (`token`, `amount`,
+ * `currency`, `expiresAt`); a client resolves the token into a route itself.
+ */
+export interface PublicBookingConfirmationPayload {
+  appointmentId: string;
+  status: string;
+  paymentStatus: string;
+  startAt: string;
+  endAt: string;
+  totalAmount: number | null;
+  currency: string;
+  hasInsurance: boolean;
+  /** The booked branch's own IANA timezone — never the visitor's browser guess. */
+  timezone: string;
+  paymentLink?: {
+    token: string;
+    amount: number;
+    currency: string;
+    expiresAt?: string;
+  };
+}
 
 /** UUID v4, the only shape `POST /public/guest/attachments` ever mints. */
 const ATTACHMENT_ID_PATTERN =
@@ -639,6 +667,35 @@ export class AiRealtimeGateway
 
       // Ensure the sender is in the (possibly new) conversation room for future turns.
       client.join(room.conversation(result.aiConversationId));
+      // Forward `book_public_appointment`'s result — computed server-side
+      // either way — so a booking-capable client can render a real
+      // confirmation instead of relying on whatever the model paraphrased in
+      // its text reply. Guarded on BOTH the tool name and its own `success`
+      // flag: `lastTool` is genuinely the LAST tool call of the turn, which is
+      // only ever the booking call when nothing else ran afterward, and a
+      // failed attempt (validation error, slot taken) carries no booking
+      // fields to forward at all.
+      const lastToolResult = result.lastTool?.result as
+        | ({ success?: boolean } & Partial<PublicBookingConfirmationPayload>)
+        | undefined;
+      const bookingConfirmation: PublicBookingConfirmationPayload | undefined =
+        result.lastTool?.name === AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT &&
+        lastToolResult?.success === true
+          ? {
+              appointmentId: lastToolResult.appointmentId!,
+              status: lastToolResult.status!,
+              paymentStatus: lastToolResult.paymentStatus!,
+              startAt: lastToolResult.startAt!,
+              endAt: lastToolResult.endAt!,
+              totalAmount: lastToolResult.totalAmount ?? null,
+              currency: lastToolResult.currency!,
+              hasInsurance: lastToolResult.hasInsurance ?? false,
+              timezone: lastToolResult.timezone!,
+              ...(lastToolResult.paymentLink
+                ? { paymentLink: lastToolResult.paymentLink }
+                : {}),
+            }
+          : undefined;
       const done = {
         aiConversationId: result.aiConversationId,
         agentRole: result.agentRole,
@@ -650,6 +707,7 @@ export class AiRealtimeGateway
         // should show a "waiting for a human agent" state instead of an empty
         // assistant bubble, and switch to listening for AI_EVENT.AGENT_MESSAGE.
         handedOver: result.handedOver ?? false,
+        ...(bookingConfirmation ? { bookingConfirmation } : {}),
       };
       client.emit(AI_EVENT.DONE, done);
       // Notify other viewers of this conversation + the tenant's dashboards

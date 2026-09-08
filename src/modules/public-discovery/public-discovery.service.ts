@@ -23,6 +23,18 @@ const WEEKDAYS = [
 /** Postgres `time` comes back as 'HH:MM:SS'; nobody needs the seconds. */
 const hhmm = (t: string | null | undefined): string => (t ?? '').slice(0, 5);
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Contract C2a — `tenants.slug` is unique and unique-indexed, and a UUID cannot
+ * collide with the slug format, so a single caller-supplied identifier
+ * unambiguously resolves to one lookup strategy. Checked in application code
+ * (never relying on a Postgres `::uuid` cast to reject a bad value) so a
+ * malformed identifier never reaches the database as a raw type error.
+ */
+const isUuid = (value: string): boolean => UUID_RE.test(value.trim());
+
 /**
  * The eligibility predicate every public query shares: an APPROVED, active,
  * non-deleted clinic that has explicitly opted in to public booking.
@@ -184,10 +196,29 @@ export class PublicDiscoveryService {
   /**
    * Search public clinics by name/slug or an offered service (e.g. "dentist"),
    * optionally narrowed to a city.
+   *
+   * **AI-facing (+ legacy widget) — FROZEN signature, defaults and shape**
+   * (contracts/backend-public-api.md C2 method-ownership table). The AI calls this
+   * IN-PROCESS (`ai-tool-dispatch.service.ts:445`) and the shipped chat widget's
+   * `useClinicSearch` depends on the bare-array, cap-24 shape. `page`/`pageSize`
+   * (contract C1, BE-6) are ADDITIVE ONLY: when both are absent this returns
+   * EXACTLY what it always has — a bare array, capped at 24, nothing else changed.
+   * The envelope (`{items,total,page,pageSize}`) is returned ONLY when a caller
+   * opts in by passing pagination params. Never change this method to satisfy a
+   * Marketplace-only requirement — extend `marketplaceClinicSearch()` instead.
    */
-  async searchClinics(query: string | undefined, limit = 12, cityId?: string) {
+  async searchClinics(
+    query: string | undefined,
+    limit = 12,
+    cityId?: string,
+    pagination?: { page: number; pageSize: number },
+  ) {
     const like = query?.trim() ? `%${query.trim()}%` : null;
     const city = cityId?.trim() || null;
+    const paginated = Boolean(pagination);
+    const page = paginated ? Math.max(1, pagination!.page) : 1;
+    const pageSize = paginated ? Math.min(Math.max(1, pagination!.pageSize), 24) : Math.min(limit, 24);
+    const offset = (page - 1) * pageSize;
 
     const rows = await this.dataSource.query(
       `SELECT t.id, t.name, t.slug, t.logo_url,
@@ -211,10 +242,10 @@ export class PublicDiscoveryService {
                            WHERE cb."tenantId" = t.id AND cb.is_active = true
                              AND cb.deleted_at IS NULL AND cb.city_id = $3::uuid))
         ORDER BY t.name ASC
-        LIMIT $2`,
-      [like, Math.min(limit, 24), city],
+        LIMIT $2 OFFSET $4`,
+      [like, pageSize, city, offset],
     );
-    return rows.map((r: Record<string, unknown>) => ({
+    const items = rows.map((r: Record<string, unknown>) => ({
       id: r.id as string,
       name: r.name as string,
       slug: r.slug as string,
@@ -222,6 +253,29 @@ export class PublicDiscoveryService {
       branchCount: n(r.branches),
       services: (r.services as string) ?? null,
     }));
+
+    if (!paginated) {
+      return items;
+    }
+
+    const [{ total }] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS total
+         FROM tenants t
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE ${ELIGIBLE_CLINIC}
+          AND ($1::text IS NULL
+               OR t.name ILIKE $1 OR t.slug ILIKE $1
+               OR EXISTS (SELECT 1 FROM services sv
+                           WHERE sv."tenantId" = t.id AND sv.is_active = true
+                             AND sv.deleted_at IS NULL AND sv.name ILIKE $1))
+          AND ($2::uuid IS NULL
+               OR EXISTS (SELECT 1 FROM branches cb
+                           WHERE cb."tenantId" = t.id AND cb.is_active = true
+                             AND cb.deleted_at IS NULL AND cb.city_id = $2::uuid))`,
+      [like, city],
+    );
+
+    return { items, total: n(total), page, pageSize };
   }
 
   /**
@@ -230,17 +284,39 @@ export class PublicDiscoveryService {
    *
    * The clinic-level lists are a PREVIEW only — booking must use
    * `listBranchServices` / `listBranchDoctors`, which apply the branch rules.
+   *
+   * **AI-facing (+ legacy widget) — FROZEN, including `LIMIT 50` and `base_price`**
+   * (contract C2 method-ownership table). A Marketplace requirement must be
+   * satisfied by `marketplaceClinicDetail()` instead of editing this method.
+   *
+   * Contract C2a (lookup only, no response-shape change): `clinicId` may be a
+   * UUID or a `tenants.slug` value — resolution is unambiguous, since a UUID
+   * cannot collide with the slug format. The UUID path's query and behaviour
+   * are byte-identical to before this change. An identifier that is neither a
+   * valid UUID nor a matching slug 404s — never a 400 that would reveal which
+   * format was expected.
    */
   async clinicDetail(clinicId: string) {
+    const trimmed = clinicId.trim();
     const tenant = await this.dataSource.query(
-      `SELECT t.id, t.name, t.slug, t.logo_url
-         FROM tenants t
-         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
-        WHERE t.id = $1 AND ${ELIGIBLE_CLINIC}`,
-      [clinicId],
+      isUuid(trimmed)
+        ? `SELECT t.id, t.name, t.slug, t.logo_url
+             FROM tenants t
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE t.id = $1::uuid AND ${ELIGIBLE_CLINIC}`
+        : `SELECT t.id, t.name, t.slug, t.logo_url
+             FROM tenants t
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE t.slug = $1 AND ${ELIGIBLE_CLINIC}`,
+      [trimmed],
     );
     if (!tenant[0])
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Clinic not found' });
+
+    // Every downstream query in this method is keyed on the RESOLVED uuid, not
+    // the caller-supplied identifier — a slug lookup must not leak into the
+    // branch/service/doctor queries below, which are typed as ::uuid-shaped ids.
+    clinicId = tenant[0].id as string;
 
     const [branches, services, doctors] = await Promise.all([
       // M-3: `address` and the resolved city name are now RETURNED. `city_id`
@@ -304,6 +380,208 @@ export class PublicDiscoveryService {
         name: d.name as string,
         title: (d.title as string) ?? null,
       })),
+    };
+  }
+
+  /**
+   * Contract C2b — the Marketplace-facing clinic projection. A SEPARATE route
+   * backed by a SEPARATE method (P3 remediation): `clinicDetail()` above is
+   * frozen and AI-facing; nothing here changes what the assistant sees or
+   * quotes. **Marketplace-facing — free to evolve.**
+   *
+   * P7 — every collection returns an explicit `total` and supports paging, so
+   * a clinic with more than one page of branches/services/doctors never loses
+   * entries silently the way the frozen method's `LIMIT 50` (no total) does.
+   *
+   * P3 — pricing is branch-scoped (`prices[]`), never the frozen method's
+   * single clinic-wide `base_price`.
+   *
+   * Withheld per decision A1: `tenants.contact_email`.
+   *
+   * **Two known, documented gaps** (not silently worked around):
+   *  - `services[].slug` is OMITTED. The `services` table has no slug column
+   *    at all (verified against `Service.ts` — no migration ever added one),
+   *    so `/clinics/[slug]/services/[serviceSlug]` (marketplace-routes.md)
+   *    cannot be built until a dedicated migration adds and backfills one,
+   *    the same way T060 does for doctors. Fabricating a derived, unpersisted
+   *    slug here would collide across renames and duplicate names — worse
+   *    than omitting the field.
+   *  - `doctors[].slug` / `.avatarUrl` and the `specialties` array are empty/
+   *    absent until T060/T061 (doctor slugs, Phase 8) and T051-T056
+   *    (specialty domain, Phase 7) land — those fields do not exist in the
+   *    schema yet. This method will be extended, not replaced, when they do.
+   */
+  async marketplaceClinicDetail(
+    idOrSlug: string,
+    pagination: {
+      branchesPage?: number;
+      branchesPageSize?: number;
+      servicesPage?: number;
+      servicesPageSize?: number;
+      doctorsPage?: number;
+      doctorsPageSize?: number;
+    } = {},
+  ) {
+    const trimmed = idOrSlug.trim();
+    const page = (v: number | undefined) => Math.max(1, v ?? 1);
+    const size = (v: number | undefined) => Math.min(Math.max(1, v ?? 20), 50);
+
+    const bPage = page(pagination.branchesPage);
+    const bSize = size(pagination.branchesPageSize);
+    const sPage = page(pagination.servicesPage);
+    const sSize = size(pagination.servicesPageSize);
+    const dPage = page(pagination.doctorsPage);
+    const dSize = size(pagination.doctorsPageSize);
+
+    const tenantRows = await this.dataSource.query(
+      isUuid(trimmed)
+        ? `SELECT t.id, t.name, t.slug, t.logo_url, t.contact_phone, t.default_currency, t.default_timezone
+             FROM tenants t
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE t.id = $1::uuid AND ${ELIGIBLE_CLINIC}`
+        : `SELECT t.id, t.name, t.slug, t.logo_url, t.contact_phone, t.default_currency, t.default_timezone
+             FROM tenants t
+             LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+            WHERE t.slug = $1 AND ${ELIGIBLE_CLINIC}`,
+      [trimmed],
+    );
+    const tenant = tenantRows[0];
+    if (!tenant)
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Clinic not found' });
+
+    const clinicId = tenant.id as string;
+
+    const [branchRows, branchCount, serviceRows, serviceCount, doctorRows, doctorCount] =
+      await Promise.all([
+        this.dataSource.query(
+          `SELECT b.id, b.name, b.address, b.phone, b.timezone, b.city_id, c.name_ar AS city_ar, c.name_en AS city_en
+             FROM branches b
+             LEFT JOIN cities c ON c.id = b.city_id
+            WHERE b."tenantId" = $1 AND b.is_active = true AND b.deleted_at IS NULL
+            ORDER BY b.name LIMIT $2 OFFSET $3`,
+          [clinicId, bSize, (bPage - 1) * bSize],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(*)::int AS total FROM branches
+            WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
+          [clinicId],
+        ),
+        this.dataSource.query(
+          `SELECT id, name, description, duration_minutes FROM services
+            WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL
+            ORDER BY name LIMIT $2 OFFSET $3`,
+          [clinicId, sSize, (sPage - 1) * sSize],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(*)::int AS total FROM services
+            WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
+          [clinicId],
+        ),
+        this.dataSource.query(
+          `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
+             FROM staff_profiles sp
+             LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
+            WHERE sp."tenantId" = $1
+              AND sp.deleted_at IS NULL
+              AND sp.is_available_for_booking = true
+            ORDER BY name LIMIT $2 OFFSET $3`,
+          [clinicId, dSize, (dPage - 1) * dSize],
+        ),
+        this.dataSource.query(
+          `SELECT COUNT(*)::int AS total FROM staff_profiles
+            WHERE "tenantId" = $1 AND deleted_at IS NULL AND is_available_for_booking = true`,
+          [clinicId],
+        ),
+      ]);
+
+    // Per-branch prices for exactly the services on this page — mirrors
+    // BRANCH_OFFERS_SERVICE's "explicit configuration wins" rule: a service
+    // with at least one active service_prices row is priced per-branch; a
+    // service with none is priced everywhere at base_price. "Everywhere" means
+    // every ACTIVE branch of the clinic, not just the current page of
+    // branches (P7 — paginating branches must never silently truncate a
+    // service's price list to whichever branches happen to be on this page).
+    const serviceIds = serviceRows.map((s: Record<string, unknown>) => s.id as string);
+    const [priceRows, allBranchRows]: [Record<string, unknown>[], Record<string, unknown>[]] =
+      await Promise.all([
+        serviceIds.length
+          ? this.dataSource.query(
+              `SELECT sp."serviceId" AS service_id, sp."branchId" AS branch_id, sp.price
+                 FROM service_prices sp
+                WHERE sp."serviceId" = ANY($1::uuid[]) AND sp.is_active = true`,
+              [serviceIds],
+            )
+          : Promise.resolve([]),
+        this.dataSource.query(
+          `SELECT id FROM branches WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL`,
+          [clinicId],
+        ),
+      ]);
+    const pricesByService = new Map<string, { branchId: string; price: number }[]>();
+    for (const row of priceRows) {
+      const list = pricesByService.get(row.service_id as string) ?? [];
+      list.push({ branchId: row.branch_id as string, price: n(row.price) });
+      pricesByService.set(row.service_id as string, list);
+    }
+    const allBranchIds: string[] = allBranchRows.map((b) => b.id as string);
+
+    return {
+      clinic: {
+        id: tenant.id as string,
+        name: tenant.name as string,
+        slug: tenant.slug as string,
+        logoUrl: (tenant.logo_url as string) ?? null,
+        phone: (tenant.contact_phone as string) ?? null,
+        currency: tenant.default_currency as string,
+        timezone: tenant.default_timezone as string,
+      },
+      branches: {
+        items: branchRows.map((b: Record<string, unknown>) => ({
+          id: b.id as string,
+          name: b.name as string,
+          address: (b.address as string) ?? null,
+          city: b.city_id
+            ? { nameAr: (b.city_ar as string) ?? null, nameEn: (b.city_en as string) ?? null }
+            : null,
+          phone: (b.phone as string) ?? null,
+          timezone: (b.timezone as string) || 'UTC',
+        })),
+        total: n(branchCount[0]?.total),
+        page: bPage,
+        pageSize: bSize,
+      },
+      services: {
+        items: serviceRows.map((s: Record<string, unknown>) => {
+          const perBranch = pricesByService.get(s.id as string);
+          const prices = perBranch?.length
+            ? perBranch
+            : allBranchIds.map((branchId) => ({ branchId, price: n(s.base_price) }));
+          return {
+            id: s.id as string,
+            name: s.name as string,
+            description: (s.description as string) ?? null,
+            durationMinutes: n(s.duration_minutes),
+            prices,
+          };
+        }),
+        total: n(serviceCount[0]?.total),
+        page: sPage,
+        pageSize: sSize,
+      },
+      doctors: {
+        items: doctorRows.map((d: Record<string, unknown>) => ({
+          id: d.id as string,
+          name: d.name as string,
+          title: (d.title as string) ?? null,
+          // slug/avatarUrl added once T060/T061 land (Phase 8) — see docstring.
+        })),
+        total: n(doctorCount[0]?.total),
+        page: dPage,
+        pageSize: dSize,
+      },
+      // Empty until the specialty domain model lands (T051-T056, Phase 7) —
+      // omitted-as-empty, not stubbed with invented data (Constitution XXIII).
+      specialties: [] as { slug: string; nameAr: string | null; nameEn: string | null }[],
     };
   }
 
