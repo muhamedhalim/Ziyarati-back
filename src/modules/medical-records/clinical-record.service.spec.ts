@@ -290,6 +290,25 @@ describe('ClinicalRecordService (T103 — FR-H008, FR-H009, FR-H013)', () => {
       expect(revisions.find).not.toHaveBeenCalled();
     });
 
+    it('listRevisions returns an empty array for an entry that has never been corrected', async () => {
+      entries.findOne.mockResolvedValueOnce({ id: 'entry-1' });
+      revisions.find.mockResolvedValueOnce([]);
+      await expect(service.listRevisions(TENANT, 'entry-1')).resolves.toEqual(
+        [],
+      );
+    });
+
+    it('listRevisions propagates a database failure instead of swallowing it into an empty array', async () => {
+      entries.findOne.mockResolvedValueOnce({ id: 'entry-1' });
+      const dbError = Object.assign(new Error('query failed'), {
+        name: 'QueryFailedError',
+      });
+      revisions.find.mockRejectedValueOnce(dbError);
+      await expect(
+        service.listRevisions(TENANT, 'entry-1'),
+      ).rejects.toBe(dbError);
+    });
+
     it("getEntry 404s a foreign tenant's entry", async () => {
       entries.findOne.mockResolvedValueOnce(null);
       await expect(

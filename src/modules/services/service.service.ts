@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
+  DataSource,
   FindOptionsWhere,
   ILike,
   In,
@@ -17,7 +18,8 @@ import { AppointmentService as AppointmentServiceEntity } from '../../entities/C
 import { StaffService as StaffServiceEntity } from '../../entities/Staff/StaffService';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppointmentStatus } from '../../entities/enums';
-import { AppError, ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
+import { slugify, uniqueSlug } from '../../common/utils/slugify.util';
 
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
@@ -75,24 +77,71 @@ export class ServiceService {
     @InjectRepository(StaffServiceEntity)
     private readonly staffServices: Repository<StaffServiceEntity>,
     private readonly categoriesSvc: ServiceCategoryService,
+    private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * Marketplace BE-4 (T065) — assigns `public_slug` for a NEW service.
+   * Pre-check narrows the candidate to this tenant's `base`/`base-%` rows;
+   * the actual race-safety backstop is `create()`'s own retry-on-
+   * `UQ_services_tenant_public_slug`-violation loop around the INSERT, since
+   * two concurrent requests could both pass this pre-check for the same
+   * candidate.
+   */
+  private async generatePublicSlug(
+    tenantId: string,
+    name: string,
+  ): Promise<string> {
+    const base = slugify(name, 'service');
+    const rows: { public_slug: string }[] = await this.dataSource.query(
+      `SELECT public_slug FROM services WHERE "tenantId" = $1 AND (public_slug = $2 OR public_slug LIKE $3)`,
+      [tenantId, base, `${base}-%`],
+    );
+    const taken = new Set(rows.map((r) => r.public_slug));
+    return uniqueSlug(base, (candidate) => taken.has(candidate));
+  }
+
+  /** `error` came from a `services` INSERT that violated a unique
+   *  constraint — true only when it was specifically `public_slug`. */
+  private isPublicSlugConflict(error: unknown): boolean {
+    return (
+      isUniqueViolation(error) &&
+      (error as { constraint?: string }).constraint ===
+        'UQ_services_tenant_public_slug'
+    );
+  }
 
   async create(tenantId: string, dto: CreateServiceDto): Promise<Service> {
     await this.assertNameUnique(tenantId, dto.name);
     if (dto.categoryId) await this.assertCategoryUsable(tenantId, dto.categoryId);
 
-    const service = this.services.create({
-      tenant: { id: tenantId } as Tenant,
-      category: dto.categoryId ? ({ id: dto.categoryId } as ServiceCategory) : undefined,
-      name: dto.name,
-      description: dto.description,
-      duration_minutes: dto.durationMinutes,
-      pricing_type: dto.pricingType ?? PricingType.FIXED,
-      base_price: dto.basePrice,
-      is_active: dto.isActive ?? true,
-    });
-    const saved = await this.services.save(service);
-    return this.findOneOrThrow(tenantId, saved.id);
+    let saved: Service | undefined;
+    const MAX_SLUG_ATTEMPTS = 5;
+    for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
+      const publicSlug = await this.generatePublicSlug(tenantId, dto.name);
+      const service = this.services.create({
+        tenant: { id: tenantId } as Tenant,
+        category: dto.categoryId ? ({ id: dto.categoryId } as ServiceCategory) : undefined,
+        name: dto.name,
+        description: dto.description,
+        duration_minutes: dto.durationMinutes,
+        pricing_type: dto.pricingType ?? PricingType.FIXED,
+        base_price: dto.basePrice,
+        is_active: dto.isActive ?? true,
+        public_slug: publicSlug,
+      });
+      try {
+        saved = await this.services.save(service);
+        break;
+      } catch (error) {
+        if (this.isPublicSlugConflict(error) && attempt < MAX_SLUG_ATTEMPTS) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return this.findOneOrThrow(tenantId, saved!.id);
   }
 
   async update(tenantId: string, id: string, dto: UpdateServiceDto): Promise<Service> {

@@ -22,6 +22,8 @@ import {
   PUBLIC_DISCOVERY_DOCTORS_THROTTLE,
   PUBLIC_DISCOVERY_DOCTOR_DETAIL_THROTTLE,
   PUBLIC_DISCOVERY_DOCTOR_AVATAR_THROTTLE,
+  PUBLIC_DISCOVERY_SERVICES_THROTTLE,
+  PUBLIC_DISCOVERY_SERVICE_DETAIL_THROTTLE,
 } from './public-discovery.throttle';
 
 /**
@@ -285,5 +287,56 @@ export class PublicDiscoveryController {
     );
     res.setHeader('X-Content-Type-Options', 'nosniff');
     (body as import('stream').Readable).pipe(res);
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Search services across clinics',
+    description:
+      'Contract C7. Honours the branch-scoped pricing rule (D1): one row per offering ' +
+      '(service × branch), so a price is never shown detached from the branch it belongs to.',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'cityId', required: false, format: 'uuid' })
+  @ApiQuery({ name: 'specialtySlug', required: false })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @ApiOkResponse({ description: 'Matching service offerings, paginated.' })
+  @Throttle(PUBLIC_DISCOVERY_SERVICES_THROTTLE)
+  @Get('services')
+  services(
+    @Query('q') q?: string,
+    @Query('cityId') cityId?: string,
+    @Query('specialtySlug') specialtySlug?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const toInt = (v: string | undefined) =>
+      v === undefined ? undefined : parseInt(v, 10) || undefined;
+    return this.discovery.searchServices({
+      q,
+      cityId,
+      specialtySlug,
+      page: toInt(page),
+      pageSize: toInt(pageSize),
+    });
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Service detail, clinic-scoped',
+    description:
+      'Contract C8. A service belongs to exactly one clinic. `offerings` applies the same ' +
+      'branch-scoped pricing rule as the search endpoint. `doctors` comes from the existing ' +
+      'staff_services link, filtered to bookable staff.',
+  })
+  @ApiOkResponse({ description: 'Service detail.' })
+  @Throttle(PUBLIC_DISCOVERY_SERVICE_DETAIL_THROTTLE)
+  @Get('clinics/:clinicSlug/services/:serviceSlug')
+  serviceDetail(
+    @Param('clinicSlug') clinicSlug: string,
+    @Param('serviceSlug') serviceSlug: string,
+  ) {
+    return this.discovery.serviceDetail(clinicSlug, serviceSlug);
   }
 }

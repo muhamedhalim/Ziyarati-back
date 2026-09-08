@@ -8,6 +8,7 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
   Index,
+  Unique,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
@@ -23,6 +24,7 @@ export enum PricingType {
 
 @Entity('services')
 @Index(['tenant', 'is_active'])
+@Unique('UQ_services_tenant_public_slug', ['tenant', 'public_slug'])
 export class Service {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -31,6 +33,16 @@ export class Service {
     nullable: false,
   })
   tenant!: Tenant;
+
+  /**
+   * Marketplace BE-4 (T065) — stable clinic-scoped slug for the
+   * `/clinics/[clinicSlug]/services/[serviceSlug]` route. Per-tenant unique
+   * (not global) because the detail URL is already clinic-scoped. Assigned
+   * once by `ServiceService.create()` or the backfill migration; a later
+   * name change does NOT repoint it.
+   */
+  @Column({ type: 'varchar', length: 160 })
+  public_slug!: string;
 
   @ManyToOne(() => ServiceCategory, (category) => category.services, {
     nullable: true,

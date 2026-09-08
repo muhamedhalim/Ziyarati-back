@@ -1294,6 +1294,205 @@ export class PublicDiscoveryService {
     };
   }
 
+  /**
+   * Marketplace BE-4 (T066, contract C7) — cross-clinic service search.
+   * Honours `BRANCH_OFFERS_SERVICE` (D1): one row per **offering**
+   * (service × branch), so a price is never shown detached from the branch
+   * it belongs to. A branch-scoped service appears only at its configured
+   * branches, at their prices; an unconfigured service appears at every
+   * active branch of its clinic, at `base_price` — the exact same rule
+   * `marketplaceClinicDetail()` already applies to a single clinic, here
+   * expressed as a JOIN instead of a post-query merge because the result
+   * spans many clinics' branch sets at once.
+   */
+  async searchServices(filters: {
+    q?: string;
+    cityId?: string;
+    specialtySlug?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const like = filters.q?.trim() ? `%${filters.q.trim()}%` : null;
+    const city = filters.cityId?.trim() || null;
+    const specialtySlug = filters.specialtySlug?.trim() || null;
+    const page = Math.max(1, filters.page ?? 1);
+    const pageSize = Math.min(Math.max(1, filters.pageSize ?? 24), 24);
+
+    // Independently-numbered WHERE fragments per query — see searchDoctors().
+    const [rows, [{ total }]] = await Promise.all([
+      this.dataSource.query(
+        `SELECT s.id, s.public_slug, s.name, s.description, s.duration_minutes,
+                COALESCE(sp.price, s.base_price) AS price, t.default_currency AS currency,
+                t.name AS clinic_name, t.slug AS clinic_slug,
+                b.id AS branch_id, b.name AS branch_name
+           FROM services s
+           JOIN tenants t ON t.id = s."tenantId"
+           LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+           JOIN branches b ON b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+           LEFT JOIN service_prices sp ON sp."serviceId" = s.id AND sp."branchId" = b.id AND sp.is_active = true
+          WHERE s.is_active = true
+            AND s.deleted_at IS NULL
+            AND ${ELIGIBLE_CLINIC}
+            AND ${BRANCH_OFFERS_SERVICE}
+            AND ($2::text IS NULL OR s.name ILIKE $2)
+            AND ($3::uuid IS NULL OR b.city_id = $3::uuid)
+            AND ($4::text IS NULL
+                 OR EXISTS (SELECT 1 FROM specialties sp4
+                             WHERE sp4.id = s."specialtyId" AND sp4.slug = $4))
+          ORDER BY s.name ASC, b.name ASC
+          LIMIT $1::int OFFSET (($5::int - 1) * $1::int)`,
+        [pageSize, like, city, specialtySlug, page],
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*)::int AS total
+           FROM services s
+           JOIN tenants t ON t.id = s."tenantId"
+           LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+           JOIN branches b ON b."tenantId" = t.id AND b.is_active = true AND b.deleted_at IS NULL
+           LEFT JOIN service_prices sp ON sp."serviceId" = s.id AND sp."branchId" = b.id AND sp.is_active = true
+          WHERE s.is_active = true
+            AND s.deleted_at IS NULL
+            AND ${ELIGIBLE_CLINIC}
+            AND ${BRANCH_OFFERS_SERVICE}
+            AND ($1::text IS NULL OR s.name ILIKE $1)
+            AND ($2::uuid IS NULL OR b.city_id = $2::uuid)
+            AND ($3::text IS NULL
+                 OR EXISTS (SELECT 1 FROM specialties sp4
+                             WHERE sp4.id = s."specialtyId" AND sp4.slug = $3))`,
+        [like, city, specialtySlug],
+      ),
+    ]);
+
+    const items = rows.map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      slug: r.public_slug as string,
+      name: r.name as string,
+      description: (r.description as string) ?? null,
+      durationMinutes: n(r.duration_minutes),
+      price: r.price == null ? null : n(r.price),
+      currency: r.currency as string,
+      clinic: { name: r.clinic_name as string, slug: r.clinic_slug as string },
+      branch: { id: r.branch_id as string, name: r.branch_name as string },
+    }));
+
+    return { items, total: n(total), page, pageSize };
+  }
+
+  /**
+   * Marketplace BE-4 (T066, contract C8) — service detail, clinic-scoped
+   * (a service belongs to exactly one clinic). `offerings` applies the same
+   * branch-scoped-pricing rule as `searchServices()`, computed the same way
+   * `marketplaceClinicDetail()` does for a single clinic's branch set.
+   * `doctors` comes from the existing `staff_services` link (D1), filtered
+   * to bookable staff.
+   */
+  async serviceDetail(clinicSlug: string, serviceSlug: string) {
+    const rows = await this.dataSource.query(
+      `SELECT s.id, s.public_slug, s.name, s.description, s.duration_minutes, s.base_price,
+              spec.slug AS specialty_slug, spec.name_ar AS specialty_name_ar,
+              spec.name_en AS specialty_name_en,
+              t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+              t.default_currency AS currency
+         FROM services s
+         JOIN tenants t ON t.id = s."tenantId"
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+         LEFT JOIN specialties spec ON spec.id = s."specialtyId"
+        WHERE s.public_slug = $1
+          AND t.slug = $2
+          AND s.is_active = true
+          AND s.deleted_at IS NULL
+          AND ${ELIGIBLE_CLINIC}`,
+      [serviceSlug.trim(), clinicSlug.trim()],
+    );
+    const service = rows[0] as Record<string, unknown> | undefined;
+    if (!service) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Service not found' });
+    }
+
+    const [priceRows, branchRows, doctorRows] = await Promise.all([
+      this.dataSource.query(
+        `SELECT sp."branchId" AS branch_id, sp.price
+           FROM service_prices sp
+          WHERE sp."serviceId" = $1 AND sp.is_active = true`,
+        [service.id],
+      ),
+      this.dataSource.query(
+        `SELECT b.id, b.name, c.name_ar AS city_ar, c.name_en AS city_en
+           FROM branches b
+           LEFT JOIN cities c ON c.id = b.city_id
+          WHERE b."tenantId" = $1 AND b.is_active = true AND b.deleted_at IS NULL`,
+        [service.tenant_id],
+      ),
+      this.dataSource.query(
+        `SELECT DISTINCT stf2.id, stf2.public_slug, stf2.title, u.full_name
+           FROM staff_services ss6
+           JOIN staff_profiles stf2 ON stf2.id = ss6."staffId"
+           JOIN users u ON u.id = stf2.user_id
+          WHERE ss6."serviceId" = $1
+            AND stf2.deleted_at IS NULL
+            AND stf2.is_available_for_booking = true`,
+        [service.id],
+      ),
+    ]);
+
+    const branchById = new Map(
+      (branchRows as Record<string, unknown>[]).map((b) => [b.id as string, b]),
+    );
+    const toBranchView = (b: Record<string, unknown>) => ({
+      id: b.id as string,
+      name: b.name as string,
+      city:
+        b.city_en || b.city_ar
+          ? {
+              nameAr: (b.city_ar as string) ?? null,
+              nameEn: (b.city_en as string) ?? null,
+            }
+          : null,
+    });
+    const offerings = priceRows.length
+      ? (priceRows as Record<string, unknown>[])
+          .filter((p) => branchById.has(p.branch_id as string))
+          .map((p) => ({
+            branch: toBranchView(branchById.get(p.branch_id as string)!),
+            price: n(p.price),
+            currency: service.currency as string,
+          }))
+      : (branchRows as Record<string, unknown>[]).map((b) => ({
+          branch: toBranchView(b),
+          price: n(service.base_price),
+          currency: service.currency as string,
+        }));
+
+    return {
+      service: {
+        id: service.id as string,
+        slug: service.public_slug as string,
+        name: service.name as string,
+        description: (service.description as string) ?? null,
+        durationMinutes: n(service.duration_minutes),
+        specialty: service.specialty_slug
+          ? {
+              slug: service.specialty_slug as string,
+              nameAr: service.specialty_name_ar as string,
+              nameEn: service.specialty_name_en as string,
+            }
+          : null,
+      },
+      clinic: {
+        id: service.tenant_id as string,
+        name: service.tenant_name as string,
+        slug: service.tenant_slug as string,
+      },
+      offerings,
+      doctors: doctorRows.map((d: Record<string, unknown>) => ({
+        id: d.id as string,
+        slug: d.public_slug as string,
+        name: (d.full_name as string) ?? null,
+        title: (d.title as string) ?? null,
+      })),
+    };
+  }
+
   /** Bulk-loads `{slug, nameAr, nameEn}` specialties per staff id (P5 — bilingual, client selects). */
   private async specialtiesForStaff(
     staffIds: string[],
