@@ -118,6 +118,33 @@ export const PUBLIC_DISCOVERY_DOCTOR_DETAIL_THROTTLE = {
   },
 };
 
+/** GET — cross-clinic service search (C7). Same enumeration-risk shape as
+ *  doctor/clinic search. */
+export const PUBLIC_DISCOVERY_SERVICES_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_SERVICES_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_SERVICES_LIMIT,
+    ttl: 60_000,
+  },
+};
+
+/** GET — single service detail, clinic-scoped (C8). */
+export const PUBLIC_DISCOVERY_SERVICE_DETAIL_LIMIT = 30;
+
+export const PUBLIC_DISCOVERY_SERVICE_DETAIL_THROTTLE = {
+  default: {
+    limit:
+      process.env.NODE_ENV === 'test'
+        ? 1_000_000
+        : PUBLIC_DISCOVERY_SERVICE_DETAIL_LIMIT,
+    ttl: 60_000,
+  },
+};
+
 /** GET — a doctor's avatar image (C12). Generous: a doctor listing/profile
  *  page can request several of these per view, and the response itself
  *  carries a 300s/3600s cache (`Cache-Control`), so real traffic mostly
