@@ -26,24 +26,65 @@ export const WORKFLOW_TRIGGER = {
   SUBSCRIPTION_REACTIVATED: SUBSCRIPTION_EVENT.REACTIVATED,
 } as const;
 
-export type WorkflowTrigger = (typeof WORKFLOW_TRIGGER)[keyof typeof WORKFLOW_TRIGGER];
+export type WorkflowTrigger =
+  (typeof WORKFLOW_TRIGGER)[keyof typeof WORKFLOW_TRIGGER];
 
 /** All valid trigger event strings (for DTO validation). */
 export const WORKFLOW_TRIGGERS: string[] = Object.values(WORKFLOW_TRIGGER);
 
-/** Action types — each maps to an EXISTING service in the executor. */
+/**
+ * Action types — restricted to the two real patient/staff messaging
+ * channels. `NOTIFICATION` (a free-text templateId into the generic
+ * notification-rules pipeline), `WEBHOOK`, and `AI` were removed: every
+ * workflow action now maps to exactly one of these two EXISTING services.
+ */
 export const WORKFLOW_ACTION_TYPE = {
   EMAIL: 'EMAIL',
   WHATSAPP: 'WHATSAPP',
-  NOTIFICATION: 'NOTIFICATION',
-  WEBHOOK: 'WEBHOOK',
-  AI: 'AI',
 } as const;
 
 export type WorkflowActionType =
   (typeof WORKFLOW_ACTION_TYPE)[keyof typeof WORKFLOW_ACTION_TYPE];
 
-export const WORKFLOW_ACTION_TYPES: string[] = Object.values(WORKFLOW_ACTION_TYPE);
+export const WORKFLOW_ACTION_TYPES: string[] =
+  Object.values(WORKFLOW_ACTION_TYPE);
+
+/**
+ * Who an EMAIL/WHATSAPP action sends to. Deliberately NOT the shared
+ * `RECIPIENT_TYPE` from the notifications module (which also has USER/TENANT,
+ * still legitimately produced by the notification-rules pipeline) — the
+ * workflow builder only ever resolves a real phone/email for a customer or a
+ * staff member, so its own contract is restricted to just those two.
+ */
+export const WORKFLOW_RECIPIENT_TYPE = {
+  CUSTOMER: 'CUSTOMER',
+  STAFF: 'STAFF',
+} as const;
+
+export type WorkflowRecipientType =
+  (typeof WORKFLOW_RECIPIENT_TYPE)[keyof typeof WORKFLOW_RECIPIENT_TYPE];
+
+export const WORKFLOW_RECIPIENT_TYPES: string[] = Object.values(
+  WORKFLOW_RECIPIENT_TYPE,
+);
+
+/**
+ * Curated, clinic-relevant subset of `EmailTemplateKey`
+ * (`../email/email.templates.ts`) offered in the EMAIL action's template
+ * dropdown — excludes auth/security/system-only keys (password reset, staff
+ * credentials, security alerts, subscription/payment system mail) that have
+ * no place in a clinic-authored patient/staff automation.
+ */
+export const WORKFLOW_EMAIL_TEMPLATE_KEYS: string[] = [
+  'generic',
+  'patient_notification',
+  'doctor_notification',
+  'appointment_confirmation',
+  'appointment_reminder',
+  'appointment_cancelled',
+  'appointment_rescheduled',
+  'campaign_marketing',
+];
 
 /** Condition operators evaluated against the run context (AND across all). */
 export const WORKFLOW_OPERATOR = {

@@ -66,6 +66,14 @@ export class WorkflowRun {
   @Column({ type: 'text', nullable: true })
   error?: string;
 
+  /**
+   * True only for a manual "Test Run" from the builder. A dry-run action
+   * still resolves its recipient and renders its content for real — it just
+   * never calls the WhatsApp/Email provider (see `WorkflowActionExecutor`).
+   */
+  @Column({ default: false })
+  dry_run!: boolean;
+
   @CreateDateColumn()
   created_at!: Date;
 

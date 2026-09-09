@@ -21,8 +21,8 @@ import { WorkflowActionExecutor } from '../../modules/workflow/workflow-action.e
  *  - `workflow.run`    → load the run + workflow, mark RUNNING, and fan each
  *    action out into its own delayed `workflow.action` job (per-action delay).
  *  - `workflow.action` → execute ONE action via WorkflowActionExecutor (which
- *    reuses Email/WhatsApp/Notification/AI services), record the outcome, and
- *    finalize the run once every action has reported.
+ *    reuses the Email/WhatsApp services), record the outcome, and finalize
+ *    the run once every action has reported.
  *
  * Retry + backoff come from the queue's default job options; a failed action job
  * is retried by BullMQ, and its outcome is recorded on the run for audit.
@@ -145,6 +145,7 @@ export class WorkflowProcessor extends WorkerHost {
           actionIndex,
           action,
           run.context ?? {},
+          run.dry_run,
         );
         await this.workflows.appendResult(runId, {
           index: actionIndex,
