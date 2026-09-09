@@ -26,10 +26,13 @@ export interface WorkflowActionSpec {
   /**
    * Per-action gate (ALL must match, AND) — evaluated against the SAME run
    * context as the workflow-level `conditions`, via the SAME
-   * `WorkflowService.evaluateConditions`. This is how the visual builder
-   * expresses IF/ELSE branching on the existing flat action list: two actions
-   * with mutually-exclusive conditions behave as an IF/ELSE pair without any
-   * new execution engine. Absent/empty = always run (unchanged behaviour).
+   * `WorkflowService.evaluateConditions`. Absent/empty = always run.
+   *
+   * The visual builder no longer exposes UI to author this (the "IF
+   * conditions" field was removed) but the engine still evaluates it, so
+   * workflows created before that removal keep running exactly as before —
+   * this stays part of the stored shape and the API contract for that
+   * reason, not because anything new relies on it.
    */
   conditions?: WorkflowConditionSpec[];
 }

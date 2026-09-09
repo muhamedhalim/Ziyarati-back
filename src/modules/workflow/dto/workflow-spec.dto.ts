@@ -58,8 +58,9 @@ export class WorkflowActionDto {
   @ApiPropertyOptional({
     description:
       'Per-action gate (ALL must match, AND) — evaluated against the run context before this SPECIFIC action ' +
-      'executes (independent of the workflow-level `conditions`). Two actions with mutually-exclusive conditions ' +
-      'give IF/ELSE branching without a second execution engine. Absent/empty = always run.',
+      'executes (independent of the workflow-level `conditions`). Absent/empty = always run. The workflow builder ' +
+      'UI no longer authors this field ("IF conditions" was removed) but it remains part of the API contract so ' +
+      'workflows created before that removal keep running unchanged.',
     type: [WorkflowConditionDto],
   })
   @IsOptional()
