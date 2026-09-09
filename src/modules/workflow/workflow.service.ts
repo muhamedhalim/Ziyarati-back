@@ -2,8 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, FindOptionsWhere, ILike, Repository } from 'typeorm';
 
-import { Workflow, WorkflowConditionSpec } from '../../entities/Workflows/Workflow';
-import { WorkflowRun, WorkflowActionResult } from '../../entities/Workflows/WorkflowRun';
+import {
+  Workflow,
+  WorkflowConditionSpec,
+} from '../../entities/Workflows/Workflow';
+import {
+  WorkflowRun,
+  WorkflowActionResult,
+} from '../../entities/Workflows/WorkflowRun';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { AppError, ErrorCode } from '../../common/errors';
@@ -12,7 +18,11 @@ import { QUEUE, JOB } from '../../queue/queue.constants';
 import { CreateWorkflowDto } from './dto/create-workflow.dto';
 import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 import { WorkflowFilterDto } from './dto/workflow-filter.dto';
-import { WORKFLOW_OPERATOR, WORKFLOW_RUN_STATUS, WORKFLOW_ACTION_CLAIM_STALE_MS } from './workflow.constants';
+import {
+  WORKFLOW_OPERATOR,
+  WORKFLOW_RUN_STATUS,
+  WORKFLOW_ACTION_CLAIM_STALE_MS,
+} from './workflow.constants';
 
 /**
  * Tenant-scoped CRUD for workflows + the run lifecycle (create / evaluate
@@ -22,8 +32,10 @@ import { WORKFLOW_OPERATOR, WORKFLOW_RUN_STATUS, WORKFLOW_ACTION_CLAIM_STALE_MS 
 @Injectable()
 export class WorkflowService {
   constructor(
-    @InjectRepository(Workflow) private readonly workflows: Repository<Workflow>,
-    @InjectRepository(WorkflowRun) private readonly runs: Repository<WorkflowRun>,
+    @InjectRepository(Workflow)
+    private readonly workflows: Repository<Workflow>,
+    @InjectRepository(WorkflowRun)
+    private readonly runs: Repository<WorkflowRun>,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -45,7 +57,8 @@ export class WorkflowService {
   async findAll(tenantId: string, filter: WorkflowFilterDto) {
     const where: FindOptionsWhere<Workflow> = { tenant: { id: tenantId } };
     if (filter.triggerEvent) where.trigger_event = filter.triggerEvent;
-    if (filter.isActive !== undefined) where.is_active = filter.isActive === 'true';
+    if (filter.isActive !== undefined)
+      where.is_active = filter.isActive === 'true';
     if (filter.q) where.name = ILike(`%${filter.q}%`);
 
     const [data, total] = await this.workflows.findAndCount({
@@ -73,12 +86,21 @@ export class WorkflowService {
   }
 
   async findOne(tenantId: string, id: string): Promise<Workflow> {
-    const row = await this.workflows.findOne({ where: { id, tenant: { id: tenantId } } });
-    if (!row) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Workflow not found' });
+    const row = await this.workflows.findOne({
+      where: { id, tenant: { id: tenantId } },
+    });
+    if (!row)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Workflow not found',
+      });
     return row;
   }
 
-  async update(tenantId: string, id: string, dto: UpdateWorkflowDto): Promise<Workflow> {
+  async update(
+    tenantId: string,
+    id: string,
+    dto: UpdateWorkflowDto,
+  ): Promise<Workflow> {
     const row = await this.findOne(tenantId, id);
     if (dto.name !== undefined) row.name = dto.name;
     if (dto.description !== undefined) row.description = dto.description;
@@ -89,7 +111,10 @@ export class WorkflowService {
     return this.workflows.save(row);
   }
 
-  async remove(tenantId: string, id: string): Promise<{ id: string; deleted: true }> {
+  async remove(
+    tenantId: string,
+    id: string,
+  ): Promise<{ id: string; deleted: true }> {
     const row = await this.findOne(tenantId, id);
     await this.workflows.remove(row);
     return { id, deleted: true };
@@ -100,7 +125,11 @@ export class WorkflowService {
   /** Active workflows for a tenant + trigger — consumed by the event listener. */
   findActiveByTrigger(tenantId: string, trigger: string): Promise<Workflow[]> {
     return this.workflows.find({
-      where: { tenant: { id: tenantId }, trigger_event: trigger, is_active: true },
+      where: {
+        tenant: { id: tenantId },
+        trigger_event: trigger,
+        is_active: true,
+      },
       order: { created_at: 'ASC' },
     });
   }
@@ -145,6 +174,7 @@ export class WorkflowService {
     workflow: Workflow,
     context: Record<string, unknown>,
     correlationId?: string,
+    dryRun = false,
   ): Promise<WorkflowRun> {
     return this.dataSource.transaction(async (mgr) => {
       const run = await mgr.save(
@@ -155,6 +185,7 @@ export class WorkflowService {
           status: WORKFLOW_RUN_STATUS.PENDING,
           context,
           results: [],
+          dry_run: dryRun,
         }),
       );
       await mgr.save(
@@ -169,8 +200,13 @@ export class WorkflowService {
     });
   }
 
-  async getRunWithWorkflow(runId: string): Promise<{ run: WorkflowRun; workflow: Workflow } | null> {
-    const run = await this.runs.findOne({ where: { id: runId }, relations: { workflow: true } });
+  async getRunWithWorkflow(
+    runId: string,
+  ): Promise<{ run: WorkflowRun; workflow: Workflow } | null> {
+    const run = await this.runs.findOne({
+      where: { id: runId },
+      relations: { workflow: true },
+    });
     if (!run || !run.workflow) return null;
     // relations gives a shallow workflow; reload to guarantee jsonb columns present.
     const workflow = await this.findByIdInternal(run.workflow.id);
@@ -179,7 +215,10 @@ export class WorkflowService {
   }
 
   async markRunning(runId: string): Promise<void> {
-    await this.runs.update({ id: runId }, { status: WORKFLOW_RUN_STATUS.RUNNING });
+    await this.runs.update(
+      { id: runId },
+      { status: WORKFLOW_RUN_STATUS.RUNNING },
+    );
   }
 
   /**
@@ -245,7 +284,10 @@ export class WorkflowService {
    * Record one action outcome (audit) — idempotent per action index, so a
    * retried action REPLACES its prior result rather than appending a duplicate.
    */
-  async appendResult(runId: string, result: WorkflowActionResult): Promise<void> {
+  async appendResult(
+    runId: string,
+    result: WorkflowActionResult,
+  ): Promise<void> {
     const run = await this.runs.findOne({ where: { id: runId } });
     if (!run) return;
     const others = (run.results ?? []).filter((r) => r.index !== result.index);
@@ -261,7 +303,9 @@ export class WorkflowService {
     const distinct = new Set(results.map((r) => r.index));
     if (distinct.size < totalActions) return; // not all actions reported yet
     const anyFailed = results.some((r) => r.status === 'FAILED');
-    run.status = anyFailed ? WORKFLOW_RUN_STATUS.FAILED : WORKFLOW_RUN_STATUS.COMPLETED;
+    run.status = anyFailed
+      ? WORKFLOW_RUN_STATUS.FAILED
+      : WORKFLOW_RUN_STATUS.COMPLETED;
     run.completed_at = new Date();
     await this.runs.save(run);
   }
@@ -279,31 +323,47 @@ export class WorkflowService {
 
   /** Tenant-scoped single run fetch (ownership enforced via the run's own tenant relation). */
   async getOwnedRun(tenantId: string, runId: string): Promise<WorkflowRun> {
-    const run = await this.runs.findOne({ where: { id: runId, tenant: { id: tenantId } } });
-    if (!run) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Workflow run not found' });
+    const run = await this.runs.findOne({
+      where: { id: runId, tenant: { id: tenantId } },
+    });
+    if (!run)
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Workflow run not found',
+      });
     return run;
   }
 
   /** The action indices whose last recorded outcome was FAILED (candidates for retry). */
   failedActionIndices(run: WorkflowRun): number[] {
-    return (run.results ?? []).filter((r) => r.status === 'FAILED').map((r) => r.index);
+    return (run.results ?? [])
+      .filter((r) => r.status === 'FAILED')
+      .map((r) => r.index);
   }
 
   /** Reopens a run for retry (RUNNING) — the caller re-enqueues the failed action indices. */
   async reopenForRetry(runId: string): Promise<void> {
-    await this.runs.update({ id: runId }, { status: WORKFLOW_RUN_STATUS.RUNNING, completed_at: undefined });
+    await this.runs.update(
+      { id: runId },
+      { status: WORKFLOW_RUN_STATUS.RUNNING, completed_at: undefined },
+    );
   }
 
   /**
    * Evaluate ALL conditions against the run context (AND). No conditions = pass.
    * Pure + side-effect-free so it is trivially testable.
    */
-  evaluateConditions(conditions: WorkflowConditionSpec[] | undefined, context: Record<string, unknown>): boolean {
+  evaluateConditions(
+    conditions: WorkflowConditionSpec[] | undefined,
+    context: Record<string, unknown>,
+  ): boolean {
     if (!conditions || conditions.length === 0) return true;
     return conditions.every((c) => this.matchOne(c, context));
   }
 
-  private matchOne(cond: WorkflowConditionSpec, context: Record<string, unknown>): boolean {
+  private matchOne(
+    cond: WorkflowConditionSpec,
+    context: Record<string, unknown>,
+  ): boolean {
     const actual = context?.[cond.field];
     const expected = cond.value;
     switch (cond.operator) {
@@ -322,7 +382,11 @@ export class WorkflowService {
       case WORKFLOW_OPERATOR.IN:
         return Array.isArray(expected) && expected.includes(actual);
       case WORKFLOW_OPERATOR.CONTAINS:
-        return typeof actual === 'string' && typeof expected === 'string' && actual.includes(expected);
+        return (
+          typeof actual === 'string' &&
+          typeof expected === 'string' &&
+          actual.includes(expected)
+        );
       case WORKFLOW_OPERATOR.EXISTS:
         return actual !== undefined && actual !== null;
       default:

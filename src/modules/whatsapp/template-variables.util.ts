@@ -48,3 +48,29 @@ export function missingVariables(
     return value === undefined || value === null || String(value).trim() === '';
   });
 }
+
+/**
+ * Renders the BODY component's text with every `{{name}}` placeholder
+ * substituted from `variables`. Returns `undefined` if there is no BODY text
+ * at all (caller decides how to treat that). Callers should check
+ * `missingVariables` first — this performs no completeness check of its own.
+ */
+export function renderTemplateBody(
+  components: unknown,
+  variables: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!components || typeof components !== 'object') return undefined;
+  const list = (components as { components?: unknown }).components;
+  if (!Array.isArray(list)) return undefined;
+  const body = (list as { type?: string; text?: string }[]).find(
+    (c) => c?.type === 'BODY',
+  );
+  const text = body?.text;
+  if (!text || typeof text !== 'string') return undefined;
+
+  const supplied = variables ?? {};
+  return text.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (match, name: string) => {
+    const value = supplied[name];
+    return value == null ? match : String(value);
+  });
+}

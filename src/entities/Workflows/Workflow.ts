@@ -20,6 +20,8 @@ export interface WorkflowConditionSpec {
 /** One stored action: a typed step with its own config + optional delay. */
 export interface WorkflowActionSpec {
   type: string;
+  /** Who this action sends to — resolved to a real phone/email at execution time (never a raw address). */
+  recipientType: string;
   config: Record<string, unknown>;
   /** Minutes to wait before this action runs (BullMQ delay). */
   delayMinutes?: number;

@@ -30,9 +30,12 @@ import { UpdateWorkflowDto } from './dto/update-workflow.dto';
 import { WorkflowFilterDto } from './dto/workflow-filter.dto';
 import {
   WORKFLOW_ACTION_TYPES,
+  WORKFLOW_EMAIL_TEMPLATE_KEYS,
   WORKFLOW_OPERATORS,
+  WORKFLOW_RECIPIENT_TYPES,
   WORKFLOW_TRIGGERS,
 } from './workflow.constants';
+import { WorkflowRecipientResolver } from './workflow-recipient.resolver';
 import { QueueService } from '../../queue/queue.service';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -81,7 +84,7 @@ const S_WORKFLOW = {
  *
  * Guarded by the standard clinic chain (PermissionsGuard + ActiveTenantGuard) and
  * `ai.manage` (the seeded automation permission). The engine executes actions via
- * the existing Email / WhatsApp / Notification / AI services — never inline.
+ * the existing Email / WhatsApp services — never inline.
  */
 @ApiTags('Workflows')
 @ApiBearerAuth('JWT-auth')
@@ -94,10 +97,12 @@ export class WorkflowController {
     private readonly workflows: WorkflowService,
     private readonly ctx: TenantContextService,
     private readonly queue: QueueService,
+    private readonly recipients: WorkflowRecipientResolver,
   ) {}
 
   @ApiOperation({
-    summary: 'List available triggers, action types and operators',
+    summary:
+      'List available triggers, action types, operators, recipient types and email templates',
   })
   @ApiOkResponse({
     description: 'Static engine metadata for building workflows.',
@@ -108,6 +113,8 @@ export class WorkflowController {
       triggers: WORKFLOW_TRIGGERS,
       actionTypes: WORKFLOW_ACTION_TYPES,
       operators: WORKFLOW_OPERATORS,
+      recipientTypes: WORKFLOW_RECIPIENT_TYPES,
+      emailTemplates: WORKFLOW_EMAIL_TEMPLATE_KEYS,
     };
   }
 
@@ -172,22 +179,23 @@ export class WorkflowController {
   }
 
   @ApiOperation({
-    summary: 'Manually run a workflow now (test)',
+    summary: 'Manually run a workflow now (Test Run — always a dry run)',
     description:
-      'Creates a run with the provided context and enqueues its actions — bypasses the trigger, not the conditions.',
+      'Creates a run and enqueues its actions for real — bypasses the trigger, not the conditions. ALWAYS a ' +
+      "dry run: the run's context is seeded from one of the tenant's own existing customers/staff (never an " +
+      'id the caller supplies), and its EMAIL/WHATSAPP actions resolve their recipient and render their ' +
+      'content for real but never call the provider. Poll `GET /workflows/runs/:runId` for the result.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiOkResponse({ description: 'Run enqueued.' })
+  @ApiOkResponse({ description: 'Run enqueued (or not, with a reason).' })
   @ApiNotFoundResponse({ description: 'Workflow not found.', schema: S_ERROR })
   @Post(':id/run')
   @HttpCode(HttpStatus.OK)
-  async run(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { context?: Record<string, unknown> },
-  ) {
+  async run(@Param('id', ParseUUIDPipe) id: string) {
     const tenantId = this.ctx.requireTenantId();
     const workflow = await this.workflows.findOne(tenantId, id);
-    const context = body?.context ?? {};
+    const sample = await this.recipients.pickSampleContext(tenantId);
+    const context: Record<string, unknown> = { ...sample };
     if (!this.workflows.evaluateConditions(workflow.conditions, context)) {
       return { enqueued: false, reason: 'conditions_not_met' };
     }
@@ -196,8 +204,24 @@ export class WorkflowController {
       workflow,
       context,
       this.ctx.getCorrelationId() ?? undefined,
+      /* dryRun */ true,
     );
     return { enqueued: true, runId: created.id };
+  }
+
+  @ApiOperation({
+    summary: 'Get one run (for polling a Test Run to completion)',
+    description:
+      'Tenant-scoped — returns 404 for a run belonging to another tenant.',
+  })
+  @ApiParam({ name: 'runId', format: 'uuid' })
+  @ApiOkResponse({
+    description: 'The run, with its current status and per-action results.',
+  })
+  @ApiNotFoundResponse({ description: 'Run not found.', schema: S_ERROR })
+  @Get('runs/:runId')
+  getRun(@Param('runId', ParseUUIDPipe) runId: string) {
+    return this.workflows.getOwnedRun(this.ctx.requireTenantId(), runId);
   }
 
   @ApiOperation({
