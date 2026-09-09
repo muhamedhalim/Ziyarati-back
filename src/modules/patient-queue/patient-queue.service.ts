@@ -11,10 +11,15 @@ import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { AppointmentStatus, QueueState } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
-import { AppointmentsService } from '../appointment/appointment.service';
+import {
+  AppointmentsService,
+  type AppointmentCaller,
+} from '../appointment/appointment.service';
 import { zonedYmd, safeZone } from '../scheduling/timezone.util';
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
+import { isScopedToOwnStaff } from '../../rbac/rbac.constants';
 import { CheckInQueueDto } from './dto/check-in-queue.dto';
 import { QueryQueueDto } from './dto/query-queue.dto';
 import { orderQueueEntries, type OrderableQueueEntry } from './queue-ordering';
@@ -73,6 +78,14 @@ export interface QueueListResult {
   page: number;
   limit: number;
   asOf: string;
+  /**
+   * The staff scope actually applied — 'OWN' when the caller holds only
+   * `appointments.read_own` (their entries only, `dto.staffId` ignored) and
+   * 'ALL' when they hold the tenant-wide `appointments.read` (`dto.staffId`,
+   * if given, is honored as a filter). Echoed back so the UI states the
+   * truth rather than guessing, mirroring `DashboardSummary.scope`.
+   */
+  scope: { staff: 'ALL' | 'OWN' };
 }
 
 /**
@@ -106,6 +119,8 @@ export class PatientQueueService {
     private readonly appointmentsService: AppointmentsService,
     private readonly activityAudit: ActivityAuditService,
     private readonly branchScope: BranchScopeService,
+    /** The one authority on "which StaffProfile, if any, IS this caller". */
+    private readonly staffScope: StaffScopeService,
   ) {}
 
   // ───────────────────────────── Check-in ────────────────────────────────── //
@@ -202,10 +217,22 @@ export class PatientQueueService {
 
   // ───────────────────────────── Read ────────────────────────────────────── //
 
-  /** FR-Q008/FR-Q013/FR-Q014. `branchId` is mandatory — a queue is always one branch's one day. */
+  /**
+   * FR-Q008/FR-Q013/FR-Q014. `branchId` is mandatory — a queue is always one
+   * branch's one day.
+   *
+   * Staff scoping: a `caller` holding only `appointments.read_own` (today:
+   * `doctor`) is FORCED to their own StaffProfile — resolved via
+   * `StaffScopeService`, never trusted from `dto.staffId` — exactly mirroring
+   * `AppointmentsService.findAll`'s ownership scope. `dto.staffId` is
+   * silently overridden in that case, never rejected, so a doctor narrowing
+   * an already-own-scoped view via the query string is a harmless no-op
+   * rather than an error. A caller with no StaffProfile at all sees an empty
+   * queue — the same fail-closed answer `findAll` gives.
+   */
   async list(
     tenantId: string,
-    actorUserId: string,
+    caller: AppointmentCaller,
     dto: QueryQueueDto,
   ): Promise<QueueListResult> {
     const branch = await this.branches.findOne({
@@ -214,7 +241,25 @@ export class PatientQueueService {
     if (!branch) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
     }
-    await this.assertOwnBranch(tenantId, actorUserId, branch.id);
+    await this.assertOwnBranch(tenantId, caller.id, branch.id);
+
+    const ownScoped = isScopedToOwnStaff(caller.permissions);
+    const ownStaffId = ownScoped
+      ? await this.staffScope.resolveOwnStaffId(tenantId, caller.id)
+      : null;
+
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 200;
+    if (ownScoped && !ownStaffId) {
+      return {
+        data: [],
+        total: 0,
+        page,
+        limit,
+        asOf: new Date().toISOString(),
+        scope: { staff: 'OWN' },
+      };
+    }
 
     const businessDate =
       dto.date ?? zonedYmd(new Date(), safeZone(branch.timezone));
@@ -224,7 +269,11 @@ export class PatientQueueService {
         tenant: { id: tenantId },
         branch: { id: branch.id },
         business_date: businessDate,
-        ...(dto.staffId ? { staff: { id: dto.staffId } } : {}),
+        ...(ownScoped
+          ? { staff: { id: ownStaffId as string } }
+          : dto.staffId
+            ? { staff: { id: dto.staffId } }
+            : {}),
       },
       relations: { appointment: true, customer: true, staff: { user: true } },
     });
@@ -240,8 +289,6 @@ export class PatientQueueService {
     );
     const ordered = orderQueueEntries(orderable);
 
-    const page = dto.page ?? 1;
-    const limit = dto.limit ?? 200;
     const start = (page - 1) * limit;
     const pageSlice = ordered.slice(start, start + limit);
 
@@ -255,6 +302,7 @@ export class PatientQueueService {
       page,
       limit,
       asOf: new Date().toISOString(),
+      scope: { staff: ownScoped ? 'OWN' : 'ALL' },
     };
   }
 

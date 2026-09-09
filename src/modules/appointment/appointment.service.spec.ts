@@ -6,6 +6,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { AppointmentsService } from './appointment.service';
 import { AppointmentAuditService } from './appointment-audit.service';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { AppointmentService as AppointmentServiceEntity } from '../../entities/Calendar&Appointments/AppointmentService';
 import { AppointmentHistory } from '../../entities/Calendar&Appointments/AppointmentHistory';
@@ -60,9 +61,9 @@ describe('AppointmentsService', () => {
   let statusLogsRepo: MockRepository;
   let reschedulesRepo: MockRepository;
   let cancellationsRepo: MockRepository;
-  let staffProfilesRepo: MockRepository;
   let scheduledNotificationsRepo: MockRepository;
   let appointmentAudit: { record: jest.Mock };
+  let staffScope: { resolveOwnStaffId: jest.Mock };
 
   /** Full tenant-wide access — the default caller for existing tests. */
   const FULL_ACCESS_CALLER = {
@@ -101,9 +102,9 @@ describe('AppointmentsService', () => {
     statusLogsRepo = createMockRepository();
     reschedulesRepo = createMockRepository();
     cancellationsRepo = createMockRepository();
-    staffProfilesRepo = createMockRepository();
     scheduledNotificationsRepo = createMockRepository();
     appointmentAudit = { record: jest.fn().mockResolvedValue(undefined) };
+    staffScope = { resolveOwnStaffId: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -125,10 +126,6 @@ describe('AppointmentsService', () => {
         {
           provide: getRepositoryToken(AppointmentCancellation),
           useValue: cancellationsRepo,
-        },
-        {
-          provide: getRepositoryToken(StaffProfile),
-          useValue: staffProfilesRepo,
         },
         {
           provide: getRepositoryToken(ScheduledNotification),
@@ -153,6 +150,7 @@ describe('AppointmentsService', () => {
             branchFilter: () => undefined,
           },
         },
+        { provide: StaffScopeService, useValue: staffScope },
       ],
     }).compile();
     service = moduleRef.get(AppointmentsService);
@@ -858,6 +856,30 @@ describe('AppointmentsService', () => {
       );
     });
 
+    it('orders by start_at DESCENDING by default (order not supplied)', async () => {
+      appointments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.findAll(
+        TENANT,
+        { page: 1, limit: 10 } as any,
+        FULL_ACCESS_CALLER,
+      );
+
+      const arg = appointments.findAndCount.mock.calls[0][0];
+      expect(arg.order).toEqual({ start_at: 'DESC' });
+    });
+
+    it('honours order=ASC — reaches the repository as ASCENDING', async () => {
+      appointments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.findAll(
+        TENANT,
+        { page: 1, limit: 10, order: 'ASC' } as any,
+        FULL_ACCESS_CALLER,
+      );
+
+      const arg = appointments.findAndCount.mock.calls[0][0];
+      expect(arg.order).toEqual({ start_at: 'ASC' });
+    });
+
     it('filters by serviceIds (ANY-of match) when provided', async () => {
       appointments.findAndCount.mockResolvedValueOnce([[], 0]);
       await service.findAll(
@@ -905,9 +927,7 @@ describe('AppointmentsService', () => {
 
     describe('findAll', () => {
       it("forces the staff filter to the caller's own StaffProfile, ignoring query.staffId", async () => {
-        staffProfilesRepo.findOne.mockResolvedValueOnce({
-          id: 'staff-doctor-1',
-        });
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce('staff-doctor-1');
         appointments.findAndCount.mockResolvedValueOnce([[{ id: 'a1' }], 1]);
 
         await service.findAll(
@@ -916,17 +936,16 @@ describe('AppointmentsService', () => {
           OWN_CALLER,
         );
 
-        expect(staffProfilesRepo.findOne).toHaveBeenCalledWith(
-          expect.objectContaining({
-            where: { user: { id: 'doctor-1' }, tenant: { id: TENANT } },
-          }),
+        expect(staffScope.resolveOwnStaffId).toHaveBeenCalledWith(
+          TENANT,
+          'doctor-1',
         );
         const arg = appointments.findAndCount.mock.calls[0][0];
         expect(arg.where.staff).toEqual({ id: 'staff-doctor-1' });
       });
 
       it('returns an empty page without querying when the caller has no StaffProfile', async () => {
-        staffProfilesRepo.findOne.mockResolvedValueOnce(null);
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce(null);
         const result = await service.findAll(
           TENANT,
           { page: 1, limit: 10 } as any,
@@ -943,9 +962,7 @@ describe('AppointmentsService', () => {
           id: 'appt-1',
           staff: { id: 'staff-doctor-1' },
         });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({
-          id: 'staff-doctor-1',
-        });
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce('staff-doctor-1');
 
         await expect(
           service.findOne(TENANT, 'appt-1', OWN_CALLER),
@@ -957,9 +974,7 @@ describe('AppointmentsService', () => {
           id: 'appt-1',
           staff: { id: 'someone-elses-staff-id' },
         });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({
-          id: 'staff-doctor-1',
-        });
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce('staff-doctor-1');
 
         await expect(
           service.findOne(TENANT, 'appt-1', OWN_CALLER),
@@ -973,7 +988,7 @@ describe('AppointmentsService', () => {
           id: 'appt-1',
           staff: { id: 'staff-doctor-1' },
         });
-        staffProfilesRepo.findOne.mockResolvedValueOnce(null);
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce(null);
 
         await expect(
           service.findOne(TENANT, 'appt-1', OWN_CALLER),
@@ -990,7 +1005,7 @@ describe('AppointmentsService', () => {
         await expect(service.findOne(TENANT, 'appt-1')).resolves.toEqual(
           expect.objectContaining({ id: 'appt-1' }),
         );
-        expect(staffProfilesRepo.findOne).not.toHaveBeenCalled();
+        expect(staffScope.resolveOwnStaffId).not.toHaveBeenCalled();
       });
     });
 
@@ -1000,9 +1015,7 @@ describe('AppointmentsService', () => {
           id: 'appt-1',
           staff: { id: 'someone-elses-staff-id' },
         });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({
-          id: 'staff-doctor-1',
-        });
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce('staff-doctor-1');
 
         await expect(
           service.listNotes(TENANT, 'appt-1', OWN_CALLER),
@@ -1017,9 +1030,7 @@ describe('AppointmentsService', () => {
           id: 'appt-1',
           staff: { id: 'someone-elses-staff-id' },
         });
-        staffProfilesRepo.findOne.mockResolvedValueOnce({
-          id: 'staff-doctor-1',
-        });
+        staffScope.resolveOwnStaffId.mockResolvedValueOnce('staff-doctor-1');
 
         await expect(
           service.getTimeline(TENANT, 'appt-1', OWN_CALLER),

@@ -25,6 +25,7 @@ const S_SUMMARY = {
   type: 'object',
   properties: {
     appointments: { type: 'number', nullable: true, example: 128 },
+    myPatients: { type: 'number', nullable: true, example: 37 },
     customers: { type: 'number', nullable: true, example: 412 },
     staff: { type: 'number', nullable: true, example: 9 },
     pendingHandovers: { type: 'number', nullable: true, example: 2 },
@@ -99,7 +100,7 @@ export class DashboardSummaryController {
 
   @ApiOperation({
     summary:
-      'Dashboard KPI counts (appointments, customers, staff, pending handovers)',
+      'Dashboard KPI counts (appointments, patients, customers, staff, pending handovers)',
     description: `
 **Protected — authenticated tenant user, clinic active.**
 
@@ -113,6 +114,13 @@ endpoint requires (\`appointments.read\`/\`appointments.read_own\`,
 
 A caller holding only \`appointments.read_own\` gets the count of their OWN
 appointments; the scope actually applied is echoed in \`scope.appointments\`.
+
+\`myPatients\` is a DIFFERENT question from \`customers\`: it is the count of
+DISTINCT customers across the appointments this caller may read (the same
+own-staff + branch scope as \`appointments\`), never the clinic-wide customer
+list — for a doctor this is genuinely "how many of my patients"; for a
+tenant-wide caller it is still narrower than \`customers\` ("patients with at
+least one appointment" vs. "every customer record").
 
 Served through the per-tenant analytics cache, so repeat opens inside the TTL
 do not reach the database at all.`.trim(),

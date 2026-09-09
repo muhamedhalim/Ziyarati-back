@@ -314,7 +314,9 @@ Returns a paginated list of the clinic's appointments. All filters
 (currently: \`doctor\`) is FORCED to their own StaffProfile's appointments —
 \`staffId\` in the query is ignored for them, never a way to widen the scope.
 
-Ordered by \`start_at\` descending (most recent first).
+Ordered by \`start_at\` descending (most recent first) by default; pass
+\`order=ASC\` to walk forward from now instead (e.g. "today's schedule" /
+"next appointments" views).
 
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.read\`);
 Doctor, own appointments only (\`appointments.read_own\`).

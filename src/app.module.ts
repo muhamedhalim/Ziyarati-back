@@ -66,6 +66,7 @@ import { PlatformDashboardModule } from './modules/platform-dashboard/platform-d
 import { EmailModule } from './modules/email/email.module';
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { BranchScopeModule } from './core/branch-scope/branch-scope.module';
+import { StaffScopeModule } from './core/staff-scope/staff-scope.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { SeedModule } from './seed/seed.module';
 
@@ -158,6 +159,10 @@ import { validate } from './config/env.validation';
     // tenant?" / "which branches inside it?"). Declared after QueueModule
     // because it injects AppRedisService for its membership cache.
     BranchScopeModule,
+    // Sibling scope authority -- "which StaffProfile, if any, IS this caller?".
+    // Same @Global registration rationale as BranchScopeModule above; also
+    // injects AppRedisService for its own-profile cache.
+    StaffScopeModule,
     HealthModule,
     MetricsModule,
 
