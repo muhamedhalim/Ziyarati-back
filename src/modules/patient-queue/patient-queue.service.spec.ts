@@ -3,8 +3,10 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AppRedisService } from '../../queue/app-redis.service';
+import { PERMISSION } from '../../rbac/rbac.constants';
 import { PatientQueueService } from './patient-queue.service';
 import { QueueEntry } from '../../entities/Calendar&Appointments/QueueEntry';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
@@ -26,16 +28,21 @@ const TENANT = 't1';
 const USER = 'u1';
 const BRANCH = 'b1';
 
+/** Tenant-wide caller — every pre-existing assertion in this suite models this. */
+const CALLER = { id: USER, permissions: [PERMISSION.APPOINTMENTS_READ] };
+
 describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
   let service: PatientQueueService;
   let entries: MockRepository;
   let branches: MockRepository;
   let branchUsers: MockRepository;
+  let staffScope: { resolveOwnStaffId: jest.Mock };
 
   beforeEach(async () => {
     entries = createMockRepository();
     branches = createMockRepository();
     branchUsers = createMockRepository();
+    staffScope = { resolveOwnStaffId: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +75,7 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
           },
         },
         { provide: TenantContextService, useValue: new TenantContextService() },
+        { provide: StaffScopeService, useValue: staffScope },
       ],
     }).compile();
     service = moduleRef.get(PatientQueueService);
@@ -80,7 +88,7 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
     branches.findOne.mockResolvedValueOnce(null);
 
     await expect(
-      service.list(TENANT, USER, { branchId: 'does-not-exist' } as any),
+      service.list(TENANT, CALLER, { branchId: 'does-not-exist' } as any),
     ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
 
     expect(entries.find).not.toHaveBeenCalled();
@@ -96,7 +104,7 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
     ]);
 
     await expect(
-      service.list(TENANT, USER, { branchId: BRANCH } as any),
+      service.list(TENANT, CALLER, { branchId: BRANCH } as any),
     ).rejects.toMatchObject({ code: ErrorCode.PERMISSION_DENIED });
 
     expect(entries.find).not.toHaveBeenCalled();
@@ -126,7 +134,7 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
       },
     ]);
 
-    const result = await service.list(TENANT, USER, {
+    const result = await service.list(TENANT, CALLER, {
       branchId: BRANCH,
       date: '2032-04-14',
     } as any);
@@ -153,7 +161,7 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
     branchUsers.find.mockResolvedValueOnce([]); // tenant-wide caller — no branch restriction
     entries.find.mockResolvedValueOnce([]);
 
-    await service.list(TENANT, USER, {
+    await service.list(TENANT, CALLER, {
       branchId: BRANCH,
       date: '2032-04-14',
       staffId: 'staff-1',
@@ -179,13 +187,86 @@ describe('PatientQueueService.list (FR-Q008/FR-Q013/FR-Q014)', () => {
     branchUsers.find.mockResolvedValueOnce([]);
     entries.find.mockResolvedValueOnce([]);
 
-    await service.list(TENANT, USER, {
+    await service.list(TENANT, CALLER, {
       branchId: BRANCH,
       date: '2032-04-14',
     } as any);
 
     const call = entries.find.mock.calls[0][0];
     expect(call.where.staff).toBeUndefined();
+  });
+
+  describe('own-staff scoping (appointments.read_own — a doctor\'s queue)', () => {
+    const OWN_CALLER = {
+      id: 'doctor-1',
+      permissions: [PERMISSION.APPOINTMENTS_READ_OWN],
+    };
+
+    it("forces the staff filter to the caller's own StaffProfile, ignoring dto.staffId", async () => {
+      branches.findOne.mockResolvedValueOnce({
+        id: BRANCH,
+        timezone: 'Asia/Riyadh',
+      });
+      branchUsers.find.mockResolvedValueOnce([]); // not branch-restricted
+      staffScope.resolveOwnStaffId.mockResolvedValueOnce('staff-doctor-1');
+      entries.find.mockResolvedValueOnce([]);
+
+      const result = await service.list(TENANT, OWN_CALLER, {
+        branchId: BRANCH,
+        date: '2032-04-14',
+        staffId: 'someone-elses-staff-id',
+      } as any);
+
+      expect(staffScope.resolveOwnStaffId).toHaveBeenCalledWith(
+        TENANT,
+        'doctor-1',
+      );
+      expect(entries.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ staff: { id: 'staff-doctor-1' } }),
+        }),
+      );
+      expect(result.scope).toEqual({ staff: 'OWN' });
+    });
+
+    it('returns an empty, unqueried page when the caller has no StaffProfile', async () => {
+      branches.findOne.mockResolvedValueOnce({
+        id: BRANCH,
+        timezone: 'Asia/Riyadh',
+      });
+      branchUsers.find.mockResolvedValueOnce([]);
+      staffScope.resolveOwnStaffId.mockResolvedValueOnce(null);
+
+      const result = await service.list(TENANT, OWN_CALLER, {
+        branchId: BRANCH,
+      } as any);
+
+      expect(result).toEqual({
+        data: [],
+        total: 0,
+        page: 1,
+        limit: 200,
+        asOf: expect.any(String),
+        scope: { staff: 'OWN' },
+      });
+      expect(entries.find).not.toHaveBeenCalled();
+    });
+
+    it('a tenant-wide caller gets scope "ALL"', async () => {
+      branches.findOne.mockResolvedValueOnce({
+        id: BRANCH,
+        timezone: 'Asia/Riyadh',
+      });
+      branchUsers.find.mockResolvedValueOnce([]);
+      entries.find.mockResolvedValueOnce([]);
+
+      const result = await service.list(TENANT, CALLER, {
+        branchId: BRANCH,
+      } as any);
+
+      expect(staffScope.resolveOwnStaffId).not.toHaveBeenCalled();
+      expect(result.scope).toEqual({ staff: 'ALL' });
+    });
   });
 
   describe('myBranches (FR-Q014)', () => {

@@ -35,6 +35,8 @@ import { StaffScheduleService } from './staff-schedule.service';
 import { StaffTimeOffService } from './staff-time-off.service';
 import { StaffCommissionService } from './staff-commission.service';
 import { StaffRatingService } from './staff-rating.service';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
+import { AppError, ErrorCode } from '../../common/errors';
 
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
@@ -365,6 +367,8 @@ export class StaffController {
     private readonly commissions: StaffCommissionService,
     private readonly ratings: StaffRatingService,
     private readonly ctx: TenantContextService,
+    /** The one authority on "which StaffProfile, if any, IS this caller". */
+    private readonly staffScope: StaffScopeService,
   ) {}
 
   // ───────────────────────────── Profiles ────────────────────────────────── //
@@ -761,6 +765,124 @@ Used by the booking UI and the WhatsApp availability bot.
       query.branchId,
       query.date,
     );
+  }
+
+  // ────────────────────────── Own profile ("me") ──────────────────────────── //
+  //
+  // Three routes for a caller who holds only `staff.read_own` (today: the
+  // `doctor` role — see rbac.constants.ts) and no `staff.read` at all. `me`
+  // is a literal path segment, not a param: the caller's own StaffProfile id
+  // comes from `StaffScopeService.resolveOwnStaffId`, and NO id is ever
+  // accepted from the client on these three routes. There is therefore no
+  // IDOR surface to defend here — the request shape itself makes "ask for
+  // someone else's profile" inexpressible, which is why these are declared
+  // as `me`, not as a widened `GET /staff/:id`. Declared BEFORE `@Get(':id')`
+  // below: NestJS matches route patterns in registration order, and `me`
+  // would otherwise be swallowed by the `:id` param.
+
+  @ApiOperation({
+    summary: "Get the caller's own staff profile",
+    description: `
+**Protected — requires \`staff.read_own\`. Clinic must be active.**
+
+Returns the CALLER's own staff profile — never another staff member's; no id
+is accepted in the request. 404 if the caller has no StaffProfile in this
+tenant.
+
+**Who can call this:** Doctor (\`staff.read_own\`), or any other role future
+work delegates this permission to.
+    `.trim(),
+  })
+  @ApiOkResponse({ description: "The caller's own staff profile.", schema: S_STAFF })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read_own`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'The caller has no StaffProfile in this tenant.',
+    schema: S_ERROR,
+  })
+  @Get('me')
+  @RequirePermissions(PERMISSION.STAFF_READ_OWN)
+  async findOwn(@CurrentUser() user: AuthenticatedUser) {
+    const tenantId = this.ctx.requireTenantId();
+    const ownId = await this.staffScope.resolveOwnStaffId(tenantId, user.id);
+    if (!ownId) {
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Staff member not found',
+      });
+    }
+    return this.staff.findOne(tenantId, ownId);
+  }
+
+  @ApiOperation({
+    summary: "List the caller's own weekly schedule",
+    description: `**Protected — requires \`staff.read_own\`. Clinic must be active.** Returns the CALLER's own schedule slots only; 404 if they have no StaffProfile.`,
+  })
+  @ApiOkResponse({
+    description: "The caller's own schedule slots.",
+    schema: { type: 'array', items: S_SCHEDULE },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read_own`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'The caller has no StaffProfile in this tenant.',
+    schema: S_ERROR,
+  })
+  @Get('me/schedules')
+  @RequirePermissions(PERMISSION.STAFF_READ_OWN)
+  async findOwnSchedules(@CurrentUser() user: AuthenticatedUser) {
+    const tenantId = this.ctx.requireTenantId();
+    const ownId = await this.staffScope.resolveOwnStaffId(tenantId, user.id);
+    if (!ownId) {
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Staff member not found',
+      });
+    }
+    return this.schedules.listSchedules(tenantId, ownId);
+  }
+
+  @ApiOperation({
+    summary: "List the caller's own time off",
+    description: `**Protected — requires \`staff.read_own\`. Clinic must be active.** Returns the CALLER's own time-off records only; 404 if they have no StaffProfile.`,
+  })
+  @ApiOkResponse({
+    description: "The caller's own time-off records.",
+    schema: { type: 'array', items: S_TIME_OFF },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `staff.read_own`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'The caller has no StaffProfile in this tenant.',
+    schema: S_ERROR,
+  })
+  @Get('me/time-off')
+  @RequirePermissions(PERMISSION.STAFF_READ_OWN)
+  async findOwnTimeOff(@CurrentUser() user: AuthenticatedUser) {
+    const tenantId = this.ctx.requireTenantId();
+    const ownId = await this.staffScope.resolveOwnStaffId(tenantId, user.id);
+    if (!ownId) {
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Staff member not found',
+      });
+    }
+    return this.timeOff.list(tenantId, ownId);
   }
 
   @ApiOperation({

@@ -146,6 +146,7 @@ export const PERMISSION = {
   // Staff
   STAFF_CREATE: 'staff.create',
   STAFF_READ: 'staff.read',
+  STAFF_READ_OWN: 'staff.read_own', // ABAC — see OWNERSHIP_SCOPED_PERMISSIONS
   STAFF_UPDATE: 'staff.update',
   STAFF_MANAGE: 'staff.manage',
   STAFF_SCHEDULE_MANAGE: 'staff.schedule.manage',
@@ -313,6 +314,7 @@ export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> =
     PERMISSION.APPOINTMENTS_READ_OWN,
     PERMISSION.PROFILE_UPDATE_OWN,
     PERMISSION.BRANCHES_UPDATE_OWN,
+    PERMISSION.STAFF_READ_OWN,
   ]);
 
 /**
@@ -549,6 +551,29 @@ export function isBranchRestricted(permissions: readonly string[]): boolean {
     permissions.includes(PERMISSION.BRANCHES_UPDATE_OWN) &&
     !permissions.includes(PERMISSION.BRANCHES_UPDATE)
   );
+}
+
+/**
+ * THE definition of "this principal may only see/act on rows belonging to
+ * its own StaffProfile" — the same ABAC pattern as {@link isBranchRestricted}
+ * one level up, applied to the `appointments.read`/`appointments.read_own`
+ * pair instead of the branch one.
+ *
+ * PRECONDITION: only meaningful on a route already admitted by
+ * `@RequireAnyPermission(PERMISSION.APPOINTMENTS_READ,
+ * PERMISSION.APPOINTMENTS_READ_OWN)` (or an equivalent ANY-of check). Fail-
+ * closed by construction: anything that reached such a route WITHOUT the
+ * tenant-wide slug is narrowed by definition — there is no third state.
+ *
+ * Expressed as a PERMISSION predicate, never a role allow-list, so it holds
+ * for `doctor` AND for any tenant "Other" custom role delegated
+ * `appointments.read_own` alone — without either being named here. Consumed
+ * by `AppointmentsService`, `DashboardSummaryService` and
+ * `PatientQueueService`, all via `StaffScopeService.resolveOwnStaffId`
+ * (`src/core/staff-scope`) — never a fourth hand-copied lookup.
+ */
+export function isScopedToOwnStaff(permissions: readonly string[]): boolean {
+  return !permissions.includes(PERMISSION.APPOINTMENTS_READ);
 }
 
 /**
@@ -916,6 +941,11 @@ export const PERMISSIONS: PermissionDef[] = [
 
   { slug: PERMISSION.STAFF_CREATE, name: 'Create staff', module: 'staff' },
   { slug: PERMISSION.STAFF_READ, name: 'Read staff', module: 'staff' },
+  {
+    slug: PERMISSION.STAFF_READ_OWN,
+    name: 'Read own staff profile & schedule',
+    module: 'staff',
+  },
   { slug: PERMISSION.STAFF_UPDATE, name: 'Update staff', module: 'staff' },
   { slug: PERMISSION.STAFF_MANAGE, name: 'Manage staff', module: 'staff' },
   {
@@ -1899,11 +1929,23 @@ export const ROLE_PERMISSIONS: Record<
   //   - CLINICAL_RECORDS_READ / CLINICAL_RECORDS_MANAGE (T105, FR-H010b) —
   //     the actual clinical-content boundary: structured entries and
   //     CustomerProfile's clinical fields, one gate for both (FR-H010a).
+  //   - STAFF_READ_OWN — an ABAC/ownership-scoped permission (see
+  //     OWNERSHIP_SCOPED_PERMISSIONS above), NOT the tenant-wide STAFF_READ.
+  //     Enforced structurally rather than by a service-layer ownership check:
+  //     `GET /staff/me`, `/staff/me/schedules` and `/staff/me/time-off`
+  //     (`staff.controller.ts`) accept no id from the client at all — the
+  //     caller's own StaffProfile id comes from `StaffScopeService`, so there
+  //     is no request shape that could ask for anyone else's. This is the
+  //     ownership-scoped enforcement path the note below used to say did not
+  //     exist yet; it now does, and is scoped to profile/schedule/time-off
+  //     read only — `staff.read` (browsing every OTHER staff member) is
+  //     still not granted.
   //
   // Still explicitly NOT granted: appointments.create/update/reschedule/cancel
   // (status/lifecycle changes), crm.customers.manage, crm.notes.*, crm.tags.*,
-  // crm.files.*, staff.* (including own-schedule viewing — no ownership-scoped
-  // variant exists yet), services.read, notifications.read, ai.chat,
+  // crm.files.*, staff.read/update/manage (any OTHER staff member's data),
+  // staff.schedule.manage/staff.timeoff.manage (writes to anyone's schedule,
+  // including their own), services.read, notifications.read, ai.chat,
   // reviews.read. Add only once there is a real ownership-scoped enforcement
   // path for each, mirroring APPOINTMENTS_READ_OWN.
   [ROLE.DOCTOR]: [
@@ -1912,6 +1954,7 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CRM_CUSTOMERS_READ,
     PERMISSION.CLINICAL_RECORDS_READ,
     PERMISSION.CLINICAL_RECORDS_MANAGE,
+    PERMISSION.STAFF_READ_OWN,
   ],
 
   // End user: self-service only (ownership enforced in the service layer).

@@ -24,18 +24,28 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireActiveSubscription } from '../subscription-billing/decorators/require-active-subscription.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
 /**
  * Spec 014 (Clinic Platform Completion) — T172 (US10, contracts/
  * clinic-surfaces.md §F10). The eight queue routes. Reuses the EXISTING
- * `appointments.read` / `appointments.update` permission slugs — **no new
- * permission is introduced** (FR-G002).
+ * `appointments.read` / `appointments.read_own` / `appointments.update`
+ * permission slugs — **no new permission is introduced** (FR-G002).
+ *
+ * `GET /queue` and `GET /queue/branches` additionally accept
+ * `appointments.read_own` (a doctor's ownership-scoped grant) so a doctor can
+ * reach their own live queue — `PatientQueueService` forces the staff filter
+ * to the caller's own StaffProfile in that case, ignoring `dto.staffId`
+ * entirely (mirrors `AppointmentsService.findAll`). The seven write routes
+ * are UNCHANGED: they still require the tenant-wide `appointments.update`, so
+ * a doctor can read but never act on the queue.
  *
  * Tenant scoping: `tenantId` is read from `TenantContext`, never from the
  * body/URL. Branch scoping (FR-Q014) and cross-tenant 404-not-403 are both
@@ -54,17 +64,23 @@ export class PatientQueueController {
   ) {}
 
   @Get()
-  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
   list(
     @Query() dto: QueryQueueDto,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthenticatedUser,
   ): Promise<QueueListResult> {
-    return this.queue.list(this.ctx.requireTenantId(), userId, dto);
+    return this.queue.list(this.ctx.requireTenantId(), user, dto);
   }
 
   /** The branches this caller may pick in the queue's branch selector (FR-Q014). */
   @Get('branches')
-  @RequirePermissions(PERMISSION.APPOINTMENTS_READ)
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_READ_OWN,
+  )
   myBranches(@CurrentUser('id') userId: string): Promise<Branch[]> {
     return this.queue.myBranches(this.ctx.requireTenantId(), userId);
   }

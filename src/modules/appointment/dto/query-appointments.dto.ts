@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
+  IsIn,
   IsInt,
   IsISO8601,
   IsOptional,
@@ -105,4 +106,16 @@ export class QueryAppointmentsDto {
   @Min(1)
   @Max(100)
   limit: number = 20;
+
+  @ApiPropertyOptional({
+    description:
+      'Sort direction on `start_at`. Defaults to DESC (most recent first) — ' +
+      'the historical behaviour. Pass ASC to walk forward from now, e.g. for ' +
+      'a "next appointments" / "today\'s schedule" view.',
+    enum: ['ASC', 'DESC'],
+    default: 'DESC',
+  })
+  @IsOptional()
+  @IsIn(['ASC', 'DESC'])
+  order: 'ASC' | 'DESC' = 'DESC';
 }

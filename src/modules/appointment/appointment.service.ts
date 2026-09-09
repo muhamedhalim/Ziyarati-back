@@ -44,8 +44,9 @@ import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
-import { PERMISSION } from '../../rbac/rbac.constants';
+import { isScopedToOwnStaff } from '../../rbac/rbac.constants';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 
 /** Authenticated principal's identity + permission set — enough to apply ownership scoping. */
 export interface AppointmentCaller {
@@ -181,8 +182,6 @@ export class AppointmentsService {
     private readonly cancellations: Repository<AppointmentCancellation>,
     @InjectRepository(ScheduledNotification)
     private readonly scheduledNotifications: Repository<ScheduledNotification>,
-    @InjectRepository(StaffProfile)
-    private readonly staffProfiles: Repository<StaffProfile>,
     private readonly dataSource: DataSource,
     /** The single availability engine: every booking path validates through it. */
     private readonly availability: AvailabilityService,
@@ -194,6 +193,8 @@ export class AppointmentsService {
     private readonly audit: AppointmentAuditService,
     /** The one authority on "which branches may this caller touch". */
     private readonly branchScope: BranchScopeService,
+    /** The one authority on "which StaffProfile, if any, IS this caller". */
+    private readonly staffScope: StaffScopeService,
   ) {}
 
   // ────────────────────── Activity / audit trail ─────────────────────────── //
@@ -242,30 +243,14 @@ export class AppointmentsService {
   // ───────────────────────────── Queries ─────────────────────────────────── //
 
   /**
-   * Resolves the caller's own StaffProfile id in this tenant, or `null` if
-   * they aren't linked to one (e.g. an Owner/Manager account with no
-   * StaffProfile). Backs the `appointments.read_own` ownership scope — see
-   * OWNERSHIP_SCOPED_PERMISSIONS in rbac.constants.ts. A caller with no
-   * StaffProfile and only the "_own" permission legitimately owns nothing.
-   */
-  private async resolveCallerStaffId(
-    tenantId: string,
-    userId: string,
-  ): Promise<string | null> {
-    const profile = await this.staffProfiles.findOne({
-      where: { user: { id: userId }, tenant: { id: tenantId } },
-      select: { id: true },
-    });
-    return profile?.id ?? null;
-  }
-
-  /**
    * Paginated, tenant-scoped list with optional filters.
    *
-   * `caller` drives ownership scoping: holding only `appointments.read_own`
-   * (not the tenant-wide `appointments.read`) FORCES the staff filter to the
-   * caller's own StaffProfile, overriding whatever `query.staffId` the client
-   * sent — a doctor can never widen their own scope via the query string.
+   * `caller` drives ownership scoping: `isScopedToOwnStaff` (not holding the
+   * tenant-wide `appointments.read`) FORCES the staff filter to the caller's
+   * own StaffProfile — resolved via `StaffScopeService`, the shared authority
+   * also used by `DashboardSummaryService` and `PatientQueueService` — this
+   * OVERRIDES whatever `query.staffId` the client sent, so a doctor can never
+   * widen their own scope via the query string.
    */
   async findAll(
     tenantId: string,
@@ -274,8 +259,11 @@ export class AppointmentsService {
   ) {
     const where: FindOptionsWhere<Appointment> = { tenant: { id: tenantId } };
 
-    if (!caller.permissions.includes(PERMISSION.APPOINTMENTS_READ)) {
-      const ownStaffId = await this.resolveCallerStaffId(tenantId, caller.id);
+    if (isScopedToOwnStaff(caller.permissions)) {
+      const ownStaffId = await this.staffScope.resolveOwnStaffId(
+        tenantId,
+        caller.id,
+      );
       if (!ownStaffId) {
         return { data: [], total: 0, page: query.page, limit: query.limit };
       }
@@ -334,7 +322,7 @@ export class AppointmentsService {
         staff: true,
         services: { service: true },
       },
-      order: { start_at: 'DESC' },
+      order: { start_at: query.order ?? 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
@@ -375,8 +363,11 @@ export class AppointmentsService {
       });
     }
 
-    if (caller && !caller.permissions.includes(PERMISSION.APPOINTMENTS_READ)) {
-      const ownStaffId = await this.resolveCallerStaffId(tenantId, caller.id);
+    if (caller && isScopedToOwnStaff(caller.permissions)) {
+      const ownStaffId = await this.staffScope.resolveOwnStaffId(
+        tenantId,
+        caller.id,
+      );
       if (!ownStaffId || appointment.staff?.id !== ownStaffId) {
         throw new AppError(ErrorCode.NOT_FOUND, {
           message: 'Appointment not found',

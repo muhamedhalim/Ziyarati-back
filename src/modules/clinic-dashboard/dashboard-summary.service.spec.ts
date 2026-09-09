@@ -95,6 +95,7 @@ function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
   const recorded: RecordedQuery[] = [];
   const row = {
     appointments: '128',
+    myPatients: '37',
     customers: '412',
     staff: '9',
     pendingHandovers: '2',
@@ -108,11 +109,22 @@ function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
   });
   const cacheKeys: string[] = [];
 
+  // StaffScopeService double — the extracted own-StaffProfile resolver
+  // (formerly `DashboardSummaryService.resolveCallerStaffId`). Defaults to
+  // the same "staff-of-caller" answer the old `staffRepo.findOne` mock gave,
+  // so every pre-existing assertion in this suite keeps testing exactly what
+  // it did; tests that need "no staff profile" now override THIS double
+  // instead of `staffRepo.findOne`.
+  const staffScope = {
+    resolveOwnStaffId: jest.fn().mockResolvedValue('staff-of-caller'),
+  };
+
   const service = new DashboardSummaryService(
     makeRepo('Appointment', recorded, row, {
       tenant: 'tenantId',
       staff: 'staffId',
       branch: 'branchId',
+      customer: 'customerId',
     }) as never,
     makeRepo('Customer', recorded, row) as never,
     staffRepo as never,
@@ -143,9 +155,10 @@ function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
         .fn()
         .mockResolvedValue({ branchIds: options.branchIds ?? null }),
     } as never,
+    staffScope as never,
   );
 
-  return { service, recorded, cacheKeys, staffRepo };
+  return { service, recorded, cacheKeys, staffRepo, staffScope };
 }
 
 function principal(permissions: string[]): AuthenticatedUser {
@@ -166,7 +179,7 @@ const ALL_FOUR = [
 
 describe('DashboardSummaryService', () => {
   describe('one round trip', () => {
-    it('answers all four counts with a SINGLE executed query', async () => {
+    it('answers all five counts with a SINGLE executed query', async () => {
       const { service, recorded } = build();
 
       const result = await service.get(TENANT, principal(ALL_FOUR));
@@ -174,27 +187,35 @@ describe('DashboardSummaryService', () => {
       expect(recorded).toHaveLength(1);
       expect(result).toMatchObject({
         appointments: 128,
+        myPatients: 37,
         customers: 412,
         staff: 9,
         pendingHandovers: 2,
       });
     });
 
-    it('composes four independent scalar sub-selects, never a join between the tables', async () => {
+    it('composes five independent scalar sub-selects, never a join between the tables', async () => {
       const { service, recorded } = build();
       await service.get(TENANT, principal(ALL_FOUR));
 
       const [query] = recorded;
       expect(query.selects.map((s) => s.alias)).toEqual([
         'appointments',
+        'myPatients',
         'customers',
         'staff',
         'pendingHandovers',
       ]);
       // Each select is a parenthesised sub-SELECT, so the outer statement
       // returns exactly one row and no table is joined to another.
+      // `myPatients` is COUNT(DISTINCT ...) — a different aggregate from the
+      // other four's COUNT(*), so it is checked separately.
       for (const select of query.selects) {
-        expect(select.sql).toMatch(/^\(SELECT COUNT\(\*\)/);
+        if (select.alias === 'myPatients') {
+          expect(select.sql).toMatch(/^\(SELECT COUNT\(DISTINCT/);
+        } else {
+          expect(select.sql).toMatch(/^\(SELECT COUNT\(\*\)/);
+        }
       }
       // The outer FROM is the tenant row itself — the anchor that makes a
       // no-FROM select list legal and guarantees a single result row.
@@ -273,11 +294,20 @@ describe('DashboardSummaryService', () => {
       expect(appointments?.sql).toContain('"staffId" = :ownStaffId');
       expect(recorded[0].params.ownStaffId).toBe('staff-of-caller');
       expect(result.scope.appointments).toBe('OWN');
+
+      // `myPatients` rides the SAME own-staff scope as `appointments` above —
+      // same bound `:ownStaffId`, same FK column.
+      const myPatients = recorded[0].selects.find(
+        (s) => s.alias === 'myPatients',
+      );
+      expect(myPatients?.sql).toContain('"customerId"');
+      expect(myPatients?.sql).toContain('"staffId" = :ownStaffId');
+      expect(result.myPatients).toBe(37);
     });
 
-    it('reports 0, not every appointment, when a read_own caller has no staff profile', async () => {
-      const { service, recorded, staffRepo } = build();
-      staffRepo.findOne.mockResolvedValue(null);
+    it('reports 0, not every appointment (or patient), when a read_own caller has no staff profile', async () => {
+      const { service, recorded, staffScope } = build();
+      staffScope.resolveOwnStaffId.mockResolvedValue(null);
 
       const result = await service.get(
         TENANT,
@@ -288,6 +318,7 @@ describe('DashboardSummaryService', () => {
       // 0 (a real answer), not null ("you may not ask") — the same answer
       // AppointmentService.findAll gives such a caller today.
       expect(result.appointments).toBe(0);
+      expect(result.myPatients).toBe(0);
       expect(result.scope.appointments).toBe('OWN');
     });
 

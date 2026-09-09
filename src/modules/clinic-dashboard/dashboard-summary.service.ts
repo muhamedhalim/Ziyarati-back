@@ -20,6 +20,7 @@ import {
   BranchScopeService,
   type BranchScope,
 } from '../../core/branch-scope/branch-scope.service';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 
 /**
  * The four headline counts the clinic/reception dashboard renders.
@@ -31,6 +32,17 @@ import {
 export interface DashboardSummary {
   appointments: number | null;
   customers: number | null;
+  /**
+   * Distinct customers across the appointments this caller may read — NOT
+   * the same question `customers` answers. For a caller scoped to
+   * `appointments.read_own` (today: doctor) this is genuinely "how many of
+   * MY patients", counted under the identical own-staff + branch scope as
+   * `appointments`. For a tenant-wide caller it is still narrower than
+   * `customers`: "patients with at least one appointment" vs. "every
+   * customer record in the clinic". `null` under the same rule as every
+   * other count here — the caller may not ask, not "the answer is zero".
+   */
+  myPatients: number | null;
   staff: number | null;
   pendingHandovers: number | null;
   /** Echoes what the caller was actually allowed to see — never client-guessed. */
@@ -128,6 +140,7 @@ export class DashboardSummaryService {
     private readonly cache: AnalyticsCacheService,
     private readonly access: AccessControlService,
     private readonly branchScope: BranchScopeService,
+    private readonly staffScope: StaffScopeService,
   ) {}
 
   async get(
@@ -142,7 +155,7 @@ export class DashboardSummaryService {
     // shares one entry.
     const ownStaffId =
       grants.appointments === 'OWN'
-        ? await this.resolveCallerStaffId(tenantId, user.id)
+        ? await this.staffScope.resolveOwnStaffId(tenantId, user.id)
         : null;
 
     // The BRANCH narrowing, on top of (not instead of) the permission
@@ -203,18 +216,6 @@ export class DashboardSummaryService {
     };
   }
 
-  /** The caller's own StaffProfile id — mirrors `AppointmentService`'s own scoping. */
-  private async resolveCallerStaffId(
-    tenantId: string,
-    userId: string,
-  ): Promise<string | null> {
-    const profile = await this.staff.findOne({
-      where: { user: { id: userId }, tenant: { id: tenantId } },
-      select: { id: true },
-    });
-    return profile?.id ?? null;
-  }
-
   /**
    * Cache key must encode the caller's VISIBILITY, or a receptionist's cached
    * response could be served to a doctor whose scope is narrower.
@@ -225,6 +226,11 @@ export class DashboardSummaryService {
    * tenant-wide marker) is a distinct value from any branch id list, and the
    * ids are already sorted by `BranchScopeService`, so the same scope always
    * produces the same key.
+   *
+   * `myPatients` needs NO key of its own: it is gated by the exact same
+   * `grants.appointments`/`ownStaffId` pair the `a:` part below already
+   * encodes, and computed from the identical bound parameters — there is no
+   * third input for a key to miss.
    */
   private cacheSuffix(
     grants: Grants,
@@ -310,6 +316,31 @@ export class DashboardSummaryService {
         );
       }
       add(`(${sub.getQuery()})`, 'appointments');
+
+      // `myPatients` — distinct customers across the SAME appointment scope
+      // as the count immediately above (own-staff + branch, when applicable).
+      // Deliberately a separate sub-select, not `COUNT(DISTINCT ...)` folded
+      // into the one above: the two answer different questions ("how many
+      // appointments" vs. "how many distinct patients") and must remain
+      // independently readable if a future caller can see one but not the
+      // other. Reuses the identical bound parameters — `:tenantId`,
+      // `:ownStaffId`, `:scopeBranchIds` — never re-derives them, so this
+      // can never drift from the scope `appointments` itself just applied.
+      const patientsSub = this.appointments
+        .createQueryBuilder('a')
+        .select(`COUNT(DISTINCT a."${this.fk(this.appointments, 'customer')}")`)
+        .where(`a."${this.fk(this.appointments, 'tenant')}" = :tenantId`);
+      if (ownStaffId) {
+        patientsSub.andWhere(
+          `a."${this.fk(this.appointments, 'staff')}" = :ownStaffId`,
+        );
+      }
+      if (branchIds !== null) {
+        patientsSub.andWhere(
+          `a."${this.fk(this.appointments, 'branch')}" = ANY(:scopeBranchIds)`,
+        );
+      }
+      add(`(${patientsSub.getQuery()})`, 'myPatients');
     }
 
     if (grants.customers) {
@@ -377,6 +408,7 @@ export class DashboardSummaryService {
 
     return {
       appointments: read('appointments', grants.appointments !== 'NONE'),
+      myPatients: read('myPatients', grants.appointments !== 'NONE'),
       customers: read('customers', grants.customers),
       staff: read('staff', grants.staff),
       pendingHandovers: read('pendingHandovers', grants.handovers),

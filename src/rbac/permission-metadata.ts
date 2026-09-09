@@ -231,6 +231,8 @@ export const PERMISSION_DESCRIPTIONS: Partial<Record<PermissionSlug, string>> =
     [PERMISSION.CUSTOMERS_READ]: 'View customer records.',
     [PERMISSION.SERVICES_READ]: 'View the bookable service catalogue.',
     [PERMISSION.STAFF_READ]: 'View staff members and their profiles.',
+    [PERMISSION.STAFF_READ_OWN]:
+      'View only the current user’s own staff profile, weekly schedule and time-off — never another staff member’s (no id is accepted from the client on these routes).',
   };
 
 // ---------------------------------------------------------------------------
