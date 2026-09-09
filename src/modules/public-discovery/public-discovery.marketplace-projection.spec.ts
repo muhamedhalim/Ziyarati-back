@@ -181,4 +181,66 @@ describe('PublicDiscoveryService.marketplaceClinicDetail (C2b)', () => {
     const [sql] = query.mock.calls[0];
     expect(sql).toContain('t.id = $1::uuid');
   });
+
+  it('404s for a blank/whitespace-only idOrSlug (malformed input rejection)', async () => {
+    const { service } = build({ tenant: [] });
+    await expect(service.marketplaceClinicDetail('   ')).rejects.toMatchObject({
+      code: ErrorCode.NOT_FOUND,
+    });
+  });
+
+  it('applies the ELIGIBLE_CLINIC predicate on the tenant lookup (visibility predicate)', async () => {
+    const { service, query } = build({ tenant: [TENANT] });
+    await service.marketplaceClinicDetail('noor-dental');
+    const tenantQuery = query.mock.calls.find((c) => (c[0] as string).includes('FROM tenants t'));
+    expect(tenantQuery?.[0]).toMatch(/t\.approval_status = 'APPROVED'/);
+    expect(tenantQuery?.[0]).toMatch(/t\.is_active = true/);
+    expect(tenantQuery?.[0]).toMatch(/t\.deleted_at IS NULL/);
+    expect(tenantQuery?.[0]).toMatch(/COALESCE\(ts\.public_booking_enabled, false\) = true/);
+  });
+
+  it('every sub-collection query excludes soft-deleted/inactive rows (soft-delete exclusion)', async () => {
+    const { service, query } = build({
+      tenant: [TENANT],
+      branches: [BRANCH_A],
+      services: [SERVICE_UNPRICED],
+      doctors: [],
+      allBranches: [BRANCH_A],
+    });
+    await service.marketplaceClinicDetail('noor-dental');
+    const calls = query.mock.calls.map((c) => c[0] as string);
+
+    const branchQuery = calls.find((s) => s.includes('FROM branches b') && s.includes('ORDER BY b.name'));
+    expect(branchQuery).toMatch(/b\.is_active = true/);
+    expect(branchQuery).toMatch(/b\.deleted_at IS NULL/);
+
+    const serviceQuery = calls.find((s) => s.includes('FROM services') && s.includes('duration_minutes'));
+    expect(serviceQuery).toMatch(/is_active = true/);
+    expect(serviceQuery).toMatch(/deleted_at IS NULL/);
+
+    const doctorQuery = calls.find((s) => s.includes('FROM staff_profiles sp') && s.includes('ORDER BY name'));
+    expect(doctorQuery).toMatch(/sp\.deleted_at IS NULL/);
+    expect(doctorQuery).toMatch(/sp\.is_available_for_booking = true/);
+  });
+
+  it('clamps services/doctors pagination the same way as branches (pagination bounds, all three collections)', async () => {
+    const { service, query } = build({ tenant: [TENANT] });
+
+    await service.marketplaceClinicDetail('noor-dental', {
+      servicesPage: -3,
+      servicesPageSize: 1000,
+      doctorsPage: 0,
+      doctorsPageSize: 0,
+    });
+
+    const serviceQuery = query.mock.calls.find(
+      (c) => (c[0] as string).includes('FROM services') && (c[0] as string).includes('duration_minutes'),
+    );
+    expect(serviceQuery?.[1]).toEqual(['clinic-1', 50, 0]); // pageSize capped 50, page floored to 1 -> offset 0
+
+    const doctorQuery = query.mock.calls.find(
+      (c) => (c[0] as string).includes('FROM staff_profiles sp') && (c[0] as string).includes('ORDER BY name'),
+    );
+    expect(doctorQuery?.[1]).toEqual(['clinic-1', 1, 0]); // pageSize floored to 1, page floored to 1 -> offset 0
+  });
 });

@@ -75,6 +75,28 @@ describe('PublicDiscoveryService.searchServices (C7)', () => {
     const result = await service.searchServices({});
     expect(result.items[0].description).toBeNull();
   });
+
+  it('rejects malformed/blank filters gracefully rather than throwing (malformed input rejection)', async () => {
+    const { service } = buildSearch([]);
+    await expect(
+      service.searchServices({ q: '   ', cityId: '', specialtySlug: '  ' }),
+    ).resolves.toEqual({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 24,
+    });
+  });
+
+  it('floors a negative page and clamps a negative pageSize to the 1..24 range', async () => {
+    const { service } = buildSearch([]);
+    const result = await service.searchServices({
+      page: -5,
+      pageSize: -50,
+    });
+    expect(result.page).toBe(1);
+    expect(result.pageSize).toBe(1);
+  });
 });
 
 function buildDetail(opts: {
