@@ -24,6 +24,7 @@
 import { DashboardSummaryService } from './dashboard-summary.service';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { HANDOVER_STATUS } from '../ai/ai.constants';
+import { AppError, ErrorCode } from '../../common/errors';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
 
 const TENANT = 'tenant-1';
@@ -91,7 +92,14 @@ function makeRepo(
   };
 }
 
-function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
+function build(
+  options: {
+    aiAllowed?: boolean;
+    branchIds?: string[];
+    /** Ids `branches.exists(...)` should answer `true` for (this tenant's branches). */
+    tenantBranchIds?: string[];
+  } = {},
+) {
   const recorded: RecordedQuery[] = [];
   const row = {
     appointments: '128',
@@ -108,6 +116,31 @@ function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
     user: 'userId',
   });
   const cacheKeys: string[] = [];
+
+  // Branch repository double — backs the tenant-ownership check on a
+  // requested `?branchId=`. Defaults to "nothing exists" so a test must opt
+  // in via `tenantBranchIds`, the same fail-closed posture the real query has.
+  const branchRepo = {
+    exists: jest.fn(
+      async ({ where }: { where: { id: string; tenant: { id: string } } }) =>
+        (options.tenantBranchIds ?? []).includes(where.id),
+    ),
+  };
+
+  // Real ABAC predicate (not a stub): tenant-wide (`branchIds: null`) allows
+  // anything, a restricted scope allows only its own ids — mirrors
+  // `BranchScopeService.isAllowed`/`assertBranchAllowed` exactly, so these
+  // tests exercise the real composition rule, not a hand-waved double.
+  const assertBranchAllowed = (
+    scope: { branchIds: string[] | null },
+    branchId: string,
+  ) => {
+    if (scope.branchIds === null) return;
+    if (scope.branchIds.includes(branchId)) return;
+    throw new AppError(ErrorCode.PERMISSION_DENIED, {
+      message: 'You can only access branches you are assigned to',
+    });
+  };
 
   // StaffScopeService double — the extracted own-StaffProfile resolver
   // (formerly `DashboardSummaryService.resolveCallerStaffId`). Defaults to
@@ -130,6 +163,7 @@ function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
     staffRepo as never,
     makeRepo('HandoverRequest', recorded, row) as never,
     makeRepo('Tenant', recorded, row) as never,
+    branchRepo as never,
     {
       // Pass-through: identical to the real service with no REDIS_URL.
       wrap: <T>(
@@ -154,11 +188,12 @@ function build(options: { aiAllowed?: boolean; branchIds?: string[] } = {}) {
       resolve: jest
         .fn()
         .mockResolvedValue({ branchIds: options.branchIds ?? null }),
+      assertBranchAllowed,
     } as never,
     staffScope as never,
   );
 
-  return { service, recorded, cacheKeys, staffRepo, staffScope };
+  return { service, recorded, cacheKeys, staffRepo, staffScope, branchRepo };
 }
 
 function principal(permissions: string[]): AuthenticatedUser {
@@ -482,6 +517,130 @@ describe('DashboardSummaryService — branch scoping', () => {
       await b.service.get(TENANT, principal(ALL_FOUR));
 
       expect(a.cacheKeys[0]).toEqual(b.cacheKeys[0]);
+    });
+  });
+});
+
+/**
+ * ============================================================================
+ *  The `?branchId=` request filter — the dashboard's branch DROPDOWN
+ * ============================================================================
+ *
+ * Distinct from the suite above: that one proves the branch scope the SERVER
+ * resolves from `branch_users`; this one proves what happens when the CLIENT
+ * additionally asks to narrow to one branch — the never-trust-the-client
+ * boundary (tenant ownership, then the caller's own ABAC scope) and its
+ * effect on the cache key.
+ */
+describe('DashboardSummaryService — requested branchId filter', () => {
+  const BRANCH_A = 'branch-a';
+  const BRANCH_B = 'branch-b';
+  const FOREIGN = 'foreign-tenant-branch';
+
+  it('"All branches" (no filter) is byte-identical to today — same scope, same cache key', async () => {
+    const withoutFilter = build({ tenantBranchIds: [BRANCH_A] });
+    const withFilterOmitted = build({ tenantBranchIds: [BRANCH_A] });
+
+    const a = await withoutFilter.service.get(TENANT, principal(ALL_FOUR));
+    const b = await withFilterOmitted.service.get(
+      TENANT,
+      principal(ALL_FOUR),
+      undefined,
+    );
+
+    expect(a.scope.branchIds).toBeNull();
+    expect(b.scope.branchIds).toBeNull();
+    expect(withoutFilter.cacheKeys[0]).toEqual(withFilterOmitted.cacheKeys[0]);
+    expect(withoutFilter.branchRepo.exists).not.toHaveBeenCalled();
+  });
+
+  it('a tenant-wide caller (owner) narrows every count to the requested branch', async () => {
+    const { service, recorded } = build({ tenantBranchIds: [BRANCH_A] });
+
+    const result = await service.get(TENANT, principal(ALL_FOUR), BRANCH_A);
+
+    expect(result.scope.branchIds).toEqual([BRANCH_A]);
+    const appointments = recorded[0].selects.find(
+      (s) => s.alias === 'appointments',
+    )!;
+    expect(appointments.sql).toContain('a."branchId" = ANY(:scopeBranchIds)');
+    expect(recorded[0].params.scopeBranchIds).toEqual([BRANCH_A]);
+  });
+
+  it('rejects a branch id that does not belong to this tenant with NOT_FOUND (404), never a silent empty result', async () => {
+    const { service, recorded } = build({ tenantBranchIds: [BRANCH_A] });
+
+    await expect(
+      service.get(TENANT, principal(ALL_FOUR), FOREIGN),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    // The rejection happens before the aggregation query — no partial/derived
+    // numbers are ever computed for a branch outside the tenant.
+    expect(recorded).toHaveLength(0);
+  });
+
+  it('rejects, with PERMISSION_DENIED (403), a branch that IS in the tenant but outside a branch-restricted caller’s own scope', async () => {
+    const { service, recorded } = build({
+      branchIds: [BRANCH_A],
+      tenantBranchIds: [BRANCH_A, BRANCH_B],
+    });
+
+    await expect(
+      service.get(TENANT, principal(ALL_FOUR), BRANCH_B),
+    ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(recorded).toHaveLength(0);
+  });
+
+  it('accepts a branch-restricted caller filtering to their OWN branch (a no-op narrowing)', async () => {
+    const { service } = build({
+      branchIds: [BRANCH_A],
+      tenantBranchIds: [BRANCH_A, BRANCH_B],
+    });
+
+    const result = await service.get(TENANT, principal(ALL_FOUR), BRANCH_A);
+    expect(result.scope.branchIds).toEqual([BRANCH_A]);
+  });
+
+  it('composes with `appointments.read_own`: a Doctor stays confined to their OWN appointments AND the selected branch — never every doctor at that branch', async () => {
+    const { service, recorded } = build({ tenantBranchIds: [BRANCH_A] });
+
+    const result = await service.get(
+      TENANT,
+      principal([PERMISSION.APPOINTMENTS_READ_OWN]),
+      BRANCH_A,
+    );
+
+    const appointments = recorded[0].selects.find(
+      (s) => s.alias === 'appointments',
+    )!;
+    // Both predicates present, ANDed — the branch filter narrows further, it
+    // never replaces the caller's own-staff narrowing.
+    expect(appointments.sql).toContain('"staffId" = :ownStaffId');
+    expect(appointments.sql).toContain('a."branchId" = ANY(:scopeBranchIds)');
+    expect(recorded[0].params.ownStaffId).toBe('staff-of-caller');
+    expect(recorded[0].params.scopeBranchIds).toEqual([BRANCH_A]);
+    expect(result.scope.appointments).toBe('OWN');
+    expect(result.scope.branchIds).toEqual([BRANCH_A]);
+  });
+
+  describe('cache isolation', () => {
+    it('gives the SAME caller different cache keys for different selected branches', async () => {
+      const a = build({ tenantBranchIds: [BRANCH_A, BRANCH_B] });
+      await a.service.get(TENANT, principal(ALL_FOUR), BRANCH_A);
+
+      const b = build({ tenantBranchIds: [BRANCH_A, BRANCH_B] });
+      await b.service.get(TENANT, principal(ALL_FOUR), BRANCH_B);
+
+      expect(a.cacheKeys[0]).not.toEqual(b.cacheKeys[0]);
+    });
+
+    it('gives a selected-branch request a DIFFERENT key than the unfiltered ("all branches") request', async () => {
+      const filtered = build({ tenantBranchIds: [BRANCH_A] });
+      await filtered.service.get(TENANT, principal(ALL_FOUR), BRANCH_A);
+
+      const unfiltered = build({ tenantBranchIds: [BRANCH_A] });
+      await unfiltered.service.get(TENANT, principal(ALL_FOUR));
+
+      expect(filtered.cacheKeys[0]).not.toEqual(unfiltered.cacheKeys[0]);
     });
   });
 });
