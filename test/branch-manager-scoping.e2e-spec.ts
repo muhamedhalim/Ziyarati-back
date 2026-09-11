@@ -811,6 +811,88 @@ describe('Branch Manager — branch isolation (e2e)', () => {
 
       expect(manager.body.appointments).toBeLessThan(owner.body.appointments);
     });
+
+    // ── The `?branchId=` request filter — the dashboard's branch dropdown ──
+
+    it('the owner (tenant-wide) narrows every count to a `?branchId=` they select', async () => {
+      const expected = await countAppointments(fx.branchA);
+      const expectedStaff = await countStaff(fx.branchA);
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/dashboard/summary`)
+        .query({ branchId: fx.branchA })
+        .set(...asOwner())
+        .expect(200);
+
+      expect(res.body.scope.branchIds).toEqual([fx.branchA]);
+      expect(res.body.appointments).toBe(expected);
+      expect(res.body.staff).toBe(expectedStaff);
+    });
+
+    it('the owner filtering to branch B gets DIFFERENT numbers than filtering to branch A — never mixed', async () => {
+      const [a, b] = await Promise.all([
+        request(e2e.app.getHttpServer())
+          .get(`${API}/dashboard/summary`)
+          .query({ branchId: fx.branchA })
+          .set(...asOwner())
+          .expect(200),
+        request(e2e.app.getHttpServer())
+          .get(`${API}/dashboard/summary`)
+          .query({ branchId: fx.branchB })
+          .set(...asOwner())
+          .expect(200),
+      ]);
+
+      expect(a.body.appointments).toBe(await countAppointments(fx.branchA));
+      expect(b.body.appointments).toBe(await countAppointments(fx.branchB));
+      expect(a.body.scope.branchIds).toEqual([fx.branchA]);
+      expect(b.body.scope.branchIds).toEqual([fx.branchB]);
+    });
+
+    it('"All branches" (no filter) still reports the owner’s full tenant-wide count — the default is unchanged', async () => {
+      const expected = await countAppointments();
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/dashboard/summary`)
+        .set(...asOwner())
+        .expect(200);
+
+      expect(res.body.scope.branchIds).toBeNull();
+      expect(res.body.appointments).toBe(expected);
+    });
+
+    it('the manager may filter to their OWN assigned branch — a no-op narrowing', async () => {
+      const res = await request(e2e.app.getHttpServer())
+        .get(`${API}/dashboard/summary`)
+        .query({ branchId: fx.branchA })
+        .set(...asManager())
+        .expect(200);
+
+      expect(res.body.scope.branchIds).toEqual([fx.branchA]);
+      expect(res.body.appointments).toBe(await countAppointments(fx.branchA));
+    });
+
+    it('refuses the manager a sibling branch that exists in the tenant but outside their own scope (403, not a silent empty result)', async () => {
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/dashboard/summary`)
+        .query({ branchId: fx.branchB })
+        .set(...asManager())
+        .expect(403);
+    });
+
+    it('rejects a branch id that does not belong to this tenant with 404, for the owner too', async () => {
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/dashboard/summary`)
+        .query({ branchId: randomUUID() })
+        .set(...asOwner())
+        .expect(404);
+    });
+
+    it('rejects a syntactically invalid branchId with 400 (validation), never reaching authorization', async () => {
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/dashboard/summary`)
+        .query({ branchId: 'not-a-uuid' })
+        .set(...asOwner())
+        .expect(400);
+    });
   });
 
   // ── H. Direct URL access to an owner-only surface ────────────────────────

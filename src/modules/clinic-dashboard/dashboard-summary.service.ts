@@ -7,6 +7,8 @@ import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { Branch } from '../../entities/SaaS-Core/Branch';
+import { AppError, ErrorCode } from '../../common/errors';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import {
   AnalyticsCacheService,
@@ -49,13 +51,14 @@ export interface DashboardSummary {
   scope: {
     appointments: 'ALL' | 'OWN' | 'NONE';
     /**
-     * The BRANCH narrowing applied to this payload, resolved server-side from
-     * `branch_users` (never a request parameter — this endpoint takes none).
+     * The BRANCH narrowing actually applied to this payload — resolved
+     * server-side, echoed back, never client-guessed.
      *
-     * `null` for a tenant-wide caller. For a branch-restricted one it is the
-     * exact branch ids counted, so the UI can state which branch the numbers
-     * are for instead of implying they are the whole clinic's — the specific
-     * confusion an unscoped dashboard creates for a Branch Manager.
+     * `null` for a tenant-wide caller with no `?branchId=` filter. For a
+     * branch-restricted caller (e.g. a Branch Manager) it is their assigned
+     * branches from `branch_users`. When the caller passed a validated
+     * `?branchId=`, it is that ONE branch, regardless of role — the filter
+     * only ever narrows further, never widens past the caller's own scope.
      */
     branchIds: string[] | null;
   };
@@ -137,6 +140,8 @@ export class DashboardSummaryService {
     private readonly handovers: Repository<HandoverRequest>,
     @InjectRepository(Tenant)
     private readonly tenants: Repository<Tenant>,
+    @InjectRepository(Branch)
+    private readonly branches: Repository<Branch>,
     private readonly cache: AnalyticsCacheService,
     private readonly access: AccessControlService,
     private readonly branchScope: BranchScopeService,
@@ -146,6 +151,7 @@ export class DashboardSummaryService {
   async get(
     tenantId: string,
     user: AuthenticatedUser,
+    requestedBranchId?: string,
   ): Promise<DashboardSummary> {
     const grants = await this.resolveGrants(tenantId, user);
 
@@ -161,8 +167,13 @@ export class DashboardSummaryService {
     // The BRANCH narrowing, on top of (not instead of) the permission
     // narrowing above. Tenant-wide for every role that exists today except a
     // branch-restricted one, so this is a no-op for owner/manager/
-    // receptionist/doctor and their cache entries are unchanged.
-    const branchScope = await this.branchScope.resolve(tenantId, user);
+    // receptionist/doctor and their cache entries are unchanged UNLESS a
+    // `?branchId=` filter was also requested.
+    const branchScope = await this.effectiveBranchScope(
+      tenantId,
+      await this.branchScope.resolve(tenantId, user),
+      requestedBranchId,
+    );
 
     const suffix = this.cacheSuffix(grants, ownStaffId, branchScope);
 
@@ -181,6 +192,46 @@ export class DashboardSummaryService {
       },
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Intersects a client-requested `?branchId=` into the caller's own
+   * server-resolved scope. The request-supplied id is NEVER trusted as-is:
+   *
+   *  1. It must belong to THIS tenant — 404 otherwise (mirrors
+   *     `AppointmentService.assertBranch`); a cross-tenant id must never
+   *     silently resolve to zero rows, which is what relying on the SQL's own
+   *     `tenantId` predicate alone would do.
+   *  2. It must be inside the caller's OWN branch scope — 403 otherwise, via
+   *     the shared {@link BranchScopeService.assertBranchAllowed} (identical
+   *     rule `ActivityLogController` applies to its own `?branchId=`).
+   *
+   * A caller who is tenant-wide (`branchScope.branchIds === null` — Owner,
+   * Manager, Receptionist, or a Doctor, none of whom are branch-RESTRICTED)
+   * may request any branch that exists in the tenant: step 2 always passes
+   * for them, so step 1 is what actually guards the boundary. For a
+   * branch-restricted caller (a Branch Manager) step 2 additionally confines
+   * the request to branches they are assigned to.
+   *
+   * No filter requested → the resolved scope is returned untouched, so
+   * "All branches" (the default) is byte-identical to today's behaviour.
+   */
+  private async effectiveBranchScope(
+    tenantId: string,
+    branchScope: BranchScope,
+    requestedBranchId: string | undefined,
+  ): Promise<BranchScope> {
+    if (!requestedBranchId) return branchScope;
+
+    const belongsToTenant = await this.branches.exists({
+      where: { id: requestedBranchId, tenant: { id: tenantId } },
+    });
+    if (!belongsToTenant) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Branch not found' });
+    }
+    this.branchScope.assertBranchAllowed(branchScope, requestedBranchId);
+
+    return { branchIds: [requestedBranchId] };
   }
 
   // ── Authorization ────────────────────────────────────────────────────────

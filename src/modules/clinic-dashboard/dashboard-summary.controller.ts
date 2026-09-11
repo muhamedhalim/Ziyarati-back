@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -20,6 +20,7 @@ import {
   DashboardSummaryService,
   type DashboardSummary,
 } from './dashboard-summary.service';
+import { DashboardSummaryQueryDto } from './dto/dashboard-summary-query.dto';
 
 const S_SUMMARY = {
   type: 'object',
@@ -123,14 +124,22 @@ tenant-wide caller it is still narrower than \`customers\` ("patients with at
 least one appointment" vs. "every customer record").
 
 Served through the per-tenant analytics cache, so repeat opens inside the TTL
-do not reach the database at all.`.trim(),
+do not reach the database at all.
+
+An optional \`?branchId=\` narrows every branch-dependent count (appointments,
+myPatients, staff) to that one branch — never trusted as-is: rejected with 404
+if it does not belong to this tenant, 403 if it falls outside the caller's own
+branch scope (e.g. a Branch Manager naming a sibling branch).`.trim(),
   })
   @ApiOkResponse({ description: 'Dashboard KPI counts.', schema: S_SUMMARY })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid access token.' })
   @ApiForbiddenResponse({ description: 'Clinic inactive.' })
   @Get('summary')
   @PrivateCache(SUMMARY_MAX_AGE_SECONDS)
-  get(@CurrentUser() user: AuthenticatedUser): Promise<DashboardSummary> {
-    return this.summary.get(this.ctx.requireTenantId(), user);
+  get(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: DashboardSummaryQueryDto,
+  ): Promise<DashboardSummary> {
+    return this.summary.get(this.ctx.requireTenantId(), user, query.branchId);
   }
 }
