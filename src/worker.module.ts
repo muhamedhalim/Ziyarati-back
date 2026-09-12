@@ -17,6 +17,7 @@ import { AuthTokenMaintenanceService } from './modules/auth/auth-token-maintenan
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { BranchScopeModule } from './core/branch-scope/branch-scope.module';
+import { StaffScopeModule } from './core/staff-scope/staff-scope.module';
 import { CryptoModule } from './common/crypto/crypto.module';
 import { QueueModule } from './queue/queue.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -258,6 +259,12 @@ const WORKER_PROVIDERS =
     // reached from here (e.g. AdvancedAnalyticsService via AnalyticsModule)
     // fails to resolve BranchScopeService at boot.
     BranchScopeModule,
+    // Sibling scope authority, same reasoning as BranchScopeModule immediately
+    // above: `@Global()` in AppModule only makes it ambient there. Needed here
+    // because AppointmentsService and PatientQueueService (reached via
+    // PatientQueueModule/AppointmentModule below) both inject StaffScopeService
+    // directly — without this, the worker root fails to resolve it at boot.
+    StaffScopeModule,
     // Workers decrypt tenant provider credentials on the send path, so the
     // worker root needs this exactly as much as the API root does.
     CryptoModule,
