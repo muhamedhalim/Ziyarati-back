@@ -38,7 +38,13 @@ const inboundBody = (wamid = 'wamid.1', timestamp = freshTimestamp()) => ({
           value: {
             metadata: { phone_number_id: 'pid-1' },
             messages: [
-              { id: wamid, from: '966500000000', type: 'text', text: { body: 'hi' }, timestamp },
+              {
+                id: wamid,
+                from: '966500000000',
+                type: 'text',
+                text: { body: 'hi' },
+                timestamp,
+              },
             ],
           },
         },
@@ -47,7 +53,11 @@ const inboundBody = (wamid = 'wamid.1', timestamp = freshTimestamp()) => ({
   ],
 });
 
-const statusBody = (wamid = 'wamid.9', status = 'delivered', timestamp = freshTimestamp()) => ({
+const statusBody = (
+  wamid = 'wamid.9',
+  status = 'delivered',
+  timestamp = freshTimestamp(),
+) => ({
   entry: [
     {
       changes: [
@@ -73,19 +83,33 @@ describe('WhatsappWebhookService', () => {
   let recipientDelivery: { recordDelivery: jest.Mock };
   let queue: { enqueueWhatsappWebhook: jest.Mock };
   let messages: MockRepository;
-  let messageStatus: { markDelivered: jest.Mock; markRead: jest.Mock; markFailed: jest.Mock };
+  let messageStatus: {
+    markDelivered: jest.Mock;
+    markRead: jest.Mock;
+    markFailed: jest.Mock;
+  };
 
   beforeEach(async () => {
     webhooks = createMockRepository();
     accounts = createMockRepository();
     webhooks.create.mockImplementation((v: object) => ({ ...v }));
-    webhooks.save.mockImplementation(async (v: object) => ({ id: 'evt-1', ...v }));
+    webhooks.save.mockImplementation(async (v: object) => ({
+      id: 'evt-1',
+      ...v,
+    }));
     accounts.findOne.mockResolvedValue({ id: 'acc-1', tenant: { id: TENANT } });
 
-    verifier = { verify: jest.fn().mockReturnValue(true), resolveChallenge: jest.fn() };
+    verifier = {
+      verify: jest.fn().mockReturnValue(true),
+      resolveChallenge: jest.fn(),
+    };
     inboundAi = { handleInboundValue: jest.fn().mockResolvedValue(undefined) };
     notifDelivery = { recordDelivery: jest.fn().mockResolvedValue(undefined) };
-    recipientDelivery = { recordDelivery: jest.fn().mockResolvedValue({ updated: false, reason: 'recipient-not-found' }) };
+    recipientDelivery = {
+      recordDelivery: jest
+        .fn()
+        .mockResolvedValue({ updated: false, reason: 'recipient-not-found' }),
+    };
     queue = { enqueueWhatsappWebhook: jest.fn().mockResolvedValue(undefined) };
     messages = createMockRepository();
     messages.findOne.mockResolvedValue(null); // default: no matching conversation message
@@ -127,7 +151,9 @@ describe('WhatsappWebhookService', () => {
     it('rejects an invalid signature before touching the database', async () => {
       verifier.verify.mockReturnValueOnce(false);
 
-      await expect(service.ingest(inboundBody(), RAW, 'sha256=bad')).rejects.toMatchObject({
+      await expect(
+        service.ingest(inboundBody(), RAW, 'sha256=bad'),
+      ).rejects.toMatchObject({
         code: ErrorCode.UNAUTHORIZED,
       });
       expect(webhooks.save).not.toHaveBeenCalled();
@@ -166,9 +192,77 @@ describe('WhatsappWebhookService', () => {
 
       const res = await service.ingest(inboundBody(), RAW, 'sha256=ok');
 
-      expect(res).toMatchObject({ accepted: true, id: 'existing', deduplicated: true });
+      expect(res).toMatchObject({
+        accepted: true,
+        id: 'existing',
+        deduplicated: true,
+      });
       expect(webhooks.save).not.toHaveBeenCalled();
       expect(queue.enqueueWhatsappWebhook).not.toHaveBeenCalled();
+    });
+
+    // Patient Journey plan (2026-09-16) — the idempotency key for a status
+    // event now includes the status VALUE, not just the wamid, so Meta's
+    // three separate `sent`/`delivered`/`read` webhooks for one message are
+    // each ingested (not collapsed onto whichever arrived first), while a
+    // genuine redelivery of the SAME status still dedupes.
+    it('does NOT deduplicate sent/delivered/read status events for the same wamid', async () => {
+      const sent = await service.ingest(
+        statusBody('wamid.30', 'sent'),
+        RAW,
+        'sha256=ok',
+      );
+      const delivered = await service.ingest(
+        statusBody('wamid.30', 'delivered'),
+        RAW,
+        'sha256=ok',
+      );
+      const read = await service.ingest(
+        statusBody('wamid.30', 'read'),
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(sent.deduplicated).toBeFalsy();
+      expect(delivered.deduplicated).toBeFalsy();
+      expect(read.deduplicated).toBeFalsy();
+      expect(webhooks.save).toHaveBeenCalledTimes(3);
+      expect(webhooks.create).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ idempotency_key: 'status:wamid.30:sent' }),
+      );
+      expect(webhooks.create).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          idempotency_key: 'status:wamid.30:delivered',
+        }),
+      );
+      expect(webhooks.create).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({ idempotency_key: 'status:wamid.30:read' }),
+      );
+    });
+
+    it('still deduplicates a genuine redelivery of the SAME status', async () => {
+      webhooks.findOne.mockResolvedValueOnce(undefined); // first delivery: not seen yet
+      const first = await service.ingest(
+        statusBody('wamid.31', 'delivered'),
+        RAW,
+        'sha256=ok',
+      );
+      expect(first.deduplicated).toBeFalsy();
+
+      webhooks.findOne.mockResolvedValueOnce({ id: 'existing-delivered' }); // Meta redelivers
+      const second = await service.ingest(
+        statusBody('wamid.31', 'delivered'),
+        RAW,
+        'sha256=ok',
+      );
+      expect(second).toMatchObject({
+        accepted: true,
+        id: 'existing-delivered',
+        deduplicated: true,
+      });
     });
 
     it('treats a concurrent-insert unique violation as a dedup, not a failure', async () => {
@@ -183,7 +277,11 @@ describe('WhatsappWebhookService', () => {
 
       const res = await service.ingest(inboundBody(), RAW, 'sha256=ok');
 
-      expect(res).toMatchObject({ accepted: true, id: 'winner-row', deduplicated: true });
+      expect(res).toMatchObject({
+        accepted: true,
+        id: 'winner-row',
+        deduplicated: true,
+      });
       expect(queue.enqueueWhatsappWebhook).not.toHaveBeenCalled();
     });
 
@@ -193,11 +291,15 @@ describe('WhatsappWebhookService', () => {
       webhooks.findOne.mockResolvedValueOnce(undefined);
       webhooks.findOne.mockResolvedValueOnce(undefined); // re-fetch finds nothing — not our dedup case
 
-      await expect(service.ingest(inboundBody(), RAW, 'sha256=ok')).rejects.toBe(err);
+      await expect(
+        service.ingest(inboundBody(), RAW, 'sha256=ok'),
+      ).rejects.toBe(err);
     });
 
     it('still accepts (200) when enqueueing fails — the event is already stored', async () => {
-      queue.enqueueWhatsappWebhook.mockRejectedValueOnce(new Error('redis down'));
+      queue.enqueueWhatsappWebhook.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
 
       // Throwing would make Meta redeliver something we already hold.
       const res = await service.ingest(inboundBody(), RAW, 'sha256=ok');
@@ -332,7 +434,10 @@ describe('WhatsappWebhookService', () => {
             where: { tenant: { id: TENANT }, wa_message_id: 'wamid.20' },
           }),
         );
-        expect(messageStatus.markDelivered).toHaveBeenCalledWith(TENANT, 'msg-1');
+        expect(messageStatus.markDelivered).toHaveBeenCalledWith(
+          TENANT,
+          'msg-1',
+        );
         expect(messageStatus.markRead).not.toHaveBeenCalled();
       });
 
@@ -421,7 +526,10 @@ describe('WhatsappWebhookService', () => {
 
       const res = await service.processEvent('evt-1');
 
-      expect(res).toMatchObject({ processed: false, reason: 'already-processed' });
+      expect(res).toMatchObject({
+        processed: false,
+        reason: 'already-processed',
+      });
       expect(inboundAi.handleInboundValue).not.toHaveBeenCalled();
     });
 

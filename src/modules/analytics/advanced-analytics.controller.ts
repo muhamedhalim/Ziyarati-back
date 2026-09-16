@@ -59,7 +59,8 @@ const S_ERROR = {
  * during P3 that it has no frontend consumer at all, so there is no known
  * client tolerance to lean on for it.
  */
-const ANALYTICS_MAX_AGE_SECONDS = 30;
+/** Exported so `PatientJourneyController` (Patient Journey plan, approved 2026-09-16) reuses the same browser-cache budget rather than a second constant. */
+export const ANALYTICS_MAX_AGE_SECONDS = 30;
 
 const AUTH_RESPONSES = {
   unauthorized: {

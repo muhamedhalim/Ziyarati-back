@@ -44,6 +44,20 @@ import { MonthlyReportController } from './monthly-report.controller';
 import { StaffPerformanceController } from './staff-performance.controller';
 import { AdvancedAnalyticsController } from './advanced-analytics.controller';
 
+// Patient Journey plan (approved 2026-09-16) — booking-to-consultation
+// journey timing, reminder coverage and deterministic insights. Its own
+// SQL lives in `journey/journey-sql.ts` and its own aggregation in
+// `journey/JourneyAggregationService` — a SECOND heavy-compute unit
+// alongside `AnalyticsAggregationService` (almost every journey figure is
+// new; the two figures that DO already exist — booked/no-show/completed
+// counts — are proven equal to `computeRates` by a parity test, never
+// recomputed under a different definition, per FR-A001). It reuses
+// `AdvancedAnalyticsService.resolveScope`/`validateRange`/`envelope` and
+// `AnalyticsCacheService` rather than a second scope/cache mechanism.
+import { JourneyAggregationService } from './journey/journey-aggregation.service';
+import { PatientJourneyService } from './journey/patient-journey.service';
+import { PatientJourneyController } from './journey/patient-journey.controller';
+
 /**
  * Analytics Domain.
  *
@@ -91,6 +105,7 @@ import { AdvancedAnalyticsController } from './advanced-analytics.controller';
     MonthlyReportController,
     StaffPerformanceController,
     AdvancedAnalyticsController,
+    PatientJourneyController,
   ],
   providers: [
     AnalyticsEventService,
@@ -103,6 +118,8 @@ import { AdvancedAnalyticsController } from './advanced-analytics.controller';
     AnalyticsRetentionService,
     AnalyticsSchemaBootstrap,
     AdvancedAnalyticsService,
+    JourneyAggregationService,
+    PatientJourneyService,
   ],
   exports: [
     AnalyticsEventService,

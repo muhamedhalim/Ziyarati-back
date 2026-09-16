@@ -50,7 +50,30 @@ export type MetricKey =
   | 'performance.services'
   | 'performance.staff'
   | 'performance.branches'
-  | 'performance.channels';
+  | 'performance.channels'
+  // ── Patient Journey plan (approved 2026-09-16). `GET /analytics/journey/
+  // summary` and `/analytics/journey/breakdown` — figures over `queue_entries`
+  // / `appointment_status_logs` / `scheduled_notifications`, never a second
+  // definition of anything `AnalyticsAggregationService` already computes
+  // (rates.no_show / rates.completion keep their existing definitions; only
+  // their `source` gains a second caller below).
+  | 'journey.booking_lead_time'
+  | 'journey.arrival_offset'
+  | 'journey.wait_for_call'
+  | 'journey.call_to_start'
+  | 'journey.wait_to_start'
+  | 'journey.ready_delay'
+  | 'journey.start_delay'
+  | 'journey.consultation_duration'
+  | 'journey.consultation_overrun'
+  | 'journey.visit_time'
+  | 'journey.queue_coverage'
+  | 'journey.reminder_coverage'
+  | 'journey.reminder_failure_rate'
+  | 'journey.no_show_share_by_reminder'
+  | 'journey.stage_counts'
+  | 'journey.service_duration_suggestion'
+  | 'journey.breakdown';
 
 export interface MetricDefinition {
   key: MetricKey;
@@ -256,14 +279,15 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     definition:
       'Appointments whose status reached NO_SHOW, as a proportion of appointments scheduled to occur in the period — the same definition applies wherever a no-show rate is shown (tenant-wide, per-staff, per-channel), only the grouping changes.',
     source:
-      'AnalyticsAggregationService.computeRates / computeStaffPerformance / channelPerformance',
+      'AnalyticsAggregationService.computeRates / computeStaffPerformance / channelPerformance / journey.JourneyAggregationService (counts.noShowRate — same population, proven equal by a parity test)',
   },
   'rates.completion': {
     key: 'rates.completion',
     label: 'Completion rate',
     definition:
       'Appointments whose status reached COMPLETED, as a proportion of appointments scheduled to occur in the period — the same definition applies tenant-wide and per booking channel, only the grouping changes.',
-    source: 'AnalyticsAggregationService.computeRates / channelPerformance',
+    source:
+      'AnalyticsAggregationService.computeRates / channelPerformance / journey.JourneyAggregationService (counts.completionRate — same population, proven equal by a parity test)',
   },
   'retention.summary': {
     key: 'retention.summary',
@@ -307,6 +331,128 @@ export const METRIC_REGISTRY: Record<MetricKey, MetricDefinition> = {
     definition:
       'Per `AppointmentSource` (PLATFORM / WHATSAPP_BOT / MANUAL / PUBLIC_AI), in the requested period/branch: appointment count, completion rate (rates.completion, grouped by channel) and SETTLED (PAID) revenue. Every channel is listed even at zero, so a channel with no bookings is never silently omitted.',
     source: 'AnalyticsAggregationService.channelPerformance',
+  },
+
+  // ─────────────────────── Patient Journey (approved 2026-09-16) ─────────── //
+  'journey.booking_lead_time': {
+    key: 'journey.booking_lead_time',
+    label: 'Booking lead time',
+    definition:
+      'Hours between when the appointment was created and its scheduled start, for every booked appointment in the period regardless of outcome. A lead time earlier than -60 minutes (a corrected/backfilled record) is excluded and counted separately; a small negative value within 1 minute of zero is treated as clock skew and clamped to 0.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.arrival_offset': {
+    key: 'journey.arrival_offset',
+    label: 'Arrival offset',
+    definition:
+      'Minutes between the scheduled start time and reception check-in (arrival and check-in are the same event in this system — there is no separate "arrival" timestamp). Negative means early. Only appointments that were checked in through the live queue are counted; a clinic that never uses the queue shows this as not tracked rather than 0.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.wait_for_call': {
+    key: 'journey.wait_for_call',
+    label: 'Wait for call',
+    definition:
+      'Minutes between check-in and being called by a doctor, from the live queue only. If the patient was skipped and recalled, this reflects the LAST call — the recall overwrites the earlier call time.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.call_to_start': {
+    key: 'journey.call_to_start',
+    label: 'Call to consultation start',
+    definition:
+      'Minutes between being called and the consultation actually starting, from the live queue only.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.wait_to_start': {
+    key: 'journey.wait_to_start',
+    label: 'Waiting time',
+    definition:
+      'Minutes between check-in and consultation start (the headline "how long did the patient wait" figure), from the live queue only. Covers every checked-in appointment that reached a consultation start, not only completed ones.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.ready_delay': {
+    key: 'journey.ready_delay',
+    label: 'Delay after ready',
+    definition:
+      'Minutes between consultation start and the LATER of the scheduled start time or check-in — the wait attributable to the clinic once the patient was actually available, excluding time the patient spent arriving early. From the live queue only.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.start_delay': {
+    key: 'journey.start_delay',
+    label: 'Start delay vs. scheduled time',
+    definition:
+      'Minutes between the scheduled start time and consultation start, from the live queue when available, else the first IN_PROGRESS status-log entry as a fallback for appointments where staff bypassed the queue. The response states how many came from each source.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.consultation_duration': {
+    key: 'journey.consultation_duration',
+    label: 'Consultation duration',
+    definition:
+      'Minutes of the actual consultation for COMPLETED appointments only — from the live queue (consultation start to completion) when a completed queue entry exists, else the status-log IN_PROGRESS-to-COMPLETED gap. Always one source per appointment, never a mix. A value under 1 minute or over 6 hours is excluded and counted separately.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.consultation_overrun': {
+    key: 'journey.consultation_overrun',
+    label: 'Consultation overrun',
+    definition:
+      "Consultation duration minus the appointment's own scheduled length (end minus start), for the same population as consultation duration. Positive means the consultation ran longer than booked.",
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.visit_time': {
+    key: 'journey.visit_time',
+    label: 'Total visit time',
+    definition:
+      'Minutes from check-in to consultation completion, from the live queue only, for appointments whose queue entry actually reached COMPLETED. This is NOT departure/checkout time — the platform records no checkout event.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.queue_coverage': {
+    key: 'journey.queue_coverage',
+    label: 'Queue coverage',
+    definition:
+      'Of completed appointments in the period, the proportion that went through the live queue at all. Every queue-derived wait figure on this page is suppressed as "not enough data" below 50% coverage, and reported as not tracked at 0% — a low number means the clinic mostly bypasses the queue, not that patients never wait.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.reminder_coverage': {
+    key: 'journey.reminder_coverage',
+    label: 'Reminder coverage',
+    definition:
+      'Of past, non-cancelled appointments, the proportion with at least one reminder message actually SENT before the scheduled start. Excludes appointments where reminders are disabled or no reminder rule/template is configured (those leave no row at all, counted separately as "not scheduled").',
+    source: 'journey.JourneyAggregationService (buildReminderRowsQuery)',
+  },
+  'journey.reminder_failure_rate': {
+    key: 'journey.reminder_failure_rate',
+    label: 'Reminder failure rate',
+    definition:
+      'Of reminder messages that reached a terminal SENT or FAILED outcome, the proportion that failed (including a cancelled reminder that still carries a failure/skip reason). Pending and successfully cancelled reminders are excluded from this rate.',
+    source: 'journey.JourneyAggregationService (buildReminderRowsQuery)',
+  },
+  'journey.no_show_share_by_reminder': {
+    key: 'journey.no_show_share_by_reminder',
+    label: 'No-show share, reminded vs. not reminded',
+    definition:
+      'Among appointments that reached COMPLETED or NO_SHOW, the no-show share computed separately for those that received a reminder and those that did not. This is an ASSOCIATION, not a causal claim — reminders are more likely to reach patients who were already going to attend, so a lower reminded no-show share does not by itself prove reminders reduce no-shows. Cancelled appointments are excluded from both groups. Shown as "not comparable" when either group has fewer than 30 appointments.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.stage_counts': {
+    key: 'journey.stage_counts',
+    label: 'Journey stage counts',
+    definition:
+      'How many of the period\'s appointments reached each journey stage (arrived, called, consultation started, completed). A stage count can be lower than an earlier one for reasons other than attrition — the queue can be bypassed entirely, so "arrived" only counts appointments checked in through the live queue.',
+    source: 'journey.JourneyAggregationService (buildJourneyOverallQuery)',
+  },
+  'journey.service_duration_suggestion': {
+    key: 'journey.service_duration_suggestion',
+    label: 'Suggested service duration',
+    definition:
+      "For a single-service appointment, the 75th percentile of its actual consultation duration, rounded up to the nearest 5 minutes and clamped to 5-480 minutes, compared against the service's configured duration. Shown only for an active service with at least 20 timed consultations, at least 50% consultation-timing coverage, and a difference from the configured duration of at least 5 minutes or 15%, whichever is larger. Multi-service and zero-service appointments are excluded and counted separately (they cannot be attributed to one service's duration).",
+    source:
+      'journey.JourneyAggregationService (buildJourneyDimensionQuery, dimension="service")',
+  },
+  'journey.breakdown': {
+    key: 'journey.breakdown',
+    label: 'Journey breakdown',
+    definition:
+      "The same wait/consultation/reminder figures as the summary, grouped by branch, practitioner, service, day of week or hour of day (local time, using the appointment's booked timezone, else the branch timezone, else UTC). A branch-restricted caller sees only their own branch. Multi-service and zero-service appointments are excluded from the service grouping only.",
+    source: 'journey.JourneyAggregationService (buildJourneyDimensionQuery)',
   },
 };
 
