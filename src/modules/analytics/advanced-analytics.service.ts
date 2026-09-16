@@ -65,7 +65,14 @@ export class AdvancedAnalyticsService {
 
   // ─────────────────────────── Shared plumbing ───────────────────────────── //
 
-  private validateRange(dto: QueryAdvancedAnalyticsDto): {
+  /**
+   * Made non-private for the Patient Journey plan (approved 2026-09-16), the
+   * same way T181 widened {@link resolveScope} — `PatientJourneyService`
+   * reuses this EXACT range validation (the `from`/`to` ordering check and
+   * the {@link MAX_ADVANCED_ANALYTICS_RANGE_DAYS} bound) rather than a
+   * second implementation.
+   */
+  validateRange(dto: QueryAdvancedAnalyticsDto): {
     from: ReportDate;
     to: ReportDate;
   } {
@@ -155,7 +162,12 @@ export class AdvancedAnalyticsService {
     return settings?.currency ?? 'USD';
   }
 
-  private envelope(
+  /**
+   * Made non-private for the Patient Journey plan (approved 2026-09-16) —
+   * `PatientJourneyService` builds the SAME `{range, scope, currency,
+   * generatedAt}` envelope shape (FR-A015/FR-A021) rather than a second one.
+   */
+  envelope(
     from: ReportDate,
     to: ReportDate,
     branchId: string | undefined,

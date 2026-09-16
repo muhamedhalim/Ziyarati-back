@@ -16,7 +16,10 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { NotificationDeliveryService } from '../notifications/notification-delivery.service';
-import { DELIVERY_STATUS, DeliveryStatus } from '../notifications/notification.constants';
+import {
+  DELIVERY_STATUS,
+  DeliveryStatus,
+} from '../notifications/notification.constants';
 import { RecipientDeliveryService } from '../campaigns/recipient-delivery.service';
 import { RecipientDelivery } from '../../entities/enums';
 import { MessageStatusService } from '../conversations/message-status.service';
@@ -129,7 +132,9 @@ export class WhatsappWebhookService {
     signatureHeader?: string,
   ): Promise<{ accepted: boolean; id?: string; deduplicated?: boolean }> {
     if (!this.verifier.verify(signatureHeader, rawBody)) {
-      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid webhook signature' });
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'Invalid webhook signature',
+      });
     }
 
     // ZT-H02 — freshness check, AFTER signature verification (so an invalid
@@ -151,13 +156,15 @@ export class WhatsappWebhookService {
     const payload: Record<string, unknown> =
       body?.payload ?? (body as unknown as Record<string, unknown>);
     const eventType = body?.eventType ?? this.deriveEventType(body);
-    const idempotencyKey = body?.idempotencyKey ?? this.deriveIdempotencyKey(body);
+    const idempotencyKey =
+      body?.idempotencyKey ?? this.deriveIdempotencyKey(body);
 
     if (idempotencyKey) {
       const existing = await this.webhooks.findOne({
         where: { idempotency_key: idempotencyKey },
       });
-      if (existing) return { accepted: true, id: existing.id, deduplicated: true };
+      if (existing)
+        return { accepted: true, id: existing.id, deduplicated: true };
     }
 
     const tenant = await this.resolveTenantFromPayload(payload);
@@ -177,9 +184,15 @@ export class WhatsappWebhookService {
       // concurrent redelivery still mid-insert. `UQ_whatsapp_webhook_idempotency_key`
       // is what actually serializes that race; a 23505 here means another
       // request just won it, so this is a duplicate, not a failure.
-      if (idempotencyKey && (err as { code?: string })?.code === PG_UNIQUE_VIOLATION) {
-        const existing = await this.webhooks.findOne({ where: { idempotency_key: idempotencyKey } });
-        if (existing) return { accepted: true, id: existing.id, deduplicated: true };
+      if (
+        idempotencyKey &&
+        (err as { code?: string })?.code === PG_UNIQUE_VIOLATION
+      ) {
+        const existing = await this.webhooks.findOne({
+          where: { idempotency_key: idempotencyKey },
+        });
+        if (existing)
+          return { accepted: true, id: existing.id, deduplicated: true };
       }
       throw err;
     }
@@ -202,7 +215,10 @@ export class WhatsappWebhookService {
     try {
       // correlationId is auto-stamped from the current context by
       // QueueService if omitted — no need to pass it explicitly here.
-      await this.queue.enqueueWhatsappWebhook({ webhookEventId, tenantId: tenantId ?? null });
+      await this.queue.enqueueWhatsappWebhook({
+        webhookEventId,
+        tenantId: tenantId ?? null,
+      });
     } catch (err) {
       this.logger.error(
         `[cid=${this.ctx.getCorrelationId() ?? '-'}] Failed to enqueue webhook event ${webhookEventId} (stored, unprocessed): ${(err as Error)?.message}`,
@@ -225,13 +241,20 @@ export class WhatsappWebhookService {
    * reply never shows delivered/read ticks in the conversation UI, no matter
    * how many Meta status events arrive — both were real gaps this closes.
    */
-  private async applyDeliveryStatuses(body: WhatsappWebhookBody, tenantId: string): Promise<void> {
+  private async applyDeliveryStatuses(
+    body: WhatsappWebhookBody,
+    tenantId: string,
+  ): Promise<void> {
     const value = this.firstChangeValue(body);
-    const statuses = (value?.statuses ?? []) as Array<{ id?: string; status?: string }>;
+    const statuses = (value?.statuses ?? []) as Array<{
+      id?: string;
+      status?: string;
+    }>;
     for (const st of statuses) {
       if (!st?.id) continue;
       const notifEvent = this.mapDeliveryStatus(st.status);
-      if (notifEvent) await this.notifDelivery.recordDelivery(st.id, notifEvent);
+      if (notifEvent)
+        await this.notifDelivery.recordDelivery(st.id, notifEvent);
 
       const recipientEvent = this.mapRecipientDelivery(st.status);
       if (recipientEvent) {
@@ -261,15 +284,18 @@ export class WhatsappWebhookService {
     waMessageId: string,
     status?: string,
   ): Promise<void> {
-    if (status !== 'delivered' && status !== 'read' && status !== 'failed') return;
+    if (status !== 'delivered' && status !== 'read' && status !== 'failed')
+      return;
 
     const message = await this.messages.findOne({
       where: { tenant: { id: tenantId }, wa_message_id: waMessageId },
     });
     if (!message) return;
 
-    if (status === 'delivered') await this.messageStatus.markDelivered(tenantId, message.id);
-    else if (status === 'read') await this.messageStatus.markRead(tenantId, message.id);
+    if (status === 'delivered')
+      await this.messageStatus.markDelivered(tenantId, message.id);
+    else if (status === 'read')
+      await this.messageStatus.markRead(tenantId, message.id);
     else await this.messageStatus.markFailed(tenantId, message.id);
   }
 
@@ -308,7 +334,10 @@ export class WhatsappWebhookService {
   }
 
   /** Authenticated manual create of a webhook log entry. */
-  create(tenantId: string, dto: CreateWhatsappWebhookDto): Promise<WhatsappWebhook> {
+  create(
+    tenantId: string,
+    dto: CreateWhatsappWebhookDto,
+  ): Promise<WhatsappWebhook> {
     const row = this.webhooks.create({
       tenant: { id: tenantId } as Tenant,
       event_type: dto.eventType,
@@ -320,9 +349,12 @@ export class WhatsappWebhookService {
   }
 
   async findAll(tenantId: string, filter: WhatsappWebhookFilterDto) {
-    const where: FindOptionsWhere<WhatsappWebhook> = { tenant: { id: tenantId } };
+    const where: FindOptionsWhere<WhatsappWebhook> = {
+      tenant: { id: tenantId },
+    };
     if (filter.eventType) where.event_type = filter.eventType;
-    if (filter.processed !== undefined) where.processed = filter.processed === 'true';
+    if (filter.processed !== undefined)
+      where.processed = filter.processed === 'true';
     if (filter.from && filter.to) {
       where.created_at = Between(new Date(filter.from), new Date(filter.to));
     } else if (filter.from) {
@@ -345,7 +377,9 @@ export class WhatsappWebhookService {
       where: { id, tenant: { id: tenantId } },
     });
     if (!row) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Webhook event not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Webhook event not found',
+      });
     }
     return row;
   }
@@ -358,7 +392,8 @@ export class WhatsappWebhookService {
     const row = await this.findOne(tenantId, id);
     if (dto.eventType !== undefined) row.event_type = dto.eventType;
     if (dto.payload !== undefined) row.payload = dto.payload;
-    if (dto.idempotencyKey !== undefined) row.idempotency_key = dto.idempotencyKey;
+    if (dto.idempotencyKey !== undefined)
+      row.idempotency_key = dto.idempotencyKey;
     if (dto.processed !== undefined) row.processed = dto.processed;
     return this.webhooks.save(row);
   }
@@ -388,13 +423,16 @@ export class WhatsappWebhookService {
    * handlers are themselves idempotent (delivery status is forward-only; the AI
    * turn is keyed on the wamid).
    */
-  async processEvent(webhookEventId: string): Promise<{ processed: boolean; reason?: string }> {
+  async processEvent(
+    webhookEventId: string,
+  ): Promise<{ processed: boolean; reason?: string }> {
     const event = await this.webhooks.findOne({
       where: { id: webhookEventId },
       relations: { tenant: true },
     });
     if (!event) return { processed: false, reason: 'event-missing' };
-    if (event.processed) return { processed: false, reason: 'already-processed' };
+    if (event.processed)
+      return { processed: false, reason: 'already-processed' };
 
     const tenantId = event.tenant?.id;
     if (!tenantId) {
@@ -519,7 +557,8 @@ export class WhatsappWebhookService {
         return;
       case 'stale':
         throw new AppError(ErrorCode.UNAUTHORIZED, {
-          message: 'Webhook event timestamp is outside the accepted freshness window',
+          message:
+            'Webhook event timestamp is outside the accepted freshness window',
         });
       case 'future':
         throw new AppError(ErrorCode.UNAUTHORIZED, {
@@ -549,8 +588,10 @@ export class WhatsappWebhookService {
   private deriveEventType(body: WhatsappWebhookBody): string | undefined {
     const value = this.firstChangeValue(body);
     if (!value) return undefined;
-    if (Array.isArray(value.statuses) && value.statuses.length > 0) return 'message_status';
-    if (Array.isArray(value.messages) && value.messages.length > 0) return 'messages';
+    if (Array.isArray(value.statuses) && value.statuses.length > 0)
+      return 'message_status';
+    if (Array.isArray(value.messages) && value.messages.length > 0)
+      return 'messages';
     const field = body?.entry?.[0]?.changes?.[0]?.field;
     return field ?? undefined;
   }
@@ -559,12 +600,33 @@ export class WhatsappWebhookService {
    * Idempotency key = the WhatsApp message id (`wamid`) of the first message or
    * status in the payload. Meta redelivers events on the same wamid, so this
    * de-duplicates safely. Undefined when the payload carries no wamid.
+   *
+   * Patient Journey plan (2026-09-16) — the status branch used to be
+   * `status:{wamid}` with no status VALUE in the key. Meta sends `sent`,
+   * `delivered` and `read` as three separate webhooks for the SAME wamid, so
+   * the old key collapsed all three onto one idempotency row: whichever
+   * arrived first (almost always `sent`) was stored, and the later
+   * `delivered`/`read` events came back as duplicates and were dropped
+   * before `applyDeliveryStatuses` ever ran — `scheduled_notifications
+   * .delivery_status` essentially never reached DELIVERED/READ, and neither
+   * did the campaign-recipient or conversation-timeline axes. Including the
+   * status VALUE in the key lets each of the three status events be
+   * ingested and processed once, while still deduplicating a genuine Meta
+   * redelivery of the identical status. Safe to widen: all three downstream
+   * consumers (`NotificationDeliveryService.recordDelivery`,
+   * `RecipientDeliveryService`, `MessageStatusService`) are forward-only —
+   * see their own docblocks — so an out-of-order or repeated status can
+   * never regress or double-apply state. Existing rows keep their old-format
+   * key; only the SHAPE of new keys changes.
    */
   private deriveIdempotencyKey(body: WhatsappWebhookBody): string | undefined {
     const value = this.firstChangeValue(body);
     if (!value) return undefined;
     const statusId = value.statuses?.[0]?.id;
-    if (statusId) return `status:${statusId}`;
+    if (statusId) {
+      const status = value.statuses?.[0]?.status ?? 'unknown';
+      return `status:${statusId}:${status}`;
+    }
     const messageId = value.messages?.[0]?.id;
     if (messageId) return `message:${messageId}`;
     return undefined;
