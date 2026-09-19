@@ -252,6 +252,86 @@ describe('env.validation', () => {
       expect(value.COOKIE_SAMESITE).toBe('none');
     });
 
+    // CSWSH: SameSite=None is legitimate (a cross-site Marketplace) and stays
+    // available — the socket's Origin check holds regardless of SameSite. What it
+    // makes the WHOLE exposure is the FRONTEND_ORIGIN allow-list, so a weak one
+    // is refused alongside it.
+    describe('SameSite=none requires a production-grade FRONTEND_ORIGIN', () => {
+      const prod = (extra: Record<string, unknown>) =>
+        validate({
+          ...prodBase,
+          PAYMENT_PROVIDER: 'noop',
+          CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+          ...extra,
+        });
+
+      it.each(['COOKIE_SAMESITE', 'PUBLIC_COOKIE_SAMESITE'])(
+        'accepts %s=none with an all-https, non-loopback allow-list — the capability is not removed',
+        (variable) => {
+          const value = prod({
+            [variable]: 'none',
+            FRONTEND_ORIGIN:
+              'https://app.example.com, https://book.example.com',
+          });
+          expect(value[variable]).toBe('none');
+        },
+      );
+
+      it.each([
+        [
+          'an http:// entry',
+          'https://app.example.com,http://staging.example.com',
+        ],
+        ['a localhost entry', 'https://app.example.com,https://localhost:3000'],
+        ['an IPv4 loopback entry', 'https://127.0.0.1:3000'],
+        ['an IPv6 loopback entry', 'https://[::1]:3000'],
+        ['a *.localhost entry', 'https://app.localhost'],
+      ])('refuses COOKIE_SAMESITE=none alongside %s', (_label, origins) => {
+        expect(() =>
+          prod({ COOKIE_SAMESITE: 'none', FRONTEND_ORIGIN: origins }),
+        ).toThrow(/COOKIE_SAMESITE or PUBLIC_COOKIE_SAMESITE/);
+      });
+
+      it('applies to PUBLIC_COOKIE_SAMESITE=none (the guest/booking cookies) as well', () => {
+        expect(() =>
+          prod({
+            PUBLIC_COOKIE_SAMESITE: 'none',
+            FRONTEND_ORIGIN: 'http://app.example.com',
+          }),
+        ).toThrow(/COOKIE_SAMESITE or PUBLIC_COOKIE_SAMESITE/);
+      });
+
+      it('does not touch lax/strict — an http or localhost entry there is a different concern', () => {
+        expect(
+          prod({
+            COOKIE_SAMESITE: 'lax',
+            FRONTEND_ORIGIN: 'http://localhost:3000',
+          }).COOKIE_SAMESITE,
+        ).toBe('lax');
+        expect(
+          prod({
+            PUBLIC_COOKIE_SAMESITE: 'strict',
+            FRONTEND_ORIGIN: 'https://localhost',
+          }).PUBLIC_COOKIE_SAMESITE,
+        ).toBe('strict');
+      });
+
+      it('names the variables only, never an origin value (the ZT-005 convention)', () => {
+        try {
+          prod({
+            COOKIE_SAMESITE: 'none',
+            FRONTEND_ORIGIN: 'http://super-secret-internal-host.example',
+          });
+          fail('expected validation to throw');
+        } catch (err) {
+          expect((err as Error).message).toContain('FRONTEND_ORIGIN');
+          expect((err as Error).message).not.toContain(
+            'super-secret-internal-host',
+          );
+        }
+      });
+    });
+
     it('accepts a valid hostname for COOKIE_DOMAIN', () => {
       const value = validate({ ...base, COOKIE_DOMAIN: 'example.com' });
       expect(value.COOKIE_DOMAIN).toBe('example.com');

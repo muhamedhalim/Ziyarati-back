@@ -993,6 +993,51 @@ export const validate = (config: Record<string, unknown>) => {
     );
   }
 
+  // ── Cross-site cookies require a production-grade origin allow-list ───────
+  // `SameSite=None` is a legitimate setting (a cross-site Marketplace, a
+  // separately hosted widget) and is NOT refused here. What it changes is who
+  // decides which sites may ride the visitor's session: the browser stops
+  // withholding the auth/guest cookie from other sites, so the only thing left
+  // is the server-side `FRONTEND_ORIGIN` check — REST CORS, and for the
+  // realtime socket the handshake `Origin` check in ws-handshake-admission.ts,
+  // which holds whatever SameSite says. That makes a weak allow-list the whole
+  // exposure: an `http://` or loopback entry would let a page served over
+  // cleartext, or from the visitor's own machine, use their session cross-site.
+  // `Secure` cookies are only ever set over https, so no working deployment
+  // needs such an entry alongside `none`. Names variables only, never values
+  // (the ZT-005 convention above).
+  if (
+    value.NODE_ENV === 'production' &&
+    (value.COOKIE_SAMESITE === 'none' ||
+      value.PUBLIC_COOKIE_SAMESITE === 'none')
+  ) {
+    const loopback = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+    const weakEntry = String(value.FRONTEND_ORIGIN ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .some((entry) => {
+        try {
+          const { protocol, hostname } = new URL(entry);
+          return (
+            protocol !== 'https:' ||
+            loopback.has(hostname) ||
+            hostname.endsWith('.localhost')
+          );
+        } catch {
+          return true;
+        }
+      });
+    if (weakEntry) {
+      throw new Error(
+        `❌ Env validation error: COOKIE_SAMESITE or PUBLIC_COOKIE_SAMESITE is ` +
+          `"none" in production, which sends the session cookies cross-site — ` +
+          `so FRONTEND_ORIGIN must list only https origins on non-loopback ` +
+          `hosts. Remove the http:// or localhost entry, or use "lax".`,
+      );
+    }
+  }
+
   // ── Database TLS trust anchor fail-fast (production only, ZT-012) ─────────
   // Exactly one of the two forms — never both (ambiguous: which one is
   // actually in effect?), never neither (the silent-`rejectUnauthorized:

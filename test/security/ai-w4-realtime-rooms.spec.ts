@@ -19,6 +19,7 @@ import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/a
 import { AiConversationService } from '../../src/modules/ai/ai-conversation.service';
 import { AiRealtimeGateway } from '../../src/modules/ai-realtime/ai-realtime.gateway';
 import { room } from '../../src/modules/ai-realtime/ai-events.constants';
+import { PERMISSION } from '../../src/rbac/rbac.constants';
 import type { AuthenticatedUser } from '../../src/modules/auth/interfaces/authenticated-user.interface';
 import type { AiConversation } from '../../src/entities/AI Agent/AiConversation';
 
@@ -76,17 +77,24 @@ describe('AI-W4 realtime-room cross-tenant reproduction (T057)', () => {
     // guest-vs-guest (W6's job). `AiConversationAccessService.assertAccess`
     // only applies the extra guest-subject check when `principal.guest` is
     // set, so a real staff principal's refusal here is purely tenant-scoped.
+    //
+    // They hold `ai.handover.read` (CSWSH F-6: `ai:join` now requires an AI
+    // conversation/handover permission for staff). That is load-bearing for this
+    // file, not incidental: with NO permission the cross-tenant refusals below
+    // would still pass — refused by the permission gate instead — and stop
+    // testing tenant isolation at all. The permission-less case has its own
+    // describe further down.
     staffA = {
       id: seed.tenantA.staffUserId,
       tenantId: seed.tenantA.id,
       roles: ['doctor'],
-      permissions: [],
+      permissions: [PERMISSION.AI_HANDOVER_READ],
     };
     staffB = {
       id: seed.tenantB.staffUserId,
       tenantId: seed.tenantB.id,
       roles: ['doctor'],
-      permissions: [],
+      permissions: [PERMISSION.AI_HANDOVER_READ],
     };
   }, 120_000);
 
@@ -127,6 +135,23 @@ describe('AI-W4 realtime-room cross-tenant reproduction (T057)', () => {
       await expect(gateway.onJoin(asSocket(socket), { aiConversationId: randomUUID() })).resolves.toEqual({
         joined: null,
       });
+    });
+  });
+
+  describe('onJoin — the permission gate (CSWSH F-6), independent of tenant', () => {
+    it('refuses staff with NO AI permission a conversation room in their OWN tenant — same tenant is not enough', async () => {
+      const doctorNoAi: AuthenticatedUser = { ...staffA, permissions: [] };
+      const socket = fakeSocket(doctorNoAi);
+      await expect(
+        gateway.onJoin(asSocket(socket), { aiConversationId: convA.id }),
+      ).resolves.toEqual({
+        joined: null,
+      });
+      expect(socket.join).not.toHaveBeenCalled();
+      expect(socket.emit).toHaveBeenCalledWith(
+        'ai:error',
+        expect.objectContaining({ code: 'FORBIDDEN' }),
+      );
     });
   });
 

@@ -5,6 +5,14 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { Redis } from 'ioredis';
 import type { ServerOptions } from 'socket.io';
 
+import { parseAllowedOrigins } from '../../config/cors-origins';
+import {
+  WS_REJECT_MESSAGE,
+  WsRejectionLog,
+  evaluateWsHandshake,
+  sanitizeForLog,
+} from './ws-handshake-admission';
+
 /**
  * Socket.IO adapter backed by Redis pub/sub (`@socket.io/redis-adapter`) so the
  * realtime gateway scales horizontally — an event emitted on one API instance
@@ -34,6 +42,19 @@ import type { ServerOptions } from 'socket.io';
  * affinity, but ONLY once clustering is actually active: single-process
  * deployments (the default, `API_CLUSTER_WORKERS<=1`) keep full
  * polling+websocket compatibility, byte-identical to before this change.
+ *
+ * CSWSH — handshake admission. `createIOServer` is the one place every gateway,
+ * namespace and transport passes through (Nest's `IoAdapter.create` routes all
+ * of them here), so it is where the `Origin` / Fetch Metadata policy in
+ * `ws-handshake-admission.ts` is installed, as engine.io's `allowRequest`. That
+ * hook runs on the HANDSHAKE — the first polling GET or the WebSocket upgrade —
+ * before a session, a namespace or `handleConnection` exists, so a refused
+ * origin costs nothing beyond the header check. It does not run per event, and
+ * it never touches the database or Redis.
+ *
+ * The gateway's `cors` option is NOT that protection and is left as it was: it
+ * only shapes the polling transport's response headers. See the policy file for
+ * why cookie configuration alone must not be relied on.
  */
 export class RedisIoAdapter extends IoAdapter {
   private readonly logger = new Logger('RedisIoAdapter');
@@ -90,13 +111,63 @@ export class RedisIoAdapter extends IoAdapter {
     }
   }
 
+  /**
+   * Builds the engine.io `allowRequest` hook. The allow-list is read from the
+   * same `FRONTEND_ORIGIN` variable, through the same parser, as REST CORS and
+   * the gateway's `cors` option — deliberately not a second list — and is
+   * resolved once, here, so the per-handshake cost is a `Set` lookup.
+   *
+   * A pre-existing `allowRequest` (none is configured today) is honoured AFTER
+   * ours, so nothing added later can loosen this policy by accident.
+   */
+  private buildAllowRequest(
+    downstream?: ServerOptions['allowRequest'],
+  ): NonNullable<ServerOptions['allowRequest']> {
+    const allowedOrigins = parseAllowedOrigins(process.env.FRONTEND_ORIGIN);
+    const allowed = new Set(allowedOrigins);
+    const rejections = new WsRejectionLog();
+
+    // Same reasoning as main.ts's CORS line: an allow-list that matches no real
+    // origin fails silently for the client and loudly nowhere, so the effective
+    // value is stated once at boot. Origins are public by definition.
+    this.logger.log(
+      `WebSocket origin allow-list: ${allowedOrigins.join(', ')}`,
+    );
+
+    return (req, callback) => {
+      const verdict = evaluateWsHandshake(req.headers, allowed);
+      if (!verdict.allowed) {
+        const quiet = rejections.shouldLog(verdict.reason);
+        if (quiet) {
+          // Origin only — never the Cookie, Authorization or any token. The
+          // value is attacker-controlled, so it is bounded and printable-only.
+          this.logger.warn(
+            `Refused WebSocket handshake: ${verdict.reason} ` +
+              `(origin=${sanitizeForLog(req.headers.origin)}` +
+              `${quiet.suppressed ? `; ${quiet.suppressed} similar suppressed` : ''})`,
+          );
+        }
+        callback(WS_REJECT_MESSAGE[verdict.reason], false);
+        return;
+      }
+      if (downstream) {
+        downstream(req, callback);
+        return;
+      }
+      callback(null, true);
+    };
+  }
+
   createIOServer(port: number, options?: ServerOptions): unknown {
-    let effectiveOptions = options;
+    let effectiveOptions: Partial<ServerOptions> = { ...options };
+    effectiveOptions.allowRequest = this.buildAllowRequest(
+      effectiveOptions.allowRequest,
+    );
     if (this.isClustered()) {
       effectiveOptions = {
-        ...options,
+        ...effectiveOptions,
         transports: ['websocket'],
-      } as ServerOptions;
+      };
       this.logger.warn(
         'API_CLUSTER_WORKERS > 1 — restricting Socket.IO to the websocket ' +
           'transport only (HTTP long-polling requires per-worker session ' +
@@ -105,7 +176,10 @@ export class RedisIoAdapter extends IoAdapter {
           'connection error instead of a silent mid-session break.',
       );
     }
-    const server = super.createIOServer(port, effectiveOptions);
+    const server = super.createIOServer(
+      port,
+      effectiveOptions as ServerOptions,
+    );
     if (this.adapterConstructor) server.adapter(this.adapterConstructor);
     return server;
   }

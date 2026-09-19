@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
   ConnectedSocket,
@@ -145,6 +145,57 @@ function resolveCorrelationId(clientSupplied: string | undefined): string {
 }
 
 /**
+ * How often a connected staff principal is re-resolved from the database (and a
+ * lapsed credential is noticed on an idle socket). Bounds how long a socket can
+ * outlive a deactivation or a role/permission change: REST re-resolves the
+ * principal on EVERY request, a socket resolves it once at connect, so without a
+ * bound a revoked agent kept both the privileges and the live broadcasts until
+ * the tab closed.
+ *
+ * A sweep costs one indexed single-row query per DISTINCT connected staff user —
+ * never per socket and never per event — and none for guests. That is the reason
+ * it is a sweep and not a lookup on each event: a busy inbox would otherwise
+ * turn every keystroke's `ai:typing` into a database round trip.
+ */
+export const WS_REVALIDATE_INTERVAL_MS = 60_000;
+
+/**
+ * Who is part of the Agent Inbox audience: the staff the handover REST routes
+ * (`ai.handover.read`) already treat as agents, and the same permission that
+ * already decides whether a socket registers presence. Only these sockets join
+ * the `tenant:<id>` room, so only they receive its broadcasts.
+ */
+const INBOX_PERMISSION = PERMISSION.AI_HANDOVER_READ;
+
+/**
+ * Any one of these lets staff read or act on AI conversations over REST, which
+ * is what makes it legitimate for the same staff to hold a conversation room
+ * over the socket: that room delivers a human agent's replies and the
+ * conversation's lifecycle events, i.e. conversation content in transit.
+ * `ai.conversations.*` covers the Dashboard Assistant, `ai.handover.*` the
+ * Agent Inbox. A guest is never checked against this — its access to a room is
+ * its own conversation, proven by `AiConversationAccessService`.
+ */
+const CONVERSATION_ROOM_PERMISSIONS: readonly string[] = [
+  PERMISSION.AI_HANDOVER_READ,
+  PERMISSION.AI_HANDOVER_MANAGE,
+  PERMISSION.AI_CONVERSATIONS_READ,
+  PERMISSION.AI_CONVERSATIONS_MANAGE,
+];
+
+const holds = (user: AuthenticatedUser | undefined, permission: string) =>
+  !!user?.permissions?.includes(permission);
+
+/** Staff who may hold the tenant broadcast room and use presence. Never a guest. */
+const isInboxStaff = (user: AuthenticatedUser | undefined) =>
+  !!user && !user.guest && holds(user, INBOX_PERMISSION);
+
+/** May this principal be in a conversation room at all (ownership is checked separately). */
+const mayHoldConversationRooms = (user: AuthenticatedUser | undefined) =>
+  !!user &&
+  (!!user.guest || CONVERSATION_ROOM_PERMISSIONS.some((p) => holds(user, p)));
+
+/**
  * The same origin allow-list `main.ts` applies to REST, applied to the socket.
  *
  * The gateway used to declare `origin: true`, which reflects whatever `Origin`
@@ -189,10 +240,16 @@ const WS_ALLOWED_ORIGINS = parseAllowedOrigins(process.env.FRONTEND_ORIGIN);
   cors: { origin: WS_ALLOWED_ORIGINS, credentials: true },
 })
 export class AiRealtimeGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnModuleInit,
+    OnModuleDestroy
 {
   private readonly logger = new Logger('AiRealtimeGateway');
   private readonly isProduction = process.env.NODE_ENV === 'production';
+  private revalidationTimer?: NodeJS.Timeout;
+  private revalidating = false;
 
   @WebSocketServer()
   server!: Server;
@@ -283,16 +340,200 @@ export class AiRealtimeGateway
     );
   }
 
+  /**
+   * Exact expiry check for the credential that admitted this socket.
+   *
+   * A token is verified once, at the handshake, and a socket can live for hours.
+   * REST re-verifies on every request, so a lapsed token stopped working there
+   * immediately while an open socket kept working — and kept receiving room
+   * broadcasts — indefinitely. This closes that for events; the sweep closes it
+   * for a socket that is only listening.
+   *
+   * No recorded expiry (a socket that never went through `handleConnection`, or
+   * a token minted without `exp` — production tokens always carry one) means
+   * there is nothing to enforce, not that the socket is expired.
+   *
+   * A lapsed credential ENDS the socket rather than answering each later event
+   * with an error: it will not become valid again on this connection, and the
+   * client re-dials with the cookie it refreshes over REST.
+   */
+  private assertLive(client: Socket): boolean {
+    const expiresAt = client.data.tokenExpiresAt as number | null | undefined;
+    if (typeof expiresAt === 'number' && Date.now() >= expiresAt) {
+      this.endSession(client, 'Session expired');
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * `UNAUTHORIZED` is the code the clients already treat as "this connection is
+   * not authenticated" (the widget's `TERMINAL_AUTH_CODES`), so an ended session
+   * lands in the same handling as a refused handshake instead of a spinner.
+   */
+  private endSession(client: Socket, message: string): void {
+    client.emit(AI_EVENT.ERROR, { code: ErrorCode.UNAUTHORIZED, message });
+    client.disconnect(true);
+  }
+
+  /**
+   * F-4 — bounds how long an open socket can outlive its handshake. Runs every
+   * {@link WS_REVALIDATE_INTERVAL_MS} over the sockets connected to THIS
+   * instance (each API instance sweeps its own; nothing needs to coordinate, and
+   * no Redis traffic is added):
+   *
+   *  1. a socket whose credential has expired is ended — including an idle one
+   *     that never sends an event for `assertLive` to catch;
+   *  2. each DISTINCT staff user is re-resolved once, however many sockets and
+   *     tabs they hold, through the same lookup REST uses. A deactivated or
+   *     removed user, or one who moved tenant, has every socket ended; otherwise
+   *     the fresh roles/permissions replace the ones captured at connect, so
+   *     every later event is authorized against the current principal.
+   *
+   * Users are resolved one at a time on purpose. This is housekeeping and must
+   * never compete with request traffic for the connection pool — a burst of
+   * parallel lookups is exactly how a background task starves the API.
+   *
+   * A lookup that FAILS (as opposed to answering "inactive") keeps the current
+   * principal until the next sweep: a database blip must not mass-disconnect
+   * every agent, and it is retried, not cached.
+   *
+   * Public so the tick can be driven directly by tests without timers.
+   */
+  async revalidateSockets(): Promise<void> {
+    if (this.revalidating) return;
+    // `@WebSocketServer()` is the `/ai` NAMESPACE at runtime (Nest decorates the
+    // Server with it) although it is typed `Server`; its `sockets` is the Map of
+    // sockets connected to this instance.
+    const sockets = (
+      this.server as unknown as { sockets?: Map<string, Socket> } | undefined
+    )?.sockets;
+    if (!sockets) return;
+
+    this.revalidating = true;
+    try {
+      const now = Date.now();
+      const lapsed: Socket[] = [];
+      const staffByUser = new Map<string, Socket[]>();
+      for (const client of sockets.values()) {
+        const expiresAt = client.data.tokenExpiresAt as
+          | number
+          | null
+          | undefined;
+        if (typeof expiresAt === 'number' && now >= expiresAt) {
+          // Let a turn that is already streaming finish; the next sweep ends
+          // the socket. Nothing new can start meanwhile (`assertLive`).
+          if (!client.data.turnsInFlight) lapsed.push(client);
+          continue;
+        }
+        const user = client.data.user as AuthenticatedUser | undefined;
+        if (!user || user.guest) continue;
+        const group = staffByUser.get(user.id);
+        if (group) group.push(client);
+        else staffByUser.set(user.id, [client]);
+      }
+      // Ended after the scan, never while iterating the live socket map.
+      for (const client of lapsed) this.endSession(client, 'Session expired');
+      for (const [userId, clients] of staffByUser) {
+        await this.revalidateUser(userId, clients);
+      }
+    } finally {
+      this.revalidating = false;
+    }
+  }
+
+  private async revalidateUser(
+    userId: string,
+    clients: Socket[],
+  ): Promise<void> {
+    let fresh: AuthenticatedUser | null;
+    try {
+      fresh = await this.wsAuth.revalidate(
+        clients[0].data.user as AuthenticatedUser,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Principal revalidation failed for user ${userId}; keeping the current principal until the next sweep: ${(err as Error)?.message}`,
+      );
+      return;
+    }
+    for (const client of clients) {
+      // Gone, deactivated, or in another tenant now. Rooms are tenant-scoped, so
+      // a socket cannot follow a user across that boundary — it has to re-dial
+      // and be authenticated into the new one.
+      if (!fresh || fresh.tenantId !== client.data.tenantId) {
+        this.endSession(client, 'Session is no longer valid');
+        continue;
+      }
+      client.data.user = fresh;
+      await this.reconcileRooms(client, fresh);
+    }
+  }
+
+  /**
+   * Takes a still-connected socket OUT of what a reduced principal is no longer
+   * entitled to. Only ever removes: a permission gained mid-session takes effect
+   * at the next connect, which is the safe direction to be conservative in.
+   */
+  private async reconcileRooms(
+    client: Socket,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    const tenantId = client.data.tenantId as string;
+    if (!isInboxStaff(user)) {
+      client.leave(room.tenant(tenantId));
+      if (client.data.presenceRegistered) {
+        // Balances the `presence.connect` made at handshake — the count is per
+        // socket, and `handleDisconnect` no longer will (the flag is cleared).
+        client.data.presenceRegistered = false;
+        const p = await this.presence.disconnect(tenantId, user.id);
+        if (p) client.to(room.tenant(tenantId)).emit(AI_EVENT.PRESENCE, p);
+      }
+    }
+    if (!mayHoldConversationRooms(user)) {
+      const prefix = room.conversation('');
+      for (const joined of [...client.rooms]) {
+        if (joined.startsWith(prefix)) client.leave(joined);
+      }
+    }
+  }
+
+  onModuleInit(): void {
+    this.revalidationTimer = setInterval(
+      () => void this.revalidateSockets(),
+      WS_REVALIDATE_INTERVAL_MS,
+    );
+    // A housekeeping timer must never be the thing that keeps a process (or a
+    // test runner) alive.
+    this.revalidationTimer.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.revalidationTimer) clearInterval(this.revalidationTimer);
+  }
+
   async handleConnection(client: Socket): Promise<void> {
     try {
-      const user = await this.wsAuth.authenticate(client);
+      const { user, expiresAt } =
+        await this.wsAuth.authenticateHandshake(client);
       // Keep the flat ids for the existing room-naming code, but also stash the
       // FULL principal so `onMessage` can restore a real TenantContextService
       // scope (roles/permissions) for the AI turn — see WsAuthService docblock.
       client.data.userId = user.id;
       client.data.tenantId = user.tenantId;
       client.data.user = user;
-      client.join(room.tenant(user.tenantId!));
+      // The credential's own expiry, enforced for the life of the socket (see
+      // `assertLive` / `revalidateSockets`) instead of only at this handshake.
+      client.data.tokenExpiresAt = expiresAt;
+
+      // The tenant room carries the Agent Inbox's signals — handover lifecycle
+      // (with the customer's free-text reason), conversation ids, presence.
+      // Every anonymous visitor is minted into ONE shared discovery tenant, so
+      // joining it unconditionally made this room a broadcast channel between
+      // strangers: guest A received guest B's conversation id and handover
+      // reason. Only inbox staff, who are entitled to those, join it.
+      const inbox = isInboxStaff(user);
+      if (inbox) client.join(room.tenant(user.tenantId!));
       client.emit(AI_EVENT.CONNECTED, {
         userId: user.id,
         tenantId: user.tenantId,
@@ -300,7 +541,13 @@ export class AiRealtimeGateway
 
       // Presence: only meaningful for real staff users (guests/patients aren't
       // "agents"), gated on the same permission the Agent Inbox itself needs.
-      if (user.permissions?.includes(PERMISSION.AI_HANDOVER_READ)) {
+      // Recorded on the socket so the matching `disconnect` (the presence
+      // count is per socket) does not have to re-derive it from permissions
+      // that may have changed since. Set BEFORE the await, not after: a socket
+      // that disconnects while its own `connect` is still in flight must still
+      // release, or the count it is about to add is never taken back.
+      if (inbox) {
+        client.data.presenceRegistered = true;
         const p = await this.presence.connect(user.tenantId!, user.id);
         client.to(room.tenant(user.tenantId!)).emit(AI_EVENT.PRESENCE, p);
       }
@@ -315,16 +562,15 @@ export class AiRealtimeGateway
   }
 
   async handleDisconnect(client: Socket): Promise<void> {
-    const { tenantId, userId, user } = client.data as {
+    const { tenantId, userId, presenceRegistered } = client.data as {
       tenantId?: string;
       userId?: string;
-      user?: AuthenticatedUser;
+      presenceRegistered?: boolean;
     };
-    if (!tenantId || !userId) return;
-    if (user?.permissions?.includes(PERMISSION.AI_HANDOVER_READ)) {
-      const p = await this.presence.disconnect(tenantId, userId);
-      if (p) client.to(room.tenant(tenantId)).emit(AI_EVENT.PRESENCE, p);
-    }
+    if (!tenantId || !userId || !presenceRegistered) return;
+    client.data.presenceRegistered = false;
+    const p = await this.presence.disconnect(tenantId, userId);
+    if (p) client.to(room.tenant(tenantId)).emit(AI_EVENT.PRESENCE, p);
   }
 
   @SubscribeMessage(AI_EVENT.JOIN)
@@ -332,6 +578,19 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string },
   ) {
+    if (!this.assertLive(client)) return { joined: null };
+    // F-6: a conversation room delivers a human agent's replies and lifecycle
+    // events, and `mayAccess` below is tenant-scoped for staff — so without a
+    // permission check ANY staff member (a doctor with no AI role at all) could
+    // join any conversation in the clinic and read it live. Checked before the
+    // ownership lookup so an unpermitted socket costs no query.
+    if (!mayHoldConversationRooms(client.data.user as AuthenticatedUser)) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
+        message: 'Forbidden',
+      });
+      return { joined: null };
+    }
     if (!(await this.mayAccess(client, body?.aiConversationId))) {
       // Unified error contract (`{code, message}` on every conversation-
       // related failure — join/message/handover/agent-reply alike): this used
@@ -368,6 +627,7 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string; typing: boolean },
   ) {
+    if (!this.assertLive(client)) return;
     // N-2: this used to emit into an arbitrary room WITHOUT joining it — a
     // cross-tenant event-injection primitive that needed no membership at all.
     // Ownership first, then membership (a socket that never joined has no
@@ -387,6 +647,7 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string; messageId: string },
   ) {
+    if (!this.assertLive(client)) return;
     if (!(await this.mayAccess(client, body?.aiConversationId))) return;
     const target = room.conversation(body.aiConversationId);
     if (!client.rooms.has(target)) return;
@@ -403,9 +664,21 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { status: 'ONLINE' | 'BUSY' | 'AWAY' },
   ) {
+    if (!this.assertLive(client)) return { ok: false };
     const tenantId = client.data.tenantId as string | undefined;
     const userId = client.data.userId as string | undefined;
     if (!tenantId || !userId || !body?.status) return { ok: false };
+    // F-6: presence describes AGENTS. A socket only registers it at connect if
+    // the principal holds `ai.handover.read`; this event let any authenticated
+    // socket write itself into the tenant's presence map (which the queue's
+    // "who is available" view reads) and broadcast that to the inbox anyway.
+    if (!isInboxStaff(client.data.user as AuthenticatedUser)) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
+        message: 'Forbidden',
+      });
+      return { ok: false };
+    }
     const p = await this.presence.setStatus(
       tenantId,
       userId,
@@ -418,8 +691,20 @@ export class AiRealtimeGateway
   /** Returns the full tenant presence snapshot on demand (Inbox initial load). */
   @SubscribeMessage(AI_EVENT.PRESENCE_SNAPSHOT)
   async onPresenceSnapshot(@ConnectedSocket() client: Socket) {
+    if (!this.assertLive(client)) return [];
     const tenantId = client.data.tenantId as string | undefined;
-    return tenantId ? this.presence.snapshot(tenantId) : [];
+    if (!tenantId) return [];
+    // F-6: the snapshot is the tenant's staff roster with their status — inbox
+    // data, not something every authenticated socket (including a guest, whose
+    // "tenant" is the shared discovery tenant) is entitled to pull.
+    if (!isInboxStaff(client.data.user as AuthenticatedUser)) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
+        message: 'Forbidden',
+      });
+      return [];
+    }
+    return this.presence.snapshot(tenantId);
   }
 
   /**
@@ -434,6 +719,7 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string; reason?: string },
   ) {
+    if (!this.assertLive(client)) return { ok: false };
     const tenantId = client.data.tenantId as string | undefined;
     if (!tenantId || !body?.aiConversationId) {
       client.emit(AI_EVENT.ERROR, {
@@ -479,6 +765,7 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { aiConversationId: string; content: string },
   ) {
+    if (!this.assertLive(client)) return { ok: false };
     const tenantId = client.data.tenantId as string | undefined;
     const userId = client.data.userId as string | undefined;
     const user = client.data.user as AuthenticatedUser | undefined;
@@ -536,6 +823,7 @@ export class AiRealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: MessagePayload,
   ) {
+    if (!this.assertLive(client)) return;
     const tenantId = client.data.tenantId as string;
     if (!tenantId || !body?.content?.trim()) {
       client.emit(AI_EVENT.ERROR, {
@@ -612,15 +900,25 @@ export class AiRealtimeGateway
     // Restore the authenticated principal for this turn — every downstream
     // service (booking tools, admin tools, usage metering) reads it via
     // TenantContextService exactly as it would under an HTTP request.
-    return this.ctx.run(() => {
-      if (user) this.ctx.setPrincipal(user);
-      // AI-016/C2: Socket.IO frames never traverse the REST correlation
-      // middleware (I-3) — without this, every realtime turn's ledger rows
-      // carry a null correlation_id. Adopt a well-formed client hint or
-      // generate one, same posture as REST's own request-id handling.
-      this.ctx.setCorrelationId(resolveCorrelationId(body?.correlationId));
-      return this.runMessage(client, body, tenantId);
-    });
+    //
+    // The turn is counted while it runs so the credential-expiry sweep does not
+    // cut a legitimate answer off mid-stream (see `revalidateSockets`). It only
+    // defers the END of the socket: a NEW event after expiry is still refused
+    // at once by `assertLive`, so this cannot be used to extend a session.
+    client.data.turnsInFlight = (client.data.turnsInFlight ?? 0) + 1;
+    try {
+      return await this.ctx.run(() => {
+        if (user) this.ctx.setPrincipal(user);
+        // AI-016/C2: Socket.IO frames never traverse the REST correlation
+        // middleware (I-3) — without this, every realtime turn's ledger rows
+        // carry a null correlation_id. Adopt a well-formed client hint or
+        // generate one, same posture as REST's own request-id handling.
+        this.ctx.setCorrelationId(resolveCorrelationId(body?.correlationId));
+        return this.runMessage(client, body, tenantId);
+      });
+    } finally {
+      client.data.turnsInFlight -= 1;
+    }
   }
 
   private async runMessage(
@@ -715,9 +1013,14 @@ export class AiRealtimeGateway
       client
         .to(room.conversation(result.aiConversationId))
         .emit(AI_EVENT.CONVERSATION_UPDATE, done);
-      client.to(room.tenant(tenantId)).emit(AI_EVENT.CONVERSATION_UPDATE, {
-        aiConversationId: result.aiConversationId,
-      });
+      // A guest's conversation id goes to its own conversation room (above) and
+      // nowhere else: the tenant room is the Agent Inbox's, and a guest's
+      // "tenant" is the one every visitor shares.
+      if (!client.data.user?.guest) {
+        client.to(room.tenant(tenantId)).emit(AI_EVENT.CONVERSATION_UPDATE, {
+          aiConversationId: result.aiConversationId,
+        });
+      }
     } catch (err) {
       this.logger.warn(`onMessage failed: ${(err as Error)?.message}`);
       const normalized = normalizeException(err, this.isProduction);
