@@ -1,6 +1,9 @@
 import { Socket } from 'socket.io';
 
-import { AiRealtimeGateway } from './ai-realtime.gateway';
+import {
+  AiRealtimeGateway,
+  WS_REVALIDATE_INTERVAL_MS,
+} from './ai-realtime.gateway';
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { HandoverRequestService } from '../ai/handover-request.service';
@@ -522,9 +525,12 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
    * `aiConversationId` sit unnoticed until the next `ai:message` also failed.
    */
   describe('unified {code, message} error contract for conversation lookups', () => {
+    // F-6: `ai:join` now requires an AI conversation/handover permission for
+    // staff, so these ownership-contract cases hold one. (The permission gate
+    // itself is covered in "F-6 — ai:join / presence permission gates" below.)
     it('ai:join emits a coded NOT_FOUND — not silence — when the conversation cannot be accessed', async () => {
       conversationAccess.canAccess.mockResolvedValueOnce(false);
-      const client = socket();
+      const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
       const res = await gateway.onJoin(client, {
         aiConversationId: 'stale-conv',
@@ -538,7 +544,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
     });
 
     it('ai:join emits no error on success', async () => {
-      const client = socket();
+      const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
 
       const res = await gateway.onJoin(client, { aiConversationId: 'conv-1' });
 
@@ -1025,5 +1031,563 @@ describe('AiRealtimeGateway — ai:message attachmentIds', () => {
     // would catch.
     const flood = Array.from({ length: 1000 }, () => VALID_A);
     expect(await forwarded(flood)).toHaveLength(3);
+  });
+});
+
+/**
+ * CSWSH remediation (F-3, F-4, F-6) at the handler level — fake sockets, no
+ * network. The same behaviours are proven over real sockets in
+ * `test/security/ws-cswsh-handshake.spec.ts`; these run everywhere, instantly,
+ * and pin the individual branches.
+ */
+describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
+  const T = 't1';
+  const READ = PERMISSION.AI_HANDOVER_READ;
+
+  type Fake = Socket & {
+    data: Record<string, any>;
+    disconnect: jest.Mock;
+    leave: jest.Mock;
+    emit: jest.Mock;
+    join: jest.Mock;
+    toEmit: jest.Mock;
+  };
+
+  function fake(
+    user: Record<string, unknown> | undefined,
+    extra: Record<string, unknown> = {},
+  ): Fake {
+    const rooms = new Set<string>();
+    const toEmit = jest.fn();
+    return {
+      id: 'sock-1',
+      data: user
+        ? { tenantId: user.tenantId, userId: user.id, user, ...extra }
+        : { ...extra },
+      rooms,
+      emit: jest.fn(),
+      join: jest.fn((r: string) => rooms.add(r)),
+      leave: jest.fn((r: string) => rooms.delete(r)),
+      disconnect: jest.fn(),
+      to: jest.fn().mockReturnValue({ emit: toEmit }),
+      toEmit,
+    } as unknown as Fake;
+  }
+
+  const staffUser = (permissions: string[], tenantId = T) => ({
+    id: 'u1',
+    tenantId,
+    roles: ['staff'],
+    permissions,
+  });
+  const guestUser = () => ({
+    id: 'g1',
+    tenantId: T,
+    roles: [],
+    permissions: [],
+    guest: true,
+  });
+
+  let wsAuth: {
+    authenticateHandshake: jest.Mock;
+    revalidate: jest.Mock;
+  };
+  let presence: Record<
+    'connect' | 'disconnect' | 'setStatus' | 'snapshot',
+    jest.Mock
+  >;
+  let orchestrator: { handleStream: jest.Mock };
+  let access: { canAccess: jest.Mock };
+  let gateway: AiRealtimeGateway;
+
+  beforeEach(() => {
+    wsAuth = {
+      authenticateHandshake: jest.fn(),
+      revalidate: jest.fn(async (u: unknown) => u),
+    };
+    presence = {
+      connect: jest.fn().mockResolvedValue({ status: 'ONLINE' }),
+      disconnect: jest.fn().mockResolvedValue({ status: 'OFFLINE' }),
+      setStatus: jest.fn().mockResolvedValue({ status: 'BUSY' }),
+      snapshot: jest.fn().mockResolvedValue([{ userId: 'x' }]),
+    };
+    orchestrator = {
+      handleStream: jest.fn().mockResolvedValue({
+        aiConversationId: 'conv-1',
+        reply: { content: 'hi' },
+        usage: {},
+        streamed: false,
+      }),
+    };
+    access = { canAccess: jest.fn().mockResolvedValue(true) };
+    gateway = new AiRealtimeGateway(
+      wsAuth as unknown as WsAuthService,
+      orchestrator as unknown as AiOrchestratorService,
+      new TenantContextService(),
+      {
+        create: jest.fn().mockResolvedValue({ id: 'h1' }),
+      } as unknown as HandoverRequestService,
+      { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
+      presence as unknown as AgentPresenceService,
+      access as unknown as AiConversationAccessService,
+      {
+        resolve: jest.fn().mockResolvedValue({ allowed: true }),
+        shouldBlock: jest.fn().mockReturnValue(true),
+      } as unknown as AccessControlService,
+      {
+        checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }),
+      } as unknown as AiWsRateLimitService,
+    );
+  });
+
+  afterEach(() => jest.useRealTimers());
+
+  describe('handleConnection — who joins the tenant room (F-3)', () => {
+    async function connect(
+      user: Record<string, unknown>,
+      expiresAt: number | null = null,
+    ) {
+      wsAuth.authenticateHandshake.mockResolvedValue({ user, expiresAt });
+      const client = fake(undefined);
+      await gateway.handleConnection(client);
+      return client;
+    }
+
+    it('never joins a guest to the tenant room, and registers no presence for it', async () => {
+      const client = await connect(guestUser());
+      expect(client.join).not.toHaveBeenCalled();
+      expect(presence.connect).not.toHaveBeenCalled();
+      expect(client.data.presenceRegistered).toBeUndefined();
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.CONNECTED, {
+        userId: 'g1',
+        tenantId: T,
+      });
+    });
+
+    it('joins inbox staff (ai.handover.read) and records that presence was registered', async () => {
+      const client = await connect(staffUser([READ]));
+      expect(client.join).toHaveBeenCalledWith(`tenant:${T}`);
+      expect(presence.connect).toHaveBeenCalledWith(T, 'u1');
+      expect(client.data.presenceRegistered).toBe(true);
+    });
+
+    it('does not join staff without ai.handover.read, however many other permissions they hold', async () => {
+      const client = await connect(
+        staffUser([
+          PERMISSION.AI_CONVERSATIONS_MANAGE,
+          PERMISSION.AI_HANDOVER_MANAGE,
+          PERMISSION.AI_CONVERSATIONS_READ,
+        ]),
+      );
+      expect(client.join).not.toHaveBeenCalled();
+      expect(presence.connect).not.toHaveBeenCalled();
+    });
+
+    it("stamps the credential's expiry on the socket for the rest of its life", async () => {
+      const client = await connect(staffUser([READ]), 1_900_000_000_000);
+      expect(client.data.tokenExpiresAt).toBe(1_900_000_000_000);
+    });
+
+    it('still releases presence when the socket disconnects WHILE its own presence.connect is in flight', async () => {
+      // The count is per socket. If the flag were only set once `connect`
+      // resolved, a disconnect landing in this window would skip the release
+      // and the increment that follows would never be taken back — an agent with
+      // another tab open would show online after every socket had closed.
+      let finishConnect: (p: unknown) => void = () => undefined;
+      presence.connect.mockReturnValueOnce(
+        new Promise((resolve) => (finishConnect = resolve)),
+      );
+      wsAuth.authenticateHandshake.mockResolvedValue({
+        user: staffUser([READ]),
+        expiresAt: null,
+      });
+      const client = fake(undefined);
+
+      const connecting = gateway.handleConnection(client);
+      await new Promise((r) => setImmediate(r)); // parked on presence.connect
+      await gateway.handleDisconnect(client); // the socket goes away mid-flight
+      finishConnect({ status: 'ONLINE' });
+      await connecting;
+
+      expect(presence.disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('still refuses and disconnects on an authentication failure', async () => {
+      wsAuth.authenticateHandshake.mockRejectedValue(new Error('nope'));
+      const client = fake(undefined);
+      await gateway.handleConnection(client);
+      expect(client.disconnect).toHaveBeenCalledWith(true);
+      expect(client.join).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleDisconnect — presence is released exactly when it was registered', () => {
+    it('releases for a socket that registered it — even if its permissions have since changed', async () => {
+      const client = fake(staffUser([]), { presenceRegistered: true });
+      await gateway.handleDisconnect(client);
+      expect(presence.disconnect).toHaveBeenCalledWith(T, 'u1');
+      expect(client.data.presenceRegistered).toBe(false);
+    });
+
+    it('does nothing for a socket that never registered it (a guest, or staff who lost the permission and were already released)', async () => {
+      await gateway.handleDisconnect(fake(guestUser()));
+      await gateway.handleDisconnect(
+        fake(staffUser([READ]), { presenceRegistered: false }),
+      );
+      expect(presence.disconnect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('F-6 — ai:join / presence permission gates', () => {
+    it('refuses ai:join for staff with no AI permission — before any ownership lookup', async () => {
+      const client = fake(staffUser(['appointments.read']));
+      await expect(
+        gateway.onJoin(client, { aiConversationId: 'c1' }),
+      ).resolves.toEqual({ joined: null });
+      expect(client.join).not.toHaveBeenCalled();
+      expect(access.canAccess).not.toHaveBeenCalled();
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.FORBIDDEN,
+        message: 'Forbidden',
+      });
+    });
+
+    it.each([
+      PERMISSION.AI_HANDOVER_READ,
+      PERMISSION.AI_HANDOVER_MANAGE,
+      PERMISSION.AI_CONVERSATIONS_READ,
+      PERMISSION.AI_CONVERSATIONS_MANAGE,
+    ])('lets staff join with just %s', async (permission) => {
+      const client = fake(staffUser([permission]));
+      await expect(
+        gateway.onJoin(client, { aiConversationId: 'c1' }),
+      ).resolves.toEqual({ joined: 'c1' });
+      expect(client.join).toHaveBeenCalledWith('conv:c1');
+    });
+
+    it('exempts a guest from the staff-permission gate — its access is its own conversation, proven by ownership', async () => {
+      const client = fake(guestUser());
+      await expect(
+        gateway.onJoin(client, { aiConversationId: 'c1' }),
+      ).resolves.toEqual({ joined: 'c1' });
+      expect(access.canAccess).toHaveBeenCalledWith(
+        T,
+        'c1',
+        expect.objectContaining({ guest: true }),
+      );
+    });
+
+    it('still applies ownership after the permission gate', async () => {
+      access.canAccess.mockResolvedValueOnce(false);
+      const client = fake(staffUser([READ]));
+      await expect(
+        gateway.onJoin(client, { aiConversationId: 'foreign' }),
+      ).resolves.toEqual({ joined: null });
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.NOT_FOUND,
+        message: 'AI conversation not found',
+      });
+    });
+
+    it('refuses presence:update and presence:snapshot for non-inbox principals, touching nothing', async () => {
+      for (const user of [
+        staffUser([]),
+        staffUser([PERMISSION.AI_CONVERSATIONS_MANAGE]),
+        guestUser(),
+      ]) {
+        const client = fake(user);
+        await expect(
+          gateway.onPresenceUpdate(client, { status: 'BUSY' }),
+        ).resolves.toEqual({ ok: false });
+        await expect(gateway.onPresenceSnapshot(client)).resolves.toEqual([]);
+        expect(client.emit).toHaveBeenCalledTimes(2);
+      }
+      expect(presence.setStatus).not.toHaveBeenCalled();
+      expect(presence.snapshot).not.toHaveBeenCalled();
+    });
+
+    it('lets inbox staff use presence', async () => {
+      const server = { to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
+      gateway.server = server as never;
+      const client = fake(staffUser([READ]));
+      await expect(
+        gateway.onPresenceUpdate(client, { status: 'AWAY' }),
+      ).resolves.toEqual({ ok: true });
+      await expect(gateway.onPresenceSnapshot(client)).resolves.toEqual([
+        { userId: 'x' },
+      ]);
+      expect(presence.setStatus).toHaveBeenCalledWith(T, 'u1', 'AWAY');
+    });
+  });
+
+  describe('runMessage — the tenant-room announcement (F-3)', () => {
+    it("is not made for a guest's turn", async () => {
+      const client = fake(guestUser());
+      await gateway.onMessage(client, { content: 'hello' } as never);
+      expect(client.to).not.toHaveBeenCalledWith(`tenant:${T}`);
+      expect(client.to).toHaveBeenCalledWith('conv:conv-1'); // its own conversation room still is
+    });
+
+    it("is still made for a staff turn — the Agent Inbox's refresh signal", async () => {
+      const client = fake(staffUser([PERMISSION.AI_CONVERSATIONS_MANAGE]));
+      await gateway.onMessage(client, { content: 'hello' } as never);
+      expect(client.to).toHaveBeenCalledWith(`tenant:${T}`);
+      expect(client.toEmit).toHaveBeenCalledWith(AI_EVENT.CONVERSATION_UPDATE, {
+        aiConversationId: 'conv-1',
+      });
+    });
+  });
+
+  describe('F-4 — an expired credential ends the socket instead of being served', () => {
+    const expired = () => Date.now() - 1_000;
+
+    const events: [
+      string,
+      (g: AiRealtimeGateway, c: Socket) => Promise<unknown>,
+    ][] = [
+      ['ai:message', (g, c) => g.onMessage(c, { content: 'x' } as never)],
+      ['ai:join', (g, c) => g.onJoin(c, { aiConversationId: 'c1' })],
+      ['ai:handover', (g, c) => g.onHandover(c, { aiConversationId: 'c1' })],
+      [
+        'ai:agent:reply',
+        (g, c) => g.onAgentReply(c, { aiConversationId: 'c1', content: 'x' }),
+      ],
+      [
+        'ai:typing',
+        (g, c) => g.onTyping(c, { aiConversationId: 'c1', typing: true }),
+      ],
+      [
+        'ai:seen',
+        (g, c) => g.onSeen(c, { aiConversationId: 'c1', messageId: 'm' }),
+      ],
+      [
+        'ai:presence:update',
+        (g, c) => g.onPresenceUpdate(c, { status: 'BUSY' }),
+      ],
+      ['ai:presence:snapshot', (g, c) => g.onPresenceSnapshot(c)],
+    ];
+
+    it.each(events)('%s', async (_name, run) => {
+      const client = fake(
+        staffUser([
+          READ,
+          PERMISSION.AI_HANDOVER_MANAGE,
+          PERMISSION.AI_CONVERSATIONS_MANAGE,
+        ]),
+        {
+          tokenExpiresAt: expired(),
+        },
+      );
+      await run(gateway, client);
+      expect(client.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+        code: ErrorCode.UNAUTHORIZED,
+        message: 'Session expired',
+      });
+      expect(client.disconnect).toHaveBeenCalledWith(true);
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(access.canAccess).not.toHaveBeenCalled();
+      expect(presence.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('serves a credential that has not yet expired', async () => {
+      const client = fake(staffUser([READ]), {
+        tokenExpiresAt: Date.now() + 60_000,
+      });
+      await expect(
+        gateway.onJoin(client, { aiConversationId: 'c1' }),
+      ).resolves.toEqual({ joined: 'c1' });
+      expect(client.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('treats a socket with no recorded expiry as having nothing to enforce (a token minted without exp)', async () => {
+      const client = fake(staffUser([READ]), { tokenExpiresAt: null });
+      await expect(
+        gateway.onJoin(client, { aiConversationId: 'c1' }),
+      ).resolves.toEqual({ joined: 'c1' });
+    });
+
+    it('counts a running turn, and releases the count even when the turn fails', async () => {
+      const client = fake(staffUser([PERMISSION.AI_CONVERSATIONS_MANAGE]));
+      let during: number | undefined;
+      orchestrator.handleStream.mockImplementationOnce(async () => {
+        during = client.data.turnsInFlight;
+        throw new Error('provider down');
+      });
+      await gateway.onMessage(client, { content: 'x' } as never);
+      expect(during).toBe(1);
+      expect(client.data.turnsInFlight).toBe(0);
+    });
+  });
+
+  describe('F-4 — revalidateSockets', () => {
+    const withSockets = (...clients: Fake[]) => {
+      gateway.server = {
+        sockets: new Map(clients.map((c, i) => [`s${i}`, c])),
+      } as never;
+    };
+    const staffSocket = (
+      permissions: string[],
+      extra: Record<string, unknown> = {},
+      id = 'u1',
+    ) => fake({ ...staffUser(permissions), id }, extra);
+
+    it('is a quiet no-op before the server exists', async () => {
+      gateway.server = undefined as never;
+      await expect(gateway.revalidateSockets()).resolves.toBeUndefined();
+    });
+
+    it('resolves each DISTINCT staff user once, however many sockets — and never a guest', async () => {
+      withSockets(
+        staffSocket([READ]),
+        staffSocket([READ]),
+        staffSocket([READ]),
+        fake(guestUser()),
+        staffSocket([READ], {}, 'u2'),
+      );
+      await gateway.revalidateSockets();
+      expect(wsAuth.revalidate).toHaveBeenCalledTimes(2);
+    });
+
+    it('resolves users one at a time — housekeeping must not compete for the connection pool', async () => {
+      let running = 0;
+      let peak = 0;
+      wsAuth.revalidate.mockImplementation(async (u: unknown) => {
+        running += 1;
+        peak = Math.max(peak, running);
+        await new Promise((r) => setTimeout(r, 5));
+        running -= 1;
+        return u;
+      });
+      withSockets(
+        staffSocket([READ], {}, 'a'),
+        staffSocket([READ], {}, 'b'),
+        staffSocket([READ], {}, 'c'),
+      );
+      await gateway.revalidateSockets();
+      expect(peak).toBe(1);
+    });
+
+    it('ends every socket of a user who is gone or inactive', async () => {
+      wsAuth.revalidate.mockResolvedValue(null);
+      const a = staffSocket([READ]);
+      const b = staffSocket([READ]);
+      withSockets(a, b);
+      await gateway.revalidateSockets();
+      for (const c of [a, b]) {
+        expect(c.emit).toHaveBeenCalledWith(AI_EVENT.ERROR, {
+          code: ErrorCode.UNAUTHORIZED,
+          message: 'Session is no longer valid',
+        });
+        expect(c.disconnect).toHaveBeenCalledWith(true);
+      }
+    });
+
+    it('ends the socket of a user who moved tenant', async () => {
+      wsAuth.revalidate.mockResolvedValue(staffUser([READ], 'other-tenant'));
+      const c = staffSocket([READ]);
+      withSockets(c);
+      await gateway.revalidateSockets();
+      expect(c.disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it('replaces the captured principal, so later events see the CURRENT permissions', async () => {
+      const fresh = staffUser([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+      wsAuth.revalidate.mockResolvedValue(fresh);
+      const c = staffSocket([READ, PERMISSION.AI_CONVERSATIONS_MANAGE]);
+      withSockets(c);
+      await gateway.revalidateSockets();
+      expect(c.data.user).toBe(fresh);
+      expect(c.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('takes a demoted socket out of the tenant room and conversation rooms, and balances presence exactly once', async () => {
+      wsAuth.revalidate.mockResolvedValue(staffUser([]));
+      const c = staffSocket([READ], { presenceRegistered: true });
+      c.rooms.add(`tenant:${T}`);
+      c.rooms.add('conv:c1');
+      c.rooms.add('conv:c2');
+      c.rooms.add('some-other-room');
+      withSockets(c);
+      await gateway.revalidateSockets();
+      expect([...c.rooms]).toEqual(['some-other-room']);
+      expect(presence.disconnect).toHaveBeenCalledTimes(1);
+      expect(c.data.presenceRegistered).toBe(false);
+      await gateway.handleDisconnect(c);
+      expect(presence.disconnect).toHaveBeenCalledTimes(1); // not released twice
+    });
+
+    it('only ever removes: a permission gained mid-session is not silently granted a room', async () => {
+      wsAuth.revalidate.mockResolvedValue(
+        staffUser([READ, PERMISSION.AI_CONVERSATIONS_MANAGE]),
+      );
+      const c = staffSocket([]);
+      withSockets(c);
+      await gateway.revalidateSockets();
+      expect(c.join).not.toHaveBeenCalled();
+    });
+
+    it('keeps the current principal when the lookup itself fails (a database blip must not disconnect every agent)', async () => {
+      wsAuth.revalidate.mockRejectedValue(new Error('pool exhausted'));
+      const c = staffSocket([READ]);
+      const before = c.data.user;
+      withSockets(c);
+      await gateway.revalidateSockets();
+      expect(c.disconnect).not.toHaveBeenCalled();
+      expect(c.data.user).toBe(before);
+    });
+
+    it('ends an idle socket whose credential has expired', async () => {
+      const c = staffSocket([READ], { tokenExpiresAt: Date.now() - 1 });
+      const g = fake(guestUser(), { tokenExpiresAt: Date.now() - 1 });
+      withSockets(c, g);
+      await gateway.revalidateSockets();
+      expect(c.disconnect).toHaveBeenCalledWith(true);
+      expect(g.disconnect).toHaveBeenCalledWith(true);
+      expect(wsAuth.revalidate).not.toHaveBeenCalled(); // an expired socket is not worth a lookup
+    });
+
+    it('lets a turn that is already streaming finish; the next sweep ends the socket', async () => {
+      const c = staffSocket([READ], {
+        tokenExpiresAt: Date.now() - 1,
+        turnsInFlight: 1,
+      });
+      withSockets(c);
+      await gateway.revalidateSockets();
+      expect(c.disconnect).not.toHaveBeenCalled();
+      c.data.turnsInFlight = 0;
+      await gateway.revalidateSockets();
+      expect(c.disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it('does not overlap itself: a slow sweep is not started again on top of itself', async () => {
+      let release: () => void = () => undefined;
+      wsAuth.revalidate.mockImplementation(
+        (u: unknown) =>
+          new Promise((r) => {
+            release = () => r(u);
+          }),
+      );
+      withSockets(staffSocket([READ]));
+      const first = gateway.revalidateSockets();
+      await gateway.revalidateSockets(); // returns immediately — a sweep is running
+      expect(wsAuth.revalidate).toHaveBeenCalledTimes(1);
+      release();
+      await first;
+    });
+  });
+
+  describe('lifecycle — the sweep timer', () => {
+    it('is started on init, does not keep the process alive, and is cleared on destroy', () => {
+      jest.useFakeTimers();
+      const sweep = jest
+        .spyOn(gateway, 'revalidateSockets')
+        .mockResolvedValue(undefined);
+      gateway.onModuleInit();
+      jest.advanceTimersByTime(WS_REVALIDATE_INTERVAL_MS * 2);
+      expect(sweep).toHaveBeenCalledTimes(2);
+      gateway.onModuleDestroy();
+      jest.advanceTimersByTime(WS_REVALIDATE_INTERVAL_MS * 2);
+      expect(sweep).toHaveBeenCalledTimes(2);
+    });
   });
 });
