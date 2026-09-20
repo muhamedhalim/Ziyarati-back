@@ -15,7 +15,10 @@ import type {
   JourneyDimensionRow,
   JourneyDistribution,
   JourneyDistributionWithP75,
+  JourneyDurationCandidate,
+  JourneyDurationCandidateStatus,
   JourneyDurationSuggestion,
+  JourneyDurationSuggestionsState,
   JourneyKpis,
   JourneyLabelInfo,
   JourneyOverallRow,
@@ -572,6 +575,95 @@ export function suggestDurationMinutes(p75: number): number {
   );
 }
 
+/**
+ * The single evaluation of every duration-suggestion gate for one service
+ * row. Both the suggestion list and the candidate list (which explains WHY a
+ * service produced no suggestion) go through this, so the gates cannot drift
+ * apart. Order is the original gate order; no threshold is changed here.
+ */
+export function evaluateDurationRow(
+  row: JourneyDimensionRow,
+  label: ServiceLabel,
+): {
+  status: JourneyDurationCandidateStatus;
+  coverage: JourneyCoverage;
+  suggested: number | null;
+} {
+  const coverage = shapeCoverage(row.completed_with_timing, row.completed);
+  if (label.inactive) {
+    return { status: 'SERVICE_INACTIVE', coverage, suggested: null };
+  }
+  if (row.consult_n < JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION) {
+    return { status: 'INSUFFICIENT_SAMPLE', coverage, suggested: null };
+  }
+  if (coverage.rate == null || coverage.rate < JOURNEY_THRESHOLDS.MIN_COVERAGE) {
+    return { status: 'LOW_TIMING_COVERAGE', coverage, suggested: null };
+  }
+  if (row.consult_p75 == null) {
+    return { status: 'NO_PERCENTILE', coverage, suggested: null };
+  }
+
+  const suggested = suggestDurationMinutes(row.consult_p75);
+  const configured = label.configuredMinutes;
+  if (configured != null) {
+    const delta = Math.abs(suggested - configured);
+    const minDelta = Math.max(
+      JOURNEY_RULE_THRESHOLDS.DURATION_SUGGESTION_MIN_DELTA_MINUTES,
+      configured * JOURNEY_RULE_THRESHOLDS.DURATION_SUGGESTION_MIN_DELTA_RATIO,
+    );
+    if (delta < minDelta) {
+      return { status: 'ALREADY_ALIGNED', coverage, suggested };
+    }
+  }
+  return { status: 'OK', coverage, suggested };
+}
+
+function buildDurationCandidate(
+  row: JourneyDimensionRow,
+  label: ServiceLabel,
+): JourneyDurationCandidate {
+  const { status, coverage, suggested } = evaluateDurationRow(row, label);
+  const configured = label.configuredMinutes;
+  return {
+    serviceId: row.dim_key,
+    name: label.name,
+    inactive: label.inactive,
+    configuredMinutes: configured,
+    scheduledP50: round1(row.scheduled_p50),
+    // Sample-gated like every other distribution: below the minimum sample
+    // the percentiles stay null while `n` remains visible.
+    consultation: shapeDistributionWithP75(
+      row.consult_n,
+      0,
+      row.consult_p50,
+      row.consult_p75,
+      row.consult_p90,
+      {
+        n: row.consult_n,
+        minSample: JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION,
+      },
+    ),
+    coverage,
+    suggestedMinutes: suggested,
+    direction:
+      status !== 'OK' || configured == null || suggested == null
+        ? null
+        : suggested > configured
+          ? 'LONGER'
+          : 'SHORTER',
+    status,
+  };
+}
+
+function durationDelta(s: {
+  configuredMinutes: number | null;
+  suggestedMinutes: number | null;
+}): number {
+  return s.configuredMinutes == null
+    ? 0
+    : Math.abs((s.suggestedMinutes ?? 0) - s.configuredMinutes);
+}
+
 export function shapeDurationSuggestions(
   serviceRows: JourneyDimensionRow[],
   labels: Map<string, ServiceLabel>,
@@ -580,71 +672,76 @@ export function shapeDurationSuggestions(
 
   for (const row of serviceRows) {
     const label = labels.get(row.dim_key);
-    if (!label || label.inactive) continue;
-    if (row.consult_n < JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION)
-      continue;
-
-    const coverage = shapeCoverage(row.completed_with_timing, row.completed);
-    if (
-      coverage.rate == null ||
-      coverage.rate < JOURNEY_THRESHOLDS.MIN_COVERAGE
-    )
-      continue;
-    if (row.consult_p75 == null) continue;
-
-    const suggested = suggestDurationMinutes(row.consult_p75);
-    const configured = label.configuredMinutes;
-    if (configured != null) {
-      const delta = Math.abs(suggested - configured);
-      const minDelta = Math.max(
-        JOURNEY_RULE_THRESHOLDS.DURATION_SUGGESTION_MIN_DELTA_MINUTES,
-        configured *
-          JOURNEY_RULE_THRESHOLDS.DURATION_SUGGESTION_MIN_DELTA_RATIO,
-      );
-      if (delta < minDelta) continue;
-    }
-
-    out.push({
-      serviceId: row.dim_key,
-      name: label.name,
-      inactive: label.inactive,
-      configuredMinutes: configured,
-      scheduledP50: round1(row.scheduled_p50),
-      consultation: shapeDistributionWithP75(
-        row.consult_n,
-        0,
-        row.consult_p50,
-        row.consult_p75,
-        row.consult_p90,
-        {
-          n: row.consult_n,
-          minSample: JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION,
-        },
-      ),
-      coverage,
-      suggestedMinutes: suggested,
-      direction:
-        configured == null
-          ? null
-          : suggested > configured
-            ? 'LONGER'
-            : 'SHORTER',
-    });
+    if (!label) continue;
+    const candidate = buildDurationCandidate(row, label);
+    if (candidate.status !== 'OK') continue;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { status, ...suggestion } = candidate;
+    out.push(suggestion);
   }
 
-  out.sort((a, b) => {
-    const da =
-      a.configuredMinutes == null
-        ? 0
-        : Math.abs((a.suggestedMinutes ?? 0) - a.configuredMinutes);
-    const db =
-      b.configuredMinutes == null
-        ? 0
-        : Math.abs((b.suggestedMinutes ?? 0) - b.configuredMinutes);
-    return db - da;
-  });
+  out.sort((a, b) => durationDelta(b) - durationDelta(a));
 
   return out.slice(0, JOURNEY_THRESHOLDS.MAX_DURATION_SUGGESTIONS);
+}
+
+const CANDIDATE_STATUS_RANK: Record<JourneyDurationCandidateStatus, number> = {
+  OK: 0,
+  ALREADY_ALIGNED: 1,
+  INSUFFICIENT_SAMPLE: 2,
+  LOW_TIMING_COVERAGE: 3,
+  NO_PERCENTILE: 4,
+  SERVICE_INACTIVE: 5,
+};
+
+/**
+ * Explains the duration-suggestion outcome per service: one candidate per
+ * service that had appointments in scope, each carrying the gate it stopped
+ * at, plus a panel-level `state` when there is nothing per-service to show.
+ * Reporting only — it never changes which suggestions exist.
+ *
+ * `activeServiceCount` is the tenant-wide count; `undefined` (a blob cached
+ * before the field existed) means unknown, so "no services configured" is
+ * never asserted without evidence. The state is derived from the FULL list,
+ * before the payload cap, so truncation cannot change the explanation.
+ */
+export function shapeDurationExplanation(
+  serviceRows: JourneyDimensionRow[],
+  labels: Map<string, ServiceLabel>,
+  activeServiceCount: number | undefined,
+): {
+  candidates: JourneyDurationCandidate[];
+  state: JourneyDurationSuggestionsState | null;
+} {
+  const all: JourneyDurationCandidate[] = [];
+  for (const row of serviceRows) {
+    const label = labels.get(row.dim_key);
+    if (!label) continue;
+    all.push(buildDurationCandidate(row, label));
+  }
+
+  const live = all.filter((c) => c.status !== 'SERVICE_INACTIVE');
+  const state: JourneyDurationSuggestionsState | null =
+    activeServiceCount === 0
+      ? 'NO_SERVICES_CONFIGURED'
+      : live.length === 0
+        ? 'NO_SERVICE_APPOINTMENTS'
+        : live.every((c) => c.consultation.n === 0)
+          ? 'NO_TIMED_CONSULTATIONS'
+          : null;
+
+  all.sort(
+    (a, b) =>
+      CANDIDATE_STATUS_RANK[a.status] - CANDIDATE_STATUS_RANK[b.status] ||
+      (a.status === 'OK' ? durationDelta(b) - durationDelta(a) : 0) ||
+      b.consultation.n - a.consultation.n ||
+      a.name.localeCompare(b.name),
+  );
+
+  return {
+    candidates: all.slice(0, JOURNEY_THRESHOLDS.MAX_DURATION_CANDIDATES),
+    state,
+  };
 }
 
 // ─────────────────────────────── Breakdown rows ────────────────────────── //

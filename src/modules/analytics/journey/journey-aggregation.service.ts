@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 
+import { AppError, ErrorCode } from '../../../common/errors';
 import { Appointment } from '../../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../../entities/SaaS-Core/Branch';
 import { StaffProfile } from '../../../entities/Staff/StaffProfile';
@@ -104,6 +105,48 @@ export class JourneyAggregationService {
       };
     }
     return out;
+  }
+
+  /**
+   * Count of the tenant's active, non-deleted services. Tenant-scoped, and a
+   * plain COUNT, so it stays cheap and runs alongside the label lookups.
+   */
+  async fetchActiveServiceCount(tenantId: string): Promise<number> {
+    return this.appointments.manager.getRepository(Service).count({
+      where: { tenant: { id: tenantId }, is_active: true },
+    });
+  }
+
+  /**
+   * The staff/service drill-down ids arrive as bare query strings. The SQL is
+   * already tenant-scoped (a foreign id just yields an empty result), so this
+   * is not a data-leak fix — it stops a foreign or made-up id from being
+   * silently "valid" (existence probing, cache-key pollution). Soft-deleted
+   * rows ARE accepted: an inactive staff member / service still appears in
+   * the breakdown and must remain drillable.
+   */
+  async assertStaff(tenantId: string, staffId: string): Promise<void> {
+    const found = await this.appointments.manager
+      .getRepository(StaffProfile)
+      .findOne({
+        where: { id: staffId, tenant: { id: tenantId } },
+        select: { id: true },
+        withDeleted: true,
+      });
+    if (!found) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Staff not found' });
+    }
+  }
+
+  async assertService(tenantId: string, serviceId: string): Promise<void> {
+    const found = await this.appointments.manager.getRepository(Service).findOne({
+      where: { id: serviceId, tenant: { id: tenantId } },
+      select: { id: true },
+      withDeleted: true,
+    });
+    if (!found) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Service not found' });
+    }
   }
 
   async fetchServiceLabels(

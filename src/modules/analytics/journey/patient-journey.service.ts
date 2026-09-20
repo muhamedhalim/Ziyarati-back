@@ -21,6 +21,7 @@ import {
   shapeComparison,
   shapeCounts,
   shapeDataQuality,
+  shapeDurationExplanation,
   shapeDurationSuggestions,
   shapeJourneyCoverages,
   shapeKpis,
@@ -126,18 +127,24 @@ export class PatientJourneyService {
       service: toLabelMap(aggregate.labels.service),
     };
 
+    const serviceLabels = new Map(
+      Object.entries(aggregate.labels.service).map(([id, l]) => [
+        id,
+        {
+          name: l.name,
+          inactive: l.inactive,
+          configuredMinutes: l.configuredMinutes,
+        },
+      ]),
+    );
     const durationSuggestions = shapeDurationSuggestions(
       aggregate.byDimension.service,
-      new Map(
-        Object.entries(aggregate.labels.service).map(([id, l]) => [
-          id,
-          {
-            name: l.name,
-            inactive: l.inactive,
-            configuredMinutes: l.configuredMinutes,
-          },
-        ]),
-      ),
+      serviceLabels,
+    );
+    const durationExplanation = shapeDurationExplanation(
+      aggregate.byDimension.service,
+      serviceLabels,
+      aggregate.activeServiceCount,
     );
 
     const { insights, truncated } = generateInsights({
@@ -188,6 +195,8 @@ export class PatientJourneyService {
       comparisonUnavailable,
       reminders,
       durationSuggestions,
+      durationSuggestionCandidates: durationExplanation.candidates,
+      durationSuggestionsState: durationExplanation.state,
       dataQuality,
       insights,
       insightsTruncated: truncated,
@@ -195,6 +204,7 @@ export class PatientJourneyService {
         minSample: JOURNEY_THRESHOLDS.MIN_SAMPLE_SUMMARY,
         minBreakdownSample: JOURNEY_THRESHOLDS.MIN_SAMPLE_BREAKDOWN_ROW,
         minCoverage: JOURNEY_THRESHOLDS.MIN_COVERAGE,
+        minDurationSample: JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION,
         maxIntervalMinutes: 720,
       },
     };
@@ -376,6 +386,11 @@ export class PatientJourneyService {
     serviceId: string | undefined,
     now: Date,
   ): Promise<JourneyAggregate> {
+    // Runs only on a cache miss: a hit was validated when it was computed and
+    // the key is tenant-prefixed, so the warm path stays free of extra reads.
+    if (staffId) await this.journeyAgg.assertStaff(tenantId, staffId);
+    if (serviceId) await this.journeyAgg.assertService(tenantId, serviceId);
+
     const settingsRow = await this.tenantSettings.findOne({
       where: { tenant: { id: tenantId } },
     });
@@ -437,11 +452,13 @@ export class PatientJourneyService {
     const staffIds = uniqueIds(byDimension.staff);
     const serviceIds = uniqueIds(byDimension.service);
 
-    const [branchLabels, staffLabels, serviceLabels] = await Promise.all([
-      this.journeyAgg.fetchBranchLabels(tenantId, branchIds),
-      this.journeyAgg.fetchStaffLabels(tenantId, staffIds),
-      this.journeyAgg.fetchServiceLabels(tenantId, serviceIds),
-    ]);
+    const [branchLabels, staffLabels, serviceLabels, activeServiceCount] =
+      await Promise.all([
+        this.journeyAgg.fetchBranchLabels(tenantId, branchIds),
+        this.journeyAgg.fetchStaffLabels(tenantId, staffIds),
+        this.journeyAgg.fetchServiceLabels(tenantId, serviceIds),
+        this.journeyAgg.fetchActiveServiceCount(tenantId),
+      ]);
 
     return {
       overall,
@@ -455,6 +472,7 @@ export class PatientJourneyService {
         service: serviceLabels,
       },
       settings: { currency, remindersEnabled, reminderLeadMinutes },
+      activeServiceCount,
       now: now.toISOString(),
     };
   }

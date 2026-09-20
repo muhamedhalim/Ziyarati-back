@@ -5,6 +5,7 @@ import {
   shapeCounts,
   shapeDataQuality,
   shapeDistribution,
+  shapeDurationExplanation,
   shapeDurationSuggestions,
   shapeJourneyCoverages,
   shapeKpis,
@@ -602,5 +603,224 @@ describe('shapeDurationSuggestions', () => {
     expect(out[0].serviceId).toBe('svc-1');
     expect(out[0].suggestedMinutes).toBe(45);
     expect(out[0].direction).toBe('LONGER');
+  });
+});
+
+describe('shapeDurationExplanation', () => {
+  function dimRow(
+    overrides: Partial<JourneyDimensionRow> = {},
+  ): JourneyDimensionRow {
+    return { ...row(), dim_key: 'svc-1', ...overrides };
+  }
+  /** A service with `n` timed consultations out of `completed` completed. */
+  function timed(
+    key: string,
+    n: number,
+    p75: number,
+    completed = n,
+  ): JourneyDimensionRow {
+    return dimRow({
+      dim_key: key,
+      consult_n: n,
+      completed,
+      completed_with_timing: n,
+      consult_p50: p75 - 4,
+      consult_p75: p75,
+      consult_p90: p75 + 6,
+      scheduled_p50: 30,
+    });
+  }
+  const label = (
+    name: string,
+    configuredMinutes: number | null = 30,
+    inactive = false,
+  ) => ({ name, inactive, configuredMinutes });
+  type Labels = Map<string, ReturnType<typeof label>>;
+
+  const statusOf = (rows: JourneyDimensionRow[], labels: Labels, key: string) =>
+    shapeDurationExplanation(rows, labels, 5).candidates.find(
+      (c) => c.serviceId === key,
+    )?.status;
+
+  it('reports the exact gate each service stopped at, instead of dropping it', () => {
+    const labels: Labels = new Map([
+      ['ok', label('Needs longer', 30)],
+      ['aligned', label('Aligned', 30)],
+      ['few', label('Few', 30)],
+      ['cov', label('Low coverage', 30)],
+      ['nop', label('No percentile', 30)],
+      ['gone', label('Gone', 30, true)],
+    ]);
+    const rows = [
+      timed('ok', 25, 50), // suggested 50, delta 20 -> OK
+      timed('aligned', 25, 26), // suggested 30, delta 0 -> aligned
+      timed('few', 5, 45),
+      dimRow({
+        dim_key: 'cov',
+        consult_n: 25,
+        completed: 100,
+        completed_with_timing: 25,
+        consult_p75: 45,
+      }),
+      dimRow({
+        dim_key: 'nop',
+        consult_n: 25,
+        completed: 25,
+        completed_with_timing: 25,
+        consult_p75: null,
+      }),
+      timed('gone', 25, 50),
+    ];
+    expect(statusOf(rows, labels, 'ok')).toBe('OK');
+    expect(statusOf(rows, labels, 'aligned')).toBe('ALREADY_ALIGNED');
+    expect(statusOf(rows, labels, 'few')).toBe('INSUFFICIENT_SAMPLE');
+    expect(statusOf(rows, labels, 'cov')).toBe('LOW_TIMING_COVERAGE');
+    expect(statusOf(rows, labels, 'nop')).toBe('NO_PERCENTILE');
+    expect(statusOf(rows, labels, 'gone')).toBe('SERVICE_INACTIVE');
+  });
+
+  it('PARITY: candidates with status OK are exactly the suggestions list', () => {
+    const labels: Labels = new Map([
+      ['a', label('A', 30)],
+      ['b', label('B', 30)],
+      ['c', label('C', 30)],
+      ['d', label('D', null)], // no configured duration -> still a suggestion
+      ['e', label('E', 30, true)],
+    ]);
+    const rows = [
+      timed('a', 25, 50),
+      timed('b', 25, 26),
+      timed('c', 3, 50),
+      timed('d', 25, 50),
+      timed('e', 25, 50),
+    ];
+    const suggestions = shapeDurationSuggestions(rows, labels)
+      .map((s) => s.serviceId)
+      .sort();
+    const okCandidates = shapeDurationExplanation(rows, labels, 5)
+      .candidates.filter((c) => c.status === 'OK')
+      .map((c) => c.serviceId)
+      .sort();
+    expect(okCandidates).toEqual(suggestions);
+    expect(suggestions).toEqual(['a', 'd']);
+  });
+
+  it('keeps the sample size visible but withholds percentiles below the minimum sample', () => {
+    const labels: Labels = new Map([['few', label('Few', 30)]]);
+    const [c] = shapeDurationExplanation([timed('few', 12, 45)], labels, 1)
+      .candidates;
+    expect(c.status).toBe('INSUFFICIENT_SAMPLE');
+    expect(c.consultation.n).toBe(12);
+    expect(c.consultation.p50).toBeNull();
+    expect(c.consultation.p75).toBeNull();
+    expect(c.suggestedMinutes).toBeNull();
+    expect(c.direction).toBeNull();
+  });
+
+  it('an aligned service still reports its actual percentiles and the matching suggestion', () => {
+    const labels: Labels = new Map([['al', label('Aligned', 30)]]);
+    const [c] = shapeDurationExplanation([timed('al', 25, 26)], labels, 1)
+      .candidates;
+    expect(c.status).toBe('ALREADY_ALIGNED');
+    expect(c.consultation.p75).toBe(26);
+    expect(c.configuredMinutes).toBe(30);
+    expect(c.suggestedMinutes).toBe(30);
+    expect(c.direction).toBeNull();
+  });
+
+  it('a suggestion with no configured duration has no direction', () => {
+    const labels: Labels = new Map([['x', label('X', null)]]);
+    const [c] = shapeDurationExplanation([timed('x', 25, 50)], labels, 1)
+      .candidates;
+    expect(c.status).toBe('OK');
+    expect(c.configuredMinutes).toBeNull();
+    expect(c.direction).toBeNull();
+  });
+
+  describe('panel-level state', () => {
+    const labels: Labels = new Map([
+      ['a', label('A', 30)],
+      ['gone', label('Gone', 30, true)],
+    ]);
+
+    it('NO_SERVICES_CONFIGURED only when the tenant count is known to be zero', () => {
+      expect(shapeDurationExplanation([], new Map(), 0).state).toBe(
+        'NO_SERVICES_CONFIGURED',
+      );
+      // an unknown count (blob cached before the field existed) never asserts it
+      expect(shapeDurationExplanation([], new Map(), undefined).state).toBe(
+        'NO_SERVICE_APPOINTMENTS',
+      );
+    });
+
+    it('NO_SERVICE_APPOINTMENTS when services exist but none was booked alone in range', () => {
+      expect(shapeDurationExplanation([], new Map(), 4).state).toBe(
+        'NO_SERVICE_APPOINTMENTS',
+      );
+    });
+
+    it('NO_TIMED_CONSULTATIONS when every live service has zero timed consultations', () => {
+      // the inactive service has data but must not mask the live one's emptiness
+      const rows = [timed('a', 0, 0, 7), timed('gone', 30, 50)];
+      expect(shapeDurationExplanation(rows, labels, 4).state).toBe(
+        'NO_TIMED_CONSULTATIONS',
+      );
+    });
+
+    it('null once any live service has timed consultations (per-candidate status explains)', () => {
+      expect(
+        shapeDurationExplanation([timed('a', 3, 40)], labels, 4).state,
+      ).toBeNull();
+    });
+
+    it('an inactive-only range is NO_SERVICE_APPOINTMENTS, not a false "no timed consultations"', () => {
+      expect(
+        shapeDurationExplanation([timed('gone', 30, 50)], labels, 4).state,
+      ).toBe('NO_SERVICE_APPOINTMENTS');
+    });
+  });
+
+  it('orders OK first (largest delta first), then aligned, then insufficient by sample size', () => {
+    const labels: Labels = new Map([
+      ['small', label('Small', 30)],
+      ['big', label('Big', 30)],
+      ['aligned', label('Aligned', 30)],
+      ['few3', label('Few3', 30)],
+      ['few9', label('Few9', 30)],
+    ]);
+    const rows = [
+      timed('few3', 3, 45),
+      timed('small', 25, 40), // suggested 40, delta 10
+      timed('few9', 9, 45),
+      timed('aligned', 25, 26),
+      timed('big', 25, 60), // suggested 60, delta 30
+    ];
+    expect(
+      shapeDurationExplanation(rows, labels, 5).candidates.map(
+        (c) => c.serviceId,
+      ),
+    ).toEqual(['big', 'small', 'aligned', 'few9', 'few3']);
+  });
+
+  it('caps the payload but derives the state from the FULL list', () => {
+    const many = JOURNEY_THRESHOLDS.MAX_DURATION_CANDIDATES + 10;
+    const rows: JourneyDimensionRow[] = [];
+    const labels: Labels = new Map();
+    for (let i = 0; i < many; i++) {
+      rows.push(timed(`s${i}`, 0, 0, 3));
+      labels.set(`s${i}`, label(`S${String(i).padStart(3, '0')}`, 30));
+    }
+    const out = shapeDurationExplanation(rows, labels, many);
+    expect(out.candidates).toHaveLength(
+      JOURNEY_THRESHOLDS.MAX_DURATION_CANDIDATES,
+    );
+    expect(out.state).toBe('NO_TIMED_CONSULTATIONS');
+  });
+
+  it('skips a row whose service has no label (not this tenant)', () => {
+    expect(
+      shapeDurationExplanation([timed('ghost', 25, 50)], new Map(), 3)
+        .candidates,
+    ).toEqual([]);
   });
 });
