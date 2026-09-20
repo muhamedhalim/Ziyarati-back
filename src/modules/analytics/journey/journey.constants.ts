@@ -106,6 +106,8 @@ export const JOURNEY_THRESHOLDS = {
   MAX_INSIGHTS: 20,
   /** Cap on how many duration suggestions a response returns. */
   MAX_DURATION_SUGGESTIONS: 10,
+  /** Cap on how many per-service duration-suggestion candidates (with their gate status) a response returns. */
+  MAX_DURATION_CANDIDATES: 25,
 } as const;
 
 // ───────────────────────────── Skip-reason allow-list ──────────────────────── //

@@ -3,7 +3,11 @@ import {
   type JourneyInsightsInput,
   type JourneyLabel,
 } from './journey-insights';
-import { shapeJourneyCoverages, shapeKpis } from './journey-shaping';
+import {
+  shapeDurationSuggestions,
+  shapeJourneyCoverages,
+  shapeKpis,
+} from './journey-shaping';
 import { JOURNEY_INSIGHT_CODE, JOURNEY_THRESHOLDS } from './journey.constants';
 import { METRIC_KEYS } from '../metric-registry';
 import type {
@@ -723,6 +727,110 @@ describe('generateInsights — ordering, cap and registry consistency', () => {
       for (const v of Object.values(insight.params)) {
         expect(['number', 'string']).toContain(typeof v);
       }
+    }
+  });
+});
+
+describe('generateInsights — SERVICE_DURATION_REVIEW (shares the suggestion gates)', () => {
+  function svcRow(
+    key: string,
+    n: number,
+    p75: number,
+    completed = n,
+  ): JourneyDimensionRow {
+    return dimRow({
+      dim_key: key,
+      consult_n: n,
+      completed,
+      completed_with_timing: n,
+      consult_p50: p75 - 4,
+      consult_p75: p75,
+      consult_p90: p75 + 6,
+    });
+  }
+  const label = (
+    name: string,
+    configuredMinutes: number | null | undefined,
+    inactive = false,
+  ): JourneyLabel => ({ name, inactive, configuredMinutes });
+
+  function reviewKeys(
+    rows: JourneyDimensionRow[],
+    labels: Map<string, JourneyLabel>,
+  ): string[] {
+    const { insights } = generateInsights(
+      baseInput({
+        dimensions: { branch: [], staff: [], service: rows, hour: [] },
+        labels: { branch: new Map(), staff: new Map(), service: labels },
+      }),
+    );
+    return insights
+      .filter((i) => i.code === JOURNEY_INSIGHT_CODE.SERVICE_DURATION_REVIEW)
+      .map((i) => i.scope.key as string);
+  }
+
+  it('fires for a service whose suggested duration differs enough from the configured one', () => {
+    const labels = new Map([['a', label('A', 30)]]);
+    expect(reviewKeys([svcRow('a', 25, 50)], labels)).toEqual(['a']);
+  });
+
+  it('does NOT fire when the configured duration already matches', () => {
+    const labels = new Map([['a', label('A', 30)]]);
+    expect(reviewKeys([svcRow('a', 25, 26)], labels)).toEqual([]);
+  });
+
+  it('does NOT fire below the minimum duration sample, at exactly one below', () => {
+    const labels = new Map([['a', label('A', 30)]]);
+    const min = JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION;
+    expect(reviewKeys([svcRow('a', min - 1, 50)], labels)).toEqual([]);
+    expect(reviewKeys([svcRow('a', min, 50)], labels)).toEqual(['a']);
+  });
+
+  it('does NOT fire for an inactive service or one without a configured duration', () => {
+    const labels = new Map([
+      ['gone', label('Gone', 30, true)],
+      ['none', label('None', null)],
+      ['unset', label('Unset', undefined)],
+    ]);
+    const rows = [svcRow('gone', 25, 50), svcRow('none', 25, 50), svcRow('unset', 25, 50)];
+    expect(reviewKeys(rows, labels)).toEqual([]);
+  });
+
+  it('PARITY: every review insight corresponds to an OK suggestion, with the same suggested minutes', () => {
+    const labels = new Map([
+      ['a', label('A', 30)],
+      ['b', label('B', 30)],
+      ['c', label('C', 30)],
+      ['d', label('D', 60)],
+    ]);
+    const rows = [
+      svcRow('a', 25, 50),
+      svcRow('b', 25, 26),
+      svcRow('c', 3, 50),
+      svcRow('d', 25, 41), // suggested 45 vs configured 60 -> SHORTER
+    ];
+    const serviceLabels = new Map(
+      [...labels].map(([k, l]) => [
+        k,
+        { name: l.name, inactive: !!l.inactive, configuredMinutes: l.configuredMinutes ?? null },
+      ]),
+    );
+    const suggestions = shapeDurationSuggestions(rows, serviceLabels);
+    const { insights } = generateInsights(
+      baseInput({
+        dimensions: { branch: [], staff: [], service: rows, hour: [] },
+        labels: { branch: new Map(), staff: new Map(), service: labels },
+      }),
+    );
+    const reviews = insights.filter(
+      (i) => i.code === JOURNEY_INSIGHT_CODE.SERVICE_DURATION_REVIEW,
+    );
+    expect(reviews.map((i) => i.scope.key).sort()).toEqual(
+      suggestions.map((s) => s.serviceId).sort(),
+    );
+    for (const r of reviews) {
+      const s = suggestions.find((x) => x.serviceId === r.scope.key);
+      expect(r.params.suggested).toBe(s?.suggestedMinutes);
     }
   });
 });

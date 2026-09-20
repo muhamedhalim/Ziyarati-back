@@ -134,6 +134,9 @@ function build(options: { cached?: JourneyAggregate } = {}) {
     fetchBranchLabels: jest.fn().mockResolvedValue({}),
     fetchStaffLabels: jest.fn().mockResolvedValue({}),
     fetchServiceLabels: jest.fn().mockResolvedValue({}),
+    fetchActiveServiceCount: jest.fn().mockResolvedValue(3),
+    assertStaff: jest.fn().mockResolvedValue(undefined),
+    assertService: jest.fn().mockResolvedValue(undefined),
   };
 
   const cacheKeys: string[] = [];
@@ -432,5 +435,162 @@ describe('PatientJourneyService — breakdown paging/sorting', () => {
       limit: 20,
     } as never);
     expect(branchRes.excluded).toBeNull();
+  });
+});
+
+describe('PatientJourneyService — staff/service drill-down validation', () => {
+  it('validates staff and service ids on a cache MISS, tenant-scoped', async () => {
+    const { service, journeyAgg } = build();
+
+    await service.summary(TENANT, TENANT_WIDE, {
+      ...RANGE,
+      staffId: 'staff-1',
+      serviceId: 'svc-1',
+    } as never);
+
+    expect(journeyAgg.assertStaff).toHaveBeenCalledWith(TENANT, 'staff-1');
+    expect(journeyAgg.assertService).toHaveBeenCalledWith(TENANT, 'svc-1');
+  });
+
+  it('does not validate when no drill-down id is supplied', async () => {
+    const { service, journeyAgg } = build();
+
+    await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(journeyAgg.assertStaff).not.toHaveBeenCalled();
+    expect(journeyAgg.assertService).not.toHaveBeenCalled();
+  });
+
+  it('a cache HIT stays free of extra reads (it was validated when computed)', async () => {
+    const { service, journeyAgg } = build({ cached: emptyAggregate() });
+
+    await service.summary(TENANT, TENANT_WIDE, {
+      ...RANGE,
+      staffId: 'staff-1',
+      serviceId: 'svc-1',
+    } as never);
+
+    expect(journeyAgg.assertStaff).not.toHaveBeenCalled();
+    expect(journeyAgg.assertService).not.toHaveBeenCalled();
+  });
+
+  it('an unknown/foreign staff id is rejected and no aggregation query runs', async () => {
+    const { service, journeyAgg } = build();
+    journeyAgg.assertStaff.mockRejectedValueOnce(
+      new AppError(ErrorCode.NOT_FOUND, { message: 'Staff not found' }),
+    );
+
+    await expect(
+      service.summary(TENANT, TENANT_WIDE, {
+        ...RANGE,
+        staffId: 'someone-elses-staff',
+      } as never),
+    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    expect(journeyAgg.fetchOverall).not.toHaveBeenCalled();
+  });
+
+  it('an unknown/foreign service id is rejected and no aggregation query runs', async () => {
+    const { service, journeyAgg } = build();
+    journeyAgg.assertService.mockRejectedValueOnce(
+      new AppError(ErrorCode.NOT_FOUND, { message: 'Service not found' }),
+    );
+
+    await expect(
+      service.summary(TENANT, TENANT_WIDE, {
+        ...RANGE,
+        serviceId: 'someone-elses-service',
+      } as never),
+    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    expect(journeyAgg.fetchOverall).not.toHaveBeenCalled();
+  });
+});
+
+describe('PatientJourneyService — duration suggestion explanation in the summary', () => {
+  it('reads the tenant service count in the same parallel batch as the label lookups', async () => {
+    const { service, journeyAgg } = build();
+
+    await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(journeyAgg.fetchActiveServiceCount).toHaveBeenCalledTimes(1);
+    expect(journeyAgg.fetchActiveServiceCount).toHaveBeenCalledWith(TENANT);
+  });
+
+  it('exposes NO_SERVICES_CONFIGURED when the tenant has no active service', async () => {
+    const { service, journeyAgg } = build();
+    journeyAgg.fetchActiveServiceCount.mockResolvedValueOnce(0);
+
+    const out = await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(out.durationSuggestionsState).toBe('NO_SERVICES_CONFIGURED');
+    expect(out.durationSuggestionCandidates).toEqual([]);
+    expect(out.durationSuggestions).toEqual([]);
+  });
+
+  it('exposes NO_SERVICE_APPOINTMENTS when services exist but none was booked in range', async () => {
+    const { service } = build();
+
+    const out = await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(out.durationSuggestionsState).toBe('NO_SERVICE_APPOINTMENTS');
+  });
+
+  it('a blob cached before the field existed never asserts "no services configured"', async () => {
+    const legacy = emptyAggregate(); // no activeServiceCount, like an old blob
+    const { service } = build({ cached: legacy });
+
+    const out = await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(out.durationSuggestionsState).toBe('NO_SERVICE_APPOINTMENTS');
+  });
+
+  it('exposes the minimum duration sample so the client never hardcodes it', async () => {
+    const { service } = build({ cached: emptyAggregate() });
+
+    const out = await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(out.thresholds.minDurationSample).toBe(20);
+  });
+
+  it('reports an in-range service that is still short of the sample as INSUFFICIENT_SAMPLE with its n', async () => {
+    const svc = {
+      ...zeroRow(),
+      dim_key: 'svc-1',
+      completed: 12,
+      completed_with_timing: 12,
+      consult_n: 12,
+      consult_p75: 45,
+    };
+    const { service } = build({
+      cached: emptyAggregate({
+        byDimension: {
+          branch: [],
+          staff: [],
+          service: [svc],
+          weekday: [],
+          hour: [],
+        },
+        labels: {
+          branch: {},
+          staff: {},
+          service: {
+            'svc-1': { name: 'Dentistry', inactive: false, configuredMinutes: 30 },
+          },
+        },
+        activeServiceCount: 2,
+      }),
+    });
+
+    const out = await service.summary(TENANT, TENANT_WIDE, RANGE as never);
+
+    expect(out.durationSuggestions).toEqual([]);
+    expect(out.durationSuggestionsState).toBeNull();
+    expect(out.durationSuggestionCandidates).toHaveLength(1);
+    expect(out.durationSuggestionCandidates[0]).toMatchObject({
+      serviceId: 'svc-1',
+      name: 'Dentistry',
+      status: 'INSUFFICIENT_SAMPLE',
+      configuredMinutes: 30,
+      consultation: { n: 12, p50: null, p75: null },
+    });
   });
 });

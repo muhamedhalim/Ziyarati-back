@@ -256,6 +256,33 @@ export interface JourneyDurationSuggestion {
   direction: 'LONGER' | 'SHORTER' | null;
 }
 
+/**
+ * Why a service did or did not produce a duration suggestion. Reporting only:
+ * the gates themselves are unchanged — this exposes the gate that fired
+ * instead of silently dropping the service.
+ */
+export type JourneyDurationCandidateStatus =
+  | 'OK'
+  | 'SERVICE_INACTIVE'
+  | 'INSUFFICIENT_SAMPLE'
+  | 'LOW_TIMING_COVERAGE'
+  | 'NO_PERCENTILE'
+  | 'ALREADY_ALIGNED';
+
+export interface JourneyDurationCandidate extends JourneyDurationSuggestion {
+  status: JourneyDurationCandidateStatus;
+}
+
+/**
+ * Panel-level reason there is nothing per-service to show. `null` means at
+ * least one service has timed consultations, so the per-candidate `status`
+ * carries the explanation.
+ */
+export type JourneyDurationSuggestionsState =
+  | 'NO_SERVICES_CONFIGURED'
+  | 'NO_SERVICE_APPOINTMENTS'
+  | 'NO_TIMED_CONSULTATIONS';
+
 export interface JourneyDataQuality {
   invalidIntervals: Record<
     | 'bookingLead'
@@ -331,6 +358,8 @@ export interface JourneySummaryResponse extends AdvancedAnalyticsEnvelope {
   comparisonUnavailable: 'RANGE_TOO_WIDE' | 'NO_PRIOR_DATA' | null;
   reminders: JourneyRemindersInfo;
   durationSuggestions: JourneyDurationSuggestion[];
+  durationSuggestionCandidates: JourneyDurationCandidate[];
+  durationSuggestionsState: JourneyDurationSuggestionsState | null;
   dataQuality: JourneyDataQuality;
   insights: JourneyInsight[];
   insightsTruncated: boolean;
@@ -338,6 +367,7 @@ export interface JourneySummaryResponse extends AdvancedAnalyticsEnvelope {
     minSample: number;
     minBreakdownSample: number;
     minCoverage: number;
+    minDurationSample: number;
     maxIntervalMinutes: number;
   };
 }
@@ -417,5 +447,12 @@ export interface JourneyAggregate {
     remindersEnabled: boolean;
     reminderLeadMinutes: number[];
   };
+  /**
+   * Tenant-wide count of active, non-deleted services — lets the duration
+   * panel tell "no services configured" from "none booked in this range".
+   * Optional: a blob cached before this field existed simply lacks it, and
+   * the shaping step then treats the count as unknown.
+   */
+  activeServiceCount?: number;
   now: string;
 }

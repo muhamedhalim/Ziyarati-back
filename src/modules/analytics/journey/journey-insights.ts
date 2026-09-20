@@ -1,4 +1,9 @@
-import { round1, round3, shapeCoverage } from './journey-shaping';
+import {
+  evaluateDurationRow,
+  round1,
+  round3,
+  shapeCoverage,
+} from './journey-shaping';
 import {
   JOURNEY_ACTION_CODE,
   JOURNEY_ACTION_ROUTE,
@@ -1106,32 +1111,19 @@ function serviceDurationRecommendations(
 ): JourneyInsight[] {
   const out: JourneyInsight[] = [];
   for (const row of serviceRows) {
-    if (row.consult_n < JOURNEY_THRESHOLDS.MIN_SAMPLE_DURATION_SUGGESTION)
-      continue;
-    const coverage = shapeCoverage(row.completed_with_timing, row.completed);
-    if (
-      coverage.rate == null ||
-      coverage.rate < JOURNEY_THRESHOLDS.MIN_COVERAGE
-    )
-      continue;
     const label = labels.get(row.dim_key);
-    if (!label || label.inactive || row.consult_p75 == null) continue;
+    if (!label) continue;
+    // One evaluation of the gates, shared with the duration-suggestions list
+    // (see `evaluateDurationRow`) so the two can never disagree.
     const configured = label.configuredMinutes ?? null;
-    const suggested = Math.min(
-      T.DURATION_MAX_MINUTES,
-      Math.max(
-        T.DURATION_MIN_MINUTES,
-        Math.ceil(row.consult_p75 / T.DURATION_ROUND_TO_MINUTES) *
-          T.DURATION_ROUND_TO_MINUTES,
-      ),
-    );
-    if (configured == null) continue;
-    const delta = Math.abs(suggested - configured);
-    const minDelta = Math.max(
-      T.DURATION_SUGGESTION_MIN_DELTA_MINUTES,
-      configured * T.DURATION_SUGGESTION_MIN_DELTA_RATIO,
-    );
-    if (delta < minDelta) continue;
+    const { status, suggested } = evaluateDurationRow(row, {
+      name: label.name,
+      inactive: !!label.inactive,
+      configuredMinutes: configured,
+    });
+    // A "review" recommendation compares against a configured baseline, so a
+    // service with no configured duration yields a suggestion but no insight.
+    if (status !== 'OK' || suggested == null || configured == null) continue;
 
     out.push(
       baseInsight({

@@ -108,6 +108,7 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       ds.getRepository(Service).create({
         tenant: { id: tenantId } as Tenant,
         name: 'Consultation',
+        public_slug: 'consultation',
         duration_minutes: 30,
       }),
     );
@@ -116,6 +117,7 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       ds.getRepository(Service).create({
         tenant: { id: tenantId } as Tenant,
         name: 'Cleaning',
+        public_slug: 'cleaning',
         duration_minutes: 45,
       }),
     );
@@ -133,6 +135,8 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       ds.getRepository(StaffProfile).create({
         user: { id: staffUser.id } as User,
         tenant: { id: tenantId } as Tenant,
+        // globally unique (UQ_staff_profiles_public_slug), so derive it from the per-run suffix
+        public_slug: `journey-staff-${suffix}`,
       }),
     );
     staffId = staff.id;
@@ -213,6 +217,10 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
         customer: { id: customerId } as Customer,
         staff: { id: staffId } as StaffProfile,
         state: QueueState.COMPLETED,
+        // NOT NULL; the journey SQL never reads it, so the arrival's own day (or a day inside the test window) is faithful
+        business_date: (overrides.arrived_at ?? new Date('2031-03-05T09:00:00.000Z'))
+          .toISOString()
+          .slice(0, 10),
         ...overrides,
       }),
     );
@@ -386,7 +394,12 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
     });
 
     expect(overall.swept).toBe(1);
-    expect(overall.completed_with_queue).toBe(0); // the queue row is CANCELLED, not COMPLETED
+    // `completed_with_queue` = COMPLETED appointments that HAVE a queue entry (the same
+    // `has_queue` predicate as the `arrived` stage), whatever that entry's final state.
+    // The patient did check in, so a swept row still counts toward queue coverage; what
+    // it must NOT do is contribute a duration (asserted below). Whether a swept check-in
+    // should count as "went through the queue" is a product decision, not settled here.
+    expect(overall.completed_with_queue).toBe(1);
     expect(overall.start_from_log).toBe(1); // start time came from the status log, not the swept queue row
     expect(overall.consult_n).toBe(1);
     expect(overall.consult_p50).toBeCloseTo(30, 1); // 09:02 -> 09:32
@@ -489,6 +502,7 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       ds.getRepository(StaffProfile).create({
         user: { id: otherUser.id } as User,
         tenant: { id: otherTenantId } as Tenant,
+        public_slug: `journey-other-staff-${randomUUID().slice(0, 8)}`,
       }),
     );
     const otherCustomer = await ds.getRepository(Customer).save(
@@ -496,6 +510,7 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
         tenant: { id: otherTenantId } as Tenant,
         full_name: 'Other Patient',
         phone: '+966500000098',
+        email: `other-patient-${randomUUID().slice(0, 8)}@example.test`,
       }),
     );
     const otherRepo = ds.getRepository(Appointment);
@@ -528,7 +543,16 @@ describe('JourneyAggregationService — conformance against raw tables', () => {
       start: dayRangeUtc('2031-03-05').start,
       end: dayRangeUtc('2031-03-05').end,
     });
-    expect(oursRow.booked).toBe(0); // this tenant's own query, same day, sees nothing from the other tenant
+    // This tenant may legitimately have its OWN appointments on that day (the percentile test
+    // above books one on 2031-03-05 — the fixture is shared and the tests are order-dependent),
+    // so the expected value is computed independently from the raw table for THIS tenant only.
+    // A cross-tenant leak would make the aggregate exceed that count by the other tenant's row.
+    const [{ n: ownRaw }] = await ds.query(
+      `SELECT COUNT(*)::int AS n FROM appointments
+        WHERE "tenantId" = $1 AND start_at BETWEEN $2 AND $3 AND deleted_at IS NULL`,
+      [tenantId, dayRangeUtc('2031-03-05').start, dayRangeUtc('2031-03-05').end],
+    );
+    expect(oursRow.booked).toBe(ownRaw);
   });
 
   it('every KNOWN_TIMEZONES entry is a real Postgres zone (AT TIME ZONE never errors)', async () => {
