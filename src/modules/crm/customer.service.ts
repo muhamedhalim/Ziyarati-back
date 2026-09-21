@@ -272,7 +272,13 @@ export class CustomerService {
     return column;
   }
 
-  /** Tenant-scoped search across name/email/phone (partial) + optional tag filter. */
+  /**
+   * Tenant-scoped search across name/email/phone/national_id (partial) + optional
+   * tag filter. `national_id` is sensitive: it is matched here but never logged —
+   * the term can reach a log only via the request URL, which the exception filter
+   * redacts (`sanitizeUrlForLog`). Every OR branch spreads `base`, so tenant,
+   * active and tag filters apply to a national_id match exactly as to the others.
+   */
   async search(tenantId: string, dto: SearchCustomersDto) {
     const base: FindOptionsWhere<Customer> = { tenant: { id: tenantId } };
     if (dto.isActive !== undefined) base.is_active = dto.isActive;
@@ -285,6 +291,7 @@ export class CustomerService {
         { ...base, full_name: ILike(term) },
         { ...base, email: ILike(term) },
         { ...base, phone: ILike(term) },
+        { ...base, national_id: ILike(term) },
       ];
     }
 

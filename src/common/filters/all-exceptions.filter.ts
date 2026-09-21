@@ -12,7 +12,7 @@ import { AppError } from '../errors/app-error';
 import { normalizeException } from '../errors/error-normalizer';
 import type { NormalizedError } from '../errors/error-normalizer';
 import { ErrorResponseBody } from '../interfaces/error-response.interface';
-import { sanitizeForLog } from '../utils/sanitize.util';
+import { sanitizeForLog, sanitizeUrlForLog } from '../utils/sanitize.util';
 
 /**
  * Catches EVERY exception thrown anywhere in the request lifecycle (guards,
@@ -106,7 +106,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const payload = {
       requestId,
       method: request.method,
-      url: request.originalUrl,
+      // Query string may carry a free-text search term (e.g. a customer's
+      // national ID) — redact those values before they reach the log.
+      url: sanitizeUrlForLog(request.originalUrl),
       statusCode: normalized.statusCode,
       code: normalized.code,
       userId: principal?.id,

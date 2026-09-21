@@ -114,7 +114,7 @@ export class CustomerController {
   @ApiOperation({
     summary: 'Search customers',
     description:
-      '**Protected — `crm.customers.read`. Clinic active.** Partial match on name/email/phone + optional tag filter, tenant-scoped.',
+      '**Protected — `crm.customers.read`. Clinic active.** Partial match on name/email/phone/national ID + optional tag filter, tenant-scoped.',
   })
   @ApiOkResponse({ description: 'Paginated search results.' })
   @ApiUnauthorizedResponse({
