@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Logger } from '@nestjs/common';
-import { DataSource, QueryFailedError } from 'typeorm';
+import { DataSource, In, QueryFailedError } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { StaffService } from './staff.service';
@@ -250,6 +250,78 @@ describe('StaffService', () => {
         isAvailable: 'true',
       } as any);
       expect(res.total).toBe(1);
+    });
+
+    describe('bookable filter (appointment Employee picker)', () => {
+      const query = { page: 1, limit: 10, bookable: 'true' } as any;
+
+      it('resolves only doctor + manager accounts, scoped to the caller tenant', async () => {
+        userRoles.find.mockResolvedValueOnce([
+          { user: { id: 'u-doctor' } },
+          { user: { id: 'u-manager' } },
+        ]);
+        staff.findAndCount.mockResolvedValueOnce([[{ id: 'staff-1' }], 1]);
+
+        await service.findAll(TENANT, query);
+
+        const roleQuery = userRoles.find.mock.calls[0][0];
+        expect(roleQuery.where.role.slug).toEqual(
+          In([ROLE.DOCTOR, ROLE.MANAGER]),
+        );
+        expect(roleQuery.where.user).toEqual({ tenant: { id: TENANT } });
+        // The staff query itself is narrowed to exactly those accounts AND the tenant.
+        const staffQuery = staff.findAndCount.mock.calls[0][0];
+        expect(staffQuery.where.user).toEqual({
+          id: In(['u-doctor', 'u-manager']),
+        });
+        expect(staffQuery.where.tenant).toEqual({ id: TENANT });
+      });
+
+      it('never offers a receptionist: the role set never contains it', async () => {
+        userRoles.find.mockResolvedValueOnce([]);
+        await service.findAll(TENANT, query);
+        const slugs = (userRoles.find.mock.calls[0][0].where.role.slug as any)
+          .value;
+        expect(slugs).not.toContain(ROLE.RECEPTIONIST);
+        expect(slugs).not.toContain(ROLE.OWNER);
+      });
+
+      it('returns an empty page without querying staff when no doctor/manager exists', async () => {
+        userRoles.find.mockResolvedValueOnce([]);
+        const res = await service.findAll(TENANT, query);
+        expect(res).toEqual({ data: [], total: 0, page: 1, limit: 10 });
+        expect(staff.findAndCount).not.toHaveBeenCalled();
+      });
+
+      it('cannot be widened by an explicit role: bookable + role=receptionist is empty', async () => {
+        const res = await service.findAll(TENANT, {
+          ...query,
+          role: ROLE.RECEPTIONIST,
+        });
+        expect(res).toEqual({ data: [], total: 0, page: 1, limit: 10 });
+        expect(userRoles.find).not.toHaveBeenCalled();
+        expect(staff.findAndCount).not.toHaveBeenCalled();
+      });
+
+      it('AND-combines with an explicit role that is itself bookable', async () => {
+        userRoles.find.mockResolvedValueOnce([{ user: { id: 'u-doctor' } }]);
+        staff.findAndCount.mockResolvedValueOnce([[{ id: 'staff-1' }], 1]);
+        await service.findAll(TENANT, { ...query, role: ROLE.DOCTOR });
+        expect(userRoles.find.mock.calls[0][0].where.role.slug).toEqual(
+          In([ROLE.DOCTOR]),
+        );
+      });
+
+      it('leaves the unfiltered list untouched when bookable is absent or false', async () => {
+        staff.findAndCount.mockResolvedValue([[{ id: 'staff-1' }], 1]);
+        await service.findAll(TENANT, { page: 1, limit: 10 } as any);
+        await service.findAll(TENANT, {
+          page: 1,
+          limit: 10,
+          bookable: 'false',
+        } as any);
+        expect(userRoles.find).not.toHaveBeenCalled();
+      });
     });
   });
 

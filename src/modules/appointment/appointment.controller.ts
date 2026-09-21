@@ -295,7 +295,9 @@ The staff member cannot take this window. Two distinct codes:
   @Post()
   @RequirePermissions(PERMISSION.APPOINTMENTS_CREATE)
   create(@Body() dto: CreateAppointmentDto, @CurrentUser('id') userId: string) {
-    return this.appointments.create(this.ctx.requireTenantId(), userId, dto);
+    return this.appointments.create(this.ctx.requireTenantId(), userId, dto, {
+      requireBookableStaff: true,
+    });
   }
 
   // ───────────────────────────── Read ────────────────────────────────────── //

@@ -527,6 +527,21 @@ export const ROLE = {
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
 
 /**
+ * Roles whose staff may be chosen as the "Employee" of a NEW appointment made
+ * from the clinic dashboard — doctors and the manager. Receptionists (and every
+ * other role) run the front desk; they are not bookable as the provider.
+ *
+ * Single source of truth for BOTH halves of the rule: the `bookable` filter on
+ * `GET /staff` (what the picker offers) and the create-time check in
+ * `AppointmentService.create` (what the API accepts), so the two can never
+ * drift. Existing appointments are never re-validated against it.
+ */
+export const APPOINTMENT_BOOKABLE_STAFF_ROLES: readonly RoleSlug[] = [
+  ROLE.DOCTOR,
+  ROLE.MANAGER,
+];
+
+/**
  * THE definition of "this principal may only see/act on its own branch(es)".
  *
  * Expressed as a PERMISSION predicate, never a role allow-list, so it holds

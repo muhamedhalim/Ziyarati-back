@@ -36,6 +36,7 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { EmailService } from '../email/email.service';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import {
+  APPOINTMENT_BOOKABLE_STAFF_ROLES,
   CUSTOM_ROLE_SENTINEL,
   OWNERSHIP_SCOPED_PERMISSIONS,
   PERMISSION,
@@ -694,10 +695,28 @@ export class StaffService {
     // column) — combined with `where.tenant` on staff_profiles below, a role
     // slug shared by other tenants can never leak a staff member across
     // tenants.
-    if (query.role) {
+    //
+    // `bookable=true` narrows the role filter to the roles that may be booked
+    // as an appointment's provider (APPOINTMENT_BOOKABLE_STAFF_ROLES). It is
+    // an AND with an explicit `role`: asking for `role=receptionist&bookable=
+    // true` yields nothing rather than letting either filter widen the other.
+    let roleSlugs: string[] | null = query.role ? [query.role] : null;
+    if (query.bookable === 'true') {
+      roleSlugs = roleSlugs
+        ? roleSlugs.filter((slug) =>
+            (APPOINTMENT_BOOKABLE_STAFF_ROLES as readonly string[]).includes(
+              slug,
+            ),
+          )
+        : [...APPOINTMENT_BOOKABLE_STAFF_ROLES];
+    }
+    if (roleSlugs !== null) {
+      if (roleSlugs.length === 0) {
+        return { data: [], total: 0, page: query.page, limit: query.limit };
+      }
       const roleLinks = await this.userRoles.find({
         where: {
-          role: { slug: query.role },
+          role: { slug: In(roleSlugs) },
           user: { tenant: { id: tenantId } },
         },
         relations: { user: true },

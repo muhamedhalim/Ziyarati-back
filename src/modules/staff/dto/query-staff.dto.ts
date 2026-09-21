@@ -52,6 +52,15 @@ export class QueryStaffDto {
   role?: string;
 
   @ApiPropertyOptional({
+    description:
+      'Pass `true` to list only staff who may be booked as the provider of a NEW appointment — accounts holding the `doctor` or `manager` role. Receptionists and all other roles are excluded. Combines with `role` and `branchId` as an AND. The role set is defined server-side; it is not client-configurable.',
+    example: 'true',
+  })
+  @IsOptional()
+  @IsBooleanString()
+  bookable?: string;
+
+  @ApiPropertyOptional({
     description: 'Page number (1-based).',
     example: 1,
     minimum: 1,
