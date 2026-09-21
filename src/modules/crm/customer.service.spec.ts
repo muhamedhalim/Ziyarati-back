@@ -458,7 +458,7 @@ describe('CustomerService', () => {
       expect(qb.take).not.toHaveBeenCalled();
     });
 
-    it('search builds an OR (name/email/phone) when a query term is present', async () => {
+    it('search builds an OR (name/email/phone/national_id) when a query term is present', async () => {
       customers.findAndCount.mockResolvedValueOnce([[{ id: 'c1' }], 1]);
       await service.search(TENANT, {
         page: 1,
@@ -468,7 +468,49 @@ describe('CustomerService', () => {
       } as any);
       const arg = customers.findAndCount.mock.calls[0][0];
       expect(Array.isArray(arg.where)).toBe(true);
-      expect(arg.where).toHaveLength(3);
+      expect(arg.where).toHaveLength(4);
+    });
+
+    it('search matches national_id with the same partial ILIKE term as name/email/phone', async () => {
+      customers.findAndCount.mockResolvedValueOnce([[{ id: 'c1' }], 1]);
+      await service.search(TENANT, { page: 1, limit: 10, q: '29801' } as any);
+      const where = customers.findAndCount.mock.calls[0][0].where as any[];
+
+      const fieldOf = (w: any) =>
+        ['full_name', 'email', 'phone', 'national_id'].find((f) => f in w);
+      expect(where.map(fieldOf)).toEqual([
+        'full_name',
+        'email',
+        'phone',
+        'national_id',
+      ]);
+      // Every branch carries the identical parameterized term — no per-field
+      // divergence, and the raw term is never interpolated into anything.
+      const terms = where.map((w) => w[fieldOf(w)!]);
+      expect(new Set(terms.map((t) => JSON.stringify(t))).size).toBe(1);
+      expect(terms[3].type).toBe('ilike');
+      expect(terms[3].value).toBe('%29801%');
+    });
+
+    it('search applies tenant, active and tag filters to the national_id branch exactly as to the others', async () => {
+      customers.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.search(TENANT, {
+        page: 2,
+        limit: 10,
+        q: '29801',
+        isActive: true,
+        tagIds: ['tag1'],
+      } as any);
+      const arg = customers.findAndCount.mock.calls[0][0];
+      for (const branch of arg.where as any[]) {
+        expect(branch.tenant).toEqual({ id: TENANT });
+        expect(branch.is_active).toBe(true);
+        expect(branch.tags).toBeDefined();
+      }
+      // Pagination + ordering are untouched by the extra OR branch.
+      expect(arg.skip).toBe(10);
+      expect(arg.take).toBe(10);
+      expect(arg.order).toEqual({ created_at: 'DESC' });
     });
 
     it('search uses a single where object when no term is given', async () => {

@@ -13,12 +13,12 @@ import {
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
- * Customer search (tenant-scoped). `q` matches name / email / phone with safe,
- * parameterized partial matching; `tagIds` further filters to customers holding
- * any of the given tags.
+ * Customer search (tenant-scoped). `q` matches name / email / phone / national
+ * ID with safe, parameterized partial matching; `tagIds` further filters to
+ * customers holding any of the given tags.
  */
 export class SearchCustomersDto {
-  @ApiPropertyOptional({ description: 'Search term — matches name, email or phone (partial).', example: 'sara' })
+  @ApiPropertyOptional({ description: 'Search term — matches name, email, phone or national ID (partial).', example: 'sara' })
   @IsOptional()
   @IsString()
   @MaxLength(255)

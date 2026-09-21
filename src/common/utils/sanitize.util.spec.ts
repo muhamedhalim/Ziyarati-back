@@ -1,4 +1,43 @@
-import { sanitizeForLog } from './sanitize.util';
+import { sanitizeForLog, sanitizeUrlForLog } from './sanitize.util';
+
+describe('sanitizeUrlForLog', () => {
+  it('redacts the free-text search term but keeps path and every other param', () => {
+    expect(
+      sanitizeUrlForLog('/api/v1/crm/customers/search?q=29801011234567&page=2&limit=20&isActive=true'),
+    ).toBe('/api/v1/crm/customers/search?q=[REDACTED]&page=2&limit=20&isActive=true');
+  });
+
+  it('never leaves the raw term anywhere in the output', () => {
+    const out = sanitizeUrlForLog('/x?q=29801011234567');
+    expect(out).not.toContain('29801011234567');
+    expect(out).toBe('/x?q=[REDACTED]');
+  });
+
+  it('returns a URL without a query string unchanged', () => {
+    expect(sanitizeUrlForLog('/api/v1/crm/customers/abc')).toBe('/api/v1/crm/customers/abc');
+  });
+
+  it('leaves params without an "=" and non-sensitive params byte-for-byte', () => {
+    expect(sanitizeUrlForLog('/x?flag&page=1&tagIds=a%2Cb')).toBe('/x?flag&page=1&tagIds=a%2Cb');
+  });
+
+  it('handles encoded keys, array-style keys, and `search`', () => {
+    expect(sanitizeUrlForLog('/x?%71=secret')).toBe('/x?%71=[REDACTED]');
+    expect(sanitizeUrlForLog('/x?q[]=a&q[]=b')).toBe('/x?q[]=[REDACTED]&q[]=[REDACTED]');
+    expect(sanitizeUrlForLog('/x?search=abc&page=1')).toBe('/x?search=[REDACTED]&page=1');
+  });
+
+  it('redacts credential-style params via the shared key rules', () => {
+    expect(sanitizeUrlForLog('/x?access_token=abc&national_id=123&page=1')).toBe(
+      '/x?access_token=[REDACTED]&national_id=[REDACTED]&page=1',
+    );
+  });
+
+  it('does not throw on a malformed percent-escape in a key', () => {
+    expect(() => sanitizeUrlForLog('/x?%E0%A4%A=1&q=1')).not.toThrow();
+    expect(sanitizeUrlForLog('/x?%E0%A4%A=1&q=1')).toBe('/x?%E0%A4%A=1&q=[REDACTED]');
+  });
+});
 
 describe('sanitizeForLog', () => {
   it('passes through primitives and null', () => {
@@ -144,6 +183,27 @@ describe('sanitizeForLog', () => {
       expect(out.emailProvider).toBe('resend');
       expect(out.emailTemplateId).toBe('tmpl-1');
       expect(out.emailDefaultLocale).toBe('en');
+    });
+
+    it('redacts national_id — naming variants, nested objects — without touching lookalike keys', () => {
+      const out = sanitizeForLog({
+        national_id: '29801011234567',
+        nationalId: '29801011234567',
+        NATIONAL_ID: '29801011234567',
+        nested: { national_id: '1' },
+        list: [{ nationalId: '2' }],
+        // Not the identity number itself — must stay readable for diagnostics.
+        national_id_verified: true,
+        nationality: 'EG',
+      }) as any;
+
+      expect(out.national_id).toBe('[REDACTED]');
+      expect(out.nationalId).toBe('[REDACTED]');
+      expect(out.NATIONAL_ID).toBe('[REDACTED]');
+      expect(out.nested.national_id).toBe('[REDACTED]');
+      expect(out.list[0].nationalId).toBe('[REDACTED]');
+      expect(out.national_id_verified).toBe(true);
+      expect(out.nationality).toBe('EG');
     });
 
     it('redacts chronic_diseases (sensitive patient data) — naming variants, nested objects', () => {

@@ -238,6 +238,30 @@ describe('AllExceptionsFilter', () => {
         expect(logged).not.toContain('"password":"secret"');
         errorSpy.mockRestore();
       });
+
+      it('never logs a customer search term (e.g. a national ID) carried in the query string', () => {
+        const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        request.method = 'GET';
+        request.originalUrl = '/api/v1/crm/customers/search?q=29801011234567&page=2&limit=20';
+        request.body = {};
+        filter.catch(new Error('boom'), host);
+
+        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        expect(logged).not.toContain('29801011234567');
+        // Operator can still see the route and the non-sensitive filters.
+        expect(logged).toContain('/api/v1/crm/customers/search?q=[REDACTED]&page=2&limit=20');
+        errorSpy.mockRestore();
+      });
+
+      it('never logs a national_id sent in a request body', () => {
+        const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        request.body = { full_name: 'Sara', national_id: '29801011234567' };
+        filter.catch(new Error('boom'), host);
+
+        const logged = errorSpy.mock.calls[0]?.[0] as string;
+        expect(logged).not.toContain('29801011234567');
+        errorSpy.mockRestore();
+      });
     });
 
     // ── publicContext / internalContext / cause separation ──────────────── //
