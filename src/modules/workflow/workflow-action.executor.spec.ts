@@ -20,7 +20,7 @@ describe('WorkflowActionExecutor', () => {
     finalizeBySourceRef: jest.Mock;
   };
   let whatsappTemplates: { getSendableTemplate: jest.Mock };
-  let recipients: { resolve: jest.Mock };
+  let recipients: { resolve: jest.Mock; placeholderValues: jest.Mock };
   let executor: WorkflowActionExecutor;
 
   const RUN_ID = 'run-1';
@@ -49,7 +49,10 @@ describe('WorkflowActionExecutor', () => {
       finalizeBySourceRef: jest.fn().mockResolvedValue(undefined),
     };
     whatsappTemplates = { getSendableTemplate: jest.fn() };
-    recipients = { resolve: jest.fn().mockResolvedValue(CUSTOMER_CONTACT) };
+    recipients = {
+      resolve: jest.fn().mockResolvedValue(CUSTOMER_CONTACT),
+      placeholderValues: jest.fn().mockResolvedValue({}),
+    };
 
     executor = new WorkflowActionExecutor(
       email as unknown as EmailService,
@@ -153,6 +156,80 @@ describe('WorkflowActionExecutor', () => {
         expect.objectContaining({ providerRef: 'wamid.1' }),
       );
       expect(res).toMatchObject({ status: 'SUCCEEDED' });
+    });
+
+    describe('message placeholders', () => {
+      it("renders {{customerName}} / {{clinicName}} from the run's patient and clinic before sending", async () => {
+        recipients.placeholderValues.mockResolvedValue({
+          customerName: 'Sara',
+          clinicName: 'Al Noor Clinic',
+        });
+
+        await run({
+          type: WORKFLOW_ACTION_TYPE.WHATSAPP,
+          config: {
+            text: 'Happy Birthday, {{customerName}}! — {{clinicName}}',
+          },
+        });
+
+        expect(recipients.placeholderValues).toHaveBeenCalledWith('t1', {});
+        expect(whatsappMessaging.sendSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: 'Happy Birthday, Sara! — Al Noor Clinic',
+          }),
+        );
+      });
+
+      it('sends a clean message (never a literal "{{customerName}}") when the patient has no name on file', async () => {
+        recipients.placeholderValues.mockResolvedValue({
+          clinicName: 'Al Noor Clinic',
+        });
+
+        await run({
+          type: WORKFLOW_ACTION_TYPE.WHATSAPP,
+          config: {
+            text: 'Happy Birthday, {{customerName}}! — {{clinicName}}',
+          },
+        });
+
+        expect(whatsappMessaging.sendSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: 'Happy Birthday! — Al Noor Clinic',
+          }),
+        );
+      });
+
+      it('does no extra lookups and leaves text untouched when it has no known placeholder (every pre-existing workflow)', async () => {
+        await run({
+          type: WORKFLOW_ACTION_TYPE.WHATSAPP,
+          config: { text: 'Your appointment {{someOtherThing}} is booked.' },
+        });
+
+        expect(recipients.placeholderValues).not.toHaveBeenCalled();
+        expect(whatsappMessaging.sendSession).toHaveBeenCalledWith(
+          expect.objectContaining({
+            text: 'Your appointment {{someOtherThing}} is booked.',
+          }),
+        );
+      });
+
+      it("does not touch an approved template's rendered body", async () => {
+        whatsappTemplates.getSendableTemplate.mockResolvedValue({
+          components: {
+            components: [{ type: 'BODY', text: 'Hi {{customerName}}' }],
+          },
+        });
+
+        await run({
+          type: WORKFLOW_ACTION_TYPE.WHATSAPP,
+          config: { templateId: 'tpl-1', variables: { customerName: 'Sara' } },
+        });
+
+        expect(recipients.placeholderValues).not.toHaveBeenCalled();
+        expect(whatsappMessaging.sendSession).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'Hi Sara' }),
+        );
+      });
     });
 
     it('fails cleanly (no send attempted) when the recipient has no resolvable phone number', async () => {

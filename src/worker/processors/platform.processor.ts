@@ -16,6 +16,7 @@ import { WaitlistService } from '../../modules/waitlist/waitlist.service';
 import { WaitlistOfferService } from '../../modules/waitlist/waitlist-offer.service';
 import { PatientQueueService } from '../../modules/patient-queue/patient-queue.service';
 import { ReportExportService } from '../../modules/report-export/report-export.service';
+import { BirthdayGreetingSweepService } from '../../modules/workflow/birthday-greeting.sweep.service';
 
 /** See `NotificationsProcessor`'s identical reap lock — same reasoning, own key. */
 const WAITLIST_EXPIRY_LOCK_KEY = 'lock:waitlist-expiry';
@@ -28,6 +29,16 @@ const QUEUE_DAY_CLOSE_LOCK_TTL_MS = 45_000;
 /** Spec 014 (Clinic Platform Completion) — T183 (US13). Same reasoning, own key. */
 const EXPORT_EXPIRY_LOCK_KEY = 'lock:export-expiry';
 const EXPORT_EXPIRY_LOCK_TTL_MS = 45_000;
+
+/**
+ * Birthday greetings. Same reasoning, own key. Unlike the sweeps above this one
+ * walks tenant by tenant and awaits every listener, so the lock is RENEWED
+ * before each tenant (see `processBirthdayGreetings`) rather than trusted to
+ * outlive the whole run — a duplicate concurrent sweep is what would otherwise
+ * be able to race the once-per-occurrence guard.
+ */
+const BIRTHDAY_GREETINGS_LOCK_KEY = 'lock:birthday-greetings';
+const BIRTHDAY_GREETINGS_LOCK_TTL_MS = 60_000;
 
 /**
  * Consumes the `platform` queue — the retention sweeps:
@@ -58,6 +69,12 @@ const EXPORT_EXPIRY_LOCK_TTL_MS = 45_000;
  *                                 due `export_jobs` row `EXPIRED` (S13,
  *                                 T183, FR-X010). SAME lock-guarded +
  *                                 heartbeat shape as the two sweeps above.
+ *  - `platform.birthdayGreetings` hourly; emits `customer.birthday` for the
+ *                                 patients whose birthday it is right now in
+ *                                 their clinic's local time, which the
+ *                                 workflow engine turns into greetings.
+ *                                 Lock-guarded + heartbeat, like the sweeps
+ *                                 above, with the lock renewed per tenant.
  *
  * Branches on the job NAME. It previously ignored it entirely and always ran
  * the log purge, which was harmless while one job existed and would have
@@ -78,6 +95,7 @@ export class PlatformProcessor extends WorkerHost {
     private readonly waitlistOffers: WaitlistOfferService,
     private readonly patientQueue: PatientQueueService,
     private readonly reportExport: ReportExportService,
+    private readonly birthdayGreetings: BirthdayGreetingSweepService,
   ) {
     super();
   }
@@ -94,6 +112,8 @@ export class PlatformProcessor extends WorkerHost {
         return this.processQueueDayClose();
       case JOB.PLATFORM_EXPORT_EXPIRY:
         return this.processExportExpiry();
+      case JOB.PLATFORM_BIRTHDAY_GREETINGS:
+        return this.processBirthdayGreetings();
       case JOB.PLATFORM_LOG_CLEANUP:
       default:
         // Default preserves the pre-existing behaviour for any job enqueued
@@ -212,6 +232,42 @@ export class PlatformProcessor extends WorkerHost {
       return { expired };
     } finally {
       await this.lock.release(EXPORT_EXPIRY_LOCK_KEY, lockToken);
+    }
+  }
+
+  /**
+   * Same M5 shape as the sweeps above: a lock-unavailable run logs a VISIBLE
+   * skip line and returns WITHOUT heartbeating; a COMPLETED run — even one
+   * where no clinic was in its greeting hour — always heartbeats, so a stalled
+   * heartbeat can only mean the sweep itself stopped running.
+   */
+  private async processBirthdayGreetings() {
+    const lockToken = await this.lock.acquire(
+      BIRTHDAY_GREETINGS_LOCK_KEY,
+      BIRTHDAY_GREETINGS_LOCK_TTL_MS,
+    );
+    if (!lockToken) {
+      this.logger.log(
+        'birthday greetings sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
+      );
+      return { skipped: true };
+    }
+    try {
+      const result = await this.birthdayGreetings.sweep(new Date(), {
+        keepAlive: () =>
+          this.lock.renew(
+            BIRTHDAY_GREETINGS_LOCK_KEY,
+            lockToken,
+            BIRTHDAY_GREETINGS_LOCK_TTL_MS,
+          ),
+      });
+      this.logger.log(
+        `birthday greetings: tenants=${result.tenants} processed=${result.processed} emitted=${result.emitted}`,
+      );
+      this.metrics.setWorkerHeartbeat('platform.birthdayGreetings');
+      return result;
+    } finally {
+      await this.lock.release(BIRTHDAY_GREETINGS_LOCK_KEY, lockToken);
     }
   }
 

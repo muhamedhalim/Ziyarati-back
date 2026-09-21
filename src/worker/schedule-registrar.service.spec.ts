@@ -102,6 +102,16 @@ describe('ScheduleRegistrarService', () => {
     );
   });
 
+  it('registers platform.birthdayGreetings hourly', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.PLATFORM,
+      JOB.PLATFORM_BIRTHDAY_GREETINGS,
+      { tenantId: null },
+      '10 * * * *',
+    );
+  });
+
   it('registers platform.exportExpiry daily, not colliding with any other platform/ai sweep', async () => {
     await service.onApplicationBootstrap();
     expect(queue.addRepeatable).toHaveBeenCalledWith(

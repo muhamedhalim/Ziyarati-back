@@ -8,6 +8,7 @@ import { WaitlistService } from '../../modules/waitlist/waitlist.service';
 import { WaitlistOfferService } from '../../modules/waitlist/waitlist-offer.service';
 import { PatientQueueService } from '../../modules/patient-queue/patient-queue.service';
 import { ReportExportService } from '../../modules/report-export/report-export.service';
+import { BirthdayGreetingSweepService } from '../../modules/workflow/birthday-greeting.sweep.service';
 
 describe('PlatformProcessor', () => {
   const build = (lockToken: string | null) => {
@@ -26,6 +27,7 @@ describe('PlatformProcessor', () => {
     const lock = {
       acquire: jest.fn().mockResolvedValue(lockToken),
       release: jest.fn().mockResolvedValue(undefined),
+      renew: jest.fn().mockResolvedValue(true),
     };
     const metrics = { setWorkerHeartbeat: jest.fn() };
     const waitlistEntries = {
@@ -45,6 +47,11 @@ describe('PlatformProcessor', () => {
     const reportExport = {
       expireDueExports: jest.fn().mockResolvedValue({ expired: 0 }),
     };
+    const birthdayGreetings = {
+      sweep: jest
+        .fn()
+        .mockResolvedValue({ tenants: 2, processed: 1, emitted: 3 }),
+    };
 
     const processor = new PlatformProcessor(
       maintenance as any,
@@ -57,6 +64,7 @@ describe('PlatformProcessor', () => {
       waitlistOffers as unknown as WaitlistOfferService,
       patientQueue as unknown as PatientQueueService,
       reportExport as unknown as ReportExportService,
+      birthdayGreetings as unknown as BirthdayGreetingSweepService,
     );
     return {
       processor,
@@ -68,9 +76,74 @@ describe('PlatformProcessor', () => {
       waitlistOffers,
       patientQueue,
       reportExport,
+      birthdayGreetings,
       authz,
     };
   };
+
+  describe('birthdayGreetings — lock guard + heartbeat + lock renewal', () => {
+    const jobData = { name: JOB.PLATFORM_BIRTHDAY_GREETINGS, data: {} } as any;
+
+    it('acquires the lock, runs the sweep, heartbeats and releases on a COMPLETED run', async () => {
+      const { processor, lock, metrics, birthdayGreetings } = build('token-b');
+
+      const result = await processor.process(jobData);
+
+      expect(birthdayGreetings.sweep).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ tenants: 2, processed: 1, emitted: 3 });
+      expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+        'platform.birthdayGreetings',
+      );
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:birthday-greetings',
+        'token-b',
+      );
+    });
+
+    it("hands the sweep a keepAlive that renews THIS run's lock token", async () => {
+      const { processor, lock, birthdayGreetings } = build('token-b');
+      lock.renew.mockResolvedValueOnce(false);
+
+      await processor.process(jobData);
+
+      const opts = birthdayGreetings.sweep.mock.calls[0][1];
+      // Lost lock => the sweep is told to stop, not to carry on unguarded.
+      await expect(opts.keepAlive()).resolves.toBe(false);
+      expect(lock.renew).toHaveBeenCalledWith(
+        'lock:birthday-greetings',
+        'token-b',
+        expect.any(Number),
+      );
+    });
+
+    it('M5 — a lock-unavailable run logs a visible skip, runs NO sweep and emits NO heartbeat', async () => {
+      const { processor, lock, metrics, birthdayGreetings } = build(null);
+      const logSpy = jest.spyOn((processor as any).logger, 'log');
+
+      const result = await processor.process(jobData);
+
+      expect(result).toEqual({ skipped: true });
+      expect(birthdayGreetings.sweep).not.toHaveBeenCalled();
+      expect(lock.release).not.toHaveBeenCalled();
+      expect(metrics.setWorkerHeartbeat).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining('skipping this run'),
+      );
+    });
+
+    it('still releases the lock if the sweep throws', async () => {
+      const { processor, lock, metrics, birthdayGreetings } = build('token-x');
+      birthdayGreetings.sweep.mockRejectedValueOnce(new Error('db error'));
+
+      await expect(processor.process(jobData)).rejects.toThrow('db error');
+
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:birthday-greetings',
+        'token-x',
+      );
+      expect(metrics.setWorkerHeartbeat).not.toHaveBeenCalled();
+    });
+  });
 
   describe('waitlistExpiry — lock guard + heartbeat (T160, M5)', () => {
     it('acquires the lock, expires offers and entries, and heartbeats on a COMPLETED run — even when nothing was due', async () => {

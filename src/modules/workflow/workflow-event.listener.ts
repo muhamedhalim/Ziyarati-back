@@ -12,6 +12,10 @@ import {
   AppointmentUpdatedEvent,
 } from '../../events/appointment.events';
 import {
+  CUSTOMER_EVENT,
+  CustomerBirthdayEvent,
+} from '../../events/customer.events';
+import {
   PAYMENT_EVENT,
   PaymentFailedEvent,
   PaymentRefundedEvent,
@@ -115,6 +119,22 @@ export class WorkflowEventListener {
     });
   }
 
+  // ── Customers ─────────────────────────────────────────────────────────────
+
+  /**
+   * Date-driven (emitted by `BirthdayGreetingSweepService`, not a request).
+   * `occurrenceKey` marks the context as "one per workflow per occurrence" —
+   * see `trigger` — so a repeated sweep can never greet a patient twice.
+   */
+  @OnEvent(CUSTOMER_EVENT.BIRTHDAY)
+  onCustomerBirthday(e: CustomerBirthdayEvent) {
+    return this.trigger(e.tenantId, CUSTOMER_EVENT.BIRTHDAY, {
+      customerId: e.customerId,
+      occurrenceDate: e.occurrenceDate,
+      occurrenceKey: `${e.customerId}:${e.occurrenceDate}`,
+    });
+  }
+
   // ── Payments ──────────────────────────────────────────────────────────────
 
   @OnEvent(PAYMENT_EVENT.SUCCEEDED)
@@ -191,6 +211,19 @@ export class WorkflowEventListener {
       try {
         if (!this.workflows.evaluateConditions(workflow.conditions, context)) continue;
         if (!workflow.actions || workflow.actions.length === 0) continue;
+        // A context carrying an `occurrenceKey` (date-driven triggers) fires
+        // AT MOST ONCE per workflow per key; every request-driven event omits
+        // it and is unaffected.
+        if (
+          typeof context.occurrenceKey === 'string' &&
+          (await this.workflows.hasRunForOccurrence(
+            tenantId,
+            workflow.id,
+            context.occurrenceKey,
+          ))
+        ) {
+          continue;
+        }
         // Captured NOW, not left to auto-stamping at relay time — same
         // reasoning as CampaignExecutionService's outbox writes (the relay's
         // poll loop has no request/job in flight to inherit a correlationId from).
