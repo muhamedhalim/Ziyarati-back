@@ -149,10 +149,10 @@ export class TenantService {
 
     Object.assign(tenant, {
       name: dto.name ?? tenant.name,
-      legal_name: dto.legalName ?? tenant.legal_name,
+      legal_name: this.optionalText(dto.legalName, tenant.legal_name),
       logo_url: dto.logoUrl ?? tenant.logo_url,
       contact_email: dto.contactEmail ?? tenant.contact_email,
-      contact_phone: dto.contactPhone ?? tenant.contact_phone,
+      contact_phone: this.optionalText(dto.contactPhone, tenant.contact_phone),
       country_id: dto.countryId ?? tenant.country_id,
       default_currency: dto.defaultCurrency ?? tenant.default_currency,
       default_timezone: dto.defaultTimezone ?? tenant.default_timezone,
@@ -427,6 +427,20 @@ export class TenantService {
       );
       return tenant;
     });
+  }
+
+  /**
+   * Partial-update semantics for a NULLABLE text column: `undefined` leaves the
+   * stored value alone, a blank string clears it to NULL, anything else is
+   * written as sent. `dto.x ?? current` alone made an optional field impossible
+   * to empty — the form's "clear it" was answered 200 and the old value came back.
+   */
+  private optionalText<T extends string | undefined>(
+    next: string | undefined,
+    current: T,
+  ): string | null | T {
+    if (next === undefined) return current;
+    return next.trim() === '' ? null : next;
   }
 
   private async assertSlugAvailable(slug: string): Promise<void> {

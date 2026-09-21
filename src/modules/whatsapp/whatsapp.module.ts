@@ -8,6 +8,7 @@ import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { NotificationLog } from '../../entities/Notifications/NotificationLog';
 import { Branch } from '../../entities/SaaS-Core/Branch';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -118,6 +119,9 @@ import { ConversationExecutionService } from '../conversations/conversation-exec
       Conversation,
       // DLQ admin actions write a safe audit record (FND-002, FR-013).
       AuditLog,
+      // READ-ONLY: `bot_enabled`, the clinic's own switch for the inbound AI
+      // auto-reply (`WhatsappInboundAiService.botSwitchedOn`).
+      TenantSetting,
     ]),
     // Usage-quota enforcement (UsageService) for WhatsApp message metering.
     SubscriptionBillingModule,

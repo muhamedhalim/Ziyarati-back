@@ -130,6 +130,8 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
       ds.getRepository(Service).create({
         tenant: { id: tenant.id } as Tenant,
         name: `${label} Consultation`,
+        // NOT NULL, unique per tenant (ServiceService assigns it in production).
+        public_slug: `consultation-${randomUUID().slice(0, 8)}`,
         duration_minutes: 30,
         base_price: 100,
         is_active: true,
@@ -158,6 +160,9 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
       ds.getRepository(StaffProfile).create({
         tenant: { id: tenant.id } as Tenant,
         user: { id: user.id } as User,
+        // `staff_profiles.public_slug` is NOT NULL + globally unique (StaffService
+        // assigns it in production); a fixture inserting the row directly must too.
+        public_slug: `dr-${randomUUID().slice(0, 12)}`,
         title: 'Consultant',
         is_available_for_booking: true,
       }),
@@ -259,10 +264,10 @@ describe('Public AI booking — full anonymous cycle, real Postgres', () => {
       await q(`DELETE FROM services WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenantId]);
-      await q(`DELETE FROM subscription_usage WHERE "tenantId" = $1`, [
+      await q(`DELETE FROM subscription_usage WHERE tenant_id = $1`, [
         tenantId,
       ]);
-      await q(`DELETE FROM free_access_overrides WHERE "tenantId" = $1`, [
+      await q(`DELETE FROM free_access_overrides WHERE tenant_id = $1`, [
         tenantId,
       ]);
       // Role provisioning writes an audit row that FKs the tenant.
@@ -529,6 +534,8 @@ describe('Public booking — deterministic HTTP path (T063, US4)', () => {
       ds.getRepository(Service).create({
         tenant: { id: tenant.id } as Tenant,
         name: `${label} Consultation`,
+        // NOT NULL, unique per tenant (ServiceService assigns it in production).
+        public_slug: `consultation-${randomUUID().slice(0, 8)}`,
         duration_minutes: 30,
         base_price: 100,
         is_active: true,
@@ -556,6 +563,9 @@ describe('Public booking — deterministic HTTP path (T063, US4)', () => {
       ds.getRepository(StaffProfile).create({
         tenant: { id: tenant.id } as Tenant,
         user: { id: user.id } as User,
+        // `staff_profiles.public_slug` is NOT NULL + globally unique (StaffService
+        // assigns it in production); a fixture inserting the row directly must too.
+        public_slug: `dr-${randomUUID().slice(0, 12)}`,
         title: 'Consultant',
         is_available_for_booking: true,
       }),
@@ -627,10 +637,10 @@ describe('Public booking — deterministic HTTP path (T063, US4)', () => {
       await q(`DELETE FROM services WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenantId]);
-      await q(`DELETE FROM subscription_usage WHERE "tenantId" = $1`, [
+      await q(`DELETE FROM subscription_usage WHERE tenant_id = $1`, [
         tenantId,
       ]);
-      await q(`DELETE FROM free_access_overrides WHERE "tenantId" = $1`, [
+      await q(`DELETE FROM free_access_overrides WHERE tenant_id = $1`, [
         tenantId,
       ]);
       await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [tenantId]);
