@@ -212,6 +212,9 @@ async function seedTenant(dataSource: DataSource, label: 'a' | 'b'): Promise<AiA
       user: { id: staffUser.id } as User,
       tenant: { id: tenant.id } as Tenant,
       title: 'Synthetic Practitioner',
+      // NOT NULL and globally unique since the public doctor page shipped; the
+      // fixture predates it, which left every spec that seeds through it red.
+      public_slug: `${RUN}-${randomUUID().slice(0, 8)}`,
     }),
   );
 

@@ -14,12 +14,41 @@ declare module 'ioredis' {
   }
 }
 
-export type AiWsRateLimitTier = 'authenticated' | 'guest';
+/**
+ * `authenticated` and `guest` are the original per-identity tiers. The rest are
+ * F-16:
+ *
+ *  - `guest-source`  — one network address, across every guest identity it mints.
+ *    The per-guest tier is keyed to a cookie subject that one unauthenticated POST
+ *    replaces, so on its own it bounded a session, not a visitor.
+ *  - `guest-day`     — the platform-wide daily ceiling on anonymous turns. Whatever
+ *    else fails (a botnet, a proxy that hides the address), this bounds the spend
+ *    an anonymous caller can cause.
+ *  - `whatsapp-contact` / `whatsapp-contact-day` — one patient number on one
+ *    clinic's WhatsApp line. There was no limit at all: 25 rapid messages were 25
+ *    model calls, billed to the clinic.
+ */
+export type AiWsRateLimitTier =
+  | 'authenticated'
+  | 'guest'
+  | 'guest-source'
+  | 'guest-day'
+  | 'whatsapp-contact'
+  | 'whatsapp-contact-day';
 
 export interface AiWsRateLimitDecision {
   allowed: boolean;
   /** Present only when `allowed` is false — which existing ErrorCode to emit. */
   code?: ErrorCode.RATE_LIMITED | ErrorCode.SERVICE_UNAVAILABLE;
+  /** Which tier refused (present when `allowed` is false). */
+  tier?: AiWsRateLimitTier;
+  /**
+   * This attempt's position in the window, and the tier's limit. Lets a caller
+   * that wants to warn ONCE (the WhatsApp bridge) act on `count === limit + 1`
+   * and stay silent for the flood behind it.
+   */
+  count?: number;
+  limit?: number;
 }
 
 /**
@@ -117,9 +146,11 @@ export class AiWsRateLimitService {
     identity: string,
     tier: AiWsRateLimitTier,
   ): Promise<AiWsRateLimitDecision> {
-    const key = this.keyFor(identity);
-    const ttl = this.windowSeconds(tier);
     const threshold = this.maxTurns(tier);
+    // A tier configured to 0 is switched off: no Redis round-trip, no key.
+    if (threshold <= 0) return { allowed: true };
+    const key = this.keyFor(this.bucketIdentity(identity, tier));
+    const ttl = this.windowSeconds(tier);
     try {
       const count = await this.appRedis.rateLimiter.aiWsTurnRecord(
         key,
@@ -127,12 +158,33 @@ export class AiWsRateLimitService {
       );
       this.degradedLog.recordSuccess();
       if (count > threshold) {
-        return { allowed: false, code: ErrorCode.RATE_LIMITED };
+        return {
+          allowed: false,
+          code: ErrorCode.RATE_LIMITED,
+          tier,
+          count,
+          limit: threshold,
+        };
       }
       return { allowed: true };
     } catch (err) {
       return this.degradedCheckAndRecord(key, tier, err);
     }
+  }
+
+  /**
+   * The bucket an identity lands in. The original two tiers keep their historic
+   * key (identity alone); every F-16 tier is namespaced by its own name so a
+   * WhatsApp number can never share a counter with a guest subject, and the
+   * platform-wide daily budget is one bucket per UTC day (it resets at midnight
+   * and an operator can read which day it belongs to).
+   */
+  private bucketIdentity(identity: string, tier: AiWsRateLimitTier): string {
+    if (tier === 'authenticated' || tier === 'guest') return identity;
+    if (tier === 'guest-day') {
+      return `${tier}|${new Date().toISOString().slice(0, 10)}`;
+    }
+    return `${tier}|${identity}`;
   }
 
   /**
@@ -146,25 +198,85 @@ export class AiWsRateLimitService {
     return `${cacheKeyPrefix()}ai:ws:turn:${hash}`;
   }
 
+  /**
+   * Turns allowed per window. `0` switches a tier off — an operator's escape
+   * hatch for the F-16 tiers, whose right size depends on a deployment's traffic
+   * and, for `guest-source`, on whether the address the server sees is the
+   * visitor's (behind a proxy that does not forward it, every visitor shares one).
+   */
   private maxTurns(tier: AiWsRateLimitTier): number {
-    return tier === 'authenticated'
-      ? this.config.get<number>('AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS', 30)
-      : this.config.get<number>('AI_WS_RATE_LIMIT_GUEST_MAX_TURNS', 15);
+    switch (tier) {
+      case 'authenticated':
+        return this.config.get<number>(
+          'AI_WS_RATE_LIMIT_AUTHENTICATED_MAX_TURNS',
+          30,
+        );
+      case 'guest':
+        return this.config.get<number>('AI_WS_RATE_LIMIT_GUEST_MAX_TURNS', 15);
+      case 'guest-source':
+        return this.config.get<number>(
+          'AI_WS_RATE_LIMIT_GUEST_SOURCE_MAX_TURNS',
+          200,
+        );
+      case 'guest-day':
+        return this.config.get<number>('AI_GUEST_DAILY_TURN_BUDGET', 20000);
+      case 'whatsapp-contact':
+        return this.config.get<number>('AI_WHATSAPP_CONTACT_MAX_TURNS', 20);
+      case 'whatsapp-contact-day':
+        return this.config.get<number>(
+          'AI_WHATSAPP_CONTACT_DAILY_MAX_TURNS',
+          300,
+        );
+    }
   }
 
   private windowSeconds(tier: AiWsRateLimitTier): number {
-    return tier === 'authenticated'
-      ? this.config.get<number>(
+    switch (tier) {
+      case 'authenticated':
+        return this.config.get<number>(
           'AI_WS_RATE_LIMIT_AUTHENTICATED_WINDOW_SECONDS',
           60,
-        )
-      : this.config.get<number>('AI_WS_RATE_LIMIT_GUEST_WINDOW_SECONDS', 60);
+        );
+      case 'guest':
+        return this.config.get<number>(
+          'AI_WS_RATE_LIMIT_GUEST_WINDOW_SECONDS',
+          60,
+        );
+      case 'guest-source':
+        return this.config.get<number>(
+          'AI_WS_RATE_LIMIT_GUEST_SOURCE_WINDOW_SECONDS',
+          600,
+        );
+      case 'whatsapp-contact':
+        return this.config.get<number>(
+          'AI_WHATSAPP_CONTACT_WINDOW_SECONDS',
+          60,
+        );
+      case 'guest-day':
+      case 'whatsapp-contact-day':
+        return 86_400;
+    }
   }
 
-  /** Degraded-mode limit — always stricter than the healthy threshold (mirrors LoginProtectionService's degradedThreshold). */
+  /**
+   * Degraded-mode limit — always stricter than the healthy threshold (mirrors
+   * LoginProtectionService's degradedThreshold).
+   *
+   * The process-local fallback table rotates on the GUEST window (a minute by
+   * default), so a tier whose real window is longer is scaled down to what it
+   * allows per fallback window — otherwise a 20 000-a-day budget would be
+   * "10 000 a minute" during a Redis outage, i.e. no limit at all. The original
+   * two tiers are not scaled: their behaviour is unchanged.
+   */
   private degradedMaxTurns(tier: AiWsRateLimitTier): number {
     const factor = this.config.get<number>('AUTH_ABUSE_DEGRADED_FACTOR', 0.5);
-    return Math.max(1, Math.ceil(this.maxTurns(tier) * factor));
+    if (tier === 'authenticated' || tier === 'guest') {
+      return Math.max(1, Math.ceil(this.maxTurns(tier) * factor));
+    }
+    const perFallbackWindow =
+      this.maxTurns(tier) *
+      Math.min(1, this.windowSeconds('guest') / this.windowSeconds(tier));
+    return Math.max(5, Math.ceil(perFallbackWindow * factor));
   }
 
   /**
@@ -180,8 +292,15 @@ export class AiWsRateLimitService {
   ): AiWsRateLimitDecision {
     this.degradedLog.recordFailure((err as Error)?.message ?? String(err));
     const count = this.fallback.increment(key);
-    if (count > this.degradedMaxTurns(tier)) {
-      return { allowed: false, code: ErrorCode.SERVICE_UNAVAILABLE };
+    const limit = this.degradedMaxTurns(tier);
+    if (count > limit) {
+      return {
+        allowed: false,
+        code: ErrorCode.SERVICE_UNAVAILABLE,
+        tier,
+        count,
+        limit,
+      };
     }
     return { allowed: true };
   }

@@ -257,6 +257,49 @@ describe.each([
     ).toHaveBeenCalledWith(TENANT_A, BRANCH_ID);
     expect(result.success).toBe(true);
     expect(result.count).toBe(1);
-    expect(result[resultKey]).toEqual(rows);
+    // A service row carries its price state too (F-26, covered below); a
+    // doctor row is passed through untouched.
+    expect(result[resultKey]).toEqual(
+      resultKey === 'services'
+        ? rows.map((r) => ({ ...r, priceStatus: 'NOT_PUBLISHED' }))
+        : rows,
+    );
+  });
+});
+
+/**
+ * F-26. A service the clinic never priced came back from this tool as
+ * `price: null` and nothing else, so on a later turn — when the result was no
+ * longer in the prompt — the model filled the gap with a number. The public
+ * service list already named the state; this one now does too.
+ */
+describe('list_clinic_services — price state (F-26)', () => {
+  it('marks an unpriced service NOT_PUBLISHED, a priced one PUBLISHED, and price 0 as a real price', async () => {
+    const { service } = build({
+      branches: { findOne: jest.fn().mockResolvedValue({ id: BRANCH_ID }) },
+      discovery: {
+        listBranchServices: jest.fn().mockResolvedValue([
+          { id: 's-none', name: 'Consultation', durationMinutes: 30, price: null },
+          { id: 's-200', name: 'Whitening', durationMinutes: 45, price: 200 },
+          { id: 's-free', name: 'Screening', durationMinutes: 15, price: 0 },
+        ]),
+      },
+    });
+
+    const result = (await service.execute(
+      CTX_AUTHENTICATED,
+      call(AI_TOOL.LIST_CLINIC_SERVICES, { branchId: BRANCH_ID }),
+    )) as { services: { id: string; priceStatus: string }[]; guidance: string };
+
+    expect(
+      Object.fromEntries(result.services.map((s) => [s.id, s.priceStatus])),
+    ).toEqual({
+      's-none': 'NOT_PUBLISHED',
+      's-200': 'PUBLISHED',
+      's-free': 'PUBLISHED',
+    });
+    expect(result.guidance).toMatch(/NOT_PUBLISHED/);
+    expect(result.guidance).toMatch(/NEVER call it free/);
+    expect(result.guidance).toMatch(/NEVER state a number/);
   });
 });

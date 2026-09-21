@@ -318,7 +318,14 @@ describe('CSWSH — Socket.IO handshake admission, on the wire', () => {
       wsAuth,
       orchestrator as never,
       new TenantContextService(),
-      { create: jest.fn().mockResolvedValue({ id: 'h1' }) } as never,
+      {
+        create: jest.fn().mockResolvedValue({ id: 'h1' }),
+        requestForCustomer: jest.fn().mockResolvedValue({ id: 'h1' }),
+        // F-07: a clinic's staff may join a guest conversation only when that
+        // clinic holds a handover request on it. No request exists here, so the
+        // cross-tenant refusal this suite asserts must still hold.
+        canAgentAccess: jest.fn().mockResolvedValue(false),
+      } as never,
       { sendAgentReply: jest.fn() } as never,
       presence as never,
       new AiConversationAccessService(fakeConversations as never),

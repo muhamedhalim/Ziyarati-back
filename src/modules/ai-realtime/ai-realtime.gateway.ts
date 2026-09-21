@@ -26,9 +26,14 @@ import { AccessControlService } from '../subscription-billing/access-control.ser
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { normalizeException } from '../../common/errors/error-normalizer';
 import { ErrorCode } from '../../common/errors/error-code';
-import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
+import {
+  AiWsRateLimitService,
+  type AiWsRateLimitDecision,
+  type AiWsRateLimitTier,
+} from './ai-ws-rate-limit.service';
 import { parseAllowedOrigins } from '../../config/cors-origins';
 import { AI_PUBLIC_TOOL } from '../ai/tools/ai-public-booking-tools.constants';
+import { AI_MESSAGE_MAX_CHARS } from '../ai/ai.constants';
 
 /**
  * Wire shape of `book_public_appointment`'s successful `toolResult` (see
@@ -859,10 +864,27 @@ export class AiRealtimeGateway
   ) {
     if (!this.assertLive(client)) return;
     const tenantId = client.data.tenantId as string;
-    if (!tenantId || !body?.content?.trim()) {
+    if (
+      !tenantId ||
+      typeof body?.content !== 'string' ||
+      !body.content.trim()
+    ) {
       client.emit(AI_EVENT.ERROR, {
         code: ErrorCode.VALIDATION_ERROR,
         message: 'Empty message or unauthenticated socket',
+      });
+      return;
+    }
+    // F-14: the same bound the REST DTOs enforce. Socket.IO frames never pass
+    // through the global ValidationPipe, so this transport — the one the public
+    // widget and the dashboard actually use — accepted a 20,000-character message
+    // that REST refuses, and paid to persist, embed and answer it. Refused before
+    // any entitlement, rate-limit or database work: an oversize frame costs the
+    // server one length comparison.
+    if (body.content.length > AI_MESSAGE_MAX_CHARS) {
+      client.emit(AI_EVENT.ERROR, {
+        code: ErrorCode.VALIDATION_ERROR,
+        message: `Message must be at most ${AI_MESSAGE_MAX_CHARS} characters`,
       });
       return;
     }
@@ -917,19 +939,47 @@ export class AiRealtimeGateway
     // guest's `id` AS the token subject — the same value), or, only absent
     // both, the Socket.IO connection id.
     const identity = user?.id ?? client.id;
+    const refuse = (decision: AiWsRateLimitDecision) =>
+      client.emit(AI_EVENT.ERROR, {
+        code: decision.code,
+        message:
+          decision.code === ErrorCode.SERVICE_UNAVAILABLE
+            ? 'The AI assistant is temporarily unavailable. Please try again shortly.'
+            : decision.tier === 'guest-day'
+              ? 'The assistant has reached its limit for anonymous visitors today. Please contact the clinic directly, or try again tomorrow.'
+              : 'Too many messages sent too quickly. Please slow down.',
+      });
     const rateLimit = await this.wsRateLimit.checkAndRecord(
       identity,
       user?.guest ? 'guest' : 'authenticated',
     );
     if (!rateLimit.allowed) {
-      client.emit(AI_EVENT.ERROR, {
-        code: rateLimit.code,
-        message:
-          rateLimit.code === ErrorCode.SERVICE_UNAVAILABLE
-            ? 'The AI assistant is temporarily unavailable. Please try again shortly.'
-            : 'Too many messages sent too quickly. Please slow down.',
-      });
+      refuse(rateLimit);
       return;
+    }
+    // F-16: the per-guest limit above is keyed to a cookie subject that one
+    // unauthenticated POST replaces, so it bounded a session, not a visitor.
+    // Two more bounds apply to anonymous turns only, both AFTER the per-guest
+    // check so a caller already refused there consumes nothing further:
+    //  - the network address (when the transport reports one) — one machine
+    //    minting identities shares one allowance;
+    //  - a platform-wide daily ceiling, which holds whatever the address shows
+    //    (a botnet, or a proxy that hides it) and so caps the spend.
+    if (user?.guest) {
+      const source = client.handshake?.address;
+      const bounds: [AiWsRateLimitTier, string][] = [
+        ...(source
+          ? [['guest-source', source] as [AiWsRateLimitTier, string]]
+          : []),
+        ['guest-day', 'all'],
+      ];
+      for (const [tier, key] of bounds) {
+        const decision = await this.wsRateLimit.checkAndRecord(key, tier);
+        if (!decision.allowed) {
+          refuse(decision);
+          return;
+        }
+      }
     }
     // Restore the authenticated principal for this turn — every downstream
     // service (booking tools, admin tools, usage metering) reads it via

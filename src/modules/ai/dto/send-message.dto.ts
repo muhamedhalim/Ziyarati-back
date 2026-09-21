@@ -9,6 +9,8 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+import { AI_MESSAGE_MAX_CHARS } from '../ai.constants';
+
 /**
  * Sends a user message into an AI conversation and triggers the RAG execution
  * pipeline (retrieve → assemble → provider → persist + meter).
@@ -18,11 +20,11 @@ export class SendMessageDto {
     description: 'User message content.',
     example: 'What are your opening hours on Friday?',
     minLength: 1,
-    maxLength: 8000,
+    maxLength: AI_MESSAGE_MAX_CHARS,
   })
   @IsString()
   @MinLength(1)
-  @MaxLength(8000)
+  @MaxLength(AI_MESSAGE_MAX_CHARS)
   content!: string;
 
   @ApiPropertyOptional({ description: 'Stable client retry key; reuse it only for the same logical turn.', maxLength: 120 })

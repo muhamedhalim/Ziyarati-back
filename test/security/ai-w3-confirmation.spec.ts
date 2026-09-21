@@ -12,6 +12,11 @@
  * is never read/trusted — proven below to have NO effect, exactly as before
  * this mechanism existed. A valid confirmation never substitutes for a
  * missing permission, proven separately.
+ *
+ * Phase 2 (F-04, 2026-09-21): the confirming call must arrive in a LATER user turn
+ * than the proposal (`ToolContext.turnId` — the persisted user message). Calls in
+ * this file that propose and then confirm therefore carry distinct `turnId`s, as the
+ * real path does; the token itself is no longer required on the confirming call.
  */
 import { buildAiAuditHarness, type AiAuditHarness } from './fixtures/ai-audit-harness';
 import { seedAiAudit, teardownAiAuditSeed, type AiAuditSeed } from './fixtures/ai-audit-seed';
@@ -42,7 +47,7 @@ describe('W3 — confirmation capture (T101)', () => {
 
     const services = harness.dataSource.getRepository(Service);
     const service = await services.save(
-      services.create({ tenant: { id: seed.tenantA.id } as Tenant, name: 'T101 Service', duration_minutes: 30, base_price: 20 }),
+      services.create({ tenant: { id: seed.tenantA.id } as Tenant, name: 'T101 Service', duration_minutes: 30, base_price: 20, public_slug: 't101-service' }),
     );
     serviceId = service.id;
   }, 120_000);
@@ -145,7 +150,7 @@ describe('W3 — confirmation capture (T101)', () => {
     const cancelConv = await conversations.start(seed.tenantA.id, {});
     const cancelCtx: ToolContext = { tenantId: seed.tenantA.id, aiConversationId: cancelConv.id, actorUserId: seed.tenantA.staffUserId, permissions: [PERMISSION.APPOINTMENTS_CANCEL] };
 
-    const firstAttempt = await dispatch.execute(cancelCtx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
+    const firstAttempt = await dispatch.execute({ ...cancelCtx, turnId: 'user-msg-1' }, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
     expect(firstAttempt.success).toBe(false);
     expect(firstAttempt.confirmationRequired).toBe(true);
     const token = firstAttempt.confirmationToken as string;
@@ -153,7 +158,7 @@ describe('W3 — confirmation capture (T101)', () => {
     expect(token.length).toBeGreaterThan(0);
 
     const secondAttempt = await dispatch.execute(
-      cancelCtx,
+      { ...cancelCtx, turnId: 'user-msg-2' }, // the customer replied: a LATER user message
       scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId, confirmationToken: token }),
     );
     expect(secondAttempt.success).not.toBe(false);
@@ -187,21 +192,65 @@ describe('W3 — confirmation capture (T101)', () => {
     const cancelConv = await conversations.start(seed.tenantA.id, {});
     const cancelCtx: ToolContext = { tenantId: seed.tenantA.id, aiConversationId: cancelConv.id, actorUserId: seed.tenantA.staffUserId, permissions: [PERMISSION.APPOINTMENTS_CANCEL] };
 
-    const proposeA = await dispatch.execute(cancelCtx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId: appointmentIdA }));
+    const proposeA = await dispatch.execute({ ...cancelCtx, turnId: 'user-msg-1' }, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId: appointmentIdA }));
     const token = proposeA.confirmationToken as string;
-    const confirmA = await dispatch.execute(cancelCtx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId: appointmentIdA, confirmationToken: token }));
+    const confirmA = await dispatch.execute({ ...cancelCtx, turnId: 'user-msg-2' }, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId: appointmentIdA, confirmationToken: token }));
     expect(confirmA.success).not.toBe(false); // consumes the token
 
     // Same token, different appointmentId, same conversation — the token was
     // keyed to appointmentIdA specifically and is already consumed; it must
     // NOT execute a cancellation of appointmentIdB.
-    const replayOnB = await dispatch.execute(cancelCtx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId: appointmentIdB, confirmationToken: token }));
+    const replayOnB = await dispatch.execute({ ...cancelCtx, turnId: 'user-msg-3' }, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId: appointmentIdB, confirmationToken: token }));
     expect(replayOnB.success).toBe(false);
     expect(replayOnB.confirmationRequired).toBe(true);
 
     await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [cancelConv.id]);
     await cleanupAppointment(appointmentIdA);
     await cleanupAppointment(appointmentIdB);
+  }, 30_000);
+
+  it('F-04 (Phase 2): a token redeemed in the SAME turn it was issued is refused — the model cannot confirm on the customer\'s behalf; a LATER turn confirms, with no token needed', async () => {
+    const bookConv = await conversations.start(seed.tenantA.id, {});
+    const bookCtx: ToolContext = { tenantId: seed.tenantA.id, aiConversationId: bookConv.id, actorUserId: seed.tenantA.staffUserId, permissions: [PERMISSION.APPOINTMENTS_CREATE] };
+    const booked = await dispatch.execute(
+      bookCtx,
+      scriptedToolCall(AI_TOOL.BOOK_APPOINTMENT, {
+        branchId: seed.tenantA.branchId,
+        customerId: seed.tenantA.customerIds[0],
+        staffId: seed.tenantA.staffProfileId,
+        startAt: '2027-10-07T10:00:00Z',
+        serviceIds: [serviceId],
+      }),
+    );
+    expect(booked.success).not.toBe(false);
+    const appointmentId = booked.appointmentId as string;
+    await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [bookConv.id]);
+
+    const cancelConv = await conversations.start(seed.tenantA.id, {});
+    const cancelCtx: ToolContext = { tenantId: seed.tenantA.id, aiConversationId: cancelConv.id, actorUserId: seed.tenantA.staffUserId, permissions: [PERMISSION.APPOINTMENTS_CANCEL] };
+    const statusOf = async () => (await harness.dataSource.query(`SELECT status FROM appointments WHERE id = $1`, [appointmentId]))[0].status;
+
+    const proposed = await dispatch.execute({ ...cancelCtx, turnId: 'user-msg-1' }, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
+    expect(proposed.confirmationRequired).toBe(true);
+    // Same user message: the token in hand is worthless.
+    const sameTurn = await dispatch.execute(
+      { ...cancelCtx, turnId: 'user-msg-1' },
+      scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId, confirmationToken: proposed.confirmationToken }),
+    );
+    expect(sameTurn.success).toBe(false);
+    expect(sameTurn.awaitingPatientReply).toBe(true);
+    expect(await statusOf()).not.toBe('CANCELLED');
+    // A caller that cannot say which turn it is in can never confirm anything.
+    const noTurn = await dispatch.execute(cancelCtx, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
+    expect(noTurn.success).toBe(false);
+    expect(await statusOf()).not.toBe('CANCELLED');
+    // The customer answers: a later user message. No token is needed — a tool result does not survive into it.
+    const later = await dispatch.execute({ ...cancelCtx, turnId: 'user-msg-2' }, scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }));
+    expect(later.success).not.toBe(false);
+    expect(await statusOf()).toBe('CANCELLED');
+
+    await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [cancelConv.id]);
+    await cleanupAppointment(appointmentId);
   }, 30_000);
 
   it('cancel_appointment: a scripted model CLAIMING confirmation cannot substitute for a MISSING permission — the claim never overrides the real authorization gate', async () => {

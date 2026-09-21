@@ -50,6 +50,7 @@ describe('W3 — mutating-tool idempotency (T094)', () => {
         name: 'T094 Synthetic Service',
         duration_minutes: 30,
         base_price: 50,
+        public_slug: 't094-synthetic-service',
       }),
     );
     serviceId = service.id;
@@ -189,7 +190,7 @@ describe('W3 — mutating-tool idempotency (T094)', () => {
     // one; the SECOND call, carrying it, is the actual first execution this
     // test's idempotency assertions are about.
     const propose = await dispatch.execute(
-      ctx,
+      { ...ctx, turnId: 'user-msg-1' },
       scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, { appointmentId }),
     );
     expect(propose.success).toBe(false);
@@ -197,7 +198,7 @@ describe('W3 — mutating-tool idempotency (T094)', () => {
     const confirmationToken = propose.confirmationToken as string;
 
     const first = await dispatch.execute(
-      ctx,
+      { ...ctx, turnId: 'user-msg-2' }, // Phase 2 (F-04): confirmed in a LATER user turn
       scriptedToolCall(AI_TOOL.CANCEL_APPOINTMENT, {
         appointmentId,
         confirmationToken,

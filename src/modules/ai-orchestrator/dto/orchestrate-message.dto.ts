@@ -10,6 +10,7 @@ import {
   MinLength,
 } from 'class-validator';
 
+import { AI_MESSAGE_MAX_CHARS } from '../../ai/ai.constants';
 import { AI_CHANNELS } from '../ai-channel.constants';
 import type { AiChannel, AiSession } from '../ai-channel.constants';
 
@@ -19,8 +20,8 @@ export class OrchestrateMessageDto {
   @IsIn(AI_CHANNELS as unknown as string[])
   channel!: AiChannel;
 
-  @ApiProperty({ description: 'User message content.', minLength: 1, maxLength: 8000 })
-  @IsString() @MinLength(1) @MaxLength(8000)
+  @ApiProperty({ description: 'User message content.', minLength: 1, maxLength: AI_MESSAGE_MAX_CHARS })
+  @IsString() @MinLength(1) @MaxLength(AI_MESSAGE_MAX_CHARS)
   content!: string;
 
   @ApiPropertyOptional({ description: 'Stable retry key for this logical AI turn.', maxLength: 120 })

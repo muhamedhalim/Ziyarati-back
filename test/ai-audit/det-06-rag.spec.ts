@@ -67,7 +67,9 @@ describe('clinic knowledge retrieval (vector path)', () => {
     expect(chunks[0].score).toBeCloseTo(0, 5);
 
     reactive.setHandler(() => ({ content: 'ok' }));
-    await whatsappTurn(rt, full.tenantId, full.patientPhones!.x, 'What is the capital of France?');
+    // Not the capital-of-France question: since Phase 3 the scope guard answers that one without retrieval
+    // (F-10), so it would never reach the point this test observes. The floor is F-08 (Phase 4).
+    await whatsappTurn(rt, full.tenantId, full.patientPhones!.x, 'Tell me a fun fact about penguins.');
     const block = knowledgeBlock();
     observed.no_floor_block = block;
     expect(block).toContain('policy-marker'); // an unrelated clinic note is presented to the model as reference data

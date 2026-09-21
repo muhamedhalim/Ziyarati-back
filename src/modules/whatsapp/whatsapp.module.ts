@@ -80,6 +80,7 @@ import { MessageStatusService } from '../conversations/message-status.service';
 // than importing ConversationsModule. Used by WhatsappInboundAiService to
 // attach a bot reply's provider message id once its send completes.
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
+import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 
 /**
  * WhatsApp Domain.
@@ -164,6 +165,10 @@ import { ConversationExecutionService } from '../conversations/conversation-exec
     WhatsappMessagingService,
     WhatsappExecutionService,
     WhatsappInboundAiService,
+    // F-16: per-contact admission for WhatsappInboundAiService. The realtime
+    // gateway provides the same class; it depends only on Redis and config, and
+    // importing AiRealtimeModule here would be a cycle (it imports this module).
+    AiWsRateLimitService,
     WhatsappAnalyticsService,
     WhatsappProviderFactory,
     NoopWhatsappProvider,

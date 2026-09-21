@@ -46,6 +46,17 @@ export type AiConversationStatus =
 export const AI_CONVERSATION_STATUSES: AiConversationStatus[] =
   Object.values(AI_CONVERSATION_STATUS);
 
+/**
+ * F-14: the longest user message any AI transport accepts, in characters.
+ *
+ * ONE number for every door. The REST DTOs capped `content` at 8000 while the
+ * WebSocket — the transport the public widget and the dashboard actually use —
+ * checked only that it was non-empty, so the same text a REST call refused was
+ * accepted, persisted, embedded for retrieval and billed on the socket. The DTOs
+ * and the gateway both read this so the two cannot drift apart again.
+ */
+export const AI_MESSAGE_MAX_CHARS = 8000;
+
 /** AI message roles (free varchar). */
 export const AI_MESSAGE_ROLE = {
   USER: 'user',

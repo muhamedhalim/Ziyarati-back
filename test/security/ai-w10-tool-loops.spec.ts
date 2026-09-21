@@ -16,7 +16,8 @@ import { scriptedToolCall } from './fixtures/scripted-ai-provider';
 import { AiExecutionService } from '../../src/modules/ai/ai-execution.service';
 import { AiConversationService } from '../../src/modules/ai/ai-conversation.service';
 
-const MAX_TOOL_ITERATIONS = 4; // ai-execution.service.ts:63 — mirrored here as the expected value, not re-derived
+const MAX_TOOL_ITERATIONS = 4; // ai-execution.service.ts — mirrored here as the expected value, not re-derived
+const WRAP_UP_CALLS = 1; // F-15: one tool-less completion after the last tool round, so a turn is at most 5 provider calls
 
 describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
   let harness: AiAuditHarness;
@@ -36,7 +37,7 @@ describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
     await harness.close();
   }, 60_000);
 
-  it('an attacker-controlled model that ALWAYS returns a tool call (never a plain answer) is stopped at exactly MAX_TOOL_ITERATIONS provider calls, not one more, not fewer', async () => {
+  it('an attacker-controlled model that ALWAYS returns a tool call (never a plain answer) is stopped at exactly MAX_TOOL_ITERATIONS tool rounds plus one tool-less wrap-up, not one more, not fewer', async () => {
     const conv = await conversations.start(seed.tenantA.id, {});
     harness.provider.reset();
     // Script far more turns than the cap could ever consume — every single
@@ -58,12 +59,14 @@ describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
       'REST',
     );
 
-    // Exactly MAX_TOOL_ITERATIONS provider.complete() calls — the loop body
-    // runs `for (i = 0; i < MAX_TOOL_ITERATIONS; i++)`, and every one of
-    // those iterations calls the provider once.
-    expect(harness.provider.callCount).toBe(MAX_TOOL_ITERATIONS);
-    // The cap's own fallback content, since the model never returned a plain answer.
-    expect(result.message.content).toBe('I have processed your request.');
+    // Exactly MAX_TOOL_ITERATIONS + 1 provider.complete() calls — the loop body
+    // runs `for (i = 0; i <= MAX_TOOL_ITERATIONS; i++)`; the last iteration is the
+    // tool-less wrap-up, so the cost of a runaway turn is bounded at 5 calls.
+    expect(harness.provider.callCount).toBe(MAX_TOOL_ITERATIONS + WRAP_UP_CALLS);
+    // The cap's own fallback content (F-15: no longer the canned "I have
+    // processed your request."), since the model never returned a plain answer.
+    expect(result.message.content).not.toBe('I have processed your request.');
+    expect(result.message.content).toContain('could not finish that reply');
 
     // `get_clinic_details` is a READ tool — it does not route through the
     // idempotent write ledger (`AiToolDispatchService.run()`, which is what
@@ -76,7 +79,7 @@ describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
     // follow-up carries exactly N accumulated 'tool' role messages —
     // confirming every one of the MAX_TOOL_ITERATIONS-1 completed iterations
     // actually dispatched and fed back its tool call, no more, no fewer.
-    for (let i = 1; i < MAX_TOOL_ITERATIONS; i += 1) {
+    for (let i = 1; i <= MAX_TOOL_ITERATIONS; i += 1) {
       const toolMsgs = harness.provider.capturedMessages(i).filter((m) => m.role === 'tool');
       expect(toolMsgs.length).toBe(i);
     }
@@ -102,8 +105,9 @@ describe('AI abuse — tool-loop and recursive-agent bounds (T149)', () => {
       'REST',
     );
 
-    expect(harness.provider.callCount).toBe(MAX_TOOL_ITERATIONS);
-    expect(result.message.content).toBe('I have processed your request.');
+    expect(harness.provider.callCount).toBe(MAX_TOOL_ITERATIONS + WRAP_UP_CALLS);
+    expect(result.message.content).not.toBe('I have processed your request.');
+    expect(result.message.content).toContain('could not finish that reply');
 
     await harness.dataSource.query(`DELETE FROM ai_tool_calls WHERE ai_conversation_id = $1`, [conv.id]).catch(() => undefined);
     await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [conv.id]);

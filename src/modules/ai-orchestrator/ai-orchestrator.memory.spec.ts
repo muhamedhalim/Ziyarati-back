@@ -77,6 +77,8 @@ describe('AiOrchestratorService memory consent gate', () => {
     const { service, memory, execution } = setup(false, true);
     await service.handle('tenant-1', {
       channel: 'WHATSAPP',
+      // F-13: the WHATSAPP channel is the bridge's alone.
+      trustedChannel: true,
       content: 'مرحبا',
       aiConversationId: 'conv-1',
       useMemory: true,

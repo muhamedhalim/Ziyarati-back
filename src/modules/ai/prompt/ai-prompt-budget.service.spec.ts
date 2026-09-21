@@ -212,3 +212,58 @@ describe('AiPromptBudgetService — pinned booking context', () => {
     expect(built.messages.filter((m) => m.role === 'system')).toHaveLength(1);
   });
 });
+
+describe('AiPromptBudgetService — clinic agent instructions (F-12)', () => {
+  const service = (overrides: Record<string, unknown> = {}) =>
+    new AiPromptBudgetService(new ConfigService({
+      AI_PROMPT_SYSTEM_TOKENS: 60,
+      AI_PROMPT_AGENT_TOKENS: 30,
+      AI_PROMPT_MAX_INPUT_TOKENS: 2000,
+      AI_MODEL_CONTEXT_WINDOW_TOKENS: 4000,
+      ...overrides,
+    }));
+  const core = 'CORE rule one. '.repeat(6).trim();
+  const clinic = 'CLINIC tone note. '.repeat(40).trim();
+  const systemMessages = (r: ReturnType<AiPromptBudgetService['build']>) =>
+    r.messages.filter((m) => m.role === 'system');
+
+  it('puts the core and the clinic text in ONE system message, core first (the booking-context refresh finds its slot by position)', () => {
+    const r = service().build({ systemPrompt: core, agentInstructions: clinic, history: [], ragChunks: [], tools: [] });
+    expect(systemMessages(r)).toHaveLength(1);
+    const content = systemMessages(r)[0].content ?? '';
+    expect(content.startsWith(core)).toBe(true);
+    expect(content).toContain('CLINIC tone note.');
+    expect(content.indexOf('CORE')).toBeLessThan(content.indexOf('CLINIC'));
+  });
+
+  it('a long agent prompt is cut at ITS OWN budget and can never evict any of the core', () => {
+    const r = service().build({ systemPrompt: core, agentInstructions: clinic, history: [], ragChunks: [], tools: [] });
+    const content = systemMessages(r)[0].content ?? '';
+    expect(content).toContain(core); // the whole core survived
+    expect(content.length).toBeLessThan(core.length + clinic.length); // the clinic text did not
+    expect(r.telemetry.truncatedSystemTokens).toBeGreaterThan(0);
+  });
+
+  it('a long core cannot starve the clinic text either — each is budgeted separately', () => {
+    const longCore = 'CORE rule. '.repeat(200);
+    const r = service().build({ systemPrompt: longCore, agentInstructions: 'CLINIC short note.', history: [], ragChunks: [], tools: [] });
+    expect(systemMessages(r)[0].content).toContain('CLINIC short note.');
+  });
+
+  it('the pinned booking context still lands as the SECOND system message', () => {
+    const r = service().build({ systemPrompt: core, agentInstructions: clinic, bookingContext: 'BOOKING CTX', history: [], ragChunks: [], tools: [] });
+    const sys = systemMessages(r);
+    expect(sys).toHaveLength(2);
+    expect(sys[1].content).toBe('BOOKING CTX');
+  });
+
+  it('without agent text the message is exactly the core — nothing appended, no stray separator', () => {
+    const r = service().build({ systemPrompt: core, history: [], ragChunks: [], tools: [] });
+    expect(systemMessages(r)[0].content).toBe(core);
+  });
+
+  it('agent text with no core still produces a system message (a caller that supplies only one)', () => {
+    const r = service().build({ agentInstructions: 'CLINIC only', history: [], ragChunks: [], tools: [] });
+    expect(systemMessages(r)[0].content).toBe('CLINIC only');
+  });
+});

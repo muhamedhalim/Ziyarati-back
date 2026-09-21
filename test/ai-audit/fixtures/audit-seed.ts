@@ -314,6 +314,18 @@ export async function seedAuditClinics(ds: DataSource): Promise<AuditSeed> {
  */
 export async function teardownAuditClinics(ds: DataSource, seed: AuditSeed): Promise<void> {
   const tenants = [seed.full.tenantId, seed.empty.tenantId, seed.b.tenantId];
+  // A guest's "talk to a human" (F-07) links a DISCOVERY-tenant AI conversation to a conversation the
+  // CLINIC owns. That row survives the per-tenant deletes below and its FK then blocks the clinic's
+  // conversations, users and finally the tenant itself — so it goes first, with its own children.
+  const crossTenantGuestConvs = `SELECT ac.id FROM ai_conversations ac JOIN conversations c ON c.id = ac."conversationId"
+      WHERE c."tenantId" = ANY($1) AND ac."tenantId" <> ALL($1)`;
+  for (const sql of [
+    `DELETE FROM ai_messages WHERE ai_conversation_id::text IN (SELECT id::text FROM (${crossTenantGuestConvs}) x)`,
+    `DELETE FROM ai_tool_calls WHERE ai_conversation_id::text IN (SELECT id::text FROM (${crossTenantGuestConvs}) x)`,
+    `DELETE FROM ai_conversations WHERE id IN (${crossTenantGuestConvs})`,
+  ]) {
+    await q(ds, sql, [tenants]).catch(() => undefined);
+  }
   const perTenant = [
     // AI ledgers / conversation state written by driven turns
     `DELETE FROM ai_kb_embeddings WHERE tenant_id = ANY($1)`,

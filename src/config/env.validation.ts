@@ -206,6 +206,24 @@ export const validate = (config: Record<string, unknown>) => {
     AI_WS_RATE_LIMIT_GUEST_MAX_TURNS: Joi.number().min(1).default(15),
     AI_WS_RATE_LIMIT_GUEST_WINDOW_SECONDS: Joi.number().min(1).default(60),
 
+    // F-16 (audit 2026-09): abuse bounds beyond the per-identity limits above.
+    // `min(0)` on all of them — 0 switches the bound off, the operator's escape
+    // hatch. Values are sizing defaults, not policy; tune to real traffic.
+    //  - GUEST_SOURCE: turns per network ADDRESS per window, across every guest
+    //    identity that address mints. Only meaningful when the address the server
+    //    sees is the visitor's — behind a proxy that does not forward it, every
+    //    visitor shares one address, so size it for the whole site or set 0.
+    //  - GUEST_DAILY_TURN_BUDGET: platform-wide anonymous turns per UTC day.
+    //  - WHATSAPP_CONTACT_*: one patient number on one clinic's line.
+    AI_WS_RATE_LIMIT_GUEST_SOURCE_MAX_TURNS: Joi.number().min(0).default(200),
+    AI_WS_RATE_LIMIT_GUEST_SOURCE_WINDOW_SECONDS: Joi.number()
+      .min(1)
+      .default(600),
+    AI_GUEST_DAILY_TURN_BUDGET: Joi.number().min(0).default(20000),
+    AI_WHATSAPP_CONTACT_MAX_TURNS: Joi.number().min(0).default(20),
+    AI_WHATSAPP_CONTACT_WINDOW_SECONDS: Joi.number().min(1).default(60),
+    AI_WHATSAPP_CONTACT_DAILY_MAX_TURNS: Joi.number().min(0).default(300),
+
     // AI-009 (FR-044, FR-091, SD-1): output-side system-prompt/tool-schema
     // disclosure check — a local, dependency-free token-shingle overlap
     // ratio (never an embedding call or LLM judge — FR-092, FR-093,

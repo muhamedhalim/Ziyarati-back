@@ -18,6 +18,7 @@ import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import { AccessControlService } from '../subscription-billing/access-control.service';
+import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { isOptOutMessage } from './opt-out.util';
@@ -40,6 +41,19 @@ const PG_UNIQUE_VIOLATION = '23505';
 const TURN_FAILED_FALLBACK_TEXT =
   'Sorry, I could not process your message just now. Please try again in a moment, or contact the clinic directly.\n' +
   'عذرًا، لم أتمكن من معالجة رسالتك الآن. يُرجى المحاولة مرة أخرى بعد قليل أو التواصل مع العيادة مباشرة.';
+
+/**
+ * F-16. Sent ONCE, to the message that first crosses a contact's limit — the
+ * flood behind it gets silence, not a reply per message (a reply is a
+ * WhatsApp send, and the point of the limit is to stop spending). Bilingual for
+ * the same reason as TURN_FAILED_FALLBACK_TEXT; no clinic fact in either.
+ */
+const CONTACT_RATE_LIMITED_TEXT =
+  'You are sending messages faster than I can answer. Please wait a moment and try again, or contact the clinic directly.\n' +
+  'أنت ترسل الرسائل أسرع مما أستطيع الرد عليه. يُرجى الانتظار قليلًا ثم المحاولة مرة أخرى، أو التواصل مع العيادة مباشرة.';
+const CONTACT_DAILY_LIMIT_TEXT =
+  'You have reached the limit for automated replies today. Please contact the clinic directly.\n' +
+  'لقد بلغت الحد الأقصى للردود الآلية اليوم. يُرجى التواصل مع العيادة مباشرة.';
 
 /**
  * WhatsApp inbound → AI automation bridge (Feature 3), driven by the tenant's
@@ -89,6 +103,12 @@ export class WhatsappInboundAiService {
     private readonly settings: SystemSettingService,
     private readonly access: AccessControlService,
     private readonly metrics: MetricsService,
+    /**
+     * F-16: per-contact admission. The same stateless class the realtime gateway
+     * uses, provided again by this module (importing AiRealtimeModule would be a
+     * cycle — it imports this one).
+     */
+    private readonly rateLimit: AiWsRateLimitService,
   ) {}
 
   /**
@@ -282,6 +302,11 @@ export class WhatsappInboundAiService {
       }
     }
 
+    // F-16: after the opt-out check (a "STOP" must always be honoured) and before
+    // anything that costs money. A refused message is already stored on the
+    // timeline by ingest, so a human can still read it.
+    if (!(await this.admitContactTurn(tenantId, waId))) return;
+
     // Continue the contact's single conversation (shared history/session/memory/
     // agent). First inbound turn has none → the orchestrator creates + routes one.
     // `handleStream` reuses the SAME tool-capable streaming path as the website/
@@ -292,6 +317,8 @@ export class WhatsappInboundAiService {
       tenantId,
       {
         channel: 'WHATSAPP',
+        // F-13: this bridge IS the WhatsApp channel; nothing else may claim it.
+        trustedChannel: true,
         content,
         aiConversationId: contact.ai_conversation_id ?? undefined,
         autoRoute: Boolean(contact.ai_conversation_id),
@@ -343,6 +370,51 @@ export class WhatsappInboundAiService {
       interactive,
       result.mirroredMessageId,
     );
+  }
+
+  /**
+   * F-16: may this contact have another AI turn? Two windows — a short one that
+   * stops a burst, and a daily one that stops a slow drip — both keyed to the
+   * tenant AND the number (one clinic's line never spends another's allowance,
+   * and the same person messaging two clinics is two contacts).
+   *
+   * The message that first crosses a limit gets ONE notice; every later one in
+   * the window is dropped silently. Nothing here throws: the limiter degrades to
+   * a stricter local count when Redis is down, and a failed notice is logged.
+   */
+  private async admitContactTurn(
+    tenantId: string,
+    waId: string,
+  ): Promise<boolean> {
+    for (const tier of ['whatsapp-contact', 'whatsapp-contact-day'] as const) {
+      const decision = await this.rateLimit.checkAndRecord(
+        `${tenantId}:${waId}`,
+        tier,
+      );
+      if (decision.allowed) continue;
+      // No phone number in the log line — tenant and tier are enough to alert on.
+      this.logger.warn(
+        `WhatsApp AI turn refused (tenant=${tenantId}, limit=${tier}, ` +
+          `count=${decision.count}/${decision.limit})`,
+      );
+      if (decision.count === (decision.limit ?? 0) + 1) {
+        try {
+          await this.sendReply(
+            tenantId,
+            waId,
+            tier === 'whatsapp-contact'
+              ? CONTACT_RATE_LIMITED_TEXT
+              : CONTACT_DAILY_LIMIT_TEXT,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `could not send the rate-limit notice (tenant=${tenantId}): ${(err as Error)?.message}`,
+          );
+        }
+      }
+      return false;
+    }
+    return true;
   }
 
   /**
