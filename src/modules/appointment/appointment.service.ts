@@ -44,7 +44,11 @@ import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
-import { isScopedToOwnStaff } from '../../rbac/rbac.constants';
+import {
+  APPOINTMENT_BOOKABLE_STAFF_ROLES,
+  isScopedToOwnStaff,
+} from '../../rbac/rbac.constants';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 
@@ -398,6 +402,7 @@ export class AppointmentsService {
     tenantId: string,
     userId: string,
     dto: CreateAppointmentDto,
+    options: { requireBookableStaff?: boolean } = {},
   ): Promise<Appointment> {
     // FND-031: also enforced at the route level (SubscriptionAccessGuard, for
     // the HTTP path) — repeated here so a QUEUED/worker-triggered call into
@@ -467,6 +472,12 @@ export class AppointmentsService {
       dto.staffId,
       strictBranchScope,
     );
+    // Opt-in: only the dashboard's own POST /appointments asks for this. The
+    // assistant / waitlist / integration-import callers choose their staff
+    // from their own rosters and keep their existing behaviour.
+    if (options.requireBookableStaff) {
+      await this.assertStaffBookableForAppointments(reads, tenantId, staff.id);
+    }
     const services = await this.loadServices(
       reads,
       tenantId,
@@ -1429,6 +1440,47 @@ export class AppointmentsService {
     if (!exists) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: 'Customer not found for this clinic',
+      });
+    }
+  }
+
+  /**
+   * Rejects a staff member whose linked account holds none of
+   * `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor, manager) — e.g. a receptionist.
+   *
+   * This is the server-side half of the "Employee" picker rule: the picker is
+   * filtered by the same constant, but a hand-crafted `POST /appointments`
+   * carrying a receptionist's staff id must fail here regardless of what the
+   * UI offered. Only ever run on CREATE — editing/rescheduling an existing
+   * appointment is deliberately not re-validated against it.
+   *
+   * Tenant isolation: the staff profile is looked up by (id, tenant) and the
+   * role link is matched through that profile's own user, so a role slug shared
+   * with another clinic can never satisfy the check.
+   */
+  private async assertStaffBookableForAppointments(
+    manager: EntityManager,
+    tenantId: string,
+    staffId: string,
+  ): Promise<void> {
+    const profile = await manager.getRepository(StaffProfile).findOne({
+      where: { id: staffId, tenant: { id: tenantId } },
+      relations: { user: true },
+      select: { id: true, user: { id: true } },
+    });
+    const bookable =
+      !!profile?.user &&
+      (await manager.getRepository(UserRole).exists({
+        where: {
+          user: { id: profile.user.id, tenant: { id: tenantId } },
+          role: { slug: In([...APPOINTMENT_BOOKABLE_STAFF_ROLES]) },
+        },
+      }));
+    if (!bookable) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message:
+          'This staff member cannot be booked for appointments. Choose a doctor or the manager.',
+        publicContext: { staffId },
       });
     }
   }

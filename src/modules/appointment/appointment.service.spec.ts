@@ -31,7 +31,8 @@ import {
   AppointmentPaymentStatus,
 } from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
-import { PERMISSION } from '../../rbac/rbac.constants';
+import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
+import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import {
   createMockRepository,
   createMockEntityManager,
@@ -239,6 +240,69 @@ describe('AppointmentsService', () => {
       expect(created.status).toBe(AppointmentStatus.PENDING_PAYMENT);
       expect(created.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
       expect(result).toBe(reloaded);
+    });
+
+    describe('requireBookableStaff (dashboard POST /appointments)', () => {
+      const staffWithUser = {
+        id: 's1',
+        is_available_for_booking: true,
+        user: { id: 'u-staff' },
+      };
+
+      it('books a staff member whose account holds the doctor or manager role', async () => {
+        primeValidRefs();
+        repo(StaffProfile).findOne.mockResolvedValue(staffWithUser);
+        repo(UserRole).exists.mockResolvedValue(true);
+
+        await service.create(TENANT, USER, dto, { requireBookableStaff: true });
+
+        // Matched through THIS staff member's own user, inside THIS tenant,
+        // against exactly the doctor + manager slugs.
+        expect(repo(UserRole).exists).toHaveBeenCalledWith({
+          where: {
+            user: { id: 'u-staff', tenant: { id: TENANT } },
+            role: { slug: In([ROLE.DOCTOR, ROLE.MANAGER]) },
+          },
+        });
+        expect(repo(Appointment).save).toHaveBeenCalled();
+      });
+
+      it('rejects a receptionist (or any other role) BEFORE availability, quota or insert', async () => {
+        primeValidRefs();
+        repo(StaffProfile).findOne.mockResolvedValue(staffWithUser);
+        repo(UserRole).exists.mockResolvedValue(false);
+
+        await expect(
+          service.create(TENANT, USER, dto, { requireBookableStaff: true }),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+
+        expect(availability.assertBookable).not.toHaveBeenCalled();
+        expect(usage.incrementIfWithinLimit).not.toHaveBeenCalled();
+        expect(repo(Appointment).save).not.toHaveBeenCalled();
+      });
+
+      it('rejects a staff profile that has no linked account (fail closed)', async () => {
+        primeValidRefs();
+        repo(StaffProfile).findOne.mockResolvedValue({
+          id: 's1',
+          is_available_for_booking: true,
+        });
+
+        await expect(
+          service.create(TENANT, USER, dto, { requireBookableStaff: true }),
+        ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+        expect(repo(UserRole).exists).not.toHaveBeenCalled();
+        expect(repo(Appointment).save).not.toHaveBeenCalled();
+      });
+
+      it('is opt-in: assistant/waitlist/import callers skip the role check entirely', async () => {
+        primeValidRefs();
+
+        await service.create(TENANT, USER, dto);
+
+        expect(repo(UserRole).exists).not.toHaveBeenCalled();
+        expect(repo(Appointment).save).toHaveBeenCalled();
+      });
     });
 
     it('[M-9] confirms an insured booking instead of stranding it in PENDING_PAYMENT', async () => {
