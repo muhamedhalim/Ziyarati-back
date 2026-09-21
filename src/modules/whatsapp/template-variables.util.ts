@@ -68,6 +68,19 @@ export function renderTemplateBody(
   const text = body?.text;
   if (!text || typeof text !== 'string') return undefined;
 
+  return renderPlaceholders(text, variables);
+}
+
+/**
+ * Substitutes every `{{name}}` in `text` from `variables`. A placeholder with
+ * no supplied value is left EXACTLY as written (never blanked) — callers that
+ * want a different fallback handle it themselves. Shared by the approved-
+ * template path above and by plain-text workflow messages.
+ */
+export function renderPlaceholders(
+  text: string,
+  variables: Record<string, unknown> | undefined,
+): string {
   const supplied = variables ?? {};
   return text.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (match, name: string) => {
     const value = supplied[name];

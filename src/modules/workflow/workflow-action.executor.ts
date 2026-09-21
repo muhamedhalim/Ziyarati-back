@@ -20,6 +20,10 @@ import {
   WORKFLOW_RECIPIENT_TYPES,
 } from './workflow.constants';
 import { WorkflowRecipientResolver } from './workflow-recipient.resolver';
+import {
+  hasWorkflowPlaceholder,
+  renderWorkflowMessage,
+} from './workflow-message-placeholders';
 
 export interface ActionOutcome {
   status: 'SUCCEEDED' | 'FAILED';
@@ -238,6 +242,14 @@ export class WorkflowActionExecutor {
         status: 'FAILED',
         detail: 'WHATSAPP action requires `text` or an approved `templateId`',
       };
+    }
+    // Plain-text messages may address the patient/clinic by placeholder. An
+    // approved template's text has already been fully rendered above.
+    if (!templateId && hasWorkflowPlaceholder(text)) {
+      text = renderWorkflowMessage(
+        text,
+        await this.recipients.placeholderValues(tenantId, context),
+      );
     }
 
     if (dryRun) {

@@ -4,11 +4,19 @@ import { Repository } from 'typeorm';
 
 import { Customer } from '../../entities/CRM/Customer';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { WORKFLOW_RECIPIENT_TYPE } from './workflow.constants';
 
 export interface ResolvedWorkflowContact {
   phone?: string;
   email?: string;
+}
+
+/** Values for the `{{customerName}}` / `{{clinicName}}` message placeholders. */
+export interface WorkflowPlaceholderValues {
+  /** The patient's FIRST name only (never the full legal name). */
+  customerName?: string;
+  clinicName?: string;
 }
 
 /**
@@ -57,6 +65,41 @@ export class WorkflowRecipientResolver {
     }
 
     return null;
+  }
+
+  /**
+   * Resolves the message placeholders for one run: the patient named by
+   * `context.customerId` and the clinic itself. Tenant-scoped on both lookups;
+   * a missing value is simply absent (the caller decides the fallback). Only
+   * called when a message actually contains a placeholder, so every existing
+   * workflow — whose text has none — pays nothing for it.
+   *
+   * The clinic is read through the customers repository's own entity manager
+   * so this resolver keeps its two-argument constructor (it is constructed
+   * positionally by the tenant-isolation integration spec).
+   */
+  async placeholderValues(
+    tenantId: string,
+    context: Record<string, unknown>,
+  ): Promise<WorkflowPlaceholderValues> {
+    const customerId = this.str(context.customerId);
+    const [customer, tenant] = await Promise.all([
+      customerId
+        ? this.customers.findOne({
+            where: { id: customerId, tenant: { id: tenantId } },
+            select: { id: true, full_name: true },
+          })
+        : Promise.resolve(null),
+      this.customers.manager.findOne(Tenant, {
+        where: { id: tenantId },
+        select: { id: true, name: true },
+      }),
+    ]);
+    const firstName = customer?.full_name?.trim().split(/\s+/)[0];
+    return {
+      customerName: firstName || undefined,
+      clinicName: tenant?.name?.trim() || undefined,
+    };
   }
 
   /**

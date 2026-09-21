@@ -171,6 +171,12 @@ export const JOB = {
   PLATFORM_QUEUE_DAY_CLOSE: 'platform.queueDayClose',
   /** Repeatable daily sweep: expires stale report-export downloads (S13). */
   PLATFORM_EXPORT_EXPIRY: 'platform.exportExpiry',
+  /**
+   * Repeatable hourly sweep: emits `customer.birthday` for patients whose
+   * birthday it is in their clinic's local time (acts at local 09:00), which
+   * the workflow engine's "Birthday Greeting" template listens for.
+   */
+  PLATFORM_BIRTHDAY_GREETINGS: 'platform.birthdayGreetings',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

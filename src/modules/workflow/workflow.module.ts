@@ -8,8 +8,10 @@ import { StaffProfile } from '../../entities/Staff/StaffProfile';
 
 import { EmailModule } from '../email/email.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
+import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 
 import { WorkflowService } from './workflow.service';
+import { BirthdayGreetingSweepService } from './birthday-greeting.sweep.service';
 import { WorkflowActionExecutor } from './workflow-action.executor';
 import { WorkflowRecipientResolver } from './workflow-recipient.resolver';
 import { WorkflowEventListener } from './workflow-event.listener';
@@ -31,6 +33,9 @@ import { WorkflowController } from './workflow.controller';
     TypeOrmModule.forFeature([Workflow, WorkflowRun, Customer, StaffProfile]),
     EmailModule,
     WhatsappModule,
+    // AccessControlService — the daily birthday sweep applies the same
+    // `automations` entitlement gate the `workflow.*` jobs enforce.
+    SubscriptionBillingModule,
   ],
   controllers: [WorkflowController],
   providers: [
@@ -38,7 +43,12 @@ import { WorkflowController } from './workflow.controller';
     WorkflowActionExecutor,
     WorkflowRecipientResolver,
     WorkflowEventListener,
+    BirthdayGreetingSweepService,
   ],
-  exports: [WorkflowService, WorkflowActionExecutor],
+  exports: [
+    WorkflowService,
+    WorkflowActionExecutor,
+    BirthdayGreetingSweepService,
+  ],
 })
 export class WorkflowModule {}

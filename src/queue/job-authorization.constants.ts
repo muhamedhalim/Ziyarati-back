@@ -195,6 +195,10 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   [JOB.PLATFORM_WAITLIST_EXPIRY]: SYSTEM,
   [JOB.PLATFORM_QUEUE_DAY_CLOSE]: SYSTEM,
   [JOB.PLATFORM_EXPORT_EXPIRY]: SYSTEM,
+  // Global sweep with no per-invocation tenant identity. Each tenant's
+  // `automations` entitlement is checked INSIDE the sweep, and the runs it
+  // triggers execute as tenant-tier `workflow.run` jobs (gated again there).
+  [JOB.PLATFORM_BIRTHDAY_GREETINGS]: SYSTEM,
 };
 
 /**

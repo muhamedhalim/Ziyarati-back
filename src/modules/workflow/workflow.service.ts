@@ -134,6 +134,26 @@ export class WorkflowService {
     });
   }
 
+  /**
+   * Whether this workflow already has a real (non-dry-run) run for one
+   * date-driven occurrence — e.g. `{customerId}:{date}` for a birthday. The
+   * listener uses it to make a repeated sweep idempotent. Tenant-scoped.
+   */
+  async hasRunForOccurrence(
+    tenantId: string,
+    workflowId: string,
+    occurrenceKey: string,
+  ): Promise<boolean> {
+    const rows: unknown[] = await this.dataSource.query(
+      `SELECT 1 FROM workflow_runs
+       WHERE "tenantId" = $1 AND "workflowId" = $2 AND dry_run = false
+         AND context->>'occurrenceKey' = $3
+       LIMIT 1`,
+      [tenantId, workflowId, occurrenceKey],
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
   /** Load a workflow by id WITHOUT tenant scoping (worker already trusts the run). */
   findByIdInternal(id: string): Promise<Workflow | null> {
     return this.workflows.findOne({ where: { id } });

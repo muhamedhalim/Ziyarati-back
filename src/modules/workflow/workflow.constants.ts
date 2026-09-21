@@ -1,4 +1,5 @@
 import { APPOINTMENT_EVENT } from '../../events/appointment.events';
+import { CUSTOMER_EVENT } from '../../events/customer.events';
 import { PAYMENT_EVENT } from '../../events/payment.events';
 import { SUBSCRIPTION_EVENT } from '../../events/subscription.events';
 
@@ -16,6 +17,7 @@ export const WORKFLOW_TRIGGER = {
   APPOINTMENT_COMPLETED: APPOINTMENT_EVENT.COMPLETED,
   APPOINTMENT_RESCHEDULED: APPOINTMENT_EVENT.RESCHEDULED,
   APPOINTMENT_NO_SHOW: APPOINTMENT_EVENT.NO_SHOW,
+  CUSTOMER_BIRTHDAY: CUSTOMER_EVENT.BIRTHDAY,
   PAYMENT_SUCCEEDED: PAYMENT_EVENT.SUCCEEDED,
   PAYMENT_REFUNDED: PAYMENT_EVENT.REFUNDED,
   PAYMENT_FAILED: PAYMENT_EVENT.FAILED,
@@ -31,6 +33,23 @@ export type WorkflowTrigger =
 
 /** All valid trigger event strings (for DTO validation). */
 export const WORKFLOW_TRIGGERS: string[] = Object.values(WORKFLOW_TRIGGER);
+
+/**
+ * The clinic-local hour (0-23) at which the birthday sweep greets patients —
+ * mid-morning, so a greeting never lands in the middle of the night. The sweep
+ * itself ticks hourly and acts for a tenant only during this local hour.
+ */
+export const BIRTHDAY_SEND_LOCAL_HOUR = 9;
+
+/**
+ * Placeholders a plain-text WHATSAPP action's `text` may contain, resolved at
+ * send time from the recipient patient and the clinic. Same `{{name}}` syntax
+ * `renderTemplateBody` already uses for approved WhatsApp templates.
+ */
+export const WORKFLOW_MESSAGE_PLACEHOLDER = {
+  CUSTOMER_NAME: 'customerName',
+  CLINIC_NAME: 'clinicName',
+} as const;
 
 /**
  * Action types — restricted to the two real patient/staff messaging
