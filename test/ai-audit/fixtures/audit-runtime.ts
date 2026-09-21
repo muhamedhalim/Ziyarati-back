@@ -1,0 +1,284 @@
+/**
+ * AI chatbot audit (2026-09) — shared runtime for every spec in `test/ai-audit`.
+ *
+ * TEST INFRASTRUCTURE ONLY. Reuses `buildAiAuditHarness` (real AppModule, real
+ * Postgres/Redis, embeddings force-scripted so a live run can never make a real
+ * embeddings call). Adds:
+ *   - three-clinic seed (`audit-seed.ts`)
+ *   - drivers that go through the SAME entry points production uses:
+ *       guest widget  → `AiRealtimeGateway.onMessage` (real gateway handler, fake socket)
+ *       WhatsApp      → `WhatsappInboundAiService.handleInboundValue` (real webhook bridge,
+ *                       real per-tenant bot actor; only the OUTBOUND Meta send is captured)
+ *       staff         → `AiRealtimeGateway.onMessage` with a staff principal
+ *   - a live-provider swap (real `OpenAiChatProvider`) gated on OPENAI_LIVE_TESTS=true
+ *   - a per-turn recorder that writes JSON evidence to `results/`
+ *
+ * The API key is read from the process environment only and is never written
+ * to any file this module produces.
+ */
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Socket } from 'socket.io';
+import request from 'supertest';
+import { Logger } from '@nestjs/common';
+
+import { buildAiAuditHarness, type AiAuditHarness } from '../../security/fixtures/ai-audit-harness';
+import { ScriptedAiProvider, type ScriptedTurn } from '../../security/fixtures/scripted-ai-provider';
+import { seedAuditClinics, teardownAuditClinics, type AuditSeed, type AuditClinic } from './audit-seed';
+
+import { AiRealtimeGateway } from '../../../src/modules/ai-realtime/ai-realtime.gateway';
+import { WsAuthService } from '../../../src/modules/ai-realtime/ws-auth.service';
+import { AiConversationService } from '../../../src/modules/ai/ai-conversation.service';
+import { AiToolDispatchService, type ToolContext } from '../../../src/modules/ai/tools/ai-tool-dispatch.service';
+import { AI_COMPLETION_PROVIDERS, type AiCompletionProvider, type AiCompletionRequest } from '../../../src/modules/ai/providers/ai-provider.interface';
+import { WhatsappInboundAiService } from '../../../src/modules/whatsapp/whatsapp-inbound-ai.service';
+import { WhatsappBotActorService } from '../../../src/modules/whatsapp/whatsapp-bot-actor.service';
+import { WhatsappMessagingService } from '../../../src/modules/whatsapp/whatsapp-messaging.service';
+import { WhatsappMessageRouter } from '../../../src/modules/whatsapp/routing/whatsapp-message.router';
+import { TenantContextService } from '../../../src/core/tenant-context/tenant-context.service';
+import { ConversationSessionService } from '../../../src/modules/ai-orchestrator/conversation-session.service';
+import type { AuthenticatedUser } from '../../../src/modules/auth/interfaces/authenticated-user.interface';
+import type { MetaWebhookChangeValue } from '../../../src/modules/whatsapp/webhooks/whatsapp-webhook.types';
+
+export interface TurnRecord {
+  surface: 'public' | 'whatsapp' | 'staff';
+  scenario: string;
+  input: string;
+  reply: string;
+  tools: string[];
+  toolArgs: { name: string; args: unknown }[];
+  errors: unknown[];
+  model?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  ms: number;
+}
+
+export interface AuditRuntime {
+  harness: AiAuditHarness;
+  seed: AuditSeed;
+  discoveryTenantId: string;
+  dispatch: AiToolDispatchService;
+  conversations: AiConversationService;
+  tenantCtx: TenantContextService;
+  provider: ScriptedAiProvider;
+  /** every outbound WhatsApp text the bridge tried to send (Meta is never called) */
+  whatsappOutbox: { tenantId: string; to: string; text: string }[];
+  records: TurnRecord[];
+  /** Nest Logger warn/error lines emitted while a test ran (silent-failure evidence). */
+  logs: string[];
+  /** Swap the ONLY registered completion provider (scripted by default). */
+  use(provider: AiCompletionProvider): void;
+  close(): Promise<void>;
+}
+
+export async function bootAudit(): Promise<AuditRuntime> {
+  const harness = await buildAiAuditHarness();
+  const seed = await seedAuditClinics(harness.dataSource);
+
+  const discoveryRow = await harness.dataSource.query(`SELECT id FROM tenants WHERE slug = '__guest_discovery__'`);
+  let discoveryTenantId: string = discoveryRow[0]?.id;
+  if (!discoveryTenantId) {
+    // first guest session creates it — mint one so the id exists
+    await mintGuest(harness);
+    discoveryTenantId = (await harness.dataSource.query(`SELECT id FROM tenants WHERE slug = '__guest_discovery__'`))[0].id;
+  }
+
+  // ── WhatsApp outbound capture: Meta is NEVER called ─────────────────────
+  const whatsappOutbox: AuditRuntime['whatsappOutbox'] = [];
+  const messaging = harness.app.get(WhatsappMessagingService);
+  const router = harness.app.get(WhatsappMessageRouter);
+  jest.spyOn(router, 'resolveForSend').mockImplementation(async () => ({ id: 'audit-account', phoneNumberId: 'audit-pnid', mode: 'COEXISTENCE' }) as never);
+  jest.spyOn(messaging, 'sendSession').mockImplementation(async (a: { tenantId: string; to: string; text: string }) => {
+    whatsappOutbox.push({ tenantId: a.tenantId, to: a.to, text: a.text });
+    return { success: true, providerMessageId: `wamid.audit-${whatsappOutbox.length}` } as never;
+  });
+
+  const logs: string[] = [];
+  const grab = (level: string) => function (this: unknown, message: unknown, ...rest: unknown[]) {
+    logs.push(`[${level}] ${typeof message === 'string' ? message : JSON.stringify(message)} ${rest.filter((r) => typeof r === 'string').join(' ')}`.slice(0, 400));
+  };
+  jest.spyOn(Logger.prototype, 'warn').mockImplementation(grab('warn') as never);
+  jest.spyOn(Logger.prototype, 'error').mockImplementation(grab('error') as never);
+
+  const runtime: AuditRuntime = {
+    harness,
+    seed,
+    discoveryTenantId,
+    dispatch: harness.app.get(AiToolDispatchService),
+    conversations: harness.app.get(AiConversationService),
+    tenantCtx: harness.app.get(TenantContextService),
+    provider: harness.provider,
+    whatsappOutbox,
+    records: [],
+    logs,
+    use: (provider) => {
+      const arr = harness.app.get(AI_COMPLETION_PROVIDERS);
+      arr.length = 0;
+      arr.push(provider);
+    },
+    close: async () => {
+      jest.restoreAllMocks();
+      await teardownAuditClinics(harness.dataSource, seed);
+      await harness.close();
+    },
+  };
+  return runtime;
+}
+
+// ─────────────────────────────── guest / public ────────────────────────────── //
+
+export async function mintGuest(harness: AiAuditHarness): Promise<AuthenticatedUser> {
+  const res = await request(harness.app.getHttpServer()).post('/api/v1/public/guest/session').send({}).expect(200);
+  const cookies = res.headers['set-cookie'] as unknown as string[] | undefined;
+  const guestCookie = cookies?.find((c) => c.startsWith('guest_token='));
+  if (!guestCookie) throw new Error('guest_token cookie was not issued');
+  return harness.app.get(WsAuthService).authenticate({
+    handshake: { auth: {}, headers: { cookie: guestCookie.split(';')[0] }, query: {} },
+  } as unknown as Socket);
+}
+
+export interface FakeSocket extends Socket {
+  emitted: { event: string; payload: any }[];
+}
+
+export function fakeSocket(user: AuthenticatedUser): FakeSocket {
+  const emitted: { event: string; payload: any }[] = [];
+  return {
+    data: { tenantId: user.tenantId, userId: user.id, user },
+    emit: (event: string, payload: unknown) => {
+      emitted.push({ event, payload });
+      return true;
+    },
+    join: () => undefined,
+    to: () => ({ emit: () => true }),
+    rooms: new Set<string>(),
+    emitted,
+  } as unknown as FakeSocket;
+}
+
+export interface TurnResult {
+  reply: string;
+  aiConversationId?: string;
+  tools: string[];
+  errors: any[];
+  raw: { event: string; payload: any }[];
+}
+
+/** One turn through the REAL gateway handler under a given principal. */
+export async function gatewayTurn(
+  rt: AuditRuntime,
+  user: AuthenticatedUser,
+  body: { content: string; aiConversationId?: string; channel?: string },
+): Promise<TurnResult> {
+  const gateway = rt.harness.app.get(AiRealtimeGateway);
+  const socket = fakeSocket(user);
+  await rt.tenantCtx.run(async () => {
+    rt.tenantCtx.setPrincipal(user);
+    return gateway.onMessage(socket, body as never);
+  });
+  const done = socket.emitted.find((e) => e.event === 'ai:done')?.payload;
+  return {
+    reply: done?.reply?.content ?? '',
+    aiConversationId: done?.aiConversationId,
+    tools: socket.emitted.filter((e) => e.event === 'ai:tool' && e.payload.phase !== 'done').map((e) => e.payload.name),
+    errors: socket.emitted.filter((e) => e.event === 'ai:error').map((e) => e.payload),
+    raw: socket.emitted,
+  };
+}
+
+/** A multi-turn guest session pinned to one guest principal + conversation. */
+export class GuestSession {
+  conversationId?: string;
+  private constructor(private rt: AuditRuntime, readonly user: AuthenticatedUser) {}
+  static async start(rt: AuditRuntime): Promise<GuestSession> {
+    return new GuestSession(rt, await mintGuest(rt.harness));
+  }
+  async say(content: string, channel = 'WEBSITE'): Promise<TurnResult> {
+    const r = await gatewayTurn(this.rt, this.user, { content, aiConversationId: this.conversationId, channel });
+    this.conversationId = r.aiConversationId ?? this.conversationId;
+    return r;
+  }
+  /** Reads the server-side selection the tools have recorded for this guest. */
+  async session(): Promise<Record<string, unknown>> {
+    const rows = await this.rt.harness.dataSource.query(`SELECT session FROM ai_conversations WHERE id = $1`, [this.conversationId]);
+    return rows[0]?.session ?? {};
+  }
+  /** ToolContext exactly as `AiExecutionService` builds it for a guest turn (ai-execution.service.ts:605-616). */
+  toolCtx(): ToolContext {
+    return {
+      tenantId: this.user.tenantId,
+      actorUserId: this.user.id, // <- the line under audit (H3): the guest subject, never empty
+      permissions: this.user.permissions ?? [],
+      aiConversationId: this.conversationId!,
+      principal: this.user,
+    };
+  }
+}
+
+/** A clinic OWNER principal carrying the real system-role permission set from the DB. */
+export async function ownerPrincipal(rt: AuditRuntime, clinic: AuditClinic): Promise<AuthenticatedUser> {
+  const perms: { slug: string }[] = await rt.harness.dataSource.query(
+    `SELECT p.slug FROM role_permissions rp JOIN permissions p ON p.id = rp."permissionId"
+       JOIN roles r ON r.id = rp."roleId" WHERE r.slug = 'owner' AND r."tenantId" IS NULL`,
+  );
+  return {
+    id: clinic.doctorUserIds.omar ?? Object.values(clinic.doctorUserIds)[0],
+    tenantId: clinic.tenantId,
+    email: null,
+    roles: ['owner'],
+    permissions: perms.map((p) => p.slug),
+  } as unknown as AuthenticatedUser;
+}
+
+// ─────────────────────────────────── WhatsApp ──────────────────────────────── //
+
+export function waPayload(text: string, waId: string, name = 'Audit Patient'): MetaWebhookChangeValue {
+  return {
+    messages: [{ id: `wamid.audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, from: waId, type: 'text', text: { body: text } }],
+    contacts: [{ wa_id: waId, profile: { name } }],
+  } as unknown as MetaWebhookChangeValue;
+}
+
+export async function whatsappTurn(rt: AuditRuntime, tenantId: string, waId: string, text: string): Promise<{ replies: string[]; tools: string[] }> {
+  const before = rt.whatsappOutbox.length;
+  const toolsBefore = await rt.harness.dataSource.query(`SELECT count(*)::int c FROM ai_tool_calls WHERE tenant_id = $1`, [tenantId]);
+  await rt.harness.app.get(WhatsappInboundAiService).handleInboundValue(tenantId, waPayload(text, waId));
+  const tools = await rt.harness.dataSource.query(
+    `SELECT tool_name FROM ai_tool_calls WHERE tenant_id = $1 ORDER BY created_at ASC OFFSET $2`,
+    [tenantId, toolsBefore[0].c],
+  );
+  return { replies: rt.whatsappOutbox.slice(before).filter((o) => o.tenantId === tenantId).map((o) => o.text), tools: tools.map((t: { tool_name: string }) => t.tool_name) };
+}
+
+/** ToolContext for a WhatsApp turn on `clinic`, bound to `customerId`, using the REAL per-tenant bot actor. */
+export async function whatsappToolCtx(rt: AuditRuntime, clinic: AuditClinic, customerId: string | undefined): Promise<ToolContext> {
+  const bot = await rt.harness.app.get(WhatsappBotActorService).ensureBotActor(clinic.tenantId);
+  const conv = await rt.conversations.start(clinic.tenantId, {});
+  if (customerId) await rt.harness.app.get(ConversationSessionService).patch(clinic.tenantId, conv.id, { context: { customerId } } as never);
+  return {
+    tenantId: clinic.tenantId,
+    actorUserId: bot.id,
+    permissions: bot.permissions,
+    customerId,
+    aiConversationId: conv.id,
+    principal: bot,
+  };
+}
+
+// ─────────────────────────────────── recording ─────────────────────────────── //
+
+export function scriptTurns(rt: AuditRuntime, turns: ScriptedTurn[]): void {
+  rt.provider.reset();
+  rt.provider.script(turns);
+}
+
+export function providerRequests(rt: AuditRuntime): readonly AiCompletionRequest[] {
+  return rt.provider.capturedRequests;
+}
+
+export function saveEvidence(name: string, data: unknown): void {
+  const dir = join(__dirname, '..', 'results');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${name}.json`), JSON.stringify(data, null, 2), 'utf8');
+}

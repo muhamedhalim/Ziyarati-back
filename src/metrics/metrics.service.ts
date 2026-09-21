@@ -177,6 +177,20 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * F-25 — an inbound WhatsApp message whose AI turn threw. Before this the
+   * only trace was a log line, so a clinic whose assistant had gone silent
+   * (the bot-actor re-provisioning bug) looked identical to a quiet inbox.
+   * No tenant or contact in the label set — this is a fleet-level "assistant
+   * is failing" signal; the ERROR log line carries the tenant for triage.
+   */
+  private readonly whatsappAiTurnFailures = new Counter({
+    name: 'whatsapp_ai_turn_failures_total',
+    help: 'Inbound WhatsApp messages whose AI turn failed, by whether the patient fallback message was delivered.',
+    labelNames: ['fallback'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -248,6 +262,11 @@ export class MetricsService {
     event: 'reuse_detected' | 'retry_served' | 'concurrent_refused',
   ): void {
     this.refreshRotationEvents.inc({ event });
+  }
+
+  /** F-25 — `fallback` = whether the patient was told the assistant could not answer. */
+  recordWhatsappAiTurnFailure(fallback: 'sent' | 'not_sent'): void {
+    this.whatsappAiTurnFailures.inc({ fallback });
   }
 
   recordHttpRequest(method: string, statusCode: number, durationSeconds: number): void {

@@ -737,7 +737,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const guest = !ctx.actorUserId;
+    const guest = this.isGuest(ctx);
     let branchId = this.uuid(args.branchId);
     if (guest) {
       const fromSession = await this.sessionBranch(ctx);
@@ -790,7 +790,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const guest = !ctx.actorUserId;
+    const guest = this.isGuest(ctx);
     let tenantId = ctx.tenantId;
     let branchId = this.uuid(args.branchId);
     let staffId = this.uuid(args.staffId);
@@ -856,7 +856,7 @@ export class AiToolDispatchService {
     | { branchId: string; staffId: string; serviceMinutes?: number }
     | { error: ToolResult }
   > {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       let booking;
       try {
         booking = await this.requirePublicContext(ctx, 'doctor');
@@ -968,7 +968,7 @@ export class AiToolDispatchService {
 
   /** THIS clinic's own active branches — id, name, address only (no phone/timezone). */
   private async listClinicBranches(ctx: ToolContext): Promise<ToolResult> {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error: 'This tool is not available in this context (no acting user).',
@@ -1001,7 +1001,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error: 'This tool is not available in this context (no acting user).',
@@ -1040,7 +1040,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error: 'This tool is not available in this context (no acting user).',
@@ -1083,7 +1083,7 @@ export class AiToolDispatchService {
     // narrowly, on the same "no acting user" precondition already used by
     // the core write tools (bookAppointment et al.), rather than widening
     // what guests are advertised.
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error: 'This tool is not available in this context (no acting user).',
@@ -1167,7 +1167,7 @@ export class AiToolDispatchService {
     // AI-003 gate below already uses (AI-008/T055) — a guest hitting this
     // tool at all is itself a foreign-id/no-context probe worth auditing,
     // not a silent drop.
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       const reason =
         'This tool is not available in this context (no acting user).';
       await this.recordAttempt(
@@ -1239,7 +1239,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error: 'Booking is not available in this context (no acting user).',
@@ -1863,7 +1863,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error: 'Reschedule is not available in this context (no acting user).',
@@ -1967,7 +1967,7 @@ export class AiToolDispatchService {
     ctx: ToolContext,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    if (!ctx.actorUserId) {
+    if (this.isGuest(ctx)) {
       return {
         success: false,
         error:
@@ -2072,10 +2072,16 @@ export class AiToolDispatchService {
       key,
       args,
       async () => {
-        const handover = await this.handovers.create(ctx.tenantId, {
-          aiConversationId: ctx.aiConversationId,
-          reason,
-        });
+        // A web guest's request is filed under the clinic it selected (F-07);
+        // every other principal escalates within its own tenant, as before.
+        const handover = await this.handovers.requestForCustomer(
+          ctx.tenantId,
+          ctx.principal,
+          {
+            aiConversationId: ctx.aiConversationId,
+            reason,
+          },
+        );
         return {
           toolResult: {
             success: true,
@@ -2146,6 +2152,23 @@ export class AiToolDispatchService {
       await this.writeAttemptRow(ctx, toolName, args, 'REFUSED', this.msg(err));
       throw err;
     }
+  }
+
+  /**
+   * Is this turn a public guest (or otherwise has no acting user)?
+   *
+   * `!ctx.actorUserId` alone answers a different question. `AiExecutionService`
+   * fills `actorUserId` from `getUser().id`, and a guest principal's id is
+   * its session subject — so for every guest turn `actorUserId` is set, the
+   * "no acting user" gates never fired, and the guest branches of
+   * `get_branch_info` / `get_doctor_schedule` / availability were unreachable
+   * from the real widget (F-01). `principal.guest` is the authoritative signal
+   * (see `actorUserId()` below, which already relies on it for the audit rows);
+   * a missing `actorUserId` is kept as guest too, so no turn that has no user
+   * at all is ever treated as authenticated.
+   */
+  private isGuest(ctx: ToolContext): boolean {
+    return !ctx.actorUserId || ctx.principal?.guest === true;
   }
 
   /**

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, In, Repository } from 'typeorm';
 
 import { HandoverRequest } from '../../entities/AI Agent/HandoverRequest';
 import { Conversation } from '../../entities/Conversations/Conversation';
@@ -14,6 +14,8 @@ import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
 import { PERMISSION } from '../../rbac/rbac.constants';
+import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
+import { PublicBookingContextService } from '../public-booking/public-booking-context.service';
 import { CONVERSATION_OWNER_TYPE, CONVERSATION_STATUS, SENDER_TYPE } from '../conversations/conversation.constants';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
 import { CustomerNoteService } from '../crm/customer-note.service';
@@ -43,6 +45,9 @@ import {
   HandoverReturnedToAiEvent,
   HandoverTransferredEvent,
 } from '../../events/handover.events';
+
+/** How many of the guest's most recent AI-chat messages are copied into the clinic's conversation at handover. */
+const HANDOVER_TRANSCRIPT_LIMIT = 40;
 
 /**
  * Human handover requests — escalate an AI/messaging conversation to staff.
@@ -77,9 +82,81 @@ export class HandoverRequestService {
     private readonly emitter: EventEmitter2,
     private readonly timeline: ConversationExecutionService,
     private readonly notes: CustomerNoteService,
+    private readonly publicBooking: PublicBookingContextService,
   ) {}
 
-  async create(tenantId: string, dto: CreateHandoverRequestDto): Promise<HandoverRequest> {
+  /**
+   * "The customer wants a human" — the ONE entry the AI tool and the socket
+   * event share, so the routing rule cannot drift between them (F-07).
+   *
+   * - A staff / WhatsApp principal escalates a conversation that belongs to its
+   *   own clinic: filed under `tenantId`, exactly as before.
+   * - An anonymous WEB GUEST has no clinic of its own — every guest lives in the
+   *   shared discovery tenant, which no clinic staff member can read. The request
+   *   is therefore filed under the clinic the guest SELECTED (resolved
+   *   server-side, see `PublicBookingContextService.resolveSelectedClinic`),
+   *   while the guest's AI conversation stays in the discovery tenant. A guest
+   *   that has not chosen a clinic is refused rather than filed where nobody
+   *   looks.
+   *
+   * The guest's own conversation id is the only client-supplied value; the
+   * clinic is never a parameter.
+   */
+  async requestForCustomer(
+    tenantId: string,
+    principal: AuthenticatedUser | null | undefined,
+    dto: CreateHandoverRequestDto,
+  ): Promise<HandoverRequest> {
+    if (!principal?.guest) return this.create(tenantId, dto);
+    if (!dto.aiConversationId) {
+      throw new AppError(ErrorCode.BAD_REQUEST, { message: 'aiConversationId is required' });
+    }
+    const clinicId = await this.publicBooking.resolveSelectedClinic(tenantId, dto.aiConversationId, principal);
+    return this.create(
+      clinicId,
+      { aiConversationId: dto.aiConversationId, reason: dto.reason },
+      { aiConversationTenantId: tenantId },
+    );
+  }
+
+  /**
+   * May a STAFF member of `tenantId` take part in this AI conversation because a
+   * handover request of theirs is attached to it? True only when the AI
+   * conversation is linked to a conversation THIS tenant owns AND this tenant
+   * holds a handover request on that conversation.
+   *
+   * This is what lets clinic staff join the room of, and reply to, a web guest
+   * whose AI conversation lives in the discovery tenant. It is deliberately not
+   * folded into `AiConversationAccessService.assertAccess`: that seam also
+   * authorises AI turns and reads, and a handover request must never widen those.
+   */
+  async canAgentAccess(tenantId: string, aiConversationId: string): Promise<boolean> {
+    if (!tenantId || !aiConversationId) return false;
+    try {
+      const aiConv = await this.aiConversations.findOne({
+        where: { id: aiConversationId, conversation: { tenant: { id: tenantId } } },
+        relations: { conversation: true },
+      });
+      if (!aiConv?.conversation) return false;
+      return await this.handovers.exists({
+        where: { conversation: { id: aiConv.conversation.id }, tenant: { id: tenantId } },
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * `opts.aiConversationTenantId` — set ONLY by {@link requestForCustomer} for a
+   * web guest, whose AI conversation lives in a different tenant than the clinic
+   * the request is filed under. It is a trusted, server-derived argument and is
+   * not reachable from any DTO.
+   */
+  async create(
+    tenantId: string,
+    dto: CreateHandoverRequestDto,
+    opts: { aiConversationTenantId?: string } = {},
+  ): Promise<HandoverRequest> {
     if (!dto.conversationId && !dto.aiConversationId) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
         message: 'conversationId or aiConversationId is required',
@@ -88,17 +165,31 @@ export class HandoverRequestService {
 
     let conversationId = dto.conversationId;
     let aiConv: AiConversation | null = null;
+    const crossTenant = !!opts.aiConversationTenantId && opts.aiConversationTenantId !== tenantId;
 
     if (dto.aiConversationId) {
       aiConv = await this.aiConversations.findOne({
-        where: { id: dto.aiConversationId, tenant: { id: tenantId } },
+        where: { id: dto.aiConversationId, tenant: { id: opts.aiConversationTenantId ?? tenantId } },
         relations: { conversation: true },
       });
       if (!aiConv) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'AI conversation not found in this tenant' });
       }
+      if (crossTenant && aiConv.status === AI_CONVERSATION_STATUS.HANDED_OVER && aiConv.conversation?.id) {
+        // Already waiting on a person (a double tap, a retry): answer with that
+        // request instead of opening a second conversation in a second clinic.
+        const open = await this.handovers.findOne({
+          where: { conversation: { id: aiConv.conversation.id } },
+          relations: { conversation: true, assigned_to: true, transferred_from: true },
+          order: { created_at: 'DESC' },
+        });
+        if (open && !TERMINAL_HANDOVER_STATUSES.includes(open.status as HandoverStatus)) return open;
+      }
       if (!conversationId) {
-        conversationId = aiConv.conversation?.id;
+        // A cross-tenant request always opens a FRESH conversation in the clinic:
+        // whatever the AI conversation was linked to before belongs to another
+        // tenant (or is stale) and must never be reused.
+        conversationId = crossTenant ? undefined : aiConv.conversation?.id;
         if (!conversationId) {
           // Every channel (website widget, dashboard, WhatsApp) gets a real
           // Agent Inbox entry at the moment of handover, even if this AI
@@ -113,6 +204,9 @@ export class HandoverRequestService {
           conversationId = created.id;
           aiConv.conversation = created;
           await this.aiConversations.save(aiConv);
+          if (crossTenant) {
+            await this.seedTranscript(tenantId, created.id, aiConv.id, opts.aiConversationTenantId!);
+          }
         }
       }
     } else {
@@ -355,7 +449,8 @@ export class HandoverRequestService {
     this.assertNotTerminal(handover.status);
 
     const aiConv = await this.aiConversations.findOne({
-      where: { conversation: { id: handover.conversation.id }, tenant: { id: tenantId } },
+      where: { conversation: { id: handover.conversation.id, tenant: { id: tenantId } } },
+      relations: { tenant: true },
     });
     if (!aiConv) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -368,6 +463,14 @@ export class HandoverRequestService {
     await this.handovers.save(handover);
 
     aiConv.status = AI_CONVERSATION_STATUS.ACTIVE;
+    // A web guest's AI conversation lives in the discovery tenant and was linked
+    // to this clinic's conversation only for the duration of the handover. Its
+    // later AI turns write in the guest's tenant, so the link is removed here —
+    // otherwise they would try to mirror into a conversation they do not own.
+    // The clinic keeps its conversation and the full history; the guest keeps theirs.
+    if (aiConv.tenant?.id && aiConv.tenant.id !== tenantId) {
+      aiConv.conversation = null as unknown as Conversation;
+    }
     await this.aiConversations.save(aiConv);
     await this.conversations.update(
       { id: handover.conversation.id },
@@ -486,9 +589,15 @@ export class HandoverRequestService {
     aiConversationId: string,
     content: string,
   ): Promise<{ message: Message; conversation: Conversation }> {
+    // The AI conversation is either this clinic's own, or a web guest's (discovery
+    // tenant) that is linked to a conversation this clinic owns because it holds a
+    // handover request on it — never any other tenant's.
     const aiConv = await this.aiConversations.findOne({
-      where: { id: aiConversationId, tenant: { id: tenantId } },
-      relations: { conversation: true },
+      where: [
+        { id: aiConversationId, tenant: { id: tenantId } },
+        { id: aiConversationId, conversation: { tenant: { id: tenantId } } },
+      ],
+      relations: { conversation: true, tenant: true },
     });
     if (!aiConv) throw new AppError(ErrorCode.NOT_FOUND, { message: 'AI conversation not found' });
     if (aiConv.status !== AI_CONVERSATION_STATUS.HANDED_OVER) {
@@ -508,7 +617,9 @@ export class HandoverRequestService {
     await this.aiMessages.save(
       this.aiMessages.create({
         ai_conversation_id: aiConversationId,
-        tenant: { id: tenantId } as Tenant,
+        // The AI conversation's own tenant (the discovery tenant for a web guest),
+        // so the history the AI reads back later stays consistent.
+        tenant: { id: aiConv.tenant?.id ?? tenantId } as Tenant,
         role: AI_MESSAGE_ROLE.ASSISTANT,
         content,
         tokens_used: 0,
@@ -568,9 +679,48 @@ export class HandoverRequestService {
   /** Best-effort lookup so realtime events can also reach the customer's own
    *  chat room (keyed by aiConversationId) — undefined when there is none. */
   private async findAiConversationId(tenantId: string, conversationId: string): Promise<string | undefined> {
+    // Keyed on the CONVERSATION's tenant: for a web guest the AI conversation
+    // itself lives in the discovery tenant, but the conversation it is linked to
+    // is this clinic's.
     const aiConv = await this.aiConversations.findOne({
-      where: { conversation: { id: conversationId }, tenant: { id: tenantId } },
+      where: { conversation: { id: conversationId, tenant: { id: tenantId } } },
     });
     return aiConv?.id;
+  }
+
+  /**
+   * Copies the guest's recent AI chat into the clinic's new conversation so the
+   * agent who picks it up is not looking at an empty thread. Best-effort and
+   * capped: a failure here must never stop the request from being filed.
+   */
+  private async seedTranscript(
+    clinicId: string,
+    conversationId: string,
+    aiConversationId: string,
+    aiConversationTenantId: string,
+  ): Promise<void> {
+    try {
+      const rows = await this.aiMessages.find({
+        where: {
+          ai_conversation_id: aiConversationId,
+          tenant: { id: aiConversationTenantId },
+          role: In([AI_MESSAGE_ROLE.USER, AI_MESSAGE_ROLE.ASSISTANT]),
+        },
+        order: { created_at: 'DESC' },
+        take: HANDOVER_TRANSCRIPT_LIMIT,
+      });
+      for (const row of rows.reverse()) {
+        const text = row.content?.trim();
+        if (!text) continue;
+        await this.timeline.recordChannelMessage(
+          clinicId,
+          conversationId,
+          row.role === AI_MESSAGE_ROLE.USER ? 'CUSTOMER' : 'BOT',
+          text,
+        );
+      }
+    } catch {
+      // The request itself is what matters; the transcript is context.
+    }
   }
 }

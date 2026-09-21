@@ -117,9 +117,13 @@ export class WhatsappBotActorService {
   }
 
   private async ensureBotRole(tenantId: string): Promise<string> {
-    const existing = await this.roles.findAll(tenantId);
-    const found = existing.find(
-      (r) => r.slug === BOT_ROLE_SLUG && r.tenant?.id === tenantId,
+    // Looked up by the same (tenant, slug) key `roles.create` de-duplicates on.
+    // (Filtering `findAll()` on `role.tenant?.id` never matched — `findAll`
+    // does not load the relation — so once the 60 s cache expired every
+    // refresh tried to re-create the role and failed: F-25.)
+    const found = await this.roles.findTenantRoleBySlug(
+      tenantId,
+      BOT_ROLE_SLUG,
     );
     if (found) return found.id;
 
@@ -156,9 +160,9 @@ export class WhatsappBotActorService {
         err instanceof AppError &&
         err.code === ErrorCode.ROLE_ALREADY_EXISTS
       ) {
-        const reloaded = await this.roles.findAll(tenantId);
-        const race = reloaded.find(
-          (r) => r.slug === BOT_ROLE_SLUG && r.tenant?.id === tenantId,
+        const race = await this.roles.findTenantRoleBySlug(
+          tenantId,
+          BOT_ROLE_SLUG,
         );
         if (race) return race.id;
       }
