@@ -21,6 +21,7 @@ import {
   MockRepository,
 } from '../../../test/utils/mock-factories';
 import { AccessControlService } from '../subscription-billing/access-control.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import {
   AccessSource,
@@ -44,6 +45,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let conversationExecution: { recordProviderMessageId: jest.Mock };
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let tenantSettings: MockRepository;
+  let metrics: { recordWhatsappAiTurnFailure: jest.Mock };
 
   const allowed = (featureKey: FeatureKey) => ({
     allowed: true,
@@ -61,6 +63,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   };
 
   beforeEach(async () => {
+    metrics = { recordWhatsappAiTurnFailure: jest.fn() };
     contacts = createMockRepository();
     contacts.findOne.mockResolvedValue(EXISTING_CONTACT);
     // The clinic has NOT switched its AI assistant off unless a test says so.
@@ -131,6 +134,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         { provide: TenantContextService, useValue: new TenantContextService() },
         { provide: SystemSettingService, useValue: settings },
         { provide: AccessControlService, useValue: access },
+        { provide: MetricsService, useValue: metrics },
       ],
     }).compile();
     service = moduleRef.get(WhatsappInboundAiService);
@@ -444,6 +448,90 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
     // AI turn; this test only asserts the guard doesn't throw or dead-end
     // trying to record consent against a non-existent customer id.
     expect(customers.recordOptOut).not.toHaveBeenCalled();
+  });
+
+  /**
+   * F-25 — a turn that throws used to leave one log line and a silent patient.
+   */
+  describe('a failed AI turn is never silent (F-25)', () => {
+    afterEach(() => jest.restoreAllMocks()); // the Logger spies below
+    const inbound = {
+      messages: [
+        { id: 'w1', from: '966500000000', type: 'text', text: { body: 'hi' } },
+      ],
+    } as never;
+
+    it('tells the patient it could not answer, once, with no clinic data in it', async () => {
+      orchestrator.handleStream.mockRejectedValue(new Error('boom'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      const sent = messaging.sendSession.mock.calls[0][0];
+      expect(sent.to).toBe('966500000000');
+      expect(sent.tenantId).toBe(TENANT);
+      expect(sent.text).toMatch(/could not process your message/i);
+      expect(sent.text).toMatch(/[؀-ۿ]/); // Arabic half present
+      expect(sent.text).not.toMatch(/\d/); // no time, price or phone in it
+    });
+
+    it('raises the alert counter, recording whether the fallback reached the patient', async () => {
+      orchestrator.handleStream.mockRejectedValue(new Error('boom'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+      expect(metrics.recordWhatsappAiTurnFailure).toHaveBeenLastCalledWith('sent');
+
+      messaging.sendSession.mockResolvedValue({ success: false, error: 'x' });
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await service.handleInboundValue(TENANT, inbound);
+      expect(metrics.recordWhatsappAiTurnFailure).toHaveBeenLastCalledWith('not_sent');
+    });
+
+    it('a failing fallback send is contained and does not block the next message in the batch', async () => {
+      orchestrator.handleStream
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce({ reply: { content: 'second reply' } });
+      messaging.sendSession
+        .mockRejectedValueOnce(new Error('meta down'))
+        .mockResolvedValue({ success: true });
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, {
+        messages: [
+          { id: 'w1', from: '966500000000', type: 'text', text: { body: 'a' } },
+          { id: 'w2', from: '966500000000', type: 'text', text: { body: 'b' } },
+        ],
+      } as never);
+
+      expect(orchestrator.handleStream).toHaveBeenCalledTimes(2);
+      expect(messaging.sendSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ text: 'second reply' }),
+      );
+    });
+
+    it('sends no fallback on a healthy turn', async () => {
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      expect(messaging.sendSession.mock.calls[0][0].text).toBe('AI reply');
+      expect(metrics.recordWhatsappAiTurnFailure).not.toHaveBeenCalled();
+    });
+
+    it('never writes the patient phone number to the failure log (FND-016)', async () => {
+      orchestrator.handleStream.mockRejectedValue(new Error('boom'));
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(
+        errorSpy.mock.calls.map((c) => c.map(String).join(' ')).join('\n'),
+      ).not.toContain('966500000000');
+    });
   });
 
   describe('logging (FND-016)', () => {

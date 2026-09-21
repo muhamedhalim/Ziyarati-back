@@ -157,6 +157,46 @@ export class PublicBookingContextService {
     return tenantId;
   }
 
+  /**
+   * The clinic this guest has chosen to talk to — the ONLY way a guest's
+   * "I want a human" is routed to a clinic (F-07).
+   *
+   * Same posture as {@link resolveTenantFromBranch}: the id comes from the
+   * server-written session, never from the model or the socket payload, and the
+   * clinic is re-checked against the database right now (approved, active, not
+   * deleted, public booking on). A guest who has not chosen a clinic yet is told
+   * so (`missing('clinic')`) instead of having the request filed somewhere no
+   * one reads.
+   */
+  async resolveSelectedClinic(
+    conversationTenantId: string,
+    aiConversationId: string,
+    principal: AuthenticatedUser | null | undefined,
+  ): Promise<string> {
+    const session = await this.getSelection(
+      conversationTenantId,
+      aiConversationId,
+      principal,
+    );
+    const clinicId = session.selectedClinicId;
+    if (!clinicId) throw this.missing('clinic');
+
+    const rows: { id: string }[] = await this.dataSource.query(
+      `SELECT t.id
+         FROM tenants t
+         LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+        WHERE t.id = $1
+          AND t.approval_status = 'APPROVED'
+          AND t.is_active = true
+          AND t.deleted_at IS NULL
+          AND COALESCE(ts.public_booking_enabled, false) = true
+        LIMIT 1`,
+      [clinicId],
+    );
+    if (!rows[0]?.id) throw this.notFound();
+    return rows[0].id;
+  }
+
   /** The conversation's persisted selections, after an ownership check. */
   async getSelection(
     conversationTenantId: string,

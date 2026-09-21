@@ -38,7 +38,11 @@ const TENANT = 't1';
 describe('AiRealtimeGateway — AI entitlement on executing events', () => {
   let gateway: AiRealtimeGateway;
   let orchestrator: { handleStream: jest.Mock };
-  let handovers: { create: jest.Mock };
+  let handovers: {
+    create: jest.Mock;
+    requestForCustomer: jest.Mock;
+    canAgentAccess: jest.Mock;
+  };
   let handoverChat: { sendAgentReply: jest.Mock };
   let conversationAccess: { canAccess: jest.Mock };
   let entitlements: { resolve: jest.Mock; shouldBlock: jest.Mock };
@@ -106,7 +110,11 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         streamed: false,
       }),
     };
-    handovers = { create: jest.fn().mockResolvedValue({ id: 'h1' }) };
+    handovers = {
+      create: jest.fn().mockResolvedValue({ id: 'h1' }),
+      requestForCustomer: jest.fn().mockResolvedValue({ id: 'h1' }),
+      canAgentAccess: jest.fn().mockResolvedValue(false),
+    };
     handoverChat = {
       sendAgentReply: jest
         .fn()
@@ -475,7 +483,7 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
       });
 
       expect(res).toEqual({ ok: false });
-      expect(handovers.create).not.toHaveBeenCalled();
+      expect(handovers.requestForCustomer).not.toHaveBeenCalled();
     });
 
     it('refuses ai:agent:reply when AI is denied', async () => {
@@ -604,7 +612,11 @@ describe('AiRealtimeGateway — ai:tool progress', () => {
       {} as unknown as WsAuthService,
       orchestrator as unknown as AiOrchestratorService,
       tenantContext,
-      { create: jest.fn() } as unknown as HandoverRequestService,
+      {
+        create: jest.fn(),
+        requestForCustomer: jest.fn(),
+        canAgentAccess: jest.fn().mockResolvedValue(false),
+      } as unknown as HandoverRequestService,
       { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
       {} as unknown as AgentPresenceService,
       {
@@ -747,7 +759,11 @@ describe('AiRealtimeGateway — ai:done bookingConfirmation forwarding', () => {
       {} as unknown as WsAuthService,
       orchestrator as unknown as AiOrchestratorService,
       tenantContext,
-      { create: jest.fn() } as unknown as HandoverRequestService,
+      {
+        create: jest.fn(),
+        requestForCustomer: jest.fn(),
+        canAgentAccess: jest.fn().mockResolvedValue(false),
+      } as unknown as HandoverRequestService,
       { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
       {} as unknown as AgentPresenceService,
       {
@@ -960,7 +976,11 @@ describe('AiRealtimeGateway — ai:message attachmentIds', () => {
       {} as unknown as WsAuthService,
       { handleStream } as unknown as AiOrchestratorService,
       new TenantContextService(),
-      { create: jest.fn() } as unknown as HandoverRequestService,
+      {
+        create: jest.fn(),
+        requestForCustomer: jest.fn(),
+        canAgentAccess: jest.fn().mockResolvedValue(false),
+      } as unknown as HandoverRequestService,
       { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
       {} as unknown as AgentPresenceService,
       { canAccess: jest.fn().mockResolvedValue(true) } as unknown as AiConversationAccessService,
@@ -1098,6 +1118,7 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
   >;
   let orchestrator: { handleStream: jest.Mock };
   let access: { canAccess: jest.Mock };
+  let handoverAgentAccess: jest.Mock;
   let gateway: AiRealtimeGateway;
 
   beforeEach(() => {
@@ -1120,12 +1141,15 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
       }),
     };
     access = { canAccess: jest.fn().mockResolvedValue(true) };
+    handoverAgentAccess = jest.fn().mockResolvedValue(false);
     gateway = new AiRealtimeGateway(
       wsAuth as unknown as WsAuthService,
       orchestrator as unknown as AiOrchestratorService,
       new TenantContextService(),
       {
         create: jest.fn().mockResolvedValue({ id: 'h1' }),
+        requestForCustomer: jest.fn().mockResolvedValue({ id: 'h1' }),
+        canAgentAccess: handoverAgentAccess,
       } as unknown as HandoverRequestService,
       { sendAgentReply: jest.fn() } as unknown as HandoverChatService,
       presence as unknown as AgentPresenceService,
@@ -1288,6 +1312,71 @@ describe('AiRealtimeGateway — CSWSH remediation (F-3 / F-4 / F-6)', () => {
         message: 'AI conversation not found',
       });
     });
+
+    // ── F-07: clinic staff take part in a web guest's conversation ────────────
+    describe('handover agent access to a guest conversation (F-07)', () => {
+      const CLINIC_STAFF_PERMS = [READ, PERMISSION.AI_HANDOVER_MANAGE];
+
+      it('staff of a clinic that holds a handover request on the conversation may join it, even though the tenant check fails', async () => {
+        access.canAccess.mockResolvedValueOnce(false);
+        handoverAgentAccess.mockResolvedValueOnce(true);
+        const client = fake(staffUser(CLINIC_STAFF_PERMS));
+
+        await expect(
+          gateway.onJoin(client, { aiConversationId: 'guest-conv' }),
+        ).resolves.toEqual({ joined: 'guest-conv' });
+        expect(handoverAgentAccess).toHaveBeenCalledWith(
+          expect.any(String),
+          'guest-conv',
+        );
+      });
+
+      it('staff WITHOUT a handover request on it are still refused', async () => {
+        access.canAccess.mockResolvedValueOnce(false);
+        handoverAgentAccess.mockResolvedValueOnce(false);
+        const client = fake(staffUser(CLINIC_STAFF_PERMS));
+
+        await expect(
+          gateway.onJoin(client, { aiConversationId: 'guest-conv' }),
+        ).resolves.toEqual({ joined: null });
+      });
+
+      it('the permission gate still comes first: a staff socket with no AI role never reaches the handover lookup', async () => {
+        access.canAccess.mockResolvedValue(false);
+        const client = fake(staffUser([]));
+
+        await gateway.onJoin(client, { aiConversationId: 'guest-conv' });
+
+        expect(handoverAgentAccess).not.toHaveBeenCalled();
+      });
+
+      it('a GUEST socket never takes the agent path', async () => {
+        access.canAccess.mockResolvedValue(false);
+        const client = fake(guestUser());
+
+        await gateway.onJoin(client, { aiConversationId: 'guest-conv' });
+        await gateway.onTyping(client, {
+          aiConversationId: 'guest-conv',
+          typing: true,
+        });
+
+        expect(handoverAgentAccess).not.toHaveBeenCalled();
+      });
+
+      it('ai:handover (the customer’s own action) never uses the agent path, so staff cannot file a request into a foreign conversation with it', async () => {
+        access.canAccess.mockResolvedValue(false);
+        handoverAgentAccess.mockResolvedValue(true);
+        const client = fake(staffUser(CLINIC_STAFF_PERMS));
+
+        const res = await gateway.onHandover(client, {
+          aiConversationId: 'guest-conv',
+        });
+
+        expect(res).toEqual({ ok: false });
+        expect(handoverAgentAccess).not.toHaveBeenCalled();
+      });
+    });
+
 
     it('refuses presence:update and presence:snapshot for non-inbox principals, touching nothing', async () => {
       for (const user of [

@@ -144,6 +144,22 @@ export class RolesService {
     });
   }
 
+  /**
+   * The role a tenant OWNS under exactly this slug, or `null`. The same
+   * `(slug, tenant)` key `create()` uses for its duplicate check, so a lookup
+   * that finds nothing here is precisely a lookup after which `create()` will
+   * succeed. System roles (tenant-less) are deliberately not matched.
+   *
+   * Exists because `findAll()` does not load the `tenant` relation: a caller
+   * that filters its result on `role.tenant?.id` can never match, then hits
+   * `ROLE_ALREADY_EXISTS` on the create that follows (F-25).
+   */
+  findTenantRoleBySlug(tenantId: string, slug: string): Promise<Role | null> {
+    return this.roles.findOne({
+      where: { slug, tenant: { id: tenantId } },
+    });
+  }
+
   async findOne(id: string, tenantId: string | null): Promise<Role> {
     const role = await this.roles.findOne({
       where: { id },

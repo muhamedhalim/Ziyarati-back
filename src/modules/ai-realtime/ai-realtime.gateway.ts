@@ -330,14 +330,24 @@ export class AiRealtimeGateway
   private async mayAccess(
     client: Socket,
     aiConversationId: string | undefined,
+    /**
+     * Room / reply events only: a STAFF socket may also take part in a web
+     * guest's AI conversation (discovery tenant) when its own clinic holds a
+     * handover request on it (F-07). Never for `ai:handover` itself, which is the
+     * customer's own action, and never for a guest socket.
+     */
+    opts: { asHandoverAgent?: boolean } = {},
   ): Promise<boolean> {
     const tenantId = client.data.tenantId as string | undefined;
     if (!tenantId || !aiConversationId) return false;
-    return this.access.canAccess(
-      tenantId,
-      aiConversationId,
-      client.data.user as AuthenticatedUser | undefined,
-    );
+    const user = client.data.user as AuthenticatedUser | undefined;
+    if (await this.access.canAccess(tenantId, aiConversationId, user)) {
+      return true;
+    }
+    if (opts.asHandoverAgent && user && !user.guest) {
+      return this.handovers.canAgentAccess(tenantId, aiConversationId);
+    }
+    return false;
   }
 
   /**
@@ -591,7 +601,11 @@ export class AiRealtimeGateway
       });
       return { joined: null };
     }
-    if (!(await this.mayAccess(client, body?.aiConversationId))) {
+    if (
+      !(await this.mayAccess(client, body?.aiConversationId, {
+        asHandoverAgent: true,
+      }))
+    ) {
       // Unified error contract (`{code, message}` on every conversation-
       // related failure — join/message/handover/agent-reply alike): this used
       // to fail silently (no `ai:error` at all), so a client whose restored
@@ -632,7 +646,12 @@ export class AiRealtimeGateway
     // cross-tenant event-injection primitive that needed no membership at all.
     // Ownership first, then membership (a socket that never joined has no
     // business relaying presence into the room).
-    if (!(await this.mayAccess(client, body?.aiConversationId))) return;
+    if (
+      !(await this.mayAccess(client, body?.aiConversationId, {
+        asHandoverAgent: true,
+      }))
+    )
+      return;
     const target = room.conversation(body.aiConversationId);
     if (!client.rooms.has(target)) return;
 
@@ -648,7 +667,12 @@ export class AiRealtimeGateway
     @MessageBody() body: { aiConversationId: string; messageId: string },
   ) {
     if (!this.assertLive(client)) return;
-    if (!(await this.mayAccess(client, body?.aiConversationId))) return;
+    if (
+      !(await this.mayAccess(client, body?.aiConversationId, {
+        asHandoverAgent: true,
+      }))
+    )
+      return;
     const target = room.conversation(body.aiConversationId);
     if (!client.rooms.has(target)) return;
 
@@ -743,10 +767,16 @@ export class AiRealtimeGateway
     // may not drive its handover lifecycle either.
     if (!(await this.mayUseAi(client, AI_EVENT.HANDOVER))) return { ok: false };
     try {
-      const handover = await this.handovers.create(tenantId, {
-        aiConversationId: body.aiConversationId,
-        reason: body.reason,
-      });
+      // A web guest's request is filed under the clinic it selected (F-07);
+      // staff / other principals escalate within their own tenant, as before.
+      const handover = await this.handovers.requestForCustomer(
+        tenantId,
+        client.data.user as AuthenticatedUser | undefined,
+        {
+          aiConversationId: body.aiConversationId,
+          reason: body.reason,
+        },
+      );
       return { ok: true, handoverId: handover.id };
     } catch (err) {
       this.logger.warn(`onHandover failed: ${(err as Error)?.message}`);
@@ -788,7 +818,11 @@ export class AiRealtimeGateway
       });
       return { ok: false };
     }
-    if (!(await this.mayAccess(client, body.aiConversationId))) {
+    if (
+      !(await this.mayAccess(client, body.aiConversationId, {
+        asHandoverAgent: true,
+      }))
+    ) {
       client.emit(AI_EVENT.ERROR, {
         code: ErrorCode.NOT_FOUND,
         message: 'AI conversation not found',

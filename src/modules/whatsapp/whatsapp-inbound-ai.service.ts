@@ -18,6 +18,7 @@ import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 import { AccessControlService } from '../subscription-billing/access-control.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { isOptOutMessage } from './opt-out.util';
 import type {
@@ -30,6 +31,15 @@ import type {
 } from './webhooks/whatsapp-webhook.types';
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Sent when an AI turn throws (see `onTurnFailed`). Bilingual because no
+ * language has been established at that point; deliberately free of any clinic
+ * fact, time or price.
+ */
+const TURN_FAILED_FALLBACK_TEXT =
+  'Sorry, I could not process your message just now. Please try again in a moment, or contact the clinic directly.\n' +
+  'عذرًا، لم أتمكن من معالجة رسالتك الآن. يُرجى المحاولة مرة أخرى بعد قليل أو التواصل مع العيادة مباشرة.';
 
 /**
  * WhatsApp inbound → AI automation bridge (Feature 3), driven by the tenant's
@@ -78,6 +88,7 @@ export class WhatsappInboundAiService {
     private readonly ctx: TenantContextService,
     private readonly settings: SystemSettingService,
     private readonly access: AccessControlService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -103,9 +114,43 @@ export class WhatsappInboundAiService {
     if (!(await this.mayAutoReply(tenantId))) return;
     for (const message of messages) {
       await this.handleOne(tenantId, value, message).catch((err) =>
-        this.logger.error(`inbound AI turn failed: ${(err as Error)?.message}`),
+        this.onTurnFailed(tenantId, message, err),
       );
     }
+  }
+
+  /**
+   * A turn that threw must not vanish. Before, this was one log line and the
+   * patient heard nothing — indistinguishable from an unread inbox, and a
+   * permanent failure (F-25) stayed invisible for as long as it lasted. Now:
+   * an ERROR log carrying the tenant, a counter to alert on, and one plain
+   * "we could not answer" message to the patient.
+   *
+   * The message carries no clinic data, time or price — nothing that could be
+   * wrong — and promises no follow-up that no one has been asked to make.
+   * Best-effort: a failed fallback is logged, never rethrown, so one bad turn
+   * still cannot block the batch.
+   */
+  private async onTurnFailed(
+    tenantId: string,
+    message: MetaWebhookMessage,
+    err: unknown,
+  ): Promise<void> {
+    this.logger.error(
+      `inbound AI turn failed (tenant=${tenantId}): ${(err as Error)?.message}`,
+    );
+    const waId = message.from?.replace(/[^\d]/g, '');
+    let sent = false;
+    if (waId) {
+      try {
+        sent = await this.sendReply(tenantId, waId, TURN_FAILED_FALLBACK_TEXT);
+      } catch (sendErr) {
+        this.logger.warn(
+          `could not send the turn-failed fallback (tenant=${tenantId}): ${(sendErr as Error)?.message}`,
+        );
+      }
+    }
+    this.metrics.recordWhatsappAiTurnFailure(sent ? 'sent' : 'not_sent');
   }
 
   /**
@@ -347,7 +392,7 @@ export class WhatsappInboundAiService {
     text: string,
     interactive?: WhatsappSessionPayload['interactive'],
     mirroredMessageId?: string | null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // A reply can only go out from THIS clinic's own connected number — there is
     // no shared platform number to fall back to. If the tenant has no usable
     // account, abort loudly rather than attempting a send that cannot succeed.
@@ -358,7 +403,7 @@ export class WhatsappInboundAiService {
       this.logger.warn(
         `Cannot send AI reply for tenant ${tenantId}: ${(err as Error)?.message}`,
       );
-      return;
+      return false;
     }
 
     const res = await this.messaging.sendSession({
@@ -372,7 +417,7 @@ export class WhatsappInboundAiService {
     });
     if (!res.success) {
       this.logger.warn(`WhatsApp reply send failed: ${res.error}`);
-      return;
+      return false;
     }
     if (mirroredMessageId && res.providerMessageId) {
       // FND-023 — lets a later delivery/read webhook (matched by wamid) find
@@ -389,6 +434,7 @@ export class WhatsappInboundAiService {
           ),
         );
     }
+    return true;
   }
 
   /**

@@ -969,7 +969,7 @@ export class AiExecutionService {
   ): Promise<{ handedOver: true }> {
     const aiConv = await this.aiConversations.findOne({
       where: { id: aiConversationId, tenant: { id: tenantId } },
-      relations: { conversation: { assigned_to: true } },
+      relations: { conversation: { assigned_to: true, tenant: true } },
     });
     if (!aiConv) {
       throw new AppError(ErrorCode.NOT_FOUND, {
@@ -989,8 +989,15 @@ export class AiExecutionService {
 
     const linkedConversationId = aiConv.conversation?.id;
     if (linkedConversationId) {
+      // The timeline and the notification belong to the tenant that OWNS the
+      // linked conversation. That is `tenantId` for every channel except a web
+      // guest handed over to a clinic (F-07): the guest's AI conversation is in
+      // the discovery tenant, the conversation the clinic's staff are working in
+      // is the clinic's, and writing to it under the guest's tenant would be
+      // refused.
+      const timelineTenantId = aiConv.conversation?.tenant?.id ?? tenantId;
       await this.mirrorToTimeline(
-        tenantId,
+        timelineTenantId,
         linkedConversationId,
         'CUSTOMER',
         content,
@@ -1001,7 +1008,7 @@ export class AiExecutionService {
       this.emitter.emit(
         HandoverCustomerRepliedEvent.eventName,
         new HandoverCustomerRepliedEvent(
-          tenantId,
+          timelineTenantId,
           linkedConversationId,
           aiConversationId,
           aiConv.conversation?.assigned_to?.id,
