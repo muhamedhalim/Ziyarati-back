@@ -125,6 +125,8 @@ describe('WhatsApp AI booking — own-clinic discovery + server-bound customer, 
       ds.getRepository(Service).create({
         tenant: { id: tenant.id } as Tenant,
         name: `${label} Dermatology Consult`,
+        // NOT NULL, unique per tenant (ServiceService assigns it in production).
+        public_slug: `derm-${randomUUID().slice(0, 8)}`,
         duration_minutes: 30,
         base_price: 100,
         is_active: true,
@@ -152,6 +154,8 @@ describe('WhatsApp AI booking — own-clinic discovery + server-bound customer, 
       ds.getRepository(StaffProfile).create({
         tenant: { id: tenant.id } as Tenant,
         user: { id: user.id } as User,
+        // NOT NULL + globally unique (StaffService assigns it in production).
+        public_slug: `dr-${randomUUID().slice(0, 12)}`,
         title: 'Dermatologist',
         is_available_for_booking: true,
       }),
@@ -230,8 +234,8 @@ describe('WhatsApp AI booking — own-clinic discovery + server-bound customer, 
       await q(`DELETE FROM services WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM branches WHERE "tenantId" = $1`, [tenantId]);
       await q(`DELETE FROM tenant_settings WHERE tenant_id = $1`, [tenantId]);
-      await q(`DELETE FROM subscription_usage WHERE "tenantId" = $1`, [tenantId]);
-      await q(`DELETE FROM free_access_overrides WHERE "tenantId" = $1`, [tenantId]);
+      await q(`DELETE FROM subscription_usage WHERE tenant_id = $1`, [tenantId]);
+      await q(`DELETE FROM free_access_overrides WHERE tenant_id = $1`, [tenantId]);
       await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [tenantId]);
       await q(
         `DELETE FROM role_permissions WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = $1)`,

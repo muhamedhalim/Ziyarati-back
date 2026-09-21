@@ -13,13 +13,14 @@
  *
  *   publicBookingEnabled       -> public clinic discovery listing
  *   enforceStaffWorkingHours   -> availability for an unscheduled staff day
+ *   publicBookingEnabled       -> the public AI chatbot's own tools (list_cities /
+ *                                 search_clinics / select_clinic), not just REST
+ *   botEnabled                 -> whether an inbound WhatsApp message starts an AI turn
  *
- * `bookingConfirmation`, `cancellationHours`, `feedbackDelayMinutes`,
- * `defaultLanguage`, `botEnabled` and `currency` are intentionally NOT given
- * business-logic assertions here — an exhaustive backend grep (recorded in
- * the implementation plan) found no consumer for any of them; wiring them up
- * is out of scope for this task and is logged separately, not silently
- * skipped.
+ * `bookingConfirmation`, `feedbackDelayMinutes` and `currency` are intentionally
+ * NOT given business-logic assertions here — nothing consumes them (wiring them
+ * would need a manual-approval flow / a feedback-request job that do not exist),
+ * so there is no behaviour to assert; they are reported, not silently skipped.
  */
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
@@ -39,6 +40,20 @@ import { User } from '../src/entities/Auth&RBAC/User';
 import { UserRole } from '../src/entities/Auth&RBAC/UserRole';
 import { Role } from '../src/entities/Auth&RBAC/Role';
 import { Tenant } from '../src/entities/SaaS-Core/Tenant';
+import { City } from '../src/entities/System&Lookup/City';
+import {
+  AiToolDispatchService,
+  type ToolContext,
+} from '../src/modules/ai/tools/ai-tool-dispatch.service';
+import { AI_TOOL } from '../src/modules/ai/tools/ai-tools.constants';
+import { AI_PUBLIC_TOOL } from '../src/modules/ai/tools/ai-public-booking-tools.constants';
+import { AiConversationService } from '../src/modules/ai/ai-conversation.service';
+import { ConversationSessionService } from '../src/modules/ai-orchestrator/conversation-session.service';
+import { AiOrchestratorService } from '../src/modules/ai-orchestrator/ai-orchestrator.service';
+import { GuestSessionService } from '../src/modules/guest-chat/guest-session.service';
+import { FreeAccessOverrideService } from '../src/modules/subscription-billing/free-access-override.service';
+import { WhatsappInboundAiService } from '../src/modules/whatsapp/whatsapp-inbound-ai.service';
+import type { AuthenticatedUser } from '../src/modules/auth/interfaces/authenticated-user.interface';
 
 const API = '/api/v1';
 const SUITE = `ts-${randomUUID().slice(0, 8)}`;
@@ -83,6 +98,8 @@ describe('Tenant settings — real Postgres', () => {
       ds.getRepository(StaffProfile).create({
         tenant: { id: ownerA.tenantId } as Tenant,
         user: { id: doctorUser.id } as User,
+        // NOT NULL + globally unique (StaffService assigns it in production).
+        public_slug: `dr-${SUITE}`,
         title: 'Consultant',
         is_available_for_booking: true,
       }),
@@ -382,4 +399,272 @@ describe('Tenant settings — real Postgres', () => {
       expect(res.body.conflicts.outsideAvailability).toBe(false);
     });
   });
+  // ── Profile: optional text fields must be clearable ──────────────────────── //
+
+  describe('profile — optional fields can be cleared', () => {
+    const patchProfile = (body: Record<string, unknown>) =>
+      request(e2e.app.getHttpServer())
+        .patch(`${API}/tenants/me`)
+        .set(...authHeader(ownerA.token))
+        .send(body)
+        .expect(200);
+    const readProfile = () =>
+      request(e2e.app.getHttpServer())
+        .get(`${API}/tenants/me`)
+        .set(...authHeader(ownerA.token))
+        .expect(200);
+
+    it('a blank legalName / contactPhone clears to NULL; an OMITTED field is left alone', async () => {
+      await patchProfile({ legalName: 'Legal LLC', contactPhone: '+966500000009' });
+      expect((await readProfile()).body).toMatchObject({
+        legal_name: 'Legal LLC',
+        contact_phone: '+966500000009',
+      });
+
+      // Omitting a field must NOT clear it…
+      await patchProfile({ name: `E2E Clinic ${SUITE}` });
+      expect((await readProfile()).body).toMatchObject({
+        legal_name: 'Legal LLC',
+        contact_phone: '+966500000009',
+      });
+
+      // …but sending it blank must (it used to answer 200 and keep the old value).
+      const cleared = await patchProfile({ legalName: '', contactPhone: '   ' });
+      expect(cleared.body.legal_name).toBeNull();
+      expect(cleared.body.contact_phone).toBeNull();
+      const stored = (await readProfile()).body;
+      expect(stored.legal_name).toBeNull();
+      expect(stored.contact_phone).toBeNull();
+    });
+
+    it("tenant B's profile is untouched by tenant A clearing its own", async () => {
+      await request(e2e.app.getHttpServer())
+        .patch(`${API}/tenants/me`)
+        .set(...authHeader(ownerB.token))
+        .send({ legalName: 'B Legal LLC' })
+        .expect(200);
+
+      await patchProfile({ legalName: '' });
+
+      const b = await request(e2e.app.getHttpServer())
+        .get(`${API}/tenants/me`)
+        .set(...authHeader(ownerB.token))
+        .expect(200);
+      expect(b.body.legal_name).toBe('B Legal LLC');
+    });
+  });
+
+  // ── Settings PATCH → the PUBLIC CHATBOT (real tool dispatcher) ───────────── //
+
+  describe('business logic — publicBookingEnabled drives the public AI chatbot', () => {
+    let tools: AiToolDispatchService;
+    let ctx: ToolContext;
+    let cityId: string;
+    const convIds: string[] = [];
+
+    /** Calls a tool exactly as the model would — through the real dispatcher. */
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      tools.execute(ctx, {
+        id: randomUUID(),
+        name,
+        arguments: JSON.stringify(args),
+      });
+
+    const setPublicBooking = (enabled: boolean) =>
+      request(e2e.app.getHttpServer())
+        .patch(`${API}/tenants/me/settings`)
+        .set(...authHeader(ownerA.token))
+        .send({ publicBookingEnabled: enabled })
+        .expect(200);
+
+    beforeAll(async () => {
+      const ds = e2e.dataSource;
+      tools = e2e.app.get(AiToolDispatchService);
+
+      const city = await ds.getRepository(City).save(
+        ds.getRepository(City).create({
+          name_en: `Chatville ${SUITE}`,
+          name_ar: `مدينة ${SUITE}`,
+        }),
+      );
+      cityId = city.id;
+      await ds.getRepository(Branch).update({ id: branchId }, { city_id: cityId });
+
+      // Unmetered, so an entitlement decision can never be what hides the clinic.
+      await e2e.app.get(FreeAccessOverrideService).grant(ownerA.tenantId, {
+        reason: `e2e ${SUITE}`,
+        durationDays: null,
+      });
+
+      const discoveryTenantId = await e2e.app
+        .get(GuestSessionService)
+        .ensureDiscoveryTenant();
+      const guest: AuthenticatedUser = {
+        id: randomUUID(),
+        tenantId: discoveryTenantId,
+        email: null,
+        roles: [],
+        permissions: [],
+        guest: true,
+      };
+      const conv = await e2e.app
+        .get(AiConversationService)
+        .start(discoveryTenantId, {});
+      convIds.push(conv.id);
+      await e2e.app
+        .get(ConversationSessionService)
+        .patch(discoveryTenantId, conv.id, { guestSubject: guest.id });
+      ctx = {
+        tenantId: discoveryTenantId,
+        aiConversationId: conv.id,
+        permissions: [],
+        principal: guest,
+      };
+    }, 60_000);
+
+    afterAll(async () => {
+      const q = (sql: string, p: unknown[]) =>
+        e2e.dataSource.query(sql, p).catch(() => undefined);
+      await q(`DELETE FROM ai_messages WHERE ai_conversation_id = ANY($1)`, [
+        convIds,
+      ]);
+      await q(`DELETE FROM ai_tool_calls WHERE ai_conversation_id = ANY($1)`, [
+        convIds,
+      ]);
+      await q(`DELETE FROM ai_conversations WHERE id = ANY($1)`, [convIds]);
+      await q(`DELETE FROM free_access_overrides WHERE tenant_id = $1`, [
+        ownerA.tenantId,
+      ]);
+      await q(`UPDATE branches SET city_id = NULL WHERE id = $1`, [branchId]);
+      await q(`DELETE FROM cities WHERE id = $1`, [cityId]);
+    }, 30_000);
+
+    const offered = async () => ({
+      cities: JSON.stringify(await call(AI_PUBLIC_TOOL.LIST_CITIES)),
+      clinics: JSON.stringify(
+        await call(AI_TOOL.SEARCH_CLINICS, { query: SUITE }),
+      ),
+      selected: (await call(AI_PUBLIC_TOOL.SELECT_CLINIC, {
+        clinicId: ownerA.tenantId,
+      })) as { success?: boolean },
+    });
+
+    it('OFF: the clinic is invisible to the chatbot and cannot be selected for booking', async () => {
+      await setPublicBooking(false);
+
+      const seen = await offered();
+
+      expect(seen.cities).not.toContain(cityId);
+      expect(seen.clinics).not.toContain(ownerA.tenantId);
+      expect(seen.selected.success).toBe(false);
+    });
+
+    it('ON (via the real settings PATCH): the clinic appears and can be selected', async () => {
+      await setPublicBooking(true);
+
+      const seen = await offered();
+
+      expect(seen.cities).toContain(cityId);
+      expect(seen.clinics).toContain(ownerA.tenantId);
+      expect(seen.selected.success).toBe(true);
+    });
+
+    it('OFF again: the change takes effect immediately — nothing serves a stale "listed" answer', async () => {
+      await setPublicBooking(false);
+
+      const seen = await offered();
+
+      expect(seen.cities).not.toContain(cityId);
+      expect(seen.clinics).not.toContain(ownerA.tenantId);
+      expect(seen.selected.success).toBe(false);
+    });
+  });
+
+  // ── Settings PATCH → the inbound WhatsApp AI auto-reply ──────────────────── //
+
+  describe('business logic — botEnabled drives the inbound WhatsApp AI reply', () => {
+    let inbound: WhatsappInboundAiService;
+    let handleStream: jest.SpyInstance;
+
+    const setBot = (enabled: boolean) =>
+      request(e2e.app.getHttpServer())
+        .patch(`${API}/tenants/me/settings`)
+        .set(...authHeader(ownerA.token))
+        .send({ botEnabled: enabled })
+        .expect(200);
+
+    const deliver = () =>
+      inbound.handleInboundValue(ownerA.tenantId, {
+        messaging_product: 'whatsapp',
+        messages: [
+          {
+            id: `wamid.${SUITE}.${randomUUID().slice(0, 6)}`,
+            from: '966500000123',
+            type: 'text',
+            text: { body: 'hello' },
+          },
+        ],
+      } as never);
+
+    beforeAll(async () => {
+      inbound = e2e.app.get(WhatsappInboundAiService);
+      // The AI itself is not under test (and there is no model key here) — what
+      // is under test is whether the clinic's own switch lets a turn START.
+      handleStream = jest
+        .spyOn(e2e.app.get(AiOrchestratorService), 'handleStream')
+        .mockResolvedValue({ reply: undefined } as never);
+      await e2e.app.get(FreeAccessOverrideService).grant(ownerA.tenantId, {
+        reason: `e2e-bot ${SUITE}`,
+        durationDays: null,
+      });
+    }, 30_000);
+
+    beforeEach(() => handleStream.mockClear());
+
+    afterAll(async () => {
+      handleStream.mockRestore();
+      const q = (sql: string, p: unknown[]) =>
+        e2e.dataSource.query(sql, p).catch(() => undefined);
+      await q(`DELETE FROM free_access_overrides WHERE tenant_id = $1`, [
+        ownerA.tenantId,
+      ]);
+      // A live inbound turn provisions the clinic's AI Bot Actor: a tenant-scoped
+      // role, its grants, and an audit row — all of which FK the tenant.
+      await q(
+        `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
+        [ownerA.tenantId],
+      );
+      await q(
+        `DELETE FROM role_permissions WHERE "roleId" IN (SELECT id FROM roles WHERE "tenantId" = $1)`,
+        [ownerA.tenantId],
+      );
+      await q(`DELETE FROM roles WHERE "tenantId" = $1`, [ownerA.tenantId]);
+      await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`, [ownerA.tenantId]);
+    });
+
+    it('OFF: an inbound message starts no AI turn', async () => {
+      await setBot(false);
+
+      await deliver();
+
+      expect(handleStream).not.toHaveBeenCalled();
+    });
+
+    it('ON (via the real settings PATCH): the same inbound message starts the AI turn', async () => {
+      await setBot(true);
+
+      await deliver();
+
+      expect(handleStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('OFF again: the switch is read per message, never cached', async () => {
+      await setBot(false);
+
+      await deliver();
+
+      expect(handleStream).not.toHaveBeenCalled();
+    });
+  });
+
 });

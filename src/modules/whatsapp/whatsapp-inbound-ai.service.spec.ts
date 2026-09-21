@@ -4,6 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { Message } from '../../entities/Conversations/Message';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
@@ -42,6 +43,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let messaging: { sendSession: jest.Mock };
   let conversationExecution: { recordProviderMessageId: jest.Mock };
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
+  let tenantSettings: MockRepository;
 
   const allowed = (featureKey: FeatureKey) => ({
     allowed: true,
@@ -61,6 +63,9 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   beforeEach(async () => {
     contacts = createMockRepository();
     contacts.findOne.mockResolvedValue(EXISTING_CONTACT);
+    // The clinic has NOT switched its AI assistant off unless a test says so.
+    tenantSettings = createMockRepository();
+    tenantSettings.findOne.mockResolvedValue({ id: 'ts-1', bot_enabled: true });
     orchestrator = {
       handleStream: jest
         .fn()
@@ -85,6 +90,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       providers: [
         WhatsappInboundAiService,
         { provide: getRepositoryToken(WhatsappContact), useValue: contacts },
+        { provide: getRepositoryToken(TenantSetting), useValue: tenantSettings },
         {
           provide: getRepositoryToken(Message),
           useValue: createMockRepository(),
@@ -203,6 +209,66 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       } as never);
 
       expect(orchestrator.handleStream).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * `tenant_settings.bot_enabled` (Settings → "AI assistant"). The clinic's own
+   * kill-switch: distinct from the entitlement gate above, and it must actually
+   * stop the bot — before this, the column was saved and displayed but read by
+   * nothing that decides whether to answer.
+   */
+  describe('clinic AI-assistant switch (tenant_settings.bot_enabled)', () => {
+    const inbound = {
+      messages: [
+        { id: 'w1', from: '966500000000', type: 'text', text: { body: 'hi' } },
+      ],
+    } as never;
+
+    it('answers when the clinic has the assistant on', async () => {
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+      expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs no AI turn and sends no reply when the clinic switched it OFF', async () => {
+      tenantSettings.findOne.mockResolvedValue({
+        id: 'ts-1',
+        bot_enabled: false,
+      });
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+      // The switch is checked before any entitlement work is spent on it.
+      expect(access.resolve).not.toHaveBeenCalled();
+    });
+
+    it("reads THIS tenant's row, never another clinic's", async () => {
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(tenantSettings.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenant: { id: TENANT } } }),
+      );
+    });
+
+    it('keeps the column default (on) for a clinic with no settings row yet', async () => {
+      tenantSettings.findOne.mockResolvedValue(null);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.handleStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails CLOSED when the switch cannot be read', async () => {
+      tenantSettings.findOne.mockRejectedValue(new Error('db down'));
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).not.toHaveBeenCalled();
     });
   });
 

@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
@@ -65,6 +66,8 @@ export class WhatsappInboundAiService {
     private readonly contacts: Repository<WhatsappContact>,
     @InjectRepository(Message)
     private readonly messages: Repository<Message>,
+    @InjectRepository(TenantSetting)
+    private readonly tenantSettings: Repository<TenantSetting>,
     private readonly media: WhatsappMediaService,
     private readonly orchestrator: AiOrchestratorService,
     private readonly conversationExecution: ConversationExecutionService,
@@ -96,11 +99,43 @@ export class WhatsappInboundAiService {
   ): Promise<void> {
     const messages = value?.messages ?? [];
     if (messages.length === 0) return;
+    if (!(await this.botSwitchedOn(tenantId))) return;
     if (!(await this.mayAutoReply(tenantId))) return;
     for (const message of messages) {
       await this.handleOne(tenantId, value, message).catch((err) =>
         this.logger.error(`inbound AI turn failed: ${(err as Error)?.message}`),
       );
+    }
+  }
+
+  /**
+   * The clinic's OWN switch (Settings → Booking & operations → "AI assistant",
+   * `tenant_settings.bot_enabled`): when off, inbound WhatsApp messages are still
+   * stored on the timeline (ingest happens before this bridge) but the bot does
+   * not answer them — a human replies from the inbox. Distinct from
+   * {@link mayAutoReply}, which is the PLAN/entitlement decision.
+   *
+   * A clinic with no settings row yet has the column default (`true`); an
+   * unreadable row fails CLOSED, like the entitlement check below — an answer
+   * the clinic switched off must never go out because the read failed.
+   */
+  private async botSwitchedOn(tenantId: string): Promise<boolean> {
+    try {
+      const row = await this.tenantSettings.findOne({
+        where: { tenant: { id: tenantId } },
+        select: { id: true, bot_enabled: true },
+      });
+      if (row?.bot_enabled ?? true) return true;
+      this.logger.log(
+        `Skipping inbound WhatsApp AI auto-reply for tenant ${tenantId}: the clinic turned the AI assistant off ` +
+          `(tenant_settings.bot_enabled = false). The inbound message itself is still stored.`,
+      );
+      return false;
+    } catch (err) {
+      this.logger.error(
+        `Could not read bot_enabled for tenant ${tenantId} — skipping the auto-reply (fail closed): ${(err as Error)?.message}`,
+      );
+      return false;
     }
   }
 
