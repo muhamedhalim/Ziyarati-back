@@ -156,17 +156,23 @@ export interface AiSession {
   /**
    * AI-019 (FR-072-FR-074, F1, PD-1): outstanding application-issued
    * confirmation tokens for irreversible appointment actions, keyed by
-   * `<action>:<appointmentId>` (e.g. `cancel:<uuid>`). SERVER-WRITE-ONLY
-   * (absent from SESSION_CLIENT_PATCHABLE_KEYS) — a client-writable value
-   * would let a caller forge its own "confirmed" state, which is exactly
-   * what FR-073 forbids. Written and consumed only by
-   * `AiToolDispatchService`'s confirmation gate on `cancel_appointment` /
+   * `<action>:<appointmentId>` (`cancel`) or
+   * `<action>:<appointmentId>:<newStartAt>` (`reschedule` — a confirmed move
+   * is a move to THAT time, never to whichever time the model names next).
+   * SERVER-WRITE-ONLY (absent from SESSION_CLIENT_PATCHABLE_KEYS) — a
+   * client-writable value would let a caller forge its own "confirmed"
+   * state, which is exactly what FR-073 forbids. Written and consumed only
+   * by `AiToolDispatchService`'s confirmation gate on `cancel_appointment` /
    * `reschedule_appointment`. Single-use: deleted from this map the moment
    * it is successfully verified, so a captured token cannot be replayed.
+   *
+   * `turnId` (F-04) is the id of the user message the proposal was made in.
+   * A proposal can only be confirmed by a LATER user message: the person, not
+   * the model, must have had a turn in between.
    */
   pendingConfirmations?: Record<
     string,
-    { token: string; expiresAt: string }
+    { token: string; expiresAt: string; turnId?: string }
   >;
 }
 

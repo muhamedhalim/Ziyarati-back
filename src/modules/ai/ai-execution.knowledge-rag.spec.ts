@@ -7,6 +7,7 @@ import { AiExecutionService } from './ai-execution.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { AiPromptBudgetService } from './prompt/ai-prompt-budget.service';
 import {
+  CLINIC_INSTRUCTIONS_HEADER,
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
 } from './prompt/default-system-prompt';
@@ -423,7 +424,7 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
     expect(f.systemMessage()).toBe(DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT);
   });
 
-  it("an Admin-provisioned agent's own prompt still wins over the platform default", async () => {
+  it("F-12: an agent's own prompt is added ON TOP of the platform default, never in place of it", async () => {
     const f = build({
       agent: {
         id: 'agent-1',
@@ -433,7 +434,13 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
 
     await f.turn();
 
-    expect(f.systemMessage()).toBe("You are Dr. Nour's receptionist.");
+    const sent = f.systemMessage();
+    // The core comes first, whole — the safety, scope and no-invention rules survive.
+    expect(sent.startsWith(DEFAULT_ASSISTANT_SYSTEM_PROMPT)).toBe(true);
+    expect(sent).toContain('CLINICAL SAFETY');
+    // The clinic's text follows, framed as subordinate to it.
+    expect(sent).toContain(CLINIC_INSTRUCTIONS_HEADER);
+    expect(sent.endsWith("You are Dr. Nour's receptionist.")).toBe(true);
   });
 
   it('falls back to the default when an agent exists but carries a blank prompt', async () => {
@@ -450,7 +457,7 @@ describe('Default system prompt — agent-less turns are no longer instruction-f
       DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
     ]) {
       expect(prompt).toContain('<knowledge>');
-      expect(prompt).toMatch(/Answer those from it directly/);
+      expect(prompt).toMatch(/Answer from it directly/);
       expect(prompt).toMatch(/Never invent facts/);
       // The precedence rule, which <knowledge> alone could not give: a clinic's
       // hours, address, prices and free times are read from the DATABASE even

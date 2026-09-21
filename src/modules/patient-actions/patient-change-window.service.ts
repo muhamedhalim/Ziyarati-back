@@ -8,6 +8,20 @@ import { AppError, ErrorCode } from '../../common/errors';
 export const DEFAULT_CHANGE_WINDOW_HOURS = 24;
 
 /**
+ * The window rule itself, with no I/O: a patient may still change an
+ * appointment while `now` is at or before `hours` before it starts. Exported so
+ * the AI tool path applies the SAME comparison as the signed-link path instead
+ * of carrying its own copy (F-05).
+ */
+export function isWithinChangeWindow(
+  appointmentStartAt: Date,
+  hours: number,
+  now: number = Date.now(),
+): boolean {
+  return now <= appointmentStartAt.getTime() - hours * 3600_000;
+}
+
+/**
  * Spec 014 (Clinic Platform Completion) — FR-C007 / FR-R009: patient
  * cancellation and patient rescheduling enforce the same clinic-configured
  * change window (`tenant_settings.cancellation_hours`), evaluated against
@@ -31,8 +45,7 @@ export class PatientChangeWindowService {
 
   async assertWithinWindow(tenantId: string, appointmentStartAt: Date): Promise<void> {
     const hours = await this.getWindowHours(tenantId);
-    const cutoffMs = appointmentStartAt.getTime() - hours * 3600_000;
-    if (Date.now() > cutoffMs) {
+    if (!isWithinChangeWindow(appointmentStartAt, hours)) {
       throw new AppError(ErrorCode.CONFLICT, {
         message: `Change window closed — must act at least ${hours}h before the appointment`,
         publicContext: { blockedReason: 'WINDOW_CLOSED' },

@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import type { Socket } from 'socket.io';
 import request from 'supertest';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 import { buildAiAuditHarness, type AiAuditHarness } from '../../security/fixtures/ai-audit-harness';
 import { ScriptedAiProvider, type ScriptedTurn } from '../../security/fixtures/scripted-ai-provider';
@@ -142,10 +143,16 @@ export interface FakeSocket extends Socket {
   emitted: { event: string; payload: any }[];
 }
 
-export function fakeSocket(user: AuthenticatedUser): FakeSocket {
+/**
+ * `address` is the network address the transport reports (`socket.handshake.address`).
+ * Omitted, the handshake carries none — as the earlier suites always did — so the
+ * per-address guest tier (F-16) has nothing to key on and is skipped.
+ */
+export function fakeSocket(user: AuthenticatedUser, address?: string): FakeSocket {
   const emitted: { event: string; payload: any }[] = [];
   return {
     data: { tenantId: user.tenantId, userId: user.id, user },
+    handshake: { address, auth: {}, headers: {}, query: {} },
     emit: (event: string, payload: unknown) => {
       emitted.push({ event, payload });
       return true;
@@ -170,9 +177,10 @@ export async function gatewayTurn(
   rt: AuditRuntime,
   user: AuthenticatedUser,
   body: { content: string; aiConversationId?: string; channel?: string },
+  address?: string,
 ): Promise<TurnResult> {
   const gateway = rt.harness.app.get(AiRealtimeGateway);
-  const socket = fakeSocket(user);
+  const socket = fakeSocket(user, address);
   await rt.tenantCtx.run(async () => {
     rt.tenantCtx.setPrincipal(user);
     return gateway.onMessage(socket, body as never);
@@ -190,12 +198,12 @@ export async function gatewayTurn(
 /** A multi-turn guest session pinned to one guest principal + conversation. */
 export class GuestSession {
   conversationId?: string;
-  private constructor(private rt: AuditRuntime, readonly user: AuthenticatedUser) {}
-  static async start(rt: AuditRuntime): Promise<GuestSession> {
-    return new GuestSession(rt, await mintGuest(rt.harness));
+  private constructor(private rt: AuditRuntime, readonly user: AuthenticatedUser, private address?: string) {}
+  static async start(rt: AuditRuntime, address?: string): Promise<GuestSession> {
+    return new GuestSession(rt, await mintGuest(rt.harness), address);
   }
   async say(content: string, channel = 'WEBSITE'): Promise<TurnResult> {
-    const r = await gatewayTurn(this.rt, this.user, { content, aiConversationId: this.conversationId, channel });
+    const r = await gatewayTurn(this.rt, this.user, { content, aiConversationId: this.conversationId, channel }, this.address);
     this.conversationId = r.aiConversationId ?? this.conversationId;
     return r;
   }
@@ -281,4 +289,26 @@ export function saveEvidence(name: string, data: unknown): void {
   const dir = join(__dirname, '..', 'results');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.json`), JSON.stringify(data, null, 2), 'utf8');
+}
+
+/**
+ * Runs `fn` with config values overridden, then restores them.
+ *
+ * `ConfigService.set` cannot do this: with env validation on, `get` answers from the
+ * validated-env snapshot first, and every key with a Joi default is in it. So the
+ * snapshot itself is edited, and put back in `finally`.
+ */
+export async function withConfig<T>(rt: AuditRuntime, values: Record<string, unknown>, fn: () => Promise<T>): Promise<T> {
+  const config = rt.harness.app.get(ConfigService) as unknown as { internalConfig: Record<string, Record<string, unknown> | undefined> };
+  const snapshot = (config.internalConfig['_PROCESS_ENV_VALIDATED'] ??= {}) as Record<string, unknown>;
+  const before = Object.fromEntries(Object.keys(values).map((k) => [k, { had: k in snapshot, value: snapshot[k] }]));
+  Object.assign(snapshot, values);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, b] of Object.entries(before)) {
+      if (b.had) snapshot[k] = b.value;
+      else delete snapshot[k];
+    }
+  }
 }

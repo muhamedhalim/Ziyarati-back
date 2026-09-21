@@ -4,10 +4,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError } from '../../../common/errors';
-import { constantTimeEqual } from '../../../common/utils/constant-time.util';
 import { Appointment } from '../../../entities/Calendar&Appointments/Appointment';
-import { AppointmentSource } from '../../../entities/enums';
+import { AppointmentSource, AppointmentStatus } from '../../../entities/enums';
 import { AppointmentsService } from '../../appointment/appointment.service';
+import { QueryAppointmentsDto } from '../../appointment/dto/query-appointments.dto';
+import {
+  DEFAULT_CHANGE_WINDOW_HOURS,
+  isWithinChangeWindow,
+} from '../../patient-actions/patient-change-window.service';
 import { PublicDiscoveryService } from '../../public-discovery/public-discovery.service';
 import {
   AvailabilityService,
@@ -121,10 +125,49 @@ export interface ToolContext {
    * discovery tenant.
    */
   principal?: AuthenticatedUser;
+  /**
+   * The transport this turn runs on ('WHATSAPP', 'WEBSOCKET', …), set by
+   * `AiExecutionService`. Only used to decide whether a successful discovery call
+   * is remembered for the next turn (see `remembered`) — never for authorisation.
+   */
+  channel?: string;
+  /**
+   * The persisted user message this turn is answering — set by `AiExecutionService`
+   * from the row it just saved, never from the model or the client. Every tool
+   * call in one turn shares it, so it is what lets the confirmation gate tell
+   * "the patient replied" from "the model called the tool a second time" (F-04).
+   * Absent means the caller cannot prove a later turn, so nothing is confirmable.
+   */
+  turnId?: string;
 }
 
 /** The structured result handed back to the model as the `tool` message. */
 type ToolResult = Record<string, unknown>;
+
+/**
+ * How many services / doctors the WhatsApp ESTABLISHED BOOKING CONTEXT lists. The
+ * block shares `AI_PROMPT_BOOKING_CONTEXT_TOKENS` (500) and is truncated from the
+ * END; a clinic with more than this is pointed at the list tools for the rest.
+ */
+const WHATSAPP_CONTEXT_MAX_SERVICES = 8;
+const WHATSAPP_CONTEXT_MAX_DOCTORS = 6;
+
+/**
+ * Appointments in a terminal state — history, not something a patient can still change.
+ * Mirrors `AppointmentsService`'s own terminal set.
+ */
+const CLOSED_APPOINTMENT_STATUSES: AppointmentStatus[] = [
+  AppointmentStatus.COMPLETED,
+  AppointmentStatus.CANCELLED,
+  AppointmentStatus.NO_SHOW,
+];
+
+/**
+ * `list_my_appointments`: how many rows are read (cancelled ones still occupy the
+ * window, so this is wider than what is shown) and how many are handed to the model.
+ */
+const MY_APPOINTMENTS_FETCH = 20;
+const MY_APPOINTMENTS_MAX = 10;
 
 /**
  * Executes the model's tool calls against the EXISTING domain services — the
@@ -203,17 +246,46 @@ export class AiToolDispatchService {
         case AI_TOOL.SEARCH_PUBLIC_AVAILABILITY:
           return await this.searchPublicAvailability(ctx, args);
         case AI_TOOL.GET_BRANCH_INFO:
-          return await this.getBranchInfo(ctx, args);
+          return await this.remembered(
+            ctx,
+            args,
+            await this.getBranchInfo(ctx, args),
+          );
         case AI_TOOL.GET_DOCTOR_SCHEDULE:
-          return await this.getDoctorSchedule(ctx, args);
-        case AI_TOOL.LIST_CLINIC_BRANCHES:
-          return await this.listClinicBranches(ctx);
+          return await this.remembered(
+            ctx,
+            args,
+            await this.getDoctorSchedule(ctx, args),
+          );
+        case AI_TOOL.LIST_CLINIC_BRANCHES: {
+          const branchList = await this.listClinicBranches(ctx);
+          // A clinic with ONE branch has no choice to make: that branch is the
+          // working branch from the first call on.
+          const only =
+            Array.isArray(branchList.branches) &&
+            branchList.branches.length === 1
+              ? (branchList.branches[0] as { id?: string }).id
+              : undefined;
+          return await this.remembered(ctx, { branchId: only }, branchList);
+        }
         case AI_TOOL.LIST_CLINIC_DOCTORS:
-          return await this.listClinicDoctors(ctx, args);
+          return await this.remembered(
+            ctx,
+            args,
+            await this.listClinicDoctors(ctx, args),
+          );
         case AI_TOOL.LIST_CLINIC_SERVICES:
-          return await this.listClinicServices(ctx, args);
+          return await this.remembered(
+            ctx,
+            args,
+            await this.listClinicServices(ctx, args),
+          );
         case AI_TOOL.CHECK_AVAILABILITY:
-          return await this.checkAvailability(ctx, args);
+          return await this.remembered(
+            ctx,
+            args,
+            await this.checkAvailability(ctx, args),
+          );
         case AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS:
           return await this.getCustomerInsuranceStatus(ctx, args);
         case AI_TOOL.BOOK_APPOINTMENT:
@@ -222,6 +294,8 @@ export class AiToolDispatchService {
           return await this.rescheduleAppointment(ctx, args);
         case AI_TOOL.CANCEL_APPOINTMENT:
           return await this.cancelAppointment(ctx, args);
+        case AI_TOOL.LIST_MY_APPOINTMENTS:
+          return await this.listMyAppointments(ctx);
         case AI_TOOL.REQUEST_HUMAN_HANDOVER:
           return await this.requestHumanHandover(ctx, args);
         // ── Public booking (anonymous visitors) ────────────────────────────
@@ -953,6 +1027,184 @@ export class AiToolDispatchService {
     return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
   }
 
+  // ───────────────── WhatsApp booking working set (F-28) ───────────────── //
+  //
+  // Tool results live for one turn: only user and assistant messages are replayed,
+  // so on the patient's next message the model had no branch id, no doctor id and
+  // no price, and re-ran discovery from the top — five calls before it could book,
+  // against a loop that allowed four. The public widget solved this with a pinned,
+  // server-verified block built from `selected*` session keys; this is the same
+  // mechanism for the own-clinic toolset.
+  //
+  // What is stored is ONLY two ids (the branch and the doctor a successful call
+  // last used), in the existing server-write-only `selectedBranchId` /
+  // `selectedDoctorId` keys. Everything the model is shown is re-read from the
+  // database each turn (`describeOwnClinicContext`), so a branch closed or a
+  // doctor removed since simply drops out instead of being pinned stale.
+
+  /**
+   * Passes `result` through untouched; on a SUCCESSFUL WhatsApp call records the
+   * branch / doctor it used. `args` are the model's, so each id is shape-checked
+   * before it is written and re-proved against the tenant before it is ever shown.
+   */
+  private async remembered(
+    ctx: ToolContext,
+    args: Record<string, unknown>,
+    result: ToolResult,
+  ): Promise<ToolResult> {
+    if (
+      ctx.channel === 'WHATSAPP' &&
+      !this.isGuest(ctx) &&
+      result.success !== false
+    ) {
+      await this.rememberOwnClinicSelection(ctx, {
+        branchId: this.uuid(args.branchId),
+        staffId: this.uuid(args.staffId),
+      });
+    }
+    return result;
+  }
+
+  /** Best effort: a failed note must never fail the tool call that produced it. */
+  private async rememberOwnClinicSelection(
+    ctx: ToolContext,
+    ids: { branchId?: string; staffId?: string },
+  ): Promise<void> {
+    if (!ids.branchId && !ids.staffId) return;
+    try {
+      const prior = await this.sessions.get(ctx.tenantId, ctx.aiConversationId);
+      const patch: Parameters<
+        PublicBookingContextService['patchSelection']
+      >[2] = {};
+      if (ids.branchId && ids.branchId !== prior.selectedBranchId) {
+        patch.selectedBranchId = ids.branchId;
+        // A doctor belongs to one branch's roster: moving to another branch
+        // drops the previous doctor unless this same call names one.
+        patch.selectedDoctorId = SESSION_UNSET;
+      }
+      if (ids.staffId && ids.staffId !== prior.selectedDoctorId) {
+        patch.selectedDoctorId = ids.staffId;
+      }
+      if (Object.keys(patch).length === 0) return;
+      await this.bookingContext.patchSelection(
+        ctx.tenantId,
+        ctx.aiConversationId,
+        patch,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `could not remember the booking working set for ${ctx.aiConversationId}: ${this.msg(err)}`,
+      );
+    }
+  }
+
+  /**
+   * The ESTABLISHED BOOKING CONTEXT block for a WHATSAPP turn, or `null` when the
+   * conversation has not worked on a branch yet (a first turn costs no prompt
+   * budget) or the branch it worked on is gone.
+   *
+   * Every line is read from the database now, through the same discovery
+   * queries the tools use, so the block can never disagree with a tool result.
+   * Ordered most-valuable-first because the budget truncates from the END.
+   */
+  async describeOwnClinicContext(
+    tenantId: string,
+    aiConversationId: string,
+  ): Promise<string | null> {
+    const session = await this.sessions.get(tenantId, aiConversationId);
+    const branchId = this.uuid(session.selectedBranchId);
+    if (!branchId) return null;
+
+    const branches = (await this.branches.findAll(tenantId)).filter(
+      (b) => b.is_active,
+    );
+    const branch = branches.find((b) => b.id === branchId);
+    if (!branch) return null;
+
+    const [doctors, services] = await Promise.all([
+      this.discovery.listBranchDoctors(tenantId, branchId),
+      this.discovery.listBranchServices(tenantId, branchId),
+    ]);
+
+    const lines: string[] = [
+      `branch: ${this.oneLine(branch.name)}${
+        branch.address ? ` (${this.oneLine(branch.address)})` : ''
+      } (id ${branch.id})`,
+    ];
+
+    const doctorId = this.uuid(session.selectedDoctorId);
+    if (doctorId) {
+      const doctor = doctors.find((x) => x.id === doctorId);
+      lines.push(
+        doctor
+          ? `doctor last used: ${this.oneLine(doctor.name)} (id ${doctor.id})`
+          : 'CLEARED (no longer valid, ask the patient again): doctor',
+      );
+    }
+
+    const shownServices = services.slice(0, WHATSAPP_CONTEXT_MAX_SERVICES);
+    if (shownServices.length) {
+      lines.push(
+        'services at this branch (price exactly as the clinic published it):',
+      );
+      for (const s of shownServices) {
+        const price =
+          s.price == null
+            ? 'price NOT PUBLISHED — never a number, never "free"'
+            : `price ${s.price}`;
+        lines.push(
+          `  - ${this.oneLine(s.name)} (id ${s.id}): ${s.durationMinutes} min, ${price}`,
+        );
+      }
+      if (services.length > shownServices.length) {
+        lines.push(
+          `  (${services.length - shownServices.length} more — call list_clinic_services)`,
+        );
+      }
+    }
+
+    const shownDoctors = doctors.slice(0, WHATSAPP_CONTEXT_MAX_DOCTORS);
+    if (shownDoctors.length) {
+      lines.push(
+        `doctors at this branch: ${shownDoctors
+          .map((x) => `${this.oneLine(x.name)} (id ${x.id})`)
+          .join('; ')}${
+          doctors.length > shownDoctors.length
+            ? ` (+${doctors.length - shownDoctors.length} more — call list_clinic_doctors)`
+            : ''
+        }`,
+      );
+    }
+
+    const others = branches.filter((b) => b.id !== branchId);
+    if (others.length) {
+      lines.push(
+        `other branches: ${others
+          .slice(0, 5)
+          .map((b) => `${this.oneLine(b.name)} (id ${b.id})`)
+          .join('; ')}`,
+      );
+    }
+
+    return [
+      'ESTABLISHED BOOKING CONTEXT (re-read from the database this turn).',
+      'These ids and prices came from earlier tool calls in this conversation. Use them directly instead of looking them up again, and never show an id to the patient. For a different branch, call list_clinic_doctors / list_clinic_services with that branch.',
+      ...lines.map((l) => (l.startsWith('  ') ? l : `- ${l}`)),
+    ].join('\n');
+  }
+
+  /**
+   * Clinic-owned text (a branch, service or doctor name) placed in a SYSTEM
+   * message: collapsed to one short line so a name can neither break the block's
+   * structure nor carry a paragraph of instructions into it.
+   */
+  private oneLine(text: string | null | undefined): string {
+    return String(text ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 60);
+  }
+
   // ───────────────────────── Own-clinic discovery (WhatsApp) ─────────────── //
   //
   // Tenant-bound equivalent of the guest discovery tools above, for a channel
@@ -1062,7 +1314,11 @@ export class AiToolDispatchService {
           branchId,
         );
         return {
-          toolResult: { success: true, count: services.length, services },
+          toolResult: {
+            success: true,
+            count: services.length,
+            ...this.servicesForModel(services),
+          },
           resultJson: { branchId, count: services.length },
         };
       },
@@ -1604,18 +1860,30 @@ export class AiToolDispatchService {
       booking.tenantId,
       booking.branchId,
     );
-    // `price: null` means the clinic has not PUBLISHED a price — it does not
-    // mean the service is free, which is exactly how the model reported it to
-    // a patient ("it's dental, and it's free"). Naming the state explicitly
-    // costs one field and removes the only reading that could produce that.
+    return { success: true, ...this.servicesForModel(services) };
+  }
+
+  /**
+   * `price: null` means the clinic has not PUBLISHED a price — it does not mean
+   * the service is free, which is exactly how the model reported it to a patient
+   * ("it's dental, and it's free"), and on WhatsApp it once filled the gap with a
+   * number it had never been given (F-26). Naming the state explicitly costs one
+   * field and removes the only reading that could produce either. Shared by the
+   * public and the WhatsApp service lists so they can never disagree.
+   */
+  private servicesForModel<T extends { price: number | null }>(
+    services: T[],
+  ): {
+    services: (T & { priceStatus: 'NOT_PUBLISHED' | 'PUBLISHED' })[];
+    guidance: string;
+  } {
     return {
-      success: true,
       services: services.map((s) => ({
         ...s,
         priceStatus: s.price == null ? 'NOT_PUBLISHED' : 'PUBLISHED',
       })),
       guidance:
-        'durationMinutes is how long the appointment takes. A service with priceStatus NOT_PUBLISHED has no published price — say the clinic has not listed one; NEVER call it free. Only price 0 is free.',
+        'durationMinutes is how long the appointment takes. A service with priceStatus NOT_PUBLISHED has no published price — say the clinic has not listed one; NEVER call it free and NEVER state a number for it. Only price 0 is free.',
     };
   }
 
@@ -1880,15 +2148,36 @@ export class AiToolDispatchService {
       );
       return { success: false, error: reason };
     }
-    const appointmentId = this.str(args.appointmentId);
+    const rawAppointmentId = this.str(args.appointmentId);
     const newStartAt = this.str(args.newStartAt);
-    if (!appointmentId || !newStartAt) {
+    if (!rawAppointmentId || !newStartAt) {
       return {
         success: false,
         error: 'appointmentId and newStartAt are required.',
       };
     }
+    const appointmentId = this.uuid(rawAppointmentId);
+    if (!appointmentId) return this.badAppointmentId(ctx);
+    const newStart = new Date(newStartAt);
+    if (Number.isNaN(newStart.getTime())) {
+      return {
+        success: false,
+        error: 'newStartAt must be a valid ISO-8601 timestamp.',
+      };
+    }
     const key = `reschedule:${appointmentId}:${newStartAt}`;
+
+    // F-03: a patient-bound turn may only touch that patient's own appointment.
+    // Runs on EVERY call (the proposing and the confirming one), and before the
+    // ledger short-circuit below, so a replay can never reach another patient's row.
+    const owned = await this.assertOwnAppointment(
+      ctx,
+      AI_TOOL.RESCHEDULE_APPOINTMENT,
+      args,
+      appointmentId,
+    );
+    if ('refusal' in owned) return owned.refusal;
+
     // AI-019/F1/PD-1: irreversible action — a valid, application-issued
     // confirmation is required and NEVER substitutes for the permission
     // check above (already run) or the ownership/business checks inside
@@ -1898,36 +2187,38 @@ export class AiToolDispatchService {
     // idempotent-replay/in-flight handling below, not be asked to
     // re-confirm an action already decided (FR-027: idempotency semantics
     // are not disturbed by this gate).
-    if (
-      !(await this.findByKey(ctx.tenantId, key)) &&
-      !(await this.verifyConfirmation(
-        ctx,
-        'reschedule',
-        appointmentId,
-        this.str(args.confirmationToken),
-      ))
-    ) {
-      const confirmationToken = await this.issueConfirmation(
-        ctx,
-        'reschedule',
-        appointmentId,
-      );
-      const reason =
-        'Reschedule requires confirmation (no valid confirmationToken supplied).';
-      await this.recordAttempt(
+    if (!(await this.findByKey(ctx.tenantId, key))) {
+      const policy = await this.changePolicyRefusal(
         ctx,
         AI_TOOL.RESCHEDULE_APPOINTMENT,
         args,
-        'REFUSED',
-        reason,
+        owned.appointment,
       );
-      return {
-        success: false,
-        confirmationRequired: true,
-        confirmationToken,
-        error:
-          'This reschedule requires confirmation. Confirm the change with the customer, then call this tool again with the same appointmentId/newStartAt and this confirmationToken.',
-      };
+      if (policy) return policy;
+      // The confirmed move is to THIS instant, in whatever notation the model
+      // wrote it — two spellings of one time must not read as two proposals.
+      const gate = await this.confirmationGate(
+        ctx,
+        AI_TOOL.RESCHEDULE_APPOINTMENT,
+        args,
+        `reschedule:${appointmentId}:${newStart.toISOString()}`,
+        'move this appointment',
+        async () =>
+          owned.appointment
+            ? {
+                appointment: await this.describeAppointment(
+                  ctx.tenantId,
+                  owned.appointment,
+                ),
+                newStartAt: newStart.toISOString(),
+                newLocalTime: this.localTimes(
+                  newStart.toISOString(),
+                  owned.appointment.branch?.timezone,
+                ),
+              }
+            : {},
+      );
+      if (gate) return gate;
     }
 
     return this.run(
@@ -1985,47 +2276,54 @@ export class AiToolDispatchService {
       );
       return { success: false, error: reason };
     }
-    const appointmentId = this.str(args.appointmentId);
-    if (!appointmentId) {
+    const rawAppointmentId = this.str(args.appointmentId);
+    if (!rawAppointmentId) {
       return { success: false, error: 'appointmentId is required.' };
     }
+    const appointmentId = this.uuid(rawAppointmentId);
+    if (!appointmentId) return this.badAppointmentId(ctx);
     const key = `cancel:${appointmentId}`;
+
+    // F-03 — see rescheduleAppointment: ownership on every call, before the ledger.
+    const owned = await this.assertOwnAppointment(
+      ctx,
+      AI_TOOL.CANCEL_APPOINTMENT,
+      args,
+      appointmentId,
+    );
+    if ('refusal' in owned) return owned.refusal;
+
     // AI-019/F1/PD-1: irreversible action — see rescheduleAppointment's
     // identical gate immediately above for the full rationale. A valid
     // confirmation never substitutes for the permission check above
     // (already run) or the ownership check inside AppointmentsService.cancel
     // (still run, below, unconditionally). Skipped only when this EXACT
     // appointmentId already has a ledger row (FR-027 idempotency).
-    if (
-      !(await this.findByKey(ctx.tenantId, key)) &&
-      !(await this.verifyConfirmation(
-        ctx,
-        'cancel',
-        appointmentId,
-        this.str(args.confirmationToken),
-      ))
-    ) {
-      const confirmationToken = await this.issueConfirmation(
-        ctx,
-        'cancel',
-        appointmentId,
-      );
-      const reason =
-        'Cancellation requires confirmation (no valid confirmationToken supplied).';
-      await this.recordAttempt(
+    if (!(await this.findByKey(ctx.tenantId, key))) {
+      const policy = await this.changePolicyRefusal(
         ctx,
         AI_TOOL.CANCEL_APPOINTMENT,
         args,
-        'REFUSED',
-        reason,
+        owned.appointment,
       );
-      return {
-        success: false,
-        confirmationRequired: true,
-        confirmationToken,
-        error:
-          'This cancellation requires confirmation. Confirm with the customer, then call this tool again with the same appointmentId and this confirmationToken.',
-      };
+      if (policy) return policy;
+      const gate = await this.confirmationGate(
+        ctx,
+        AI_TOOL.CANCEL_APPOINTMENT,
+        args,
+        `cancel:${appointmentId}`,
+        'cancel this appointment',
+        async () =>
+          owned.appointment
+            ? {
+                appointment: await this.describeAppointment(
+                  ctx.tenantId,
+                  owned.appointment,
+                ),
+              }
+            : {},
+      );
+      if (gate) return gate;
     }
 
     return this.run(ctx, AI_TOOL.CANCEL_APPOINTMENT, key, args, async () => {
@@ -2047,6 +2345,321 @@ export class AiToolDispatchService {
         },
       };
     });
+  }
+
+  // ───────────── Patient-bound appointment changes (F-03/F-05/F-06/F-27) ───────────── //
+  //
+  // A WhatsApp turn is one patient talking to one clinic, and the conversation
+  // carries that patient's id (`ctx.customerId`, written by the trusted webhook
+  // bridge, never by the model). Everything below is enforced HERE, on the server:
+  // which appointments a patient may touch, whether the clinic's change window is
+  // still open, and that the patient — not the model — was asked before anything
+  // irreversible ran. A staff principal (no bound customer) keeps its permission-
+  // based authority over the whole tenant, exactly as the REST API gives it.
+
+  /**
+   * One sentence for "no such appointment", "another clinic's appointment" and
+   * "another patient's appointment", so the answer is never an existence oracle.
+   */
+  private static readonly NOT_THIS_PATIENTS_APPOINTMENT =
+    'No upcoming appointment with that id belongs to this patient. Call list_my_appointments and use an id it returns.';
+
+  private badAppointmentId(ctx: ToolContext): ToolResult {
+    return this.badId(
+      'appointmentId',
+      ctx.customerId ? 'list_my_appointments' : 'the tool that listed it',
+    );
+  }
+
+  /**
+   * F-03. On a patient-bound turn the appointment must be that patient's own
+   * (same tenant AND same customer); anything else is refused with the one
+   * uniform message. Returns the appointment it loaded so the caller does not
+   * read it twice, or `{}` for a principal with no bound customer.
+   *
+   * A WhatsApp turn with NO bound customer is refused outright: the bot actor
+   * holds tenant-wide cancel/reschedule permission, so "no patient" must never
+   * quietly mean "any patient". The channel only ever NARROWS here — it can
+   * turn a call into a refusal, never into an allowance.
+   */
+  private async assertOwnAppointment(
+    ctx: ToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+    appointmentId: string,
+  ): Promise<{ refusal: ToolResult } | { appointment?: Appointment }> {
+    if (!ctx.customerId) {
+      if (ctx.channel !== 'WHATSAPP') return {};
+      const reason = 'No patient is identified for this conversation.';
+      await this.recordAttempt(ctx, tool, args, 'DENIED', reason);
+      return {
+        refusal: {
+          success: false,
+          error: `${reason} An appointment cannot be changed from here: offer to connect the person with the clinic team (request_human_handover).`,
+        },
+      };
+    }
+    let appointment: Appointment | null = null;
+    try {
+      appointment = await this.appointments.findOne(
+        ctx.tenantId,
+        appointmentId,
+      );
+    } catch (err) {
+      // `findOne` is tenant-scoped and throws a 404 for a row that is not there.
+      if (!(err instanceof AppError)) throw err;
+    }
+    if (!appointment || appointment.customer?.id !== ctx.customerId) {
+      await this.recordAttempt(
+        ctx,
+        tool,
+        args,
+        'DENIED',
+        'Appointment not found for this patient.',
+      );
+      return {
+        refusal: {
+          success: false,
+          error: AiToolDispatchService.NOT_THIS_PATIENTS_APPOINTMENT,
+        },
+      };
+    }
+    return { appointment };
+  }
+
+  /**
+   * F-05. The clinic's `cancellation_hours` window, read live and compared with
+   * the SAME rule the signed patient link applies (`isWithinChangeWindow`), plus
+   * "is it still a live appointment". Checked BEFORE a confirmation is asked
+   * for, so the patient is never asked to agree to something the server will
+   * refuse. Only for a patient-bound turn (`appointment` is set): the window is
+   * a rule about patients, and staff act under their own permission.
+   */
+  private async changePolicyRefusal(
+    ctx: ToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+    appointment: Appointment | undefined,
+  ): Promise<ToolResult | null> {
+    if (!appointment) return null;
+    if (CLOSED_APPOINTMENT_STATUSES.includes(appointment.status)) {
+      const reason = `This appointment is ${appointment.status
+        .toLowerCase()
+        .replace('_', ' ')} and can no longer be changed.`;
+      await this.recordAttempt(ctx, tool, args, 'REFUSED', reason);
+      return { success: false, error: reason };
+    }
+    const hours = await this.changeWindowHours(ctx.tenantId);
+    if (!isWithinChangeWindow(appointment.start_at, hours)) {
+      const reason = `Clinic policy: an appointment can only be changed at least ${hours} hours before it starts, and this one starts sooner.`;
+      await this.recordAttempt(ctx, tool, args, 'REFUSED', reason);
+      return {
+        success: false,
+        blockedReason: 'WINDOW_CLOSED',
+        changeWindowHours: hours,
+        error: `${reason} Do not cancel or move it. Tell the patient, and offer to connect them with the clinic team (request_human_handover).`,
+      };
+    }
+    return null;
+  }
+
+  private async changeWindowHours(tenantId: string): Promise<number> {
+    const settings = await this.tenants.getSettings(tenantId);
+    return settings.cancellation_hours ?? DEFAULT_CHANGE_WINDOW_HOURS;
+  }
+
+  /**
+   * F-04 / F-27. Returns `null` when the patient has confirmed (the caller
+   * proceeds), otherwise the refusal to hand the model:
+   *  - no proposal yet → the server records exactly what is being confirmed and
+   *    asks the model to put it to the patient and STOP;
+   *  - a proposal made in THIS turn → refused again: the patient has had no turn
+   *    in which to answer, so the model cannot confirm on their behalf.
+   * The confirming call arrives in a later user turn and needs no token (a tool
+   * result does not survive into the next turn, which is why a token the model
+   * had to carry made every real confirmation fail).
+   */
+  private async confirmationGate(
+    ctx: ToolContext,
+    tool: string,
+    args: Record<string, unknown>,
+    gateKey: string,
+    action: string,
+    /** What the patient is being asked to confirm — built only when a proposal is actually issued. */
+    summary: () => Promise<Record<string, unknown>>,
+  ): Promise<ToolResult | null> {
+    const state = await this.verifyConfirmation(ctx, gateKey);
+    if (state === 'confirmed') return null;
+    if (state === 'same_turn') {
+      await this.recordAttempt(
+        ctx,
+        tool,
+        args,
+        'REFUSED',
+        'Confirmation was already requested in this turn; waiting for the patient.',
+      );
+      return {
+        success: false,
+        confirmationRequired: true,
+        awaitingPatientReply: true,
+        error:
+          'The patient has not answered yet. Do not call this tool again in this reply: send them the confirmation question now, and act only after they answer.',
+      };
+    }
+    const confirmationToken = await this.issueConfirmation(ctx, gateKey);
+    await this.recordAttempt(
+      ctx,
+      tool,
+      args,
+      'REFUSED',
+      `Requires confirmation before it will ${action}.`,
+    );
+    return {
+      success: false,
+      confirmationRequired: true,
+      confirmationToken,
+      ...(await summary()),
+      error: `Nothing has changed yet. Tell the patient exactly what will happen (details above), ask them to confirm, then STOP and wait for their reply. Only after they agree, in their next message, call this tool again with the same arguments to ${action}.`,
+    };
+  }
+
+  /** `HH:mm` and date of an instant in the branch's own zone. */
+  private localTimes(
+    iso: string,
+    timezone: string | null | undefined,
+  ): { date: string; time: string; timezone: string } {
+    const zone = safeZone(timezone);
+    return {
+      date: zonedYmd(new Date(iso), zone),
+      time: this.localHhmm(iso, zone),
+      timezone: zone,
+    };
+  }
+
+  /** Doctor names for a set of staff-profile ids, tenant-scoped. Best effort. */
+  private async doctorNames(
+    tenantId: string,
+    staffIds: string[],
+  ): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    if (staffIds.length === 0) return names;
+    try {
+      const rows: { id: string; name: string | null }[] =
+        await this.dataSource.query(
+          `SELECT sp.id, u.full_name AS name
+             FROM staff_profiles sp JOIN users u ON u.id = sp.user_id
+            WHERE sp."tenantId" = $1 AND sp.id = ANY($2::uuid[])`,
+          [tenantId, staffIds],
+        );
+      for (const r of rows) if (r.name) names.set(r.id, this.oneLine(r.name));
+    } catch (err) {
+      this.logger.warn(`could not read doctor names: ${this.msg(err)}`);
+    }
+    return names;
+  }
+
+  /**
+   * An appointment as the patient should hear it — date and time in the branch's
+   * own zone, doctor, branch, services. Read from the row, so a confirmation
+   * question can only ever name what the appointment really is.
+   */
+  private async describeAppointment(
+    tenantId: string,
+    appointment: Appointment,
+    names?: Map<string, string>,
+  ): Promise<Record<string, unknown>> {
+    const doctors =
+      names ??
+      (await this.doctorNames(
+        tenantId,
+        appointment.staff?.id ? [appointment.staff.id] : [],
+      ));
+    const startIso = appointment.start_at.toISOString();
+    return {
+      appointmentId: appointment.id,
+      status: appointment.status,
+      startAt: startIso,
+      local: this.localTimes(startIso, appointment.branch?.timezone),
+      branch: appointment.branch?.name
+        ? this.oneLine(appointment.branch.name)
+        : null,
+      doctor:
+        (appointment.staff?.id && doctors.get(appointment.staff.id)) || null,
+      services: (appointment.services ?? [])
+        .map((s) => s.service?.name)
+        .filter((n): n is string => !!n)
+        .map((n) => this.oneLine(n)),
+    };
+  }
+
+  /**
+   * F-27 / F-06. The patient's own upcoming appointments — the only source of an
+   * `appointmentId` for cancel/reschedule, so the patient is never asked to type
+   * one and the model never has to guess one. Bound to the conversation's customer
+   * server-side; a model-supplied id is not an input at all.
+   */
+  private async listMyAppointments(ctx: ToolContext): Promise<ToolResult> {
+    if (this.isGuest(ctx)) {
+      return {
+        success: false,
+        error: 'This tool is not available in this context (no acting user).',
+      };
+    }
+    if (!(ctx.permissions ?? []).includes(PERMISSION.APPOINTMENTS_READ)) {
+      const reason = `Forbidden: listing appointments requires the "${PERMISSION.APPOINTMENTS_READ}" permission.`;
+      await this.recordAttempt(
+        ctx,
+        AI_TOOL.LIST_MY_APPOINTMENTS,
+        {},
+        'DENIED',
+        reason,
+      );
+      return { success: false, error: reason };
+    }
+    if (!ctx.customerId) {
+      return {
+        success: false,
+        error:
+          'No patient is identified for this conversation, so there is no appointment list to show. Offer to connect the person with the clinic team (request_human_handover).',
+      };
+    }
+    const query = Object.assign(new QueryAppointmentsDto(), {
+      customerId: ctx.customerId,
+      from: new Date().toISOString(),
+      order: 'ASC' as const,
+      page: 1,
+      limit: MY_APPOINTMENTS_FETCH,
+    });
+    const { data } = await this.appointments.findAll(ctx.tenantId, query, {
+      id: ctx.actorUserId!,
+      permissions: ctx.permissions ?? [],
+    });
+    const upcoming = data
+      .filter((a) => !CLOSED_APPOINTMENT_STATUSES.includes(a.status))
+      .slice(0, MY_APPOINTMENTS_MAX);
+    const hours = await this.changeWindowHours(ctx.tenantId);
+    const names = await this.doctorNames(
+      ctx.tenantId,
+      upcoming.flatMap((a) => (a.staff?.id ? [a.staff.id] : [])),
+    );
+    const appointments = await Promise.all(
+      upcoming.map(async (a) => ({
+        ...(await this.describeAppointment(ctx.tenantId, a, names)),
+        // Server-computed, so the model does not have to do date arithmetic
+        // against a policy it has not been shown.
+        canChangeOnline: isWithinChangeWindow(a.start_at, hours),
+      })),
+    );
+    return {
+      success: true,
+      count: appointments.length,
+      changeWindowHours: hours,
+      appointments,
+      guidance:
+        appointments.length === 0
+          ? 'This patient has no upcoming appointment. Say so, and offer to book one.'
+          : 'Refer to an appointment by its date, time and doctor — never show the id. Only these appointments can be cancelled or moved; one with canChangeOnline false is inside the clinic change window, so do not try it: offer to connect the patient with the clinic team instead.',
+    };
   }
 
   /**
@@ -2362,48 +2975,60 @@ export class AiToolDispatchService {
   private static readonly CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 
   /**
-   * Verifies a model-supplied `confirmationToken` against the one the
-   * application itself issued for this exact (conversation, action,
-   * appointment) triple. Never trusts the model's claim (FR-073) — only a
-   * byte-exact match against server-held state, not expired, counts.
-   * Single-use: consumes (deletes) the pending entry on a successful match,
-   * so a captured token cannot be replayed for a second execution.
+   * Has the person confirmed the exact action in `key`?
+   *
+   * The application recorded the proposal itself (`issueConfirmation`), keyed to
+   * this conversation, the action and the appointment (and, for a move, the new
+   * time), together with the user message it was made in. It counts as confirmed
+   * only when ALL of these hold — the model's say-so is never read (FR-073):
+   *  - a live, unexpired proposal exists for exactly this key;
+   *  - it was made in an EARLIER user turn than this call (F-04). Within one turn
+   *    the model could otherwise propose and "confirm" on the patient's behalf
+   *    with no human reply in between, which is the gate defeating itself;
+   *  - this call can prove its own turn (`ctx.turnId`).
+   * Confirmed consumes the proposal, so one "yes" authorises one execution. An
+   * expired proposal is dropped so a later call starts clean. A same-turn call
+   * leaves the proposal in place — the question is still waiting for its answer.
+   *
+   * Deliberately takes no token: a tool result does not survive into the next
+   * turn, so a model asked to hand one back could not, and every genuine "yes"
+   * then read as a fresh request (F-27). Nothing is lost — the token was only
+   * ever as trustworthy as the model that carried it.
    */
   private async verifyConfirmation(
     ctx: ToolContext,
-    action: 'cancel' | 'reschedule',
-    appointmentId: string,
-    suppliedToken: string | undefined,
-  ): Promise<boolean> {
-    if (!suppliedToken) return false;
-    const key = `${action}:${appointmentId}`;
+    key: string,
+  ): Promise<'confirmed' | 'same_turn' | 'none'> {
     const session = await this.sessions.get(ctx.tenantId, ctx.aiConversationId);
     const pending = session.pendingConfirmations?.[key];
-    if (!pending) return false;
-    const valid =
-      constantTimeEqual(pending.token, suppliedToken) &&
-      new Date(pending.expiresAt).getTime() > Date.now();
-    // Consumed either way once found — a stale/mismatched attempt should not
-    // leave a stale entry a later, unrelated call could stumble into.
+    if (!pending) return 'none';
     const remaining = { ...(session.pendingConfirmations ?? {}) };
+    if (!(new Date(pending.expiresAt).getTime() > Date.now())) {
+      delete remaining[key];
+      await this.sessions.patch(ctx.tenantId, ctx.aiConversationId, {
+        pendingConfirmations: remaining,
+      });
+      return 'none';
+    }
+    if (!ctx.turnId || !pending.turnId || pending.turnId === ctx.turnId) {
+      return 'same_turn';
+    }
     delete remaining[key];
     await this.sessions.patch(ctx.tenantId, ctx.aiConversationId, {
       pendingConfirmations: remaining,
     });
-    return valid;
+    return 'confirmed';
   }
 
   /**
-   * Mints a fresh confirmation token for this (conversation, action,
-   * appointment) triple and persists it server-side, so a subsequent call
-   * to the same tool carrying it back can be independently verified.
+   * Records what is being proposed for this (conversation, action, appointment)
+   * and the turn it was proposed in, so a LATER turn's identical call can be
+   * independently verified. Returns the token for callers that still carry one.
    */
   private async issueConfirmation(
     ctx: ToolContext,
-    action: 'cancel' | 'reschedule',
-    appointmentId: string,
+    key: string,
   ): Promise<string> {
-    const key = `${action}:${appointmentId}`;
     const token = randomUUID();
     const session = await this.sessions.get(ctx.tenantId, ctx.aiConversationId);
     await this.sessions.patch(ctx.tenantId, ctx.aiConversationId, {
@@ -2414,6 +3039,7 @@ export class AiToolDispatchService {
           expiresAt: new Date(
             Date.now() + AiToolDispatchService.CONFIRMATION_TTL_MS,
           ).toISOString(),
+          turnId: ctx.turnId,
         },
       },
     });

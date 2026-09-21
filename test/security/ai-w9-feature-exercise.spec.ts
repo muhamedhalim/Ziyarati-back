@@ -968,7 +968,7 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       }
     }, 30_000);
 
-    it('WebSocket: body.channel accepts ANY string at all (not just the 8 declared AI_CHANNEL values) — no @IsIn-equivalent guard on this path', async () => {
+    it('WebSocket: [F-13, Phase 3] body.channel is validated against the declared AI_CHANNEL values — the future channels a staff socket may name are processed, an undeclared label is refused', async () => {
       const gateway = harness.app.get(AiRealtimeGateway);
       const results: Record<string, { doneEmitted: boolean; errorEmitted: boolean }> = {};
       for (const channel of ['MOBILE', 'VOICE', 'TELEGRAM', 'MESSENGER', 'MADE_UP_CHANNEL']) {
@@ -992,16 +992,17 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       observed.t138_ws_channel_reachability = {
         results,
         conclusion:
-          'The WS path processes EVERY SHORT (<=20 char) channel string tested, including a channel value that does not even exist in the ' +
-          'AI_CHANNEL enum ("MADE_UP_CHANNEL") — confirms channel-matrix.md\'s finding that body.channel has no @IsIn-equivalent VALUE restriction ' +
-          'on this path (unlike REST\'s @IsIn). The channel label is accepted as free-form routing/logging metadata, never an authorization ' +
-          'boundary. [PROMOTED, RTP row 18, AI-022/T106] An over-20-char channel string is a SEPARATE, LENGTH concern, now covered by its own ' +
-          'dedicated case below — it no longer reaches the database at all.',
+          'F-13 (Phase 3): the WS path now applies the same VALUE restriction REST always had (@IsIn) — in AiOrchestratorService, the one place ' +
+          'every transport funnels through. The four future channels a staff socket may name are processed as before; a value that is not in the ' +
+          'AI_CHANNEL enum ("MADE_UP_CHANNEL") is refused with VALIDATION_ERROR before any conversation row exists. (WHATSAPP is refused to ' +
+          'anyone but the WhatsApp bridge — see det-04 F-13.) The over-20-char LENGTH case (AI-022) is still its own case below.',
       };
-      for (const channel of ['MOBILE', 'VOICE', 'TELEGRAM', 'MESSENGER', 'MADE_UP_CHANNEL']) {
+      for (const channel of ['MOBILE', 'VOICE', 'TELEGRAM', 'MESSENGER']) {
         expect(results[channel].doneEmitted).toBe(true);
         expect(results[channel].errorEmitted).toBe(false);
       }
+      expect(results['MADE_UP_CHANNEL'].doneEmitted).toBe(false);
+      expect(results['MADE_UP_CHANNEL'].errorEmitted).toBe(true);
     }, 30_000);
 
     it('WebSocket: [PROMOTED, RTP row 18, AI-022/T106] an over-20-char channel is now rejected with a clean VALIDATION_ERROR before persistence — no raw Postgres error', async () => {
@@ -1031,7 +1032,7 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       expect(JSON.stringify(errorPayload)).not.toContain('character varying');
     }, 30_000);
 
-    it('resolves the two remaining provisional cells directly: WEBSITE+authenticated (WS) and DASHBOARD+anonymous/guest (WS)', async () => {
+    it('resolves the two remaining provisional cells directly: WEBSITE+authenticated (WS) is processed; DASHBOARD+anonymous/guest (WS) is REFUSED since F-13 (Phase 3)', async () => {
       const gateway = harness.app.get(AiRealtimeGateway);
 
       // WEBSITE + authenticated: an authenticated staff socket sending channel:"WEBSITE".
@@ -1054,6 +1055,7 @@ describe('T133 — AI feature inventory, exercised for real', () => {
       await gateway.onMessage(asSocket(guestSocket), { channel: 'DASHBOARD', content: 'probe' });
       const guestDone = guestSocket.emit.mock.calls.find((c) => c[0] === 'ai:done');
       const dashboardAnonymousWorked = !!guestDone && (guestDone[1] as { reply: { content: string } }).reply.content === 'DASHBOARD+guest reply.';
+      const guestError = guestSocket.emit.mock.calls.find((c) => c[0] === 'ai:error');
       // Critically: the guest is NOT elevated by claiming channel:"DASHBOARD" — it still has
       // zero permissions and stays on the discovery tenant. Confirm no privilege change occurred.
       if (guestDone) {
@@ -1068,14 +1070,15 @@ describe('T133 — AI feature inventory, exercised for real', () => {
         websiteAuthenticated: { reachable: websiteAuthenticatedWorked },
         dashboardAnonymousGuest: { reachable: dashboardAnonymousWorked, tenantEscalationOccurred: false },
         conclusion:
-          'Both remaining provisional channel-matrix cells resolved by direct runtime test. WEBSITE+authenticated: an authenticated staff WS ' +
-          'socket sending channel:"WEBSITE" is processed normally — Reachable=Yes. DASHBOARD+anonymous: a REAL guest principal\'s WS socket ' +
-          'sending channel:"DASHBOARD" is ALSO processed normally (no channel-based auth gate exists) — Reachable=Yes — but the guest stays ' +
-          'bound to the discovery tenant with zero permissions throughout; claiming the DASHBOARD label produces no privilege escalation, ' +
-          'confirming data-flow-map.md Stage 9\'s claim that routing/tool-filtering keys off ctx.permissions, never the channel label.',
+          'Both remaining provisional channel-matrix cells, by direct runtime test. WEBSITE+authenticated: an authenticated staff WS socket ' +
+          'sending channel:"WEBSITE" is processed normally — Reachable=Yes. DASHBOARD+anonymous: since F-13 (Phase 3) a REAL guest ' +
+          'principal\'s WS socket may only name the website widget\'s channel, so channel:"DASHBOARD" is refused with FORBIDDEN before any ' +
+          'conversation exists. (It never escalated anything before either — tools key off ctx.permissions, never the label — but the label ' +
+          'also chose the prompt, the toolset and the model tier, which is what the allow-list closes.)',
       };
       expect(websiteAuthenticatedWorked).toBe(true);
-      expect(dashboardAnonymousWorked).toBe(true);
+      expect(dashboardAnonymousWorked).toBe(false);
+      expect((guestError?.[1] as { code: string } | undefined)?.code).toBe('FORBIDDEN');
     }, 30_000);
   });
 });

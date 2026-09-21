@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
@@ -11,6 +13,23 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { QueryCustomersDto } from './dto/query-customers.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
 import { UsageService } from '../subscription-billing/usage.service';
+
+/** How many same-phone rows are compared by name when a public booking arrives. */
+const SAME_PHONE_LOOKUP_LIMIT = 20;
+
+/**
+ * A person's name reduced to what identifies them, for a same-person comparison:
+ * compatibility-normalised, Arabic diacritics and tatweel dropped, whitespace
+ * collapsed, case folded. An empty result never matches anything.
+ */
+function normalizePersonName(name: string | null | undefined): string {
+  return (name ?? '')
+    .normalize('NFKC')
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
 
 /**
  * Customers — the core CRM aggregate root.
@@ -94,45 +113,66 @@ export class CustomerService {
    * clinic can see the other's — including notes, chronic diseases and
    * insurance status, which hang off the customer row.
    *
-   * `phone` is NOT unique (a clinic's staff may legitimately record more than
-   * one customer under the same number), so this matches the FIRST live row
-   * with that phone in the tenant — acceptable for the booking-match heuristic
-   * this method exists for, but callers should not assume it is the ONLY
-   * customer with that phone.
+   * F-19 — identity is NOT decided by the phone number alone. This runs for an
+   * anonymous visitor, and nobody has proved the number is theirs: matching on it
+   * used to attach the booking to whichever patient owned it and silently throw
+   * the supplied name away, so anyone could put an appointment on a stranger's
+   * record (and a parent booking a child on their own number overwrote the child
+   * with the parent). An existing record is reused only when the phone AND the
+   * name match. Anything else gets a record of its own — `phone` is deliberately
+   * NOT unique, a shared household line is a supported case — and an existing
+   * patient's record is never touched. What this still cannot do is prove the
+   * person IS that patient: someone who knows both the number and the exact name
+   * can still land on that record. Closing that needs a verification step (a code
+   * sent to the number), which this path does not have.
    *
-   * `email` is NOT NULL, so a synthetic tenant-unique address is minted when
-   * the patient doesn't give one — the same convention the WhatsApp bridge uses.
-   * The `23505` retry closes the race where two concurrent turns both miss the
-   * lookup and both insert.
+   * `email` is NOT NULL and unique per tenant, so a synthetic one is minted when
+   * the patient doesn't give one — the same convention the WhatsApp bridge uses;
+   * it carries a random part now that one phone may own several records. A
+   * supplied address that already belongs to another record is not attached to
+   * this one either. The `23505` retry closes the race where two concurrent
+   * turns both miss the lookup and both insert.
    */
   async findOrCreateForBooking(
     tenantId: string,
     input: { fullName?: string; phone: string; email?: string },
   ): Promise<Customer> {
     const phone = input.phone.trim();
+    const wanted = normalizePersonName(input.fullName);
 
-    const existing = await this.customers.findOne({
-      where: { tenant: { id: tenantId }, phone },
-    });
+    const findSamePerson = async (): Promise<Customer | undefined> => {
+      if (!wanted) return undefined;
+      const sharing = await this.customers.find({
+        where: { tenant: { id: tenantId }, phone },
+        order: { created_at: 'ASC' },
+        take: SAME_PHONE_LOOKUP_LIMIT,
+      });
+      return sharing.find((c) => normalizePersonName(c.full_name) === wanted);
+    };
+
+    const existing = await findSamePerson();
     if (existing) return existing;
 
-    try {
-      return await this.create(tenantId, {
+    const synthetic = () =>
+      `patient+${tenantId}-${phone}-${randomUUID().slice(0, 8)}@booking.internal`;
+    const createWith = (email: string) =>
+      this.create(tenantId, {
         full_name: input.fullName,
         phone,
-        // Globally-unique synthetic address (the column is NOT NULL and unique
-        // per tenant); tenantId + phone guarantees no collision.
-        email:
-          input.email?.trim() ||
-          `patient+${tenantId}-${phone}@booking.internal`,
+        email,
         source: 'public_ai',
       } as CreateCustomerDto);
+
+    const supplied = input.email?.trim();
+    try {
+      return await createWith(supplied || synthetic());
     } catch (err) {
       // Concurrent insert won the race — re-read rather than failing the booking.
-      const raced = await this.customers.findOne({
-        where: { tenant: { id: tenantId }, phone },
-      });
+      const raced = await findSamePerson();
       if (raced) return raced;
+      // The address the visitor typed belongs to a record that is not this person's
+      // (or was just taken): book under a private one rather than fail, or attach.
+      if (supplied) return createWith(synthetic());
       throw err;
     }
   }

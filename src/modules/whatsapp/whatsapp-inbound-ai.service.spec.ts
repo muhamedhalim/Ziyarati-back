@@ -22,6 +22,7 @@ import {
 } from '../../../test/utils/mock-factories';
 import { AccessControlService } from '../subscription-billing/access-control.service';
 import { MetricsService } from '../../metrics/metrics.service';
+import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import {
   AccessSource,
@@ -46,6 +47,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let tenantSettings: MockRepository;
   let metrics: { recordWhatsappAiTurnFailure: jest.Mock };
+  let rateLimit: { checkAndRecord: jest.Mock };
 
   const allowed = (featureKey: FeatureKey) => ({
     allowed: true,
@@ -64,6 +66,8 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
 
   beforeEach(async () => {
     metrics = { recordWhatsappAiTurnFailure: jest.fn() };
+    // F-16: admission is open unless a test closes it.
+    rateLimit = { checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }) };
     contacts = createMockRepository();
     contacts.findOne.mockResolvedValue(EXISTING_CONTACT);
     // The clinic has NOT switched its AI assistant off unless a test says so.
@@ -135,6 +139,7 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         { provide: SystemSettingService, useValue: settings },
         { provide: AccessControlService, useValue: access },
         { provide: MetricsService, useValue: metrics },
+        { provide: AiWsRateLimitService, useValue: rateLimit },
       ],
     }).compile();
     service = moduleRef.get(WhatsappInboundAiService);
@@ -348,6 +353,118 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
    * the model supplied — a WhatsApp turn could book against a customer the
    * patient never proved they were.
    */
+  it("F-13: marks the turn as the bridge's own — the only caller allowed to claim the WHATSAPP channel", async () => {
+    await service.handleInboundValue(TENANT, {
+      messages: [
+        { id: 'wamid-5', from: '966500000000', type: 'text', text: { body: 'hi' } },
+      ],
+    } as never);
+
+    const [, input] = orchestrator.handleStream.mock.calls[0];
+    expect(input.channel).toBe('WHATSAPP');
+    expect(input.trustedChannel).toBe(true);
+  });
+
+  describe('per-contact admission (F-16)', () => {
+    afterEach(() => jest.restoreAllMocks());
+    const inbound = {
+      messages: [
+        { id: 'w1', from: '966500000000', type: 'text', text: { body: 'hi' } },
+      ],
+    } as never;
+    const refuse = (count: number, limit = 20, tier = 'whatsapp-contact') =>
+      rateLimit.checkAndRecord.mockImplementation(async (_id: string, t: string) =>
+        t === tier
+          ? { allowed: false, code: 'RATE_LIMITED', tier, count, limit }
+          : { allowed: true },
+      );
+
+    it("keys the limit to THIS clinic's line and THIS number — never a number alone", async () => {
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(rateLimit.checkAndRecord).toHaveBeenCalledWith(
+        `${TENANT}:966500000000`,
+        'whatsapp-contact',
+      );
+      expect(rateLimit.checkAndRecord).toHaveBeenCalledWith(
+        `${TENANT}:966500000000`,
+        'whatsapp-contact-day',
+      );
+    });
+
+    it('runs no AI turn past the limit', async () => {
+      refuse(21);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+    });
+
+    it('tells the contact ONCE — on the message that first crosses the limit — in both languages', async () => {
+      refuse(21); // limit 20 → this is the first refused message
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      const sent = messaging.sendSession.mock.calls[0][0];
+      expect(sent.to).toBe('966500000000');
+      expect(sent.text).toMatch(/faster than I can answer/i);
+      expect(sent.text).toMatch(/[؀-ۿ]/);
+      expect(sent.text).not.toMatch(/\d/); // no clinic fact in it
+    });
+
+    it('stays SILENT for every message after that one — the flood gets no replies to pay for', async () => {
+      refuse(22);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      expect(messaging.sendSession).not.toHaveBeenCalled();
+    });
+
+    it('the daily limit has its own notice', async () => {
+      refuse(301, 300, 'whatsapp-contact-day');
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(messaging.sendSession.mock.calls[0][0].text).toMatch(/limit for automated replies today/i);
+    });
+
+    it('an opt-out is still honoured while the contact is over the limit', async () => {
+      refuse(30);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, {
+        messages: [
+          { id: 'w9', from: '966500000000', type: 'text', text: { body: 'stop' } },
+        ],
+      } as never);
+
+      expect(customers.recordOptOut).toHaveBeenCalledWith(TENANT, 'cust-1', 'inbound_keyword');
+    });
+
+    it('never writes the patient phone number to the refusal log line', async () => {
+      refuse(21);
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await service.handleInboundValue(TENANT, inbound);
+
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('966500000000');
+    });
+
+    it('a failed notice send is contained', async () => {
+      refuse(21);
+      messaging.sendSession.mockRejectedValue(new Error('meta down'));
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await expect(service.handleInboundValue(TENANT, inbound)).resolves.toBeUndefined();
+    });
+  });
+
   it('binds the contact\'s customer via trustedSessionPatch, never sessionPatch', async () => {
     await service.handleInboundValue(TENANT, {
       messages: [

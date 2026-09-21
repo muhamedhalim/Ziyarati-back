@@ -7,17 +7,19 @@
  * captured. The "model" is a deterministic double.
  *
  * Findings covered:
- *   F-03  cancel/reschedule accept ANY appointment id in the tenant (within-tenant IDOR)
- *   F-04  the confirmation token is model-mediated: redeemable in the same turn, no user reply
- *   F-05  tenant_settings.cancellation_hours is not applied on the AI path
+ *   F-03  cancel/reschedule accepted ANY appointment id in the tenant (within-tenant IDOR)      — FIXED, Phase 2
+ *   F-04  the confirmation token was model-mediated: redeemable in the same turn                 — FIXED, Phase 2
+ *   F-05  tenant_settings.cancellation_hours was not applied on the AI path                       — FIXED, Phase 2
+ *   F-06  no tool listed a patient's own appointments                                             — FIXED, Phase 2
  *   F-02  (WhatsApp variant) availability slot length is whatever the model passes
  *
- * Convention: defect tests PASS WHILE THE DEFECT EXISTS.
+ * Convention: defect tests PASS WHILE THE DEFECT EXISTS. The F-03/04/05/06 tests below were defect tests;
+ * they now describe the corrected behaviour. The multi-turn confirmation flow is in det-09.
  */
 import { randomUUID } from 'node:crypto';
 import { scriptedToolCall as call } from '../security/fixtures/scripted-ai-provider';
 import { bootAudit, whatsappTurn, whatsappToolCtx, saveEvidence, type AuditRuntime } from './fixtures/audit-runtime';
-import { ReactiveProvider, toolResultsIn } from './fixtures/reactive-provider';
+import { ReactiveProvider, toolResultsIn, lastToolResult } from './fixtures/reactive-provider';
 
 describe('WhatsApp surface — tools, identity binding and appointment actions', () => {
   let rt: AuditRuntime;
@@ -65,9 +67,10 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
     expect(info.branch.phone).toBe('+966500000111');
     expect(sched.success).toBe(true);
     expect((services.services as any[]).find((s) => s.name === 'General Consultation').price).toBeNull();
-    // MINOR: unlike the public tool, the WhatsApp list carries no `priceStatus`, so `price: null` is
-    // distinguishable from free only by the prompt's own warning.
-    expect((services.services as any[])[0]).not.toHaveProperty('priceStatus');
+    // F-26 (fixed in Phase 1): like the public tool, the WhatsApp list now names the price state, so
+    // `price: null` can no longer be read as free — or filled with a number.
+    expect((services.services as any[]).find((s) => s.name === 'General Consultation').priceStatus).toBe('NOT_PUBLISHED');
+    expect((services.services as any[]).find((s) => s.name === 'Dental Cleaning').priceStatus).toBe('PUBLISHED');
   });
 
   it('F-02 (WhatsApp): check_availability uses the slot length the MODEL passes — omitted, a free 09:00-17:00 day is one window start', async () => {
@@ -99,14 +102,18 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
     expect(row.customerId).toBe(full.patientIds.x); // NOT y
   });
 
-  // ── F-03 / F-04 ────────────────────────────────────────────────────────────
-  it('F-03 + F-04 DEFECT: patient X cancels patient Y\'s appointment from ONE message — the model redeems its own confirmation token, no user reply in between', async () => {
+  // ── F-03 / F-04 (fixed in Phase 2; the defect tests are now regressions) ────
+  const NOT_YOURS = /belongs to this patient/;
+  const cancelCalls = (rows: { status: string }[]) => rows.map((l) => l.status);
+
+  it('F-03 + F-04 regression: patient X cannot cancel patient Y\'s appointment from ONE message — the refusal is uniform, nothing is confirmed, nothing runs', async () => {
     const { full } = rt.seed;
     const apptY = await newAppointment(full.patientIds.y, 72);
     reactive.setHandler((req) => {
       const results = toolResultsIn(req).filter((r) => r.name === 'cancel_appointment');
       if (results.length === 0) return { toolCalls: [call('cancel_appointment', { appointmentId: apptY, reason: 'patient request' })] };
       const last = results[results.length - 1].json;
+      // The same model behaviour the defect test scripted: if it is ever handed a token it redeems it in the same turn.
       if (last?.confirmationRequired) {
         return { toolCalls: [call('cancel_appointment', { appointmentId: apptY, confirmationToken: last.confirmationToken })] };
       }
@@ -120,21 +127,20 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
       `SELECT status FROM ai_tool_calls WHERE tenant_id=$1 AND tool_name='cancel_appointment' ORDER BY created_at DESC LIMIT 5`,
       [full.tenantId],
     );
-    const userMsgs = await q(
-      `SELECT count(*)::int c FROM ai_messages m
-        WHERE m."tenantId"=$1 AND m.role='user' AND m.content LIKE $2`,
-      [full.tenantId, `%${apptY}%`],
-    );
-    observed.wa_cancel_idor = { before, after, ledger, replies: r.replies, tools: r.tools, userMessagesCarryingId: userMsgs[0].c };
+    const refusal = lastToolResult(reactive.capturedRequests, 'cancel_appointment');
+    observed.wa_cancel_idor = { before, after, ledger, replies: r.replies, tools: r.tools, refusal };
 
     expect(before.status).toBe('CONFIRMED');
-    expect(after.status).toBe('CANCELLED'); // Y's appointment, cancelled by X
-    expect(r.tools.filter((t) => t === 'cancel_appointment').length).toBe(2); // token issued, then redeemed
-    expect(ledger.map((l: any) => l.status)).toEqual(expect.arrayContaining(['REFUSED', 'SUCCEEDED']));
-    expect(userMsgs[0].c).toBe(1); // exactly one user message — no human confirmation turn happened
+    expect(after.status).toBe('CONFIRMED'); // Y's appointment is untouched
+    expect(refusal).toMatchObject({ success: false });
+    expect(refusal.error).toMatch(NOT_YOURS);
+    expect(refusal.confirmationRequired).toBeUndefined(); // X was not even offered a confirmation for Y's appointment
+    expect(r.tools.filter((t) => t === 'cancel_appointment')).toHaveLength(1); // no token round trip happened
+    expect(cancelCalls(ledger)).toContain('DENIED');
+    expect(cancelCalls(ledger)).not.toContain('SUCCEEDED');
   });
 
-  it('F-03 DEFECT: reschedule has the same hole — X moves Y\'s appointment to a time the model chose', async () => {
+  it('F-03 regression: reschedule has the same guard — X cannot move Y\'s appointment', async () => {
     const { full } = rt.seed;
     const apptY = await newAppointment(full.patientIds.y, 96);
     const ctx = await whatsappToolCtx(rt, full, full.patientIds.x);
@@ -154,13 +160,14 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
     const before = await statusOf(apptY);
     await whatsappTurn(rt, full.tenantId, full.patientPhones!.x, `move appointment ${apptY} earlier`);
     const after = await statusOf(apptY);
-    observed.wa_reschedule_idor = { before, after, target };
-    expect(new Date(after.start_at).toISOString()).toBe(new Date(target).toISOString());
-    expect(new Date(before.start_at).toISOString()).not.toBe(new Date(after.start_at).toISOString());
+    const refusal = lastToolResult(reactive.capturedRequests, 'reschedule_appointment');
+    observed.wa_reschedule_idor = { before, after, target, refusal };
+    expect(new Date(after.start_at).toISOString()).toBe(new Date(before.start_at).toISOString());
+    expect(refusal.error).toMatch(NOT_YOURS);
   });
 
   // ── F-05 ───────────────────────────────────────────────────────────────────
-  it('F-05 DEFECT: the clinic\'s cancellation_hours=24 policy is ignored — Y cancels their OWN appointment that starts in 2 hours', async () => {
+  it('F-05 regression: the clinic\'s cancellation_hours=24 policy is enforced — Y cannot cancel their OWN appointment that starts in 2 hours', async () => {
     const { full } = rt.seed;
     expect((await q(`SELECT cancellation_hours FROM tenant_settings WHERE tenant_id=$1`, [full.tenantId]))[0].cancellation_hours).toBe(24);
     const soon = await newAppointment(full.patientIds.y, 2);
@@ -169,16 +176,20 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
       if (results.length === 0) return { toolCalls: [call('cancel_appointment', { appointmentId: soon })] };
       const last = results[results.length - 1].json;
       if (last?.confirmationRequired) return { toolCalls: [call('cancel_appointment', { appointmentId: soon, confirmationToken: last.confirmationToken })] };
-      return { content: 'Cancelled.' };
+      return { content: 'I am sorry, that appointment can no longer be changed here.' };
     });
     await whatsappTurn(rt, full.tenantId, full.patientPhones!.y, 'cancel my appointment');
     const after = await statusOf(soon);
-    observed.wa_policy = { after };
-    expect(after.status).toBe('CANCELLED'); // policy says free cancellation only >=24h ahead
+    const refusal = lastToolResult(reactive.capturedRequests, 'cancel_appointment');
+    observed.wa_policy = { after, refusal };
+    expect(after.status).toBe('CONFIRMED');
+    expect(refusal).toMatchObject({ success: false, blockedReason: 'WINDOW_CLOSED', changeWindowHours: 24 });
+    expect(refusal.confirmationRequired).toBeUndefined(); // the patient is not asked to agree to something the server will refuse
+    expect(refusal.error).toMatch(/request_human_handover/); // and the way forward is named
   });
 
-  // ── no listing tool + toolset ─────────────────────────────────────────────
-  it('F-06: the WhatsApp toolset has no way to list a patient\'s own appointments, so the model must be handed an id by the patient', async () => {
+  // ── F-06 / F-27 ────────────────────────────────────────────────────────────
+  it('F-06 regression: the WhatsApp toolset now has list_my_appointments, so the patient is never handed an id to type', async () => {
     const { full } = rt.seed;
     reactive.setHandler(() => ({ content: 'hi' }));
     await whatsappTurn(rt, full.tenantId, full.patientPhones!.x, 'hello');
@@ -186,10 +197,9 @@ describe('WhatsApp surface — tools, identity binding and appointment actions',
     observed.wa_toolset = names;
     expect(names).toEqual([
       'book_appointment', 'cancel_appointment', 'check_availability', 'get_branch_info', 'get_customer_insurance_status',
-      'get_doctor_schedule', 'list_clinic_branches', 'list_clinic_doctors', 'list_clinic_services',
+      'get_doctor_schedule', 'list_clinic_branches', 'list_clinic_doctors', 'list_clinic_services', 'list_my_appointments',
       'request_human_handover', 'reschedule_appointment',
     ]);
-    expect(names.some((n) => /appointments?$/.test(n) && /^(list|get|find|my)/.test(n))).toBe(false);
     void randomUUID;
   });
 });

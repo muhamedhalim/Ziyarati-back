@@ -9,7 +9,8 @@ import {
 import { ConversationSessionService } from './conversation-session.service';
 import { AgentRouterService } from './agent-router.service';
 import { AiMemoryService } from '../ai-memory/ai-memory.service';
-import { AiChannel, AiSession } from './ai-channel.constants';
+import { AI_CHANNELS, AiChannel, AiSession } from './ai-channel.constants';
+import { AppError, ErrorCode } from '../../common/errors';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { ConfigService } from '@nestjs/config';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -69,8 +70,31 @@ export interface OrchestrateInput {
    * ever reach the session).
    */
   trustedSessionPatch?: Partial<AiSession>;
+  /**
+   * F-13. Set ONLY by a trusted server-side bridge that genuinely IS the channel
+   * it names (today: the WhatsApp webhook worker) — never bound from a DTO or a
+   * socket frame, same trust model as `origin` and `trustedSessionPatch` above.
+   *
+   * `channel` is the one field a client fills in for itself, and it chooses the
+   * prompt, the toolset, the metering route and (through routing) the model
+   * tier. Without this, any dashboard user could send `channel: 'WHATSAPP'` and
+   * be handed the WhatsApp assistant. A channel a bridge owns is now accepted
+   * only from that bridge.
+   */
+  trustedChannel?: boolean;
   idempotencyKey?: string;
 }
+
+/**
+ * F-13. Channels a client may NAME for itself, by who it is.
+ *
+ * An anonymous visitor reaches the AI from exactly one place — the public
+ * website widget — so that is the only channel it may claim. Everything else in
+ * `AI_CHANNELS` is open to a signed-in staff principal except the channels a
+ * bridge owns (`BRIDGE_OWNED_CHANNELS`).
+ */
+const GUEST_CHANNELS: readonly AiChannel[] = ['WEBSITE'];
+const BRIDGE_OWNED_CHANNELS: readonly AiChannel[] = ['WHATSAPP'];
 
 /**
  * AI Orchestrator (Phase 2) — the SINGLE cross-channel entry point for AI
@@ -101,8 +125,40 @@ export class AiOrchestratorService {
     private readonly access: AiConversationAccessService,
   ) {}
 
+  /**
+   * F-13: the server, not the client, decides which channel a caller may run as.
+   *
+   * Checked here — the one place the REST controller, the WebSocket gateway and
+   * the WhatsApp bridge all funnel through — so a fourth transport inherits it.
+   * Throws before any conversation, message or metering row is written.
+   */
+  private assertChannelAllowed(input: OrchestrateInput): void {
+    if (!AI_CHANNELS.includes(input.channel)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'Unknown channel',
+      });
+    }
+    const forbidden = () =>
+      new AppError(ErrorCode.FORBIDDEN, {
+        message: 'This channel is not available to the caller',
+      });
+    if (
+      BRIDGE_OWNED_CHANNELS.includes(input.channel) &&
+      input.trustedChannel !== true
+    ) {
+      throw forbidden();
+    }
+    if (
+      this.tenantContext.getUser()?.guest &&
+      !GUEST_CHANNELS.includes(input.channel)
+    ) {
+      throw forbidden();
+    }
+  }
+
   /** Synchronous turn (REST). Delegates to the engine's sendMessage. */
   async handle(tenantId: string, input: OrchestrateInput) {
+    this.assertChannelAllowed(input);
     const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'REST';
     const { conversationId, session, routedRole, handedOver, memoryLoader } =
       await this.prepare(tenantId, input, transport);
@@ -172,6 +228,7 @@ export class AiOrchestratorService {
      */
     onToolEvent?: AiToolProgressListener,
   ) {
+    this.assertChannelAllowed(input);
     const transport = input.channel === 'WHATSAPP' ? 'WHATSAPP' : 'WEBSOCKET';
     const { conversationId, session, routedRole, handedOver, memoryLoader } =
       await this.prepare(tenantId, input, transport);

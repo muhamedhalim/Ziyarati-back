@@ -384,6 +384,123 @@ describe('CustomerService', () => {
     });
   });
 
+  // F-19 (Phase 2): a public booking is attached to an existing record only when the
+  // phone AND the name match; anything else gets a record of its own.
+  describe('findOrCreateForBooking — identity is not decided by the phone alone', () => {
+    const PHONE = '966500123456';
+    const existing = (over: Record<string, unknown> = {}) => ({
+      id: 'c-existing',
+      phone: PHONE,
+      full_name: 'Sara Al-Otaibi',
+      ...over,
+    });
+    let created: Record<string, unknown>[];
+
+    beforeEach(() => {
+      created = [];
+      customers.count.mockResolvedValue(0);
+      customers.save.mockImplementation(async (e: any) => {
+        const row = { id: `c-new-${created.length + 1}`, ...e };
+        created.push(row);
+        return row;
+      });
+    });
+
+    it('reuses the record when phone and name both match', async () => {
+      customers.find.mockResolvedValueOnce([existing()]);
+      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Sara Al-Otaibi', phone: PHONE });
+      expect(c.id).toBe('c-existing');
+      expect(customers.save).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['case and spacing', '  sara   AL-otaibi '],
+      ['a compatibility form of the same letters', 'Ｓara Al-Otaibi'],
+    ])('recognises the same person despite %s', async (_label, typed) => {
+      customers.find.mockResolvedValueOnce([existing()]);
+      const c = await service.findOrCreateForBooking(TENANT, { fullName: typed, phone: PHONE });
+      expect(c.id).toBe('c-existing');
+    });
+
+    it('ignores Arabic diacritics and tatweel when comparing names', async () => {
+      customers.find.mockResolvedValueOnce([existing({ full_name: 'محمد' })]);
+      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'مُحَمَّـد', phone: PHONE });
+      expect(c.id).toBe('c-existing');
+    });
+
+    it('creates a NEW record when the phone matches but the name does not — the existing patient is untouched', async () => {
+      customers.find.mockResolvedValueOnce([existing()]);
+      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Someone Else', phone: PHONE });
+      expect(c.id).not.toBe('c-existing');
+      expect(created).toHaveLength(1);
+      expect(created[0]).toMatchObject({ full_name: 'Someone Else', phone: PHONE, source: 'public_ai' });
+      expect(customers.update).not.toHaveBeenCalled();
+    });
+
+    it('never treats a missing name as a match — an unnamed record cannot be claimed by phone', async () => {
+      customers.find.mockResolvedValueOnce([existing({ full_name: undefined })]);
+      const noName = await service.findOrCreateForBooking(TENANT, { phone: PHONE });
+      expect(noName.id).not.toBe('c-existing');
+      customers.find.mockResolvedValueOnce([existing({ full_name: undefined })]);
+      const blankName = await service.findOrCreateForBooking(TENANT, { fullName: '   ', phone: PHONE });
+      expect(blankName.id).not.toBe('c-existing');
+    });
+
+    it('picks the record whose NAME matches when several patients share the number', async () => {
+      customers.find.mockResolvedValueOnce([
+        existing({ id: 'c-mother', full_name: 'Huda Salem' }),
+        existing({ id: 'c-child', full_name: 'Adam Salem' }),
+      ]);
+      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Adam Salem', phone: PHONE });
+      expect(c.id).toBe('c-child');
+    });
+
+    it('looks only inside the tenant it was given, and only at a bounded number of rows', async () => {
+      customers.find.mockResolvedValueOnce([]);
+      await service.findOrCreateForBooking(TENANT, { fullName: 'Nadia', phone: PHONE });
+      expect(customers.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenant: { id: TENANT }, phone: PHONE }, take: 20 }),
+      );
+    });
+
+    it('gives each record its own synthetic email — one phone may now own several', async () => {
+      customers.find.mockResolvedValue([]);
+      await service.findOrCreateForBooking(TENANT, { fullName: 'One', phone: PHONE });
+      await service.findOrCreateForBooking(TENANT, { fullName: 'Two', phone: PHONE });
+      const emails = created.map((c) => c.email as string);
+      expect(new Set(emails).size).toBe(2);
+      for (const e of emails) expect(e).toMatch(/^patient\+t1-966500123456-[0-9a-f]{8}@booking\.internal$/);
+    });
+
+    it('uses the address the visitor typed; if it belongs to another record it is not attached — a private one is minted instead', async () => {
+      customers.find.mockResolvedValue([]);
+      customers.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));
+      const c = await service.findOrCreateForBooking(TENANT, {
+        fullName: 'Layla',
+        phone: PHONE,
+        email: 'taken@example.com',
+      });
+      expect(c.id).toBeTruthy();
+      expect(created).toHaveLength(1);
+      expect(created[0].email).toMatch(/@booking\.internal$/);
+    });
+
+    it('a concurrent insert of the SAME person is re-read rather than duplicated', async () => {
+      customers.find.mockResolvedValueOnce([]); // first look: nobody
+      customers.save.mockRejectedValueOnce(Object.assign(new Error('duplicate key'), { code: '23505' }));
+      customers.find.mockResolvedValueOnce([existing({ id: 'c-raced', full_name: 'Omar' })]); // the racer's row
+      const c = await service.findOrCreateForBooking(TENANT, { fullName: 'Omar', phone: PHONE });
+      expect(c.id).toBe('c-raced');
+      expect(created).toHaveLength(0);
+    });
+
+    it('rethrows a failure that is not an address clash (no address was supplied)', async () => {
+      customers.find.mockResolvedValue([]);
+      customers.save.mockRejectedValueOnce(new Error('connection lost'));
+      await expect(service.findOrCreateForBooking(TENANT, { fullName: 'Omar', phone: PHONE })).rejects.toThrow('connection lost');
+    });
+  });
+
   describe('setInsuranceStatus', () => {
     it('writes has_health_insurance via a tenant-scoped targeted update', async () => {
       await service.setInsuranceStatus(TENANT, 'c1', true);

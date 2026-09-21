@@ -22,6 +22,10 @@ export const AI_TOOL = {
   BOOK_APPOINTMENT: 'book_appointment',
   RESCHEDULE_APPOINTMENT: 'reschedule_appointment',
   CANCEL_APPOINTMENT: 'cancel_appointment',
+  // The patient's OWN upcoming appointments, bound to the server-side customer of
+  // the conversation. It is the only place an appointmentId for cancel/reschedule
+  // can come from — the patient is never asked to type one.
+  LIST_MY_APPOINTMENTS: 'list_my_appointments',
   // Own-clinic discovery (tenant-bound, read-only — the WhatsApp channel's
   // equivalent of the guest's search_clinics/get_clinic_details: an
   // AUTHENTICATED turn (the WhatsApp bot actor) has no public booking
@@ -55,6 +59,7 @@ export const AI_TOOL_PERMISSION: Partial<Record<string, PermissionSlug>> = {
   [AI_TOOL.BOOK_APPOINTMENT]: PERMISSION.APPOINTMENTS_CREATE,
   [AI_TOOL.RESCHEDULE_APPOINTMENT]: PERMISSION.APPOINTMENTS_RESCHEDULE,
   [AI_TOOL.CANCEL_APPOINTMENT]: PERMISSION.APPOINTMENTS_CANCEL,
+  [AI_TOOL.LIST_MY_APPOINTMENTS]: PERMISSION.APPOINTMENTS_READ,
 };
 
 /**
@@ -280,12 +285,18 @@ export const AI_TOOLS: AiToolDefinition[] = [
   {
     name: AI_TOOL.RESCHEDULE_APPOINTMENT,
     description:
-      'Move an existing appointment to a new start time. The new window is availability-checked.',
+      'Move an existing appointment to a new start time. The new window is availability-checked. ' +
+      'The first call only asks for confirmation (it changes nothing): put the exact change to the patient, wait for their reply, ' +
+      'then call again with the SAME appointmentId and newStartAt.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        appointmentId: { type: 'string', description: 'Appointment UUID.' },
+        appointmentId: {
+          type: 'string',
+          description:
+            'Appointment UUID, exactly as returned by list_my_appointments.',
+        },
         newStartAt: {
           type: 'string',
           description: 'New start time, ISO-8601 with offset.',
@@ -294,16 +305,17 @@ export const AI_TOOLS: AiToolDefinition[] = [
           type: 'string',
           description: 'Optional reason (stored in the audit trail).',
         },
-        // AI-019/PD-1/F1: irreversible — the FIRST call (no token, or an
-        // invalid/expired one) is refused and returns a fresh
-        // application-issued confirmationToken instead of executing; the
-        // model relays it back to confirm. The application independently
-        // verifies this token server-side — it is never trusted merely
-        // because the model supplied it (FR-073).
+        // AI-019/PD-1/F1: irreversible — the FIRST call is refused and the
+        // application records what is being confirmed, server-side. The
+        // change executes only when the SAME call arrives in a LATER user turn
+        // (F-04): the application verifies that itself and never trusts the
+        // model's claim that the patient agreed (FR-073). The token is what
+        // the refused call returns; it is optional on the confirming call,
+        // because a tool result does not survive into the next turn.
         confirmationToken: {
           type: 'string',
           description:
-            'Application-issued confirmation token from a prior refused call to this same tool for this same appointment. Omit on the first attempt.',
+            'Optional. The token the confirmation request returned, if you still have it; the confirming call works without it.',
         },
       },
       required: ['appointmentId', 'newStartAt'],
@@ -311,12 +323,18 @@ export const AI_TOOLS: AiToolDefinition[] = [
   },
   {
     name: AI_TOOL.CANCEL_APPOINTMENT,
-    description: 'Cancel an existing appointment.',
+    description:
+      'Cancel an existing appointment. The first call only asks for confirmation (it changes nothing): ' +
+      'put the exact appointment to the patient, wait for their reply, then call again with the SAME appointmentId.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        appointmentId: { type: 'string', description: 'Appointment UUID.' },
+        appointmentId: {
+          type: 'string',
+          description:
+            'Appointment UUID, exactly as returned by list_my_appointments.',
+        },
         reason: {
           type: 'string',
           description:
@@ -326,10 +344,22 @@ export const AI_TOOLS: AiToolDefinition[] = [
         confirmationToken: {
           type: 'string',
           description:
-            'Application-issued confirmation token from a prior refused call to this same tool for this same appointment. Omit on the first attempt.',
+            'Optional. The token the confirmation request returned, if you still have it; the confirming call works without it.',
         },
       },
       required: ['appointmentId'],
+    },
+  },
+  {
+    name: AI_TOOL.LIST_MY_APPOINTMENTS,
+    description:
+      "List THIS patient's own upcoming appointments (id, date and time, doctor, branch, services). " +
+      'Call it before cancel_appointment or reschedule_appointment: it is the only source of an appointmentId — never ask the patient for one, and never use an id from anywhere else.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+      required: [],
     },
   },
   {
@@ -424,6 +454,9 @@ export const WHATSAPP_CHANNEL_TOOL_NAMES: string[] = [
   AI_TOOL.BOOK_APPOINTMENT,
   AI_TOOL.RESCHEDULE_APPOINTMENT,
   AI_TOOL.CANCEL_APPOINTMENT,
+  // The patient's own appointments, from the server-bound customer of this
+  // conversation — where a cancel/reschedule id comes from.
+  AI_TOOL.LIST_MY_APPOINTMENTS,
   AI_TOOL.REQUEST_HUMAN_HANDOVER,
 ];
 
@@ -444,4 +477,7 @@ export const WHATSAPP_ONLY_TOOL_NAMES: string[] = [
   AI_TOOL.LIST_CLINIC_BRANCHES,
   AI_TOOL.LIST_CLINIC_DOCTORS,
   AI_TOOL.LIST_CLINIC_SERVICES,
+  // Needs a customer bound to the conversation, which only a WhatsApp contact has;
+  // staff already list appointments through the dashboard tools.
+  AI_TOOL.LIST_MY_APPOINTMENTS,
 ];

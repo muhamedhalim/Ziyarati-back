@@ -78,10 +78,22 @@ import {
   PromptBudgetTelemetry,
 } from './prompt/ai-prompt-budget.service';
 import {
+  composeClinicInstructions,
   DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   DEFAULT_PUBLIC_BOOKING_SYSTEM_PROMPT,
   DEFAULT_WHATSAPP_SYSTEM_PROMPT,
 } from './prompt/default-system-prompt';
+import {
+  buildDisclosureIndex,
+  checkDisclosure,
+  type DisclosureIndex,
+} from './guardrails/prompt-disclosure';
+import {
+  looksLikeCode,
+  scopeRefusal,
+  screenUserMessage,
+  type ScopeCategory,
+} from './guardrails/scope-guard';
 import { AiCostLedgerService } from './cost/ai-cost-ledger.service';
 import { PRICING_STATUS } from './cost/ai-price-catalog.service';
 import { AiRequestExecutionService } from './idempotency/ai-request-execution.service';
@@ -90,8 +102,38 @@ import { findModel } from './routing/ai-model-registry';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
 
-/** Bounds the tool-calling loop so a misbehaving model can't spin indefinitely. */
+/**
+ * Bounds the ROUNDS of tool calls in a turn so a misbehaving model can't spin
+ * indefinitely. A turn that spends them all gets ONE more, tool-less completion
+ * (see TOOL_BUDGET_SPENT_NOTICE), so a turn makes at most MAX_TOOL_ITERATIONS + 1
+ * provider calls.
+ */
 const MAX_TOOL_ITERATIONS = 4;
+
+/**
+ * F-15. What the model is told on the extra, tool-less completion that follows a
+ * spent tool budget.
+ *
+ * WHY THERE IS ONE. The loop used to stop at the end of the LAST tool round and
+ * answer with a canned line — so whatever that round did (a booking included) was
+ * executed and never shown to the model, and the patient was told nothing about
+ * it. The WhatsApp booking chain (branches → doctors/services/insurance →
+ * availability → book) needs four tool rounds and then an answer, which is one
+ * completion more than the loop allowed: the book call ran on the last round and
+ * its outcome was thrown away. Tools are withheld on this completion, so it cannot
+ * extend the loop — it can only report.
+ */
+const TOOL_BUDGET_SPENT_NOTICE =
+  'Tool calls are no longer available for this reply. Answer the person now, using only what the tool results above returned. If something is still missing, say exactly what and ask for it. Never say an action succeeded unless a tool result above says so.';
+
+/**
+ * F-15. The last resort when even the tool-less completion comes back empty.
+ * Deliberately claims nothing — no success, no failure, no time, no promise — and
+ * covers both product languages, as the WhatsApp turn-failed fallback does.
+ */
+const TOOL_LOOP_FALLBACK_TEXT =
+  'Sorry, I could not finish that reply. Please send your last message again, or ask to speak with the clinic team.\n' +
+  'عذرًا، لم أتمكن من إكمال الرد. يُرجى إعادة إرسال رسالتك الأخيرة أو طلب التحدث مع فريق العيادة.';
 
 interface TurnAccounting {
   cachedInputTokens: number;
@@ -360,6 +402,10 @@ export class AiExecutionService {
     let processing: ProcessingDescriptor = DEFAULT_PROCESSING_DESCRIPTOR;
     let modelForMetric = 'noop';
     let providerForMetric = 'unknown';
+    // F-20: WHO the cost/usage rows of this turn are attributed to. The conversation
+    // tenant unless a guest has chosen a clinic (see `meterTenantFor`) — assigned once
+    // that is known, so a turn that fails earlier still lands on the conversation tenant.
+    let meterTenantId = tenantId;
     try {
       const aiConv = await this.aiConversations.findOne({
         where: { id: aiConversationId, tenant: { id: tenantId } },
@@ -439,6 +485,30 @@ export class AiExecutionService {
         dataSensitivity: 'SENSITIVE',
       });
 
+      // F-10: an unambiguous role-change, prompt-extraction, code, creative-writing,
+      // arithmetic or trivia ask on a surface strangers reach is answered with a
+      // fixed redirect HERE — before the quota is reserved, before retrieval, before
+      // any model or tool call — so it costs nothing and cannot be talked round.
+      if (this.scopeGuardActive(channel)) {
+        const verdict = screenUserMessage(dto.content);
+        if (verdict.blocked && verdict.category) {
+          return await this.answerOutOfScope({
+            tenantId,
+            session: aiConv.session,
+            aiConversationId,
+            linkedConversationId,
+            content: dto.content,
+            requestKey,
+            channel,
+            route: routeForMetric,
+            feature: featureForMetric,
+            processing,
+            turnStart,
+            category: verdict.category,
+          });
+        }
+      }
+
       // Quota pre-check (blocks a tenant already over its monthly token cap).
       // FND-034: reserves 1 token's worth of headroom ATOMICALLY (closing the
       // check-then-act race — see UsageService.incrementIfWithinLimit). The
@@ -469,7 +539,8 @@ export class AiExecutionService {
       providerStarted = true;
 
       // 1) persist the user message (own write — not held across the LLM round-trips).
-      await this.messages.save(
+      //    Its id is this turn's identity for the tool confirmation gate (F-04).
+      const userMessage = await this.messages.save(
         this.messages.create({
           ai_conversation_id: aiConversationId,
           tenant: { id: tenantId } as Tenant,
@@ -506,6 +577,7 @@ export class AiExecutionService {
         aiConv.session,
         tenantId,
       );
+      meterTenantId = this.meterTenantFor(tenantId, knowledgeTenantId);
       const chunks = await this.rag.retrieve(
         knowledgeTenantId,
         agent?.id ?? null,
@@ -559,8 +631,12 @@ export class AiExecutionService {
       // `applyPromptDisclosureCheck` protects from being recited back. Passing
       // the default to the former but `undefined` to the latter would have made
       // the platform prompt the one prompt the disclosure gate did not cover.
-      const effectiveSystemPrompt =
-        agent?.system_prompt?.trim() || this.defaultSystemPrompt(channel);
+      const { corePrompt, clinicInstructions, effectiveSystemPrompt } =
+        this.composeSystemPrompt(channel, agent);
+      // F-10: the redirect a code reply is swapped for — set only where the guard applies.
+      const scopeRedirect = this.scopeGuardActive(channel)
+        ? scopeRefusal(dto.content)
+        : undefined;
 
       // The booking selections this conversation already established, re-proved
       // against the database. Pinned into the prompt so a public turn continues
@@ -569,6 +645,7 @@ export class AiExecutionService {
       const bookingContext = await this.buildBookingContext(
         tenantId,
         aiConversationId,
+        channel,
       );
 
       // Files the visitor attached, claimed for this conversation. Runs
@@ -582,7 +659,8 @@ export class AiExecutionService {
       );
 
       const built = this.budgets.build({
-        systemPrompt: effectiveSystemPrompt,
+        systemPrompt: corePrompt,
+        agentInstructions: clinicInstructions,
         bookingContext,
         ragChunks: chunks,
         attachments,
@@ -613,6 +691,8 @@ export class AiExecutionService {
         // scoping proves nothing (every guest shares the discovery tenant), so
         // ownership is checked against `session.guestSubject`.
         principal: this.ctx.getUser() ?? undefined,
+        channel,
+        turnId: userMessage?.id,
       };
 
       let promptTokens = 0;
@@ -639,10 +719,18 @@ export class AiExecutionService {
         pricingStatus: PRICING_STATUS.PRICED,
       };
 
-      for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
+      for (let i = 0; i <= MAX_TOOL_ITERATIONS; i += 1) {
+        // F-15: the round after the last tool round is the tool-less wrap-up.
+        const wrapUp = i === MAX_TOOL_ITERATIONS;
+        if (wrapUp) {
+          messages = [
+            ...messages,
+            { role: 'system', content: TOOL_BUDGET_SPENT_NOTICE },
+          ];
+        }
         const fitted = this.budgets.fitRuntime(
           messages,
-          tools,
+          wrapUp ? [] : tools,
           modelDefinition,
         );
         messages = fitted.messages;
@@ -657,7 +745,7 @@ export class AiExecutionService {
           supportsTemperature: modelDefinition?.supportsTemperature,
           reasoningEffort: modelDefinition?.reasoningEffort,
           messages,
-          tools,
+          tools: wrapUp ? [] : tools,
           maxOutputTokens: this.budgets.maxOutputTokens,
           idempotencyKey: `${requestKey}:loop:${i}`,
           feature: featureForMetric,
@@ -673,7 +761,7 @@ export class AiExecutionService {
           accounting.cachedRequestCount += 1;
         accounting.providerAttempts += completion.providerAttempts ?? 1;
         await this.recordCompletionCost({
-          tenantId,
+          tenantId: meterTenantId,
           aiConversationId,
           requestKey,
           channel,
@@ -686,18 +774,24 @@ export class AiExecutionService {
           processing,
         });
 
-        const calls = completion.toolCalls ?? [];
+        // A wrap-up completion never runs tools, whatever the provider sent back.
+        const calls = wrapUp ? [] : (completion.toolCalls ?? []);
         if (calls.length === 0) {
           // AI-009 (FR-043, FR-045): checked before persistence and before
           // return, so both the persisted message and the client-visible
           // reply carry the redacted form when this trips.
           const checked = this.applyPromptDisclosureCheck(
-            completion.content,
+            wrapUp
+              ? completion.content?.trim() || TOOL_LOOP_FALLBACK_TEXT
+              : completion.content,
             effectiveSystemPrompt,
             tools,
+            scopeRedirect,
           );
           finalContent = checked.content;
           promptDisclosureBlocked = checked.blocked;
+          if (checked.scopeBlocked)
+            this.logScopeBlock(tenantId, aiConversationId, 'reply-code');
           break;
         }
         accounting.toolLoops += 1;
@@ -745,15 +839,6 @@ export class AiExecutionService {
           aiConversationId,
           accepted,
         );
-        if (i === MAX_TOOL_ITERATIONS - 1) {
-          const checked = this.applyPromptDisclosureCheck(
-            completion.content || 'I have processed your request.',
-            effectiveSystemPrompt,
-            tools,
-          );
-          finalContent = checked.content;
-          promptDisclosureBlocked = promptDisclosureBlocked || checked.blocked;
-        }
       }
       modelForMetric = lastModel;
 
@@ -772,7 +857,7 @@ export class AiExecutionService {
         );
         await this.recordUsage(
           manager,
-          tenantId,
+          meterTenantId,
           agent?.id ?? null,
           totalTokens,
         );
@@ -801,7 +886,7 @@ export class AiExecutionService {
       }
 
       await this.metrics.record({
-        tenantId,
+        tenantId: meterTenantId,
         aiConversationId,
         channel,
         model: lastModel,
@@ -867,7 +952,7 @@ export class AiExecutionService {
       }
       if (providerStarted) {
         await this.costs.record({
-          tenantId,
+          tenantId: meterTenantId,
           aiConversationId,
           idempotencyKey: `${requestKey}:failure`,
           requestKind: 'CHAT',
@@ -908,7 +993,7 @@ export class AiExecutionService {
           .catch(() => undefined);
       }
       await this.metrics.record({
-        tenantId,
+        tenantId: meterTenantId,
         aiConversationId,
         channel,
         model: modelForMetric,
@@ -1030,79 +1115,20 @@ export class AiExecutionService {
   }
 
   /**
-   * AI-009 (FR-043, FR-044, FR-091-FR-093, SD-1): local, dependency-free
-   * check for a reply reproducing the assembled system prompt or the
-   * caller's permission-filtered tool-schema text for THIS turn — both
-   * already in memory, so cost is bounded by reply length alone, never by
-   * knowledge-base or conversation size (FR-091). Deliberately NOT an
-   * embedding call (FR-093) or an LLM-judge call (FR-092, Principle XXXIV —
-   * a model must not be the control that decides whether a model leaked).
-   *
-   * Method: normalized word-shingle overlap (a bounded, cheap "does the
-   * reply contain chunks of the source" measure) — the fraction of the
-   * reply's own shingles that also appear in the source's shingle set. A
-   * short reply that is mostly copied source text scores high even against
-   * a much larger source; an ordinary answer sharing a few incidental words
-   * (e.g. clinic hours) does not, because it has few or no matching
-   * `AI_PROMPT_SIMILARITY_SHINGLE_SPAN`-word runs in common.
+   * AI-009 (FR-043, FR-044, FR-091-FR-093, SD-1) + F-11: the index of what a reply
+   * must not recite — the assembled system prompt and this turn's tool catalogue.
+   * Built ONCE per turn iteration (the streaming gate used to rebuild the source's
+   * shingle set on every check). The three signals and their limits are documented
+   * in `guardrails/prompt-disclosure.ts`.
    */
-  private checkPromptDisclosure(
-    reply: string,
+  private disclosureIndex(
     systemPrompt: string | undefined,
     tools: AiToolDefinition[],
-  ): { blocked: boolean; overlapRatio: number } {
-    const shingleSpan = Number(
-      this.config.get('AI_PROMPT_SIMILARITY_SHINGLE_SPAN', 8),
-    );
-    const threshold = Number(
-      this.config.get('AI_PROMPT_SIMILARITY_THRESHOLD', 0.6),
-    );
-    const sourceText = `${systemPrompt ?? ''}\n${JSON.stringify(tools)}`;
-    const sourceShingles = this.shingleSet(sourceText, shingleSpan);
-    const replyShingles = this.shingles(reply, shingleSpan);
-    if (sourceShingles.size === 0 || replyShingles.length === 0) {
-      return { blocked: false, overlapRatio: 0 };
-    }
-    let hits = 0;
-    for (const shingle of replyShingles) {
-      if (sourceShingles.has(shingle)) hits += 1;
-    }
-    const overlapRatio = hits / replyShingles.length;
-    return { blocked: overlapRatio >= threshold, overlapRatio };
-  }
-
-  /**
-   * Lowercased, punctuation-stripped word list — the shingle unit is a word, not
-   * a character. Unicode-aware (`\p{L}`/`\p{N}`, not `a-z0-9`): the ASCII-only
-   * version silently stripped every Arabic (or other non-Latin) character to
-   * nothing, so a reply that verbatim-reproduced an Arabic system prompt
-   * produced zero shingles and the disclosure gate returned unconditionally
-   * `blocked: false` for it (AIE-A01). `\p{L}`/`\p{N}` match letters/digits in
-   * any script; `.toLowerCase()` is a no-op on scripts with no case (Arabic),
-   * so ASCII/English behavior is unchanged.
-   */
-  private normalizeForShingles(text: string): string[] {
-    return text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .filter(Boolean);
-  }
-
-  /** Sliding-window word n-grams. A text shorter than `span` still yields one shingle (itself). */
-  private shingles(text: string, span: number): string[] {
-    const words = this.normalizeForShingles(text);
-    if (words.length === 0) return [];
-    if (words.length < span) return [words.join(' ')];
-    const result: string[] = [];
-    for (let i = 0; i <= words.length - span; i += 1) {
-      result.push(words.slice(i, i + span).join(' '));
-    }
-    return result;
-  }
-
-  private shingleSet(text: string, span: number): Set<string> {
-    return new Set(this.shingles(text, span));
+  ): DisclosureIndex {
+    return buildDisclosureIndex(systemPrompt, tools, {
+      span: Number(this.config.get('AI_PROMPT_SIMILARITY_SHINGLE_SPAN', 8)),
+      threshold: Number(this.config.get('AI_PROMPT_SIMILARITY_THRESHOLD', 0.6)),
+    });
   }
 
   /** The redacted stand-in for a reply the disclosure check blocks — never the raw leaked content. */
@@ -1119,16 +1145,20 @@ export class AiExecutionService {
     content: string,
     systemPrompt: string | undefined,
     tools: AiToolDefinition[],
-  ): { content: string; blocked: boolean } {
-    const { blocked } = this.checkPromptDisclosure(
+    /** F-10: the redirect to use if this reply turns out to be code (public/WhatsApp only). */
+    scopeRedirect?: string,
+  ): { content: string; blocked: boolean; scopeBlocked?: boolean } {
+    const { blocked } = checkDisclosure(
+      this.disclosureIndex(systemPrompt, tools),
       content,
-      systemPrompt,
-      tools,
     );
-    return {
-      content: blocked ? this.PROMPT_DISCLOSURE_REDACTED_MESSAGE : content,
-      blocked,
-    };
+    if (blocked) {
+      return { content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE, blocked };
+    }
+    if (scopeRedirect && looksLikeCode(content)) {
+      return { content: scopeRedirect, blocked: false, scopeBlocked: true };
+    }
+    return { content, blocked: false };
   }
 
   /**
@@ -1158,9 +1188,20 @@ export class AiExecutionService {
     onToken: (delta: string) => void,
     systemPrompt: string | undefined,
     tools: AiToolDefinition[],
+    /**
+     * F-10: when set (public/WhatsApp turns), the gate ALSO refuses to carry code
+     * to the client and answers with this redirect instead. It rides the same
+     * hold-back window and cadence as the disclosure check, so a fenced block is
+     * stopped at its first checked tick, not after it has all been streamed.
+     */
+    scopeRedirect?: string,
   ): {
     feed: (delta: string) => void;
-    finalize: (fullContent: string) => { content: string; blocked: boolean };
+    finalize: (fullContent: string) => {
+      content: string;
+      blocked: boolean;
+      scopeBlocked?: boolean;
+    };
   } {
     const shingleSpan = Number(
       this.config.get('AI_PROMPT_SIMILARITY_SHINGLE_SPAN', 8),
@@ -1171,23 +1212,25 @@ export class AiExecutionService {
     const AVG_CHARS_PER_WORD = 6;
     const holdBackWindow = shingleSpan * AVG_CHARS_PER_WORD;
 
+    // One index for the whole iteration: the source does not change between checks.
+    const index = this.disclosureIndex(systemPrompt, tools);
     let buffer = '';
     let released = 0;
     let checkedUpTo = 0;
-    let tripped = false;
+    let tripped: false | 'disclosure' | 'scope' = false;
 
     const feed = (delta: string): void => {
       if (tripped) return; // point 4: nothing further is ever released
       buffer += delta;
       if (buffer.length - checkedUpTo >= holdBackWindow) {
         checkedUpTo = buffer.length;
-        const { blocked } = this.checkPromptDisclosure(
-          buffer,
-          systemPrompt,
-          tools,
-        );
+        const { blocked } = checkDisclosure(index, buffer);
         if (blocked) {
-          tripped = true;
+          tripped = 'disclosure';
+          return;
+        }
+        if (scopeRedirect && looksLikeCode(buffer)) {
+          tripped = 'scope';
           return;
         }
       }
@@ -1201,7 +1244,10 @@ export class AiExecutionService {
 
     const finalize = (
       fullContent: string,
-    ): { content: string; blocked: boolean } => {
+    ): { content: string; blocked: boolean; scopeBlocked?: boolean } => {
+      if (tripped === 'scope' && scopeRedirect) {
+        return { content: scopeRedirect, blocked: false, scopeBlocked: true };
+      }
       if (tripped) {
         return {
           content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE,
@@ -1212,16 +1258,15 @@ export class AiExecutionService {
       // accumulated but never individually re-checked past its own
       // cadence tick, so a disclosure completed only in that tail must
       // still be caught here, before persistence/completion (point 4).
-      const { blocked } = this.checkPromptDisclosure(
-        fullContent,
-        systemPrompt,
-        tools,
-      );
+      const { blocked } = checkDisclosure(index, fullContent);
       if (blocked) {
         return {
           content: this.PROMPT_DISCLOSURE_REDACTED_MESSAGE,
           blocked: true,
         };
+      }
+      if (scopeRedirect && looksLikeCode(fullContent)) {
+        return { content: scopeRedirect, blocked: false, scopeBlocked: true };
       }
       // The full content passed — safe to flush whatever the hold-back
       // window was still sitting on (including a reply SHORTER than the
@@ -1360,6 +1405,10 @@ export class AiExecutionService {
     let processing: ProcessingDescriptor = DEFAULT_PROCESSING_DESCRIPTOR;
     let modelForMetric = 'noop';
     let providerForMetric = 'unknown';
+    // F-20: WHO the cost/usage rows of this turn are attributed to. The conversation
+    // tenant unless a guest has chosen a clinic (see `meterTenantFor`) — assigned once
+    // that is known, so a turn that fails earlier still lands on the conversation tenant.
+    let meterTenantId = tenantId;
     try {
       const aiConv = await this.aiConversations.findOne({
         where: { id: aiConversationId, tenant: { id: tenantId } },
@@ -1444,6 +1493,32 @@ export class AiExecutionService {
         dataSensitivity: 'SENSITIVE',
       });
 
+      // F-10: an unambiguous role-change, prompt-extraction, code, creative-writing,
+      // arithmetic or trivia ask on a surface strangers reach is answered with a
+      // fixed redirect HERE — before the quota is reserved, before retrieval, before
+      // any model or tool call — so it costs nothing and cannot be talked round.
+      if (this.scopeGuardActive(channel)) {
+        const verdict = screenUserMessage(dto.content);
+        if (verdict.blocked && verdict.category) {
+          return await this.answerOutOfScope({
+            tenantId,
+            session: aiConv.session,
+            aiConversationId,
+            linkedConversationId,
+            content: dto.content,
+            origin,
+            onToken,
+            requestKey,
+            channel,
+            route: routeForMetric,
+            feature: featureForMetric,
+            processing,
+            turnStart,
+            category: verdict.category,
+          });
+        }
+      }
+
       // FND-034: same atomic reservation as the non-streaming path above —
       // see its comment for the full rationale.
       const admission = await this.usage.incrementIfWithinLimit(
@@ -1466,7 +1541,7 @@ export class AiExecutionService {
       await this.requests.markProviderStarted(tenantId, requestKey);
       providerStarted = true;
 
-      await this.messages.save(
+      const userMessage = await this.messages.save(
         this.messages.create({
           ai_conversation_id: aiConversationId,
           tenant: { id: tenantId } as Tenant,
@@ -1499,6 +1574,7 @@ export class AiExecutionService {
         aiConv.session,
         tenantId,
       );
+      meterTenantId = this.meterTenantFor(tenantId, knowledgeTenantId);
       const chunks = await this.rag.retrieve(
         knowledgeTenantId,
         agent?.id ?? null,
@@ -1539,14 +1615,19 @@ export class AiExecutionService {
 
       // Same single source of truth for "the prompt this turn runs under" as
       // the non-streaming path above — see its comment.
-      const effectiveSystemPrompt =
-        agent?.system_prompt?.trim() || this.defaultSystemPrompt(channel);
+      const { corePrompt, clinicInstructions, effectiveSystemPrompt } =
+        this.composeSystemPrompt(channel, agent);
+      // F-10: the redirect a code reply is swapped for — set only where the guard applies.
+      const scopeRedirect = this.scopeGuardActive(channel)
+        ? scopeRefusal(dto.content)
+        : undefined;
 
       // Same server-verified booking state as the non-streaming path — this is
       // the method the public widget actually reaches, so it had to go here too.
       const bookingContext = await this.buildBookingContext(
         tenantId,
         aiConversationId,
+        channel,
       );
 
       // Files the visitor attached, claimed for this conversation. Runs
@@ -1560,7 +1641,8 @@ export class AiExecutionService {
       );
 
       const built = this.budgets.build({
-        systemPrompt: effectiveSystemPrompt,
+        systemPrompt: corePrompt,
+        agentInstructions: clinicInstructions,
         bookingContext,
         ragChunks: chunks,
         attachments,
@@ -1591,6 +1673,8 @@ export class AiExecutionService {
         // scoping proves nothing (every guest shares the discovery tenant), so
         // ownership is checked against `session.guestSubject`.
         principal: this.ctx.getUser() ?? undefined,
+        channel,
+        turnId: userMessage?.id,
       };
 
       let full = '';
@@ -1624,10 +1708,18 @@ export class AiExecutionService {
       if (provider.stream) {
         streamed = true;
         const streamStart = Date.now();
-        for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
+        for (let i = 0; i <= MAX_TOOL_ITERATIONS; i += 1) {
+          // F-15: the round after the last tool round is the tool-less wrap-up.
+          const wrapUp = i === MAX_TOOL_ITERATIONS;
+          if (wrapUp) {
+            messages = [
+              ...messages,
+              { role: 'system', content: TOOL_BUDGET_SPENT_NOTICE },
+            ];
+          }
           const fitted = this.budgets.fitRuntime(
             messages,
-            tools,
+            wrapUp ? [] : tools,
             modelDefinition,
           );
           messages = fitted.messages;
@@ -1650,6 +1742,7 @@ export class AiExecutionService {
             onToken,
             effectiveSystemPrompt,
             tools,
+            scopeRedirect,
           );
           for await (const chunk of provider.stream({
             tenantId,
@@ -1658,7 +1751,7 @@ export class AiExecutionService {
             supportsTemperature: modelDefinition?.supportsTemperature,
             reasoningEffort: modelDefinition?.reasoningEffort,
             messages,
-            tools,
+            tools: wrapUp ? [] : tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
             idempotencyKey: `${requestKey}:loop:${i}`,
             feature: featureForMetric,
@@ -1691,7 +1784,7 @@ export class AiExecutionService {
               accounting.cachedRequestCount += 1;
             accounting.providerAttempts += turnUsage.providerAttempts ?? 1;
             await this.recordCompletionCost({
-              tenantId,
+              tenantId: meterTenantId,
               aiConversationId,
               requestKey,
               channel,
@@ -1715,14 +1808,25 @@ export class AiExecutionService {
               processing,
             });
           }
-          if (sawToolCalls.length === 0) {
+          // A wrap-up completion never runs tools, whatever the provider sent back.
+          if (wrapUp || sawToolCalls.length === 0) {
             // AI-009 (SD-1 points 4-6): final check on the complete
             // iteration content, before persistence and before the
             // completion reply (ai:done). On a trip the redacted form
             // replaces `full` here; no further deltas were ever released.
-            const checked = disclosureGate.finalize(turnContent);
+            //
+            // F-15: an empty wrap-up gets the fixed fallback, and — unlike the
+            // model's own text — it was never fed through the gate, so it is
+            // released to the client here.
+            const emptyWrapUp = wrapUp && !turnContent.trim();
+            const checked = disclosureGate.finalize(
+              emptyWrapUp ? TOOL_LOOP_FALLBACK_TEXT : turnContent,
+            );
             full = checked.content;
             promptDisclosureBlocked = checked.blocked;
+            if (checked.scopeBlocked)
+              this.logScopeBlock(tenantId, aiConversationId, 'reply-code');
+            if (emptyWrapUp && !checked.blocked) onToken(full);
             break;
           }
           accounting.toolLoops += 1;
@@ -1766,22 +1870,22 @@ export class AiExecutionService {
             aiConversationId,
             acceptedStream,
           );
-          if (i === MAX_TOOL_ITERATIONS - 1) {
-            const checked = disclosureGate.finalize(
-              turnContent || 'I have processed your request.',
-            );
-            full = checked.content;
-            promptDisclosureBlocked =
-              promptDisclosureBlocked || checked.blocked;
-          }
         }
         streamingDurationMs = Date.now() - streamStart;
       } else {
         // No streaming support (Noop fallback) — SAME complete()-based tool loop as sendMessage.
-        for (let i = 0; i < MAX_TOOL_ITERATIONS; i += 1) {
+        for (let i = 0; i <= MAX_TOOL_ITERATIONS; i += 1) {
+          // F-15: the round after the last tool round is the tool-less wrap-up.
+          const wrapUp = i === MAX_TOOL_ITERATIONS;
+          if (wrapUp) {
+            messages = [
+              ...messages,
+              { role: 'system', content: TOOL_BUDGET_SPENT_NOTICE },
+            ];
+          }
           const fitted = this.budgets.fitRuntime(
             messages,
-            tools,
+            wrapUp ? [] : tools,
             modelDefinition,
           );
           messages = fitted.messages;
@@ -1793,7 +1897,7 @@ export class AiExecutionService {
             supportsTemperature: modelDefinition?.supportsTemperature,
             reasoningEffort: modelDefinition?.reasoningEffort,
             messages,
-            tools,
+            tools: wrapUp ? [] : tools,
             maxOutputTokens: this.budgets.maxOutputTokens,
             idempotencyKey: `${requestKey}:loop:${i}`,
             feature: featureForMetric,
@@ -1810,7 +1914,7 @@ export class AiExecutionService {
             accounting.cachedRequestCount += 1;
           accounting.providerAttempts += completion.providerAttempts ?? 1;
           await this.recordCompletionCost({
-            tenantId,
+            tenantId: meterTenantId,
             aiConversationId,
             requestKey,
             channel,
@@ -1823,17 +1927,23 @@ export class AiExecutionService {
             processing,
           });
 
-          const calls = completion.toolCalls ?? [];
+          // A wrap-up completion never runs tools, whatever the provider sent back.
+          const calls = wrapUp ? [] : (completion.toolCalls ?? []);
           if (calls.length === 0) {
             // AI-009 (FR-043, FR-045): checked before this branch's single
             // onToken(full) emission below and before persistence.
             const checked = this.applyPromptDisclosureCheck(
-              completion.content,
+              wrapUp
+                ? completion.content?.trim() || TOOL_LOOP_FALLBACK_TEXT
+                : completion.content,
               effectiveSystemPrompt,
               tools,
+              scopeRedirect,
             );
             full = checked.content;
             promptDisclosureBlocked = checked.blocked;
+            if (checked.scopeBlocked)
+              this.logScopeBlock(tenantId, aiConversationId, 'reply-code');
             break;
           }
           accounting.toolLoops += 1;
@@ -1880,16 +1990,6 @@ export class AiExecutionService {
             aiConversationId,
             acceptedFallback,
           );
-          if (i === MAX_TOOL_ITERATIONS - 1) {
-            const checked = this.applyPromptDisclosureCheck(
-              completion.content || 'I have processed your request.',
-              effectiveSystemPrompt,
-              tools,
-            );
-            full = checked.content;
-            promptDisclosureBlocked =
-              promptDisclosureBlocked || checked.blocked;
-          }
         }
         if (full) onToken(full);
       }
@@ -1924,7 +2024,7 @@ export class AiExecutionService {
         );
         await this.recordUsage(
           manager,
-          tenantId,
+          meterTenantId,
           agent?.id ?? null,
           totalTokens,
         );
@@ -1949,7 +2049,7 @@ export class AiExecutionService {
       }
 
       await this.metrics.record({
-        tenantId,
+        tenantId: meterTenantId,
         aiConversationId,
         channel,
         model: lastModel,
@@ -2022,7 +2122,7 @@ export class AiExecutionService {
       }
       if (providerStarted) {
         await this.costs.record({
-          tenantId,
+          tenantId: meterTenantId,
           aiConversationId,
           idempotencyKey: `${requestKey}:failure`,
           requestKind: 'CHAT',
@@ -2063,7 +2163,7 @@ export class AiExecutionService {
           .catch(() => undefined);
       }
       await this.metrics.record({
-        tenantId,
+        tenantId: meterTenantId,
         aiConversationId,
         channel,
         model: modelForMetric,
@@ -2247,6 +2347,198 @@ export class AiExecutionService {
   }
 
   /**
+   * F-12: the prompt a turn runs under = the platform core for its surface, with
+   * the clinic's agent text (when there is one) ON TOP of it.
+   *
+   * Before, `agent.system_prompt || default` — the agent text REPLACED the core,
+   * so a clinic Owner's one-line persona removed the clinical-safety boundary, the
+   * no-invention rule and the WhatsApp own-clinic rules. `corePrompt` and
+   * `clinicInstructions` are returned apart because the budget truncates them
+   * separately; `effectiveSystemPrompt` is both together, which is what the
+   * disclosure check has to protect from being recited.
+   */
+  private composeSystemPrompt(
+    channel: AiExecutionTransport,
+    agent: AiAgent | undefined,
+  ): {
+    corePrompt: string;
+    clinicInstructions: string | undefined;
+    effectiveSystemPrompt: string;
+  } {
+    const corePrompt = this.defaultSystemPrompt(channel);
+    const clinicInstructions = composeClinicInstructions(agent?.system_prompt);
+    return {
+      corePrompt,
+      clinicInstructions,
+      effectiveSystemPrompt: clinicInstructions
+        ? `${corePrompt}\n\n${clinicInstructions}`
+        : corePrompt,
+    };
+  }
+
+  /**
+   * F-10: does the scope guard apply to this turn? The two surfaces a stranger
+   * reaches — the public widget (a guest principal) and a clinic's WhatsApp number
+   * (the bridge-only transport, see F-13) — and never the signed-in staff
+   * assistant. `AI_SCOPE_GUARD_ENABLED=false` is the operator's kill switch.
+   */
+  private scopeGuardActive(channel: AiExecutionTransport): boolean {
+    if (String(this.config.get('AI_SCOPE_GUARD_ENABLED', 'true')) === 'false') {
+      return false;
+    }
+    return !!this.ctx.getUser()?.guest || channel === 'WHATSAPP';
+  }
+
+  /** What tripped, never what was said: the message itself stays out of the log. */
+  private logScopeBlock(
+    tenantId: string,
+    aiConversationId: string,
+    kind: ScopeCategory | 'reply-code',
+  ): void {
+    this.logger.warn(
+      `scope guard: ${kind} (tenant=${tenantId}, conversation=${aiConversationId})`,
+    );
+  }
+
+  /**
+   * F-10: finish a turn the scope guard refused, WITHOUT a model.
+   *
+   * It is still a turn — the visitor's message and the redirect are persisted (and
+   * mirrored to the inbox on WhatsApp), the request is completed so a retry of the
+   * same key replays it, and a metrics row records it with zero tokens. What it is
+   * not: no quota was reserved (the caller checks before that), no retrieval, no
+   * tool, no provider call and no cost row, and no usage row — nothing was spent.
+   */
+  private async answerOutOfScope(p: {
+    tenantId: string;
+    session: Record<string, unknown> | undefined;
+    aiConversationId: string;
+    linkedConversationId: string | undefined;
+    content: string;
+    origin?: { waMessageId?: string; messageType?: string };
+    onToken?: (delta: string) => void;
+    requestKey: string;
+    channel: AiExecutionTransport;
+    route: string;
+    feature: AiFeature;
+    processing: ProcessingDescriptor;
+    turnStart: number;
+    category: ScopeCategory;
+  }) {
+    this.logScopeBlock(p.tenantId, p.aiConversationId, p.category);
+    const reply = scopeRefusal(p.content);
+    await this.messages.save(
+      this.messages.create({
+        ai_conversation_id: p.aiConversationId,
+        tenant: { id: p.tenantId } as Tenant,
+        role: AI_MESSAGE_ROLE.USER,
+        content: p.content,
+        tokens_used: 0,
+      }),
+    );
+    if (p.linkedConversationId) {
+      await this.mirrorToTimeline(
+        p.tenantId,
+        p.linkedConversationId,
+        'CUSTOMER',
+        p.content,
+        p.origin,
+      );
+    }
+    const assistant = await this.messages.save(
+      this.messages.create({
+        ai_conversation_id: p.aiConversationId,
+        tenant: { id: p.tenantId } as Tenant,
+        role: AI_MESSAGE_ROLE.ASSISTANT,
+        content: reply,
+        tokens_used: 0,
+      }),
+    );
+    let mirroredMessageId: string | null = null;
+    if (p.linkedConversationId) {
+      const mirrored = await this.mirrorToTimeline(
+        p.tenantId,
+        p.linkedConversationId,
+        'BOT',
+        reply,
+      );
+      mirroredMessageId = mirrored?.id ?? null;
+    }
+    p.onToken?.(reply);
+    await this.metrics.record({
+      tenantId: this.meterTenantFor(
+        p.tenantId,
+        await this.resolveKnowledgeScope(p.session, p.tenantId),
+      ),
+      aiConversationId: p.aiConversationId,
+      channel: p.channel,
+      model: 'scope-guard',
+      feature: p.feature,
+      route: p.route,
+      idempotencyKey: p.requestKey,
+      streamed: false,
+      fallback: false,
+      success: true,
+      promptTokens: 0,
+      completionTokens: 0,
+      costUsd: 0,
+      toolCallsCount: 0,
+      toolSuccessCount: 0,
+      toolFailureCount: 0,
+      toolCallsTruncated: 0,
+      promptDisclosureBlocked: false,
+      toolExecMs: 0,
+      totalLatencyMs: Date.now() - p.turnStart,
+      correlationId: this.ctx.getCorrelationId(),
+      actorUserId: this.ctx.getUser()?.guest
+        ? null
+        : (this.ctx.getUser()?.id ?? null),
+      processing: p.processing,
+    });
+    const response = {
+      message: assistant,
+      retrievedChunks: 0,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      streamed: false,
+      fallback: false,
+      lastTool: undefined as
+        | { name: string; result: Record<string, unknown> }
+        | undefined,
+      mirroredMessageId,
+    };
+    await this.requests.complete(p.tenantId, p.requestKey, response);
+    return response;
+  }
+
+  /**
+   * F-20: which tenant this turn's COST and USAGE rows belong to.
+   *
+   * An anonymous visitor's conversation lives in the shared guest-discovery tenant
+   * — it owns the chat rows and nothing else — so every guest turn's cost, usage
+   * and metrics rows landed there (302 rows, none on the clinic) while the
+   * booking tool call, and the retrieval embedding, already named the clinic. A
+   * clinic could not see what its public assistant cost.
+   *
+   * Once the visitor has chosen a clinic, `resolveKnowledgeScope` has re-proved it
+   * against live data (approved, active, opted in to public booking), and that is
+   * the tenant to attribute to; before that, or if the choice no longer holds, it
+   * stays the conversation's own tenant. Only ever re-attributes a GUEST turn —
+   * a staff or WhatsApp turn is always its own tenant's.
+   *
+   * WHAT THIS DOES NOT MOVE. The quota counter (`UsageService`, the plan's AI-token
+   * cap) and the entitlement check still use the conversation tenant. Charging a
+   * clinic's purchased quota for anonymous visitors — and refusing a visitor
+   * mid-conversation because the clinic ran out — is a commercial decision, not a
+   * bookkeeping fix; see the Phase 3 log.
+   */
+  private meterTenantFor(
+    conversationTenantId: string,
+    resolvedTenantId: string,
+  ): string {
+    return this.ctx.getUser()?.guest ? resolvedTenantId : conversationTenantId;
+  }
+
+  /**
    * The ESTABLISHED BOOKING CONTEXT block for a PUBLIC turn, or `undefined`.
    *
    * Public surfaces only: it is built from the anonymous booking session, which
@@ -2257,10 +2549,22 @@ export class AiExecutionService {
   private async buildBookingContext(
     tenantId: string,
     aiConversationId: string,
+    channel?: AiExecutionTransport,
   ): Promise<string | undefined> {
     const user = this.ctx.getUser();
-    if (!user?.guest) return undefined;
+    // F-28: a WhatsApp patient is not a guest, but their turns have the same
+    // amnesia — the own-clinic working set is that channel's pinned block.
+    const ownClinic = !user?.guest && !!user && channel === 'WHATSAPP';
+    if (!user?.guest && !ownClinic) return undefined;
     try {
+      if (ownClinic) {
+        return (
+          (await this.dispatch.describeOwnClinicContext(
+            tenantId,
+            aiConversationId,
+          )) ?? undefined
+        );
+      }
       return (
         (await this.bookingContext.describeSelection(
           tenantId,
@@ -2410,7 +2714,7 @@ export class AiExecutionService {
     const period = currentPeriodMonth();
 
     if (agentId === null) {
-      const updated: unknown[] = await manager.query(
+      const result: unknown = await manager.query(
         `UPDATE ai_usage_logs
             SET total_tokens   = total_tokens   + $3,
                 total_requests = total_requests + 1
@@ -2418,7 +2722,15 @@ export class AiExecutionService {
         RETURNING id`,
         [tenantId, period, tokens],
       );
-      if (updated.length > 0) return;
+      // TypeORM's Postgres driver answers an UPDATE … RETURNING with a TUPLE,
+      // `[rows, affectedCount]`, not the bare row array a SELECT gives. This used
+      // to read `.length` of the tuple — always 2 — so it took "the row exists"
+      // as a fact and returned, and the INSERT below never ran: no agent-less turn
+      // (every guest turn, every clinic without an agent) was ever written to
+      // `ai_usage_logs`, so the clinic's AI usage analytics for them stayed empty.
+      const touched =
+        Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
+      if (Array.isArray(touched) && touched.length > 0) return;
 
       await manager.query(
         `INSERT INTO ai_usage_logs ("tenantId", "agentId", period_month, total_tokens, total_requests)

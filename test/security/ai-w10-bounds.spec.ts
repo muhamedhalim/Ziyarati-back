@@ -39,7 +39,7 @@ describe('AI abuse — bound manipulation (T148)', () => {
     await harness.close();
   }, 60_000);
 
-  it('a massively oversized WS message (bypassing the REST-only 8000-char DTO validation) is still bounded to the applied prompt-token budget, never sent to the provider at its full size', async () => {
+  it('a massively oversized WS message is REFUSED at the door (F-14, Phase 3) — and the prompt-token budget still bounds one that gets past it (defence in depth)', async () => {
     await harness.app.listen(0);
     const address = harness.app.getHttpServer().address() as AddressInfo;
     const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -73,31 +73,34 @@ describe('AI abuse — bound manipulation (T148)', () => {
       harness.provider.reset();
       harness.provider.script([{ content: 'Bound-manipulation scripted reply.' }]);
 
-      const done = await new Promise<{ aiConversationId: string }>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('ai:done timeout')), 15_000);
-        client.once(AI_EVENT.DONE, (payload: { aiConversationId: string }) => { clearTimeout(timer); resolve(payload); });
-        client.once(AI_EVENT.ERROR, (payload: unknown) => { clearTimeout(timer); reject(new Error(JSON.stringify(payload))); });
+      // F-14: the WS path used to accept this (REST's DTO caps content at 8000) and rely on the
+      // token budget alone. It is now refused before any conversation, embedding or provider work.
+      const outcome = await new Promise<{ kind: 'done' | 'error'; payload: { code?: string } }>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('no ai:done / ai:error within the timeout')), 15_000);
+        client.once(AI_EVENT.DONE, (payload: unknown) => { clearTimeout(timer); resolve({ kind: 'done', payload: payload as { code?: string } }); });
+        client.once(AI_EVENT.ERROR, (payload: unknown) => { clearTimeout(timer); resolve({ kind: 'error', payload: payload as { code?: string } }); });
         client.emit(AI_EVENT.MESSAGE, { content: oversizedContent, channel: 'WEBSITE' });
       });
-
-      expect(done.aiConversationId).toBeTruthy();
-      expect(harness.provider.callCount).toBeGreaterThanOrEqual(1);
-
-      // The APPLIED bound: what actually reached the "model" in the captured
-      // request must be bounded by the configured budget, not by what was sent.
-      const captured = harness.provider.capturedMessages(0);
-      const totalEstimated = budgets.estimateMessages(captured as never);
-      expect(totalEstimated).toBeLessThan(20_000); // well under the raw ~40,000-token request, close to contextWindow(16384)-ish ceiling
-      // No single captured message contains the full 120,000-char string.
-      for (const m of captured) {
-        expect((m.content ?? '').length).toBeLessThan(oversizedContent.length);
-      }
-
-      await harness.dataSource.query(`DELETE FROM ai_messages WHERE ai_conversation_id = $1`, [done.aiConversationId]);
-      await harness.dataSource.query(`DELETE FROM ai_conversations WHERE id = $1`, [done.aiConversationId]);
+      expect(outcome.kind).toBe('error');
+      expect(outcome.payload.code).toBe('VALIDATION_ERROR');
+      expect(harness.provider.callCount).toBe(0);
     } finally {
       if (client.connected) client.disconnect();
       await new Promise<void>((resolve) => harness.app.getHttpServer().close(() => resolve()));
+    }
+
+    // Defence in depth — the APPLIED bound, asserted directly on the prompt builder for a message that
+    // reaches it by a path with no length cap of its own: what is handed to a model is bounded by the
+    // configured budget, not by what was sent.
+    const built = budgets.build({
+      systemPrompt: 'You are the clinic assistant.',
+      history: [{ role: 'user', content: oversizedContent }],
+      ragChunks: [],
+      tools: [],
+    });
+    expect(budgets.estimateMessages(built.messages as never)).toBeLessThan(20_000); // vs ~40,000 raw
+    for (const m of built.messages) {
+      expect((m.content ?? '').length).toBeLessThan(oversizedContent.length);
     }
   }, 30_000);
 

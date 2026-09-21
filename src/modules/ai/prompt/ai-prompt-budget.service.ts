@@ -39,6 +39,15 @@ export interface AttachmentPromptInput {
 export interface PromptBuildInput {
   systemPrompt?: string;
   /**
+   * F-12: the clinic's own agent text, already framed by
+   * `composeClinicInstructions`. Appended to the SAME system message as the core
+   * but budgeted and truncated on its own (`AI_PROMPT_AGENT_TOKENS`), so a long
+   * agent prompt cannot evict the platform's guidance and the platform's guidance
+   * cannot starve the clinic's. One message, not two: `refreshBookingContext`
+   * finds the pinned booking block by its position among the system messages.
+   */
+  agentInstructions?: string;
+  /**
    * Server-verified state this conversation has already established — for the
    * public booking assistant, the city/clinic/branch/service/doctor/slot it has
    * confirmed against the database (see
@@ -77,6 +86,7 @@ export class AiPromptBudgetService {
   readonly maxOutputTokens: number;
   readonly maxToolOutputTokens: number;
   private readonly systemBudget: number;
+  private readonly agentBudget: number;
   private readonly historyBudget: number;
   private readonly ragBudget: number;
   private readonly bookingContextBudget: number;
@@ -88,6 +98,10 @@ export class AiPromptBudgetService {
 
   constructor(config: ConfigService) {
     this.systemBudget = this.positive(config.get('AI_PROMPT_SYSTEM_TOKENS'), 2000);
+    // F-12: the clinic's own agent text, on top of (never instead of) the core.
+    // Before this an agent prompt could use the whole 2000 by REPLACING the core,
+    // so this is the same order of size — not a new class of spend.
+    this.agentBudget = this.positive(config.get('AI_PROMPT_AGENT_TOKENS'), 1000);
     this.historyBudget = this.positive(config.get('AI_PROMPT_HISTORY_TOKENS'), 5000);
     this.ragBudget = this.positive(config.get('AI_PROMPT_RAG_TOKENS'), 2500);
     // Small and fixed: the block is a handful of validated lines (ids + names),
@@ -119,10 +133,16 @@ export class AiPromptBudgetService {
     const messages: AiChatMessage[] = [];
     const tools = this.takeTools(input.tools ?? [], telemetry);
 
-    if (input.systemPrompt) {
-      const trimmed = this.truncate(input.systemPrompt, this.systemBudget);
-      telemetry.truncatedSystemTokens = Math.max(0, this.estimate(input.systemPrompt) - this.estimate(trimmed));
-      if (trimmed) messages.push({ role: 'system', content: trimmed });
+    if (input.systemPrompt || input.agentInstructions) {
+      const core = this.truncate(input.systemPrompt ?? '', this.systemBudget);
+      telemetry.truncatedSystemTokens = Math.max(0, this.estimate(input.systemPrompt ?? '') - this.estimate(core));
+      let system = core;
+      if (input.agentInstructions) {
+        const clinic = this.truncate(input.agentInstructions, this.agentBudget);
+        telemetry.truncatedSystemTokens += Math.max(0, this.estimate(input.agentInstructions) - this.estimate(clinic));
+        system = core ? `${core}\n\n${clinic}` : clinic;
+      }
+      if (system) messages.push({ role: 'system', content: system });
     }
 
     if (input.bookingContext) {

@@ -20,6 +20,7 @@ import {
 } from '../subscription-billing/tenant-access-decision';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
+import { AI_MESSAGE_MAX_CHARS } from '../ai/ai.constants';
 import { ErrorCode } from '../../common/errors/error-code';
 import { AppError } from '../../common/errors/app-error';
 import { QueryFailedError } from 'typeorm';
@@ -353,6 +354,123 @@ describe('AiRealtimeGateway — AI entitlement on executing events', () => {
         });
 
         expect(orchestrator.handleStream).toHaveBeenCalled();
+      });
+    });
+
+    describe('F-14 — message size', () => {
+      const errors = (client: Socket) =>
+        (client.emit as jest.Mock).mock.calls.filter(([event]) => event === AI_EVENT.ERROR);
+
+      it('refuses a message over the REST limit with VALIDATION_ERROR, before any entitlement, rate-limit or turn work', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        await gateway.onMessage(client, { content: 'A'.repeat(AI_MESSAGE_MAX_CHARS + 1) });
+
+        expect(errors(client)).toHaveLength(1);
+        expect(errors(client)[0][1]).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+        expect(entitlements.resolve).not.toHaveBeenCalled();
+        expect(wsRateLimit.checkAndRecord).not.toHaveBeenCalled();
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      });
+
+      it('accepts a message of exactly the limit — the bound is inclusive, as the REST DTO\'s is', async () => {
+        const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+        await gateway.onMessage(client, { content: 'A'.repeat(AI_MESSAGE_MAX_CHARS) });
+
+        expect(errors(client)).toHaveLength(0);
+        expect(orchestrator.handleStream).toHaveBeenCalled();
+      });
+
+      it('applies to a guest exactly as to staff — the public widget is the transport that had no bound', async () => {
+        const client = guestSocket();
+        await gateway.onMessage(client, { content: 'A'.repeat(20_000) });
+
+        expect(errors(client)[0][1]).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      });
+
+      it.each([{ content: 12345 }, { content: { toString: () => 'x' } }, { content: ['a'] }, { content: null }])(
+        'a non-string content (%j) is a validation error, not a TypeError thrown across the socket',
+        async (body) => {
+          const client = socket([PERMISSION.AI_CONVERSATIONS_MANAGE]);
+          await expect(gateway.onMessage(client, body as never)).resolves.toBeUndefined();
+          expect(errors(client)[0][1]).toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+        },
+      );
+
+      it('uses the same constant the REST DTOs use (8000)', () => {
+        expect(AI_MESSAGE_MAX_CHARS).toBe(8000);
+      });
+    });
+
+    describe('F-16 — anonymous turns are bounded beyond the per-guest limit', () => {
+      const withAddress = (client: Socket, address: string | undefined) => {
+        (client as unknown as { handshake: { address?: string } }).handshake = { address };
+        return client;
+      };
+      const tiersCalled = () => wsRateLimit.checkAndRecord.mock.calls.map(([, tier]) => tier);
+      const refuseTier = (tier: string, code = ErrorCode.RATE_LIMITED) =>
+        wsRateLimit.checkAndRecord.mockImplementation(async (_id: string, t: string) =>
+          t === tier ? { allowed: false, code, tier } : { allowed: true },
+        );
+      const errorOf = (client: Socket) =>
+        (client.emit as jest.Mock).mock.calls.find(([event]) => event === AI_EVENT.ERROR)?.[1];
+
+      it('a guest is checked per guest, then per network address, then against the platform-wide daily budget — in that order', async () => {
+        await gateway.onMessage(withAddress(guestSocket(), '203.0.113.7'), { content: 'hello' });
+
+        expect(tiersCalled()).toEqual(['guest', 'guest-source', 'guest-day']);
+        expect(wsRateLimit.checkAndRecord).toHaveBeenCalledWith('203.0.113.7', 'guest-source');
+        expect(orchestrator.handleStream).toHaveBeenCalled();
+      });
+
+      it('with no address on the transport, the address tier is skipped — nothing is invented — and the daily budget still applies', async () => {
+        await gateway.onMessage(guestSocket(), { content: 'hello' });
+
+        expect(tiersCalled()).toEqual(['guest', 'guest-day']);
+      });
+
+      it('the per-address tier refuses a guest whose own limit is fresh — a re-minted identity restores nothing', async () => {
+        refuseTier('guest-source');
+        const client = withAddress(guestSocket(), '203.0.113.7');
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(errorOf(client)).toMatchObject({ code: ErrorCode.RATE_LIMITED });
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      });
+
+      it('an exhausted daily budget says so in words a visitor can act on', async () => {
+        refuseTier('guest-day');
+        const client = guestSocket();
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(errorOf(client).code).toBe(ErrorCode.RATE_LIMITED);
+        expect(errorOf(client).message).toMatch(/limit for anonymous visitors today/i);
+        expect(errorOf(client).message).toMatch(/contact the clinic/i);
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+      });
+
+      it('a degraded limiter (SERVICE_UNAVAILABLE) keeps its own message on the new tiers too', async () => {
+        refuseTier('guest-day', ErrorCode.SERVICE_UNAVAILABLE);
+        const client = guestSocket();
+        await gateway.onMessage(client, { content: 'hello' });
+
+        expect(errorOf(client).code).toBe(ErrorCode.SERVICE_UNAVAILABLE);
+        expect(errorOf(client).message).toMatch(/temporarily unavailable/i);
+      });
+
+      it('a guest already refused on their own limit consumes nothing further', async () => {
+        refuseTier('guest');
+        await gateway.onMessage(withAddress(guestSocket(), '203.0.113.7'), { content: 'hello' });
+
+        expect(tiersCalled()).toEqual(['guest']);
+      });
+
+      it('STAFF are not subject to the anonymous tiers', async () => {
+        await gateway.onMessage(withAddress(socket([PERMISSION.AI_CONVERSATIONS_MANAGE]), '203.0.113.7'), {
+          content: 'hello',
+        });
+
+        expect(tiersCalled()).toEqual(['authenticated']);
       });
     });
 
