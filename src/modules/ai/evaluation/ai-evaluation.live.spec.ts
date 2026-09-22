@@ -82,7 +82,7 @@ function provider(model: string): OpenAiChatProvider {
   return new OpenAiChatProvider(
     new ConfigService({
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-      OPENAI_CHAT_MODEL: model,
+      AI_FALLBACK_MODEL: model,
       OPENAI_REQUEST_TIMEOUT_MS: 60_000,
       OPENAI_PROVIDER_MAX_RETRIES: 1,
     }),

@@ -40,7 +40,7 @@ function providerFor(model: AiModelDefinition): OpenAiChatProvider {
   return new OpenAiChatProvider(
     new ConfigService({
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-      OPENAI_CHAT_MODEL: model.id,
+      AI_FALLBACK_MODEL: model.id,
       // Keep a failing model from stalling the whole sweep.
       OPENAI_REQUEST_TIMEOUT_MS: 60_000,
       OPENAI_PROVIDER_MAX_RETRIES: 1,

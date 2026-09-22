@@ -1248,7 +1248,12 @@ export class AiToolDispatchService {
     );
   }
 
-  /** Doctors at one of THIS clinic's own branches. */
+  /**
+   * Doctors at one of THIS clinic's own branches, or — F-24 — across every
+   * active branch when `branchId` is omitted, so a multi-branch clinic can
+   * answer a general "who are your doctors?" without demanding a branch
+   * choice first.
+   */
   private async listClinicDoctors(
     ctx: ToolContext,
     args: Record<string, unknown>,
@@ -1259,8 +1264,11 @@ export class AiToolDispatchService {
         error: 'This tool is not available in this context (no acting user).',
       };
     }
-    const branchId = this.uuid(args.branchId);
-    if (!branchId) return this.badId('branchId', 'list_clinic_branches');
+    const branchArgPresent = args.branchId !== undefined && args.branchId !== null && args.branchId !== '';
+    const branchId = branchArgPresent ? this.uuid(args.branchId) : undefined;
+    if (branchArgPresent && !branchId) {
+      return this.badId('branchId', 'list_clinic_branches');
+    }
 
     return this.run(
       ctx,
@@ -1268,26 +1276,36 @@ export class AiToolDispatchService {
       `clinic_doctors:${randomUUID()}`,
       args,
       async () => {
-        // Ownership check INSIDE the executor, before the lookup: a branch
-        // id from another tenant must refuse plainly (recorded as a normal
-        // FAILED_PERMANENT ledger row via AppError, same as getClinicDetails'
-        // not-found path) rather than silently returning an empty doctor
-        // list — which reads to the model as "this branch has no doctors"
-        // and invites a wrong answer to the patient.
-        await this.branches.findOne(ctx.tenantId, branchId);
-        const doctors = await this.discovery.listBranchDoctors(
-          ctx.tenantId,
-          branchId,
-        );
+        let doctors: Awaited<ReturnType<typeof this.discovery.listTenantDoctors>>;
+        if (branchId) {
+          // Ownership check INSIDE the executor, before the lookup: a branch
+          // id from another tenant must refuse plainly (recorded as a normal
+          // FAILED_PERMANENT ledger row via AppError, same as getClinicDetails'
+          // not-found path) rather than silently returning an empty doctor
+          // list — which reads to the model as "this branch has no doctors"
+          // and invites a wrong answer to the patient.
+          await this.branches.findOne(ctx.tenantId, branchId);
+          doctors = await this.discovery.listBranchDoctors(
+            ctx.tenantId,
+            branchId,
+          );
+        } else {
+          doctors = await this.discovery.listTenantDoctors(ctx.tenantId);
+        }
         return {
           toolResult: { success: true, count: doctors.length, doctors },
-          resultJson: { branchId, count: doctors.length },
+          resultJson: { branchId: branchId ?? null, count: doctors.length },
         };
       },
     );
   }
 
-  /** Services (with prices) at one of THIS clinic's own branches. */
+  /**
+   * Services (with prices) at one of THIS clinic's own branches, or — F-24 —
+   * across every active branch when `branchId` is omitted, so a multi-branch
+   * clinic can answer a general "what services do you offer?" without
+   * demanding a branch choice first.
+   */
   private async listClinicServices(
     ctx: ToolContext,
     args: Record<string, unknown>,
@@ -1298,8 +1316,11 @@ export class AiToolDispatchService {
         error: 'This tool is not available in this context (no acting user).',
       };
     }
-    const branchId = this.uuid(args.branchId);
-    if (!branchId) return this.badId('branchId', 'list_clinic_branches');
+    const branchArgPresent = args.branchId !== undefined && args.branchId !== null && args.branchId !== '';
+    const branchId = branchArgPresent ? this.uuid(args.branchId) : undefined;
+    if (branchArgPresent && !branchId) {
+      return this.badId('branchId', 'list_clinic_branches');
+    }
 
     return this.run(
       ctx,
@@ -1307,19 +1328,24 @@ export class AiToolDispatchService {
       `clinic_services:${randomUUID()}`,
       args,
       async () => {
-        // See listClinicDoctors' identical comment above.
-        await this.branches.findOne(ctx.tenantId, branchId);
-        const services = await this.discovery.listBranchServices(
-          ctx.tenantId,
-          branchId,
-        );
+        let services: Awaited<ReturnType<typeof this.discovery.listTenantServices>>;
+        if (branchId) {
+          // See listClinicDoctors' identical comment above.
+          await this.branches.findOne(ctx.tenantId, branchId);
+          services = await this.discovery.listBranchServices(
+            ctx.tenantId,
+            branchId,
+          );
+        } else {
+          services = await this.discovery.listTenantServices(ctx.tenantId);
+        }
         return {
           toolResult: {
             success: true,
             count: services.length,
             ...this.servicesForModel(services),
           },
-          resultJson: { branchId, count: services.length },
+          resultJson: { branchId: branchId ?? null, count: services.length },
         };
       },
     );
@@ -1845,10 +1871,13 @@ export class AiToolDispatchService {
       {
         selectedClinicId: owner,
         selectedBranchId: branchId,
-        // Doctors and services are branch-specific — a branch change invalidates them.
-        selectedDoctorId: undefined,
-        selectedServiceIds: undefined,
-        selectedStartAt: undefined,
+        // Doctors and services are branch-specific — a branch change invalidates
+        // them. F-21: SESSION_UNSET, not `undefined` — `undefined` is dropped by
+        // `clean()` and PRESERVES the existing value, so this reset was a no-op
+        // and a stale doctor/service/slot survived a branch switch.
+        selectedDoctorId: SESSION_UNSET,
+        selectedServiceIds: SESSION_UNSET,
+        selectedStartAt: SESSION_UNSET,
       },
     );
     return { success: true, branchId };
@@ -1964,8 +1993,10 @@ export class AiToolDispatchService {
       ctx.aiConversationId,
       {
         selectedDoctorId: staffId,
-        // The doctor's calendar differs, so a previously chosen time is stale.
-        selectedStartAt: undefined,
+        // F-21: SESSION_UNSET, not `undefined` (see selectBranch above) — the
+        // doctor's calendar differs, so a previously chosen time is stale and
+        // this reset must actually clear it, not silently no-op.
+        selectedStartAt: SESSION_UNSET,
       },
     );
     return { success: true, staffId };

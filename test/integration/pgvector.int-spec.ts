@@ -550,7 +550,11 @@ describe('pgvector — upsert / idempotency (real Postgres)', () => {
 
 describe('pgvector — similarity search (real HNSW/cosine query, static vectors, no OpenAI)', () => {
   gate()(
-    'returns results ordered by cosine distance: exact < close < far < opposite',
+    // F-08 (Phase 4): `far` (orthogonal, score 0) and `opposite` (score -1)
+    // now fall below RAG_MIN_SCORE's default floor (0.5) and are excluded —
+    // previously this test proved only ORDER, which is exactly how a
+    // near-zero-relevance chunk still made it into the model's context.
+    'returns results ordered by cosine distance, and excludes anything below the relevance floor',
     async () => {
       const tenantId = await newTenant(ds!);
       const agentId = await newAgent(ds!, tenantId);
@@ -582,15 +586,17 @@ describe('pgvector — similarity search (real HNSW/cosine query, static vectors
         'find the exact match',
         10,
       );
+      // `far` (score 0) and `opposite` (score -1) never clear the default
+      // 0.5 floor — only the two genuinely relevant chunks come back.
       expect(results.map((r) => r.content)).toEqual([
         'chunk exact',
         'chunk close',
-        'chunk far',
-        'chunk opposite',
       ]);
-      // Scores are 1 - cosine_distance: exact ≈ 1, opposite ≈ -1, strictly descending.
+      // Scores are 1 - cosine_distance: exact ≈ 1, strictly descending, and
+      // every surviving score clears the floor.
       for (let i = 1; i < results.length; i += 1)
         expect(results[i - 1].score).toBeGreaterThan(results[i].score);
+      for (const r of results) expect(r.score).toBeGreaterThanOrEqual(0.5);
     },
   );
 
@@ -599,8 +605,15 @@ describe('pgvector — similarity search (real HNSW/cosine query, static vectors
     const agentId = await newAgent(ds!, tenantId);
     const embedder = new StubEmbeddingProvider();
     const { ingestion, rag } = services(embedder);
+    // F-08 (Phase 4): each vector must clear the relevance floor for this to
+    // still test the LIMIT rather than the floor — mostly aligned with Q
+    // (index 0), plus a distinct tiny perturbation so all 8 are genuinely
+    // separate rows at a near-1.0 score, the same shape as V_CLOSE above.
     for (let i = 0; i < 8; i += 1) {
-      embedder.enqueue(basisVector(DIM, [i]));
+      const nearQ = basisVector(DIM, [0], 1).map((v, idx) =>
+        idx === i + 50 ? 0.05 : v,
+      );
+      embedder.enqueue(nearQ);
       await ingestion.ingestChunk(tenantId, agentId, `chunk-${i}`, {
         type: 'manual',
         id: randomUUID(),

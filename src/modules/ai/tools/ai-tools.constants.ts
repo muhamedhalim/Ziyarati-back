@@ -228,7 +228,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
   {
     name: AI_TOOL.GET_CUSTOMER_INSURANCE_STATUS,
     description:
-      'Check whether this patient\'s health-insurance status is already on file, before asking. Call this once, early in a booking flow, right after the customer is identified. Returns hasInsurance: true, false, or null (never asked before). If a value comes back (true or false), briefly CONFIRM it with the patient (e.g. "I have you down as having health insurance — is that still correct?") instead of asking cold. If null, ask the question fresh (see book_appointment for the exact wording).',
+      'Check whether this patient\'s health-insurance status is already on file, before asking. Call this once, early in a booking flow, right after the customer is identified. Returns hasInsurance: true, false, or null (never asked before). If a value comes back (true or false), briefly confirm it with the patient (e.g. "I have you down as having health insurance — is that still correct?") instead of asking cold. If null, ask the question fresh (see book_appointment for how to phrase it).',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -247,8 +247,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     description:
       'Book a new appointment for a customer. Only call after confirming an available slot via check_availability. ' +
       "Before booking, you must know the patient's health-insurance status: call get_customer_insurance_status first. " +
-      'If it returns a known value, confirm it with the patient rather than asking again. If it returns null (unknown), ask exactly — ' +
-      'Arabic: "هل لديك تأمين صحي؟" / English: "Do you have health insurance?" — with Yes/No options, then pass the confirmed answer as hasInsurance. ' +
+      'If it returns a known value, confirm it with the patient rather than asking again. If it returns null (unknown), ask a plain yes/no question, IN THE LANGUAGE THE PATIENT HAS BEEN USING (never a fixed script and never switch language for this one question), then pass the answer as hasInsurance. ' +
       'Insured patients are never charged online: no payment link is generated for them, regardless of what you say. ' +
       "Uninsured patients may get a payment link in this tool's result when the clinic requires online payment for this booking — if `paymentLink` is present in the result, share its details with the patient so they can complete payment; the decision to include it is made by the backend, not by you. " +
       'The booking itself is validated for real availability and fails if the slot is taken.',
@@ -276,7 +275,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
         hasInsurance: {
           type: 'boolean',
           description:
-            'The patient\'s confirmed health-insurance answer for this turn (from get_customer_insurance_status confirmation, or a fresh answer). Omit only if you truly could not obtain one — the backend then falls back to the on-file value, defaulting to "no insurance" if it was never asked.',
+            'The patient\'s health-insurance answer for this turn (from get_customer_insurance_status confirmation, or a fresh answer). Omit only if you truly could not obtain one — the backend then falls back to the on-file value, defaulting to "no insurance" if it was never asked.',
         },
       },
       required: ['branchId', 'customerId', 'staffId', 'startAt'],
@@ -376,33 +375,35 @@ export const AI_TOOLS: AiToolDefinition[] = [
   {
     name: AI_TOOL.LIST_CLINIC_DOCTORS,
     description:
-      "List the doctors who work at one of THIS clinic's branches, chosen from list_clinic_branches. Call this (and/or list_clinic_services) after the branch is chosen, before check_availability.",
+      "List THIS clinic's doctors, with their title, bio and specialties. OMIT branchId to answer a general 'who are your doctors?' / 'do you have a specialist for X?' across every branch — do NOT ask which branch first just to answer that. Pass branchId (from list_clinic_branches) only once you actually need branch-scoped doctors, e.g. right before check_availability.",
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         branchId: {
           type: 'string',
-          description: 'Branch UUID from list_clinic_branches.',
+          description:
+            'Branch UUID from list_clinic_branches. Omit for a clinic-wide list.',
         },
       },
-      required: ['branchId'],
+      required: [],
     },
   },
   {
     name: AI_TOOL.LIST_CLINIC_SERVICES,
     description:
-      "List the services (with prices) offered at one of THIS clinic's branches, chosen from list_clinic_branches. Call this (and/or list_clinic_doctors) after the branch is chosen, before book_appointment.",
+      "List THIS clinic's services, with description, duration and price. OMIT branchId to answer a general 'what services do you offer?' / 'do you do X?' across every branch — do NOT ask which branch first just to answer that. Pass branchId (from list_clinic_branches) only once you actually need branch-scoped prices, e.g. right before book_appointment.",
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         branchId: {
           type: 'string',
-          description: 'Branch UUID from list_clinic_branches.',
+          description:
+            'Branch UUID from list_clinic_branches. Omit for a clinic-wide list.',
         },
       },
-      required: ['branchId'],
+      required: [],
     },
   },
   {

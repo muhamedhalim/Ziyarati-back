@@ -309,7 +309,7 @@ export class AiExecutionService {
    * same reason: the guest/public widget runs against the discovery tenant with
    * no `AiAgent` row, so without this the setting would govern only agents
    * created after it was changed, and the widget would run on whatever
-   * `OPENAI_CHAT_MODEL` said. That is what made the setting a seed value rather
+   * `AI_FALLBACK_MODEL` said. That is what made the setting a seed value rather
    * than the platform's model configuration.
    *
    * `getTyped` is served from `SystemSettingService`'s 30 s in-process cache, so

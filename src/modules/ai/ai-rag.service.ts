@@ -70,18 +70,39 @@ export class AiRagService {
 
     if (this.embedder.isConfigured() && this.pgvector.isAvailable()) {
       try {
-        const chunks = await this.vectorSearch(tenantId, agentId, query, topK, timing, attribution);
+        const { chunks, hadCandidates } = await this.vectorSearch(tenantId, agentId, query, topK, timing, attribution);
+        if (chunks.length > 0) {
+          if (timing) timing.retrievalMode = 'vector';
+          return chunks;
+        }
+        // F-08: two DIFFERENT empty results were previously conflated.
+        //  - `hadCandidates` false: the ANN join found NOTHING at all for this
+        //    tenant/agent — most likely a row that has never been embedded yet
+        //    (ingestion lag, an embedding failure). Keyword search reads
+        //    `ai_knowledge_bases.content` directly and can still find that row
+        //    by exact text match, so it gets a real chance.
+        //  - `hadCandidates` true: the ANN join DID find rows, and every one
+        //    of them scored below the relevance floor — the tenant's
+        //    knowledge genuinely has nothing relevant. Falling back to
+        //    keyword here would defeat the floor: keyword scoring alone can
+        //    match on a single common word, which is exactly how an unrelated
+        //    chunk got shown as "knowledge" for an off-topic question. This
+        //    case returns empty, on purpose.
+        if (!hadCandidates) {
+          if (timing) timing.retrievalMode = 'keyword';
+          return this.keywordSearch(tenantId, agentId, query, topK);
+        }
         if (timing) timing.retrievalMode = 'vector';
-        return chunks;
+        return [];
       } catch (err) {
         this.logger.warn(
           `Vector search failed (${(err as Error).message}) — using keyword fallback`,
         );
       }
     }
-    // Reached both on a pure keyword-only deployment AND when the vector
-    // path above was attempted and threw — the recorded value matches the
-    // path actually taken, never the path merely attempted (FR-067).
+    // Reached on a pure keyword-only deployment, and when the vector path threw
+    // — the recorded value matches the path actually taken, never the path
+    // merely attempted (FR-067).
     if (timing) timing.retrievalMode = 'keyword';
     return this.keywordSearch(tenantId, agentId, query, topK);
   }
@@ -96,6 +117,13 @@ export class AiRagService {
 
   // ──────────────────────────── Vector path ──────────────────────────────── //
 
+  /**
+   * `hadCandidates` tells `retrieve()` WHY the result may be empty: false
+   * means the ANN join found no row at all (most likely nothing has been
+   * embedded yet — a keyword fallback deserves a chance); true means rows
+   * were found and scored, and every one fell below the relevance floor — a
+   * real "nothing relevant" answer that a keyword fallback must not override.
+   */
   private async vectorSearch(
     tenantId: string,
     agentId: string | null,
@@ -103,7 +131,7 @@ export class AiRagService {
     topK: number,
     timing?: { embeddingMs?: number; embeddingTokens?: number; embeddingCacheHits?: number },
     attribution?: { channel?: string; aiConversationId?: string; idempotencyKey?: string },
-  ): Promise<RetrievedChunk[]> {
+  ): Promise<{ chunks: RetrievedChunk[]; hadCandidates: boolean }> {
     const embedStart = Date.now();
     const embedding = await this.embedder.embed(tenantId, [query], {
       kind: 'QUERY', feature: 'rag_search', route: 'ai.chat.rag',
@@ -118,7 +146,7 @@ export class AiRagService {
       timing.embeddingCacheHits = embedding.cacheHits ?? 0;
     }
     const queryVec = vectors[0];
-    if (!queryVec) return [];
+    if (!queryVec) return { chunks: [], hadCandidates: false };
 
     const efSearch = Math.max(
       1,
@@ -152,13 +180,22 @@ export class AiRagService {
       row,
     ])).values()].slice(0, topK);
 
-    return uniqueRows.map((r: Record<string, unknown>) => ({
-      id: r.id as string,
-      content: r.content as string,
-      sourceType: (r.sourceType as string) ?? undefined,
-      sourceId: (r.sourceId as string) ?? undefined,
-      score: Number(r.score),
-    }));
+    // F-08: without a floor, the ANN query above always returns its top-K
+    // rows by similarity ORDER, even when the best of them barely resembles
+    // the question — a live run injected a near-zero-score chunk as
+    // "knowledge" for a question the tenant's KB had nothing on. A chunk that
+    // does not clear the floor is worse than no chunk at all.
+    const minScore = Number(this.config.get<number>('RAG_MIN_SCORE', 0.5));
+    const chunks = uniqueRows
+      .map((r: Record<string, unknown>) => ({
+        id: r.id as string,
+        content: r.content as string,
+        sourceType: (r.sourceType as string) ?? undefined,
+        sourceId: (r.sourceId as string) ?? undefined,
+        score: Number(r.score),
+      }))
+      .filter((c) => c.score >= minScore);
+    return { chunks, hadCandidates: uniqueRows.length > 0 };
   }
 
   // ──────────────────────────── Keyword fallback ─────────────────────────── //

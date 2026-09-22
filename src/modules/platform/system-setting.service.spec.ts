@@ -212,3 +212,51 @@ describe('SystemSettingService — ai.default_model policy', () => {
     expect(AI_MODEL_IDS).toContain(value);
   });
 });
+
+/**
+ * F-22 FIXED (was: the effective AI model was "visible nowhere" — `.env`'s
+ * `OPENAI_CHAT_MODEL` looked authoritative but was dead code, and
+ * `ai.default_model`'s own value carried no indication of whether a super
+ * admin had ever actually set it). `listTyped()` now reports `source` for
+ * every setting, so `ai.default_model` specifically stops being ambiguous.
+ */
+describe('SystemSettingService — F-22 listTyped() source', () => {
+  let settings: MockRepository;
+  let service: SystemSettingService;
+
+  beforeEach(() => {
+    settings = createMockRepository();
+    service = new SystemSettingService(
+      settings as any,
+      { record: jest.fn() } as any,
+      { getUser: () => ({ id: 'admin-1' }) } as any,
+    );
+  });
+
+  it('reports source "default" for ai.default_model when no row exists', async () => {
+    settings.findOne.mockResolvedValue(undefined);
+    const list = await service.listTyped();
+    const entry = list.find((s) => s.key === SettingKey.AI_DEFAULT_MODEL);
+    expect(entry?.source).toBe('default');
+    expect(entry?.value).toBe(entry?.default);
+  });
+
+  it('reports source "override" for ai.default_model once a super admin has upserted it', async () => {
+    settings.findOne.mockResolvedValue({ id: 's1', key: SettingKey.AI_DEFAULT_MODEL, value: 'gpt-5.6-luna' });
+    const list = await service.listTyped();
+    const entry = list.find((s) => s.key === SettingKey.AI_DEFAULT_MODEL);
+    expect(entry?.source).toBe('override');
+    expect(entry?.value).toBe('gpt-5.6-luna');
+  });
+
+  it('reports source independently per key, not platform-wide', async () => {
+    settings.findOne.mockImplementation(async ({ where: { key } }: { where: { key: SettingKey } }) =>
+      key === SettingKey.AI_DEFAULT_MODEL ? { id: 's1', key, value: 'gpt-5.6-terra' } : undefined,
+    );
+    const list = await service.listTyped();
+    const model = list.find((s) => s.key === SettingKey.AI_DEFAULT_MODEL);
+    const other = list.find((s) => s.key === SettingKey.MAINTENANCE_MODE);
+    expect(model?.source).toBe('override');
+    expect(other?.source).toBe('default');
+  });
+});

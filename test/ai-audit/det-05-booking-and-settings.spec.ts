@@ -174,23 +174,47 @@ describe('booking integrity and settings', () => {
   });
 
   // ── F-21 ───────────────────────────────────────────────────────────────────
-  it('F-21 DEFECT: select_branch does not clear the previously selected doctor/service/slot, select_doctor does not clear the slot', async () => {
+  it('F-21 FIXED: select_branch clears the previously selected doctor/service/slot', async () => {
     const { full } = rt.seed;
     const g = await GuestSession.start(rt);
     const { slot } = await prepare(g);
     await step(g, 'select_slot', { startAt: slot });
     const before = await g.session();
+    // Both seeded doctors work at `branchId` only — `branch2Id` has none —
+    // so this switch is a pure test of the RESET, not a re-validated pick.
     await step(g, 'select_branch', { branchId: full.branch2Id });
     const afterBranch = await g.session();
+    observed.stale_state = { before, afterBranch };
+    expect(before.selectedDoctorId).toBe(full.doctorStaffIds.omar);
+    expect(before.selectedServiceIds).toEqual([full.serviceIds.cleaning]);
+    expect(before.selectedStartAt).toBe(slot);
+    // FIXED: SESSION_UNSET (not `undefined`) now genuinely clears these on a
+    // branch switch — the same mechanism AI-006 already used for
+    // select_clinic. A stale doctor/service/slot can no longer survive into
+    // the new branch's context.
+    expect(afterBranch.selectedBranchId).toBe(full.branch2Id);
+    expect(afterBranch.selectedDoctorId).toBeNull();
+    expect(afterBranch.selectedServiceIds).toBeNull();
+    expect(afterBranch.selectedStartAt).toBeNull();
+  });
+
+  it('F-21 FIXED: select_doctor clears the previously selected slot', async () => {
+    const { full } = rt.seed;
+    const g = await GuestSession.start(rt);
+    const { slot } = await prepare(g, 'omar');
+    await step(g, 'select_slot', { startAt: slot });
+    const before = await g.session();
+    expect(before.selectedStartAt).toBe(slot);
+    // Switching doctor WITHIN the same branch (both omar and layla work at
+    // `branchId`) isolates select_doctor's own reset from select_branch's.
     await step(g, 'select_doctor', { staffId: full.doctorStaffIds.layla });
     const afterDoctor = await g.session();
-    observed.stale_state = { before, afterBranch, afterDoctor };
-    // AI-006 fixed this for select_clinic via SESSION_UNSET; the two sibling tools still pass `undefined`.
-    expect(afterBranch.selectedBranchId).toBe(full.branch2Id);
-    expect(afterBranch.selectedDoctorId).toBe(full.doctorStaffIds.omar); // stale: doctor of the OLD branch
-    expect(afterBranch.selectedServiceIds).toEqual([full.serviceIds.cleaning]);
-    expect(afterBranch.selectedStartAt).toBe(slot);
-    expect(afterDoctor.selectedStartAt).toBe(slot); // slot picked for omar survives the switch to layla
+    observed.stale_slot_after_doctor_switch = { before, afterDoctor };
+    // FIXED: the new doctor's calendar differs, so the slot picked for the
+    // OLD doctor is genuinely cleared — not silently carried over to a doctor
+    // it was never checked against.
+    expect(afterDoctor.selectedDoctorId).toBe(full.doctorStaffIds.layla);
+    expect(afterDoctor.selectedStartAt).toBeNull();
   });
 
   // ── settings ──────────────────────────────────────────────────────────────
