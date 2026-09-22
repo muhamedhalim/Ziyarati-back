@@ -37,7 +37,9 @@
     "test:e2e:integration-platform": "jest --config ./test/jest-e2e-integration-platform.json",
     "test:security": "jest --config ./test/jest-security.json",
     "test:ai:live": "jest openai-model-compat",
-    "test:ai:benchmark": "jest ai-evaluation.live"
+    "test:ai:benchmark": "jest ai-evaluation.live",
+    "test:ai-audit": "jest --config ./test/jest-ai-audit.json --runInBand --testPathIgnorePatterns \"live-\"",
+    "test:ai-audit:live": "jest --config ./test/jest-ai-audit.json --runInBand --testPathPattern \"live-\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1075.0",

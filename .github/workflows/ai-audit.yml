@@ -1,0 +1,208 @@
+name: AI chatbot audit suite
+
+# Phase 6 (specs/ai-chatbot-audit-2026-09/report.md, "Implementation plan" §12):
+# promotes `test/ai-audit` — built during the audit as pure test infrastructure,
+# see the report's Appendix A/B — from "a developer runs it by hand" into CI.
+#
+#   - `ai-audit-deterministic`: every PR into master. Scripted-model suites
+#     (det-*.spec.ts) against a real Postgres/Redis — no network call, no
+#     OpenAI key, no cost. This is the gate.
+#   - `ai-audit-live`: nightly only (+ manual dispatch), never on a PR. Runs
+#     the real `gpt-5.6-luna` model (report Phase 5's cost finding: Luna is
+#     the cheap side of the two-model registry) against a small, per-file
+#     capped scenario set (live-00: 12 calls, live-01: 150, live-02: 120 — the
+#     cap enforced in code by RecordingProvider, test/ai-audit/fixtures/
+#     live-support.ts) and uploads the run's transcripts (which record the
+#     resolved model id per call, `resolvedModel`/`models`) as a build
+#     artifact, since `test/ai-audit/results/` is git-ignored on purpose
+#     (real per-run output, not a fixture). Skipped entirely when no
+#     OPENAI_API_KEY secret is configured, so forks/early setup don't fail.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "test/ai-audit/**"
+      - "test/jest-ai-audit.json"
+      - "test/jest-e2e.env.js"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/ai-audit.yml"
+  schedule:
+    # 02:00 UTC nightly.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      live_model:
+        description: "Model to run the live suite against (must be one of the two GA models)"
+        required: false
+        default: gpt-5.6-luna
+        type: choice
+        options:
+          - gpt-5.6-luna
+          - gpt-5.6-terra
+
+jobs:
+  ai-audit-deterministic:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ziyarati_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      E2E_DB_NAME: ziyarati_e2e
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_e2e
+      ZT_E2E_REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      # Test-only — never a real secret. Isolated, disposable CI database.
+      JWT_ACCESS_SECRET: ai-audit-ci-access-secret-not-for-production-use
+      JWT_REFRESH_SECRET: ai-audit-ci-refresh-secret-not-for-production-use
+      PAYMENT_PROVIDER: noop
+      EMAIL_PROVIDER: noop
+      # Deliberately UNSET (H14 finding): the OpenAI provider dials the real
+      # API whenever OPENAI_API_KEY is present, key or no OPENAI_LIVE_TESTS
+      # flag. The deterministic suite runs on ScriptedAiProvider only — no key
+      # must ever be visible to this job.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Provision database from the migration chain
+        run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+
+      - name: Seed system RBAC catalogue and platform admin
+        run: npm run seed
+
+      - name: Deterministic AI-audit suite (det-*.spec.ts)
+        run: npm run test:ai-audit
+
+  ai-audit-live:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ziyarati_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      E2E_DB_NAME: ziyarati_e2e
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ziyarati_e2e
+      ZT_E2E_REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      JWT_ACCESS_SECRET: ai-audit-ci-access-secret-not-for-production-use
+      JWT_REFRESH_SECRET: ai-audit-ci-refresh-secret-not-for-production-use
+      PAYMENT_PROVIDER: noop
+      EMAIL_PROVIDER: noop
+      OPENAI_LIVE_TESTS: "true"
+      # Manual dispatch can pick Terra for a one-off comparison; the nightly
+      # schedule always falls through to the default (Luna — report Phase 5).
+      LIVE_MODEL: ${{ github.event.inputs.live_model || 'gpt-5.6-luna' }}
+
+    steps:
+      - name: Skip if no live-suite key is configured
+        if: ${{ secrets.OPENAI_API_KEY == '' }}
+        run: |
+          echo "::notice::OPENAI_API_KEY is not set as a repo/org secret — skipping the live AI-audit suite."
+          exit 0
+
+      - uses: actions/checkout@v4
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: npm ci
+
+      - name: Build
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: npm run build
+
+      - name: Provision database from the migration chain
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: node node_modules/typeorm/cli.js migration:run -d dist/src/config/data-source.js
+
+      - name: Seed system RBAC catalogue and platform admin
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: npm run seed
+
+      - name: Live AI-audit suite (live-*.spec.ts — real model, capped calls)
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: npm run test:ai-audit:live
+
+      # test/ai-audit/results/*.json is git-ignored (real per-run output);
+      # this is where the model id actually run and its per-scenario transcript
+      # get recorded for a nightly run, without checking real output into git.
+      - name: Upload live-run transcripts (model id + transcripts)
+        if: ${{ secrets.OPENAI_API_KEY != '' && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-audit-live-results-${{ github.run_id }}
+          path: test/ai-audit/results/
+          retention-days: 30
