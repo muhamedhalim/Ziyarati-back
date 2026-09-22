@@ -317,6 +317,13 @@ export async function cleanupTenant(
   await q(`DELETE FROM customer_files WHERE "tenantId" = $1`);
   await q(`DELETE FROM ai_training_files WHERE "tenantId" = $1`);
   await q(`DELETE FROM customers WHERE "tenantId" = $1`);
+  // Phase 6: `audit_logs."userId"` FKs to `users` with NO ACTION (branch is
+  // the only nullable/SET NULL side of this entity) — any spec whose flow
+  // writes an audit row (e.g. AppointmentService.create) previously 409'd
+  // the final `DELETE FROM users` below. Surfaced by
+  // staff-availability-soft-deleted-schedule.e2e-spec.ts once its own seed
+  // bug (missing public_slug) stopped masking it.
+  await q(`DELETE FROM audit_logs WHERE "tenantId" = $1`);
   await q(
     `DELETE FROM user_roles WHERE "userId" IN (SELECT id FROM users WHERE "tenantId" = $1)`,
   );

@@ -26,9 +26,15 @@ import { AI_TOOL } from './ai-tools.constants';
 /** A real UUID: every public lookup casts its id to `uuid` in SQL. */
 const CITY_ID = '11111111-1111-4111-8111-111111111111';
 
+// Phase 6, production-shape fix: `actorUserId` is deliberately set (to the
+// guest's own subject) — `AiExecutionService` fills it from `getUser().id` on
+// every turn, guests included, so a fixture that left it unset never actually
+// exercised `isGuest()`'s `principal.guest === true` branch (see the F-01
+// note in ai-tool-dispatch.clinic-questions.spec.ts for the full history).
 const CTX = {
   tenantId: 'guest-discovery-tenant',
   aiConversationId: 'conv-1',
+  actorUserId: 'guest-sub',
   principal: { id: 'guest-sub', guest: true, permissions: [] },
 } as never;
 

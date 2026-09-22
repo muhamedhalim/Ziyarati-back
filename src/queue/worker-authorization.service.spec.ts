@@ -130,6 +130,39 @@ describe('WorkerAuthorizationService', () => {
       expect(tenantLookup.findById).toHaveBeenCalledTimes(1);
     });
 
+    it('Phase 6 — tenant cache expires after its 30s TTL and re-queries, reflecting a tenant suspended mid-window', async () => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      tenantLookup.findById.mockResolvedValueOnce(approvedTenant);
+      await service.assertAuthorized(JOB.NOTIFICATIONS_DISPATCH, {
+        tenantId: 't1',
+      });
+      expect(tenantLookup.findById).toHaveBeenCalledTimes(1);
+
+      // Still within the 30s TTL — the stale (now-wrong) cached "ok" is served.
+      jest.spyOn(Date, 'now').mockReturnValue(now + 29_000);
+      tenantLookup.findById.mockResolvedValueOnce({
+        ...approvedTenant,
+        approval_status: TenantApprovalStatus.SUSPENDED,
+      });
+      await expect(
+        service.assertAuthorized(JOB.NOTIFICATIONS_DISPATCH, { tenantId: 't1' }),
+      ).resolves.toBeUndefined();
+      expect(tenantLookup.findById).toHaveBeenCalledTimes(1);
+
+      // Past the TTL — a fresh lookup runs and the suspension is observed.
+      jest.spyOn(Date, 'now').mockReturnValue(now + 30_001);
+      tenantLookup.findById.mockResolvedValueOnce({
+        ...approvedTenant,
+        approval_status: TenantApprovalStatus.SUSPENDED,
+      });
+      await expect(
+        service.assertAuthorized(JOB.NOTIFICATIONS_DISPATCH, { tenantId: 't1' }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(tenantLookup.findById).toHaveBeenCalledTimes(2);
+      jest.restoreAllMocks();
+    });
+
     it('"system" is treated as a placeholder, not a real actor — no actor lookup', async () => {
       tenantLookup.findById.mockResolvedValueOnce(approvedTenant);
       await service.assertAuthorized(JOB.NOTIFICATIONS_DISPATCH, {
@@ -265,6 +298,29 @@ describe('WorkerAuthorizationService', () => {
         actorId: 'u1',
       });
       expect(users.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('Phase 6 — actor cache expires after its 30s TTL and re-queries, reflecting an actor deactivated mid-window', async () => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      tenantLookup.findById.mockResolvedValue(approvedTenant);
+      users.findOne.mockResolvedValueOnce(activeMember);
+      await service.assertAuthorized(JOB.NOTIFICATIONS_DISPATCH, {
+        tenantId: 't1',
+        actorId: 'u1',
+      });
+      expect(users.findOne).toHaveBeenCalledTimes(1);
+
+      jest.spyOn(Date, 'now').mockReturnValue(now + 30_001);
+      users.findOne.mockResolvedValueOnce({ ...activeMember, is_active: false });
+      await expect(
+        service.assertAuthorized(JOB.NOTIFICATIONS_DISPATCH, {
+          tenantId: 't1',
+          actorId: 'u1',
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(users.findOne).toHaveBeenCalledTimes(2);
+      jest.restoreAllMocks();
     });
   });
 
@@ -442,6 +498,41 @@ describe('WorkerAuthorizationService', () => {
         actorId: 'u1',
       });
       expect(authService.buildAuthenticatedUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('Phase 6 — permission cache expires after its 30s TTL and re-queries, reflecting a permission revoked mid-window', async () => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      authService.buildAuthenticatedUser.mockResolvedValueOnce({
+        id: 'u1',
+        tenantId: 't1',
+        email: null,
+        roles: [],
+        permissions: [PERMISSION.AI_MANAGE],
+      });
+      await service.assertAuthorized(JOB.WORKFLOW_ACTION, {
+        tenantId: 't1',
+        actorId: 'u1',
+      });
+      expect(authService.buildAuthenticatedUser).toHaveBeenCalledTimes(1);
+
+      // Past the TTL (actor cache expires alongside it, re-validated the same way).
+      jest.spyOn(Date, 'now').mockReturnValue(now + 30_001);
+      authService.buildAuthenticatedUser.mockResolvedValueOnce({
+        id: 'u1',
+        tenantId: 't1',
+        email: null,
+        roles: [],
+        permissions: [],
+      });
+      await expect(
+        service.assertAuthorized(JOB.WORKFLOW_ACTION, {
+          tenantId: 't1',
+          actorId: 'u1',
+        }),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(authService.buildAuthenticatedUser).toHaveBeenCalledTimes(2);
+      jest.restoreAllMocks();
     });
 
     it('treats a lookup failure (inactive/missing user) as lacking the permission, not a crash', async () => {

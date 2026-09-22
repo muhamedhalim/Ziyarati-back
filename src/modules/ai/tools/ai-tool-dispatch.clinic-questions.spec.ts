@@ -26,10 +26,20 @@ const DOCTOR = '33333333-3333-4333-8333-333333333333';
 const SERVICE = '44444444-4444-4444-8444-444444444444';
 const CLINIC = '55555555-5555-4555-8555-555555555555';
 
-/** An anonymous website visitor: no acting user, no permissions, no tenant. */
+/**
+ * An anonymous website visitor: no permissions, no real tenant. `actorUserId`
+ * is deliberately set (to the guest's own subject, matching `principal.id`) —
+ * Phase 6, production-shape fix. `AiExecutionService` fills `actorUserId` from
+ * `getUser().id` on EVERY turn, guests included, so a real guest context always
+ * carries a truthy `actorUserId`; a fixture that left it unset was exactly the
+ * shape that hid F-01 (only `!ctx.actorUserId` was checked, never
+ * `principal.guest`), so it never proved `isGuest()`'s `principal.guest ===
+ * true` branch actually does the work.
+ */
 const GUEST_CTX = {
   tenantId: 'guest-discovery-tenant',
   aiConversationId: 'conv-1',
+  actorUserId: 'guest-sub',
   principal: { id: 'guest-sub', guest: true, permissions: [] },
 } as never;
 

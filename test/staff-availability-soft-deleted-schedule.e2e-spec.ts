@@ -39,6 +39,8 @@ import { WorkingHour } from '../src/entities/Staff/WorkingHour';
 import { StaffProfile } from '../src/entities/Staff/StaffProfile';
 import { StaffSchedule } from '../src/entities/Staff/StaffSchedule';
 import { User } from '../src/entities/Auth&RBAC/User';
+import { UserRole } from '../src/entities/Auth&RBAC/UserRole';
+import { Role } from '../src/entities/Auth&RBAC/Role';
 import { Customer } from '../src/entities/CRM/Customer';
 import { Tenant } from '../src/entities/SaaS-Core/Tenant';
 
@@ -115,9 +117,32 @@ describe('Availability windows — soft-deleted staff schedule (real Postgres)',
         tenant: { id: owner.tenantId } as Tenant,
         user: { id: liveUser.id } as User,
         is_available_for_booking: true,
+        public_slug: `${SUITE}-live-${randomUUID().slice(0, 8)}`,
       }),
     );
     liveStaffId = liveStaff.id;
+    // Phase 6 fix: `AppointmentService.create` only accepts a staff member
+    // whose USER holds a role in `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor or
+    // manager) — this suite's own booking assertion was unreachable before
+    // (the seed crashed on the missing `public_slug` NOT NULL above), so the
+    // missing role assignment was never exercised until now.
+    const doctorRole = await ds
+      .getRepository(Role)
+      .createQueryBuilder('r')
+      .where('r.slug = :slug', { slug: 'doctor' })
+      .andWhere('r."tenantId" IS NULL')
+      .getOne();
+    if (!doctorRole) {
+      throw new Error(
+        'Seeded system role "doctor" not found — run the RBAC seed against the test database first.',
+      );
+    }
+    await ds.getRepository(UserRole).save(
+      ds.getRepository(UserRole).create({
+        user: { id: liveUser.id } as User,
+        role: { id: doctorRole.id } as Role,
+      }),
+    );
     await schedules.save(
       schedules.create({
         tenant: { id: owner.tenantId } as Tenant,
@@ -149,6 +174,7 @@ describe('Availability windows — soft-deleted staff schedule (real Postgres)',
         tenant: { id: owner.tenantId } as Tenant,
         user: { id: ghostUser.id } as User,
         is_available_for_booking: true,
+        public_slug: `${SUITE}-ghost-${randomUUID().slice(0, 8)}`,
       }),
     );
     ghostStaffId = ghostStaff.id;
