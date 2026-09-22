@@ -558,14 +558,27 @@ export const validate = (config: Record<string, unknown>) => {
     // All optional: with no key the AI falls back to the Noop provider and RAG
     // degrades to keyword search, so the app still boots & runs.
     OPENAI_API_KEY: Joi.string().allow('', null),
-    // Constrained to the registry. This was free text defaulting to 'gpt-4o',
-    // and it is the model `OpenAiChatProvider` applies when a request names
-    // none — so it was a way for a single environment variable to put an
-    // unauthorized model in front of live traffic, outranking every
-    // application-level gate. Platform policy is not env-overridable.
-    OPENAI_CHAT_MODEL: Joi.string()
+    // F-22: renamed from `OPENAI_CHAT_MODEL`, which was named like the
+    // platform's effective chat model but never was one — `AiModelRouterService`
+    // always supplies `request.model` from `ai.default_model`
+    // (`/platform/settings`), so the old name was actively misleading. Still
+    // constrained to the registry so it can never put an unauthorized model in
+    // front of live traffic. Its two real jobs now: (1) the model applied when
+    // a request names none at all (rare — only callers that bypass the router),
+    // and (2) the model `OpenAiChatProvider`'s circuit breaker substitutes to
+    // when the routed model trips (see AI_CIRCUIT_BREAKER_* below).
+    AI_FALLBACK_MODEL: Joi.string()
       .valid(...AI_MODEL_IDS_ALL)
       .default(DEFAULT_AI_MODEL_ID),
+    // F-22: consecutive-failure threshold / cooldown for the per-model circuit
+    // breaker in `OpenAiChatProvider`. Unproven live — a first sizing guess,
+    // not a measured value; tune once real failure-rate data exists.
+    AI_CIRCUIT_BREAKER_THRESHOLD: Joi.number().integer().min(1).max(20).default(3),
+    AI_CIRCUIT_BREAKER_COOLDOWN_MS: Joi.number()
+      .integer()
+      .min(1000)
+      .max(600000)
+      .default(60000),
     OPENAI_EMBEDDING_MODEL: Joi.string().default('text-embedding-3-small'),
     // Must match the vector(N) column dimension created by the pgvector bootstrap.
     OPENAI_EMBEDDING_DIM: Joi.number().default(1536),
@@ -727,6 +740,11 @@ export const validate = (config: Record<string, unknown>) => {
     RAG_TOP_K: Joi.number().default(5),
     // HNSW query-time recall/latency knob (higher = better recall, slower).
     HNSW_EF_SEARCH: Joi.number().default(60),
+    // F-08: minimum cosine similarity a vector-search chunk must clear to be
+    // shown to the model as knowledge. Without a floor, the ANN search always
+    // returns its top-K rows even when the best of them is a near-zero match
+    // to a question the knowledge base has nothing on.
+    RAG_MIN_SCORE: Joi.number().min(0).max(1).default(0.5),
     // Toggle to create/use the pgvector sidecar. If false (or extension missing),
     // RAG uses keyword fallback.
     AI_PGVECTOR_ENABLED: Joi.string().valid('true', 'false').default('true'),

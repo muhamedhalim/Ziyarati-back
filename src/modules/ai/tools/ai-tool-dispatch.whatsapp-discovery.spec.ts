@@ -62,6 +62,8 @@ function build(overrides: {
   const discovery = {
     listBranchDoctors: jest.fn().mockResolvedValue([]),
     listBranchServices: jest.fn().mockResolvedValue([]),
+    listTenantDoctors: jest.fn().mockResolvedValue([]),
+    listTenantServices: jest.fn().mockResolvedValue([]),
     ...overrides.discovery,
   };
   const service = new AiToolDispatchService(
@@ -176,14 +178,16 @@ describe.each([
   {
     tool: AI_TOOL.LIST_CLINIC_DOCTORS,
     discoveryMethod: 'listBranchDoctors',
+    tenantWideMethod: 'listTenantDoctors',
     resultKey: 'doctors',
   },
   {
     tool: AI_TOOL.LIST_CLINIC_SERVICES,
     discoveryMethod: 'listBranchServices',
+    tenantWideMethod: 'listTenantServices',
     resultKey: 'services',
   },
-])('$tool', ({ tool, discoveryMethod, resultKey }) => {
+])('$tool', ({ tool, discoveryMethod, tenantWideMethod, resultKey }) => {
   it('is refused with no acting user', async () => {
     const { service, branches } = build({});
     const result: Record<string, unknown> = await service.execute(
@@ -205,6 +209,42 @@ describe.each([
     expect(branches.findOne).not.toHaveBeenCalled();
     expect(
       (discovery as never as Record<string, jest.Mock>)[discoveryMethod],
+    ).not.toHaveBeenCalled();
+  });
+
+  // F-24: a multi-branch clinic's WhatsApp turn had to ask "which branch?"
+  // before it could answer even a general "what services/doctors do you
+  // have?" — `branchId` is now OPTIONAL, and omitting it answers clinic-wide.
+  it('F-24: with no branchId, answers clinic-wide via the tenant-scoped method, without touching branches.findOne', async () => {
+    const { service, branches, discovery } = build({
+      discovery: {
+        [tenantWideMethod]: jest.fn().mockResolvedValue([{ id: 'x' }]),
+      },
+    });
+    const result: Record<string, unknown> = await service.execute(
+      CTX_AUTHENTICATED,
+      call(tool),
+    );
+    expect(result.success).toBe(true);
+    expect((result[resultKey] as { id: string }[])[0].id).toBe('x');
+    expect(branches.findOne).not.toHaveBeenCalled();
+    expect(
+      (discovery as never as Record<string, jest.Mock>)[tenantWideMethod],
+    ).toHaveBeenCalledWith(TENANT_A);
+    expect(
+      (discovery as never as Record<string, jest.Mock>)[discoveryMethod],
+    ).not.toHaveBeenCalled();
+  });
+
+  it('F-24: is refused with no acting user even with no branchId', async () => {
+    const { service, discovery } = build({});
+    const result: Record<string, unknown> = await service.execute(
+      CTX_NO_ACTOR,
+      call(tool),
+    );
+    expect(result.success).toBe(false);
+    expect(
+      (discovery as never as Record<string, jest.Mock>)[tenantWideMethod],
     ).not.toHaveBeenCalled();
   });
 

@@ -170,14 +170,36 @@ describe('public widget — tool behaviour through real gateway turns', () => {
   });
 
   // ── F-09 ───────────────────────────────────────────────────────────────────
-  it('F-09 DEFECT (coverage): get_clinic_details omits every field a patient asks about that exists in the DB — specialty, doctor bio, service description, clinic phone, cancellation policy', () => {
+  it('F-09 FIXED: get_clinic_details (the FROZEN guest-discovery contract) still omits these fields — extending it was deliberately avoided', () => {
     const blob = JSON.stringify(observed.clinic_details);
     expect(observed.clinic_details.success).toBe(true);
     expect(blob).toContain('Dental Cleaning'); // what IS exposed
-    expect(blob).not.toContain('AuditDermatology'); // staff/tenant specialty (seeded in staff_specialties/tenant_specialties)
-    expect(blob).not.toContain('bio-marker'); // staff_profiles.bio
-    expect(blob).not.toContain('published description'); // services.description
-    expect(blob).not.toContain('+966500000777'); // tenants.contact_phone
-    expect(blob).not.toMatch(/cancel/i); // tenant_settings.cancellation_hours = 24 is seeded
+    expect(blob).not.toContain('AuditDermatology');
+    expect(blob).not.toContain('bio-marker');
+    expect(blob).not.toContain('published description');
+    expect(blob).not.toContain('+966500000777');
+  });
+
+  it('F-09 FIXED: doctor specialty and bio are reachable via list_branch_doctors, once a branch is selected', () => {
+    const blob = JSON.stringify(observed.list_branch_doctors);
+    expect(observed.list_branch_doctors.success).toBe(true);
+    expect(blob).toContain('AuditDermatology'); // staff_specialties, via specialtiesForStaff
+    expect(blob).toContain('bio-marker'); // staff_profiles.bio
+    const layla = (observed.list_branch_doctors.doctors as any[]).find((d) => (d.bio ?? '').includes('bio-marker'));
+    expect(layla.specialties.some((s: any) => (s.nameEn ?? s.slug ?? '').includes('AuditDermatology') || s.slug?.includes('audit-derm'))).toBe(true);
+  });
+
+  it('F-09 FIXED: service description is reachable via list_branch_services', () => {
+    const blob = JSON.stringify(observed.list_branch_services);
+    expect(observed.list_branch_services.success).toBe(true);
+    expect(blob).toContain('published description');
+  });
+
+  it('F-09 FIXED: clinic phone and the cancellation policy are reachable via get_branch_info', () => {
+    const info = observed.branch_info_noargs;
+    expect(info.success).toBe(true);
+    expect(info.clinic.phone).toBe('+966500000777'); // tenants.contact_phone
+    expect(info.policies.cancellationHours).toBe(24); // tenant_settings.cancellation_hours
+    expect(typeof info.policies.paymentRequired).toBe('boolean');
   });
 });

@@ -109,13 +109,22 @@ export class SystemSettingService {
   /**
    * Returns all registry-defined settings merged with their current DB values
    * (or registry defaults when a key has no row yet).
+   *
+   * F-22: `source` distinguishes "a super admin deliberately set this" from
+   * "nobody has ever touched it, this is just the code default" — for
+   * `ai.default_model` specifically, that is the difference between "we chose
+   * gpt-5.6-terra" and "the platform silently runs terra because no one has
+   * looked". Without it, `value` alone can't tell the two apart.
    */
-  async listTyped(): Promise<Array<SettingDefinition & { value: unknown }>> {
+  async listTyped(): Promise<Array<SettingDefinition & { value: unknown; source: 'override' | 'default' }>> {
     return Promise.all(
       Object.values(SettingKey).map(async (key) => {
         const def = SETTINGS_REGISTRY[key];
-        const value = await this.getTyped(key);
-        return { ...def, value };
+        const [value, row] = await Promise.all([
+          this.getTyped(key),
+          this.settings.findOne({ where: { key } }),
+        ]);
+        return { ...def, value, source: row ? ('override' as const) : ('default' as const) };
       }),
     );
   }

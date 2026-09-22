@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
 import { AvailabilityService } from '../scheduling/availability.service';
+import { DEFAULT_CHANGE_WINDOW_HOURS } from '../patient-actions/patient-change-window.service';
 
 const n = (v: unknown): number => {
   const x = Number(v);
@@ -615,10 +616,15 @@ export class PublicDiscoveryService {
    *
    * `tenantId` is the caller's already-resolved clinic (from
    * `PublicBookingContextService`), never a caller-supplied value.
+   *
+   * F-09: `description` is now selected and returned — previously the column
+   * existed (used by the Marketplace projections) but no AI-reachable tool
+   * ever read it, so the assistant could never answer "what does this service
+   * involve?" beyond the bare name.
    */
   async listBranchServices(tenantId: string, branchId: string) {
     const rows = await this.dataSource.query(
-      `SELECT s.id, s.name, s.duration_minutes,
+      `SELECT s.id, s.name, s.description, s.duration_minutes,
               COALESCE(sp.price, s.base_price) AS price,
               s.pricing_type
          FROM services s
@@ -634,6 +640,7 @@ export class PublicDiscoveryService {
     return rows.map((r: Record<string, unknown>) => ({
       id: r.id as string,
       name: r.name as string,
+      description: (r.description as string) ?? null,
       durationMinutes: n(r.duration_minutes),
       price: r.price == null ? null : n(r.price),
       pricingType: r.pricing_type as string,
@@ -646,10 +653,15 @@ export class PublicDiscoveryService {
    * already carried `branchId`; it was consulted only deep inside availability
    * computation, where it failed OPEN — so a doctor from another branch (or one
    * with no schedule at all) was bookable anywhere in the clinic.
+   *
+   * F-09: `bio` and `specialties` are now selected and returned — the columns
+   * already exist (used by the Marketplace `doctorDetail()`/`searchDoctors()`
+   * projections) but no AI-reachable tool ever read them, so a "what does Dr.
+   * X specialize in?" question had no honest answer beyond "not available".
    */
   async listBranchDoctors(tenantId: string, branchId: string) {
     const rows = await this.dataSource.query(
-      `SELECT DISTINCT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
+      `SELECT DISTINCT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title, sp.bio
          FROM staff_profiles sp
          JOIN staff_schedules ss
            ON ss."staffId" = sp.id AND ss."branchId" = $2 AND ss.is_active = true
@@ -660,10 +672,78 @@ export class PublicDiscoveryService {
         ORDER BY name LIMIT 50`,
       [tenantId, branchId],
     );
+    const specialtiesByStaff = await this.specialtiesForStaff(
+      rows.map((r: Record<string, unknown>) => r.id as string),
+    );
     return rows.map((r: Record<string, unknown>) => ({
       id: r.id as string,
       name: r.name as string,
       title: (r.title as string) ?? null,
+      bio: (r.bio as string) ?? null,
+      specialties: specialtiesByStaff.get(r.id as string) ?? [],
+    }));
+  }
+
+  /**
+   * F-24: every doctor bookable at ANY of this tenant's own active branches,
+   * deduped by id. Own-clinic (authenticated) use only — `tenantId` is
+   * `ctx.tenantId`, never caller-supplied.
+   *
+   * THE BUG THIS FIXES. `list_clinic_doctors` required a `branchId`, so a
+   * multi-branch clinic's WhatsApp turn had to ask "which branch?" before it
+   * could answer even a generic "who are your doctors?" — a question that
+   * does not need a branch at all. This is a PREVIEW across the whole clinic,
+   * the same relationship `clinicDetail()`'s clinic-level lists have to
+   * `listBranchDoctors()`; booking still resolves the branch-scoped roster.
+   */
+  async listTenantDoctors(tenantId: string) {
+    const rows = await this.dataSource.query(
+      `SELECT DISTINCT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title, sp.bio
+         FROM staff_profiles sp
+         JOIN staff_schedules ss ON ss."staffId" = sp.id AND ss.is_active = true
+         JOIN branches b ON b.id = ss."branchId"
+                         AND b."tenantId" = $1 AND b.is_active = true AND b.deleted_at IS NULL
+         LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
+        WHERE sp."tenantId" = $1
+          AND sp.deleted_at IS NULL
+          AND sp.is_available_for_booking = true
+        ORDER BY name LIMIT 50`,
+      [tenantId],
+    );
+    const specialtiesByStaff = await this.specialtiesForStaff(
+      rows.map((r: Record<string, unknown>) => r.id as string),
+    );
+    return rows.map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      name: r.name as string,
+      title: (r.title as string) ?? null,
+      bio: (r.bio as string) ?? null,
+      specialties: specialtiesByStaff.get(r.id as string) ?? [],
+    }));
+  }
+
+  /**
+   * F-24: every active service this tenant offers, deduped by id, at its
+   * `base_price` — a clinic-wide PREVIEW, exactly as `clinicDetail()` already
+   * previews services for a guest before a branch is chosen. Booking still
+   * resolves the branch-scoped price via `listBranchServices()`, which is the
+   * only source `book_appointment`/`book_public_appointment` ever use.
+   */
+  async listTenantServices(tenantId: string) {
+    const rows = await this.dataSource.query(
+      `SELECT id, name, description, duration_minutes, base_price, pricing_type
+         FROM services
+        WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL
+        ORDER BY name LIMIT 50`,
+      [tenantId],
+    );
+    return rows.map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      name: r.name as string,
+      description: (r.description as string) ?? null,
+      durationMinutes: n(r.duration_minutes),
+      price: r.base_price == null ? null : n(r.base_price),
+      pricingType: r.pricing_type as string,
     }));
   }
 
@@ -754,7 +834,11 @@ export class PublicDiscoveryService {
       whatsapp: string | null;
       timezone: string;
     };
-    clinic: { id: string; name: string };
+    clinic: { id: string; name: string; phone: string | null };
+    policies: {
+      cancellationHours: number;
+      paymentRequired: boolean;
+    };
     workingHours: {
       dayOfWeek: number;
       day: string;
@@ -770,9 +854,15 @@ export class PublicDiscoveryService {
         }
       : { clause: `AND ${ELIGIBLE_CLINIC}`, params: [branchId] };
 
+    // F-09: `t.contact_phone`, `ts.cancellation_hours` and `ts.payment_required`
+    // already existed (read by the booking/cancellation code paths) but no
+    // AI-reachable tool ever selected them, so "what's your cancellation
+    // policy?" or "do I need to pay online?" had no structured answer — only
+    // an optional, clinic-authored KB note (F-08) could ever cover it.
     const rows = await this.dataSource.query(
       `SELECT b.id, b.name, b.address, b.phone, b.whatsapp_phone, b.timezone,
-              b."tenantId" AS tenant_id, t.name AS clinic_name,
+              b."tenantId" AS tenant_id, t.name AS clinic_name, t.contact_phone,
+              ts.cancellation_hours, ts.payment_required,
               COALESCE(c.name_ar, c.name_en) AS city
          FROM branches b
          JOIN tenants t ON t.id = b."tenantId"
@@ -811,7 +901,18 @@ export class PublicDiscoveryService {
         whatsapp: (row.whatsapp_phone as string) ?? null,
         timezone: (row.timezone as string) || 'UTC',
       },
-      clinic: { id: row.tenant_id as string, name: row.clinic_name as string },
+      clinic: {
+        id: row.tenant_id as string,
+        name: row.clinic_name as string,
+        phone: (row.contact_phone as string) ?? null,
+      },
+      policies: {
+        cancellationHours:
+          row.cancellation_hours == null
+            ? DEFAULT_CHANGE_WINDOW_HOURS
+            : n(row.cancellation_hours),
+        paymentRequired: row.payment_required !== false,
+      },
       workingHours: WEEKDAYS.map((day, dayOfWeek) => {
         const rowsForDay = byDay.get(dayOfWeek);
         if (!rowsForDay?.length) {
@@ -856,7 +957,13 @@ export class PublicDiscoveryService {
     branchId: string,
     staffId: string,
   ): Promise<{
-    doctor: { id: string; name: string; title: string | null };
+    doctor: {
+      id: string;
+      name: string;
+      title: string | null;
+      bio: string | null;
+      specialties: { slug: string; nameAr: string; nameEn: string }[];
+    };
     weekly: {
       dayOfWeek: number;
       day: string;
@@ -868,7 +975,7 @@ export class PublicDiscoveryService {
     await this.assertDoctorAtBranch(tenantId, branchId, staffId);
 
     const [profile] = await this.dataSource.query(
-      `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
+      `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title, sp.bio
          FROM staff_profiles sp
          LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
         WHERE sp.id = $2::uuid AND sp."tenantId" = $1::uuid AND sp.deleted_at IS NULL
@@ -877,6 +984,14 @@ export class PublicDiscoveryService {
     );
     if (!profile)
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Doctor not found' });
+
+    // F-09: same fields `listBranchDoctors` now carries — a doctor's specialty
+    // and bio are answerable wherever the assistant discusses that doctor, not
+    // only from the branch-level list.
+    const specialties =
+      (await this.specialtiesForStaff([profile.id as string])).get(
+        profile.id as string,
+      ) ?? [];
 
     // Staff schedule ∩ branch open hours — the same intersection
     // `StaffScheduleService.getAvailability` performs per day, expressed here
@@ -919,6 +1034,8 @@ export class PublicDiscoveryService {
         id: profile.id as string,
         name: profile.name as string,
         title: (profile.title as string) ?? null,
+        bio: (profile.bio as string) ?? null,
+        specialties,
       },
       weekly: [...byDay.entries()]
         .sort((a, b) => a[0] - b[0])

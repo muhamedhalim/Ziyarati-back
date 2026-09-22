@@ -159,7 +159,7 @@ const PUBLIC_ONLY_TOOLS: AiToolDefinition[] = [
     name: AI_PUBLIC_TOOL.BOOK_PUBLIC_APPOINTMENT,
     description:
       "Create the appointment. Call this ONLY after city, clinic, branch, service, doctor and slot have all been recorded via the select_* tools, and after you have the patient's name and phone. " +
-      'You must also know their health-insurance status: ask exactly — Arabic: "هل لديك تأمين صحي؟" / English: "Do you have health insurance?" — and pass the answer as hasInsurance. ' +
+      'You must also know their health-insurance status: ask a plain yes/no question, IN THE LANGUAGE THE PATIENT HAS BEEN USING (never a fixed script and never switch language for this one question) — and pass the answer as hasInsurance. ' +
       'Insured patients are never charged online and no payment link is created for them, regardless of what you say. ' +
       "Uninsured patients may receive a payment link in this tool's result when the clinic requires online payment; if `paymentLink` is present, share its details. That decision is the backend's, not yours. " +
       'Takes no clinic, branch, service, doctor or time arguments — those come from what you already recorded, so they cannot drift. ' +
@@ -174,7 +174,7 @@ const PUBLIC_ONLY_TOOLS: AiToolDefinition[] = [
         hasInsurance: {
           type: 'boolean',
           description:
-            'The patient\'s confirmed answer to the health-insurance question. Omit only if you truly could not obtain one — the backend then defaults to "no insurance", and payment is collected as usual.',
+            'The patient\'s answer to the health-insurance question, asked once in this turn. Omit only if you truly could not obtain one — the backend then defaults to "no insurance", and payment is collected as usual.',
         },
         notes: {
           type: 'string',

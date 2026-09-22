@@ -50,7 +50,7 @@ export class AiProviderFactory {
   /**
    * @param model The model to dispatch. Omitted ⇒ "any provider", used by call
    *   sites that let the provider apply its own default — itself allow-listed
-   *   (`OPENAI_CHAT_MODEL` is Joi-validated against the registry), so an absent
+   *   (`AI_FALLBACK_MODEL` is Joi-validated against the registry), so an absent
    *   model cannot be a way around this gate.
    * @throws AppError(SERVICE_UNAVAILABLE) when `model` is outside the registry.
    *   Thrown BEFORE provider selection, in every environment: dropping through

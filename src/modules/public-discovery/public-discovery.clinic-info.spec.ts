@@ -226,10 +226,20 @@ describe('PublicDiscoveryService.doctorSchedule', () => {
 
     await service.doctorSchedule(TENANT, BRANCH, DOCTOR);
 
-    // Every parameterised read carries the tenant. A doctor id belonging to
-    // another clinic therefore matches nothing rather than returning a roster.
+    // Every parameterised read against a TENANT-COLUMN-CARRYING staff table
+    // (staff_profiles/staff_schedules) binds the tenant. A doctor id belonging
+    // to another clinic therefore matches nothing rather than returning a
+    // roster. F-09's `specialtiesForStaff` lookup is deliberately excluded: it
+    // filters by staffId only (no tenant column on `staff_specialties`), which
+    // is safe because every staffId it receives — here and at every other call
+    // site (the Marketplace's cross-tenant doctor search included) — was
+    // already resolved through a tenant-scoped query first.
     for (const [sql, params] of query.mock.calls) {
-      if (typeof sql === 'string' && sql.includes('staff')) {
+      if (
+        typeof sql === 'string' &&
+        sql.includes('staff') &&
+        !sql.includes('staff_specialties')
+      ) {
         expect(params).toContain(TENANT);
       }
     }

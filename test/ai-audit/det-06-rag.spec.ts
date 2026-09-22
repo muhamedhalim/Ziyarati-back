@@ -5,10 +5,12 @@
  * query embedding spied to another chosen vector), so what is measured is the RETRIEVAL LOGIC, not the
  * quality of any embedding model.
  *
- * Findings covered:
- *   F-08a  a KB row without an embedding is invisible: the vector query succeeds with zero rows, so the
- *          keyword fallback (which would find it) never runs
- *   F-08b  there is no relevance floor: an orthogonal (score 0.000) chunk is still injected as "Reference data"
+ * Findings covered (Phase 4 — both now FIXED, converted from the original defect tests):
+ *   F-08a  a KB row with no embedding yet is no longer invisible: an empty ANN result with no candidate
+ *          rows at all now falls back to the keyword search, which finds it by exact text match
+ *   F-08b  a relevance floor (RAG_MIN_SCORE) now rejects a chunk that scored below it; because the ANN
+ *          join DID produce a candidate (just a bad one), this does NOT fall back to keyword — a
+ *          keyword fallback here would defeat the floor via a single common-word match
  *   (control) tenant scoping holds on the vector path
  */
 import { CANARY } from './fixtures/audit-seed';
@@ -43,28 +45,32 @@ describe('clinic knowledge retrieval (vector path)', () => {
   const knowledgeBlock = () =>
     reactive.capturedRequests[0].messages.find((m) => m.role === 'user' && (m.content ?? '').includes('Reference data only'))?.content ?? '';
 
-  it('F-08a DEFECT: a KB row with no embedding is never retrieved on the vector path, although the keyword fallback would find it', async () => {
+  it('F-08a FIXED: a KB row with no embedding yet is found via the keyword fallback', async () => {
     const { full } = rt.seed;
     const timing: { retrievalMode?: string } = {};
-    const viaVector = await rag.retrieve(full.tenantId, null, 'cancellation policy', 5, timing);
-    const viaKeyword = await (rag as unknown as { keywordSearch: (t: string, a: null, q: string, k: number) => Promise<{ content: string }[]> })
-      .keywordSearch(full.tenantId, null, 'cancellation policy', 5);
-    observed.no_embedding = { mode: timing.retrievalMode, vectorChunks: viaVector.length, keywordChunks: viaKeyword.length };
-    expect(timing.retrievalMode).toBe('vector');
-    expect(viaVector).toHaveLength(0);
-    expect(viaKeyword).toHaveLength(1);
-    expect(viaKeyword[0].content).toContain('Cancellation policy');
+    const found = await rag.retrieve(full.tenantId, null, 'cancellation policy', 5, timing);
+    observed.no_embedding = { mode: timing.retrievalMode, chunks: found.length };
+    // No row has been embedded yet for this tenant (the ANN join has zero candidates), so `retrieve()`
+    // now falls all the way through to the keyword path — the timing it RECORDS matches the path that
+    // ACTUALLY served the answer, not the vector path it merely tried first.
+    expect(timing.retrievalMode).toBe('keyword');
+    expect(found).toHaveLength(1);
+    expect(found[0].content).toContain('Cancellation policy');
   });
 
-  it('F-08b DEFECT: with cosine similarity 0 (orthogonal vectors) the chunk is still returned and injected into the model request', async () => {
+  it('F-08b FIXED: an orthogonal (score 0) chunk is rejected by the relevance floor and never reaches the model', async () => {
     const { full } = rt.seed;
     await q(`INSERT INTO ai_kb_embeddings (kb_id, tenant_id, agent_id, embedding) VALUES ($1,$2,NULL,$3::vector)`, [full.kbId, full.tenantId, sql(unit(0))]);
     const embed = jest.spyOn(rt.harness.embedding, 'embed').mockResolvedValue({ vectors: [unit(1)], tokens: 1, cacheHits: 0 } as never);
 
-    const chunks = await rag.retrieve(full.tenantId, null, 'What is the capital of France?', 5);
-    observed.no_floor_chunks = chunks.map((c) => ({ score: c.score, content: c.content.slice(0, 60) }));
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0].score).toBeCloseTo(0, 5);
+    const timing: { retrievalMode?: string } = {};
+    const chunks = await rag.retrieve(full.tenantId, null, 'What is the capital of France?', 5, timing);
+    observed.no_floor_chunks = { mode: timing.retrievalMode, chunks };
+    // A real candidate WAS found and scored (score 0, below RAG_MIN_SCORE) — unlike F-08a, this must
+    // NOT fall back to keyword: keyword scoring can match on a single common word, which is exactly how
+    // an unrelated chunk was previously shown to the model as "knowledge" for an off-topic question.
+    expect(chunks).toHaveLength(0);
+    expect(timing.retrievalMode).toBe('vector');
 
     reactive.setHandler(() => ({ content: 'ok' }));
     // Not the capital-of-France question: since Phase 3 the scope guard answers that one without retrieval
@@ -72,8 +78,9 @@ describe('clinic knowledge retrieval (vector path)', () => {
     await whatsappTurn(rt, full.tenantId, full.patientPhones!.x, 'Tell me a fun fact about penguins.');
     const block = knowledgeBlock();
     observed.no_floor_block = block;
-    expect(block).toContain('policy-marker'); // an unrelated clinic note is presented to the model as reference data
-    expect(block).toContain('[1] Cancellation policy'); // the score (0) is stripped before the model sees it
+    // With nothing above the floor, ai-prompt-budget.service.ts never emits the "Reference data only"
+    // message at all — the unrelated clinic note is not presented to the model as reference data.
+    expect(block).toBe('');
     embed.mockRestore();
   });
 

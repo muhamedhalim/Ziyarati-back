@@ -10,6 +10,7 @@ import {
 } from './ai-provider.interface';
 import { OpenAiRequestPolicy } from './openai-request-policy';
 import { OpenAiClientProvider } from './openai-client.provider';
+import { ModelCircuitBreaker } from './model-circuit-breaker';
 import {
   DEFAULT_AI_MODEL_ID,
   allowedModelId,
@@ -27,8 +28,18 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   readonly name = 'openai';
   private readonly logger = new Logger('OpenAiChatProvider');
   private readonly client?: OpenAI;
-  private readonly defaultModel: string;
+  /**
+   * F-22: this used to be read from `OPENAI_CHAT_MODEL` and described as "the
+   * default chat model" — misleading, because `AiModelRouterService` always
+   * supplies `request.model` for every real turn, so that branch was dead. It
+   * now has two real jobs instead, both under the name `AI_FALLBACK_MODEL`:
+   * (1) the rarely-reached model-less-request default, kept for callers that
+   * bypass the router entirely (e.g. the live model-compat sweep), and (2)
+   * the model `effectiveModel()` substitutes to when the breaker trips.
+   */
+  private readonly fallbackModel: string;
   private readonly policy: OpenAiRequestPolicy;
+  private readonly breaker: ModelCircuitBreaker;
 
   constructor(
     private readonly config: ConfigService,
@@ -38,16 +49,21 @@ export class OpenAiChatProvider implements AiCompletionProvider {
     private readonly clients?: OpenAiClientProvider,
   ) {
     const apiKey = config.get<string>('OPENAI_API_KEY');
-    // `OPENAI_CHAT_MODEL` is Joi-validated against the registry at boot, so in
+    // `AI_FALLBACK_MODEL` is Joi-validated against the registry at boot, so in
     // a real process this is already an allowed id. It is re-checked here
     // because this provider is also constructed directly in unit tests with a
     // hand-built ConfigService that never went through Joi — and because an
     // env var must never be the way a disallowed model reaches the API.
-    this.defaultModel = this.allowedDefault(config.get<string>('OPENAI_CHAT_MODEL'));
+    this.fallbackModel = this.allowedDefault(config.get<string>('AI_FALLBACK_MODEL'));
     const timeout = Number(config.get('OPENAI_REQUEST_TIMEOUT_MS', 30_000));
     this.policy = new OpenAiRequestPolicy(
       Number(config.get('OPENAI_PROVIDER_MAX_RETRIES', 2)),
       Number(config.get('OPENAI_RETRY_BASE_MS', 500)),
+      this.logger,
+    );
+    this.breaker = new ModelCircuitBreaker(
+      Number(config.get('AI_CIRCUIT_BREAKER_THRESHOLD', 3)),
+      Number(config.get('AI_CIRCUIT_BREAKER_COOLDOWN_MS', 60_000)),
       this.logger,
     );
     // The SDK retry loop is disabled so this explicit policy is the sole owner.
@@ -66,21 +82,56 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   }
 
   /**
-   * Falls back to the registry's own default when the configured chat model is
-   * missing or not permitted. Warns rather than throws: a bad value here must
-   * not stop the process from booting, and the platform default is always a
-   * safe model to serve.
+   * Falls back to the registry's own default when the configured fallback
+   * model is missing or not permitted. Warns rather than throws: a bad value
+   * here must not stop the process from booting, and the platform default is
+   * always a safe model to serve.
    */
   private allowedDefault(configured?: string): string {
     const allowed = allowedModelId(configured);
     if (allowed) return allowed;
     if (configured) {
       this.logger.warn(
-        `OPENAI_CHAT_MODEL="${configured}" is not a permitted platform model; ` +
+        `AI_FALLBACK_MODEL="${configured}" is not a permitted platform model; ` +
           `using "${DEFAULT_AI_MODEL_ID}" instead.`,
       );
     }
     return DEFAULT_AI_MODEL_ID;
+  }
+
+  /**
+   * F-22 runtime fallback: when `requested` (the router-chosen model) has
+   * tripped the breaker, serve the fallback model instead — but only if the
+   * fallback isn't ALSO tripped, and only if there IS a different model to
+   * fall to. With exactly two registered models this is the whole policy;
+   * a fallback model that is itself failing means the platform has no third
+   * option, and the error should surface rather than mask a total outage.
+   */
+  private effectiveModel(requested: string): string {
+    if (requested === this.fallbackModel) return requested;
+    if (this.breaker.isOpen(requested) && !this.breaker.isOpen(this.fallbackModel)) {
+      this.logger.warn(`Substituting fallback model "${this.fallbackModel}" for tripped "${requested}".`);
+      return this.fallbackModel;
+    }
+    return requested;
+  }
+
+  /**
+   * Runs `operation` and reports its outcome to the breaker for `model`. A
+   * generic wrapper (not folded into `OpenAiRequestPolicy`) because the
+   * breaker cares about the OUTCOME of the whole retry-bounded call, not
+   * individual attempts — `OpenAiRequestPolicy` already retries transient
+   * failures internally, so only an error it gives up on should count here.
+   */
+  private async trackModelHealth<T>(model: string, operation: () => Promise<T>): Promise<T> {
+    try {
+      const result = await operation();
+      this.breaker.recordSuccess(model);
+      return result;
+    } catch (error) {
+      this.breaker.recordFailure(model);
+      throw error;
+    }
   }
 
   /**
@@ -96,15 +147,17 @@ export class OpenAiChatProvider implements AiCompletionProvider {
   }
 
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
-    const model = request.model ?? this.defaultModel;
+    const model = this.effectiveModel(request.model ?? this.fallbackModel);
     const client = await this.resolveClient(request.tenantId);
 
-    const { value: res, attempts } = await this.policy.execute(
-      () => client.chat.completions.create(
-        this.requestBody(request, model),
-        this.requestOptions(request),
+    const { value: res, attempts } = await this.trackModelHealth(model, () =>
+      this.policy.execute(
+        () => client.chat.completions.create(
+          this.requestBody(request, model),
+          this.requestOptions(request),
+        ),
+        'chat.completions',
       ),
-      'chat.completions',
     );
 
     const message = res.choices[0]?.message;
@@ -248,16 +301,19 @@ export class OpenAiChatProvider implements AiCompletionProvider {
    * tool-dispatch loop as `complete()` without duplicating that logic.
    */
   async *stream(request: AiCompletionRequest): AsyncIterable<AiCompletionChunk> {
-    const model = request.model ?? this.defaultModel;
+    const model = this.effectiveModel(request.model ?? this.fallbackModel);
     const client = await this.resolveClient(request.tenantId);
     // Retry only stream creation. Once any stream data is observed, replaying it
     // could duplicate output/cost, so iteration failures propagate immediately.
-    const { value: stream, attempts } = await this.policy.execute(
-      () => client.chat.completions.create(
-        { ...this.requestBody(request, model), stream: true, stream_options: { include_usage: true } },
-        this.requestOptions(request),
+    // The breaker likewise only sees the creation outcome, for the same reason.
+    const { value: stream, attempts } = await this.trackModelHealth(model, () =>
+      this.policy.execute(
+        () => client.chat.completions.create(
+          { ...this.requestBody(request, model), stream: true, stream_options: { include_usage: true } },
+          this.requestOptions(request),
+        ),
+        'chat.completions.stream',
       ),
-      'chat.completions.stream',
     );
 
     // Reassemble streamed tool_call fragments by index (OpenAI splits each call's
