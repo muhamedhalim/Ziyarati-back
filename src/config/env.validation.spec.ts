@@ -1210,19 +1210,27 @@ describe('env.validation', () => {
     });
 
     it('refuses to boot with EMAIL_FROM="" — the exact production worker state', () => {
-      expect(() => validate(prodEmail({ EMAIL_FROM: '' }))).toThrow(/EMAIL_FROM/);
+      expect(() => validate(prodEmail({ EMAIL_FROM: '' }))).toThrow(
+        /EMAIL_FROM/,
+      );
     });
 
     it('refuses to boot with EMAIL_FROM unset', () => {
-      expect(() => validate(prodEmail({ EMAIL_FROM: undefined }))).toThrow(/EMAIL_FROM/);
+      expect(() => validate(prodEmail({ EMAIL_FROM: undefined }))).toThrow(
+        /EMAIL_FROM/,
+      );
     });
 
     it('refuses to boot with a malformed EMAIL_FROM', () => {
-      expect(() => validate(prodEmail({ EMAIL_FROM: 'no-reply' }))).toThrow(/EMAIL_FROM/);
+      expect(() => validate(prodEmail({ EMAIL_FROM: 'no-reply' }))).toThrow(
+        /EMAIL_FROM/,
+      );
     });
 
     it('refuses to boot with RESEND_API_KEY blank', () => {
-      expect(() => validate(prodEmail({ RESEND_API_KEY: '  ' }))).toThrow(/RESEND_API_KEY/);
+      expect(() => validate(prodEmail({ RESEND_API_KEY: '  ' }))).toThrow(
+        /RESEND_API_KEY/,
+      );
     });
 
     it('names variables only, never values', () => {
@@ -1237,18 +1245,32 @@ describe('env.validation', () => {
 
     it('boots with a plain address or an already-formatted "Name <addr>"', () => {
       expect(() => validate(prodEmail({ EMAIL_FROM: 'a@b.co' }))).not.toThrow();
-      expect(() => validate(prodEmail({ EMAIL_FROM: 'ZiyaraTech <a@b.co>' }))).not.toThrow();
+      expect(() =>
+        validate(prodEmail({ EMAIL_FROM: 'ZiyaraTech <a@b.co>' })),
+      ).not.toThrow();
     });
 
     it('boots without a sender when email is explicitly disabled', () => {
       expect(() =>
-        validate(prodEmail({ EMAIL_ENABLED: 'false', EMAIL_FROM: '', RESEND_API_KEY: '' })),
+        validate(
+          prodEmail({
+            EMAIL_ENABLED: 'false',
+            EMAIL_FROM: '',
+            RESEND_API_KEY: '',
+          }),
+        ),
       ).not.toThrow();
     });
 
     it('boots without a sender with the noop provider', () => {
       expect(() =>
-        validate(prodEmail({ EMAIL_PROVIDER: 'noop', EMAIL_FROM: '', RESEND_API_KEY: '' })),
+        validate(
+          prodEmail({
+            EMAIL_PROVIDER: 'noop',
+            EMAIL_FROM: '',
+            RESEND_API_KEY: '',
+          }),
+        ),
       ).not.toThrow();
     });
 
@@ -1257,10 +1279,13 @@ describe('env.validation', () => {
     });
 
     it('caps RESEND_HTTP_TIMEOUT_MS below the 30s BullMQ job lock', () => {
-      expect(() => validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 30000 })).toThrow(
-        /RESEND_HTTP_TIMEOUT_MS/,
-      );
-      expect(validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 10000 }).RESEND_HTTP_TIMEOUT_MS).toBe(10000);
+      expect(() =>
+        validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 30000 }),
+      ).toThrow(/RESEND_HTTP_TIMEOUT_MS/);
+      expect(
+        validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 10000 })
+          .RESEND_HTTP_TIMEOUT_MS,
+      ).toBe(10000);
     });
   });
 });

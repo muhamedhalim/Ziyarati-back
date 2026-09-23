@@ -92,7 +92,9 @@ describe('EmailDeliveryService (atomic claim — gap-closure pass, §0.8.11)', (
     const err = await service.deliver(job() as never).catch((e) => e);
     expect(err.message).toBe('timeout');
     expect(err).not.toBeInstanceOf(UnrecoverableError); // retryable
-    expect(logs.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
+    expect(logs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'FAILED' }),
+    );
   });
 
   // Production incident: Resend 422 (invalid `from`) was recorded FAILED but the
@@ -101,7 +103,8 @@ describe('EmailDeliveryService (atomic claim — gap-closure pass, §0.8.11)', (
     (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
     provider.send.mockResolvedValueOnce({
       success: false,
-      error: 'HTTP 422: {"name":"validation_error","message":"Invalid `from` field."}',
+      error:
+        'HTTP 422: {"name":"validation_error","message":"Invalid `from` field."}',
       transient: false,
     });
 
@@ -115,19 +118,31 @@ describe('EmailDeliveryService (atomic claim — gap-closure pass, §0.8.11)', (
 
   it('a permanent failure is recorded as FAILED before the throw, so a re-driven job re-claims the row and sends', async () => {
     (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
-    provider.send.mockResolvedValueOnce({ success: false, error: 'HTTP 403', transient: false });
+    provider.send.mockResolvedValueOnce({
+      success: false,
+      error: 'HTTP 403',
+      transient: false,
+    });
     await service.deliver(job() as never).catch(() => undefined);
-    expect(logs.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
+    expect(logs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'FAILED' }),
+    );
 
     // Operator fixes the config and retries the failed job: the FAILED row is claimable.
     (manager.query as jest.Mock)
       .mockResolvedValueOnce([]) // insert loses (row exists)
       .mockResolvedValueOnce([{ status: 'FAILED' }]);
-    logs.findOne.mockResolvedValueOnce({ id: 'row-1', idempotency_key: job().idempotencyKey, attempts: 1 });
+    logs.findOne.mockResolvedValueOnce({
+      id: 'row-1',
+      idempotency_key: job().idempotencyKey,
+      attempts: 1,
+    });
     await service.deliver(job() as never);
 
     expect(provider.send).toHaveBeenCalledTimes(2);
-    expect(logs.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'SENT' }));
+    expect(logs.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'SENT' }),
+    );
   });
 
   it('forwards the claimed idempotency key to the provider (provider-side dedupe of an unobserved success)', async () => {

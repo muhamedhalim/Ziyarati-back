@@ -301,6 +301,19 @@ describe('Email pipeline — real Redis + BullMQ (production incident regression
       const keys = await redis.keys(`${PREFIX}:*`);
       expect(keys.length).toBeGreaterThan(0);
       expect(keys.join('\n')).not.toContain(RAW_TOKEN);
+
+      // Job DATA: no separate `token` field; the raw token appears exactly
+      // once — inside the link the template must render.
+      const data = await redis.hget(
+        `${PREFIX}:email:${expectedJobId()}`,
+        'data',
+      );
+      const parsed = JSON.parse(data as string);
+      expect(parsed.variables).not.toHaveProperty('token');
+      expect((data as string).split(RAW_TOKEN).length - 1).toBe(1);
+      // BullMQ's events stream records job ids — it must hold only the hash.
+      const events = await redis.xrange(`${PREFIX}:email:events`, '-', '+');
+      expect(JSON.stringify(events)).not.toContain(RAW_TOKEN);
     } finally {
       redis.disconnect();
     }
