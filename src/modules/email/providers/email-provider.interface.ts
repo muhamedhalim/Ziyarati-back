@@ -25,6 +25,12 @@ export interface EmailMessage {
   headers?: Record<string, string>;
   /** Provider tags for analytics (no secrets/PII). */
   tags?: { name: string; value: string }[];
+  /**
+   * Stable per-message key the provider uses to deduplicate a retried send
+   * whose first attempt's outcome was never observed (timeout after the
+   * provider accepted it). Must never contain a secret.
+   */
+  idempotencyKey?: string;
 }
 
 export interface EmailSendResult {

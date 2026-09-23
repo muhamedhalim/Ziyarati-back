@@ -1,3 +1,5 @@
+import { UnrecoverableError } from 'bullmq';
+
 import { EmailDeliveryService } from './email-delivery.service';
 import { EmailLog } from '../../entities/System/EmailLog';
 import { EmailProviderFactory } from './providers/email-provider.factory';
@@ -87,8 +89,60 @@ describe('EmailDeliveryService (atomic claim — gap-closure pass, §0.8.11)', (
     (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
     provider.send.mockResolvedValueOnce({ success: false, error: 'timeout', transient: true });
 
-    await expect(service.deliver(job() as never)).rejects.toThrow('timeout');
+    const err = await service.deliver(job() as never).catch((e) => e);
+    expect(err.message).toBe('timeout');
+    expect(err).not.toBeInstanceOf(UnrecoverableError); // retryable
     expect(logs.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
+  });
+
+  // Production incident: Resend 422 (invalid `from`) was recorded FAILED but the
+  // BullMQ job still COMPLETED, so nothing reported a failure for weeks.
+  it('throws UnrecoverableError on a PERMANENT failure — the job must end FAILED, not COMPLETED, and must not retry', async () => {
+    (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
+    provider.send.mockResolvedValueOnce({
+      success: false,
+      error: 'HTTP 422: {"name":"validation_error","message":"Invalid `from` field."}',
+      transient: false,
+    });
+
+    const err = await service.deliver(job() as never).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toContain('template=welcome');
+    expect(err.message).toContain('HTTP 422');
+    expect(logs.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
+  });
+
+  it('a permanent failure is recorded as FAILED before the throw, so a re-driven job re-claims the row and sends', async () => {
+    (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
+    provider.send.mockResolvedValueOnce({ success: false, error: 'HTTP 403', transient: false });
+    await service.deliver(job() as never).catch(() => undefined);
+    expect(logs.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
+
+    // Operator fixes the config and retries the failed job: the FAILED row is claimable.
+    (manager.query as jest.Mock)
+      .mockResolvedValueOnce([]) // insert loses (row exists)
+      .mockResolvedValueOnce([{ status: 'FAILED' }]);
+    logs.findOne.mockResolvedValueOnce({ id: 'row-1', idempotency_key: job().idempotencyKey, attempts: 1 });
+    await service.deliver(job() as never);
+
+    expect(provider.send).toHaveBeenCalledTimes(2);
+    expect(logs.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'SENT' }));
+  });
+
+  it('forwards the claimed idempotency key to the provider (provider-side dedupe of an unobserved success)', async () => {
+    (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
+
+    await service.deliver(job() as never);
+
+    expect(provider.send).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'welcome:a@b.com:t1' }),
+    );
+  });
+
+  it('a successful send does not throw (job COMPLETES)', async () => {
+    (manager.query as jest.Mock).mockResolvedValueOnce([{ id: 'row-1' }]);
+    await expect(service.deliver(job() as never)).resolves.toBeUndefined();
   });
 });
 

@@ -7,6 +7,18 @@ import { EmailSendJob } from '../../queue/job-data.interface';
 import { EmailDeliveryService } from './email-delivery.service';
 import { EmailTemplateKey } from './email.templates';
 
+/**
+ * Idempotency key for a message that carries a one-time credential
+ * (password-reset / set-password / email-verification token). The key becomes
+ * the BullMQ job id — which QueueService logs and Redis stores as a key name —
+ * and `email_logs.idempotency_key`, so it must never hold the raw token (the
+ * token itself is only ever persisted as a SHA-256 hash). Hashing keeps it
+ * exactly as deterministic: one token, one key.
+ */
+function tokenKey(prefix: string, rawToken: string): string {
+  return `${prefix}:${createHash('sha256').update(rawToken).digest('hex')}`;
+}
+
 export interface SendEmailInput {
   to: string | string[];
   template: EmailTemplateKey;
@@ -63,7 +75,7 @@ export class EmailService {
       else await this.queue.enqueueEmail(job);
     } catch (err) {
       this.logger.error(
-        `Failed to dispatch email "${input.template}" to ${Array.isArray(input.to) ? input.to.join(',') : input.to}: ${(err as Error)?.message}`,
+        `Failed to dispatch email "${input.template}" (tenant=${input.tenantId ?? '-'}, key=${job.idempotencyKey}): ${(err as Error)?.message}`,
       );
     }
   }
@@ -110,7 +122,7 @@ export class EmailService {
       variables: p,
       tenantId: p.tenantId,
       locale: p.locale,
-      idempotencyKey: p.token ? `verify:${p.token}` : undefined,
+      idempotencyKey: p.token ? tokenKey('verify', p.token) : undefined,
     });
   }
 
@@ -128,7 +140,7 @@ export class EmailService {
       variables: p,
       tenantId: p.tenantId,
       locale: p.locale,
-      idempotencyKey: p.token ? `reset:${p.token}` : undefined,
+      idempotencyKey: p.token ? tokenKey('reset', p.token) : undefined,
     });
   }
 
@@ -256,7 +268,7 @@ export class EmailService {
       variables: p,
       tenantId: p.tenantId,
       locale: p.locale,
-      idempotencyKey: p.token ? `invite:${p.token}` : undefined,
+      idempotencyKey: p.token ? tokenKey('invite', p.token) : undefined,
     });
   }
 
