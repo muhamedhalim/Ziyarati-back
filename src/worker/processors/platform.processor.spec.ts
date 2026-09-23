@@ -55,6 +55,7 @@ describe('PlatformProcessor', () => {
     };
     const freeAccessNotice = {
       deliver: jest.fn().mockResolvedValue(undefined),
+      sweepExpiring: jest.fn().mockResolvedValue({ claimed: 0, batches: 1 }),
     };
 
     const processor = new PlatformProcessor(
@@ -494,6 +495,74 @@ describe('PlatformProcessor', () => {
         kind: 'EXPIRING',
         endsAt: '2026-01-01T00:00:00.000Z',
       });
+    });
+  });
+
+  describe('platform.freeAccessExpirySweep — lock guard + heartbeat (P5, M5)', () => {
+    const jobData = {
+      name: JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP,
+      data: {},
+    } as any;
+
+    it('acquires the lock, runs the sweep, heartbeats and releases on a COMPLETED run — even zero-claimed', async () => {
+      const { processor, lock, metrics, freeAccessNotice } = build('token-fa');
+
+      const result = await processor.process(jobData);
+
+      expect(freeAccessNotice.sweepExpiring).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ claimed: 0, batches: 1 });
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:free-access-expiry-sweep',
+        'token-fa',
+      );
+      expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+        'platform.freeAccessExpirySweep',
+      );
+    });
+
+    it('heartbeats with the real claimed/batches counts when there is work to do', async () => {
+      const { processor, metrics, freeAccessNotice } = build('token-fa');
+      freeAccessNotice.sweepExpiring.mockResolvedValueOnce({
+        claimed: 5,
+        batches: 2,
+      });
+
+      const result = await processor.process(jobData);
+
+      expect(result).toEqual({ claimed: 5, batches: 2 });
+      expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+        'platform.freeAccessExpirySweep',
+      );
+    });
+
+    it('M5 — a lock-unavailable run logs a visible skip, runs NO sweep and emits NO heartbeat', async () => {
+      const { processor, lock, metrics, freeAccessNotice } = build(null);
+      const logSpy = jest.spyOn((processor as any).logger, 'log');
+
+      const result = await processor.process(jobData);
+
+      expect(result).toEqual({ skipped: true });
+      expect(freeAccessNotice.sweepExpiring).not.toHaveBeenCalled();
+      expect(lock.release).not.toHaveBeenCalled();
+      expect(metrics.setWorkerHeartbeat).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining('skipping this run'),
+      );
+    });
+
+    it('still releases the lock if the sweep throws', async () => {
+      const { processor, lock, metrics, freeAccessNotice } = build('token-x');
+      freeAccessNotice.sweepExpiring.mockRejectedValueOnce(
+        new Error('db error'),
+      );
+
+      await expect(processor.process(jobData)).rejects.toThrow('db error');
+
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:free-access-expiry-sweep',
+        'token-x',
+      );
+      expect(metrics.setWorkerHeartbeat).not.toHaveBeenCalled();
     });
   });
 });

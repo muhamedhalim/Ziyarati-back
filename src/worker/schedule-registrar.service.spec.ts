@@ -126,6 +126,20 @@ describe('ScheduleRegistrarService', () => {
     expect(new Set(platformCrons).size).toBe(platformCrons.length);
   });
 
+  it('registers platform.freeAccessExpirySweep hourly, offset from birthdayGreetings (P5)', async () => {
+    await service.onApplicationBootstrap();
+    expect(queue.addRepeatable).toHaveBeenCalledWith(
+      QUEUE.PLATFORM,
+      JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP,
+      { tenantId: null },
+      '20 * * * *',
+    );
+    const platformCrons = queue.addRepeatable.mock.calls
+      .filter(([q]) => q === QUEUE.PLATFORM)
+      .map(([, , , cron]) => cron);
+    expect(new Set(platformCrons).size).toBe(platformCrons.length);
+  });
+
   it('registration is idempotent across simulated replicas — two bootstraps issue the identical call set', async () => {
     await service.onApplicationBootstrap();
     const firstRound = [...queue.addRepeatable.mock.calls];

@@ -102,8 +102,13 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // clinic is greeted at ITS OWN local 09:00; the sweep no-ops for every
       // tenant not currently in that hour.
       await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_BIRTHDAY_GREETINGS, { tenantId: null }, '10 * * * *');
+      // Free-access expiry-warning sweep (plan §7) — hourly at :20, offset
+      // from birthday-greetings (:10) and the analytics/usage-report hourly
+      // ticks (:00/:05) so none of the platform-queue sweeps contend for the
+      // same instant.
+      await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP, { tenantId: null }, '20 * * * *');
 
-      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions ×2, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, campaigns-recover-dlq, waitlist-expiry, queue-day-close, export-expiry, birthday-greetings)');
+      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions ×2, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, campaigns-recover-dlq, waitlist-expiry, queue-day-close, export-expiry, birthday-greetings, free-access-expiry-sweep)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

@@ -202,6 +202,9 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   // The override id is looked up fresh inside `deliver()` — the tenant it
   // belongs to is never trusted from the payload (plan §12).
   [JOB.PLATFORM_FREE_ACCESS_NOTICE]: SYSTEM,
+  // Repeatable maintenance sweep — no per-invocation tenant identity, same
+  // registration shape as PLATFORM_WAITLIST_EXPIRY / PLATFORM_QUEUE_DAY_CLOSE.
+  [JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP]: SYSTEM,
 };
 
 /**

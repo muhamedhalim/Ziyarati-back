@@ -1,8 +1,10 @@
 import { FreeAccessNoticeService } from './free-access-notice.service';
 import { DataSource } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import { InternalNotificationService } from '../notifications/internal/internal-notification.service';
 import { EmailService } from '../email/email.service';
 import { MetricsService } from '../../metrics/metrics.service';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 
 // Dates are computed relative to `Date.now()` (never a hardcoded literal) so
 // this spec's staleness assertions ("already expired" vs "still active") stay
@@ -29,6 +31,12 @@ describe('FreeAccessNoticeService', () => {
   let emit: jest.Mock;
   let sendFreeAccessNotification: jest.Mock;
   let recordFreeAccessNotice: jest.Mock;
+  let config: { get: jest.Mock };
+  // Backs `sweepExpiring`'s per-batch transaction — separate from `query`
+  // (used by `deliver()`'s direct `dataSource.query` calls) since the two
+  // never run in the same call.
+  let transactionQuery: jest.Mock;
+  let outboxSave: jest.Mock;
 
   const emitResult = (over: Partial<{ resolved: number; created: number; error?: string }> = {}) => ({
     key: 'FREE_ACCESS_STARTED',
@@ -43,12 +51,31 @@ describe('FreeAccessNoticeService', () => {
     emit = jest.fn().mockResolvedValue(emitResult());
     sendFreeAccessNotification = jest.fn();
     recordFreeAccessNotice = jest.fn();
+    // Matches the real default (unset === enabled) unless a test overrides it.
+    config = { get: jest.fn().mockReturnValue('true') };
+    transactionQuery = jest.fn();
+    outboxSave = jest.fn().mockResolvedValue(undefined);
 
     service = new FreeAccessNoticeService(
-      { query } as unknown as DataSource,
+      {
+        query,
+        transaction: (
+          cb: (m: {
+            query: jest.Mock;
+            create: (entity: unknown, data: unknown) => unknown;
+            save: jest.Mock;
+          }) => unknown,
+        ) =>
+          cb({
+            query: transactionQuery,
+            create: (_entity: unknown, data: unknown) => data,
+            save: outboxSave,
+          }),
+      } as unknown as DataSource,
       { emit } as unknown as InternalNotificationService,
       { sendFreeAccessNotification } as unknown as EmailService,
       { recordFreeAccessNotice } as unknown as MetricsService,
+      config as unknown as ConfigService,
     );
   });
 
@@ -230,6 +257,87 @@ describe('FreeAccessNoticeService', () => {
       expect(recordFreeAccessNotice).toHaveBeenCalledWith('started', 'email', 'no_recipient');
       // In-app is independent of email recipient availability.
       expect(emit).toHaveBeenCalled();
+    });
+  });
+
+  describe('sweepExpiring', () => {
+    const claimedRow = (id: string, endsAt: string) => ({ id, ends_at: endsAt });
+    // node-postgres (via TypeORM's raw `query()`) returns `[rows,
+    // affectedCount]` for an UPDATE, even one with RETURNING — see the
+    // service's own comment on `claimExpiringBatch` for why this mock
+    // shape, not a plain array, is what real Postgres actually returns.
+    const updateResult = (rows: ReturnType<typeof claimedRow>[]) => [rows, rows.length];
+
+    it('claims a short batch, enqueues one outbox row per claim, and stops after one batch', async () => {
+      const endsAt1 = new Date(Date.now() + 47 * 3_600_000).toISOString();
+      const endsAt2 = new Date(Date.now() + 40 * 3_600_000).toISOString();
+      transactionQuery.mockResolvedValueOnce(
+        updateResult([claimedRow('ov-1', endsAt1), claimedRow('ov-2', endsAt2)]),
+      );
+
+      const result = await service.sweepExpiring({ batch: 100, maxBatches: 50 });
+
+      expect(result).toEqual({ claimed: 2, batches: 1 });
+      expect(transactionQuery).toHaveBeenCalledTimes(1);
+      expect(transactionQuery).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF o SKIP LOCKED'), [100]);
+      expect(outboxSave).toHaveBeenCalledTimes(2);
+      expect(outboxSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queue: 'platform',
+          job_name: 'platform.freeAccessNotice',
+          dedupe_key: expect.stringContaining('fa-expiry-ov-1-'),
+          payload: { overrideId: 'ov-1', kind: 'EXPIRING', endsAt: new Date(endsAt1).toISOString() },
+        }),
+      );
+      expect(outboxSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dedupe_key: expect.stringContaining('fa-expiry-ov-2-'),
+          payload: { overrideId: 'ov-2', kind: 'EXPIRING', endsAt: new Date(endsAt2).toISOString() },
+        }),
+      );
+    });
+
+    it('loops across full batches and stops on the first short one', async () => {
+      const endsAt = new Date(Date.now() + 30 * 3_600_000).toISOString();
+      transactionQuery
+        .mockResolvedValueOnce(updateResult([claimedRow('a', endsAt), claimedRow('b', endsAt)])) // full batch of 2
+        .mockResolvedValueOnce(updateResult([claimedRow('c', endsAt)])); // short batch — stop
+
+      const result = await service.sweepExpiring({ batch: 2, maxBatches: 50 });
+
+      expect(result).toEqual({ claimed: 3, batches: 2 });
+      expect(transactionQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops at maxBatches even when every batch is full', async () => {
+      const endsAt = new Date(Date.now() + 30 * 3_600_000).toISOString();
+      transactionQuery.mockResolvedValue(
+        updateResult([claimedRow('x', endsAt), claimedRow('y', endsAt)]),
+      );
+
+      const result = await service.sweepExpiring({ batch: 2, maxBatches: 3 });
+
+      expect(result).toEqual({ claimed: 6, batches: 3 });
+      expect(transactionQuery).toHaveBeenCalledTimes(3);
+    });
+
+    it('claims nothing when no override is due', async () => {
+      transactionQuery.mockResolvedValueOnce(updateResult([]));
+
+      const result = await service.sweepExpiring();
+
+      expect(result).toEqual({ claimed: 0, batches: 1 });
+      expect(outboxSave).not.toHaveBeenCalled();
+    });
+
+    it('claims nothing at all when the kill switch is off', async () => {
+      config.get.mockReturnValue('false');
+
+      const result = await service.sweepExpiring();
+
+      expect(result).toEqual({ claimed: 0, batches: 0 });
+      expect(transactionQuery).not.toHaveBeenCalled();
+      expect(outboxSave).not.toHaveBeenCalled();
     });
   });
 });
