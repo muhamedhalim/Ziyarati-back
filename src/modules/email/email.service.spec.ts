@@ -168,23 +168,88 @@ describe('EmailService — credential tokens never leak into job ids, logs or em
   });
 
   it.each([
-    ['invite', (s: EmailService) => s.sendInvitation({ to: 'x@y.co', invitationUrl: 'u', token: RAW })],
-    ['reset', (s: EmailService) => s.sendPasswordReset({ to: 'x@y.co', resetUrl: 'u', token: RAW })],
-    ['verify', (s: EmailService) => s.sendVerification({ to: 'x@y.co', verifyUrl: 'u', token: RAW })],
-  ])('%s key is a SHA-256 of the token, stable across calls', async (prefix, send) => {
-    await send(service);
-    await send(service);
-    const [k1, k2] = queue.enqueueEmail.mock.calls.map((c) => c[0].idempotencyKey);
-    expect(k1).toBe(`${prefix}:${createHash('sha256').update(RAW).digest('hex')}`);
-    expect(k1).not.toContain(RAW);
-    expect(k2).toBe(k1);
-  });
+    [
+      'invite',
+      (s: EmailService) =>
+        s.sendInvitation({ to: 'x@y.co', invitationUrl: 'u', token: RAW }),
+    ],
+    [
+      'reset',
+      (s: EmailService) =>
+        s.sendPasswordReset({ to: 'x@y.co', resetUrl: 'u', token: RAW }),
+    ],
+    [
+      'verify',
+      (s: EmailService) =>
+        s.sendVerification({ to: 'x@y.co', verifyUrl: 'u', token: RAW }),
+    ],
+  ])(
+    '%s key is a SHA-256 of the token, stable across calls',
+    async (prefix, send) => {
+      await send(service);
+      await send(service);
+      const [k1, k2] = queue.enqueueEmail.mock.calls.map(
+        (c) => c[0].idempotencyKey,
+      );
+      expect(k1).toBe(
+        `${prefix}:${createHash('sha256').update(RAW).digest('hex')}`,
+      );
+      expect(k1).not.toContain(RAW);
+      expect(k2).toBe(k1);
+    },
+  );
+
+  it.each([
+    [
+      'invite',
+      (s: EmailService) =>
+        s.sendInvitation({
+          to: 'x@y.co',
+          invitationUrl: `https://a/reset?token=${RAW}`,
+          token: RAW,
+        }),
+    ],
+    [
+      'reset',
+      (s: EmailService) =>
+        s.sendPasswordReset({
+          to: 'x@y.co',
+          resetUrl: `https://a/reset?token=${RAW}`,
+          token: RAW,
+        }),
+    ],
+    [
+      'verify',
+      (s: EmailService) =>
+        s.sendVerification({
+          to: 'x@y.co',
+          verifyUrl: `https://a/verify?token=${RAW}`,
+          token: RAW,
+        }),
+    ],
+  ])(
+    '%s job data carries the link but NOT a separate raw token field',
+    async (_p, send) => {
+      await send(service);
+      const job = queue.enqueueEmail.mock.calls[0][0];
+      expect(job.variables).not.toHaveProperty('token');
+      // Only the link (needed to render the email) may still carry it — once.
+      expect(JSON.stringify(job).split(RAW).length - 1).toBe(1);
+    },
+  );
 
   it('a dispatch failure is logged without the recipient address', async () => {
-    const err = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const err = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
     queue.enqueueEmail.mockRejectedValueOnce(new Error('redis down'));
 
-    await service.sendInvitation({ to: 'secret.person@clinic.com', invitationUrl: 'u', token: RAW, tenantId: 't1' });
+    await service.sendInvitation({
+      to: 'secret.person@clinic.com',
+      invitationUrl: 'u',
+      token: RAW,
+      tenantId: 't1',
+    });
 
     const line = String(err.mock.calls[0][0]);
     expect(line).toContain('redis down');

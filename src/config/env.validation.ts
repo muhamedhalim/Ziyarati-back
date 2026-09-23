@@ -1286,7 +1286,8 @@ export const validate = (config: Record<string, unknown>) => {
     value.EMAIL_PROVIDER === 'resend';
   if (emailLive) {
     const missing: string[] = [];
-    if (!String(value.RESEND_API_KEY ?? '').trim()) missing.push('RESEND_API_KEY');
+    if (!String(value.RESEND_API_KEY ?? '').trim())
+      missing.push('RESEND_API_KEY');
     if (!formatFromAddress(value.EMAIL_FROM, value.EMAIL_FROM_NAME)) {
       missing.push('EMAIL_FROM (and/or EMAIL_FROM_NAME)');
     }

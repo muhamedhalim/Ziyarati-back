@@ -1,6 +1,8 @@
 import { EmailChannelProvider } from './email-channel.provider';
 import { NOTIFICATION_CHANNEL } from '../notification.constants';
 import { EmailProviderFactory } from '../../email/providers/email-provider.factory';
+import { ResendProvider } from '../../email/providers/resend.provider';
+import { NoopEmailProvider } from '../../email/providers/noop-email.provider';
 
 describe('EmailChannelProvider', () => {
   const makeFactory = (overrides: Partial<EmailProviderFactory> = {}) =>
@@ -9,7 +11,10 @@ describe('EmailChannelProvider', () => {
       resolve: jest.fn(() => ({
         name: 'resend',
         isConfigured: () => true,
-        send: jest.fn(async () => ({ success: true, providerMessageId: 'msg-1' })),
+        send: jest.fn(async () => ({
+          success: true,
+          providerMessageId: 'msg-1',
+        })),
       })),
       ...overrides,
     }) as unknown as EmailProviderFactory;
@@ -114,5 +119,54 @@ describe('EmailChannelProvider', () => {
     });
     expect(sentMessage.text).toBe('مرحبا');
     expect(sentMessage.to).toBe('p@example.com');
+  });
+});
+
+// Production defect found 2026-09-23: this channel never set `from`, and
+// Resend rejects a message without one. The sender must come from the single
+// shared resolver (resolveEmailConfig), applied by the real ResendProvider.
+describe('EmailChannelProvider → real factory → real ResendProvider (sender)', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('the outgoing Resend request carries the configured platform sender', async () => {
+    const env: Record<string, string> = {
+      NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'resend',
+      RESEND_API_KEY: 're_test',
+      EMAIL_FROM: 'no-reply@ziyaratech.com',
+      EMAIL_FROM_NAME: 'ZiyaraTech',
+    };
+    const config = { get: jest.fn((k: string) => env[k]) } as never;
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 're_1' }),
+    }));
+    global.fetch = fetchMock as never;
+    const factory = new EmailProviderFactory(
+      config,
+      new ResendProvider(config),
+      new NoopEmailProvider(),
+    );
+
+    const result = await new EmailChannelProvider(factory).send({
+      tenantId: 't1',
+      channel: NOTIFICATION_CHANNEL.EMAIL,
+      recipientEmail: 'patient@example.com',
+      contentEn: 'Your appointment is confirmed',
+      locale: 'en',
+    });
+
+    expect(result.success).toBe(true);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { body: string },
+    ];
+    const body = JSON.parse(init.body);
+    expect(body.from).toBe('ZiyaraTech <no-reply@ziyaratech.com>');
   });
 });

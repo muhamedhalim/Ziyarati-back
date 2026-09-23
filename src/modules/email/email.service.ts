@@ -19,6 +19,16 @@ function tokenKey(prefix: string, rawToken: string): string {
   return `${prefix}:${createHash('sha256').update(rawToken).digest('hex')}`;
 }
 
+/**
+ * Template variables for a credential email, minus the raw `token`. No
+ * template reads `token` (the link already carries it), so keeping it only
+ * duplicated the secret into Redis job data.
+ */
+function withoutToken<T extends { token?: string }>(p: T): Omit<T, 'token'> {
+  const { token: _token, ...variables } = p;
+  return variables;
+}
+
 export interface SendEmailInput {
   to: string | string[];
   template: EmailTemplateKey;
@@ -119,7 +129,7 @@ export class EmailService {
     return this.send({
       to: p.to,
       template: 'email_verification',
-      variables: p,
+      variables: withoutToken(p),
       tenantId: p.tenantId,
       locale: p.locale,
       idempotencyKey: p.token ? tokenKey('verify', p.token) : undefined,
@@ -137,7 +147,7 @@ export class EmailService {
     return this.send({
       to: p.to,
       template: 'password_reset',
-      variables: p,
+      variables: withoutToken(p),
       tenantId: p.tenantId,
       locale: p.locale,
       idempotencyKey: p.token ? tokenKey('reset', p.token) : undefined,
@@ -265,7 +275,7 @@ export class EmailService {
     return this.send({
       to: p.to,
       template: 'staff_invitation',
-      variables: p,
+      variables: withoutToken(p),
       tenantId: p.tenantId,
       locale: p.locale,
       idempotencyKey: p.token ? tokenKey('invite', p.token) : undefined,
