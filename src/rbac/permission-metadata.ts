@@ -135,6 +135,11 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
   // low, because it discloses medical history rather than operational data.
   [PERMISSION.CLINICAL_RECORDS_READ]: 'high',
   [PERMISSION.CLINICAL_RECORDS_MANAGE]: 'high',
+  // Nurse role — a narrower WRITE than `.manage` (NOTE/VITALS + own-entry
+  // correction only), but still a write of health data, so it stays at the
+  // same `high` classification as its sibling above rather than the derived
+  // `medium` a bare write would otherwise get.
+  [PERMISSION.CLINICAL_RECORDS_NURSING]: 'high',
 
   // Accountability log — a read of who-did-what across the tenant, more
   // sensitive than an ordinary operational read but not identity/money

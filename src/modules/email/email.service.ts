@@ -327,6 +327,41 @@ export class EmailService {
     });
   }
 
+  /**
+   * Free-access lifecycle mail (start + 48h expiry warning). Idempotency is
+   * always caller-supplied — see `free-access-notice-keys.ts` — because the
+   * caller (`FreeAccessNoticeService`) already computed the exact business
+   * key and a generic fallback would defeat the point of a stable key that
+   * survives a retried job.
+   */
+  sendFreeAccessNotification(p: {
+    to: string;
+    name?: string;
+    event: 'started' | 'expiring';
+    clinicName?: string;
+    durationDays?: string;
+    endsAt?: string;
+    daysRemaining?: string;
+    tenantId?: string;
+    idempotencyKey: string;
+    locale?: string;
+  }) {
+    const template = (
+      {
+        started: 'free_access_started',
+        expiring: 'free_access_expiring',
+      } as const
+    )[p.event];
+    return this.send({
+      to: p.to,
+      template,
+      variables: p,
+      tenantId: p.tenantId,
+      locale: p.locale,
+      idempotencyKey: p.idempotencyKey,
+    });
+  }
+
   sendDoctorNotification(p: {
     to: string;
     name?: string;

@@ -19,7 +19,11 @@ function fakePermission(slug: string) {
  * map or any global built-in.
  */
 describe('seedRolePermissions — additive reconciliation (M-07)', () => {
-  function buildManagerMock(allSlugs: string[], currentSlugs: string[]) {
+  function buildManagerMock(
+    allSlugs: string[],
+    currentSlugs: string[],
+    targetRole: string = ROLE.OWNER,
+  ) {
     const allPermissionRows = allSlugs.map(fakePermission);
     const permBySlug = new Map(allPermissionRows.map((p) => [p.slug, p]));
 
@@ -29,7 +33,9 @@ describe('seedRolePermissions — additive reconciliation (M-07)', () => {
 
     const roleRepo = {
       findOne: jest.fn(({ where }: { where: { slug: string } }) =>
-        where.slug === ROLE.OWNER ? { id: 'role-owner', slug: ROLE.OWNER } : null,
+        where.slug === targetRole
+          ? { id: `role-${targetRole}`, slug: targetRole }
+          : null,
       ),
     };
     const permRepo = { find: jest.fn().mockResolvedValue(allPermissionRows) };
@@ -93,5 +99,39 @@ describe('seedRolePermissions — additive reconciliation (M-07)', () => {
     const removed = (rpRepo.remove as jest.Mock).mock.calls[0][0];
     expect(removed).toHaveLength(1);
     expect(removed[0].permission.slug).toBe(PERMISSION.STAFF_MANAGE);
+  });
+
+  it('reconciles a freshly-migrated NURSE role to exactly its 10 desired grants, adding all and removing none', async () => {
+    const desired = ROLE_PERMISSIONS[ROLE.NURSE] as string[];
+    expect(desired).toHaveLength(10);
+
+    // Simulates the state immediately after NurseRole1730101000000 runs on a
+    // database with SEED_ON_STARTUP=false: the migration already inserted
+    // every grant itself, so "current" already equals "desired" — the
+    // reconciler must report +0/-0, proving the migration's frozen list and
+    // ROLE_PERMISSIONS agree exactly (Phase 0 finding 0.7).
+    const { manager, rpRepo } = buildManagerMock(desired, desired, ROLE.NURSE);
+
+    await seedRolePermissions(manager as never);
+
+    expect(rpRepo.save).not.toHaveBeenCalled();
+    expect(rpRepo.remove).not.toHaveBeenCalled();
+  });
+
+  it('adds every desired NURSE grant when starting from an empty grant set (e.g. seeder ran before the migration)', async () => {
+    const desired = ROLE_PERMISSIONS[ROLE.NURSE] as string[];
+    const { manager, rpRepo } = buildManagerMock(desired, [], ROLE.NURSE);
+
+    await seedRolePermissions(manager as never);
+
+    expect(rpRepo.remove).not.toHaveBeenCalled();
+    const savedRows = (rpRepo.save as jest.Mock).mock.calls[0]?.[0] as Array<{
+      permission: { slug: string };
+    }>;
+    const savedSlugs = savedRows.map((row) => row.permission.slug);
+    expect(new Set(savedSlugs)).toEqual(new Set(desired));
+    expect(savedSlugs).not.toContain(PERMISSION.APPOINTMENTS_UPDATE);
+    expect(savedSlugs).not.toContain(PERMISSION.CLINICAL_RECORDS_MANAGE);
+    expect(savedSlugs).not.toContain(PERMISSION.CRM_FILES_MANAGE);
   });
 });

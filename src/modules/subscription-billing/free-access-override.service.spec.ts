@@ -1,4 +1,5 @@
 import { DataSource } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 
 import { FreeAccessOverrideService } from './free-access-override.service';
 import { ErrorCode } from '../../common/errors';
@@ -6,6 +7,7 @@ import { PlatformAdminAuditService } from '../platform/platform-admin-audit.serv
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { AccessCacheService } from './access-cache.service';
 import { createMockAccessCache } from '../../../test/utils/mock-factories';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 
 const row = (overrides: Record<string, unknown> = {}) => ({
   id: 'ov-1',
@@ -26,6 +28,8 @@ describe('FreeAccessOverrideService', () => {
   let audit: { record: jest.Mock };
   let tenantContext: { getUser: jest.Mock };
   let accessCache: ReturnType<typeof createMockAccessCache>;
+  let outboxSave: jest.Mock;
+  let config: { get: jest.Mock };
 
   beforeEach(() => {
     query = jest.fn();
@@ -34,18 +38,34 @@ describe('FreeAccessOverrideService', () => {
       getUser: jest.fn().mockReturnValue({ id: 'super-admin-1' }),
     };
     accessCache = createMockAccessCache();
+    outboxSave = jest.fn().mockResolvedValue(undefined);
+    // Matches the real default (unset === enabled) unless a test overrides it.
+    config = { get: jest.fn().mockReturnValue('true') };
     service = new FreeAccessOverrideService(
       {
         query,
         // grant/extend now run inside ONE transaction behind a per-tenant
         // advisory lock; the manager is the same query mock, so the existing
-        // call-order assertions keep describing real statements.
-        transaction: (cb: (m: { query: jest.Mock }) => unknown) =>
-          cb({ query }),
+        // call-order assertions keep describing real statements. `create`/
+        // `save` back the P4 start-notice outbox insert (TypeORM entity, not
+        // raw SQL like the override row itself).
+        transaction: (
+          cb: (m: {
+            query: jest.Mock;
+            create: (entity: unknown, data: unknown) => unknown;
+            save: jest.Mock;
+          }) => unknown,
+        ) =>
+          cb({
+            query,
+            create: (_entity: unknown, data: unknown) => data,
+            save: outboxSave,
+          }),
       } as unknown as DataSource,
       audit as unknown as PlatformAdminAuditService,
       tenantContext as unknown as TenantContextService,
       accessCache as unknown as AccessCacheService,
+      config as unknown as ConfigService,
     );
   });
 
@@ -222,7 +242,79 @@ describe('FreeAccessOverrideService', () => {
       // The rejection never reaches an INSERT — only the lock and the check.
       expect(query).toHaveBeenCalledTimes(2);
     });
+  });
 
+  // P4 — grant() enqueuing the free-access start notice atomically.
+  describe('start-notice enqueue (D4, kill switch)', () => {
+    it('writes start_notice_at and an outbox row when notifyClinic is true', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+
+      await service.grant('t1', { durationDays: 30, notifyClinic: true });
+
+      // The 6th bound param (index 5) is the `notifyClinic` boolean that
+      // drives `start_notice_at`'s CASE expression in the INSERT.
+      const insertCall = query.mock.calls[2];
+      expect(insertCall[1][5]).toBe(true);
+      expect(outboxSave).toHaveBeenCalledTimes(1);
+      expect(outboxSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queue: 'platform',
+          job_name: 'platform.freeAccessNotice',
+          dedupe_key: 'fa-start-ov-1',
+          payload: { overrideId: 'ov-1', kind: 'STARTED' },
+        }),
+      );
+    });
+
+    it('does not write an outbox row when notifyClinic is omitted (system/seed callers stay silent)', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+
+      await service.grant('t1', { durationDays: 30 });
+
+      const insertCall = query.mock.calls[2];
+      expect(insertCall[1][5]).toBe(false);
+      expect(outboxSave).not.toHaveBeenCalled();
+    });
+
+    it('the kill switch overrides notifyClinic:true — no outbox row, no start_notice_at', async () => {
+      config.get.mockReturnValue('false'); // FREE_ACCESS_NOTICES_ENABLED=false
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+
+      await service.grant('t1', { durationDays: 30, notifyClinic: true });
+
+      const insertCall = query.mock.calls[2];
+      expect(insertCall[1][5]).toBe(false);
+      expect(outboxSave).not.toHaveBeenCalled();
+    });
+
+    it('enriches the grant audit after-state with startsAt/durationDays/notifyClinic', async () => {
+      query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
+      query.mockResolvedValueOnce([]); // getActive → none
+      query.mockResolvedValueOnce([row()]); // INSERT RETURNING
+
+      await service.grant('t1', { durationDays: 30, notifyClinic: true });
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'platform_admin.override.grant',
+          after: expect.objectContaining({
+            startsAt: new Date(row().starts_at),
+            durationDays: 30,
+            notifyClinic: true,
+          }),
+        }),
+      );
+    });
+  });
+
+  // FND-015 — grant/extend/revoke previously wrote NO audit entry (continued).
+  describe('FND-015 — audit trail (extend/revoke)', () => {
     it('audits a successful extend with before/after ends_at', async () => {
       query.mockResolvedValueOnce([]); // pg_advisory_xact_lock
       query.mockResolvedValueOnce([row({ ends_at: '2026-06-30T00:00:00Z' })]); // getActive
@@ -238,7 +330,7 @@ describe('FreeAccessOverrideService', () => {
           entityId: 'ov-1',
           tenantId: 't1',
           before: { endsAt: new Date('2026-06-30T00:00:00Z') },
-          after: { endsAt: new Date('2026-12-31T00:00:00Z') },
+          after: { endsAt: new Date('2026-12-31T00:00:00Z'), durationDays: 30 },
         }),
       );
     });

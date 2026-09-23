@@ -244,6 +244,14 @@ export const validate = (config: Record<string, unknown>) => {
     // all" (FR-B007g — configurable, never hardcoded, and never silently zero).
     SUBSCRIPTION_GRACE_DAYS: Joi.number().min(1).default(14),
 
+    // Free-access lifecycle notices (start + 48h expiry warning) rollout
+    // kill switch. Defaults ON; set to 'false' to stop `grant()` from writing
+    // a start-notice outbox row and stop the expiry sweep from claiming
+    // anything — see FreeAccessNoticeService's docblock for why this exists
+    // (deploy-order safety: the worker must know the job name before any API
+    // instance starts enqueueing it).
+    FREE_ACCESS_NOTICES_ENABLED: Joi.string().valid('true', 'false').default('true'),
+
     JWT_ACCESS_SECRET: Joi.string().required(),
     JWT_REFRESH_SECRET: Joi.string().required(),
 

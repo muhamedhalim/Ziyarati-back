@@ -104,7 +104,15 @@ describe('StaffService.create — public_slug (uniqueness holds under concurrent
         },
         { provide: DataSource, useValue: dataSource },
         { provide: AuthService, useValue: { createUserWithRole: jest.fn() } },
-        { provide: RolesService, useValue: {} },
+        {
+          provide: RolesService,
+          // `create()`'s public-booking-exclusion check reads the linked
+          // user's CURRENT roles — an existing user with no role held is a
+          // valid (if unusual) state, and every test here is unrelated to
+          // bookability, so an empty list keeps `resolveBookableFlag`
+          // unrestricted (matches this module's pre-Nurse behavior).
+          useValue: { listUserRoles: jest.fn().mockResolvedValue([]) },
+        },
         {
           provide: StaffAccessService,
           useValue: { getAccessStates: jest.fn().mockResolvedValue(new Map()) },

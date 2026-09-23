@@ -25,7 +25,10 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
-import { ClinicalRecordService } from './clinical-record.service';
+import {
+  ClinicalRecordService,
+  type ClinicalWriteCaller,
+} from './clinical-record.service';
 import { ClinicalTimelineService } from './clinical-timeline.service';
 import { ClinicalAccessLogService } from './clinical-access-log.service';
 import {
@@ -36,6 +39,7 @@ import {
 import { QueryClinicalTimelineDto } from './dto/query-clinical-timeline.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -64,6 +68,14 @@ const S_ERROR = {
  * are the same 404 as non-existent ones — this surface must not let a
  * viewer enumerate data they could not otherwise see.
  *
+ * Nurse role addition: 4 of the write routes (create encounter, create
+ * entry — either flavour, correct entry) additionally admit
+ * `clinical.records.nursing`, a narrower write grant enforced inside
+ * `ClinicalRecordService` (kind + own-author checks) rather than by the
+ * guard alone — see that service's docblock. `DELETE entries/:id` stays
+ * `clinical.records.manage`-only: a nursing caller may never delete
+ * clinical content.
+ *
  * Entitlement policy (T026A): `@RequireFeature(FeatureKey.CRM)` at the
  * controller level — clinical records extend the patient-record domain,
  * they are not a separate entitlement.
@@ -88,6 +100,19 @@ export class ClinicalController {
       throw new Error('ClinicalController: no authenticated user on request');
     }
     return id;
+  }
+
+  /**
+   * The caller's identity for `ClinicalRecordService`'s nursing/manage split
+   * — see that service's own docblock on why the guard admitting the route
+   * is not the end of the authorization question for a write.
+   */
+  private requireCaller(): ClinicalWriteCaller {
+    const user = this.ctx.getUser();
+    if (!user) {
+      throw new Error('ClinicalController: no authenticated user on request');
+    }
+    return { roles: user.roles, permissions: user.permissions };
   }
 
   @ApiOperation({
@@ -146,14 +171,18 @@ export class ClinicalController {
 
   @ApiOperation({
     summary: 'Create a clinical encounter',
-    description: '**Protected — `clinical.records.manage`.**',
+    description:
+      '**Protected — `clinical.records.manage` OR `clinical.records.nursing`.**',
   })
   @ApiParam({ name: 'customerId', type: 'string', format: 'uuid' })
   @ApiCreatedResponse({ description: 'Encounter created.' })
   @ApiUnauthorizedResponse({ schema: S_ERROR })
   @ApiForbiddenResponse({ schema: S_ERROR })
   @Post('patients/:customerId/encounters')
-  @RequirePermissions(PERMISSION.CLINICAL_RECORDS_MANAGE)
+  @RequireAnyPermission(
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
+    PERMISSION.CLINICAL_RECORDS_NURSING,
+  )
   createEncounter(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Body() dto: CreateClinicalEncounterDto,
@@ -192,7 +221,9 @@ export class ClinicalController {
 
   @ApiOperation({
     summary: 'Add an entry to an encounter',
-    description: '**Protected — `clinical.records.manage`.**',
+    description:
+      '**Protected — `clinical.records.manage` OR `clinical.records.nursing`.** ' +
+      'A nursing-only caller may create only NOTE/VITALS entries — any other `kind` is refused (403).',
   })
   @ApiParam({
     name: 'id',
@@ -205,7 +236,10 @@ export class ClinicalController {
   @ApiForbiddenResponse({ schema: S_ERROR })
   @ApiNotFoundResponse({ schema: S_ERROR })
   @Post('encounters/:id/entries')
-  @RequirePermissions(PERMISSION.CLINICAL_RECORDS_MANAGE)
+  @RequireAnyPermission(
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
+    PERMISSION.CLINICAL_RECORDS_NURSING,
+  )
   async createEncounterEntry(
     @Param('id', ParseUUIDPipe) encounterId: string,
     @Body() dto: CreateClinicalEntryDto,
@@ -217,20 +251,26 @@ export class ClinicalController {
       encounter.customer.id,
       this.requireActorId(),
       dto,
+      this.requireCaller(),
       encounterId,
     );
   }
 
   @ApiOperation({
     summary: 'Add a patient-level entry (no visit — e.g. a standing allergy)',
-    description: '**Protected — `clinical.records.manage`.**',
+    description:
+      '**Protected — `clinical.records.manage` OR `clinical.records.nursing`.** ' +
+      'A nursing-only caller may create only NOTE/VITALS entries — any other `kind` is refused (403).',
   })
   @ApiParam({ name: 'customerId', type: 'string', format: 'uuid' })
   @ApiCreatedResponse({ description: 'Entry created.' })
   @ApiUnauthorizedResponse({ schema: S_ERROR })
   @ApiForbiddenResponse({ schema: S_ERROR })
   @Post('patients/:customerId/entries')
-  @RequirePermissions(PERMISSION.CLINICAL_RECORDS_MANAGE)
+  @RequireAnyPermission(
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
+    PERMISSION.CLINICAL_RECORDS_NURSING,
+  )
   createPatientEntry(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Body() dto: CreateClinicalEntryDto,
@@ -240,13 +280,16 @@ export class ClinicalController {
       customerId,
       this.requireActorId(),
       dto,
+      this.requireCaller(),
     );
   }
 
   @ApiOperation({
     summary: 'Correct a clinical entry',
     description:
-      '**Protected — `clinical.records.manage`.** Requires the CURRENT `version` — a stale value is refused with 409 (FR-H009). ' +
+      '**Protected — `clinical.records.manage` OR `clinical.records.nursing`.** ' +
+      'A nursing-only caller may correct only their OWN NOTE/VITALS entries — anything else is refused (403). ' +
+      'Requires the CURRENT `version` — a stale value is refused with 409 (FR-H009). ' +
       'The prior content is preserved as a revision in the same transaction (FR-H008).',
   })
   @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
@@ -259,7 +302,10 @@ export class ClinicalController {
     schema: S_ERROR,
   })
   @Patch('entries/:id')
-  @RequirePermissions(PERMISSION.CLINICAL_RECORDS_MANAGE)
+  @RequireAnyPermission(
+    PERMISSION.CLINICAL_RECORDS_MANAGE,
+    PERMISSION.CLINICAL_RECORDS_NURSING,
+  )
   correctEntry(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CorrectClinicalEntryDto,
@@ -269,6 +315,7 @@ export class ClinicalController {
       id,
       this.requireActorId(),
       dto,
+      this.requireCaller(),
     );
   }
 

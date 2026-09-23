@@ -1,3 +1,5 @@
+import { ConfigService } from '@nestjs/config';
+
 /**
  * Platform-level billing constants.
  *
@@ -56,6 +58,29 @@ export enum OverrideStatus {
  */
 export const FREE_ACCESS_MIN_DURATION_DAYS = 1;
 export const FREE_ACCESS_MAX_DURATION_DAYS = 365;
+
+/**
+ * The `/platform/billing/overview` "expiring" filter bucket boundary — an
+ * ADMIN-VISIBILITY grouping only ("show me clinics losing free access soon"),
+ * independent of the 48h server-side expiry-warning notice window
+ * (`FreeAccessNoticeService`'s sweep). An ACTIVE, time-boxed override with
+ * `daysRemaining <= this` is "expiring"; otherwise "active".
+ */
+export const FREE_ACCESS_OVERVIEW_EXPIRING_SOON_DAYS = 7;
+
+/**
+ * Rollout kill switch for the free-access notice pipeline (start notice +
+ * 48h expiry warning). Checked by BOTH `FreeAccessOverrideService.grant`
+ * (whether to write the start-notice outbox row at all) and
+ * `FreeAccessNoticeService.sweepExpiring` (whether to claim anything) — one
+ * function so the two can never read the flag differently. Defaults ON;
+ * flip to 'false' only for the brief window between deploying the schema/API
+ * and deploying the worker that knows the job name (see the plan's
+ * Deployment Plan §19).
+ */
+export function freeAccessNoticesEnabled(config: ConfigService): boolean {
+  return config.get<string>('FREE_ACCESS_NOTICES_ENABLED', 'true') !== 'false';
+}
 
 /**
  * `AccessSource` now lives with the rest of the decision shape in

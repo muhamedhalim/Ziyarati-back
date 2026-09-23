@@ -199,6 +199,9 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   // `automations` entitlement is checked INSIDE the sweep, and the runs it
   // triggers execute as tenant-tier `workflow.run` jobs (gated again there).
   [JOB.PLATFORM_BIRTHDAY_GREETINGS]: SYSTEM,
+  // The override id is looked up fresh inside `deliver()` — the tenant it
+  // belongs to is never trusted from the payload (plan §12).
+  [JOB.PLATFORM_FREE_ACCESS_NOTICE]: SYSTEM,
 };
 
 /**

@@ -370,6 +370,7 @@ describe('RolesService', () => {
         { id: 'r6', slug: ROLE.AI_BOT },
         { id: 'r7', slug: 'front-desk' }, // tenant custom role
         { id: 'r8', slug: ROLE.BRANCH_MANAGER },
+        { id: 'r9', slug: ROLE.NURSE },
       ]);
 
       const result = await service.findAssignableForStaff(TENANT);
@@ -378,6 +379,7 @@ describe('RolesService', () => {
         ROLE.RECEPTIONIST,
         'front-desk',
         ROLE.BRANCH_MANAGER,
+        ROLE.NURSE,
       ]);
     });
   });
@@ -911,6 +913,25 @@ describe('RolesService', () => {
       await expect(
         service.assignRoleToUser('u1', 'r-rec', TENANT),
       ).resolves.toEqual({ id: 'ur1' });
+    });
+
+    it('refuses a tenant caller assigning NURSE directly (clinical.records.nursing is reserved) — only StaffService may do it', async () => {
+      users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });
+      roles.findOne.mockResolvedValueOnce({
+        id: 'r-nurse',
+        slug: ROLE.NURSE,
+        is_system: true,
+        tenant: null,
+        rolePermissions: [
+          { permission: { slug: PERMISSION.APPOINTMENTS_READ } },
+          { permission: { slug: PERMISSION.CLINICAL_RECORDS_NURSING } },
+        ],
+      });
+
+      await expect(
+        service.assignRoleToUser('u1', 'r-nurse', TENANT),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(userRoles.save).not.toHaveBeenCalled();
     });
   });
 

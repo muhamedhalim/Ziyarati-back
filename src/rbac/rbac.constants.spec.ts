@@ -33,6 +33,8 @@ import {
   UNENFORCED_PERMISSION_SLUGS,
   UNTRIAGED_COVERAGE_GAP_SLUGS,
   isBranchRestricted,
+  canViewAppointmentFinancials,
+  PUBLIC_BOOKING_EXCLUDED_ROLES,
 } from './rbac.constants';
 import { getScope } from './permission-metadata';
 
@@ -613,5 +615,221 @@ describe('branch_manager role (branch-scoped RBAC)', () => {
    */
   it('branches.update_own is registered at the branch scope layer, for the Permission Preview', () => {
     expect(getScope(PERMISSION.BRANCHES_UPDATE_OWN)).toBe('branch');
+  });
+});
+
+/**
+ * Nurse role — clinical.records.nursing, appointments.status.update,
+ * PUBLIC_BOOKING_EXCLUDED_ROLES and the ROLE_PERMISSIONS grant itself.
+ */
+describe('nurse role', () => {
+  const nurseGrants = ROLE_PERMISSIONS[ROLE.NURSE] as string[];
+
+  it('is in the role catalogue with a display name and description', () => {
+    const def = ROLES.find((r) => r.slug === ROLE.NURSE);
+    expect(def?.name).toBe('Nurse');
+    expect(def?.description).toBeTruthy();
+  });
+
+  it('is assignable to clinic staff — never in NON_STAFF_ROLE_SLUGS', () => {
+    expect(NON_STAFF_ROLE_SLUGS).not.toContain(ROLE.NURSE);
+  });
+
+  it('can reach the clinic workspace shell (holds dashboard.access)', () => {
+    expect(nurseGrants).toContain(PERMISSION.DASHBOARD_ACCESS);
+  });
+
+  it('is NOT branch-restricted — clinic-wide like doctor/receptionist', () => {
+    expect(isBranchRestricted(nurseGrants)).toBe(false);
+    expect(nurseGrants).not.toContain(PERMISSION.BRANCHES_UPDATE_OWN);
+  });
+
+  it('holds appointments.read (tenant-wide) and appointments.status.update, never appointments.update/read_own/manage_all', () => {
+    expect(nurseGrants).toContain(PERMISSION.APPOINTMENTS_READ);
+    expect(nurseGrants).toContain(PERMISSION.APPOINTMENTS_STATUS_UPDATE);
+    expect(nurseGrants).not.toContain(PERMISSION.APPOINTMENTS_UPDATE);
+    expect(nurseGrants).not.toContain(PERMISSION.APPOINTMENTS_READ_OWN);
+    expect(nurseGrants).not.toContain(PERMISSION.APPOINTMENTS_CREATE);
+    expect(nurseGrants).not.toContain(PERMISSION.APPOINTMENTS_RESCHEDULE);
+    expect(nurseGrants).not.toContain(PERMISSION.APPOINTMENTS_CANCEL);
+    expect(nurseGrants).not.toContain(PERMISSION.APPOINTMENTS_MANAGE_ALL);
+  });
+
+  it('holds read-only CRM access, never crm.*.manage or crm.files.manage', () => {
+    expect(nurseGrants).toContain(PERMISSION.CRM_CUSTOMERS_READ);
+    expect(nurseGrants).toContain(PERMISSION.CRM_NOTES_READ);
+    expect(nurseGrants).toContain(PERMISSION.CRM_TAGS_READ);
+    expect(nurseGrants).toContain(PERMISSION.CRM_FILES_READ);
+    expect(nurseGrants).not.toContain(PERMISSION.CRM_CUSTOMERS_MANAGE);
+    expect(nurseGrants).not.toContain(PERMISSION.CRM_NOTES_MANAGE);
+    expect(nurseGrants).not.toContain(PERMISSION.CRM_TAGS_MANAGE);
+    expect(nurseGrants).not.toContain(PERMISSION.CRM_FILES_MANAGE);
+  });
+
+  it('holds clinical.records.read + .nursing, never .manage', () => {
+    expect(nurseGrants).toContain(PERMISSION.CLINICAL_RECORDS_READ);
+    expect(nurseGrants).toContain(PERMISSION.CLINICAL_RECORDS_NURSING);
+    expect(nurseGrants).not.toContain(PERMISSION.CLINICAL_RECORDS_MANAGE);
+  });
+
+  it('holds staff.read_own only — never the tenant-wide staff.read/create/update/manage', () => {
+    expect(nurseGrants).toContain(PERMISSION.STAFF_READ_OWN);
+    expect(nurseGrants).not.toContain(PERMISSION.STAFF_READ);
+    expect(nurseGrants).not.toContain(PERMISSION.STAFF_CREATE);
+    expect(nurseGrants).not.toContain(PERMISSION.STAFF_UPDATE);
+    expect(nurseGrants).not.toContain(PERMISSION.STAFF_MANAGE);
+  });
+
+  it('holds no finance, billing, subscription, analytics, reports, audit, roles, users, settings, branches or AI-config permission', () => {
+    const forbidden = [
+      PERMISSION.PAYMENTS_READ,
+      PERMISSION.PAYMENTS_MANAGE,
+      PERMISSION.REFUNDS_MANAGE,
+      PERMISSION.INVOICES_READ,
+      PERMISSION.INVOICES_MANAGE,
+      PERMISSION.SETTLEMENTS_READ,
+      PERMISSION.SETTLEMENTS_MANAGE,
+      PERMISSION.SUBSCRIPTION_READ,
+      PERMISSION.SUBSCRIPTION_MANAGE,
+      PERMISSION.BILLING_READ,
+      PERMISSION.BILLING_MANAGE,
+      PERMISSION.REPORTS_READ,
+      PERMISSION.REPORTS_EXPORT,
+      PERMISSION.ANALYTICS_DASHBOARD_READ,
+      PERMISSION.ANALYTICS_REPORTS_READ,
+      PERMISSION.AUDIT_READ,
+      PERMISSION.ROLES_MANAGE,
+      PERMISSION.USERS_MANAGE,
+      PERMISSION.TENANTS_MANAGE,
+      PERMISSION.PLATFORM_SETTINGS_READ,
+      PERMISSION.PLATFORM_SETTINGS_MANAGE,
+      PERMISSION.BRANCHES_CREATE,
+      PERMISSION.BRANCHES_UPDATE,
+      PERMISSION.BRANCHES_DELETE,
+      PERMISSION.SERVICES_CREATE,
+      PERMISSION.SERVICES_UPDATE,
+      PERMISSION.SERVICES_DELETE,
+      PERMISSION.AI_MANAGE,
+      PERMISSION.WHATSAPP_ACCOUNTS_MANAGE,
+    ];
+    for (const slug of forbidden) {
+      expect(nurseGrants).not.toContain(slug);
+    }
+  });
+
+  it('never appears in every other role’s "least privilege" comparison lists (RECEPTIONIST/DOCTOR/CUSTOMER/AI_BOT still hold no branch permission)', () => {
+    for (const role of [
+      ROLE.RECEPTIONIST,
+      ROLE.DOCTOR,
+      ROLE.CUSTOMER,
+      ROLE.AI_BOT,
+      ROLE.NURSE,
+    ]) {
+      const grants = ROLE_PERMISSIONS[role] as string[];
+      expect(grants).not.toEqual(
+        expect.arrayContaining([
+          PERMISSION.BRANCHES_CREATE,
+          PERMISSION.BRANCHES_UPDATE,
+          PERMISSION.BRANCHES_UPDATE_OWN,
+          PERMISSION.BRANCHES_DELETE,
+        ]),
+      );
+    }
+  });
+
+  describe('clinical.records.nursing — reserved + ownership-scoped', () => {
+    it('is reserved — a clinic Owner can never delegate it into a tenant custom role', () => {
+      expect(RESERVED_PERMISSION_SLUGS.has(PERMISSION.CLINICAL_RECORDS_NURSING)).toBe(
+        true,
+      );
+    });
+
+    it('is registered as ownership-scoped (ABAC) — correction is author-restricted', () => {
+      expect(
+        OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.CLINICAL_RECORDS_NURSING),
+      ).toBe(true);
+    });
+  });
+
+  describe('appointments.status.update — delegable, queue/status-only', () => {
+    it('is NOT reserved — a clinic Owner may delegate it into a tenant custom role', () => {
+      expect(
+        RESERVED_PERMISSION_SLUGS.has(PERMISSION.APPOINTMENTS_STATUS_UPDATE),
+      ).toBe(false);
+    });
+  });
+});
+
+/**
+ * PUBLIC_BOOKING_EXCLUDED_ROLES — the deny-list StaffService.resolveBookableFlag
+ * consults so an excluded role can never be set publicly bookable.
+ */
+describe('PUBLIC_BOOKING_EXCLUDED_ROLES', () => {
+  it('contains nurse', () => {
+    expect(PUBLIC_BOOKING_EXCLUDED_ROLES).toContain(ROLE.NURSE);
+  });
+
+  it('does not contain any role that is bookable today (doctor, manager) or the front-desk roles', () => {
+    expect(PUBLIC_BOOKING_EXCLUDED_ROLES).not.toContain(ROLE.DOCTOR);
+    expect(PUBLIC_BOOKING_EXCLUDED_ROLES).not.toContain(ROLE.MANAGER);
+    expect(PUBLIC_BOOKING_EXCLUDED_ROLES).not.toContain(ROLE.RECEPTIONIST);
+    expect(PUBLIC_BOOKING_EXCLUDED_ROLES).not.toContain(ROLE.BRANCH_MANAGER);
+  });
+});
+
+/**
+ * canViewAppointmentFinancials — the derived predicate that redacts
+ * total_amount/payment_status/currency/service pricing/refundAmount/queue
+ * paymentStatus at the controller response boundary (never inside
+ * AppointmentService itself). See its own docblock for the full rationale.
+ */
+describe('canViewAppointmentFinancials', () => {
+  it.each([
+    ['owner', ROLE.OWNER],
+    ['manager', ROLE.MANAGER],
+    ['branch_manager', ROLE.BRANCH_MANAGER],
+    ['receptionist', ROLE.RECEPTIONIST],
+  ])(
+    '%s keeps seeing financial fields — every existing role already holds appointments.create or .update',
+    (_label, role) => {
+      const grants = ROLE_PERMISSIONS[role] as string[];
+      expect(canViewAppointmentFinancials(grants)).toBe(true);
+    },
+  );
+
+  it('doctor keeps seeing financial fields — via appointments.read_own', () => {
+    const grants = ROLE_PERMISSIONS[ROLE.DOCTOR] as string[];
+    expect(grants).toContain(PERMISSION.APPOINTMENTS_READ_OWN);
+    expect(canViewAppointmentFinancials(grants)).toBe(true);
+  });
+
+  it('super_admin keeps seeing financial fields — the wildcard resolves to every permission, including appointments.update', () => {
+    // The seeder resolves ALL_PERMISSIONS into a literal grant of every
+    // catalogue permission, so a real super_admin's `user.permissions`
+    // array already contains appointments.update — no special-case bypass
+    // needed here (mirrors the pattern documented on the function itself).
+    expect(canViewAppointmentFinancials(ALL_PERMISSION_SLUGS)).toBe(true);
+  });
+
+  it('nurse does NOT see financial fields — holds appointments.read but none of create/update/read_own/payments.read', () => {
+    const grants = ROLE_PERMISSIONS[ROLE.NURSE] as string[];
+    expect(grants).toContain(PERMISSION.APPOINTMENTS_READ);
+    expect(canViewAppointmentFinancials(grants)).toBe(false);
+  });
+
+  it('a tenant custom role holding ONLY appointments.read also loses financial visibility — the documented, accepted side effect', () => {
+    expect(
+      canViewAppointmentFinancials([PERMISSION.APPOINTMENTS_READ]),
+    ).toBe(false);
+  });
+
+  it('an otherwise-bare caller holding only payments.read still sees financials', () => {
+    expect(canViewAppointmentFinancials([PERMISSION.PAYMENTS_READ])).toBe(
+      true,
+    );
+  });
+
+  it('an empty permission set sees no financials', () => {
+    expect(canViewAppointmentFinancials([])).toBe(false);
   });
 });

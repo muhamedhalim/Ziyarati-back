@@ -546,6 +546,11 @@ drives the dropdown.
           id: { type: 'string', format: 'uuid' },
           slug: { type: 'string', example: 'receptionist' },
           name: { type: 'string', example: 'Receptionist' },
+          bookable: {
+            type: 'boolean',
+            description:
+              'True only for doctor/manager (APPOINTMENT_BOOKABLE_STAFF_ROLES) — never a tenant custom role. Lets the Add/Edit Staff dialog default "available for public booking" from the same rule the backend enforces (StaffService.resolveBookableFlag), instead of a hardcoded guess.',
+          },
         },
       },
     },
@@ -984,7 +989,9 @@ required to change the role).
 **Protected — requires \`staff.update\`. Clinic must be active.**
 
 Sets \`is_available_for_booking = true\`. The staff member becomes visible
-in availability lookups.
+in availability lookups. Refused (422) for a role that must never be
+publicly bookable (e.g. Nurse) — a public-booking exclusion enforced
+server-side, not just left off the dashboard picker.
 
 **Who can call this:** Owner, Manager (\`staff.update\`).
     `.trim(),
@@ -1006,6 +1013,11 @@ in availability lookups.
   })
   @ApiNotFoundResponse({
     description: 'Staff member not found.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'This role must never be publicly bookable (e.g. Nurse).',
     schema: S_ERROR,
   })
   @Post(':id/activate')

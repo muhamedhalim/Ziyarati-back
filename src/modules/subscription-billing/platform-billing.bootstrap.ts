@@ -71,6 +71,33 @@ export class PlatformBillingBootstrap implements OnApplicationBootstrap {
     `,
     );
 
+    // Notice-tracking columns (mirrors migration 1730102000000 verbatim, so
+    // dev `synchronize` boxes — which never run migrations — and
+    // migrations-first prod converge on the same schema). `grant()`/`extend()`
+    // and the free-access notice sweep read/write these; without them on a
+    // dev box those statements would fail outright, so this is `require`d
+    // exactly like the base table above.
+    await this.require(
+      'free_access_overrides notice-tracking columns',
+      `
+      ALTER TABLE free_access_overrides
+      ADD COLUMN IF NOT EXISTS start_notice_at timestamptz,
+      ADD COLUMN IF NOT EXISTS expiry_warning_at timestamptz,
+      ADD COLUMN IF NOT EXISTS expiry_warning_ends_at timestamptz
+    `,
+    );
+
+    // Hourly expiry-sweep's hot path — see migration 1730102000000 for why
+    // this predicate (no `now()`) is safely indexable.
+    await this.run(
+      'free_access_overrides expiry-due index',
+      `
+      CREATE INDEX IF NOT EXISTS idx_free_override_expiry_due
+      ON free_access_overrides (ends_at)
+      WHERE status = 'ACTIVE' AND ends_at IS NOT NULL
+    `,
+    );
+
     // ── tenant_entitlement_ledger — verbatim from 1730043000000 ────────────
     await this.require(
       'tenant_entitlement_ledger table',

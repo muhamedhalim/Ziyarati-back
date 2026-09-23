@@ -3,7 +3,10 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
 import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
-import { PlatformWaitlistEvaluateJob } from '../../queue/job-data.interface';
+import {
+  PlatformWaitlistEvaluateJob,
+  PlatformFreeAccessNoticeJob,
+} from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -17,6 +20,7 @@ import { WaitlistOfferService } from '../../modules/waitlist/waitlist-offer.serv
 import { PatientQueueService } from '../../modules/patient-queue/patient-queue.service';
 import { ReportExportService } from '../../modules/report-export/report-export.service';
 import { BirthdayGreetingSweepService } from '../../modules/workflow/birthday-greeting.sweep.service';
+import { FreeAccessNoticeService } from '../../modules/subscription-billing/free-access-notice.service';
 
 /** See `NotificationsProcessor`'s identical reap lock — same reasoning, own key. */
 const WAITLIST_EXPIRY_LOCK_KEY = 'lock:waitlist-expiry';
@@ -75,6 +79,16 @@ const BIRTHDAY_GREETINGS_LOCK_TTL_MS = 60_000;
  *                                 workflow engine turns into greetings.
  *                                 Lock-guarded + heartbeat, like the sweeps
  *                                 above, with the lock renewed per tenant.
+ *  - `platform.freeAccessNotice`  delivers one free-access lifecycle notice
+ *                                 (in-app + email) — the start notice
+ *                                 enqueued by `FreeAccessOverrideService.
+ *                                 grant`, or an expiry warning enqueued by
+ *                                 `FreeAccessNoticeService.sweepExpiring`.
+ *                                 Not lock-guarded like the sweeps above: it
+ *                                 is a per-event job, not a periodic one, and
+ *                                 its own idempotency comes from the unique
+ *                                 constraints `FreeAccessNoticeService.
+ *                                 deliver` relies on.
  *
  * Branches on the job NAME. It previously ignored it entirely and always ran
  * the log purge, which was harmless while one job existed and would have
@@ -96,6 +110,7 @@ export class PlatformProcessor extends WorkerHost {
     private readonly patientQueue: PatientQueueService,
     private readonly reportExport: ReportExportService,
     private readonly birthdayGreetings: BirthdayGreetingSweepService,
+    private readonly freeAccessNotice: FreeAccessNoticeService,
   ) {
     super();
   }
@@ -114,12 +129,32 @@ export class PlatformProcessor extends WorkerHost {
         return this.processExportExpiry();
       case JOB.PLATFORM_BIRTHDAY_GREETINGS:
         return this.processBirthdayGreetings();
+      case JOB.PLATFORM_FREE_ACCESS_NOTICE:
+        return this.processFreeAccessNotice(job);
       case JOB.PLATFORM_LOG_CLEANUP:
       default:
         // Default preserves the pre-existing behaviour for any job enqueued
         // onto this queue without a recognised name.
         return this.maintenance.purgeOldLogs();
     }
+  }
+
+  /**
+   * SYSTEM tier, no per-invocation tenant identity in the payload (see
+   * `PlatformFreeAccessNoticeJob`'s own docblock) — `FreeAccessNoticeService.
+   * deliver()` re-reads the override/tenant fresh from the database itself,
+   * so there is no `runInTenantContext`/`validateJobPayload` wrapper here,
+   * matching every other SYSTEM-tier branch in this processor (e.g.
+   * `PLATFORM_AUTH_TOKEN_CLEANUP` above). A thrown error here (a failed
+   * in-app emit) propagates to BullMQ's ordinary attempts/backoff.
+   */
+  private processFreeAccessNotice(job: Job) {
+    const data = job.data as PlatformFreeAccessNoticeJob;
+    return this.freeAccessNotice.deliver({
+      overrideId: data.overrideId,
+      kind: data.kind,
+      endsAt: data.endsAt,
+    });
   }
 
   private processWaitlistEvaluate(job: Job) {

@@ -14,6 +14,11 @@ import { User } from './entities/Auth&RBAC/User';
 import { RefreshToken } from './entities/Auth&RBAC/RefreshToken';
 import { PasswordReset } from './entities/Auth&RBAC/PasswordReset';
 import { AuthTokenMaintenanceService } from './modules/auth/auth-token-maintenance.service';
+// Provided directly here (not exported by SubscriptionBillingModule) so
+// that module never has to import NotificationsModule/EmailModule just to
+// satisfy this worker-only service's constructor — see the plan's rationale
+// on FreeAccessNoticeService's own docblock.
+import { FreeAccessNoticeService } from './modules/subscription-billing/free-access-notice.service';
 
 import { TenantContextModule } from './core/tenant-context/tenant-context.module';
 import { BranchScopeModule } from './core/branch-scope/branch-scope.module';
@@ -334,6 +339,10 @@ const WORKER_PROVIDERS =
     // PlatformProcessor's exportExpiry branch.
     ReportExportModule,
   ],
-  providers: [AuthTokenMaintenanceService, ...WORKER_PROVIDERS],
+  providers: [
+    AuthTokenMaintenanceService,
+    FreeAccessNoticeService,
+    ...WORKER_PROVIDERS,
+  ],
 })
 export class WorkerModule {}
