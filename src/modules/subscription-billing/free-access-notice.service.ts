@@ -1,13 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 
 import { EmailService } from '../email/email.service';
 import { InternalNotificationService } from '../notifications/internal/internal-notification.service';
 import { MetricsService } from '../../metrics/metrics.service';
+import { freeAccessNoticesEnabled } from './platform-billing.constants';
 import {
   freeAccessExpiryEmailKey,
+  freeAccessExpiryOutboxKey,
   freeAccessStartEmailKey,
 } from './free-access-notice-keys';
+import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
+import { QUEUE, JOB } from '../../queue/queue.constants';
 
 /** One row of everything `deliver()` needs, re-read fresh for every delivery. */
 interface DeliverableOverride {
@@ -31,8 +36,8 @@ export interface FreeAccessNoticeJob {
 /**
  * Delivers one free-access lifecycle notice (in-app + email) — the START
  * event enqueued by `FreeAccessOverrideService.grant`, or an EXPIRING
- * warning enqueued by this service's own `sweepExpiring` (added in the plan's
- * next phase). Worker-only: provided in `WorkerModule`, not the API module,
+ * warning enqueued by this service's own `sweepExpiring`. Worker-only:
+ * provided in `WorkerModule`, not the API module,
  * so an API-only deployment never needs `InternalNotificationService`'s
  * dependencies wired in just to satisfy this constructor.
  *
@@ -72,7 +77,110 @@ export class FreeAccessNoticeService {
     private readonly notifications: InternalNotificationService,
     private readonly email: EmailService,
     private readonly metrics: MetricsService,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * Hourly expiry-warning sweep (plan §7/D3): claims every ACTIVE, time-boxed
+   * override whose `ends_at` falls within the next 48h and hasn't already
+   * been warned for that exact `ends_at`, and enqueues one EXPIRING notice
+   * per claim.
+   *
+   * ATOMICITY / EXACTLY-ONCE. Each batch runs in its own transaction: the
+   * claim query (`FOR UPDATE OF o SKIP LOCKED`) marks a row warned and the
+   * matching outbox row is inserted in the SAME transaction, so a crash
+   * between them can't happen — either both commit or neither does, and a
+   * row that rolls back is simply re-claimable by the next sweep tick. Two
+   * sweeps running concurrently (a double-fired cron, two worker replicas)
+   * can never claim the same row twice: `SKIP LOCKED` hands each row to at
+   * most one of them, and the eligibility predicate
+   * (`expiry_warning_ends_at IS DISTINCT FROM ends_at`) is what stops an
+   * ALREADY-claimed row from being claimed again on the next run.
+   *
+   * Batches rather than one unbounded query, so a large backlog (e.g. right
+   * after this feature is first enabled, when every pre-existing eligible
+   * override becomes claimable at once — see plan §16/§19) can't hold one
+   * transaction open indefinitely; `maxBatches` bounds a single sweep tick's
+   * total work even if the backlog is larger than that.
+   */
+  async sweepExpiring(
+    opts: { batch?: number; maxBatches?: number } = {},
+  ): Promise<{ claimed: number; batches: number }> {
+    // Same kill switch `grant()` checks before writing a start notice — off
+    // means the pipeline sends nothing anywhere, not just on the grant path.
+    // Nothing is lost while disabled: every currently-eligible row is still
+    // eligible (its `expiry_warning_ends_at` was never claimed) the moment
+    // this is flipped back on.
+    if (!freeAccessNoticesEnabled(this.config)) {
+      return { claimed: 0, batches: 0 };
+    }
+
+    const batchSize = opts.batch ?? 100;
+    const maxBatches = opts.maxBatches ?? 50;
+    let claimed = 0;
+    let batches = 0;
+
+    while (batches < maxBatches) {
+      const n = await this.claimExpiringBatch(batchSize);
+      batches++;
+      claimed += n;
+      if (n < batchSize) break; // short batch — nothing left to claim
+    }
+
+    return { claimed, batches };
+  }
+
+  /** One claim-and-enqueue transaction, capped at `limit` rows. Returns the number claimed. */
+  private async claimExpiringBatch(limit: number): Promise<number> {
+    return this.dataSource.transaction(async (manager) => {
+      // node-postgres (via TypeORM's raw `query()`) returns `[rows,
+      // affectedCount]` for an UPDATE — even one with RETURNING — unlike a
+      // plain SELECT or an INSERT...RETURNING, which return the rows array
+      // directly (see `FreeAccessOverrideService.revoke`'s identical
+      // unwrapping, and its own comment, for the same quirk).
+      const result = await manager.query(
+        `WITH due AS (
+           SELECT o.id, o.ends_at
+           FROM free_access_overrides o
+           JOIN tenants t ON t.id = o.tenant_id AND t.deleted_at IS NULL
+           WHERE o.status = 'ACTIVE' AND o.ends_at IS NOT NULL
+             AND o.ends_at > now() AND o.ends_at <= now() + interval '2 days'
+             AND o.ends_at - o.starts_at > interval '2 days'
+             AND o.expiry_warning_ends_at IS DISTINCT FROM o.ends_at
+           ORDER BY o.ends_at
+           LIMIT $1
+           FOR UPDATE OF o SKIP LOCKED
+         )
+         UPDATE free_access_overrides o
+         SET expiry_warning_at = now(), expiry_warning_ends_at = o.ends_at
+         FROM due
+         WHERE o.id = due.id
+         RETURNING o.id, o.ends_at`,
+        [limit],
+      );
+      const due: { id: string; ends_at: string }[] = Array.isArray(result)
+        ? (result[0] as { id: string; ends_at: string }[])
+        : [];
+
+      for (const row of due) {
+        const endsAt = new Date(row.ends_at);
+        await manager.save(
+          manager.create(OutboxJob, {
+            queue: QUEUE.PLATFORM,
+            job_name: JOB.PLATFORM_FREE_ACCESS_NOTICE,
+            dedupe_key: freeAccessExpiryOutboxKey(row.id, endsAt),
+            payload: {
+              overrideId: row.id,
+              kind: 'EXPIRING',
+              endsAt: endsAt.toISOString(),
+            },
+          }),
+        );
+      }
+
+      return due.length;
+    });
+  }
 
   async deliver(job: FreeAccessNoticeJob): Promise<void> {
     const kindLabel = job.kind === 'STARTED' ? 'started' : 'expiring';

@@ -185,6 +185,14 @@ export const JOB = {
    * from the DB rather than trusting a `tenantId` in the job data (plan §12).
    */
   PLATFORM_FREE_ACCESS_NOTICE: 'platform.freeAccessNotice',
+  /**
+   * Repeatable hourly sweep: claims free-access overrides entering their
+   * final 48h and enqueues exactly one `PLATFORM_FREE_ACCESS_NOTICE` (kind
+   * EXPIRING) per claimed row — see `FreeAccessNoticeService.sweepExpiring`.
+   * SYSTEM tier, same reasoning as `PLATFORM_FREE_ACCESS_NOTICE` above: the
+   * claim query itself is the source of truth, never anything in the payload.
+   */
+  PLATFORM_FREE_ACCESS_EXPIRY_SWEEP: 'platform.freeAccessExpirySweep',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

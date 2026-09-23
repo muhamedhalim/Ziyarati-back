@@ -44,6 +44,10 @@ const EXPORT_EXPIRY_LOCK_TTL_MS = 45_000;
 const BIRTHDAY_GREETINGS_LOCK_KEY = 'lock:birthday-greetings';
 const BIRTHDAY_GREETINGS_LOCK_TTL_MS = 60_000;
 
+/** Free-access expiry-warning sweep. Same M5 reasoning, own key. */
+const FREE_ACCESS_EXPIRY_SWEEP_LOCK_KEY = 'lock:free-access-expiry-sweep';
+const FREE_ACCESS_EXPIRY_SWEEP_LOCK_TTL_MS = 45_000;
+
 /**
  * Consumes the `platform` queue — the retention sweeps:
  *  - `platform.logCleanup`        purges aged api_logs / webhook_logs;
@@ -89,6 +93,11 @@ const BIRTHDAY_GREETINGS_LOCK_TTL_MS = 60_000;
  *                                 its own idempotency comes from the unique
  *                                 constraints `FreeAccessNoticeService.
  *                                 deliver` relies on.
+ *  - `platform.freeAccessExpirySweep` hourly; claims free-access overrides
+ *                                 entering their final 48h and enqueues one
+ *                                 `platform.freeAccessNotice` (EXPIRING) per
+ *                                 claim. Lock-guarded + heartbeat, SAME M5
+ *                                 shape as the sweeps above.
  *
  * Branches on the job NAME. It previously ignored it entirely and always ran
  * the log purge, which was harmless while one job existed and would have
@@ -131,6 +140,8 @@ export class PlatformProcessor extends WorkerHost {
         return this.processBirthdayGreetings();
       case JOB.PLATFORM_FREE_ACCESS_NOTICE:
         return this.processFreeAccessNotice(job);
+      case JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP:
+        return this.processFreeAccessExpirySweep();
       case JOB.PLATFORM_LOG_CLEANUP:
       default:
         // Default preserves the pre-existing behaviour for any job enqueued
@@ -155,6 +166,35 @@ export class PlatformProcessor extends WorkerHost {
       kind: data.kind,
       endsAt: data.endsAt,
     });
+  }
+
+  /**
+   * Same M5 shape as the sweeps below: a lock-unavailable run logs a VISIBLE
+   * skip line and returns WITHOUT heartbeating; a COMPLETED run — even one
+   * that claims zero rows — always heartbeats, so a stalled heartbeat can
+   * only mean the sweep itself stopped running.
+   */
+  private async processFreeAccessExpirySweep() {
+    const lockToken = await this.lock.acquire(
+      FREE_ACCESS_EXPIRY_SWEEP_LOCK_KEY,
+      FREE_ACCESS_EXPIRY_SWEEP_LOCK_TTL_MS,
+    );
+    if (!lockToken) {
+      this.logger.log(
+        'free-access expiry sweep already in progress elsewhere (or the lock is unavailable) — skipping this run',
+      );
+      return { skipped: true };
+    }
+    try {
+      const result = await this.freeAccessNotice.sweepExpiring();
+      this.logger.log(
+        `free-access expiry sweep: claimed=${result.claimed} batches=${result.batches}`,
+      );
+      this.metrics.setWorkerHeartbeat('platform.freeAccessExpirySweep');
+      return result;
+    } finally {
+      await this.lock.release(FREE_ACCESS_EXPIRY_SWEEP_LOCK_KEY, lockToken);
+    }
   }
 
   private processWaitlistEvaluate(job: Job) {
