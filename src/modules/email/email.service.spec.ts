@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { Logger } from '@nestjs/common';
+
 import { EmailService } from './email.service';
 import { QueueService } from '../../queue/queue.service';
 import { EmailDeliveryService } from './email-delivery.service';
@@ -77,7 +80,10 @@ describe('EmailService — fallback idempotencyKey (gap-closure pass, §0.8.11)'
     });
 
     const job = queue.enqueueEmail.mock.calls[0][0];
-    expect(job.idempotencyKey).toBe('reset:tok-123');
+    // Hashed — the raw token must never become a job id / log line / DB key.
+    expect(job.idempotencyKey).toBe(
+      'reset:' + createHash('sha256').update('tok-123').digest('hex'),
+    );
   });
 
   it("sendWelcome keys on the new user's own row id, not on to+tenantId (L4) — a recreated account with a new userId can get a second welcome email", async () => {
@@ -144,5 +150,46 @@ describe('EmailService — fallback idempotencyKey (gap-closure pass, §0.8.11)'
     expect(first).toBe('usage-report:sched-1:2026-06-01T00:00:00.000Z');
     expect(second).toBe('usage-report:sched-1:2026-07-01T00:00:00.000Z');
     expect(first).not.toBe(second);
+  });
+});
+
+describe('EmailService — credential tokens never leak into job ids, logs or email_logs', () => {
+  const RAW = 'a'.repeat(64);
+  let queue: { enqueueEmail: jest.Mock };
+  let service: EmailService;
+
+  beforeEach(() => {
+    queue = { enqueueEmail: jest.fn().mockResolvedValue(undefined) };
+    service = new EmailService(
+      queue as unknown as QueueService,
+      { deliver: jest.fn() } as unknown as EmailDeliveryService,
+      { get: jest.fn(() => undefined) } as never,
+    );
+  });
+
+  it.each([
+    ['invite', (s: EmailService) => s.sendInvitation({ to: 'x@y.co', invitationUrl: 'u', token: RAW })],
+    ['reset', (s: EmailService) => s.sendPasswordReset({ to: 'x@y.co', resetUrl: 'u', token: RAW })],
+    ['verify', (s: EmailService) => s.sendVerification({ to: 'x@y.co', verifyUrl: 'u', token: RAW })],
+  ])('%s key is a SHA-256 of the token, stable across calls', async (prefix, send) => {
+    await send(service);
+    await send(service);
+    const [k1, k2] = queue.enqueueEmail.mock.calls.map((c) => c[0].idempotencyKey);
+    expect(k1).toBe(`${prefix}:${createHash('sha256').update(RAW).digest('hex')}`);
+    expect(k1).not.toContain(RAW);
+    expect(k2).toBe(k1);
+  });
+
+  it('a dispatch failure is logged without the recipient address', async () => {
+    const err = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    queue.enqueueEmail.mockRejectedValueOnce(new Error('redis down'));
+
+    await service.sendInvitation({ to: 'secret.person@clinic.com', invitationUrl: 'u', token: RAW, tenantId: 't1' });
+
+    const line = String(err.mock.calls[0][0]);
+    expect(line).toContain('redis down');
+    expect(line).not.toContain('secret.person@clinic.com');
+    expect(line).not.toContain(RAW);
+    err.mockRestore();
   });
 });

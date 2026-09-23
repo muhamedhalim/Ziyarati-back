@@ -14,7 +14,9 @@ import { WorkerAuthorizationService } from '../../queue/worker-authorization.ser
  * Consumes the `email` queue and delivers via {@link EmailDeliveryService}
  * (render → provider → email_logs). Retries + backoff come from the default job
  * options; a per-worker limiter caps the provider send rate. Transient failures
- * re-throw so BullMQ retries; permanent failures are recorded and swallowed.
+ * re-throw so BullMQ retries; permanent failures are recorded in `email_logs`
+ * and thrown as `UnrecoverableError`, so the job ends FAILED (visible to
+ * `onFailed` below and QueueMonitor) without further attempts.
  *
  * FND-036: wired to the same `runInTenantContext` + `validateJobPayload` +
  * `WorkerAuthorizationService` trio every sibling processor uses (see

@@ -5,6 +5,7 @@ import {
   DEFAULT_AI_MODEL_ID,
   defaultModelForTier,
 } from '../modules/ai/routing/ai-model-registry';
+import { formatFromAddress } from '../modules/email/email.config';
 
 export const validate = (config: Record<string, unknown>) => {
   const schema = Joi.object({
@@ -506,6 +507,11 @@ export const validate = (config: Record<string, unknown>) => {
     EMAIL_FROM_NAME: Joi.string().allow('', null),
     EMAIL_REPLY_TO: Joi.string().allow('', null),
     EMAIL_DEFAULT_LOCALE: Joi.string().default('en'),
+    // Per-request timeout for the Resend HTTP call (ResendProvider defaults to
+    // 10000). Capped below BullMQ's default 30s job lock: a send that outlives
+    // the lock gets the job stall-requeued and delivered a second time while
+    // the first request is still in flight.
+    RESEND_HTTP_TIMEOUT_MS: Joi.number().integer().min(1000).max(25000),
     // Base URL used to build links inside emails (falls back to FRONTEND_ORIGIN).
     APP_URL: Joi.string().allow('', null),
     // Phase 11 (US7, T134) — HMAC secret for the stateless unsubscribe token
@@ -1263,6 +1269,37 @@ export const validate = (config: Record<string, unknown>) => {
         `run in production — it writes tenant data and secrets to console ` +
         `output. Set TYPEORM_LOGGING=false, or unset it entirely.`,
     );
+  }
+
+  // ── Transactional email sender fail-fast (production only) ────────────────
+  // Same ZT-005 posture as above. Email defaults to ON in production (see
+  // resolveEmailConfig), and every send happens in whichever process consumes
+  // the `email` queue — usually the WORKER, not the API. Production's worker
+  // ran for weeks with EMAIL_FROM="" while the API held a valid value: every
+  // email was rejected by Resend (422 invalid `from`), recorded as FAILED, and
+  // the BullMQ job still reported success. Each process root validates its
+  // OWN environment here, so the worker can no longer boot in that state.
+  // Names variables only, never values.
+  const emailLive =
+    value.NODE_ENV === 'production' &&
+    value.EMAIL_ENABLED !== 'false' &&
+    value.EMAIL_PROVIDER === 'resend';
+  if (emailLive) {
+    const missing: string[] = [];
+    if (!String(value.RESEND_API_KEY ?? '').trim()) missing.push('RESEND_API_KEY');
+    if (!formatFromAddress(value.EMAIL_FROM, value.EMAIL_FROM_NAME)) {
+      missing.push('EMAIL_FROM (and/or EMAIL_FROM_NAME)');
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `❌ Env validation error: email is enabled in production with ` +
+          `EMAIL_PROVIDER=resend, but ${missing.join(', ')} is missing, blank or ` +
+          `malformed. EMAIL_FROM must be "sender@your-verified-domain" or ` +
+          `"Name <sender@your-verified-domain>"; EMAIL_FROM_NAME must not contain ` +
+          `<, > or ". Set these on EVERY process that consumes the email queue ` +
+          `(the worker), or set EMAIL_ENABLED=false to turn email off explicitly.`,
+      );
+    }
   }
 
   return value;

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { UnrecoverableError } from 'bullmq';
 
 import { ILike } from 'typeorm';
 
@@ -18,7 +19,11 @@ const SENSITIVE = /token|url|password|secret|code|otp/i;
 /**
  * Renders a template, sends it through the active provider, and records the
  * attempt in `email_logs`. Callable directly (sync mode) or by the worker's
- * EmailProcessor. Transient failures re-throw so BullMQ retries with backoff.
+ * EmailProcessor. Transient failures re-throw so BullMQ retries with backoff;
+ * permanent ones throw {@link UnrecoverableError} so the job lands in FAILED
+ * with no further attempts. Returning normally on a permanent failure (the
+ * previous behaviour) marked the job COMPLETED — a misconfigured sender then
+ * failed every email while the queue reported 100% success.
  *
  * IDEMPOTENCY (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.11 /
  * original audit H5): the PREVIOUS version checked-then-acted (`findOne`, then
@@ -100,13 +105,21 @@ export class EmailDeliveryService {
       from: cfg.from,
       replyTo: job.replyTo ?? cfg.replyTo,
       tags: [{ name: 'template', value: job.template }],
+      idempotencyKey: claimedKey ?? undefined,
     });
 
     await this.record(job, rendered.subject, provider.name, ctx.locale, toAddr, result, claimedKey);
 
-    if (!result.success && result.transient) {
-      // Re-throw so BullMQ retries with the configured backoff.
-      throw new Error(result.error ?? 'Transient email delivery failure');
+    if (!result.success) {
+      const reason = (result.error ?? 'unknown provider error').slice(0, 300);
+      if (result.transient) {
+        // Re-throw so BullMQ retries with the configured backoff.
+        throw new Error(result.error ?? 'Transient email delivery failure');
+      }
+      // Permanent (bad sender/recipient/credentials): retrying cannot succeed.
+      throw new UnrecoverableError(
+        `Permanent email delivery failure (template=${job.template}, provider=${provider.name}): ${reason}`,
+      );
     }
   }
 

@@ -29,8 +29,16 @@ const PROD_DB_SSL_CA = '/etc/ssl/certs/db-ca.pem';
 // prodBase-derived object with this field explicitly omitted to exercise the
 // missing-value fail-fast itself.
 const PROD_REGISTER_OWNER_CEILING = 1000;
+// A live Resend sender (email defaults ON in production) — same "boot cleanly
+// past this check" role as the constants above, for every production-mode
+// test that is not itself about the email sender fail-fast.
+const PROD_EMAIL = {
+  RESEND_API_KEY: 're_test_key',
+  EMAIL_FROM: 'no-reply@example.com',
+};
 const prodBase = {
   ...base,
+  ...PROD_EMAIL,
   NODE_ENV: 'production',
   FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
   DB_SSL_CA: PROD_DB_SSL_CA,
@@ -424,6 +432,7 @@ describe('env.validation', () => {
   describe('DB_SSL_CA / DB_SSL_CA_CERT (ZT-012)', () => {
     const prodWithoutDbSsl = {
       ...base,
+      ...PROD_EMAIL,
       NODE_ENV: 'production',
       FRONTEND_ORIGIN: PROD_FRONTEND_ORIGIN,
       PAYMENT_PROVIDER: 'noop',
@@ -1186,6 +1195,72 @@ describe('env.validation', () => {
           TYPEORM_SYNCHRONIZE_ALLOW_MIGRATED_DB: 'true',
         }),
       ).toThrow(/no longer accepted/);
+    });
+  });
+
+  // Production incident (2026-09): the worker ran with EMAIL_FROM="" while the
+  // API held a valid value — Resend rejected every email with a 422. Each
+  // process root validates its own environment, so this is where it stops.
+  describe('transactional email sender fail-fast (production)', () => {
+    const prodEmail = (overrides: Record<string, unknown>) => ({
+      ...prodBase,
+      PAYMENT_PROVIDER: 'noop',
+      CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+      ...overrides,
+    });
+
+    it('refuses to boot with EMAIL_FROM="" — the exact production worker state', () => {
+      expect(() => validate(prodEmail({ EMAIL_FROM: '' }))).toThrow(/EMAIL_FROM/);
+    });
+
+    it('refuses to boot with EMAIL_FROM unset', () => {
+      expect(() => validate(prodEmail({ EMAIL_FROM: undefined }))).toThrow(/EMAIL_FROM/);
+    });
+
+    it('refuses to boot with a malformed EMAIL_FROM', () => {
+      expect(() => validate(prodEmail({ EMAIL_FROM: 'no-reply' }))).toThrow(/EMAIL_FROM/);
+    });
+
+    it('refuses to boot with RESEND_API_KEY blank', () => {
+      expect(() => validate(prodEmail({ RESEND_API_KEY: '  ' }))).toThrow(/RESEND_API_KEY/);
+    });
+
+    it('names variables only, never values', () => {
+      const secret = 're_SECRET_VALUE_123';
+      try {
+        validate(prodEmail({ RESEND_API_KEY: secret, EMAIL_FROM: 'bad' }));
+        throw new Error('expected validate to throw');
+      } catch (err) {
+        expect((err as Error).message).not.toContain(secret);
+      }
+    });
+
+    it('boots with a plain address or an already-formatted "Name <addr>"', () => {
+      expect(() => validate(prodEmail({ EMAIL_FROM: 'a@b.co' }))).not.toThrow();
+      expect(() => validate(prodEmail({ EMAIL_FROM: 'ZiyaraTech <a@b.co>' }))).not.toThrow();
+    });
+
+    it('boots without a sender when email is explicitly disabled', () => {
+      expect(() =>
+        validate(prodEmail({ EMAIL_ENABLED: 'false', EMAIL_FROM: '', RESEND_API_KEY: '' })),
+      ).not.toThrow();
+    });
+
+    it('boots without a sender with the noop provider', () => {
+      expect(() =>
+        validate(prodEmail({ EMAIL_PROVIDER: 'noop', EMAIL_FROM: '', RESEND_API_KEY: '' })),
+      ).not.toThrow();
+    });
+
+    it('is not enforced outside production', () => {
+      expect(() => validate({ ...base, EMAIL_FROM: '' })).not.toThrow();
+    });
+
+    it('caps RESEND_HTTP_TIMEOUT_MS below the 30s BullMQ job lock', () => {
+      expect(() => validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 30000 })).toThrow(
+        /RESEND_HTTP_TIMEOUT_MS/,
+      );
+      expect(validate({ ...base, RESEND_HTTP_TIMEOUT_MS: 10000 }).RESEND_HTTP_TIMEOUT_MS).toBe(10000);
     });
   });
 });

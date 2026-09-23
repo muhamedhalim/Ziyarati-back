@@ -112,6 +112,10 @@ without** — each is enforced by an explicit fail-fast in
 
 ### Mandatory — worker deployment only
 
+Every variable a job needs must be set on the **worker** service, not just the
+API — the API only enqueues. In 2026-09 the worker ran with `EMAIL_FROM=""`
+while the API held a valid value, and every email failed for four weeks.
+
 | Variable | Expected value |
 | --- | --- |
 | `WORKER_ROLE` | `all` \| `critical` \| `dispatch`. **Must not be set on the API.** |
@@ -123,7 +127,7 @@ without** — each is enforced by an explicit fail-fast in
 | `MOYASAR_SECRET_KEY`, `MOYASAR_WEBHOOK_SECRET` | whenever `PAYMENT_PROVIDER` is not `noop` (the default is `moyasar`). Without them the boot fails rather than falling back to the provider that *simulates* successful payments. |
 | `META_APP_ID`, `META_APP_SECRET`, `META_EMBEDDED_SIGNUP_CONFIG_ID`, `META_WEBHOOK_VERIFY_TOKEN` | all four, or none. A *partial* Meta configuration is a boot error. |
 | `METRICS_TOKEN` | required in practice: with it unset, `/metrics` answers 401 in production. |
-| `RESEND_API_KEY`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=resend` (the default) and email is enabled. |
+| `RESEND_API_KEY`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=resend` (the default) and email is enabled (the production default). Boot fails when either is blank or `EMAIL_FROM` is not `addr` / `Name <addr>`. **Set them on the worker** — it is the process that sends. |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | all four together, or every upload route fails closed with 503. |
 
 ### Must be false / unset in production
@@ -205,7 +209,20 @@ a re-encryption pass.
 
 ---
 
-## 8. Graceful shutdown
+## 8. Background job observability
+
+* A job that cannot succeed (bad email sender or recipient, missing tenant
+  configuration) ends in BullMQ's **failed** set after one attempt
+  (`UnrecoverableError`); transient errors retry with backoff. `QueueMonitor`
+  on the worker logs every final failure as `[<queue>] ✗ failed job=…`.
+* A completed job is not the same as a delivered email. `email_logs` (and
+  `GET /api/v1/platform/email-logs`, super-admin) records the outcome per
+  message — `SENT` means Resend accepted it.
+* Re-drive a failed email job by retrying it in BullMQ: its `email_logs` row is
+  `FAILED`, so the retry re-claims it and sends once. Failed email jobs are
+  kept for 6 hours (PII retention).
+
+## 9. Graceful shutdown
 
 Both roots install `SIGTERM`/`SIGINT` handlers and call `app.close()`, which
 runs every `onModuleDestroy` hook — the worker drains in-flight BullMQ jobs and
