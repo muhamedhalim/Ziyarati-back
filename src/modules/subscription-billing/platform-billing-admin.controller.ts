@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -25,6 +26,7 @@ import { PlanAdminService } from './plan-admin.service';
 import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
 import { GrantOverrideDto, ExtendOverrideDto } from './dto/grant-override.dto';
 import { SetBillingModeDto } from './dto/set-billing-mode.dto';
+import { ListFreeAccessOverviewQueryDto } from './dto/list-free-access-overview.query.dto';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -136,11 +138,40 @@ export class PlatformBillingAdminController {
 
   // ─────────────────────────── Free-access overrides ──────────────────────── //
 
-  @ApiOperation({ summary: "Get a tenant's active free-access override" })
-  @ApiOkResponse({ description: 'Active override or null.' })
+  @ApiOperation({
+    summary: "Get a tenant's active free-access override and lifecycle summary",
+    description:
+      '`override` is the tenant\'s currently ACTIVE, time-valid override (null ' +
+      "if none). `summary` is the tenant's overall free-access lifecycle — the " +
+      'latest override of ANY status (so a just-expired or just-revoked one ' +
+      'still shows), with server-computed elapsed/remaining days and notice ' +
+      "delivery status. `summary.lifecycle` is `NONE` if the tenant has never " +
+      'had an override.',
+  })
+  @ApiOkResponse({ description: 'Active override (or null) and lifecycle summary.' })
   @Get('tenants/:tenantId/override')
   async getOverride(@Param('tenantId', ParseUUIDPipe) tenantId: string) {
-    return { override: await this.overrides.getActive(tenantId) };
+    const [override, summary] = await Promise.all([
+      this.overrides.getActive(tenantId),
+      this.overrides.getSummary(tenantId),
+    ]);
+    return { override, summary };
+  }
+
+  @ApiOperation({
+    summary: 'Cross-clinic free-access lifecycle overview (for the admin table)',
+    description:
+      'One paginated, searchable, lifecycle-filtered listing across every ' +
+      'clinic — every tenant appears, even one that has never had an ' +
+      'override (`lifecycle: NONE`). Powers the overview table on ' +
+      '`/platform/feature-flags` without an N+1 query per clinic.',
+  })
+  @ApiOkResponse({
+    description: 'A page of free-access lifecycle summaries plus the server clock.',
+  })
+  @Get('overview')
+  listOverview(@Query() query: ListFreeAccessOverviewQueryDto) {
+    return this.overrides.listOverview(query);
   }
 
   @ApiOperation({ summary: "Get a tenant's override history" })
@@ -171,6 +202,10 @@ export class PlatformBillingAdminController {
       grantedBy: this.ctx.getUser()?.id,
       reason: dto.reason,
       durationDays: dto.durationDays ?? null,
+      // Only an admin-initiated HTTP grant notifies the clinic (D4) — every
+      // other caller of `grant()` (guest-discovery tenant creation, seeds)
+      // defaults to silent.
+      notifyClinic: true,
     });
   }
 

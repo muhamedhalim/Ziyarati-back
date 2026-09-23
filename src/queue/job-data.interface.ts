@@ -346,3 +346,23 @@ export interface PlatformWaitlistEvaluateJob extends BaseJobData {
   freedBranchId?: string;
   freedStaffId?: string;
 }
+
+/**
+ * Free-access lifecycle notice delivery (`platform.freeAccessNotice`).
+ * SYSTEM tier — `tenantId` is always null here; `FreeAccessNoticeService.
+ * deliver()` re-reads the override's actual tenant from the database rather
+ * than trusting the payload (plan §12). `overrideId` alone is a durable
+ * business key, so the job is safe to retry indefinitely.
+ */
+export interface PlatformFreeAccessNoticeJob extends BaseJobData {
+  tenantId: null;
+  overrideId: string;
+  kind: 'STARTED' | 'EXPIRING';
+  /**
+   * Only present for `kind: 'EXPIRING'` — the exact `ends_at` (ISO string)
+   * this warning was claimed for, so a stale claim (the override was
+   * extended after the sweep claimed it but before this job ran) can be
+   * detected by comparing against the override's CURRENT `ends_at`.
+   */
+  endsAt?: string;
+}

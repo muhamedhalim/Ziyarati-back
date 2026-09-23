@@ -9,6 +9,7 @@ import { WaitlistOfferService } from '../../modules/waitlist/waitlist-offer.serv
 import { PatientQueueService } from '../../modules/patient-queue/patient-queue.service';
 import { ReportExportService } from '../../modules/report-export/report-export.service';
 import { BirthdayGreetingSweepService } from '../../modules/workflow/birthday-greeting.sweep.service';
+import { FreeAccessNoticeService } from '../../modules/subscription-billing/free-access-notice.service';
 
 describe('PlatformProcessor', () => {
   const build = (lockToken: string | null) => {
@@ -52,6 +53,9 @@ describe('PlatformProcessor', () => {
         .fn()
         .mockResolvedValue({ tenants: 2, processed: 1, emitted: 3 }),
     };
+    const freeAccessNotice = {
+      deliver: jest.fn().mockResolvedValue(undefined),
+    };
 
     const processor = new PlatformProcessor(
       maintenance as any,
@@ -65,6 +69,7 @@ describe('PlatformProcessor', () => {
       patientQueue as unknown as PatientQueueService,
       reportExport as unknown as ReportExportService,
       birthdayGreetings as unknown as BirthdayGreetingSweepService,
+      freeAccessNotice as unknown as FreeAccessNoticeService,
     );
     return {
       processor,
@@ -77,6 +82,7 @@ describe('PlatformProcessor', () => {
       patientQueue,
       reportExport,
       birthdayGreetings,
+      freeAccessNotice,
       authz,
     };
   };
@@ -452,6 +458,42 @@ describe('PlatformProcessor', () => {
         data: {},
       } as any);
       expect(maintenance.purgeOldLogs).toHaveBeenCalled();
+    });
+  });
+
+  describe('platform.freeAccessNotice', () => {
+    it('delegates to FreeAccessNoticeService.deliver with the job payload', async () => {
+      const { processor, freeAccessNotice } = build('token-abc');
+
+      await processor.process({
+        name: JOB.PLATFORM_FREE_ACCESS_NOTICE,
+        data: { overrideId: 'ov-1', kind: 'STARTED' },
+      } as any);
+
+      expect(freeAccessNotice.deliver).toHaveBeenCalledWith({
+        overrideId: 'ov-1',
+        kind: 'STARTED',
+        endsAt: undefined,
+      });
+    });
+
+    it('passes endsAt through for an EXPIRING job', async () => {
+      const { processor, freeAccessNotice } = build('token-abc');
+
+      await processor.process({
+        name: JOB.PLATFORM_FREE_ACCESS_NOTICE,
+        data: {
+          overrideId: 'ov-2',
+          kind: 'EXPIRING',
+          endsAt: '2026-01-01T00:00:00.000Z',
+        },
+      } as any);
+
+      expect(freeAccessNotice.deliver).toHaveBeenCalledWith({
+        overrideId: 'ov-2',
+        kind: 'EXPIRING',
+        endsAt: '2026-01-01T00:00:00.000Z',
+      });
     });
   });
 });

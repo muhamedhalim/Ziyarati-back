@@ -41,6 +41,7 @@ import {
   OWNERSHIP_SCOPED_PERMISSIONS,
   PERMISSION,
   PermissionSlug,
+  PUBLIC_BOOKING_EXCLUDED_ROLES,
   ROLE,
   RoleSlug,
   isSynthesizedCustomRoleName,
@@ -163,11 +164,25 @@ export class StaffService {
   /** Roles this tenant may assign to staff — backs the Add Staff role selector. */
   async findAssignableRoles(
     tenantId: string,
-  ): Promise<{ id: string; slug: string; name: string }[]> {
+  ): Promise<
+    { id: string; slug: string; name: string; bookable: boolean }[]
+  > {
     const roles = await this.rolesService.findAssignableForStaff(tenantId);
     // Slim projection for the dropdown — the full Role (with its permission
-    // set) is more than this endpoint needs to expose.
-    return roles.map((r) => ({ id: r.id, slug: r.slug, name: r.name }));
+    // set) is more than this endpoint needs to expose. `bookable` mirrors
+    // APPOINTMENT_BOOKABLE_STAFF_ROLES (never a tenant custom role, which is
+    // always excluded here) so the Add/Edit Staff dialog can default the
+    // "available for public booking" toggle from the SAME rule the backend
+    // enforces — see StaffService.resolveBookableFlag — rather than
+    // hardcoding a client-side guess that could drift from it.
+    return roles.map((r) => ({
+      id: r.id,
+      slug: r.slug,
+      name: r.name,
+      bookable: (APPOINTMENT_BOOKABLE_STAFF_ROLES as readonly string[]).includes(
+        r.slug,
+      ),
+    }));
   }
 
   /**
@@ -314,6 +329,58 @@ export class StaffService {
     );
   }
 
+  /**
+   * The write-time half of {@link PUBLIC_BOOKING_EXCLUDED_ROLES} (see its
+   * own docblock in rbac.constants.ts): forces `is_available_for_booking`
+   * back to `false` for any role that must never appear on the public/
+   * AI-booking surfaces, regardless of what the request asked for. A
+   * `false` request is never widened — this only ever narrows.
+   *
+   * Consulted by every path that can set the flag to `true`: `create`,
+   * `createWithNewUser`, `update` (both the direct flag change and after a
+   * role change — see the reconciliation pass there) and `setAvailability`
+   * (which turns this into an explicit 422 instead, a single-purpose
+   * endpoint where silently ignoring the request would be surprising).
+   */
+  private resolveBookableFlag(
+    roleSlugs: readonly string[],
+    requested: boolean,
+  ): boolean {
+    if (!requested) return false;
+    const excluded: readonly string[] = PUBLIC_BOOKING_EXCLUDED_ROLES;
+    return !roleSlugs.some((slug) => excluded.includes(slug));
+  }
+
+  /**
+   * Re-derives `is_available_for_booking` from the staff member's CURRENT
+   * role(s) and forces it to `false` if that role is publicly-booking-
+   * excluded — the reconciliation pass `update()` runs after a role change
+   * (or a direct flag change) so "switch a profile TO nurse" always wins
+   * over a `true` the request set (or left in place from before). A no-op
+   * (no extra write) whenever the flag is already `false`.
+   */
+  private async enforceBookableFlagInvariant(
+    tenantId: string,
+    staffId: string,
+  ): Promise<void> {
+    const profile = await this.staff.findOne({
+      where: { id: staffId, tenant: { id: tenantId } },
+      relations: { user: true },
+    });
+    if (!profile?.user || !profile.is_available_for_booking) return;
+    const roles = await this.rolesService.listUserRoles(
+      profile.user.id,
+      tenantId,
+    );
+    const slugs = roles.map((r) => r.slug);
+    if (!this.resolveBookableFlag(slugs, true)) {
+      await this.staff.update(
+        { id: staffId },
+        { is_available_for_booking: false },
+      );
+    }
+  }
+
   async create(tenantId: string, dto: CreateStaffDto): Promise<StaffProfile> {
     const user = await this.users.findOne({
       where: { id: dto.userId, tenant: { id: tenantId } },
@@ -341,6 +408,18 @@ export class StaffService {
       this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
     }
 
+    // Public-booking exclusion (write-time invariant) — `dto.userId` links
+    // an EXISTING user, whose role(s) were assigned separately (this method
+    // never assigns one), so their CURRENT role decides bookability here.
+    const existingRoles = await this.rolesService.listUserRoles(
+      dto.userId,
+      tenantId,
+    );
+    const bookable = this.resolveBookableFlag(
+      existingRoles.map((r) => r.slug),
+      dto.isAvailableForBooking ?? true,
+    );
+
     let saved: StaffProfile | undefined;
     const MAX_SLUG_ATTEMPTS = 5;
     for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
@@ -352,7 +431,7 @@ export class StaffService {
         bio: dto.bio,
         avatar_storage_key: dto.avatarStorageKey,
         booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
-        is_available_for_booking: dto.isAvailableForBooking ?? true,
+        is_available_for_booking: bookable,
         public_slug: publicSlug,
       });
       try {
@@ -503,6 +582,13 @@ export class StaffService {
         // path surfaces as an ordinary failed request the caller retries,
         // not a silent data-integrity issue.
         const publicSlug = await this.generatePublicSlug(dto.fullName);
+        // Public-booking exclusion (write-time invariant) — `assignedRole`
+        // is resolved above, in THIS same transaction, so it is always the
+        // role the new profile is about to hold.
+        const bookable = this.resolveBookableFlag(
+          [assignedRole.slug],
+          dto.isAvailableForBooking ?? true,
+        );
         const profile = await manager.save(
           manager.getRepository(StaffProfile).create({
             tenant: { id: tenantId } as Tenant,
@@ -511,7 +597,7 @@ export class StaffService {
             bio: dto.bio,
             avatar_storage_key: dto.avatarStorageKey,
             booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
-            is_available_for_booking: dto.isAvailableForBooking ?? true,
+            is_available_for_booking: bookable,
             public_slug: publicSlug,
           }),
         );
@@ -911,6 +997,16 @@ export class StaffService {
       );
     }
 
+    // Public-booking exclusion (write-time invariant) — run AFTER any role
+    // change above, so "switch this profile TO nurse" always wins even when
+    // `dto.isAvailableForBooking` was left untouched (the flag it saved
+    // earlier in this method reflects the OLD role, not whatever role the
+    // account holds now). Only worth the extra read when this request could
+    // plausibly have changed bookability at all.
+    if (dto.roleSlug !== undefined || dto.isAvailableForBooking !== undefined) {
+      await this.enforceBookableFlagInvariant(tenantId, id);
+    }
+
     return this.findOne(tenantId, id);
   }
 
@@ -1125,6 +1221,22 @@ export class StaffService {
     active: boolean,
   ): Promise<StaffProfile> {
     const profile = await this.loadProfile(tenantId, id);
+    // Public-booking exclusion (write-time invariant) — this is a
+    // single-purpose, explicit activation endpoint, so an excluded role
+    // gets a clear 422 rather than the silent narrowing `create`/
+    // `createWithNewUser`/`update` apply on a broader multi-field request.
+    if (active && profile.user) {
+      const roles = await this.rolesService.listUserRoles(
+        profile.user.id,
+        tenantId,
+      );
+      if (!this.resolveBookableFlag(roles.map((r) => r.slug), true)) {
+        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+          message:
+            "This staff member's role cannot be made available for public booking",
+        });
+      }
+    }
     profile.is_available_for_booking = active;
     await this.staff.save(profile);
     return this.findOne(tenantId, id);

@@ -177,6 +177,14 @@ export const JOB = {
    * the workflow engine's "Birthday Greeting" template listens for.
    */
   PLATFORM_BIRTHDAY_GREETINGS: 'platform.birthdayGreetings',
+  /**
+   * Free-access lifecycle notice delivery (in-app + email), one job per
+   * override event — start or a 48h expiry warning. SYSTEM tier: the
+   * override id is the only trust anchor in the payload, and
+   * `FreeAccessNoticeService.deliver()` re-reads the tenant/override fresh
+   * from the DB rather than trusting a `tenantId` in the job data (plan §12).
+   */
+  PLATFORM_FREE_ACCESS_NOTICE: 'platform.freeAccessNotice',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];

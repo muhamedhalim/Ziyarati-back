@@ -1321,12 +1321,32 @@ describe('StaffService', () => {
   });
 
   describe('findAssignableRoles', () => {
-    it('delegates to RolesService.findAssignableForStaff', async () => {
+    it('delegates to RolesService.findAssignableForStaff, adding `bookable`', async () => {
       const roles = [{ id: 'r1', slug: 'receptionist', name: 'Receptionist' }];
       rolesService.findAssignableForStaff.mockResolvedValueOnce(roles);
 
-      await expect(service.findAssignableRoles(TENANT)).resolves.toEqual(roles);
+      await expect(service.findAssignableRoles(TENANT)).resolves.toEqual([
+        { id: 'r1', slug: 'receptionist', name: 'Receptionist', bookable: false },
+      ]);
       expect(rolesService.findAssignableForStaff).toHaveBeenCalledWith(TENANT);
+    });
+
+    it('`bookable` is true only for doctor/manager — never nurse or a custom role', async () => {
+      const roles = [
+        { id: 'r1', slug: 'doctor', name: 'Doctor' },
+        { id: 'r2', slug: 'manager', name: 'Operations Manager' },
+        { id: 'r3', slug: 'nurse', name: 'Nurse' },
+        { id: 'r4', slug: 'custom-abc', name: 'Custom — Alice' },
+      ];
+      rolesService.findAssignableForStaff.mockResolvedValueOnce(roles);
+
+      const result = await service.findAssignableRoles(TENANT);
+      expect(result.map((r) => [r.slug, r.bookable])).toEqual([
+        ['doctor', true],
+        ['manager', true],
+        ['nurse', false],
+        ['custom-abc', false],
+      ]);
     });
   });
 });

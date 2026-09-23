@@ -15,6 +15,10 @@ import {
   tenantPermission,
   type RecipientPolicy,
 } from './notification-recipient.policy';
+import {
+  freeAccessExpiryNotificationDedupe,
+  freeAccessStartNotificationDedupe,
+} from '../../subscription-billing/free-access-notice-keys';
 
 /**
  * ============================================================================
@@ -373,6 +377,86 @@ export const NOTIFICATION_CATALOG = {
       ar: (v) => ({
         title: `قدّمت ${v.clinicName} طلب التحقق`,
         body: `رفعت ${v.clinicName} جميع المستندات المطلوبة وهي بانتظار المراجعة.`,
+      }),
+    },
+  },
+
+  /**
+   * A super admin comped the clinic (`FreeAccessOverrideService.grant`, with
+   * `notifyClinic: true`). Sent once per override row — see
+   * `free-access-notice-keys.ts` for why the dedupe is keyed on the override
+   * id alone (one start notice per grant, ever).
+   *
+   * Emitted directly by `FreeAccessNoticeService.deliver()` (worker-only,
+   * `subscription-billing/free-access-notice.service.ts`), NOT through
+   * `internal-notification.listener.ts` like every other key here — the
+   * deliberate exception documented in the free-access lifecycle plan §8, so
+   * the sweep job can inspect `EmitResult.error` and retry the whole delivery
+   * (in-app + email) as one unit instead of firing an event nothing awaits.
+   */
+  FREE_ACCESS_STARTED: {
+    scope: NOTIFICATION_SCOPE.TENANT,
+    category: NOTIFICATION_CATEGORY.BILLING,
+    priority: NOTIFICATION_PRIORITY.NORMAL,
+    // Whoever can act on billing — same holder as the expiry warning below.
+    recipients: tenantPermission(PERMISSION.SUBSCRIPTION_MANAGE),
+    // Access loss/gain is never something a user should be able to mute.
+    mandatory: true,
+    variables: ['clinicName', 'endsAt', 'durationDays'],
+    dedupe: (ctx) => {
+      const overrideId = ref(ctx, 'overrideId');
+      return overrideId ? freeAccessStartNotificationDedupe(overrideId) : null;
+    },
+    link: () => '/app/billing',
+    entity: (ctx) => ({
+      type: 'FreeAccessOverride',
+      id: ref(ctx, 'overrideId') ?? undefined,
+    }),
+    render: {
+      en: (v) => ({
+        title: 'Free access started',
+        body: `${v.clinicName}'s access is now free. Duration: ${v.durationDays}. Ends: ${v.endsAt}.`,
+      }),
+      ar: (v) => ({
+        title: 'بدأ الوصول المجاني',
+        body: `أصبح وصول ${v.clinicName} مجانيًا الآن. المدة: ${v.durationDays}. تاريخ الانتهاء: ${v.endsAt}.`,
+      }),
+    },
+  },
+
+  /**
+   * The rolling-48h expiry warning (`FreeAccessNoticeService.sweepExpiring`).
+   * Dedupe is keyed on `(overrideId, endsAt)` — see `free-access-notice-keys.ts`
+   * — so extending the override re-arms exactly one new warning instead of
+   * either colliding with an already-delivered one or firing twice.
+   */
+  FREE_ACCESS_EXPIRING: {
+    scope: NOTIFICATION_SCOPE.TENANT,
+    category: NOTIFICATION_CATEGORY.BILLING,
+    priority: NOTIFICATION_PRIORITY.HIGH,
+    recipients: tenantPermission(PERMISSION.SUBSCRIPTION_MANAGE),
+    mandatory: true,
+    variables: ['endsAt', 'daysRemaining'],
+    dedupe: (ctx) => {
+      const overrideId = ref(ctx, 'overrideId');
+      const endsAt = ref(ctx, 'endsAt');
+      return overrideId && endsAt
+        ? freeAccessExpiryNotificationDedupe(overrideId, new Date(endsAt))
+        : null;
+    },
+    link: () => '/app/billing',
+    entity: (ctx) => ({
+      type: 'FreeAccessOverride',
+      id: ref(ctx, 'overrideId') ?? undefined,
+    }),
+    render: {
+      en: (v) => ({
+        title: 'Free access is ending soon',
+        body: `Your free access ends on ${v.endsAt} (${v.daysRemaining} day(s) remaining). Subscribe to keep uninterrupted access.`,
+      }),
+      ar: (v) => ({
+        title: 'الوصول المجاني على وشك الانتهاء',
+        body: `ينتهي وصولك المجاني في ${v.endsAt} (متبقٍ ${v.daysRemaining} يوم). اشترك للحفاظ على الوصول دون انقطاع.`,
       }),
     },
   },

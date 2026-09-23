@@ -191,6 +191,20 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  /**
+   * Free-access lifecycle notices (`FreeAccessNoticeService.deliver`).
+   * `kind`: started | expiring. `channel`: in_app | email. `outcome`:
+   * sent | duplicate (idempotent no-op) | stale (override changed/revoked/
+   * tenant deleted before delivery) | failed | no_recipient (no
+   * SUBSCRIPTION_MANAGE holder — email still attempted independently).
+   */
+  private readonly freeAccessNotices = new Counter({
+    name: 'free_access_notices_total',
+    help: 'Free-access lifecycle notice deliveries, by kind/channel/outcome.',
+    labelNames: ['kind', 'channel', 'outcome'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     // Standard Node/process metrics (event-loop lag, heap, CPU, handles) —
     // present in §14's gap table under "Workers: CPU, memory, event-loop
@@ -267,6 +281,14 @@ export class MetricsService {
   /** F-25 — `fallback` = whether the patient was told the assistant could not answer. */
   recordWhatsappAiTurnFailure(fallback: 'sent' | 'not_sent'): void {
     this.whatsappAiTurnFailures.inc({ fallback });
+  }
+
+  recordFreeAccessNotice(
+    kind: 'started' | 'expiring',
+    channel: 'in_app' | 'email',
+    outcome: 'sent' | 'duplicate' | 'stale' | 'failed' | 'no_recipient',
+  ): void {
+    this.freeAccessNotices.inc({ kind, channel, outcome });
   }
 
   recordHttpRequest(method: string, statusCode: number, durationSeconds: number): void {

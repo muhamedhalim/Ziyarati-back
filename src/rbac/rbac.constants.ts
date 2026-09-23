@@ -38,6 +38,19 @@ export const PERMISSION = {
   APPOINTMENTS_RESCHEDULE: 'appointments.reschedule',
   APPOINTMENTS_CANCEL: 'appointments.cancel',
   APPOINTMENTS_MANAGE_ALL: 'appointments.manage_all',
+  /**
+   * Nurse role — the queue/status-lifecycle slice of `appointments.update`,
+   * carved out on purpose: `appointments.update` ALSO covers reassigning the
+   * staff member/branch (`PATCH /appointments/:id`) and replacing services
+   * (`PUT /appointments/:id/services`), neither of which a nurse may do.
+   * Admits `POST /appointments/:id/status` and the queue actions
+   * (check-in/call/start/complete/skip/recall/no-show) via
+   * `@RequireAnyPermission(APPOINTMENTS_UPDATE, APPOINTMENTS_STATUS_UPDATE)`
+   * — never alone; `appointments.update` still satisfies the same routes so
+   * every existing role's behaviour is unchanged. Delegable (not reserved):
+   * it grants no doctor/branch/service reassignment and no financial reach.
+   */
+  APPOINTMENTS_STATUS_UPDATE: 'appointments.status.update',
 
   // Reviews (customer feedback on completed appointments)
   REVIEWS_READ: 'reviews.read',
@@ -286,6 +299,20 @@ export const PERMISSION = {
   // domain; not granted to any role yet, see T104's enforcing controller)
   CLINICAL_RECORDS_READ: 'clinical.records.read',
   CLINICAL_RECORDS_MANAGE: 'clinical.records.manage',
+  /**
+   * Nurse role — a DELIBERATELY NARROWER write scope than
+   * `CLINICAL_RECORDS_MANAGE`. Granted alongside `CLINICAL_RECORDS_READ`
+   * (never alone), it lets the holder create NOTE/VITALS entries and
+   * encounters, and correct only their OWN NOTE/VITALS entries — never
+   * DIAGNOSIS/MEDICATION/ALLERGY, never another author's entry, never a
+   * delete. Enforced in `ClinicalRecordService` (kind + author checks), not
+   * by the guard alone — see its docblock. ABAC-flavoured (ownership-scoped
+   * on correction) — see OWNERSHIP_SCOPED_PERMISSIONS below. Reserved (see
+   * RESERVED_PERMISSION_SLUGS) for the same reason CLINICAL_RECORDS_* is: an
+   * Owner must never be able to delegate clinical write reach into an
+   * arbitrary "Other" custom role.
+   */
+  CLINICAL_RECORDS_NURSING: 'clinical.records.nursing',
 
   // Accountability / activity log (activity-log module). Granted to `owner`
   // and `manager` only — see T192's migration and T193's enforcing
@@ -315,6 +342,10 @@ export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> =
     PERMISSION.PROFILE_UPDATE_OWN,
     PERMISSION.BRANCHES_UPDATE_OWN,
     PERMISSION.STAFF_READ_OWN,
+    // Nurse's clinical write permission is ownership-scoped on CORRECTION
+    // only (create is kind-scoped, not author-scoped) — see its own
+    // docblock above and ClinicalRecordService's enforcement.
+    PERMISSION.CLINICAL_RECORDS_NURSING,
   ]);
 
 /**
@@ -479,6 +510,11 @@ export const RESERVED_PERMISSION_SLUGS: ReadonlySet<PermissionSlug> = new Set([
   // grant exists but the reservation doesn't would itself be the leak.
   PERMISSION.CLINICAL_RECORDS_READ,
   PERMISSION.CLINICAL_RECORDS_MANAGE,
+  // Nurse role — same rationale as the pair above: a narrower clinical WRITE
+  // capability is still clinical write capability, and must never become
+  // delegable into an arbitrary "Other" custom role just because a caller
+  // (e.g. Owner, via `clinical.records.manage`) happens to hold it.
+  PERMISSION.CLINICAL_RECORDS_NURSING,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -511,6 +547,16 @@ export const ROLE = {
   BRANCH_MANAGER: 'branch_manager',
   RECEPTIONIST: 'receptionist',
   DOCTOR: 'doctor',
+  /**
+   * Clinic-wide (not branch-restricted), like `doctor`/`receptionist`. Reads
+   * patients, appointments and the clinical timeline; runs queue/status
+   * actions (`appointments.status.update`, never the tenant-wide
+   * `appointments.update`); writes only NOTE/VITALS clinical entries and
+   * corrects only their own (`clinical.records.nursing`, never `.manage`).
+   * Never a bookable provider — see {@link PUBLIC_BOOKING_EXCLUDED_ROLES}.
+   * No finance, staff, roles, users, settings, services or branch slug.
+   */
+  NURSE: 'nurse',
   CUSTOMER: 'customer',
   /** Per-tenant system actor driving AI-initiated bookings (e.g. WhatsApp). */
   AI_BOT: 'ai-bot',
@@ -539,6 +585,28 @@ export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
 export const APPOINTMENT_BOOKABLE_STAFF_ROLES: readonly RoleSlug[] = [
   ROLE.DOCTOR,
   ROLE.MANAGER,
+];
+
+/**
+ * Roles that must NEVER be publicly listed as a bookable provider —
+ * distinct from {@link APPOINTMENT_BOOKABLE_STAFF_ROLES} above, which is an
+ * ALLOW-list for the dashboard "Employee" picker (doctor + manager only).
+ * This is a narrower DENY-list consulted only when a staff profile's
+ * `is_available_for_booking` flag is being SET to `true` — see
+ * `StaffService.resolveBookableFlag` — so it forces the flag back to
+ * `false` for a role that must stay off the public/AI-booking surfaces
+ * (`public-discovery`, `public-booking-context`, `availability.service`,
+ * `scheduling-ref.service`), all of which key on that flag alone rather
+ * than on role.
+ *
+ * Deliberately NOT "every role outside `APPOINTMENT_BOOKABLE_STAFF_ROLES`":
+ * `receptionist` and a tenant custom role have never been excluded by role
+ * (only by the flag's own default), and changing that today would be an
+ * unrelated behavior change. This list only ever grows by an explicit,
+ * reviewed decision — currently just the role this predicate exists for.
+ */
+export const PUBLIC_BOOKING_EXCLUDED_ROLES: readonly RoleSlug[] = [
+  ROLE.NURSE,
 ];
 
 /**
@@ -589,6 +657,39 @@ export function isBranchRestricted(permissions: readonly string[]): boolean {
  */
 export function isScopedToOwnStaff(permissions: readonly string[]): boolean {
   return !permissions.includes(PERMISSION.APPOINTMENTS_READ);
+}
+
+/**
+ * Nurse role — whether a caller holding `appointments.read` (or `_read_own`)
+ * may ALSO see an appointment's financial fields: `total_amount`,
+ * `payment_status`, `currency`, `services[].price`,
+ * `services[].service.base_price`/`pricing_type`, a cancellation's
+ * `refundAmount`, and the queue view's `appointment.paymentStatus`.
+ *
+ * Deliberately a DERIVED predicate, not a new permission slug: every
+ * existing role (owner, manager, branch_manager, receptionist, doctor)
+ * already holds at least one of the four slugs below, so this changes
+ * NOTHING for them — the redaction affects only a caller who reads
+ * appointments without ever creating/updating/reading-own one or holding
+ * `payments.read`, which today means exactly the Nurse role, and, as an
+ * accepted side effect, any tenant "Other" custom role an Owner builds with
+ * `appointments.read` alone (documented, not fixed — narrowing an existing
+ * custom role's visibility is a product decision, not this predicate's to
+ * make). Consumed only at controller RESPONSE boundaries (appointments
+ * list/detail/timeline, the status-change response, the queue list and
+ * every queue action response) — never inside `AppointmentService.findOne`
+ * itself, which internal write paths (create/update/cancel/etc.) reuse and
+ * must keep seeing the full row regardless of who is acting.
+ */
+export function canViewAppointmentFinancials(
+  permissions: readonly string[],
+): boolean {
+  return (
+    permissions.includes(PERMISSION.APPOINTMENTS_CREATE) ||
+    permissions.includes(PERMISSION.APPOINTMENTS_UPDATE) ||
+    permissions.includes(PERMISSION.APPOINTMENTS_READ_OWN) ||
+    permissions.includes(PERMISSION.PAYMENTS_READ)
+  );
 }
 
 /**
@@ -719,6 +820,11 @@ export const PERMISSIONS: PermissionDef[] = [
     name: 'Manage all appointments',
     module: 'appointments',
   },
+  {
+    slug: PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+    name: 'Update appointment queue status',
+    module: 'appointments',
+  },
 
   {
     slug: PERMISSION.REVIEWS_READ,
@@ -778,6 +884,11 @@ export const PERMISSIONS: PermissionDef[] = [
   {
     slug: PERMISSION.CLINICAL_RECORDS_MANAGE,
     name: 'Manage clinical records',
+    module: 'clinical',
+  },
+  {
+    slug: PERMISSION.CLINICAL_RECORDS_NURSING,
+    name: 'Record nursing notes & vitals',
     module: 'clinical',
   },
   {
@@ -1454,6 +1565,12 @@ export const ROLES: RoleDef[] = [
       'Clinical staff who treat customers. Manages own appointments and schedule.',
   },
   {
+    slug: ROLE.NURSE,
+    name: 'Nurse',
+    description:
+      'Clinical support staff. Views patients, appointments and the clinical record; records nursing notes and vitals; runs queue check-in and status updates. No diagnoses, prescriptions, finances, staff or settings.',
+  },
+  {
     slug: ROLE.CUSTOMER,
     name: 'Customer',
     description: 'End user who books appointments and manages their profile.',
@@ -1969,6 +2086,59 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.CRM_CUSTOMERS_READ,
     PERMISSION.CLINICAL_RECORDS_READ,
     PERMISSION.CLINICAL_RECORDS_MANAGE,
+    PERMISSION.STAFF_READ_OWN,
+  ],
+
+  // Nurse — clinic-wide (NOT branch-restricted; not in isBranchRestricted's
+  // input pair), like doctor/receptionist. Reviewed permission-by-permission
+  // against the same modules DOCTOR was, with a deliberately different
+  // shape:
+  //
+  //   - DASHBOARD_ACCESS: reach the workspace shell at all.
+  //   - APPOINTMENTS_READ (tenant-wide, NOT `_read_own`): a nurse is never
+  //     the assigned provider on an appointment (nurse is not in
+  //     APPOINTMENT_BOOKABLE_STAFF_ROLES), so `_read_own` would resolve to
+  //     no StaffProfile ownership and show nothing — the "own" ABAC pattern
+  //     only fits a role that IS the assigned staff member. Tenant-wide read
+  //     is what lets a nurse see the appointments/queue they support.
+  //   - APPOINTMENTS_STATUS_UPDATE (NOT the tenant-wide APPOINTMENTS_UPDATE):
+  //     queue check-in/call/start/complete/skip/recall/no-show and
+  //     `POST /appointments/:id/status` only — never reassigning the
+  //     doctor/branch (`PATCH`) or replacing services (`PUT .../services`).
+  //   - CRM_CUSTOMERS_READ / CRM_NOTES_READ / CRM_TAGS_READ / CRM_FILES_READ:
+  //     read-only patient record access — search, notes, tags and files.
+  //     CRM_CUSTOMERS_MANAGE / CRM_NOTES_MANAGE / CRM_TAGS_MANAGE /
+  //     CRM_FILES_MANAGE are deliberately NOT granted (D3: files are
+  //     read-only in v1 — `crm.files.manage` also hard-deletes the R2
+  //     object, which a nurse must never be able to do).
+  //   - CLINICAL_RECORDS_READ: the clinical timeline, allergies and doctor's
+  //     instructions — same privacy boundary as doctor/owner/manager.
+  //   - CLINICAL_RECORDS_NURSING (NOT `.manage`): create NOTE/VITALS entries
+  //     and encounters, correct only their OWN NOTE/VITALS entries — see its
+  //     own docblock above. `.manage` is withheld on purpose: it would let a
+  //     nurse create/approve DIAGNOSIS or MEDICATION entries, correct a
+  //     doctor's entry, or delete clinical content, none of which is a
+  //     nursing duty.
+  //   - STAFF_READ_OWN: own profile/schedule/time-off only, exactly like
+  //     doctor — never the tenant-wide STAFF_READ.
+  //
+  // Explicitly NOT granted: appointments.create/update/reschedule/cancel/
+  // manage_all, crm.*.manage, clinical.records.manage, staff.read/create/
+  // update/manage/schedule.manage/timeoff.manage, services.*, scheduling.*
+  // (manage), every payments/invoices/settlements/billing/subscription
+  // slug, reports.*/analytics.*, audit.read, whatsapp.*, conversations.*/
+  // messages.*/ai.*, notifications.*, campaigns.*, platform.*, users.manage,
+  // roles.manage, branches.* — none of these are nursing duties.
+  [ROLE.NURSE]: [
+    PERMISSION.DASHBOARD_ACCESS,
+    PERMISSION.APPOINTMENTS_READ,
+    PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+    PERMISSION.CRM_CUSTOMERS_READ,
+    PERMISSION.CRM_NOTES_READ,
+    PERMISSION.CRM_TAGS_READ,
+    PERMISSION.CRM_FILES_READ,
+    PERMISSION.CLINICAL_RECORDS_READ,
+    PERMISSION.CLINICAL_RECORDS_NURSING,
     PERMISSION.STAFF_READ_OWN,
   ],
 

@@ -48,12 +48,17 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import type { AuthenticatedUser } from '../auth/interfaces/authenticated-user.interface';
-import { PERMISSION } from '../../rbac/rbac.constants';
+import { PERMISSION, canViewAppointmentFinancials } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
 import { RequireFeature } from '../subscription-billing/decorators/require-feature.decorator';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { AppointmentActionOrigin } from '../../entities/enums';
+import {
+  redactAppointmentFinancials,
+  redactAppointmentListFinancials,
+  redactTimelineFinancials,
+} from './appointment-financial-redaction';
 
 // ─── Reusable inline response schema fragments ────────────────────────────────
 
@@ -343,14 +348,20 @@ Doctor, own appointments only (\`appointments.read_own\`).
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_READ_OWN,
   )
-  findAll(
+  async findAll(
     @Query() query: QueryAppointmentsDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.appointments.findAll(this.ctx.requireTenantId(), query, {
-      id: user.id,
-      permissions: user.permissions,
-    });
+    const result = await this.appointments.findAll(
+      this.ctx.requireTenantId(),
+      query,
+      { id: user.id, permissions: user.permissions },
+    );
+    result.data = redactAppointmentListFinancials(
+      result.data,
+      canViewAppointmentFinancials(user.permissions),
+    );
+    return result;
   }
 
   @ApiOperation({
@@ -396,14 +407,19 @@ yours".
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_READ_OWN,
   )
-  findOne(
+  async findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.appointments.findOne(this.ctx.requireTenantId(), id, {
-      id: user.id,
-      permissions: user.permissions,
-    });
+    const appointment = await this.appointments.findOne(
+      this.ctx.requireTenantId(),
+      id,
+      { id: user.id, permissions: user.permissions },
+    );
+    return redactAppointmentFinancials(
+      appointment,
+      canViewAppointmentFinancials(user.permissions),
+    );
   }
 
   // ───────────────────────────── Update ──────────────────────────────────── //
@@ -554,7 +570,8 @@ Illegal transitions are rejected (409). Each change writes an
 **\`CANCELLED\` is not accepted here** — use the cancel endpoint, which
 captures reason/actor/refund.
 
-**Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`).
+**Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`);
+Nurse (\`appointments.status.update\` — queue/status only, no reassignment).
     `.trim(),
   })
   @ApiParam({
@@ -587,17 +604,24 @@ captures reason/actor/refund.
   })
   @Post(':id/status')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions(PERMISSION.APPOINTMENTS_UPDATE)
-  changeStatus(
+  @RequireAnyPermission(
+    PERMISSION.APPOINTMENTS_UPDATE,
+    PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+  )
+  async changeStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ChangeAppointmentStatusDto,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.appointments.changeStatus(
+    const updated = await this.appointments.changeStatus(
       this.ctx.requireTenantId(),
-      userId,
+      user.id,
       id,
       dto,
+    );
+    return redactAppointmentFinancials(
+      updated,
+      canViewAppointmentFinancials(user.permissions),
     );
   }
 
@@ -870,14 +894,19 @@ Ideal for rendering an activity feed on the appointment detail screen.
     PERMISSION.APPOINTMENTS_READ,
     PERMISSION.APPOINTMENTS_READ_OWN,
   )
-  timeline(
+  async timeline(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.appointments.getTimeline(this.ctx.requireTenantId(), id, {
-      id: user.id,
-      permissions: user.permissions,
-    });
+    const entries = await this.appointments.getTimeline(
+      this.ctx.requireTenantId(),
+      id,
+      { id: user.id, permissions: user.permissions },
+    );
+    return redactTimelineFinancials(
+      entries,
+      canViewAppointmentFinancials(user.permissions),
+    );
   }
 
   // ───────────────────────────── Reminders ───────────────────────────────── //

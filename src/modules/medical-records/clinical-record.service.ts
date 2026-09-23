@@ -15,6 +15,7 @@ import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { AppError, ErrorCode } from '../../common/errors';
 import { ActivityAuditService } from '../activity-log/activity-audit.service';
+import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
 
 import {
   CreateClinicalEncounterDto,
@@ -46,6 +47,31 @@ const DATA_DTO_BY_KIND: Record<ClinicalEntryKind, new () => object> = {
 };
 
 /**
+ * Entry kinds a `clinical.records.nursing` holder (without `.manage`) may
+ * create, and the only kinds they may correct — see the permission's own
+ * docblock in rbac.constants.ts. DIAGNOSIS/MEDICATION/ALLERGY stay
+ * `.manage`-only: a nurse must never author or approve a diagnosis or a
+ * prescription/treatment plan.
+ */
+const NURSING_ENTRY_KINDS: ReadonlySet<ClinicalEntryKind> = new Set([
+  ClinicalEntryKind.NOTE,
+  ClinicalEntryKind.VITALS,
+]);
+
+/**
+ * The caller's identity for the nursing/manage split below. Routes reach
+ * this service only after `PermissionsGuard` admits at least one of
+ * `clinical.records.manage` / `clinical.records.nursing` (or super_admin) —
+ * see `ClinicalController`'s `@RequireAnyPermission`. This service still
+ * re-derives which one, because "admitted the route" and "may create a
+ * DIAGNOSIS" are different questions.
+ */
+export interface ClinicalWriteCaller {
+  roles: readonly string[];
+  permissions: readonly string[];
+}
+
+/**
  * Spec 014 (Clinic Platform Completion) — T107 (US6, FR-H001–H003, FR-H008,
  * FR-H009, FR-H013, FR-H014).
  *
@@ -64,12 +90,121 @@ export class ClinicalRecordService {
     private readonly entries: Repository<ClinicalEntry>,
     @InjectRepository(ClinicalEntryRevision)
     private readonly revisions: Repository<ClinicalEntryRevision>,
+    // Tenant-existence checks only (see assertBelongsToTenant) — never
+    // written through.
+    @InjectRepository(Customer)
+    private readonly customers: Repository<Customer>,
+    @InjectRepository(Appointment)
+    private readonly appointments: Repository<Appointment>,
+    @InjectRepository(Branch)
+    private readonly branches: Repository<Branch>,
     private readonly dataSource: DataSource,
     /** Clinic-wide activity trail. Clinical WRITES are auditable actions; the
      *  high-volume clinical READS deliberately go to `clinical_access_logs`
      *  instead (FR-H012) and never reach the Activity surface. */
     private readonly activityAudit: ActivityAuditService,
   ) {}
+
+  /**
+   * True for super_admin (role-identity bypass, mirroring `PermissionsGuard`
+   * itself) or a caller holding the full `clinical.records.manage` grant.
+   * Everything this returns `false` for is restricted to the nursing subset
+   * below — never silently treated as "no access", since the route only
+   * ever admits a caller holding at least one of the two permissions.
+   */
+  private hasFullClinicalAccess(caller: ClinicalWriteCaller): boolean {
+    return (
+      caller.roles.includes(ROLE.SUPER_ADMIN) ||
+      caller.permissions.includes(PERMISSION.CLINICAL_RECORDS_MANAGE)
+    );
+  }
+
+  /**
+   * Create-time gate for a nursing-only caller (FR-scope: D4). A DIAGNOSIS,
+   * MEDICATION or ALLERGY entry — or an encounter, which has no `kind` of
+   * its own and is create-only regardless of kind — created by a
+   * `.manage` holder passes through unchecked; a nursing-only caller may
+   * create only NOTE/VITALS.
+   */
+  private assertNursingCreateAllowed(
+    caller: ClinicalWriteCaller,
+    kind: ClinicalEntryKind,
+  ): void {
+    if (this.hasFullClinicalAccess(caller)) return;
+    if (NURSING_ENTRY_KINDS.has(kind)) return;
+    throw new AppError(ErrorCode.PERMISSION_DENIED, {
+      message: `Nursing staff may only record NOTE or VITALS entries, not ${kind}`,
+    });
+  }
+
+  /**
+   * Correction-time gate for a nursing-only caller: the entry's KIND must be
+   * one they could have created, AND they must be its original author —
+   * this is what makes `clinical.records.nursing` ownership-scoped on
+   * correction (see OWNERSHIP_SCOPED_PERMISSIONS in rbac.constants.ts). A
+   * nursing-only caller may never correct a doctor's NOTE, nor their own
+   * DIAGNOSIS-kind entry (which they could not have created in the first
+   * place, but might exist from before the role held only `.manage`).
+   */
+  private assertNursingCorrectAllowed(
+    caller: ClinicalWriteCaller,
+    entry: ClinicalEntry,
+    actorUserId: string,
+  ): void {
+    if (this.hasFullClinicalAccess(caller)) return;
+    const kindAllowed = NURSING_ENTRY_KINDS.has(entry.kind);
+    const isOwnEntry = entry.author?.id === actorUserId;
+    if (kindAllowed && isOwnEntry) return;
+    throw new AppError(ErrorCode.PERMISSION_DENIED, {
+      message:
+        'Nursing staff may only correct their own NOTE or VITALS entries',
+    });
+  }
+
+  /**
+   * Tenant-existence guard for a client-supplied id on a clinical CREATE —
+   * `customerId`, and (when given) `appointmentId`/`branchId`. Previously
+   * these were attached to the new row unchecked (a plain FK reference), so
+   * a fabricated or cross-tenant id would either violate the FK constraint
+   * with a raw 500 or, worse, silently succeed if the id happened to exist
+   * in another tenant with no FK to catch it. 404 (not 403): from the
+   * caller's point of view a foreign id is indistinguishable from one that
+   * does not exist, matching this module's own IDOR convention elsewhere
+   * (see the controller's docblock).
+   */
+  private async assertBelongsToTenant(
+    tenantId: string,
+    refs: { customerId: string; appointmentId?: string; branchId?: string },
+  ): Promise<void> {
+    const customerOk = await this.customers.exists({
+      where: { id: refs.customerId, tenant: { id: tenantId } },
+    });
+    if (!customerOk) {
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'Customer not found for this clinic',
+      });
+    }
+    if (refs.appointmentId) {
+      const appointmentOk = await this.appointments.exists({
+        where: { id: refs.appointmentId, tenant: { id: tenantId } },
+      });
+      if (!appointmentOk) {
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Appointment not found for this clinic',
+        });
+      }
+    }
+    if (refs.branchId) {
+      const branchOk = await this.branches.exists({
+        where: { id: refs.branchId, tenant: { id: tenantId } },
+      });
+      if (!branchOk) {
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Branch not found for this clinic',
+        });
+      }
+    }
+  }
 
   /** Validates `data` against its kind's DTO. Throws BAD_REQUEST on the FIRST violation — nothing is stored on a rejected input. */
   private validateEntryData(
@@ -94,12 +229,22 @@ export class ClinicalRecordService {
     }
   }
 
+  /**
+   * No nursing/manage kind split here — an encounter has no `kind` of its
+   * own (D5: nurses may open/record patient-level visits), so any caller
+   * the route admits (holds `.manage` OR `.nursing`) may create one.
+   */
   async createEncounter(
     tenantId: string,
     customerId: string,
     actorUserId: string,
     dto: CreateClinicalEncounterDto,
   ): Promise<ClinicalEncounter> {
+    await this.assertBelongsToTenant(tenantId, {
+      customerId,
+      appointmentId: dto.appointmentId,
+      branchId: dto.branchId,
+    });
     const encounter = this.encounters.create({
       tenant: { id: tenantId } as Tenant,
       customer: { id: customerId } as Customer,
@@ -120,9 +265,12 @@ export class ClinicalRecordService {
     customerId: string,
     actorUserId: string,
     dto: CreateClinicalEntryDto,
+    caller: ClinicalWriteCaller,
     encounterId?: string,
   ): Promise<ClinicalEntry> {
+    this.assertNursingCreateAllowed(caller, dto.kind);
     this.validateEntryData(dto.kind, dto.data);
+    await this.assertBelongsToTenant(tenantId, { customerId });
 
     const entry = this.entries.create({
       tenant: { id: tenantId } as Tenant,
@@ -167,15 +315,20 @@ export class ClinicalRecordService {
     entryId: string,
     actorUserId: string,
     dto: CorrectClinicalEntryDto,
+    caller: ClinicalWriteCaller,
   ): Promise<ClinicalEntry> {
     const corrected = await this.dataSource.transaction(async (manager) => {
       const entryRepo = manager.getRepository(ClinicalEntry);
       const entry = await entryRepo.findOne({
         where: { id: entryId, tenant: { id: tenantId } },
+        // `author` is needed for the nursing-caller ownership check below —
+        // a `.manage` caller / super_admin never reads it.
+        relations: { author: true },
       });
       if (!entry) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Entry not found' });
       }
+      this.assertNursingCorrectAllowed(caller, entry, actorUserId);
       if (entry.version !== dto.version) {
         throw new AppError(ErrorCode.CONFLICT, {
           message:

@@ -27,6 +27,8 @@ export type EmailTemplateKey =
   | 'subscription_expiring_soon'
   | 'subscription_entered_grace'
   | 'subscription_grace_ending_soon'
+  | 'free_access_started'
+  | 'free_access_expiring'
   | 'staff_invitation'
   | 'staff_credentials'
   | 'security_alert'
@@ -458,6 +460,44 @@ export const EMAIL_TEMPLATES: Record<
       ),
       {
         label: t(ctx, 'Renew now', 'جدّد الآن'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
+      '',
+      ctx,
+    ),
+
+  // Free-access lifecycle notices (super-admin comps) — a separate family
+  // from the paid-subscription lifecycle above, since a free-access override
+  // and a subscription are independent grants (see AccessControlService's
+  // priority chain: ADMIN_FREE_ACCESS is resolved before any subscription).
+  free_access_started: (v, ctx) =>
+    action(
+      t(ctx, 'Free access started', 'بدأ الوصول المجاني'),
+      greet(v, ctx),
+      t(
+        ctx,
+        `${s(v.clinicName, 'Your clinic')}'s ZiyaraTech access is now free. Duration: ${s(v.durationDays, '—')}. Ends: ${s(v.endsAt, '—')}.`,
+        `أصبح وصول ${s(v.clinicName, 'عيادتك')} إلى ZiyaraTech مجانيًا الآن. المدة: ${s(v.durationDays, '—')}. تاريخ الانتهاء: ${s(v.endsAt, '—')}.`,
+      ),
+      {
+        label: t(ctx, 'View billing', 'عرض الفوترة'),
+        url: `${ctx.appUrl}/app/billing`,
+      },
+      '',
+      ctx,
+    ),
+
+  free_access_expiring: (v, ctx) =>
+    action(
+      t(ctx, 'Your free access is ending soon', 'وصولك المجاني على وشك الانتهاء'),
+      greet(v, ctx),
+      t(
+        ctx,
+        `Your free access ends on ${s(v.endsAt)} (${s(v.daysRemaining)} day(s) remaining). Subscribe to a plan to avoid any interruption.`,
+        `ينتهي وصولك المجاني بتاريخ ${s(v.endsAt)} (متبقٍ ${s(v.daysRemaining)} يوم). اشترك في إحدى الباقات لتجنّب أي انقطاع.`,
+      ),
+      {
+        label: t(ctx, 'Subscribe now', 'اشترك الآن'),
         url: `${ctx.appUrl}/app/billing`,
       },
       '',
