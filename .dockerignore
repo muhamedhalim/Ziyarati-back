@@ -41,4 +41,6 @@ ziyaratech.backup
 # ── Docs & specs (documentation only; nothing at runtime reads these) ───────
 docs
 specs
+# Terraform + AWS architecture docs: infrastructure, never part of the image
+infra
 README.md

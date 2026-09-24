@@ -128,7 +128,9 @@ while the API held a valid value, and every email failed for four weeks.
 | `META_APP_ID`, `META_APP_SECRET`, `META_EMBEDDED_SIGNUP_CONFIG_ID`, `META_WEBHOOK_VERIFY_TOKEN` | all four, or none. A *partial* Meta configuration is a boot error. |
 | `METRICS_TOKEN` | required in practice: with it unset, `/metrics` answers 401 in production. |
 | `RESEND_API_KEY`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=resend` (the default) and email is enabled (the production default). Boot fails when either is blank or `EMAIL_FROM` is not `addr` / `Name <addr>`. **Set them on the worker** — it is the process that sends. |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | all four together, or every upload route fails closed with 503. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | all four together, or every upload route fails closed with 503 (default `STORAGE_PROVIDER=r2`). |
+| `S3_BUCKET` + `S3_REGION`/`AWS_REGION` | whenever `STORAGE_PROVIDER=s3` (AWS). No keys: the IAM task role authenticates. Boot fails without them. |
+| `SES_REGION`/`AWS_REGION`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=ses` (AWS) and email is enabled. No API key: the IAM task role authenticates. `SES_FEEDBACK_QUEUE_URL` (worker) enables bounce/complaint handling. |
 
 ### Must be false / unset in production
 
@@ -230,3 +232,12 @@ both close their Redis and Postgres connections. `tini` is PID 1 in the image
 so the signal actually arrives. Allow at least **30 s** of termination grace in
 the platform's deployment settings (the clustered API primary waits up to 25 s
 for its forked workers before force-killing).
+
+## 10. AWS (ECS Fargate / RDS / ElastiCache / S3 / SES)
+
+The AWS target architecture, Terraform, and the Railway → AWS migration runbook
+live in [`infra/`](infra/README.md). On AWS the ECS task definitions set the
+platform variables (`STORAGE_PROVIDER=s3`, `EMAIL_PROVIDER=ses`,
+`DB_SSL_CA=/app/certs/rds-global-bundle.pem` — the RDS CA bundle is baked
+into the image — `REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true`, `NO_COLOR=1`)
+and inject secrets from Secrets Manager; see `infra/docs/DEPLOYMENT.md`.

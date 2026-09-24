@@ -10,6 +10,7 @@ import { EmailService } from './email.service';
 import { EmailDeliveryService } from './email-delivery.service';
 import { EmailProviderFactory } from './providers/email-provider.factory';
 import { ResendProvider } from './providers/resend.provider';
+import { SesProvider } from './providers/ses.provider';
 import { NoopEmailProvider } from './providers/noop-email.provider';
 import { EmailLogController } from './email-log.controller';
 
@@ -55,6 +56,7 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
     EmailDeliveryService,
     EmailProviderFactory,
     ResendProvider,
+    SesProvider,
     NoopEmailProvider,
     EmailSuppressionService,
     UnsubscribeTokenService,

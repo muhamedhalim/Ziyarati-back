@@ -75,3 +75,73 @@ describe('StorageService — tenant-ownership enforcement (FND-039)', () => {
     });
   });
 });
+
+describe('StorageService — STORAGE_PROVIDER=s3 (AWS migration)', () => {
+  const TENANT_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const TENANT_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const { S3Client } = jest.requireMock('@aws-sdk/client-s3');
+
+  function makeS3Service(values: Record<string, string>): StorageService {
+    const config = { get: (name: string) => values[name] } as unknown as ConfigService;
+    return new StorageService(config);
+  }
+
+  beforeEach(() => (S3Client as jest.Mock).mockClear());
+
+  it('uses the default credential chain: region only, no R2 endpoint, no static keys', async () => {
+    const service = makeS3Service({
+      STORAGE_PROVIDER: 's3',
+      S3_BUCKET: 'zt-production-uploads-123456789012',
+      AWS_REGION: 'me-central-1',
+      // Leftover R2 values must be ignored in S3 mode.
+      R2_ACCOUNT_ID: 'old',
+      R2_ACCESS_KEY_ID: 'old',
+      R2_SECRET_ACCESS_KEY: 'old',
+    });
+    expect(service.isConfigured()).toBe(true);
+    await service.deleteObject(`${TENANT_A}/docs/x.pdf`, TENANT_A);
+    expect(S3Client).toHaveBeenCalledTimes(1);
+    expect(S3Client).toHaveBeenCalledWith({ region: 'me-central-1' });
+  });
+
+  it('prefers S3_REGION over AWS_REGION', async () => {
+    const service = makeS3Service({
+      STORAGE_PROVIDER: 's3',
+      S3_BUCKET: 'b',
+      S3_REGION: 'eu-central-1',
+      AWS_REGION: 'me-central-1',
+    });
+    await service.deleteObject(`${TENANT_A}/docs/x.pdf`, TENANT_A);
+    expect(S3Client).toHaveBeenCalledWith({ region: 'eu-central-1' });
+  });
+
+  it('is not configured without a bucket and fails closed with a message naming the S3 variables', async () => {
+    const service = makeS3Service({ STORAGE_PROVIDER: 's3', AWS_REGION: 'me-central-1' });
+    expect(service.isConfigured()).toBe(false);
+    await expect(service.deleteObject(`${TENANT_A}/docs/x.pdf`, TENANT_A)).rejects.toMatchObject({
+      code: ErrorCode.INTERNAL_ERROR,
+      message: expect.stringContaining('S3_BUCKET'),
+    });
+    expect(S3Client).not.toHaveBeenCalled();
+  });
+
+  it('keeps tenant-prefix enforcement unchanged', async () => {
+    const service = makeS3Service({ STORAGE_PROVIDER: 's3', S3_BUCKET: 'b', AWS_REGION: 'me-central-1' });
+    await expect(
+      service.getSignedDownloadUrl(`${TENANT_B}/docs/x.pdf`, TENANT_A),
+    ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+  });
+
+  it('defaults to R2 when STORAGE_PROVIDER is unset (rollback path)', async () => {
+    const service = makeS3Service({
+      R2_ACCOUNT_ID: 'acct',
+      R2_ACCESS_KEY_ID: 'k',
+      R2_SECRET_ACCESS_KEY: 's',
+      R2_BUCKET: 'b',
+    });
+    await service.deleteObject(`${TENANT_A}/docs/x.pdf`, TENANT_A);
+    expect(S3Client).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: 'https://acct.r2.cloudflarestorage.com' }),
+    );
+  });
+});

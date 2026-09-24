@@ -1,0 +1,18 @@
+# Terraform working files and state — state is remote (S3); never commit it.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+backend.hcl
+*.auto.tfvars
+.terraformrc
+terraform.rc
+# Lock files ARE committed (provider checksum pinning).
+!.terraform.lock.hcl

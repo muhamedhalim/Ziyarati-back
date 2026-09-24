@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { EmailProvider } from './email-provider.interface';
 import { ResendProvider } from './resend.provider';
+import { SesProvider } from './ses.provider';
 import { NoopEmailProvider } from './noop-email.provider';
 import { resolveEmailConfig } from '../email.config';
 
@@ -20,6 +21,8 @@ export class EmailProviderFactory {
     private readonly config: ConfigService,
     private readonly resend: ResendProvider,
     private readonly noop: NoopEmailProvider,
+    // Last so positional test constructions (resend, noop) stay valid.
+    private readonly ses?: SesProvider,
   ) {}
 
   resolve(): EmailProvider {
@@ -28,6 +31,9 @@ export class EmailProviderFactory {
 
     if (cfg.provider === 'resend' && this.resend.isConfigured()) {
       return this.resend;
+    }
+    if (cfg.provider === 'ses' && this.ses?.isConfigured()) {
+      return this.ses;
     }
 
     this.logger.warn(

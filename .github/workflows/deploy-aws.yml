@@ -1,0 +1,158 @@
+name: Deploy backend (AWS)
+
+# infra/docs/DEPLOYMENT.md. Keyless: GitHub OIDC → zt-<env>-github-deploy.
+# The image is built ONCE; staging and production receive the same image.
+# Production waits for the required reviewer on the `production` GitHub
+# Environment. Rollback = run this workflow with image_tag=<previous sha>.
+#
+# Repository variables (Settings → Variables; none are secrets):
+#   AWS_REGION, AWS_ACCOUNT_ID_STAGING, AWS_ACCOUNT_ID_PRODUCTION,
+#   API_URL_STAGING, API_URL_PRODUCTION,
+#   ALLOW_RED_UNIT_TESTS ("true" only while the known pre-existing red unit
+#   tests are being fixed — the choice stays visible in every run log)
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "infra/**"
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Redeploy an EXISTING image tag (git sha) — skips the build. Empty = build this commit."
+        required: false
+        default: ""
+      target:
+        description: "Where to deploy"
+        type: choice
+        options: [both, staging, production]
+        default: both
+
+permissions:
+  contents: read
+  id-token: write # OIDC
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ziyaratech/backend
+
+jobs:
+  build:
+    if: ${{ github.event_name == 'push' || inputs.image_tag == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Typecheck + build
+        run: npm run build
+
+      - name: Unit tests
+        run: npx jest --ci
+        continue-on-error: ${{ vars.ALLOW_RED_UNIT_TESTS == 'true' }}
+
+      - id: tag
+        run: echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: |
+          docker build -t "backend:${GITHUB_SHA}" .
+          # The image must not contain environment files.
+          if docker run --rm --entrypoint sh "backend:${GITHUB_SHA}" -c 'ls -a /app | grep -E "^\.env"'; then
+            echo "::error::.env file found inside the image"; exit 1
+          fi
+          test "$(docker run --rm --entrypoint sh "backend:${GITHUB_SHA}" -c 'test -s /app/certs/rds-global-bundle.pem && echo ok')" = ok
+          docker save "backend:${GITHUB_SHA}" | gzip -1 > image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: image.tar.gz
+          retention-days: 7
+
+  deploy-staging:
+    needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') && (github.event_name == 'push' || inputs.target != 'production') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID_STAGING }}:role/zt-staging-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ inputs.image_tag || needs.build.outputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - if: ${{ needs.build.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Push image
+        if: ${{ needs.build.result == 'success' }}
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker tag "backend:${{ steps.tag.outputs.tag }}" "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+          docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+
+      - name: Migrate + deploy + smoke
+        run: bash infra/scripts/ecs-deploy.sh staging "${{ steps.tag.outputs.tag }}" "${{ vars.API_URL_STAGING }}"
+
+  deploy-production:
+    needs: [build, deploy-staging]
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') && (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') && (github.event_name == 'push' || inputs.target != 'staging') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production # required reviewer gate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID_PRODUCTION }}:role/zt-production-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ inputs.image_tag || needs.build.outputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - if: ${{ needs.build.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Push the staging-tested image
+        if: ${{ needs.build.result == 'success' }}
+        run: |
+          gunzip -c image.tar.gz | docker load
+          docker tag "backend:${{ steps.tag.outputs.tag }}" "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+          docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${{ steps.tag.outputs.tag }}"
+
+      - name: Migrate + deploy + smoke
+        run: bash infra/scripts/ecs-deploy.sh production "${{ steps.tag.outputs.tag }}" "${{ vars.API_URL_PRODUCTION }}"

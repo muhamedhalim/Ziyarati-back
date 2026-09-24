@@ -53,6 +53,7 @@ import { WorkerTenantsService } from './worker/worker-tenants.service';
 import { QueueMonitorService } from './worker/queue-monitor.service';
 import { ScheduleRegistrarService } from './worker/schedule-registrar.service';
 import { OutboxRelayService } from './worker/outbox-relay.service';
+import { SesFeedbackConsumer } from './modules/email/feedback/ses-feedback.consumer';
 
 import { NotificationsProcessor } from './worker/processors/notifications.processor';
 import { WhatsappProcessor } from './worker/processors/whatsapp.processor';
@@ -200,6 +201,9 @@ const CRITICAL_INFRA = [
   QueueMonitorService,
   ScheduleRegistrarService,
   OutboxRelayService,
+  // SES bounce/complaint (SQS long-poll). Idle unless SES_FEEDBACK_QUEUE_URL is
+  // set; never in a dispatch-only deployment.
+  SesFeedbackConsumer,
 ];
 
 const WORKER_PROVIDERS =
