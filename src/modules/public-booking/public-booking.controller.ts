@@ -26,6 +26,7 @@ import {
   type GuestPrincipal,
 } from './public-booking-flow.service';
 import {
+  BookingSessionDto,
   ConfirmBookingDto,
   PublicBookingAvailabilityQueryDto,
   SelectBranchDto,
@@ -72,14 +73,21 @@ export class PublicBookingController {
   async session(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
+    @Body() dto?: BookingSessionDto,
   ) {
-    const { conversationId, principal } = await this.resolve(req, res);
+    const { conversationId, principal } = await this.resolve(req, res, {
+      adoptConversationId: dto?.conversationId,
+      fresh: dto?.fresh === true,
+    });
     const session = await this.flow.getSelection(
       principal.tenantId,
       conversationId,
       principal,
     );
-    return { selection: session };
+    // `conversationId` and `guestId` let the chat widget resume the SAME conversation the
+    // selections now live on (both are already the caller's own: the id is a conversation this
+    // guest owns, the guest id is the identity `POST /public/guest/session` returns too).
+    return { selection: session, conversationId, guestId: principal.id };
   }
 
   @Public()
@@ -238,6 +246,7 @@ export class PublicBookingController {
   private async resolve(
     req: Request,
     res: Response,
+    opts: { adoptConversationId?: string; fresh?: boolean } = {},
   ): Promise<{ conversationId: string; principal: GuestPrincipal }> {
     const existingGuestToken = readGuestTokenCookie(req);
     const guestSession = await this.guestSessions.resolveSession(existingGuestToken);
@@ -248,15 +257,29 @@ export class PublicBookingController {
       });
     }
 
-    const existingConversationId = req.cookies?.[BOOKING_SESSION_COOKIE] as
+    const cookieConversationId = req.cookies?.[BOOKING_SESSION_COOKIE] as
       | string
       | undefined;
+    // Which conversation to resume: a fresh start ignores everything; otherwise the chat
+    // widget's own conversation wins when (and only when) this guest owns it; otherwise the
+    // cookie's. `ensureConversation` re-checks ownership of whatever it is handed.
+    let existingConversationId: string | undefined = cookieConversationId;
+    if (opts.fresh) {
+      existingConversationId = undefined;
+    } else if (opts.adoptConversationId) {
+      const adopted = await this.bookingContext.adoptOwnedConversation(
+        guestSession.tenantId,
+        guestSession.guestId,
+        opts.adoptConversationId,
+      );
+      if (adopted) existingConversationId = adopted;
+    }
     const conversationId = await this.bookingContext.ensureConversation(
       guestSession.tenantId,
       guestSession.guestId,
       existingConversationId,
     );
-    if (conversationId !== existingConversationId) {
+    if (conversationId !== cookieConversationId) {
       res.cookie(BOOKING_SESSION_COOKIE, conversationId, {
         ...this.cookieOptions(),
         maxAge: guestSession.maxAgeMs,
