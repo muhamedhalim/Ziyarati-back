@@ -499,7 +499,7 @@ export const validate = (config: Record<string, unknown>) => {
     // `enabled` defaults to ON in production, OFF in dev (no-op provider) unless
     // EMAIL_ENABLED is set explicitly. EMAIL_SYNC=true delivers inline instead of
     // via the worker (for API-only deployments).
-    EMAIL_PROVIDER: Joi.string().valid('resend', 'noop').default('resend'),
+    EMAIL_PROVIDER: Joi.string().valid('resend', 'ses', 'noop').default('resend'),
     EMAIL_ENABLED: Joi.string().valid('true', 'false'),
     EMAIL_SYNC: Joi.string().valid('true', 'false').default('false'),
     RESEND_API_KEY: Joi.string().allow('', null),
@@ -523,6 +523,19 @@ export const validate = (config: Record<string, unknown>) => {
     // endpoint. Unset means bounce/complaint feedback is rejected outright
     // (fail closed), same posture as META_APP_SECRET/MOYASAR_WEBHOOK_SECRET.
     RESEND_WEBHOOK_SECRET: Joi.string().allow('', null),
+
+    // ── Amazon SES (EMAIL_PROVIDER=ses — AWS migration) ───────────────────
+    // No credentials here: the SDK resolves the runtime IAM role (ECS task
+    // role). Region falls back to AWS_REGION. The timeout is capped below
+    // BullMQ's 30 s job lock for the same reason as RESEND_HTTP_TIMEOUT_MS.
+    // SES_FEEDBACK_QUEUE_URL turns on the worker's bounce/complaint consumer
+    // (SES → SNS → SQS); unset = consumer idle.
+    SES_REGION: Joi.string().allow('', null),
+    SES_CONFIGURATION_SET: Joi.string().allow('', null),
+    SES_HTTP_TIMEOUT_MS: Joi.number().integer().min(1000).max(25000),
+    SES_FEEDBACK_QUEUE_URL: Joi.string().uri().allow('', null),
+    // Set by the platform (ECS task definition); used by the S3/SES/SQS clients.
+    AWS_REGION: Joi.string().allow('', null),
 
     // ── Localization (CAP-I18N) ────────────────────────────────────────────
     // Platform-wide default locale (AD-09 step 4: the last fallback in the
@@ -776,6 +789,11 @@ export const validate = (config: Record<string, unknown>) => {
     R2_REGION: Joi.string().default('auto'),
     // Unused for private buckets (we serve signed URLs). Kept for parity.
     R2_PUBLIC_BASE_URL: Joi.string().allow('', null),
+    // AWS migration: `s3` = Amazon S3 via the runtime IAM role (no keys);
+    // `r2` (default) keeps the Cloudflare path above selectable for rollback.
+    STORAGE_PROVIDER: Joi.string().valid('r2', 's3').default('r2'),
+    S3_BUCKET: Joi.string().allow('', null),
+    S3_REGION: Joi.string().allow('', null),
     // Per-file upload cap in bytes (default 10 MB). Enforced by the multer
     // interceptor and re-checked in the controller.
     UPLOAD_MAX_BYTES: Joi.number()
@@ -1283,24 +1301,49 @@ export const validate = (config: Record<string, unknown>) => {
   const emailLive =
     value.NODE_ENV === 'production' &&
     value.EMAIL_ENABLED !== 'false' &&
-    value.EMAIL_PROVIDER === 'resend';
+    (value.EMAIL_PROVIDER === 'resend' || value.EMAIL_PROVIDER === 'ses');
   if (emailLive) {
     const missing: string[] = [];
-    if (!String(value.RESEND_API_KEY ?? '').trim())
+    if (
+      value.EMAIL_PROVIDER === 'resend' &&
+      !String(value.RESEND_API_KEY ?? '').trim()
+    )
       missing.push('RESEND_API_KEY');
+    // SES authenticates with the runtime role; it only needs a region.
+    if (
+      value.EMAIL_PROVIDER === 'ses' &&
+      !String(value.SES_REGION || value.AWS_REGION || '').trim()
+    )
+      missing.push('SES_REGION or AWS_REGION');
     if (!formatFromAddress(value.EMAIL_FROM, value.EMAIL_FROM_NAME)) {
       missing.push('EMAIL_FROM (and/or EMAIL_FROM_NAME)');
     }
     if (missing.length > 0) {
       throw new Error(
         `❌ Env validation error: email is enabled in production with ` +
-          `EMAIL_PROVIDER=resend, but ${missing.join(', ')} is missing, blank or ` +
+          `EMAIL_PROVIDER=${value.EMAIL_PROVIDER}, but ${missing.join(', ')} is missing, blank or ` +
           `malformed. EMAIL_FROM must be "sender@your-verified-domain" or ` +
           `"Name <sender@your-verified-domain>"; EMAIL_FROM_NAME must not contain ` +
           `<, > or ". Set these on EVERY process that consumes the email queue ` +
           `(the worker), or set EMAIL_ENABLED=false to turn email off explicitly.`,
       );
     }
+  }
+
+  // ── Object storage fail-fast (production, S3 explicitly selected) ─────────
+  // R2 stays fail-soft (upload routes answer 503) for backward compatibility,
+  // but choosing STORAGE_PROVIDER=s3 without a bucket/region is an explicit,
+  // detectable misconfiguration — every clinic document upload would fail.
+  if (
+    value.NODE_ENV === 'production' &&
+    value.STORAGE_PROVIDER === 's3' &&
+    (!String(value.S3_BUCKET ?? '').trim() ||
+      !String(value.S3_REGION || value.AWS_REGION || '').trim())
+  ) {
+    throw new Error(
+      `❌ Env validation error: STORAGE_PROVIDER=s3 in production requires ` +
+        `S3_BUCKET and S3_REGION (or AWS_REGION).`,
+    );
   }
 
   return value;

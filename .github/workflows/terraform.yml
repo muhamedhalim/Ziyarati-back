@@ -1,0 +1,129 @@
+name: Terraform
+
+# infra/docs/TERRAFORM.md. fmt → validate → test (mocked AWS) on every PR;
+# plan per environment with the READ-ONLY role; apply only by manual dispatch
+# from the protected `infra-<env>` GitHub Environment (required reviewers).
+
+on:
+  pull_request:
+    paths: ["infra/terraform/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [master]
+    paths: ["infra/terraform/**"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to APPLY"
+        type: choice
+        options: [staging, production]
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+env:
+  TF_IN_AUTOMATION: "1"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_VERSION: "1.16.4"
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: fmt
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+      - name: validate roots
+        run: |
+          for d in bootstrap environments/staging environments/production; do
+            terraform -chdir="infra/terraform/$d" init -backend=false -input=false
+            terraform -chdir="infra/terraform/$d" validate
+          done
+      - name: terraform test (mocked AWS — no account needed)
+        run: |
+          for m in network rds elasticache s3-uploads ecs platform; do
+            terraform -chdir="infra/terraform/modules/$m" init -backend=false -input=false
+            terraform -chdir="infra/terraform/modules/$m" test
+          done
+
+  plan:
+    needs: static
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, production]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Account id
+        id: acct
+        run: |
+          if [ "${{ matrix.environment }}" = production ]; then
+            echo "id=${{ vars.AWS_ACCOUNT_ID_PRODUCTION }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=${{ vars.AWS_ACCOUNT_ID_STAGING }}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/zt-${{ matrix.environment }}-tf-plan
+          aws-region: ${{ env.AWS_REGION }}
+      - name: plan
+        working-directory: infra/terraform/environments/${{ matrix.environment }}
+        env:
+          TF_VAR_account_id: ${{ steps.acct.outputs.id }}
+        run: |
+          terraform init -input=false -backend-config="bucket=zt-${{ matrix.environment }}-tfstate-${{ steps.acct.outputs.id }}"
+          terraform plan -input=false -lock=false -no-color -out=tfplan | tee plan.txt
+          {
+            echo "### terraform plan — ${{ matrix.environment }}"
+            echo '```'
+            grep -E '^Plan:|No changes' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    needs: static
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150 # first apply waits for ACM DNS validation
+    environment: infra-${{ inputs.environment }}
+    concurrency:
+      group: terraform-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Account id
+        id: acct
+        run: |
+          if [ "${{ inputs.environment }}" = production ]; then
+            echo "id=${{ vars.AWS_ACCOUNT_ID_PRODUCTION }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=${{ vars.AWS_ACCOUNT_ID_STAGING }}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/zt-${{ inputs.environment }}-tf-apply
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+      - name: plan + apply
+        working-directory: infra/terraform/environments/${{ inputs.environment }}
+        env:
+          TF_VAR_account_id: ${{ steps.acct.outputs.id }}
+        run: |
+          terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}"
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false tfplan

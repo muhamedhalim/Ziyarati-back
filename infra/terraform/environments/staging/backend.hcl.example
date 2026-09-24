@@ -1,0 +1,4 @@
+# cp backend.hcl.example backend.hcl  (backend.hcl is git-ignored)
+# Values come from `terraform -chdir=infra/terraform/bootstrap output`.
+bucket     = "zt-staging-tfstate-<ACCOUNT_ID>"
+kms_key_id = "arn:aws:kms:me-central-1:<ACCOUNT_ID>:key/<STATE_KEY_ID>"

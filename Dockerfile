@@ -16,11 +16,15 @@
 ###############################################################################
 
 # Pinned to a specific minor so a rebuild resolves the same base. Alpine is safe
-# here: every RUNTIME dependency (pg, ioredis, bcryptjs, @aws-sdk, prom-client,
-# pdf-parse, socket.io, pdfkit, bidi-js) is pure JavaScript — the only native
-# artefacts in the tree belong to devDependencies (artillery/eslint), which
-# never reach the runtime stage.
+# here: the runtime dependencies are pure JavaScript except native `bcrypt`,
+# whose prebuilt binary for linux-x64 musl was verified on this exact base
+# (P1.2, 2026-09-04). linux-arm64 musl is NOT verified yet — keep ECS tasks on
+# X86_64 until it is (infra/docs/CURRENT-STATE-AUDIT.md F-12).
 ARG NODE_IMAGE=node:24.11-alpine3.22
+# Amazon RDS trust anchors. Production refuses to connect to Postgres without
+# validating the server certificate (database-ssl.ts, ZT-012); the ECS task sets
+# DB_SSL_CA=/app/certs/rds-global-bundle.pem. Public CA bundle, not a secret.
+ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 # ─────────────────────────── Stage 1: dependencies ──────────────────────────
 # `npm ci` (not `npm install`) so the lockfile is the single source of truth and
@@ -85,14 +89,21 @@ ENV NODE_ENV=production \
 # install their own SIGTERM/SIGINT handlers for graceful shutdown (app.close()
 # → onModuleDestroy → BullMQ drain, Redis/DB teardown); tini guarantees the
 # signal actually reaches them and that no orphaned child survives.
-RUN apk add --no-cache tini
+# /app/certs is created here (0755) on purpose: letting ADD --chmod=644 create
+# it applies 644 to the DIRECTORY too, which the non-root user cannot traverse
+# — the DB CA would be unreadable and production boot would fail.
+RUN apk add --no-cache tini && mkdir -p /app/certs && chmod 0755 /app/certs
 
 # Non-root. The `node` user (uid/gid 1000) ships with the base image. Nothing in
-# the app writes to disk at runtime — uploads go to Cloudflare R2 — so the whole
-# tree can stay read-only-for-the-app and root-owned-by-nobody.
+# the app writes to disk at runtime — uploads go to object storage (S3, or R2
+# until cutover) — so the tree can stay read-only (ECS: readonlyRootFilesystem
+# with a writable /tmp).
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build     --chown=node:node /app/dist         ./dist
 COPY               --chown=node:node package.json         ./package.json
+# (A pre-FROM ARG is only visible to FROM lines — re-declare it for this stage.)
+ARG RDS_CA_BUNDLE_URL
+ADD --chmod=644 ${RDS_CA_BUNDLE_URL} /app/certs/rds-global-bundle.pem
 
 USER node
 
