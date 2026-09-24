@@ -88,6 +88,8 @@ const CLINIC = {
 };
 const DOCTOR = {
   id: 'doc-1',
+  public_slug: 'dr-sara-ahmed',
+  full_name: 'Sara Ahmed',
   title: 'Dr.',
   tenant_id: 'clinic-1',
   tenant_name: 'Noor',
@@ -126,10 +128,22 @@ describe('PublicDiscoveryService.specialtyDetail (C4)', () => {
     expect(result.doctors.items).toEqual([
       {
         id: 'doc-1',
+        slug: 'dr-sara-ahmed',
+        name: 'Sara Ahmed',
         title: 'Dr.',
         clinic: { id: 'clinic-1', name: 'Noor', slug: 'noor' },
       },
     ]);
+  });
+
+  it('a doctor without a public slug or linked user name stays an honest null, never invented', async () => {
+    const { service } = buildDetail({
+      specialty: [SPECIALTY],
+      doctors: [{ ...DOCTOR, public_slug: null, full_name: null }],
+      doctorTotal: 1,
+    });
+    const result = await service.specialtyDetail('dentistry');
+    expect(result.doctors.items[0]).toMatchObject({ slug: null, name: null });
   });
 
   it('404s for an unknown slug (a genuinely bad slug)', async () => {

@@ -186,12 +186,13 @@ describe('PublicDiscoveryService.doctorDetail (C6)', () => {
     expect(JSON.stringify(result)).not.toMatch(/https?:\/\//);
   });
 
-  it('services never carry a slug — the column does not exist yet (honest null, not an invented value)', async () => {
+  it('services carry their public_slug, so the frontend can link clinic.slug + slug to the service page', async () => {
     const { service } = buildDetail({
       doctor: [DETAIL_ROW],
       services: [
         {
           id: 'svc-1',
+          public_slug: 'teeth-cleaning',
           name: 'Cleaning',
           duration_minutes: 30,
           base_price: '200.00',
@@ -202,12 +203,38 @@ describe('PublicDiscoveryService.doctorDetail (C6)', () => {
     expect(result.services).toEqual([
       {
         id: 'svc-1',
-        slug: null,
+        slug: 'teeth-cleaning',
         name: 'Cleaning',
         durationMinutes: 30,
         price: 200,
       },
     ]);
+  });
+
+  it('a service with no public_slug (pre-backfill) stays an honest null, never an invented value', async () => {
+    const { service } = buildDetail({
+      doctor: [DETAIL_ROW],
+      services: [
+        {
+          id: 'svc-2',
+          public_slug: null,
+          name: 'Legacy',
+          duration_minutes: 15,
+          base_price: null,
+        },
+      ],
+    });
+    const result = await service.doctorDetail('dr-sara-ahmed');
+    expect(result.services[0].slug).toBeNull();
+  });
+
+  it('selects the slug in the SQL itself (the projection, not just the mapping)', async () => {
+    const { service, query } = buildDetail({ doctor: [DETAIL_ROW] });
+    await service.doctorDetail('dr-sara-ahmed');
+    const sql = (query.mock.calls as [string][])
+      .map(([q]) => q)
+      .find((q) => q.includes('FROM staff_services'));
+    expect(sql).toMatch(/s.public_slug/);
   });
 
   it('branches reflects staff_schedules — the frontend uses its length for FR-083 context-depth', async () => {
