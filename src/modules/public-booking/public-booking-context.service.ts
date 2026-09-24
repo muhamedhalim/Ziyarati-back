@@ -126,6 +126,31 @@ export class PublicBookingContextService {
   }
 
   /**
+   * Returns `candidate` only when it is a conversation this exact guest owns (same
+   * `assertAccess` gate `ensureConversation` uses); `null` for anything else — someone
+   * else's, deleted, never existed. Never mints and never throws: the caller keeps whatever
+   * conversation it already had, so a foreign or stale id is indistinguishable from none.
+   */
+  async adoptOwnedConversation(
+    guestTenantId: string,
+    guestId: string,
+    candidate: string,
+  ): Promise<string | null> {
+    try {
+      await this.access.assertAccess(guestTenantId, candidate, {
+        id: guestId,
+        tenantId: guestTenantId,
+        roles: [],
+        permissions: [],
+        guest: true,
+      });
+      return candidate;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Resolves the owning clinic of a branch — the ONLY way a public booking
    * tenant is ever produced.
    *

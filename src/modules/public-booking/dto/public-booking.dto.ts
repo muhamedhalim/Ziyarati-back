@@ -14,6 +14,29 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/**
+ * `POST /public/booking/session` — both fields optional, so a body-less call (every existing
+ * caller) behaves exactly as before.
+ */
+export class BookingSessionDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      "The chat widget's conversation. Adopted as the booking session ONLY if it is this guest's own; anything else is ignored.",
+  })
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Start a brand-new conversation instead of resuming the current one.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  fresh?: boolean;
+}
+
 /** contracts/public-surfaces.md §B `POST /public/booking/select/clinic`. */
 export class SelectClinicDto {
   @ApiProperty({ format: 'uuid' })

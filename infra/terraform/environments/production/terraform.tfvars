@@ -8,7 +8,9 @@ vpc_cidr              = "10.20.0.0/16"
 nat_gateway_count     = 2
 
 domain           = "ziyaratech.com"
-frontend_origins = ["https://www.ziyaratech.com", "https://ziyaratech.com"]
+# Every browser origin that opens a socket or sends credentialed requests: the marketing/dashboard site
+# AND the patient marketplace (book.), whose AI widget dials wss://api.ziyaratech.com directly.
+frontend_origins = ["https://www.ziyaratech.com", "https://ziyaratech.com", "https://book.ziyaratech.com"]
 app_url          = "https://www.ziyaratech.com"
 
 # First apply: a tag already pushed to ECR (see DEPLOYMENT.md §2).
