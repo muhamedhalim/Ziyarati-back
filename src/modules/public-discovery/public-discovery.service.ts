@@ -401,18 +401,15 @@ export class PublicDiscoveryService {
    *
    * Withheld per decision A1: `tenants.contact_email`.
    *
-   * **Two known, documented gaps** (not silently worked around):
-   *  - `services[].slug` is OMITTED. The `services` table has no slug column
-   *    at all (verified against `Service.ts` — no migration ever added one),
-   *    so `/clinics/[slug]/services/[serviceSlug]` (marketplace-routes.md)
-   *    cannot be built until a dedicated migration adds and backfills one,
-   *    the same way T060 does for doctors. Fabricating a derived, unpersisted
-   *    slug here would collide across renames and duplicate names — worse
-   *    than omitting the field.
-   *  - `doctors[].slug` / `.avatarUrl` and the `specialties` array are empty/
-   *    absent until T060/T061 (doctor slugs, Phase 8) and T051-T056
-   *    (specialty domain, Phase 7) land — those fields do not exist in the
-   *    schema yet. This method will be extended, not replaced, when they do.
+   * `services[].slug` and `doctors[].slug` are the persisted `public_slug`
+   * columns (unique per clinic), so the marketplace can link each row to its
+   * detail route. A row that predates the slug backfill has none and returns
+   * `null` — never a derived, unpersisted slug, which would collide across
+   * renames and duplicate names.
+   *
+   * Still open: `doctors[].avatarUrl` is absent and `specialties` is always
+   * empty here (the specialty domain exists now, but this projection has not
+   * been extended to read it). Extend, never replace.
    */
   async marketplaceClinicDetail(
     idOrSlug: string,
@@ -476,7 +473,7 @@ export class PublicDiscoveryService {
         [clinicId],
       ),
       this.dataSource.query(
-        `SELECT id, name, description, duration_minutes FROM services
+        `SELECT id, public_slug, name, description, duration_minutes FROM services
             WHERE "tenantId" = $1 AND is_active = true AND deleted_at IS NULL
             ORDER BY name LIMIT $2 OFFSET $3`,
         [clinicId, sSize, (sPage - 1) * sSize],
@@ -487,7 +484,7 @@ export class PublicDiscoveryService {
         [clinicId],
       ),
       this.dataSource.query(
-        `SELECT sp.id, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
+        `SELECT sp.id, sp.public_slug, COALESCE(u.full_name, sp.title, 'Doctor') AS name, sp.title
              FROM staff_profiles sp
              LEFT JOIN users u ON u.id = sp.user_id AND u.deleted_at IS NULL AND u.is_active = true
             WHERE sp."tenantId" = $1
@@ -580,6 +577,7 @@ export class PublicDiscoveryService {
               }));
           return {
             id: s.id as string,
+            slug: (s.public_slug as string | null) ?? null,
             name: s.name as string,
             description: (s.description as string) ?? null,
             durationMinutes: n(s.duration_minutes),
@@ -593,9 +591,9 @@ export class PublicDiscoveryService {
       doctors: {
         items: doctorRows.map((d: Record<string, unknown>) => ({
           id: d.id as string,
+          slug: (d.public_slug as string | null) ?? null,
           name: d.name as string,
           title: (d.title as string) ?? null,
-          // slug/avatarUrl added once T060/T061 land (Phase 8) — see docstring.
         })),
         total: n(doctorCount[0]?.total),
         page: dPage,
@@ -1152,8 +1150,10 @@ export class PublicDiscoveryService {
           [specialty.id, city],
         ),
         this.dataSource.query(
-          `SELECT DISTINCT sf.id, sf.title, t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug
+          `SELECT DISTINCT sf.id, sf.public_slug, sf.title, u.full_name,
+                  t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug
              FROM staff_profiles sf
+             JOIN users u ON u.id = sf.user_id
              JOIN staff_specialties ss2 ON ss2."staffId" = sf.id AND ss2."specialtyId" = $1
              JOIN tenants t ON t.id = sf."tenantId"
              LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
@@ -1164,13 +1164,14 @@ export class PublicDiscoveryService {
                    OR EXISTS (SELECT 1 FROM branches cb
                                WHERE cb."tenantId" = t.id AND cb.is_active = true
                                  AND cb.deleted_at IS NULL AND cb.city_id = $3::uuid))
-            ORDER BY sf.title ASC NULLS LAST
+            ORDER BY sf.title ASC NULLS LAST, u.full_name ASC NULLS LAST, sf.id ASC
             LIMIT $2::int OFFSET (($4::int - 1) * $2::int)`,
           [specialty.id, doctorsPageSize, city, doctorsPage],
         ),
         this.dataSource.query(
           `SELECT COUNT(DISTINCT sf.id)::int AS "doctorTotal"
              FROM staff_profiles sf
+             JOIN users u ON u.id = sf.user_id
              JOIN staff_specialties ss2 ON ss2."staffId" = sf.id AND ss2."specialtyId" = $1
              JOIN tenants t ON t.id = sf."tenantId"
              LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
@@ -1206,6 +1207,8 @@ export class PublicDiscoveryService {
       doctors: {
         items: doctorRows.map((r: Record<string, unknown>) => ({
           id: r.id as string,
+          slug: (r.public_slug as string | null) ?? null,
+          name: (r.full_name as string | null) ?? null,
           title: (r.title as string) ?? null,
           clinic: {
             id: r.tenant_id as string,
@@ -1358,13 +1361,11 @@ export class PublicDiscoveryService {
       this.specialtiesForStaff([doctor.id as string]).then(
         (m) => m.get(doctor.id as string) ?? [],
       ),
-      // `services` has NO `slug` column at all yet (verified against the
-      // entity — same documented gap T025 hit for C2b's services[]; a
-      // migration+backfill is needed before this can carry a real slug, and
-      // it is not yet scheduled as a task). `slug: null` here is honest
-      // about that, not a placeholder pretending otherwise.
+      // `slug` is the service's `public_slug` (unique per clinic, so the pair
+      // clinic.slug + slug addresses the service detail route). A service that
+      // predates the slug backfill has none; that stays an honest `null`.
       this.dataSource.query(
-        `SELECT DISTINCT s.id, s.name, s.duration_minutes, s.base_price
+        `SELECT DISTINCT s.id, s.public_slug, s.name, s.duration_minutes, s.base_price
            FROM staff_services stf
            JOIN services s ON s.id = stf."serviceId" AND s.is_active = true AND s.deleted_at IS NULL
           WHERE stf."staffId" = $1
@@ -1403,7 +1404,7 @@ export class PublicDiscoveryService {
       specialties,
       services: services.map((s: Record<string, unknown>) => ({
         id: s.id as string,
-        slug: null as string | null,
+        slug: (s.public_slug as string | null) ?? null,
         name: s.name as string,
         durationMinutes: n(s.duration_minutes),
         price: s.base_price !== null ? Number(s.base_price) : null,

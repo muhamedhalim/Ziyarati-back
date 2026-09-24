@@ -144,17 +144,32 @@ describe('PublicDiscoveryService.marketplaceClinicDetail (C2b)', () => {
     expect(result.services.items[0].prices).toBeInstanceOf(Array);
   });
 
-  it('omits services[].slug (documented gap — no slug column exists on services)', async () => {
+  it('carries services[].slug from public_slug, and null (never invented) when a service has none', async () => {
     const { service } = build({
       tenant: [TENANT],
       branches: [BRANCH_A],
       allBranches: [BRANCH_A],
-      services: [SERVICE_UNPRICED],
+      services: [{ ...SERVICE_UNPRICED, public_slug: 'cleaning' }, { ...SERVICE_PRICED, public_slug: null }],
     });
 
     const result = await service.marketplaceClinicDetail('noor-dental');
 
-    expect(result.services.items[0]).not.toHaveProperty('slug');
+    expect(result.services.items.map((s: { slug: string | null }) => s.slug)).toEqual(['cleaning', null]);
+  });
+
+  it('carries doctors[].slug from public_slug, and null when a doctor has none', async () => {
+    const { service } = build({
+      tenant: [TENANT],
+      doctors: [
+        { id: 'd1', public_slug: 'dr-sara', name: 'Sara', title: 'Dentist' },
+        { id: 'd2', public_slug: null, name: 'Doctor', title: null },
+      ],
+      doctorCount: 2,
+    });
+
+    const result = await service.marketplaceClinicDetail('noor-dental');
+
+    expect(result.doctors.items.map((d: { slug: string | null }) => d.slug)).toEqual(['dr-sara', null]);
   });
 
   it('returns an empty specialties array (specialty domain not yet built — omitted, not invented)', async () => {
