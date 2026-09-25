@@ -46,6 +46,7 @@ import { USAGE_METRIC } from '../subscription-billing/usage-metric';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
 import {
   APPOINTMENT_BOOKABLE_STAFF_ROLES,
+  OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES,
   isScopedToOwnStaff,
 } from '../../rbac/rbac.constants';
 import { UserRole } from '../../entities/Auth&RBAC/UserRole';
@@ -865,6 +866,30 @@ export class AppointmentsService {
     let previousStatus: AppointmentStatus | undefined;
     await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(manager, tenantId, id);
+
+      // A provider (doctor: `appointments.status.update` without
+      // `appointments.update`/`appointments.read`) may only drive appointments
+      // assigned to them — the assigned `appointment.staff` is the source of
+      // truth. 404 for anyone else's, exactly like the own-scoped read. Not in
+      // `loadForWrite`: cancel/reschedule/update share that chokepoint and
+      // must not change behaviour. A non-confined caller (nurse, receptionist,
+      // owner, a worker with no principal) costs nothing here.
+      const ownScoped = await this.staffScope.assertMayDriveAppointment(
+        tenantId,
+        appointment.staff?.id,
+      );
+      // A confined provider drives the clinical lifecycle only. Manual
+      // CONFIRMED is excluded: this method never touches `payment_status`, so
+      // it would let a provider confirm a PENDING_PAYMENT booking unpaid.
+      if (
+        ownScoped &&
+        !OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES.includes(dto.status)
+      ) {
+        throw new AppError(ErrorCode.FORBIDDEN, {
+          message: `You may only set an appointment to ${OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES.join(', ')}`,
+        });
+      }
+
       this.assertTransition(appointment.status, dto.status);
 
       const previous = appointment.status;

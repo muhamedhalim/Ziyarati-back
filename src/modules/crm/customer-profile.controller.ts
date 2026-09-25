@@ -22,7 +22,9 @@ import { CustomerProfileService } from './customer-profile.service';
 import { UpdateCustomerProfileDto } from './dto/update-customer-profile.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { AppError, ErrorCode } from '../../common/errors';
 import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -105,7 +107,8 @@ export class CustomerProfileController {
   @ApiOperation({
     summary: 'Create or update customer profile',
     description:
-      '**Protected — `crm.customers.manage`. Clinic active.** Upserts the 1:1 profile. ' +
+      '**Protected — `crm.customers.manage` OR `crm.customers.update_own`. Clinic active.** Upserts the 1:1 profile. ' +
+      'A `crm.customers.update_own` holder (doctor) without `manage` may write only the profile of a patient they have an appointment with (403 otherwise). ' +
       'T108 (spec 014, US6, FR-H010a) — submitting any of the 4 clinical fields ' +
       '(medical_history, allergies, blood_type, notes) additionally requires ' +
       '`clinical.records.manage`, or the request is refused (403), never silently dropped.',
@@ -123,7 +126,7 @@ export class CustomerProfileController {
   })
   @ApiForbiddenResponse({
     description:
-      'Caller lacks `crm.customers.manage`, or clinic inactive, or attempted a clinical field without `clinical.records.manage`.',
+      'Caller lacks `crm.customers.manage` and `crm.customers.update_own`, or clinic inactive, or (update_own only) the patient is not theirs, or attempted a clinical field without `clinical.records.manage`.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
@@ -131,16 +134,38 @@ export class CustomerProfileController {
     schema: S_ERROR,
   })
   @Put()
-  @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
+  @RequireAnyPermission(
+    PERMISSION.CRM_CUSTOMERS_MANAGE,
+    PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
+  )
   upsert(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Body() dto: UpdateCustomerProfileDto,
   ) {
-    return this.profiles.upsert(
-      this.ctx.requireTenantId(),
-      customerId,
-      dto,
-      this.hasClinical(PERMISSION.CLINICAL_RECORDS_MANAGE),
+    const tenantId = this.ctx.requireTenantId();
+    const user = this.ctx.getUser();
+    if (!user) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'An authenticated user is required for this operation',
+      });
+    }
+    const hasClinicalManage = this.hasClinical(
+      PERMISSION.CLINICAL_RECORDS_MANAGE,
     );
+    // Same split as `CustomerController.update`: `manage` (or super_admin)
+    // keeps the unchanged clinic-wide write; an `update_own`-only caller is
+    // confined to a patient they have an appointment with.
+    const canManage =
+      user.roles.includes(ROLE.SUPER_ADMIN) ||
+      user.permissions.includes(PERMISSION.CRM_CUSTOMERS_MANAGE);
+    return canManage
+      ? this.profiles.upsert(tenantId, customerId, dto, hasClinicalManage)
+      : this.profiles.upsertForOwnPatient(
+          tenantId,
+          user.id,
+          customerId,
+          dto,
+          hasClinicalManage,
+        );
   }
 }

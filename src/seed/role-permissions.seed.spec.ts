@@ -134,4 +134,71 @@ describe('seedRolePermissions — additive reconciliation (M-07)', () => {
     expect(savedSlugs).not.toContain(PERMISSION.CLINICAL_RECORDS_MANAGE);
     expect(savedSlugs).not.toContain(PERMISSION.CRM_FILES_MANAGE);
   });
+
+  describe('DOCTOR (operational expansion)', () => {
+    const desired = ROLE_PERMISSIONS[ROLE.DOCTOR] as string[];
+    // The doctor's stored grants BEFORE DoctorOperationalPermissions1730103000000
+    // — the real state of every already-deployed database.
+    const originalSix = [
+      PERMISSION.DASHBOARD_ACCESS,
+      PERMISSION.APPOINTMENTS_READ_OWN,
+      PERMISSION.CRM_CUSTOMERS_READ,
+      PERMISSION.CLINICAL_RECORDS_READ,
+      PERMISSION.CLINICAL_RECORDS_MANAGE,
+      PERMISSION.STAFF_READ_OWN,
+    ];
+
+    it('reconciles a freshly-migrated DOCTOR to exactly its 12 desired grants: +0/-0, proving the migration snapshot and ROLE_PERMISSIONS agree', async () => {
+      expect(desired).toHaveLength(12);
+      const { manager, rpRepo } = buildManagerMock(desired, desired, ROLE.DOCTOR);
+
+      await seedRolePermissions(manager as never);
+
+      expect(rpRepo.save).not.toHaveBeenCalled();
+      expect(rpRepo.remove).not.toHaveBeenCalled();
+    });
+
+    it('adds EXACTLY the six new grants to a pre-expansion doctor and removes nothing', async () => {
+      const { manager, rpRepo } = buildManagerMock(desired, originalSix, ROLE.DOCTOR);
+
+      await seedRolePermissions(manager as never);
+
+      expect(rpRepo.remove).not.toHaveBeenCalled();
+      const savedRows = (rpRepo.save as jest.Mock).mock.calls[0]?.[0] as Array<{
+        permission: { slug: string };
+      }>;
+      expect(new Set(savedRows.map((r) => r.permission.slug))).toEqual(
+        new Set([
+          PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+          PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
+          PERMISSION.CRM_NOTES_READ,
+          PERMISSION.CRM_TAGS_READ,
+          PERMISSION.CRM_FILES_READ,
+          PERMISSION.STAFF_SCHEDULE_READ,
+        ]),
+      );
+    });
+
+    it('never hands the doctor a tenant-wide or administrative grant, even from an empty set', async () => {
+      const { manager, rpRepo } = buildManagerMock(desired, [], ROLE.DOCTOR);
+
+      await seedRolePermissions(manager as never);
+
+      const savedSlugs = (
+        (rpRepo.save as jest.Mock).mock.calls[0]?.[0] as Array<{
+          permission: { slug: string };
+        }>
+      ).map((r) => r.permission.slug);
+      for (const forbidden of [
+        PERMISSION.APPOINTMENTS_UPDATE,
+        PERMISSION.APPOINTMENTS_READ,
+        PERMISSION.CRM_CUSTOMERS_MANAGE,
+        PERMISSION.STAFF_READ,
+        PERMISSION.STAFF_SCHEDULE_MANAGE,
+        PERMISSION.BRANCHES_UPDATE,
+      ]) {
+        expect(savedSlugs).not.toContain(forbidden);
+      }
+    });
+  });
 });

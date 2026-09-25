@@ -571,7 +571,10 @@ Illegal transitions are rejected (409). Each change writes an
 captures reason/actor/refund.
 
 **Who can call this:** Owner, Manager, Receptionist (\`appointments.update\`);
-Nurse (\`appointments.status.update\` — queue/status only, no reassignment).
+Nurse (\`appointments.status.update\` — queue/status only, no reassignment);
+Doctor (\`appointments.status.update\`, **confined to their own appointments** — anyone
+else's is a 404 — and to \`IN_PROGRESS\`, \`COMPLETED\` or \`NO_SHOW\`; any other
+target is a 403, notably a manual \`CONFIRMED\`, which would bypass payment confirmation).
     `.trim(),
   })
   @ApiParam({
@@ -591,11 +594,13 @@ Nurse (\`appointments.status.update\` — queue/status only, no reassignment).
     schema: S_ERROR,
   })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `appointments.update`, or clinic inactive.',
+    description:
+      'Caller lacks `appointments.update` and `appointments.status.update`, or clinic inactive, or (a doctor) the target status is outside IN_PROGRESS/COMPLETED/NO_SHOW.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
-    description: 'Appointment not found in this clinic.',
+    description:
+      'Appointment not found in this clinic (or, for a doctor, not assigned to them).',
     schema: S_ERROR,
   })
   @ApiConflictResponse({

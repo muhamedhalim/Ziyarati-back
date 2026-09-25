@@ -18,9 +18,12 @@
  * Doctor role permission refinement (2026-09-10) added four more blocks:
  *  - A doctor's `GET /queue` returns ONLY their own entry (`staffId` in the
  *    query is silently overridden, never honored); every queue MUTATION
- *    route still 403s for them (read-only queue by design); a caller
- *    holding `appointments.read_own` with no StaffProfile sees an empty
- *    queue; owner/receptionist behaviour is unchanged.
+ *    route is confined to THEIR OWN appointments (another doctor's entry is
+ *    a 404 — the queue was read-only for doctors until they gained
+ *    `appointments.status.update` on 2026-09-25; see doctor-role.e2e-spec.ts
+ *    for the full matrix); a caller holding `appointments.read_own` with no
+ *    StaffProfile sees an empty queue; owner/receptionist behaviour is
+ *    unchanged.
  *  - `GET /staff/me`, `/staff/me/schedules`, `/staff/me/time-off`
  *    (`staff.read_own`) return only the caller's own data — a doctor still
  *    cannot reach `GET /staff` or `GET /staff/:id`.
@@ -398,30 +401,48 @@ describe('Staff role scoping (Doctor / "Other") — HTTP e2e', () => {
         .expect(200);
     });
 
-    it('every queue MUTATION route still 403s for a doctor — the queue is read-only for them by design', async () => {
-      const entryRes = await request(e2e.app.getHttpServer())
+    // Doctors gained `appointments.status.update` (2026-09-25), so the queue is
+    // no longer read-only for them — but every mutation is confined to their OWN
+    // appointments. The positive lifecycle (own check-in/call/start/complete)
+    // and the full cross-doctor / cross-tenant matrix live in
+    // doctor-role.e2e-spec.ts; this keeps the legacy guard here: doctor A can
+    // never move doctor B's entry, and nothing changes when they try.
+    it("every queue MUTATION route is own-scoped for a doctor — doctor B's entry and appointment are a 404 on all seven, and stay untouched", async () => {
+      const ownerList = await request(e2e.app.getHttpServer())
         .get(`${API}/queue`)
         .query({ branchId })
-        .set(...authHeader(docAToken))
+        .set(...authHeader(owner.token))
         .expect(200);
-      const ownEntry = (
-        entryRes.body.data as Array<{ id: string; appointment: { id: string } }>
-      ).find((e) => e.appointment.id === apptA)!;
+      const entryB = (
+        ownerList.body.data as Array<{
+          id: string;
+          state: string;
+          appointment: { id: string };
+        }>
+      ).find((e) => e.appointment.id === apptB)!;
 
       const checkIn = await request(e2e.app.getHttpServer())
         .post(`${API}/queue/check-in`)
         .set(...authHeader(docAToken))
-        .send({ appointmentId: apptA })
-        .expect(403);
-      expect(checkIn.body.code).toBe('PERMISSION_DENIED');
+        .send({ appointmentId: apptB });
+      expect(checkIn.status).toBe(404);
 
       for (const action of ['call', 'start', 'complete', 'skip', 'recall', 'no-show']) {
         const res = await request(e2e.app.getHttpServer())
-          .post(`${API}/queue/${ownEntry.id}/${action}`)
-          .set(...authHeader(docAToken))
-          .expect(403);
-        expect(res.body.code).toBe('PERMISSION_DENIED');
+          .post(`${API}/queue/${entryB.id}/${action}`)
+          .set(...authHeader(docAToken));
+        expect(res.status).toBe(404);
       }
+
+      const after = await request(e2e.app.getHttpServer())
+        .get(`${API}/queue`)
+        .query({ branchId })
+        .set(...authHeader(owner.token))
+        .expect(200);
+      const entryBAfter = (
+        after.body.data as Array<{ id: string; state: string }>
+      ).find((e) => e.id === entryB.id)!;
+      expect(entryBAfter.state).toBe(entryB.state);
     });
 
     it('a nonexistent (or cross-tenant) branchId 404s for a doctor rather than leaking existence', async () => {

@@ -141,6 +141,12 @@ export const RISK_OVERRIDES: Partial<Record<PermissionSlug, RiskLevel>> = {
   // `medium` a bare write would otherwise get.
   [PERMISSION.CLINICAL_RECORDS_NURSING]: 'high',
 
+  // Doctor role — writes patient PII (contact/demographics), scoped to the
+  // holder's own patients. Explicit because `deriveBaseRisk` classifies EVERY
+  // `_own` slug as low (correct for the read-only ones), which would understate
+  // a write of personal data.
+  [PERMISSION.CRM_CUSTOMERS_UPDATE_OWN]: 'medium',
+
   // Accountability log — a read of who-did-what across the tenant, more
   // sensitive than an ordinary operational read but not identity/money
   // touching, so medium rather than the derived low or an escalation to high.
@@ -238,6 +244,10 @@ export const PERMISSION_DESCRIPTIONS: Partial<Record<PermissionSlug, string>> =
     [PERMISSION.STAFF_READ]: 'View staff members and their profiles.',
     [PERMISSION.STAFF_READ_OWN]:
       'View only the current user’s own staff profile, weekly schedule and time-off — never another staff member’s (no id is accepted from the client on these routes).',
+    [PERMISSION.STAFF_SCHEDULE_READ]:
+      'View a branch’s operating hours (read-only). Does not allow browsing staff members or editing any schedule.',
+    [PERMISSION.CRM_CUSTOMERS_UPDATE_OWN]:
+      'Edit the contact and demographic details of patients the current user has an appointment with (ownership enforced in the service layer). Cannot create, delete, import, change consent/status flags or identity keys.',
   };
 
 // ---------------------------------------------------------------------------

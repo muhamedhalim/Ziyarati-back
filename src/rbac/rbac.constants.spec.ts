@@ -33,10 +33,13 @@ import {
   UNENFORCED_PERMISSION_SLUGS,
   UNTRIAGED_COVERAGE_GAP_SLUGS,
   isBranchRestricted,
+  isScopedToOwnStaff,
+  isStatusWriteScopedToOwnStaff,
   canViewAppointmentFinancials,
+  OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES,
   PUBLIC_BOOKING_EXCLUDED_ROLES,
 } from './rbac.constants';
-import { getScope } from './permission-metadata';
+import { getRisk, getScope } from './permission-metadata';
 
 const SRC_ROOT = path.join(__dirname, '..');
 
@@ -831,5 +834,203 @@ describe('canViewAppointmentFinancials', () => {
 
   it('an empty permission set sees no financials', () => {
     expect(canViewAppointmentFinancials([])).toBe(false);
+  });
+});
+
+/**
+ * Doctor role — operational expansion: own queue/status, own-patient edit,
+ * read-only CRM care context, branch working-hours read. Ownership itself is
+ * enforced in the service layer; this pins the GRANTS and the predicates.
+ */
+describe('doctor role — operational permissions', () => {
+  const doctorGrants = ROLE_PERMISSIONS[ROLE.DOCTOR] as string[];
+
+  it('holds EXACTLY the 12 reviewed permissions — nothing implicit, nothing dropped', () => {
+    expect([...doctorGrants].sort()).toEqual(
+      [
+        PERMISSION.DASHBOARD_ACCESS,
+        PERMISSION.APPOINTMENTS_READ_OWN,
+        PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+        PERMISSION.CRM_CUSTOMERS_READ,
+        PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
+        PERMISSION.CRM_NOTES_READ,
+        PERMISSION.CRM_TAGS_READ,
+        PERMISSION.CRM_FILES_READ,
+        PERMISSION.CLINICAL_RECORDS_READ,
+        PERMISSION.CLINICAL_RECORDS_MANAGE,
+        PERMISSION.STAFF_READ_OWN,
+        PERMISSION.STAFF_SCHEDULE_READ,
+      ].sort(),
+    );
+  });
+
+  it('is still own-scoped for appointment reads and NOT branch-restricted', () => {
+    expect(isScopedToOwnStaff(doctorGrants)).toBe(true);
+    expect(isBranchRestricted(doctorGrants)).toBe(false);
+    expect(doctorGrants).not.toContain(PERMISSION.APPOINTMENTS_READ);
+  });
+
+  it('never holds a tenant-wide appointment write, a manage slug, or any administrative slug', () => {
+    const forbidden = [
+      PERMISSION.APPOINTMENTS_CREATE,
+      PERMISSION.APPOINTMENTS_UPDATE,
+      PERMISSION.APPOINTMENTS_RESCHEDULE,
+      PERMISSION.APPOINTMENTS_CANCEL,
+      PERMISSION.APPOINTMENTS_MANAGE_ALL,
+      PERMISSION.CRM_CUSTOMERS_MANAGE,
+      PERMISSION.CRM_NOTES_MANAGE,
+      PERMISSION.CRM_TAGS_MANAGE,
+      PERMISSION.CRM_FILES_MANAGE,
+      PERMISSION.CLINICAL_RECORDS_NURSING,
+      PERMISSION.STAFF_READ,
+      PERMISSION.STAFF_CREATE,
+      PERMISSION.STAFF_UPDATE,
+      PERMISSION.STAFF_MANAGE,
+      PERMISSION.STAFF_SCHEDULE_MANAGE,
+      PERMISSION.STAFF_TIMEOFF_MANAGE,
+      PERMISSION.BRANCHES_CREATE,
+      PERMISSION.BRANCHES_UPDATE,
+      PERMISSION.BRANCHES_UPDATE_OWN,
+      PERMISSION.BRANCHES_DELETE,
+      PERMISSION.PAYMENTS_READ,
+      PERMISSION.PAYMENTS_MANAGE,
+      PERMISSION.REFUNDS_MANAGE,
+      PERMISSION.INVOICES_MANAGE,
+      PERMISSION.BILLING_MANAGE,
+      PERMISSION.SUBSCRIPTION_MANAGE,
+      PERMISSION.ANALYTICS_DASHBOARD_READ,
+      PERMISSION.ANALYTICS_REPORTS_READ,
+      PERMISSION.AUDIT_READ,
+      PERMISSION.ROLES_MANAGE,
+      PERMISSION.USERS_MANAGE,
+      PERMISSION.SERVICES_CREATE,
+      PERMISSION.SERVICES_UPDATE,
+      PERMISSION.SERVICES_DELETE,
+      PERMISSION.AI_MANAGE,
+    ];
+    for (const slug of forbidden) {
+      expect(doctorGrants).not.toContain(slug);
+    }
+  });
+
+  it('is granted the two NEW slugs to no other role — they are doctor-only', () => {
+    for (const [role, grants] of Object.entries(ROLE_PERMISSIONS)) {
+      if (role === ROLE.DOCTOR) continue;
+      // super_admin holds everything via the wildcard; skip non-arrays.
+      if (!Array.isArray(grants)) continue;
+      expect(grants).not.toContain(PERMISSION.CRM_CUSTOMERS_UPDATE_OWN);
+      expect(grants).not.toContain(PERMISSION.STAFF_SCHEDULE_READ);
+    }
+  });
+
+  describe('staff.schedule.read', () => {
+    it('is registered in the catalogue at tenant scope, low risk (a read of non-sensitive hours)', () => {
+      expect(
+        PERMISSIONS.some((p) => p.slug === PERMISSION.STAFF_SCHEDULE_READ),
+      ).toBe(true);
+      expect(getScope(PERMISSION.STAFF_SCHEDULE_READ)).toBe('tenant');
+      expect(getRisk(PERMISSION.STAFF_SCHEDULE_READ)).toBe('low');
+    });
+
+    it('is NOT ownership-scoped — the service verifies TENANT ownership of the branch, not a per-user relationship', () => {
+      expect(OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.STAFF_SCHEDULE_READ)).toBe(
+        false,
+      );
+    });
+  });
+
+  describe('crm.customers.update_own', () => {
+    it('is ownership-scoped (ABAC) — a bare guard check is not sufficient', () => {
+      expect(
+        OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.CRM_CUSTOMERS_UPDATE_OWN),
+      ).toBe(true);
+    });
+
+    it('is registered at tenant scope with MEDIUM risk — explicitly not the `low` deriveBaseRisk gives every `_own` slug', () => {
+      expect(getScope(PERMISSION.CRM_CUSTOMERS_UPDATE_OWN)).toBe('tenant');
+      expect(getRisk(PERMISSION.CRM_CUSTOMERS_UPDATE_OWN)).toBe('medium');
+    });
+
+    it('is a different, narrower slug than crm.customers.manage (which stays high risk and is not delegated to the doctor)', () => {
+      expect(PERMISSION.CRM_CUSTOMERS_UPDATE_OWN).not.toBe(
+        PERMISSION.CRM_CUSTOMERS_MANAGE,
+      );
+      expect(getRisk(PERMISSION.CRM_CUSTOMERS_MANAGE)).toBe('high');
+    });
+  });
+});
+
+/**
+ * isStatusWriteScopedToOwnStaff — the WRITE-side own-staff predicate that
+ * `StaffScopeService.assertMayDriveAppointment` consults. The truth table over
+ * EVERY seeded role is the point: only the doctor may be narrowed; nobody else's
+ * behaviour may change.
+ */
+describe('isStatusWriteScopedToOwnStaff', () => {
+  it('narrows the doctor (status.update + read_own, no tenant-wide read/update)', () => {
+    expect(
+      isStatusWriteScopedToOwnStaff(ROLE_PERMISSIONS[ROLE.DOCTOR] as string[]),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['owner', ROLE.OWNER],
+    ['manager', ROLE.MANAGER],
+    ['branch_manager', ROLE.BRANCH_MANAGER],
+    ['receptionist', ROLE.RECEPTIONIST],
+    ['nurse', ROLE.NURSE],
+    ['customer', ROLE.CUSTOMER],
+    ['ai-bot', ROLE.AI_BOT],
+    ['platform_support', ROLE.PLATFORM_SUPPORT],
+  ])('does NOT narrow %s — behaviour unchanged', (_label, role) => {
+    expect(
+      isStatusWriteScopedToOwnStaff(ROLE_PERMISSIONS[role] as string[]),
+    ).toBe(false);
+  });
+
+  it('does NOT narrow super_admin — the wildcard holds appointments.update and appointments.read', () => {
+    expect(isStatusWriteScopedToOwnStaff(ALL_PERMISSION_SLUGS)).toBe(false);
+  });
+
+  it('does NOT narrow a caller with no status.update at all — e.g. the AI bot / a worker with an empty principal', () => {
+    expect(isStatusWriteScopedToOwnStaff([])).toBe(false);
+    expect(
+      isStatusWriteScopedToOwnStaff([PERMISSION.APPOINTMENTS_READ_OWN]),
+    ).toBe(false);
+  });
+
+  it('a nurse-shaped custom role (status.update + tenant-wide read) stays tenant-wide', () => {
+    expect(
+      isStatusWriteScopedToOwnStaff([
+        PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+        PERMISSION.APPOINTMENTS_READ,
+      ]),
+    ).toBe(false);
+  });
+
+  it('a role holding appointments.update stays tenant-wide even alongside status.update and read_own', () => {
+    expect(
+      isStatusWriteScopedToOwnStaff([
+        PERMISSION.APPOINTMENTS_STATUS_UPDATE,
+        PERMISSION.APPOINTMENTS_UPDATE,
+        PERMISSION.APPOINTMENTS_READ_OWN,
+      ]),
+    ).toBe(false);
+  });
+
+  it('is fail-closed: status.update with NEITHER tenant-wide slug is narrowed, even without read_own', () => {
+    expect(
+      isStatusWriteScopedToOwnStaff([PERMISSION.APPOINTMENTS_STATUS_UPDATE]),
+    ).toBe(true);
+  });
+});
+
+describe('OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES', () => {
+  it('is exactly the clinical lifecycle — never CONFIRMED (payment bypass), CANCELLED, PENDING_PAYMENT or RESCHEDULED', () => {
+    expect([...OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES].sort()).toEqual([
+      'COMPLETED',
+      'IN_PROGRESS',
+      'NO_SHOW',
+    ]);
   });
 });

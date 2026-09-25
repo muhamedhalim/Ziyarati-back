@@ -56,6 +56,16 @@ import {
  * doctor/branch (`PATCH /appointments/:id`) or replace services, both of
  * which stay gated to the tenant-wide `appointments.update` alone.
  *
+ * A doctor also holds `appointments.status.update` (with `read_own`, never the
+ * tenant-wide `read`/`update`), so they run THEIR OWN queue — but the slug
+ * alone would let them drive another doctor's entry by UUID. The write routes
+ * therefore confine such a caller to appointments assigned to their own
+ * StaffProfile (`isStatusWriteScopedToOwnStaff` /
+ * `StaffScopeService.assertMayDriveAppointment`, enforced in
+ * `PatientQueueService` before any state is claimed): anyone else's entry or
+ * appointment is a 404, identical to a missing one. A nurse (tenant-wide read)
+ * and every `appointments.update` holder are not confined.
+ *
  * Tenant scoping: `tenantId` is read from `TenantContext`, never from the
  * body/URL. Branch scoping (FR-Q014) and cross-tenant 404-not-403 are both
  * enforced inside `PatientQueueService`.

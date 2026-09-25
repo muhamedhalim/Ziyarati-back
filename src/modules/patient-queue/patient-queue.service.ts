@@ -146,6 +146,13 @@ export class PatientQueueService {
       });
     }
 
+    // A provider (doctor) may check in only an appointment assigned to them —
+    // the same 404 as a missing appointment, before any state is inspected.
+    await this.staffScope.assertMayDriveAppointment(
+      tenantId,
+      appointment.staff?.id,
+    );
+
     // FR-Q007 — cancelled / completed / no-show appointments are refused.
     if (TERMINAL_APPOINTMENT_STATUSES.includes(appointment.status)) {
       throw new AppError(ErrorCode.CONFLICT, {
@@ -594,7 +601,7 @@ export class PatientQueueService {
       where: { id: entryId, tenant: { id: tenantId } },
       relations: {
         branch: true,
-        appointment: true,
+        appointment: { staff: true },
         customer: true,
         staff: { user: true },
       },
@@ -604,6 +611,17 @@ export class PatientQueueService {
         message: 'Queue entry not found',
       });
     }
+    // A provider (doctor) drives only entries whose appointment is assigned to
+    // them. Keyed on the appointment's CURRENT staff, not `entry.staff` (a
+    // snapshot taken at check-in that goes stale on reassignment), and checked
+    // BEFORE the branch rule and before `claim`: the queue claims the state
+    // first and is not transactional, so a late refusal would still have
+    // moved the entry. Same 404 a missing entry returns.
+    await this.staffScope.assertMayDriveAppointment(
+      tenantId,
+      entry.appointment?.staff?.id,
+      'Queue entry not found',
+    );
     await this.assertOwnBranch(tenantId, userId, entry.branch.id);
     return entry;
   }

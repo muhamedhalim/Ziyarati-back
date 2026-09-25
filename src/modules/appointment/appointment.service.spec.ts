@@ -64,7 +64,10 @@ describe('AppointmentsService', () => {
   let cancellationsRepo: MockRepository;
   let scheduledNotificationsRepo: MockRepository;
   let appointmentAudit: { record: jest.Mock };
-  let staffScope: { resolveOwnStaffId: jest.Mock };
+  let staffScope: {
+    resolveOwnStaffId: jest.Mock;
+    assertMayDriveAppointment: jest.Mock;
+  };
 
   /** Full tenant-wide access — the default caller for existing tests. */
   const FULL_ACCESS_CALLER = {
@@ -105,7 +108,13 @@ describe('AppointmentsService', () => {
     cancellationsRepo = createMockRepository();
     scheduledNotificationsRepo = createMockRepository();
     appointmentAudit = { record: jest.fn().mockResolvedValue(undefined) };
-    staffScope = { resolveOwnStaffId: jest.fn() };
+    // `assertMayDriveAppointment` resolves `false` = the caller is not confined
+    // to its own appointments (nurse / receptionist / owner / no principal), so
+    // every pre-existing changeStatus assertion below keeps its meaning.
+    staffScope = {
+      resolveOwnStaffId: jest.fn(),
+      assertMayDriveAppointment: jest.fn().mockResolvedValue(false),
+    };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -649,6 +658,105 @@ describe('AppointmentsService', () => {
           status: AppointmentStatus.CONFIRMED,
         } as any),
       ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+    });
+
+    // A provider (doctor) drives only their OWN appointments, and only the
+    // clinical lifecycle. The ownership decision itself lives in
+    // StaffScopeService.assertMayDriveAppointment (its own spec); here we prove
+    // changeStatus asks it, with the appointment's CURRENT staff, and obeys it.
+    describe('own-staff confinement (doctor)', () => {
+      it("asks the shared gate with the appointment's CURRENT assigned staff id, inside the request tenant", async () => {
+        loadAppointment(AppointmentStatus.CONFIRMED);
+        await service.changeStatus(TENANT, USER, 'appt-1', {
+          status: AppointmentStatus.IN_PROGRESS,
+        } as any);
+        expect(staffScope.assertMayDriveAppointment).toHaveBeenCalledWith(
+          TENANT,
+          's1',
+        );
+      });
+
+      it("refuses another provider's appointment with the gate's NOT_FOUND — nothing is saved, logged or emitted", async () => {
+        loadAppointment(AppointmentStatus.CONFIRMED);
+        staffScope.assertMayDriveAppointment.mockRejectedValueOnce(
+          Object.assign(new Error('Appointment not found'), {
+            code: ErrorCode.NOT_FOUND,
+          }),
+        );
+
+        await expect(
+          service.changeStatus(TENANT, USER, 'appt-1', {
+            status: AppointmentStatus.IN_PROGRESS,
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+
+        expect(repo(Appointment).save).not.toHaveBeenCalled();
+        expect(repo(AppointmentStatusLog).save).not.toHaveBeenCalled();
+        expect(appointmentAudit.record).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [AppointmentStatus.CONFIRMED, AppointmentStatus.IN_PROGRESS],
+        [AppointmentStatus.IN_PROGRESS, AppointmentStatus.COMPLETED],
+        [AppointmentStatus.CONFIRMED, AppointmentStatus.NO_SHOW],
+      ])(
+        'a confined provider may drive %s → %s (the clinical lifecycle)',
+        async (from, to) => {
+          staffScope.assertMayDriveAppointment.mockResolvedValueOnce(true);
+          loadAppointment(from);
+
+          await service.changeStatus(TENANT, USER, 'appt-1', {
+            status: to,
+          } as any);
+
+          expect(repo(Appointment).save).toHaveBeenCalled();
+        },
+      );
+
+      it('a confined provider may NOT manually CONFIRM a PENDING_PAYMENT booking (403) — changeStatus never touches payment_status, so this would bypass payment', async () => {
+        staffScope.assertMayDriveAppointment.mockResolvedValueOnce(true);
+        loadAppointment(AppointmentStatus.PENDING_PAYMENT);
+
+        await expect(
+          service.changeStatus(TENANT, USER, 'appt-1', {
+            status: AppointmentStatus.CONFIRMED,
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+        expect(repo(Appointment).save).not.toHaveBeenCalled();
+      });
+
+      it('a confined provider may not set RESCHEDULED or PENDING_PAYMENT either (403, not the machine’s 409)', async () => {
+        for (const status of [
+          AppointmentStatus.RESCHEDULED,
+          AppointmentStatus.PENDING_PAYMENT,
+        ]) {
+          staffScope.assertMayDriveAppointment.mockResolvedValueOnce(true);
+          loadAppointment(AppointmentStatus.CONFIRMED);
+          await expect(
+            service.changeStatus(TENANT, USER, 'appt-1', { status } as any),
+          ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+        }
+      });
+
+      it('an UNCONFINED caller (nurse, receptionist, owner, a worker with no principal) keeps every legal transition, including manual CONFIRMED — unchanged behaviour', async () => {
+        staffScope.assertMayDriveAppointment.mockResolvedValueOnce(false);
+        loadAppointment(AppointmentStatus.PENDING_PAYMENT);
+
+        await service.changeStatus(TENANT, USER, 'appt-1', {
+          status: AppointmentStatus.CONFIRMED,
+        } as any);
+
+        expect(repo(Appointment).save).toHaveBeenCalled();
+      });
+
+      it('CANCELLED is still routed to the dedicated endpoint BEFORE any lookup, for everyone', async () => {
+        await expect(
+          service.changeStatus(TENANT, USER, 'appt-1', {
+            status: AppointmentStatus.CANCELLED,
+          } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+        expect(staffScope.assertMayDriveAppointment).not.toHaveBeenCalled();
+      });
     });
   });
 

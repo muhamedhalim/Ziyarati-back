@@ -66,6 +66,19 @@ export const PERMISSION = {
   // CRM (dedicated customer relationship domain — namespaced separately)
   CRM_CUSTOMERS_READ: 'crm.customers.read',
   CRM_CUSTOMERS_MANAGE: 'crm.customers.manage',
+  /**
+   * Doctor role — edit the contact/demographic fields of a patient the holder
+   * has an appointment with, and only those. A DELIBERATELY NARROWER write
+   * than `CRM_CUSTOMERS_MANAGE` (which also creates, deletes, imports and
+   * manages addresses/segments for the whole clinic). ABAC — see
+   * OWNERSHIP_SCOPED_PERMISSIONS: a bare guard check is NOT sufficient, the
+   * service verifies the appointment relationship
+   * (`StaffScopeService.hasAppointmentWithCustomer`) and a field allow-list
+   * (`CustomerService.updateOwnPatient`). Admits `PATCH /crm/customers/:id`
+   * and `PUT /crm/customers/:id/profile` via
+   * `@RequireAnyPermission(CRM_CUSTOMERS_MANAGE, CRM_CUSTOMERS_UPDATE_OWN)`.
+   */
+  CRM_CUSTOMERS_UPDATE_OWN: 'crm.customers.update_own',
   CRM_NOTES_READ: 'crm.notes.read',
   CRM_NOTES_MANAGE: 'crm.notes.manage',
   CRM_TAGS_READ: 'crm.tags.read',
@@ -163,6 +176,15 @@ export const PERMISSION = {
   STAFF_UPDATE: 'staff.update',
   STAFF_MANAGE: 'staff.manage',
   STAFF_SCHEDULE_MANAGE: 'staff.schedule.manage',
+  /**
+   * Read-only view of a branch's operating hours (`GET /working-hours`). The
+   * read counterpart of `staff.schedule.manage`, carved out so a doctor can
+   * open the Branches working-hours dialog WITHOUT `staff.read` (tenant-wide
+   * staff browsing). Admits the route via
+   * `@RequireAnyPermission(STAFF_READ, STAFF_SCHEDULE_READ)` — every role that
+   * already holds `staff.read` is unaffected.
+   */
+  STAFF_SCHEDULE_READ: 'staff.schedule.read',
   STAFF_TIMEOFF_MANAGE: 'staff.timeoff.manage',
   STAFF_COMMISSION_READ: 'staff.commission.read',
   STAFF_RATING_READ: 'staff.rating.read',
@@ -346,6 +368,10 @@ export const OWNERSHIP_SCOPED_PERMISSIONS: ReadonlySet<PermissionSlug> =
     // only (create is kind-scoped, not author-scoped) — see its own
     // docblock above and ClinicalRecordService's enforcement.
     PERMISSION.CLINICAL_RECORDS_NURSING,
+    // Doctor's patient-edit permission is ownership-scoped on the PATIENT
+    // (an appointment with the caller's own StaffProfile) — see its own
+    // docblock above and CustomerService.updateOwnPatient's enforcement.
+    PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
   ]);
 
 /**
@@ -660,6 +686,55 @@ export function isScopedToOwnStaff(permissions: readonly string[]): boolean {
 }
 
 /**
+ * THE definition of "this principal may only DRIVE (queue actions, status
+ * changes) appointments assigned to its own StaffProfile" — the WRITE-side
+ * sibling of {@link isScopedToOwnStaff}.
+ *
+ * Deliberately NOT a reuse of {@link isScopedToOwnStaff}: that predicate's
+ * precondition is admission by the appointment READ routes. The queue/status
+ * write routes are admitted by `appointments.update` OR
+ * `appointments.status.update` instead, so `!appointments.read` would newly
+ * narrow any unrelated custom role that merely lacks the tenant-wide read.
+ *
+ * The rule: holds `appointments.status.update` (the carved-out slug that
+ * admits the write routes without `appointments.update`) and NEITHER tenant-wide
+ * slug. Fail-closed by construction — no third state:
+ *   - doctor (`status.update` + `read_own`)              → scoped
+ *   - nurse (`status.update` + tenant-wide `read`)        → NOT scoped (a
+ *     nurse is never the assigned provider; unchanged)
+ *   - owner/manager/branch_manager/receptionist (`update`) → NOT scoped
+ *   - ai-bot, customer, worker jobs (no `status.update`)   → NOT scoped
+ *
+ * Consumed only through `StaffScopeService.assertMayDriveAppointment`, which
+ * `AppointmentService.changeStatus` and `PatientQueueService` share — never a
+ * hand-copied check.
+ */
+export function isStatusWriteScopedToOwnStaff(
+  permissions: readonly string[],
+): boolean {
+  return (
+    permissions.includes(PERMISSION.APPOINTMENTS_STATUS_UPDATE) &&
+    !permissions.includes(PERMISSION.APPOINTMENTS_UPDATE) &&
+    !permissions.includes(PERMISSION.APPOINTMENTS_READ)
+  );
+}
+
+/**
+ * The only appointment statuses a caller for whom
+ * {@link isStatusWriteScopedToOwnStaff} holds may set — the clinical
+ * lifecycle a treating provider drives. Excludes `CONFIRMED` on purpose:
+ * `changeStatus` never touches `payment_status`, so letting a provider
+ * manually confirm a `PENDING_PAYMENT` booking would bypass payment
+ * confirmation. Confirmation remains a front-desk/payment concern.
+ * Stored as strings so this module stays free of an entity import.
+ */
+export const OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES: readonly string[] = [
+  'IN_PROGRESS',
+  'COMPLETED',
+  'NO_SHOW',
+];
+
+/**
  * Nurse role — whether a caller holding `appointments.read` (or `_read_own`)
  * may ALSO see an appointment's financial fields: `total_amount`,
  * `payment_status`, `currency`, `services[].price`,
@@ -874,6 +949,11 @@ export const PERMISSIONS: PermissionDef[] = [
     module: 'crm',
   },
   {
+    slug: PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
+    name: "Edit own patients' details",
+    module: 'crm',
+  },
+  {
     // T104/T105 (spec 014, US6, FR-H010a) — one privacy boundary for BOTH the
     // new structured clinical entries and the clinical fields already stored
     // on CustomerProfile (medical_history, allergies, blood_type, notes).
@@ -1077,6 +1157,11 @@ export const PERMISSIONS: PermissionDef[] = [
   {
     slug: PERMISSION.STAFF_SCHEDULE_MANAGE,
     name: 'Manage staff schedules & working hours',
+    module: 'staff',
+  },
+  {
+    slug: PERMISSION.STAFF_SCHEDULE_READ,
+    name: 'View branch working hours',
     module: 'staff',
   },
   {
@@ -2072,21 +2157,50 @@ export const ROLE_PERMISSIONS: Record<
   //     exist yet; it now does, and is scoped to profile/schedule/time-off
   //     read only — `staff.read` (browsing every OTHER staff member) is
   //     still not granted.
+  //   - APPOINTMENTS_STATUS_UPDATE — the doctor's own queue workflow:
+  //     check-in/call/start/complete/skip/recall/no-show and
+  //     `POST /appointments/:id/status`. Granted ONLY together with the
+  //     ownership check in `StaffScopeService.assertMayDriveAppointment`
+  //     (predicate: `isStatusWriteScopedToOwnStaff`), which confines a
+  //     holder without `appointments.update`/`appointments.read` to
+  //     appointments assigned to its OWN StaffProfile (404 otherwise), and
+  //     limits the status a doctor may set to
+  //     `OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES` (no manual CONFIRMED — that
+  //     would bypass payment confirmation). Without that check the slug alone
+  //     would let a doctor drive another doctor's entry by UUID.
+  //   - CRM_CUSTOMERS_UPDATE_OWN — edit contact/demographic fields of a
+  //     patient the doctor has an appointment with (ABAC, see its docblock).
+  //     CRM_CUSTOMERS_MANAGE stays withheld: it also creates/deletes/imports
+  //     patients and manages addresses/segments clinic-wide.
+  //   - CRM_NOTES_READ / CRM_TAGS_READ / CRM_FILES_READ — read-only care
+  //     context on the patient record (same trio the nurse holds). The
+  //     matching `.manage` slugs are NOT granted (`crm.files.manage` also
+  //     hard-deletes the stored object; notes are not author-scoped).
+  //   - STAFF_SCHEDULE_READ — read a branch's working hours so the Branches
+  //     page works, without `staff.read`. Tenant-verified by the service.
   //
   // Still explicitly NOT granted: appointments.create/update/reschedule/cancel
-  // (status/lifecycle changes), crm.customers.manage, crm.notes.*, crm.tags.*,
-  // crm.files.*, staff.read/update/manage (any OTHER staff member's data),
-  // staff.schedule.manage/staff.timeoff.manage (writes to anyone's schedule,
-  // including their own), services.read, notifications.read, ai.chat,
-  // reviews.read. Add only once there is a real ownership-scoped enforcement
-  // path for each, mirroring APPOINTMENTS_READ_OWN.
+  // (booking/reassigning/moving/cancelling), crm.customers.manage,
+  // crm.notes/tags/files.manage, staff.read/update/manage (any OTHER staff
+  // member's data), staff.schedule.manage/staff.timeoff.manage (writes to
+  // anyone's schedule, including their own), branches.* (administration),
+  // services.read, notifications.read, ai.chat, reviews.read, every
+  // finance/billing/settings/analytics slug. Add only once there is a real
+  // ownership-scoped enforcement path for each, mirroring
+  // APPOINTMENTS_READ_OWN.
   [ROLE.DOCTOR]: [
     PERMISSION.DASHBOARD_ACCESS,
     PERMISSION.APPOINTMENTS_READ_OWN,
+    PERMISSION.APPOINTMENTS_STATUS_UPDATE,
     PERMISSION.CRM_CUSTOMERS_READ,
+    PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
+    PERMISSION.CRM_NOTES_READ,
+    PERMISSION.CRM_TAGS_READ,
+    PERMISSION.CRM_FILES_READ,
     PERMISSION.CLINICAL_RECORDS_READ,
     PERMISSION.CLINICAL_RECORDS_MANAGE,
     PERMISSION.STAFF_READ_OWN,
+    PERMISSION.STAFF_SCHEDULE_READ,
   ],
 
   // Nurse — clinic-wide (NOT branch-restricted; not in isBranchRestricted's

@@ -33,6 +33,7 @@ import { CreateWorkingHoursDto } from './dto/create-working-hours.dto';
 import { UpdateWorkingHoursDto } from './dto/update-working-hours.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -141,12 +142,16 @@ represent a closed day.
   @ApiOperation({
     summary: "List a branch's working hours",
     description: `
-**Protected — requires \`staff.read\`. Clinic must be active.**
+**Protected — requires \`staff.read\` OR \`staff.schedule.read\`. Clinic must be active.**
 
 Returns the operating-hours rows for a branch, ordered by weekday then start
-time.
+time. The branch must belong to the caller's clinic (404 otherwise); any branch
+of the clinic is readable — the hours are not sensitive and are already public
+on the booking pages.
 
-**Who can call this:** Owner, Manager, Receptionist (\`staff.read\`).
+**Who can call this:** Owner, Manager, Branch Manager, Receptionist
+(\`staff.read\`); Doctor (\`staff.schedule.read\`, read-only — no browsing of
+other staff, no edits).
     `.trim(),
   })
   @ApiQuery({
@@ -168,7 +173,8 @@ time.
     schema: S_ERROR,
   })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `staff.read`, or clinic inactive.',
+    description:
+      'Caller lacks both `staff.read` and `staff.schedule.read`, or clinic inactive.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
@@ -176,7 +182,7 @@ time.
     schema: S_ERROR,
   })
   @Get()
-  @RequirePermissions(PERMISSION.STAFF_READ)
+  @RequireAnyPermission(PERMISSION.STAFF_READ, PERMISSION.STAFF_SCHEDULE_READ)
   list(@Query('branchId', ParseUUIDPipe) branchId: string) {
     return this.schedules.listWorkingHours(
       this.ctx.requireTenantId(),
