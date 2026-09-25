@@ -14,7 +14,8 @@ describe('MetaGraphClient.createTemplate', () => {
   const config = {
     graphVersion: 'v21.0',
     httpTimeoutMs: 10_000,
-    graphUrl: (path: string) => `https://graph.facebook.com/v21.0/${path.replace(/^\//, '')}`,
+    graphUrl: (path: string) =>
+      `https://graph.facebook.com/v21.0/${path.replace(/^\//, '')}`,
   } as unknown as MetaConfig;
 
   const ok = (body: unknown) => ({
@@ -40,7 +41,9 @@ describe('MetaGraphClient.createTemplate', () => {
   afterEach(() => jest.restoreAllMocks());
 
   it('POSTs to the WABA message_templates edge with a JSON body and bearer token', async () => {
-    fetchMock.mockResolvedValueOnce(ok({ id: '1234567890', status: 'PENDING', category: 'UTILITY' }));
+    fetchMock.mockResolvedValueOnce(
+      ok({ id: '1234567890', status: 'PENDING', category: 'UTILITY' }),
+    );
 
     const result = await client.createTemplate('waba-1', 'tok-1', {
       name: 'appointment_reminder_review_test',
@@ -55,10 +58,16 @@ describe('MetaGraphClient.createTemplate', () => {
       ],
     });
 
-    expect(result).toEqual({ id: '1234567890', status: 'PENDING', category: 'UTILITY' });
+    expect(result).toEqual({
+      id: '1234567890',
+      status: 'PENDING',
+      category: 'UTILITY',
+    });
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://graph.facebook.com/v21.0/waba-1/message_templates');
+    expect(url).toBe(
+      'https://graph.facebook.com/v21.0/waba-1/message_templates',
+    );
     expect(init.method).toBe('POST');
     expect(init.headers.Authorization).toBe('Bearer tok-1');
     expect(init.headers['Content-Type']).toBe('application/json');
@@ -89,7 +98,13 @@ describe('MetaGraphClient.createTemplate', () => {
 
   it("surfaces Meta's rejection message as a 422 AppError", async () => {
     fetchMock.mockResolvedValueOnce(
-      fail(400, { error: { message: 'Template name is invalid', code: 100, error_subcode: 2388042 } }),
+      fail(400, {
+        error: {
+          message: 'Template name is invalid',
+          code: 100,
+          error_subcode: 2388042,
+        },
+      }),
     );
 
     await expect(
@@ -119,7 +134,11 @@ describe('MetaGraphClient.createTemplate', () => {
   });
 
   it('never puts the access token in the thrown error or the URL', async () => {
-    fetchMock.mockResolvedValueOnce(fail(401, { error: { message: 'Invalid OAuth access token', code: 190 } }));
+    fetchMock.mockResolvedValueOnce(
+      fail(401, {
+        error: { message: 'Invalid OAuth access token', code: 190 },
+      }),
+    );
 
     const err = await client
       .createTemplate('waba-1', 'super-secret-token', {
@@ -163,10 +182,16 @@ describe('MetaGraphClient.getWaba', () => {
   const config = {
     graphVersion: 'v21.0',
     httpTimeoutMs: 10_000,
-    graphUrl: (path: string) => `https://graph.facebook.com/v21.0/${path.replace(/^\//, '')}`,
+    graphUrl: (path: string) =>
+      `https://graph.facebook.com/v21.0/${path.replace(/^\//, '')}`,
   } as unknown as MetaConfig;
 
-  const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body, headers: new Map() });
+  const ok = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    json: async () => body,
+    headers: new Map(),
+  });
   const fail = (status: number, body: unknown) => ({
     ok: false,
     status,
@@ -184,7 +209,9 @@ describe('MetaGraphClient.getWaba', () => {
 
   it('does NOT request owner_business_info in the primary read', async () => {
     fetchMock
-      .mockResolvedValueOnce(ok({ id: 'waba-1', name: 'Clinic', currency: 'SAR', timezone_id: '1' }))
+      .mockResolvedValueOnce(
+        ok({ id: 'waba-1', name: 'Clinic', currency: 'SAR', timezone_id: '1' }),
+      )
       .mockResolvedValueOnce(ok({ owner_business_info: { id: 'biz-1' } }));
 
     await client.getWaba('waba-1', 'tok-1');
@@ -207,10 +234,16 @@ describe('MetaGraphClient.getWaba', () => {
 
   it('SUCCEEDS with an Embedded Signup token that cannot read owner_business_info', async () => {
     fetchMock
-      .mockResolvedValueOnce(ok({ id: 'waba-1', name: 'Clinic', currency: 'SAR', timezone_id: '1' }))
+      .mockResolvedValueOnce(
+        ok({ id: 'waba-1', name: 'Clinic', currency: 'SAR', timezone_id: '1' }),
+      )
       .mockResolvedValueOnce(
         fail(403, {
-          error: { message: '(#200) Requires business_management permission', code: 200, type: 'OAuthException' },
+          error: {
+            message: '(#200) Requires business_management permission',
+            code: 200,
+            type: 'OAuthException',
+          },
         }),
       );
 
@@ -231,6 +264,123 @@ describe('MetaGraphClient.getWaba', () => {
 
     await expect(client.getWaba('waba-1', 'tok-1')).rejects.toMatchObject({
       code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
+  });
+});
+
+describe('MetaGraphClient — Coexistence', () => {
+  let client: MetaGraphClient;
+  let fetchMock: jest.Mock;
+
+  const config = {
+    graphVersion: 'v21.0',
+    httpTimeoutMs: 10_000,
+    graphUrl: (path: string) =>
+      `https://graph.facebook.com/v21.0/${path.replace(/^\//, '')}`,
+  } as unknown as MetaConfig;
+
+  const ok = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    json: async () => body,
+    headers: new Map(),
+  });
+  const fail = (status: number, body: unknown) => ({
+    ok: false,
+    status,
+    json: async () => body,
+    headers: new Map(),
+  });
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    client = new MetaGraphClient(config);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  describe('getPhoneCoexistenceStatus', () => {
+    it('reads is_on_biz_app/platform_type from the phone number', async () => {
+      fetchMock.mockResolvedValueOnce(
+        ok({ is_on_biz_app: true, platform_type: 'CLOUD_API' }),
+      );
+
+      const result = await client.getPhoneCoexistenceStatus('pid-1', 'tok-1');
+
+      expect(result).toEqual({ isOnBizApp: true, platformType: 'CLOUD_API' });
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toBe(
+        'https://graph.facebook.com/v21.0/pid-1?fields=is_on_biz_app,platform_type',
+      );
+    });
+
+    it('returns undefined fields rather than throwing when Meta omits them', async () => {
+      fetchMock.mockResolvedValueOnce(ok({}));
+
+      await expect(
+        client.getPhoneCoexistenceStatus('pid-1', 'tok-1'),
+      ).resolves.toEqual({
+        isOnBizApp: undefined,
+        platformType: undefined,
+      });
+    });
+
+    it('propagates a Graph API failure as an AppError (caller decides how to handle it)', async () => {
+      fetchMock.mockResolvedValueOnce(
+        fail(400, { error: { message: 'Unsupported get request', code: 100 } }),
+      );
+
+      await expect(
+        client.getPhoneCoexistenceStatus('pid-1', 'tok-1'),
+      ).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+    });
+  });
+
+  describe('triggerSmbAppDataSync', () => {
+    it('POSTs to /{phone_number_id}/smb_app_data with the requested sync_type', async () => {
+      fetchMock.mockResolvedValueOnce(ok({ success: true }));
+
+      await client.triggerSmbAppDataSync(
+        'pid-1',
+        'tok-1',
+        'smb_app_state_sync',
+      );
+
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://graph.facebook.com/v21.0/pid-1/smb_app_data');
+      expect(init.method).toBe('POST');
+      expect(init.headers.Authorization).toBe('Bearer tok-1');
+      expect(JSON.parse(init.body)).toEqual({
+        messaging_product: 'whatsapp',
+        sync_type: 'smb_app_state_sync',
+      });
+    });
+
+    it('sends history as its own call with sync_type: history', async () => {
+      fetchMock.mockResolvedValueOnce(ok({ success: true }));
+
+      await client.triggerSmbAppDataSync('pid-1', 'tok-1', 'history');
+
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        messaging_product: 'whatsapp',
+        sync_type: 'history',
+      });
+    });
+
+    it('throws an AppError on a Graph rejection, WITHOUT the token anywhere in it', async () => {
+      fetchMock.mockResolvedValueOnce(
+        fail(400, { error: { message: 'Invalid parameter', code: 100 } }),
+      );
+
+      const err = await client
+        .triggerSmbAppDataSync('pid-1', 'super-secret-token', 'history')
+        .catch((e) => e);
+
+      expect(err).toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+      expect(JSON.stringify(err)).not.toContain('super-secret-token');
     });
   });
 });

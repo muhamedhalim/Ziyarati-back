@@ -7,6 +7,7 @@ import { Message } from '../../entities/Conversations/Message';
 import { Customer } from '../../entities/CRM/Customer';
 import { User } from '../../entities/Auth&RBAC/User';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { AppError, ErrorCode } from '../../common/errors';
 
 import { MessageStatusService } from './message-status.service';
@@ -52,7 +53,8 @@ export class ConversationExecutionService {
 
     // Text/system messages must carry content; image/file carry it on the attachment.
     if (
-      (messageType === MESSAGE_TYPE.TEXT || messageType === MESSAGE_TYPE.SYSTEM) &&
+      (messageType === MESSAGE_TYPE.TEXT ||
+        messageType === MESSAGE_TYPE.SYSTEM) &&
       !dto.content?.trim()
     ) {
       throw new AppError(ErrorCode.BAD_REQUEST, {
@@ -65,7 +67,9 @@ export class ConversationExecutionService {
         where: { id: conversationId, tenant: { id: tenantId } },
       });
       if (!conversation) {
-        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Conversation not found' });
+        throw new AppError(ErrorCode.NOT_FOUND, {
+          message: 'Conversation not found',
+        });
       }
 
       const repo = manager.getRepository(Message);
@@ -75,13 +79,20 @@ export class ConversationExecutionService {
           tenant: { id: tenantId } as Tenant,
           sender_type: senderType as Message['sender_type'],
           sender_user:
-            senderType === SENDER_TYPE.AGENT ? ({ id: userId } as User) : undefined,
+            senderType === SENDER_TYPE.AGENT
+              ? ({ id: userId } as User)
+              : undefined,
           content: dto.content,
           message_type: messageType,
         }),
       );
 
-      await this.status.append(tenantId, message.id, MESSAGE_STATUS.SENT, manager);
+      await this.status.append(
+        tenantId,
+        message.id,
+        MESSAGE_STATUS.SENT,
+        manager,
+      );
 
       conversation.last_message_at = new Date();
       await manager.getRepository(Conversation).save(conversation);
@@ -94,7 +105,12 @@ export class ConversationExecutionService {
 
   /** Broadcast the same message to multiple conversations (per-conversation results). */
   async sendBulk(tenantId: string, userId: string, dto: BulkMessageDto) {
-    const results: Array<{ conversationId: string; success: boolean; messageId?: string; error?: string }> = [];
+    const results: Array<{
+      conversationId: string;
+      success: boolean;
+      messageId?: string;
+      error?: string;
+    }> = [];
     for (const conversationId of dto.conversationIds) {
       try {
         const msg = await this.sendMessage(tenantId, userId, conversationId, {
@@ -112,7 +128,12 @@ export class ConversationExecutionService {
       }
     }
     const sent = results.filter((r) => r.success).length;
-    return { requested: dto.conversationIds.length, sent, failed: results.length - sent, results };
+    return {
+      requested: dto.conversationIds.length,
+      sent,
+      failed: results.length - sent,
+      results,
+    };
   }
 
   /** Marks a message as read (READ status log). */
@@ -140,16 +161,25 @@ export class ConversationExecutionService {
   }
 
   /**
-   * Persist a non-agent channel message (CUSTOMER inbound, BOT/AI reply, or
-   * SYSTEM note) into the unified Conversation/Message timeline — the seam used
-   * by the AI engine to MIRROR each turn so agents, inbox, search and analytics
-   * all read one store. Reuses the same transactional pattern as `sendMessage`
-   * (message + initial SENT status + `last_message_at` bump). For a CUSTOMER
-   * message the conversation's customer is attached as the sender.
+   * Persist a non-interactive-send channel message (CUSTOMER inbound, BOT/AI
+   * reply, SYSTEM note, or an AGENT message that arrived from OUTSIDE
+   * ZiyaraTech's own send path — see `senderType` note below) into the
+   * unified Conversation/Message timeline — the seam used by the AI engine
+   * to MIRROR each turn so agents, inbox, search and analytics all read one
+   * store. Reuses the same transactional pattern as `sendMessage` (message +
+   * initial SENT status + `last_message_at` bump). For a CUSTOMER message the
+   * conversation's customer is attached as the sender.
    *
    * Returns `null` (no-op) when the conversation isn't found for the tenant, so
    * an AI session with no linked Conversation simply isn't mirrored. Accepts an
    * optional `manager` to enlist in a caller's transaction.
+   *
+   * `senderType: 'AGENT'` is for a message ZiyaraTech did not send itself —
+   * today, a WhatsApp Coexistence `smb_message_echo` (the clinic staff replied
+   * from the native WhatsApp Business App, not from ZiyaraTech's UI). Unlike
+   * `sendMessage`'s AGENT path, no `sender_user` is set: there is no
+   * authenticated ZiyaraTech actor to attribute it to, and the column is
+   * nullable precisely for this case.
    *
    * `origin` carries provider facts about an inbound channel message:
    *  - `waMessageId` — the WhatsApp `wamid`. Recording it is what makes the
@@ -163,7 +193,10 @@ export class ConversationExecutionService {
   async recordChannelMessage(
     tenantId: string,
     conversationId: string,
-    senderType: Extract<Message['sender_type'], 'CUSTOMER' | 'BOT' | 'SYSTEM'>,
+    senderType: Extract<
+      Message['sender_type'],
+      'CUSTOMER' | 'BOT' | 'SYSTEM' | 'AGENT'
+    >,
     content: string,
     manager?: EntityManager,
     origin?: { waMessageId?: string; messageType?: string },
@@ -199,6 +232,39 @@ export class ConversationExecutionService {
     };
 
     return manager ? exec(manager) : this.dataSource.transaction(exec);
+  }
+
+  /**
+   * Find-or-create the unified timeline Conversation for a WhatsApp customer.
+   *
+   * The AI-only path (`AiConversation`) lazily creates a linked Conversation
+   * only at handover (see `HandoverRequestService.create`) — a coexistence
+   * echo has no `aiConversationId` to key off at all (it arrives from a
+   * business-app-initiated send, not an AI turn), so it resolves/creates the
+   * timeline Conversation directly from (tenant, customer). Reuses whichever
+   * conversation already exists for this customer (most recent) rather than
+   * creating a second one, so an echo lands in the same inbox thread the
+   * patient's own messages do once a handover happens to create one.
+   */
+  async findOrCreateForWhatsapp(
+    tenantId: string,
+    customerId: string,
+    whatsappAccountId: string,
+  ): Promise<Conversation> {
+    const existing = await this.conversations.findOne({
+      where: { tenant: { id: tenantId }, customer: { id: customerId } },
+      order: { created_at: 'DESC' },
+    });
+    if (existing) return existing;
+
+    return this.conversations.save(
+      this.conversations.create({
+        tenant: { id: tenantId } as Tenant,
+        customer: { id: customerId } as Customer,
+        whatsapp_account: { id: whatsappAccountId } as WhatsappAccount,
+        type: 'whatsapp',
+      }),
+    );
   }
 
   private async reload(tenantId: string, id: string): Promise<Message> {

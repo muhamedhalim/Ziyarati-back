@@ -50,6 +50,8 @@ import { MetaGraphClient } from './meta/meta-graph.client';
 import { MetaEmbeddedSignupService } from './meta/meta-embedded-signup.service';
 import { WhatsappTemplateSyncService } from './meta/whatsapp-template-sync.service';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
+import { WhatsappCoexistenceSyncService } from './meta/whatsapp-coexistence-sync.service';
+import { WhatsappCoexistenceEchoService } from './meta/whatsapp-coexistence-echo.service';
 import { WhatsappOnboardingController } from './meta/whatsapp-onboarding.controller';
 import { StorageModule } from '../storage/storage.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
@@ -183,6 +185,8 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     MetaEmbeddedSignupService,
     WhatsappTemplateSyncService,
     WhatsappMediaService,
+    WhatsappCoexistenceSyncService,
+    WhatsappCoexistenceEchoService,
     RecipientDeliveryService,
     MessageStatusService,
     ConversationExecutionService,
@@ -191,7 +195,9 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     // typed fallback dependency and is never resolved (Meta supports() === true).
     {
       provide: WHATSAPP_MESSAGE_PROVIDERS,
-      useFactory: (meta: MetaWhatsappProvider): WhatsappMessageProvider[] => [meta],
+      useFactory: (meta: MetaWhatsappProvider): WhatsappMessageProvider[] => [
+        meta,
+      ],
       inject: [MetaWhatsappProvider],
     },
   ],
@@ -207,9 +213,11 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     // Campaigns validate template↔account WABA matching against the resolver.
     WhatsappAccountResolver,
     WhatsappTemplateSyncService,
-    // Consumed by the worker's whatsapp-webhook / whatsapp-media processors.
+    // Consumed by the worker's whatsapp-webhook / whatsapp-media / whatsapp
+    // (outbound) processors.
     WhatsappWebhookService,
     WhatsappMediaService,
+    WhatsappCoexistenceSyncService,
   ],
 })
 export class WhatsappModule {}

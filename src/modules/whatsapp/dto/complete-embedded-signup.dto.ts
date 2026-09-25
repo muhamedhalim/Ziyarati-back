@@ -1,5 +1,11 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+import {
+  WHATSAPP_ONBOARDING_TYPE,
+  WHATSAPP_ONBOARDING_TYPES,
+  type WhatsappOnboardingType,
+} from '../whatsapp.constants';
 
 /**
  * Completes Meta Embedded Signup for the caller's clinic.
@@ -65,4 +71,20 @@ export class CompleteEmbeddedSignupDto {
   @IsOptional()
   @IsUUID()
   branchId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'STANDARD (default) — a normal managed Cloud API number — or COEXISTENCE, when the ' +
+      'dialog completed via the WhatsApp Business App onboarding path (the frontend sets this ' +
+      'from the `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING` postMessage event, not from which button ' +
+      'was clicked). This is a HINT for which onboarding branch to run (skip registration, kick off ' +
+      'smb_app_data sync) — it is not trusted as proof of anything; the WABA/phone re-verification ' +
+      'below applies identically regardless of its value.',
+    enum: WHATSAPP_ONBOARDING_TYPES,
+    default: WHATSAPP_ONBOARDING_TYPE.STANDARD,
+    example: WHATSAPP_ONBOARDING_TYPE.COEXISTENCE,
+  })
+  @IsOptional()
+  @IsIn(WHATSAPP_ONBOARDING_TYPES)
+  onboardingType?: WhatsappOnboardingType;
 }

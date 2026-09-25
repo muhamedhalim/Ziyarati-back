@@ -112,6 +112,8 @@ export const JOB = {
   WHATSAPP_RETRY: 'whatsapp.retry',
   WHATSAPP_WEBHOOK_PROCESS: 'whatsapp.webhookProcess',
   WHATSAPP_MEDIA_DOWNLOAD: 'whatsapp.mediaDownload',
+  /** Coexistence smb_app_state_sync → history pair (same queue as sends: it's an outbound Graph call). */
+  WHATSAPP_COEXISTENCE_SYNC: 'whatsapp.coexistenceSync',
   WHATSAPP_DLQ: 'whatsapp.dlq',
   CAMPAIGNS_LAUNCH: 'campaigns.launch',
   CAMPAIGNS_FANOUT_CHUNK: 'campaigns.fanoutChunk',

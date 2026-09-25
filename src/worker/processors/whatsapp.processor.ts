@@ -2,8 +2,12 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, UnrecoverableError } from 'bullmq';
 
-import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
-import { WhatsappSendJob, WhatsappDlqJob } from '../../queue/job-data.interface';
+import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import {
+  WhatsappSendJob,
+  WhatsappCoexistenceSyncJob,
+  WhatsappDlqJob,
+} from '../../queue/job-data.interface';
 import { runInTenantContext } from '../../queue/tenant-context.runner';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -12,6 +16,7 @@ import { QueueService } from '../../queue/queue.service';
 import { WhatsappExecutionService } from '../../modules/whatsapp/whatsapp-execution.service';
 import { SendTemplateMessageDto } from '../../modules/whatsapp/dto/send-template-message.dto';
 import { WHATSAPP_DELIVERY_STATUS } from '../../modules/whatsapp/whatsapp.constants';
+import { WhatsappCoexistenceSyncService } from '../../modules/whatsapp/meta/whatsapp-coexistence-sync.service';
 
 /**
  * Consumes the `whatsapp` queue (`whatsapp.send` + `whatsapp.retry`). Reuses
@@ -40,31 +45,50 @@ export class WhatsappProcessor extends WorkerHost {
     private readonly ctx: TenantContextService,
     private readonly authz: WorkerAuthorizationService,
     private readonly queue: QueueService,
+    private readonly coexistenceSync: WhatsappCoexistenceSyncService,
   ) {
     super();
   }
 
-  async process(job: Job<WhatsappSendJob>) {
+  async process(job: Job<WhatsappSendJob | WhatsappCoexistenceSyncJob>) {
     const data = job.data;
     validateJobPayload(job.name, data);
-    this.logger.log(
-      `[cid=${data.correlationId ?? '-'}] ${job.name} tenant=${data.tenantId} template=${data.templateId} attempt=${job.attemptsMade + 1}`,
-    );
-    return runInTenantContext(this.ctx, this.authz, job.name, data, async () => {
-      const result = await this.exec.sendTemplateMessage(
-        data.tenantId,
-        data.templateId,
-        data.payload as SendTemplateMessageDto,
-        data.logId ? { logId: data.logId } : undefined,
+
+    if (job.name === JOB.WHATSAPP_COEXISTENCE_SYNC) {
+      const syncData = data as WhatsappCoexistenceSyncJob;
+      this.logger.log(
+        `[cid=${syncData.correlationId ?? '-'}] ${job.name} tenant=${syncData.tenantId} account=${syncData.accountId} attempt=${job.attemptsMade + 1}`,
       );
-      if (result?.status === WHATSAPP_DELIVERY_STATUS.FAILED) {
-        // The execution service already recorded this outcome on the
-        // notification log — throwing here is purely what drives BullMQ's
-        // attempts/backoff; it does not duplicate that persistence.
-        throw new Error(result.error ?? 'WhatsApp provider send failed');
-      }
-      return result;
-    });
+      return runInTenantContext(this.ctx, this.authz, job.name, syncData, () =>
+        this.coexistenceSync.run(syncData.tenantId, syncData.accountId),
+      );
+    }
+
+    const sendData = data as WhatsappSendJob;
+    this.logger.log(
+      `[cid=${sendData.correlationId ?? '-'}] ${job.name} tenant=${sendData.tenantId} template=${sendData.templateId} attempt=${job.attemptsMade + 1}`,
+    );
+    return runInTenantContext(
+      this.ctx,
+      this.authz,
+      job.name,
+      sendData,
+      async () => {
+        const result = await this.exec.sendTemplateMessage(
+          sendData.tenantId,
+          sendData.templateId,
+          sendData.payload as SendTemplateMessageDto,
+          sendData.logId ? { logId: sendData.logId } : undefined,
+        );
+        if (result?.status === WHATSAPP_DELIVERY_STATUS.FAILED) {
+          // The execution service already recorded this outcome on the
+          // notification log — throwing here is purely what drives BullMQ's
+          // attempts/backoff; it does not duplicate that persistence.
+          throw new Error(result.error ?? 'WhatsApp provider send failed');
+        }
+        return result;
+      },
+    );
   }
 
   @OnWorkerEvent('failed')
@@ -95,6 +119,8 @@ export class WhatsappProcessor extends WorkerHost {
         attemptsMade: job?.attemptsMade ?? 0,
         diedAt: new Date().toISOString(),
       } satisfies WhatsappDlqJob)
-      .catch((e) => this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`));
+      .catch((e) =>
+        this.logger.error(`DLQ enqueue failed: ${(e as Error)?.message}`),
+      );
   }
 }

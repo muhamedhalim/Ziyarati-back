@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { WhatsappWebhookService } from './whatsapp-webhook.service';
 import { WebhookSignatureVerifier } from './webhooks/webhook-signature.verifier';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
+import { WhatsappCoexistenceEchoService } from './meta/whatsapp-coexistence-echo.service';
 import { MetaConfig } from './meta/meta.config';
 import { WhatsappWebhook } from '../../entities/WhatsApp/WhatsappWebhook';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
@@ -73,12 +74,56 @@ const statusBody = (
   ],
 });
 
+/** Coexistence — a business-app-sent message echoed back via the webhook. */
+const echoBody = (wamid = 'echo.1', timestamp = freshTimestamp()) => ({
+  entry: [
+    {
+      changes: [
+        {
+          field: 'smb_message_echoes',
+          value: {
+            metadata: { phone_number_id: 'pid-1' },
+            contacts: [{ wa_id: '966500000000' }],
+            message_echoes: [
+              {
+                id: wamid,
+                to: '966500000000',
+                type: 'text',
+                text: { body: 'from the business app' },
+                timestamp,
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ],
+});
+
+/** Coexistence — Meta's confirmation that a triggered sync ran. Shape is deliberately unasserted (see coexistence-webhook.adapter.ts). */
+const syncConfirmationBody = (
+  field: 'smb_app_state_sync' | 'history',
+  timestamp = freshTimestamp(),
+) => ({
+  entry: [
+    {
+      changes: [
+        {
+          field,
+          value: { metadata: { phone_number_id: 'pid-1' }, timestamp },
+        },
+      ],
+    },
+  ],
+});
+
 describe('WhatsappWebhookService', () => {
   let service: WhatsappWebhookService;
   let webhooks: MockRepository;
   let accounts: MockRepository;
   let verifier: { verify: jest.Mock; resolveChallenge: jest.Mock };
   let inboundAi: { handleInboundValue: jest.Mock };
+  let coexistenceEcho: { handleEchoes: jest.Mock };
   let notifDelivery: { recordDelivery: jest.Mock };
   let recipientDelivery: { recordDelivery: jest.Mock };
   let queue: { enqueueWhatsappWebhook: jest.Mock };
@@ -104,6 +149,7 @@ describe('WhatsappWebhookService', () => {
       resolveChallenge: jest.fn(),
     };
     inboundAi = { handleInboundValue: jest.fn().mockResolvedValue(undefined) };
+    coexistenceEcho = { handleEchoes: jest.fn().mockResolvedValue(undefined) };
     notifDelivery = { recordDelivery: jest.fn().mockResolvedValue(undefined) };
     recipientDelivery = {
       recordDelivery: jest
@@ -130,6 +176,7 @@ describe('WhatsappWebhookService', () => {
         { provide: RecipientDeliveryService, useValue: recipientDelivery },
         { provide: MessageStatusService, useValue: messageStatus },
         { provide: WhatsappInboundAiService, useValue: inboundAi },
+        { provide: WhatsappCoexistenceEchoService, useValue: coexistenceEcho },
         { provide: QueueService, useValue: queue },
         { provide: TenantContextService, useValue: new TenantContextService() },
         {
@@ -570,6 +617,170 @@ describe('WhatsappWebhookService', () => {
         webhookEventId: 'evt-1',
         tenantId: TENANT,
       });
+    });
+  });
+
+  describe('Coexistence — smb_message_echoes / smb_app_state_sync / history', () => {
+    it('ingests an echo, deriving a stable "echo:{wamid}" idempotency key', async () => {
+      const res = await service.ingest(echoBody('echo.1'), RAW, 'sha256=ok');
+
+      expect(res).toMatchObject({ accepted: true });
+      expect(webhooks.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'smb_message_echoes',
+          idempotency_key: 'echo:echo.1',
+        }),
+      );
+    });
+
+    it('deduplicates a redelivered echo on the same wamid', async () => {
+      webhooks.findOne.mockResolvedValueOnce({ id: 'existing-echo' });
+
+      const res = await service.ingest(echoBody('echo.1'), RAW, 'sha256=ok');
+
+      expect(res).toMatchObject({
+        accepted: true,
+        id: 'existing-echo',
+        deduplicated: true,
+      });
+      expect(webhooks.save).not.toHaveBeenCalled();
+    });
+
+    it('ingests a history/state-sync webhook with a content-hash idempotency key (unasserted schema)', async () => {
+      const res = await service.ingest(
+        syncConfirmationBody('smb_app_state_sync', '1700000000'),
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(res).toMatchObject({ accepted: true });
+      const key = webhooks.create.mock.calls[0][0].idempotency_key as string;
+      expect(key).toMatch(/^smb_app_state_sync:[0-9a-f]{64}$/);
+    });
+
+    it('deduplicates two IDENTICAL history payloads via the content hash, without a `findOne` hit (hash collision only, not a stored row)', async () => {
+      // Same payload twice -> same hash -> same idempotency_key -> the second
+      // insert collides on the DB's partial unique index, exactly like any
+      // other duplicate — proven here via the same 23505-recovery path other
+      // event types already rely on.
+      const err = Object.assign(new Error('duplicate key'), { code: '23505' });
+      webhooks.save.mockRejectedValueOnce(err);
+      webhooks.findOne.mockResolvedValueOnce(undefined);
+      webhooks.findOne.mockResolvedValueOnce({ id: 'winner-history-row' });
+
+      const res = await service.ingest(
+        syncConfirmationBody('history', '1700000000'),
+        RAW,
+        'sha256=ok',
+      );
+
+      expect(res).toMatchObject({
+        accepted: true,
+        id: 'winner-history-row',
+        deduplicated: true,
+      });
+    });
+
+    it('does not reject a history/state-sync webhook for lacking a timestamp (freshness check is scoped away from these two fields)', async () => {
+      await expect(
+        service.ingest(
+          syncConfirmationBody('smb_app_state_sync'),
+          RAW,
+          'sha256=ok',
+        ),
+      ).resolves.toMatchObject({ accepted: true });
+    });
+
+    it('processEvent routes smb_message_echoes to WhatsappCoexistenceEchoService, never to the AI bridge', async () => {
+      const value = echoBody('echo.2').entry[0].changes[0].value;
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-echo',
+        processed: false,
+        event_type: 'smb_message_echoes',
+        payload: echoBody('echo.2'),
+        tenant: { id: TENANT },
+      });
+
+      await service.processEvent('evt-echo');
+
+      expect(coexistenceEcho.handleEchoes).toHaveBeenCalledWith(TENANT, value);
+      expect(inboundAi.handleInboundValue).not.toHaveBeenCalled();
+    });
+
+    it('confirms a state-sync webhook by flipping IN_PROGRESS -> COMPLETED for the matching account', async () => {
+      accounts.findOne.mockResolvedValueOnce({
+        id: 'acc-1',
+        coexistence_state_sync_status: 'IN_PROGRESS',
+      });
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-sync',
+        processed: false,
+        event_type: 'smb_app_state_sync',
+        payload: syncConfirmationBody('smb_app_state_sync'),
+        tenant: { id: TENANT },
+      });
+
+      await service.processEvent('evt-sync');
+
+      expect(accounts.update).toHaveBeenCalledWith('acc-1', {
+        coexistence_state_sync_status: 'COMPLETED',
+        coexistence_state_sync_at: expect.any(Date),
+      });
+    });
+
+    it('confirms a history webhook the same way, on its own status field', async () => {
+      accounts.findOne.mockResolvedValueOnce({
+        id: 'acc-1',
+        coexistence_history_sync_status: 'IN_PROGRESS',
+      });
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-history',
+        processed: false,
+        event_type: 'history',
+        payload: syncConfirmationBody('history'),
+        tenant: { id: TENANT },
+      });
+
+      await service.processEvent('evt-history');
+
+      expect(accounts.update).toHaveBeenCalledWith('acc-1', {
+        coexistence_history_sync_status: 'COMPLETED',
+        coexistence_history_sync_at: expect.any(Date),
+      });
+    });
+
+    it('ignores a confirmation when the account is not IN_PROGRESS (never overwrites COMPLETED or FAILED)', async () => {
+      accounts.findOne.mockResolvedValueOnce({
+        id: 'acc-1',
+        coexistence_state_sync_status: 'COMPLETED',
+      });
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-sync-2',
+        processed: false,
+        event_type: 'smb_app_state_sync',
+        payload: syncConfirmationBody('smb_app_state_sync'),
+        tenant: { id: TENANT },
+      });
+
+      await service.processEvent('evt-sync-2');
+
+      expect(accounts.update).not.toHaveBeenCalled();
+    });
+
+    it('ignores a confirmation for a phone_number_id matching no live account (never throws the worker job)', async () => {
+      accounts.findOne.mockResolvedValueOnce(null);
+      webhooks.findOne.mockResolvedValueOnce({
+        id: 'evt-sync-3',
+        processed: false,
+        event_type: 'smb_app_state_sync',
+        payload: syncConfirmationBody('smb_app_state_sync'),
+        tenant: { id: TENANT },
+      });
+
+      await expect(service.processEvent('evt-sync-3')).resolves.toMatchObject({
+        processed: true,
+      });
+      expect(accounts.update).not.toHaveBeenCalled();
     });
   });
 });

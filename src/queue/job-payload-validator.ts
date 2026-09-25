@@ -39,6 +39,7 @@ const REQUIRED_FIELDS: Partial<Record<string, RequiredFields>> = {
   [JOB.WHATSAPP_MEDIA_DOWNLOAD]: {
     strings: ['accountId', 'messageId', 'mediaId', 'mediaType'],
   },
+  [JOB.WHATSAPP_COEXISTENCE_SYNC]: { strings: ['accountId'] },
   [JOB.CAMPAIGNS_LAUNCH]: {
     strings: ['campaignId', 'runId', 'idempotencyKey'],
   },

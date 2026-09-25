@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, In, IsNull, Not, Repository } from 'typeorm';
+import {
+  DataSource,
+  FindOptionsWhere,
+  In,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
 
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { Branch } from '../../entities/SaaS-Core/Branch';
@@ -14,6 +21,7 @@ import { WhatsappAccountFilterDto } from './dto/whatsapp-account-filter.dto';
 import {
   WHATSAPP_ACCOUNT_MODE,
   WHATSAPP_CONNECTION_STATUS,
+  WHATSAPP_ONBOARDING_TYPE,
   WHATSAPP_PROVIDER,
 } from './whatsapp.constants';
 
@@ -65,10 +73,13 @@ export class WhatsappAccountService {
   }
 
   async findAll(tenantId: string, filter: WhatsappAccountFilterDto) {
-    const where: FindOptionsWhere<WhatsappAccount> = { tenant: { id: tenantId } };
+    const where: FindOptionsWhere<WhatsappAccount> = {
+      tenant: { id: tenantId },
+    };
     if (filter.branchId) where.branch = { id: filter.branchId };
     if (filter.mode) where.mode = filter.mode;
-    if (filter.isActive !== undefined) where.is_active = filter.isActive === 'true';
+    if (filter.isActive !== undefined)
+      where.is_active = filter.isActive === 'true';
 
     const [rows, total] = await this.accounts.findAndCount({
       where,
@@ -78,7 +89,12 @@ export class WhatsappAccountService {
       skip: (filter.page - 1) * filter.limit,
       take: filter.limit,
     });
-    return { data: rows.map((a) => this.toView(a)), total, page: filter.page, limit: filter.limit };
+    return {
+      data: rows.map((a) => this.toView(a)),
+      total,
+      page: filter.page,
+      limit: filter.limit,
+    };
   }
 
   async findOne(tenantId: string, id: string) {
@@ -155,7 +171,12 @@ export class WhatsappAccountService {
     await this.dataSource.transaction(async (mgr) => {
       await mgr.update(
         WhatsappAccount,
-        { tenant: { id: tenantId }, is_default: true, deleted_at: IsNull(), id: Not(id) },
+        {
+          tenant: { id: tenantId },
+          is_default: true,
+          deleted_at: IsNull(),
+          id: Not(id),
+        },
         { is_default: false },
       );
       await mgr.update(WhatsappAccount, { id }, { is_default: true });
@@ -203,7 +224,8 @@ export class WhatsappAccountService {
   async connectionStatus(tenantId: string, id: string) {
     const a = await this.loadEntity(tenantId, id);
     const hasCredentials = !!a.access_token;
-    const expired = !!a.token_expires_at && a.token_expires_at.getTime() <= Date.now();
+    const expired =
+      !!a.token_expires_at && a.token_expires_at.getTime() <= Date.now();
     return {
       accountId: a.id,
       isActive: a.is_active,
@@ -224,23 +246,47 @@ export class WhatsappAccountService {
         hasCredentials &&
         !expired &&
         a.connection_status === WHATSAPP_CONNECTION_STATUS.CONNECTED,
+      onboardingType: a.onboarding_type,
+      isOnBizApp: a.is_on_biz_app,
+      platformType: a.platform_type,
+      // Only meaningful for a COEXISTENCE account — omitted for STANDARD so
+      // the frontend has one clear signal ("is this object present?") instead
+      // of reading four always-null fields.
+      coexistence:
+        a.onboarding_type === WHATSAPP_ONBOARDING_TYPE.COEXISTENCE
+          ? {
+              stateSyncStatus: a.coexistence_state_sync_status,
+              stateSyncAt: a.coexistence_state_sync_at,
+              historySyncStatus: a.coexistence_history_sync_status,
+              historySyncAt: a.coexistence_history_sync_at,
+              lastSyncError: a.coexistence_last_sync_error,
+            }
+          : undefined,
     };
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
 
-  private async loadEntity(tenantId: string, id: string): Promise<WhatsappAccount> {
+  private async loadEntity(
+    tenantId: string,
+    id: string,
+  ): Promise<WhatsappAccount> {
     const account = await this.accounts.findOne({
       where: { id, tenant: { id: tenantId } },
       relations: { branch: true },
     });
     if (!account) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'WhatsApp account not found' });
+      throw new AppError(ErrorCode.NOT_FOUND, {
+        message: 'WhatsApp account not found',
+      });
     }
     return account;
   }
 
-  private async assertBranch(tenantId: string, branchId: string): Promise<void> {
+  private async assertBranch(
+    tenantId: string,
+    branchId: string,
+  ): Promise<void> {
     const ok = await this.branches.exists({
       where: { id: branchId, tenant: { id: tenantId } },
     });
