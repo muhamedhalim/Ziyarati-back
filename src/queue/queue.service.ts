@@ -38,6 +38,7 @@ import {
   WhatsappSendJob,
   WhatsappWebhookProcessJob,
   WhatsappMediaDownloadJob,
+  WhatsappCoexistenceSyncJob,
   WhatsappDlqJob,
   WebhookDeliverJob,
   WebhookDlqJob,
@@ -175,6 +176,29 @@ export class QueueService {
       jobId: `wa-media-${data.messageId}-${data.mediaId}`,
       ...opts,
     });
+  }
+
+  /**
+   * Coexistence `smb_app_state_sync` → `history` pair for one account.
+   * Deterministic jobId per ACCOUNT (not per call) — a second onboarding
+   * retry or an admin re-trigger collapses onto the SAME job while one is
+   * still queued/running; `WhatsappCoexistenceSyncService` re-checks the
+   * account's persisted sync status on every run, so this stays a safe no-op
+   * even once the job has already completed and a new one is enqueued later.
+   */
+  enqueueWhatsappCoexistenceSync(
+    data: WhatsappCoexistenceSyncJob,
+    opts?: JobsOptions,
+  ) {
+    return this.add(
+      QUEUE.WHATSAPP_OUTBOUND,
+      JOB.WHATSAPP_COEXISTENCE_SYNC,
+      data,
+      {
+        jobId: `wa-coexistence-sync-${data.accountId}`,
+        ...opts,
+      },
+    );
   }
 
   /**

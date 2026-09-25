@@ -112,6 +112,13 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
     tier: 'tenant',
     featureKey: FeatureKey.WHATSAPP,
   },
+  // NO `featureKey`, same reasoning as WHATSAPP_WEBHOOK_PROCESS immediately
+  // above: this SYNCS the clinic's own message history/state from Meta — it
+  // does not send anything or consume AI/messaging entitlement, and refusing
+  // it for a suspended/unentitled tenant would just leave Coexistence synced
+  // forever, not protect anything. Always carries a real tenantId (kicked off
+  // by an authenticated onboarding call), so `tenant`, not `system-or-tenant`.
+  [JOB.WHATSAPP_COEXISTENCE_SYNC]: TENANT,
   [JOB.CAMPAIGNS_LAUNCH]: { tier: 'tenant', featureKey: FeatureKey.CAMPAIGNS },
   [JOB.CAMPAIGNS_FANOUT_CHUNK]: {
     tier: 'tenant',

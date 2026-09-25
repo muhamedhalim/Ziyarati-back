@@ -144,13 +144,15 @@ export class MetaGraphClient {
     );
     if (!json.access_token) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'Meta did not return an access token for this authorization code.',
+        message:
+          'Meta did not return an access token for this authorization code.',
       });
     }
     return {
       accessToken: json.access_token,
       // 0 / absent = long-lived System User token with no expiry.
-      expiresInSeconds: json.expires_in && json.expires_in > 0 ? json.expires_in : undefined,
+      expiresInSeconds:
+        json.expires_in && json.expires_in > 0 ? json.expires_in : undefined,
     };
   }
 
@@ -165,7 +167,10 @@ export class MetaGraphClient {
    */
   async debugToken(token: string): Promise<MetaDebugTokenResult> {
     const appToken = `${this.config.requireAppId()}|${this.config.requireAppSecret()}`;
-    const params = new URLSearchParams({ input_token: token, access_token: appToken });
+    const params = new URLSearchParams({
+      input_token: token,
+      access_token: appToken,
+    });
 
     const json = await this.get<{
       data?: {
@@ -231,11 +236,15 @@ export class MetaGraphClient {
       name?: string;
       currency?: string;
       timezone_id?: string;
-    }>(`${encodeURIComponent(wabaId)}?fields=${MetaGraphClient.WABA_FIELDS}`, token);
+    }>(
+      `${encodeURIComponent(wabaId)}?fields=${MetaGraphClient.WABA_FIELDS}`,
+      token,
+    );
 
     if (!json.id) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'The selected WhatsApp Business Account could not be read from Meta.',
+        message:
+          'The selected WhatsApp Business Account could not be read from Meta.',
       });
     }
     return {
@@ -276,7 +285,10 @@ export class MetaGraphClient {
   }
 
   /** Phone numbers registered on a WABA. */
-  async listPhoneNumbers(wabaId: string, token: string): Promise<MetaPhoneNumber[]> {
+  async listPhoneNumbers(
+    wabaId: string,
+    token: string,
+  ): Promise<MetaPhoneNumber[]> {
     const json = await this.get<{
       data?: Array<{
         id: string;
@@ -308,9 +320,56 @@ export class MetaGraphClient {
     );
     if (json.success !== true) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'Meta rejected the webhook subscription for this WhatsApp Business Account.',
+        message:
+          'Meta rejected the webhook subscription for this WhatsApp Business Account.',
       });
     }
+  }
+
+  /**
+   * Coexistence verification (post-onboarding gate): `GET /{phone_number_id}
+   * ?fields=is_on_biz_app,platform_type`. Meta's documented way to confirm a
+   * number actually IS on the Cloud API after a Coexistence Embedded Signup —
+   * the dialog completing without error is not proof by itself. Returns
+   * `undefined` fields (never throws its own error) when Meta omits either —
+   * seen when the field is present but not yet populated on Meta's side
+   * immediately after signup; the caller decides how to treat "unknown".
+   */
+  async getPhoneCoexistenceStatus(
+    phoneNumberId: string,
+    token: string,
+  ): Promise<{ isOnBizApp?: boolean; platformType?: string }> {
+    const json = await this.get<{
+      is_on_biz_app?: boolean;
+      platform_type?: string;
+    }>(
+      `${encodeURIComponent(phoneNumberId)}?fields=is_on_biz_app,platform_type`,
+      token,
+    );
+    return { isOnBizApp: json.is_on_biz_app, platformType: json.platform_type };
+  }
+
+  /**
+   * Coexistence sync: `POST /{phone_number_id}/smb_app_data`. Meta documents
+   * two `sync_type` values, called in order — `smb_app_state_sync` first,
+   * `history` second (see `WhatsappCoexistenceSyncService`, which owns that
+   * ordering and the idempotency around it). This call only proves Meta
+   * ACCEPTED the request; the actual sync result arrives later as an inbound
+   * `smb_app_state_sync`/`history` webhook.
+   */
+  async triggerSmbAppDataSync(
+    phoneNumberId: string,
+    token: string,
+    syncType: 'smb_app_state_sync' | 'history',
+  ): Promise<void> {
+    await this.postJson(
+      `${encodeURIComponent(phoneNumberId)}/smb_app_data`,
+      token,
+      {
+        messaging_product: 'whatsapp',
+        sync_type: syncType,
+      },
+    );
   }
 
   /** All message templates on a WABA (paginated by Meta; follows `next`). */
@@ -348,9 +407,10 @@ export class MetaGraphClient {
       }
 
       const after = json.paging?.cursors?.after;
-      path = json.paging?.next && after
-        ? `${encodeURIComponent(wabaId)}/message_templates?limit=100&after=${encodeURIComponent(after)}`
-        : null;
+      path =
+        json.paging?.next && after
+          ? `${encodeURIComponent(wabaId)}/message_templates?limit=100&after=${encodeURIComponent(after)}`
+          : null;
     }
     return collected;
   }
@@ -372,11 +432,11 @@ export class MetaGraphClient {
     token: string,
     input: MetaTemplateCreateInput,
   ): Promise<MetaTemplateCreateResult> {
-    const json = await this.postJson<{ id?: string; status?: string; category?: string }>(
-      `${encodeURIComponent(wabaId)}/message_templates`,
-      token,
-      input,
-    );
+    const json = await this.postJson<{
+      id?: string;
+      status?: string;
+      category?: string;
+    }>(`${encodeURIComponent(wabaId)}/message_templates`, token, input);
 
     if (!json.id) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
@@ -391,7 +451,10 @@ export class MetaGraphClient {
    * these in minutes, which is why media download is a queued job that
    * re-resolves rather than storing the URL.
    */
-  async getMediaMetadata(mediaId: string, token: string): Promise<MetaMediaMetadata> {
+  async getMediaMetadata(
+    mediaId: string,
+    token: string,
+  ): Promise<MetaMediaMetadata> {
     const json = await this.get<{
       url?: string;
       mime_type?: string;
@@ -462,7 +525,11 @@ export class MetaGraphClient {
   }
 
   /** POST with a JSON body. `post()` above sends none — Meta's edges differ. */
-  private async postJson<T>(path: string, token: string, body: unknown): Promise<T> {
+  private async postJson<T>(
+    path: string,
+    token: string,
+    body: unknown,
+  ): Promise<T> {
     return this.request<T>('POST', path, token, body);
   }
 
@@ -500,15 +567,25 @@ export class MetaGraphClient {
           ? `Meta rejected the request: ${err.message}${detail ? ` — ${detail}` : ''}`
           : `Meta API error (HTTP ${res.status}).`,
         // Meta's own error code/subcode — provider-response detail, logs only.
-        internalContext: { metaCode: err?.code, metaSubcode: err?.error_subcode, metaDetail: detail },
+        internalContext: {
+          metaCode: err?.code,
+          metaSubcode: err?.error_subcode,
+          metaDetail: detail,
+        },
       });
     }
     return json;
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+  ): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.httpTimeoutMs);
+    const timer = setTimeout(
+      () => controller.abort(),
+      this.config.httpTimeoutMs,
+    );
     try {
       return await fetch(url, { ...init, signal: controller.signal });
     } catch (err) {

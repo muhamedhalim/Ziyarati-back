@@ -32,11 +32,14 @@ import type {
   WhatsappWebhookBody,
   MetaWebhookEntry,
 } from './webhooks/whatsapp-webhook.types';
+import { contentHashKey } from './webhooks/coexistence-webhook.adapter';
+import { WhatsappCoexistenceEchoService } from './meta/whatsapp-coexistence-echo.service';
 import { CreateWhatsappWebhookDto } from './dto/create-whatsapp-webhook.dto';
 import { UpdateWhatsappWebhookDto } from './dto/update-whatsapp-webhook.dto';
 import { WhatsappWebhookFilterDto } from './dto/whatsapp-webhook-filter.dto';
 import { verifyTimestamp } from '../integration-platform/inbound/inbound-signature';
 import { WEBHOOK_SIGNATURE_SCHEME } from '../integration-platform/integration-platform.constants';
+import { COEXISTENCE_SYNC_STATUS } from './whatsapp.constants';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -88,6 +91,7 @@ export class WhatsappWebhookService {
     private readonly recipientDelivery: RecipientDeliveryService,
     private readonly messageStatus: MessageStatusService,
     private readonly inboundAi: WhatsappInboundAiService,
+    private readonly coexistenceEcho: WhatsappCoexistenceEchoService,
     private readonly queue: QueueService,
     private readonly ctx: TenantContextService,
   ) {}
@@ -453,6 +457,27 @@ export class WhatsappWebhookService {
         if (value) await this.inboundAi.handleInboundValue(tenantId, value);
         break;
       }
+      case 'smb_message_echoes': {
+        const value = this.firstChangeValue(body);
+        if (value) await this.coexistenceEcho.handleEchoes(tenantId, value);
+        break;
+      }
+      case 'smb_app_state_sync':
+        await this.confirmCoexistenceSync(
+          tenantId,
+          body,
+          'coexistence_state_sync_status',
+          'coexistence_state_sync_at',
+        );
+        break;
+      case 'history':
+        await this.confirmCoexistenceSync(
+          tenantId,
+          body,
+          'coexistence_history_sync_status',
+          'coexistence_history_sync_at',
+        );
+        break;
       default:
         this.logger.debug(
           `[cid=${this.ctx.getCorrelationId() ?? '-'}] Webhook event ${event.id} has no handler for "${event.event_type}"`,
@@ -466,6 +491,58 @@ export class WhatsappWebhookService {
   /** Guarded so a concurrent duplicate job can't double-count the transition. */
   private async markProcessed(id: string): Promise<void> {
     await this.webhooks.update({ id, processed: false }, { processed: true });
+  }
+
+  /**
+   * Coexistence: an inbound `smb_app_state_sync`/`history` webhook is Meta's
+   * CONFIRMATION that a sync this platform triggered (`WhatsappCoexistenceSyncService`)
+   * actually completed — the outbound POST accepting the request is not the
+   * same fact. Resolves the account the SAME trusted way every inbound event
+   * does (`metadata.phone_number_id` → live account, tenant-scoped), then
+   * advances the status ONLY from IN_PROGRESS to COMPLETED.
+   *
+   * That guard is what makes a redelivered/duplicate confirmation webhook a
+   * safe no-op: a status already COMPLETED (an earlier delivery already
+   * applied it) or FAILED (a later real failure must not be silently
+   * overwritten by a stale, now out-of-order confirmation) is left alone.
+   */
+  private async confirmCoexistenceSync(
+    tenantId: string,
+    body: WhatsappWebhookBody,
+    statusField:
+      | 'coexistence_state_sync_status'
+      | 'coexistence_history_sync_status',
+    atField: 'coexistence_state_sync_at' | 'coexistence_history_sync_at',
+  ): Promise<void> {
+    const phoneNumberId = this.extractPhoneNumberId(
+      body as unknown as Record<string, unknown>,
+    );
+    if (!phoneNumberId) {
+      this.logger.warn(
+        `[cid=${this.ctx.getCorrelationId() ?? '-'}] Coexistence sync confirmation carried no phone_number_id (tenant=${tenantId}) — cannot update sync status`,
+      );
+      return;
+    }
+    const account = await this.accounts.findOne({
+      where: {
+        phone_number_id: phoneNumberId,
+        tenant: { id: tenantId },
+        deleted_at: IsNull(),
+      },
+    });
+    if (
+      !account ||
+      account[statusField] !== COEXISTENCE_SYNC_STATUS.IN_PROGRESS
+    ) {
+      return;
+    }
+    await this.accounts.update(account.id, {
+      [statusField]: COEXISTENCE_SYNC_STATUS.COMPLETED,
+      [atField]: new Date(),
+    });
+    this.logger.log(
+      `COEXISTENCE_SYNC_CONFIRMED account=${account.id} field=${statusField}`,
+    );
   }
 
   // ──────────────────────────── Private helpers ──────────────────────────── //
@@ -536,6 +613,10 @@ export class WhatsappWebhookService {
     if (statusTimestamp) return statusTimestamp;
     const messageTimestamp = value?.messages?.[0]?.timestamp;
     if (messageTimestamp) return messageTimestamp;
+    // Coexistence — Meta documents `message_echoes` items as message objects
+    // (same fields, including `timestamp`), so the same extraction applies.
+    const echoTimestamp = value?.message_echoes?.[0]?.timestamp;
+    if (echoTimestamp) return echoTimestamp;
     return undefined;
   }
 
@@ -547,6 +628,27 @@ export class WhatsappWebhookService {
    */
   private enforceEventFreshness(body: WhatsappWebhookBody): void {
     const presented = this.extractEventTimestamp(body);
+
+    // Coexistence — `history`/`smb_app_state_sync` payload schemas are not
+    // asserted anywhere in this codebase (see coexistence-webhook.adapter.ts
+    // docblock: no verified sample payload was available), so no field name
+    // is guessed for a timestamp inside them. The HMAC signature check above
+    // (over the exact raw body) still authenticates the request either way;
+    // this only means the additional anti-replay freshness window cannot be
+    // evaluated for these two specific fields, so it is skipped — scoped
+    // exactly to them, so no other event type's protection weakens, and
+    // narrower than the fail-closed "missing" branch below, which stays in
+    // effect for every field type this codebase DOES assert a timestamp for.
+    if (presented === undefined) {
+      const field = body?.entry?.[0]?.changes?.[0]?.field;
+      if (field === 'history' || field === 'smb_app_state_sync') {
+        this.logger.debug(
+          `Skipping freshness check for "${field}" — no asserted timestamp field for this Coexistence event type`,
+        );
+        return;
+      }
+    }
+
     const verdict = verifyTimestamp(
       WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED,
       presented,
@@ -629,6 +731,20 @@ export class WhatsappWebhookService {
     }
     const messageId = value.messages?.[0]?.id;
     if (messageId) return `message:${messageId}`;
+
+    // Coexistence — `message_echoes` items carry their own wamid, same as an
+    // ordinary message, so the same natural key applies.
+    const echoId = value.message_echoes?.[0]?.id;
+    if (echoId) return `echo:${echoId}`;
+
+    // Coexistence — `history`/`smb_app_state_sync` have no asserted schema
+    // (see coexistence-webhook.adapter.ts), so a content hash of the whole
+    // change value is the key: identical redeliveries dedupe, a genuinely
+    // new chunk/state does not.
+    const field = body?.entry?.[0]?.changes?.[0]?.field;
+    if (field === 'history' || field === 'smb_app_state_sync') {
+      return contentHashKey(field, value);
+    }
     return undefined;
   }
 }

@@ -12,10 +12,13 @@ import { MetaConfig } from './meta.config';
 import { MetaGraphClient } from './meta-graph.client';
 import { CompleteEmbeddedSignupDto } from '../dto/complete-embedded-signup.dto';
 import {
+  COEXISTENCE_SYNC_STATUS,
   WHATSAPP_ACCOUNT_MODE,
   WHATSAPP_CONNECTION_STATUS,
+  WHATSAPP_ONBOARDING_TYPE,
   WHATSAPP_PROVIDER,
 } from '../whatsapp.constants';
+import { QueueService } from '../../../queue/queue.service';
 
 /**
  * Scopes the Embedded Signup flow must have granted. If Meta hands back a token
@@ -23,7 +26,10 @@ import {
  * first send — better to reject it during onboarding while the user is still
  * looking at the screen.
  */
-const REQUIRED_SCOPES = ['whatsapp_business_management', 'whatsapp_business_messaging'];
+const REQUIRED_SCOPES = [
+  'whatsapp_business_management',
+  'whatsapp_business_messaging',
+];
 
 /**
  * Meta Embedded Signup — the onboarding flow that makes ZiyaraTech an
@@ -66,6 +72,7 @@ export class MetaEmbeddedSignupService {
     private readonly graph: MetaGraphClient,
     private readonly config: MetaConfig,
     private readonly encryption: EncryptionService,
+    private readonly queue: QueueService,
   ) {}
 
   /**
@@ -93,7 +100,10 @@ export class MetaEmbeddedSignupService {
    * Completes onboarding for the authenticated tenant and returns the connected
    * account (safe view — no token).
    */
-  async complete(tenantId: string, dto: CompleteEmbeddedSignupDto): Promise<WhatsappAccount> {
+  async complete(
+    tenantId: string,
+    dto: CompleteEmbeddedSignupDto,
+  ): Promise<WhatsappAccount> {
     // Fail before touching Meta if the branch is bogus — a cheap, tenant-scoped
     // check that also stops branch-id probing across tenants.
     if (dto.branchId) await this.assertBranch(tenantId, dto.branchId);
@@ -101,8 +111,10 @@ export class MetaEmbeddedSignupService {
     this.stage(tenantId, 'META_EMBEDDED_SIGNUP_CALLBACK_RECEIVED');
 
     // ── 1. Code → token (server-side only; requires the app secret) ────────
-    const exchanged = await this.trace(tenantId, 'META_OAUTH_CODE_EXCHANGE', () =>
-      this.graph.exchangeCode(dto.code),
+    const exchanged = await this.trace(
+      tenantId,
+      'META_OAUTH_CODE_EXCHANGE',
+      () => this.graph.exchangeCode(dto.code),
     );
 
     // ── 2. Prove the token belongs to OUR app and can do what we need ──────
@@ -119,7 +131,11 @@ export class MetaEmbeddedSignupService {
       this.graph.getWaba(dto.wabaId, exchanged.accessToken),
     );
     const phone = await this.trace(tenantId, 'META_PHONE_NUMBER_LOOKUP', () =>
-      this.resolvePhoneNumber(dto.wabaId, dto.phoneNumberId, exchanged.accessToken),
+      this.resolvePhoneNumber(
+        dto.wabaId,
+        dto.phoneNumberId,
+        exchanged.accessToken,
+      ),
     );
 
     // Reject a number already held by ANOTHER tenant before we subscribe the
@@ -132,13 +148,121 @@ export class MetaEmbeddedSignupService {
     );
 
     // ── 5. Persist under the authenticated tenant, encrypted ──────────────
-    const account = await this.persist(tenantId, dto, exchanged, debug, waba, phone);
+    const onboardingType =
+      dto.onboardingType ?? WHATSAPP_ONBOARDING_TYPE.STANDARD;
+    const account = await this.persist(
+      tenantId,
+      dto,
+      exchanged,
+      debug,
+      waba,
+      phone,
+      onboardingType,
+    );
 
     this.stage(tenantId, 'META_WHATSAPP_CONNECTION_SAVED');
     this.logger.log(
-      `Tenant ${tenantId} connected WhatsApp number ${phone.id} (waba=${waba.id}) via Embedded Signup`,
+      `Tenant ${tenantId} connected WhatsApp number ${phone.id} (waba=${waba.id}) via Embedded Signup ` +
+        `(onboardingType=${onboardingType})`,
     );
+
+    // ── 6. Coexistence only ─────────────────────────────────────────────
+    // The number is already registered/usable in the clinic's own WhatsApp
+    // Business App. There is deliberately NO phone-number registration call
+    // anywhere in this service for EITHER onboarding type today — this stage
+    // marker exists so that guarantee is explicit, logged and testable for
+    // Coexistence specifically, rather than an accidental absence that a
+    // future STANDARD-flow change could silently start applying here too.
+    if (onboardingType === WHATSAPP_ONBOARDING_TYPE.COEXISTENCE) {
+      this.stage(
+        tenantId,
+        'META_COEXISTENCE_PHONE_REGISTRATION_SKIPPED',
+        `phone=${phone.id}`,
+      );
+      await this.verifyCoexistenceStatus(
+        tenantId,
+        account.id,
+        phone.id,
+        exchanged.accessToken,
+      );
+      await this.kickOffCoexistenceSync(tenantId, account.id);
+    }
+
     return account;
+  }
+
+  /**
+   * Post-onboarding verification gate — Embedded Signup completing without a
+   * frontend error is NOT proof Coexistence actually took effect. Reads
+   * Meta's own `is_on_biz_app`/`platform_type` for the number and records it
+   * on the account either way.
+   *
+   * Best-effort by design: Meta's state can lag briefly behind the dialog
+   * closing, so a mismatch is logged loudly (and visible via
+   * `WhatsappAccountService.connectionStatus`) rather than treated as a
+   * reason to undo an otherwise-valid connection — the credential, WABA and
+   * webhook subscription from steps 1-4 are already correct.
+   */
+  private async verifyCoexistenceStatus(
+    tenantId: string,
+    accountId: string,
+    phoneNumberId: string,
+    token: string,
+  ): Promise<void> {
+    try {
+      const status = await this.trace(
+        tenantId,
+        'META_COEXISTENCE_STATUS_VERIFICATION',
+        () => this.graph.getPhoneCoexistenceStatus(phoneNumberId, token),
+      );
+      const verified =
+        status.isOnBizApp === true && status.platformType === 'CLOUD_API';
+      if (verified) {
+        this.stage(
+          tenantId,
+          'META_COEXISTENCE_VERIFIED',
+          `phone=${phoneNumberId}`,
+        );
+      } else {
+        this.logger.warn(
+          `META_COEXISTENCE_VERIFICATION_MISMATCH tenant=${tenantId} phone=${phoneNumberId} ` +
+            `isOnBizApp=${status.isOnBizApp ?? 'unknown'} platformType=${status.platformType ?? 'unknown'} — ` +
+            'Meta has not confirmed Coexistence yet; the connection is kept, this is reported, not fatal.',
+        );
+      }
+      await this.accounts.update(accountId, {
+        is_on_biz_app: status.isOnBizApp ?? null,
+        platform_type: status.platformType ?? null,
+      });
+    } catch (err) {
+      // Never aborts onboarding over a verification READ failing — see docblock.
+      this.logger.error(
+        `META_COEXISTENCE_VERIFICATION_FAILED tenant=${tenantId} phone=${phoneNumberId}: ${(err as Error)?.message}`,
+      );
+    }
+  }
+
+  /**
+   * Kicks off the state-sync → history sync pair on the background queue
+   * (WhatsappCoexistenceSyncService owns the ordering/idempotency). Best-effort:
+   * a failed enqueue must not undo a valid connection, mirroring the template
+   * sync call in WhatsappOnboardingController#complete.
+   */
+  private async kickOffCoexistenceSync(
+    tenantId: string,
+    accountId: string,
+  ): Promise<void> {
+    try {
+      await this.accounts.update(accountId, {
+        coexistence_state_sync_status: COEXISTENCE_SYNC_STATUS.PENDING,
+        coexistence_history_sync_status: COEXISTENCE_SYNC_STATUS.PENDING,
+      });
+      await this.queue.enqueueWhatsappCoexistenceSync({ tenantId, accountId });
+    } catch (err) {
+      this.logger.error(
+        `META_COEXISTENCE_SYNC_ENQUEUE_FAILED tenant=${tenantId} account=${accountId}: ${(err as Error)?.message}`,
+      );
+    }
   }
 
   // ─────────────────────────── Stage diagnostics ─────────────────────────── //
@@ -153,7 +277,9 @@ export class MetaEmbeddedSignupService {
    * code/subcode is already recorded by MetaGraphClient.request().
    */
   private stage(tenantId: string, marker: string, detail?: string): void {
-    this.logger.log(`${marker} tenant=${tenantId}${detail ? ` ${detail}` : ''}`);
+    this.logger.log(
+      `${marker} tenant=${tenantId}${detail ? ` ${detail}` : ''}`,
+    );
   }
 
   /** Runs one stage, emitting a `_STARTED` marker and a `_FAILED` one on throw. */
@@ -169,7 +295,9 @@ export class MetaEmbeddedSignupService {
       // `AppError.message` here is Meta's own rejection text, already stripped
       // of credentials by the client. Anything else is logged by type only.
       const reason =
-        err instanceof AppError ? err.message : ((err as Error)?.name ?? 'unknown');
+        err instanceof AppError
+          ? err.message
+          : ((err as Error)?.name ?? 'unknown');
       this.logger.error(`${marker}_FAILED tenant=${tenantId} reason=${reason}`);
       throw err;
     }
@@ -189,7 +317,8 @@ export class MetaEmbeddedSignupService {
   }): void {
     if (!debug.isValid) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'Meta reported this authorization as invalid. Please retry the connection.',
+        message:
+          'Meta reported this authorization as invalid. Please retry the connection.',
       });
     }
 
@@ -237,7 +366,8 @@ export class MetaEmbeddedSignupService {
       const match = numbers.find((n) => n.id === requestedPhoneNumberId);
       if (!match) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-          message: 'The selected phone number does not belong to the connected WhatsApp Business Account.',
+          message:
+            'The selected phone number does not belong to the connected WhatsApp Business Account.',
         });
       }
       return match;
@@ -295,22 +425,32 @@ export class MetaEmbeddedSignupService {
     debug: { expiresAt?: number },
     waba: { id: string; ownerBusinessId?: string },
     phone: { id: string; displayPhoneNumber?: string; verifiedName?: string },
+    onboardingType: string,
   ): Promise<WhatsappAccount> {
     const existing = await this.accounts.findOne({
-      where: { phone_number_id: phone.id, tenant: { id: tenantId }, deleted_at: IsNull() },
+      where: {
+        phone_number_id: phone.id,
+        tenant: { id: tenantId },
+        deleted_at: IsNull(),
+      },
     });
 
-    const account = existing ?? this.accounts.create({ tenant: { id: tenantId } as Tenant });
+    const account =
+      existing ?? this.accounts.create({ tenant: { id: tenantId } as Tenant });
 
     account.provider = WHATSAPP_PROVIDER.META_CLOUD;
     account.mode = WHATSAPP_ACCOUNT_MODE.CUSTOM;
+    account.onboarding_type = onboardingType;
     account.meta_business_id = waba.ownerBusinessId ?? dto.metaBusinessId;
     account.waba_id = waba.id;
     account.phone_number_id = phone.id;
     account.display_phone_number = phone.displayPhoneNumber;
     account.verified_name = phone.verifiedName;
     account.access_token = this.encryption.encrypt(exchanged.accessToken);
-    account.token_expires_at = this.resolveExpiry(exchanged.expiresInSeconds, debug.expiresAt);
+    account.token_expires_at = this.resolveExpiry(
+      exchanged.expiresInSeconds,
+      debug.expiresAt,
+    );
     account.connection_status = WHATSAPP_CONNECTION_STATUS.CONNECTED;
     account.connected_at = new Date();
     account.is_active = true;
@@ -332,7 +472,8 @@ export class MetaEmbeddedSignupService {
     expiresInSeconds?: number,
     expiresAtUnix?: number,
   ): Date | undefined {
-    if (expiresAtUnix && expiresAtUnix > 0) return new Date(expiresAtUnix * 1000);
+    if (expiresAtUnix && expiresAtUnix > 0)
+      return new Date(expiresAtUnix * 1000);
     if (expiresInSeconds && expiresInSeconds > 0) {
       return new Date(Date.now() + expiresInSeconds * 1000);
     }
@@ -365,7 +506,10 @@ export class MetaEmbeddedSignupService {
     await this.accounts.save(account);
   }
 
-  private async assertBranch(tenantId: string, branchId: string): Promise<void> {
+  private async assertBranch(
+    tenantId: string,
+    branchId: string,
+  ): Promise<void> {
     const ok = await this.branches.exists({
       where: { id: branchId, tenant: { id: tenantId } },
     });

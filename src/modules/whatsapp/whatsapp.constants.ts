@@ -13,9 +13,8 @@ export const WHATSAPP_TEMPLATE_STATUS = {
 export type WhatsappTemplateStatus =
   (typeof WHATSAPP_TEMPLATE_STATUS)[keyof typeof WHATSAPP_TEMPLATE_STATUS];
 
-export const WHATSAPP_TEMPLATE_STATUSES: WhatsappTemplateStatus[] = Object.values(
-  WHATSAPP_TEMPLATE_STATUS,
-);
+export const WHATSAPP_TEMPLATE_STATUSES: WhatsappTemplateStatus[] =
+  Object.values(WHATSAPP_TEMPLATE_STATUS);
 
 /**
  * Message delivery lifecycle. There is no WhatsApp *message* table in the
@@ -82,7 +81,8 @@ export const WHATSAPP_PROVIDER = {
 export type WhatsappProvider =
   (typeof WHATSAPP_PROVIDER)[keyof typeof WHATSAPP_PROVIDER];
 
-export const WHATSAPP_PROVIDERS: WhatsappProvider[] = Object.values(WHATSAPP_PROVIDER);
+export const WHATSAPP_PROVIDERS: WhatsappProvider[] =
+  Object.values(WHATSAPP_PROVIDER);
 
 /**
  * Lifecycle of a tenant's connection to Meta. Distinct from `is_active` (the
@@ -106,9 +106,8 @@ export const WHATSAPP_CONNECTION_STATUS = {
 export type WhatsappConnectionStatus =
   (typeof WHATSAPP_CONNECTION_STATUS)[keyof typeof WHATSAPP_CONNECTION_STATUS];
 
-export const WHATSAPP_CONNECTION_STATUSES: WhatsappConnectionStatus[] = Object.values(
-  WHATSAPP_CONNECTION_STATUS,
-);
+export const WHATSAPP_CONNECTION_STATUSES: WhatsappConnectionStatus[] =
+  Object.values(WHATSAPP_CONNECTION_STATUS);
 
 /**
  * Meta template categories. Meta rejects anything outside this set, and the
@@ -116,17 +115,32 @@ export const WHATSAPP_CONNECTION_STATUSES: WhatsappConnectionStatus[] = Object.v
  * than accepted as free text (the column stays varchar for forward
  * compatibility if Meta adds one).
  */
-export const WHATSAPP_TEMPLATE_CATEGORIES = ['UTILITY', 'MARKETING', 'AUTHENTICATION'] as const;
-export type WhatsappTemplateCategory = (typeof WHATSAPP_TEMPLATE_CATEGORIES)[number];
+export const WHATSAPP_TEMPLATE_CATEGORIES = [
+  'UTILITY',
+  'MARKETING',
+  'AUTHENTICATION',
+] as const;
+export type WhatsappTemplateCategory =
+  (typeof WHATSAPP_TEMPLATE_CATEGORIES)[number];
 
 /** Component types Meta accepts on a template. Media headers are not implemented. */
-export const WHATSAPP_TEMPLATE_COMPONENT_TYPES = ['HEADER', 'BODY', 'FOOTER', 'BUTTONS'] as const;
+export const WHATSAPP_TEMPLATE_COMPONENT_TYPES = [
+  'HEADER',
+  'BODY',
+  'FOOTER',
+  'BUTTONS',
+] as const;
 export type WhatsappTemplateComponentType =
   (typeof WHATSAPP_TEMPLATE_COMPONENT_TYPES)[number];
 
 /** Button types Meta accepts on a BUTTONS component. */
-export const WHATSAPP_TEMPLATE_BUTTON_TYPES = ['QUICK_REPLY', 'URL', 'PHONE_NUMBER'] as const;
-export type WhatsappTemplateButtonType = (typeof WHATSAPP_TEMPLATE_BUTTON_TYPES)[number];
+export const WHATSAPP_TEMPLATE_BUTTON_TYPES = [
+  'QUICK_REPLY',
+  'URL',
+  'PHONE_NUMBER',
+] as const;
+export type WhatsappTemplateButtonType =
+  (typeof WHATSAPP_TEMPLATE_BUTTON_TYPES)[number];
 
 /**
  * Meta template name rule: lower-case letters, digits and underscores only.
@@ -145,6 +159,45 @@ export const WHATSAPP_TEMPLATE_NAME_PATTERN = /^[a-z0-9_]+$/;
  * `template.language.code`, so create and send always agree.
  */
 export const WHATSAPP_TEMPLATE_LANGUAGE_PATTERN = /^[a-z]{2,3}(_[A-Z]{2})?$/;
+
+/**
+ * Coexistence (Feature: WhatsApp Business App Coexistence). `STANDARD` is the
+ * existing Embedded Signup flow (a fresh/managed Cloud API number). `COEXISTENCE`
+ * is Meta's "link an existing WhatsApp Business App number" flow — the number
+ * stays registered/usable in the WhatsApp Business App, and history/state sync
+ * runs via `smb_app_data` instead of the usual phone-number registration path.
+ * Stored on `WhatsappAccount.onboarding_type`.
+ */
+export const WHATSAPP_ONBOARDING_TYPE = {
+  STANDARD: 'STANDARD',
+  COEXISTENCE: 'COEXISTENCE',
+} as const;
+
+export type WhatsappOnboardingType =
+  (typeof WHATSAPP_ONBOARDING_TYPE)[keyof typeof WHATSAPP_ONBOARDING_TYPE];
+
+export const WHATSAPP_ONBOARDING_TYPES: WhatsappOnboardingType[] =
+  Object.values(WHATSAPP_ONBOARDING_TYPE);
+
+/**
+ * Lifecycle of ONE coexistence sync operation (`smb_app_state_sync` or
+ * `history` — see `WhatsappCoexistenceSyncService`). `PENDING` is the default
+ * (never triggered yet); `IN_PROGRESS` means the outbound `smb_app_data`
+ * POST succeeded and the platform is waiting on Meta's confirming webhook
+ * (`smb_app_state_sync`/`history` inbound event); `COMPLETED` is set by that
+ * webhook, never by the POST itself — the POST only proves Meta ACCEPTED the
+ * request, not that the sync finished. This is what makes "do not re-run a
+ * completed sync" and "each sync exactly once" checkable from the DB alone.
+ */
+export const COEXISTENCE_SYNC_STATUS = {
+  PENDING: 'PENDING',
+  IN_PROGRESS: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+} as const;
+
+export type CoexistenceSyncStatus =
+  (typeof COEXISTENCE_SYNC_STATUS)[keyof typeof COEXISTENCE_SYNC_STATUS];
 
 /** Channel marker written to `notification_logs.channel` for WhatsApp sends. */
 export const WHATSAPP_CHANNEL = 'WHATSAPP';

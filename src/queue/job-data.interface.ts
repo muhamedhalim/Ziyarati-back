@@ -134,6 +134,18 @@ export interface WhatsappMediaDownloadJob extends BaseJobData {
 }
 
 /**
+ * Coexistence sync (Feature: WhatsApp Business App Coexistence). Runs the
+ * `smb_app_state_sync` → `history` pair via `smb_app_data` for one account.
+ * Carries only ids — `WhatsappCoexistenceSyncService` re-reads the account's
+ * current sync status from the DB before doing anything, which is what makes
+ * a redelivered/duplicated job a safe no-op instead of a re-run.
+ */
+export interface WhatsappCoexistenceSyncJob extends BaseJobData {
+  tenantId: string;
+  accountId: string;
+}
+
+/**
  * Dead-letter envelope for the inbound `whatsapp-webhook`/`whatsapp-media`
  * queues, once a job exhausts its retries. Same shape as `CampaignDlqJob` —
  * unlike campaign dispatch there are no counters to reconcile, so replay here
