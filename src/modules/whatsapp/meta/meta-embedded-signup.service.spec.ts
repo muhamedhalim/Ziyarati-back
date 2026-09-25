@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 
 import { MetaEmbeddedSignupService } from './meta-embedded-signup.service';
 import { MetaConfig } from './meta.config';
@@ -9,6 +10,7 @@ import { WhatsappAccount } from '../../../entities/WhatsApp/WhatsappAccount';
 import { Branch } from '../../../entities/SaaS-Core/Branch';
 import { ErrorCode } from '../../../common/errors';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
+import { QueueService } from '../../../queue/queue.service';
 import { WHATSAPP_CONNECTION_STATUS } from '../whatsapp.constants';
 import {
   createMockRepository,
@@ -33,13 +35,17 @@ describe('MetaEmbeddedSignupService', () => {
     subscribeAppToWaba: jest.Mock;
   };
   let encryption: { encrypt: jest.Mock; decrypt: jest.Mock };
+  let queue: { enqueueWhatsappCoexistenceSync: jest.Mock };
 
   beforeEach(async () => {
     accounts = createMockRepository();
     branches = createMockRepository();
     branches.exists.mockResolvedValue(true);
     accounts.create.mockImplementation((v: object) => ({ ...v }));
-    accounts.save.mockImplementation(async (v: object) => ({ id: 'acc-1', ...v }));
+    accounts.save.mockImplementation(async (v: object) => ({
+      id: 'acc-1',
+      ...v,
+    }));
 
     graph = {
       // Happy path by default; individual tests override one step to prove the gate.
@@ -49,17 +55,27 @@ describe('MetaEmbeddedSignupService', () => {
         isValid: true,
         scopes: ['whatsapp_business_management', 'whatsapp_business_messaging'],
       }),
-      getWaba: jest.fn().mockResolvedValue({ id: 'waba-1', ownerBusinessId: 'biz-1' }),
-      listPhoneNumbers: jest
+      getWaba: jest
         .fn()
-        .mockResolvedValue([
-          { id: 'pid-1', displayPhoneNumber: '+966 50 000 0000', verifiedName: 'Clinic' },
-        ]),
+        .mockResolvedValue({ id: 'waba-1', ownerBusinessId: 'biz-1' }),
+      listPhoneNumbers: jest.fn().mockResolvedValue([
+        {
+          id: 'pid-1',
+          displayPhoneNumber: '+966 50 000 0000',
+          verifiedName: 'Clinic',
+        },
+      ]),
       subscribeAppToWaba: jest.fn().mockResolvedValue(undefined),
+      getPhoneCoexistenceStatus: jest
+        .fn()
+        .mockResolvedValue({ isOnBizApp: true, platformType: 'CLOUD_API' }),
     };
     encryption = {
       encrypt: jest.fn((v?: string) => (v ? `enc(${v})` : v)),
       decrypt: jest.fn((v?: string) => v),
+    };
+    queue = {
+      enqueueWhatsappCoexistenceSync: jest.fn().mockResolvedValue(undefined),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -69,6 +85,7 @@ describe('MetaEmbeddedSignupService', () => {
         { provide: getRepositoryToken(Branch), useValue: branches },
         { provide: MetaGraphClient, useValue: graph },
         { provide: EncryptionService, useValue: encryption },
+        { provide: QueueService, useValue: queue },
         {
           provide: MetaConfig,
           useValue: new MetaConfig(
@@ -90,7 +107,11 @@ describe('MetaEmbeddedSignupService', () => {
     it('exposes ONLY the public identifiers — never the app secret', () => {
       const config = service.publicConfig();
 
-      expect(config).toEqual({ appId: APP_ID, configId: 'cfg-1', graphVersion: 'v21.0' });
+      expect(config).toEqual({
+        appId: APP_ID,
+        configId: 'cfg-1',
+        graphVersion: 'v21.0',
+      });
       expect(JSON.stringify(config)).not.toContain('secret');
     });
   });
@@ -103,8 +124,13 @@ describe('MetaEmbeddedSignupService', () => {
       expect(graph.debugToken).toHaveBeenCalledWith('real-token');
       expect(graph.getWaba).toHaveBeenCalledWith('waba-1', 'real-token');
       // Without the subscription Meta never delivers this clinic's messages.
-      expect(graph.subscribeAppToWaba).toHaveBeenCalledWith('waba-1', 'real-token');
-      expect(account.connection_status).toBe(WHATSAPP_CONNECTION_STATUS.CONNECTED);
+      expect(graph.subscribeAppToWaba).toHaveBeenCalledWith(
+        'waba-1',
+        'real-token',
+      );
+      expect(account.connection_status).toBe(
+        WHATSAPP_CONNECTION_STATUS.CONNECTED,
+      );
       expect(account.connected_at).toBeInstanceOf(Date);
     });
 
@@ -140,11 +166,14 @@ describe('MetaEmbeddedSignupService', () => {
     });
 
     it('binds to a branch when one is given', async () => {
-      const account = await service.complete(TENANT, { ...VALID_DTO, branchId: 'b-1' });
+      const account = await service.complete(TENANT, {
+        ...VALID_DTO,
+        branchId: 'b-1',
+      });
       expect(account.branch).toEqual({ id: 'b-1' });
     });
 
-    it('makes the tenant\'s FIRST connected number its default', async () => {
+    it("makes the tenant's FIRST connected number its default", async () => {
       accounts.exists.mockResolvedValue(false); // no existing default
 
       await service.complete(TENANT, VALID_DTO);
@@ -194,7 +223,11 @@ describe('MetaEmbeddedSignupService', () => {
     });
 
     it('rejects a token Meta reports as invalid', async () => {
-      graph.debugToken.mockResolvedValueOnce({ appId: APP_ID, isValid: false, scopes: [] });
+      graph.debugToken.mockResolvedValueOnce({
+        appId: APP_ID,
+        isValid: false,
+        scopes: [],
+      });
 
       await expect(service.complete(TENANT, VALID_DTO)).rejects.toMatchObject({
         code: ErrorCode.UNPROCESSABLE_ENTITY,
@@ -224,7 +257,9 @@ describe('MetaEmbeddedSignupService', () => {
 
     it('fails when the token cannot actually read the claimed WABA', async () => {
       graph.getWaba.mockRejectedValueOnce(
-        Object.assign(new Error('nope'), { code: ErrorCode.UNPROCESSABLE_ENTITY }),
+        Object.assign(new Error('nope'), {
+          code: ErrorCode.UNPROCESSABLE_ENTITY,
+        }),
       );
       await expect(service.complete(TENANT, VALID_DTO)).rejects.toThrow();
       expect(accounts.save).not.toHaveBeenCalled();
@@ -232,7 +267,10 @@ describe('MetaEmbeddedSignupService', () => {
 
     it('rejects a phone number that is not on the connected WABA', async () => {
       await expect(
-        service.complete(TENANT, { ...VALID_DTO, phoneNumberId: 'not-on-this-waba' }),
+        service.complete(TENANT, {
+          ...VALID_DTO,
+          phoneNumberId: 'not-on-this-waba',
+        }),
       ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
     });
 
@@ -260,7 +298,11 @@ describe('MetaEmbeddedSignupService', () => {
       ]);
 
       await expect(service.complete(TENANT, VALID_DTO)).rejects.toMatchObject({
-        publicContext: { phoneNumbers: [{ id: 'pid-1' }, { id: 'pid-2' }].map(expect.objectContaining) },
+        publicContext: {
+          phoneNumbers: [{ id: 'pid-1' }, { id: 'pid-2' }].map(
+            expect.objectContaining,
+          ),
+        },
       });
     });
 
@@ -297,9 +339,14 @@ describe('MetaEmbeddedSignupService', () => {
     });
 
     it('does not reveal WHICH tenant holds the number', async () => {
-      accounts.findOne.mockResolvedValueOnce({ id: 'other', tenant: { id: 'tenant-2' } });
+      accounts.findOne.mockResolvedValueOnce({
+        id: 'other',
+        tenant: { id: 'tenant-2' },
+      });
 
-      await expect(service.complete(TENANT, VALID_DTO)).rejects.not.toThrow(/tenant-2/);
+      await expect(service.complete(TENANT, VALID_DTO)).rejects.not.toThrow(
+        /tenant-2/,
+      );
     });
 
     it('allows the SAME tenant to reconnect its own number (token refresh)', async () => {
@@ -321,7 +368,7 @@ describe('MetaEmbeddedSignupService', () => {
       expect(account.token_expires_at).toBeUndefined();
     });
 
-    it('prefers debug_token\'s expires_at over the exchange\'s expires_in', async () => {
+    it("prefers debug_token's expires_at over the exchange's expires_in", async () => {
       const at = Math.floor(Date.now() / 1000) + 3600;
       graph.exchangeCode.mockResolvedValueOnce({
         accessToken: 'real-token',
@@ -338,6 +385,141 @@ describe('MetaEmbeddedSignupService', () => {
 
       // The introspected value is authoritative.
       expect(account.token_expires_at?.getTime()).toBe(at * 1000);
+    });
+  });
+
+  describe('Coexistence onboarding (onboardingType: COEXISTENCE)', () => {
+    it('defaults to STANDARD when onboardingType is omitted (the existing flow is unaffected)', async () => {
+      const account = await service.complete(TENANT, VALID_DTO);
+
+      expect(account.onboarding_type).toBe('STANDARD');
+      expect(graph.getPhoneCoexistenceStatus).not.toHaveBeenCalled();
+      expect(queue.enqueueWhatsappCoexistenceSync).not.toHaveBeenCalled();
+    });
+
+    it('persists onboarding_type: COEXISTENCE', async () => {
+      const account = await service.complete(TENANT, {
+        ...VALID_DTO,
+        onboardingType: 'COEXISTENCE',
+      });
+
+      expect(account.onboarding_type).toBe('COEXISTENCE');
+    });
+
+    it('runs the SAME token/WABA/phone verification gates as the standard flow — nothing is skipped for Coexistence', async () => {
+      graph.debugToken.mockResolvedValueOnce({
+        appId: 'someone-elses-app',
+        isValid: true,
+        scopes: ['whatsapp_business_management', 'whatsapp_business_messaging'],
+      });
+
+      await expect(
+        service.complete(TENANT, {
+          ...VALID_DTO,
+          onboardingType: 'COEXISTENCE',
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(accounts.save).not.toHaveBeenCalled();
+      expect(queue.enqueueWhatsappCoexistenceSync).not.toHaveBeenCalled();
+    });
+
+    it('logs the explicit phone-registration-skipped marker for Coexistence, and never for STANDARD', async () => {
+      const logSpy = jest.spyOn(Logger.prototype, 'log');
+
+      await service.complete(TENANT, {
+        ...VALID_DTO,
+        onboardingType: 'COEXISTENCE',
+      });
+      expect(
+        logSpy.mock.calls.some((c) =>
+          String(c[0]).includes('META_COEXISTENCE_PHONE_REGISTRATION_SKIPPED'),
+        ),
+      ).toBe(true);
+
+      logSpy.mockClear();
+      await service.complete(TENANT, VALID_DTO); // STANDARD
+      expect(
+        logSpy.mock.calls.some((c) =>
+          String(c[0]).includes('META_COEXISTENCE_PHONE_REGISTRATION_SKIPPED'),
+        ),
+      ).toBe(false);
+
+      logSpy.mockRestore();
+    });
+
+    it('verifies is_on_biz_app/platform_type via the Graph API and records the result on the account', async () => {
+      await service.complete(TENANT, {
+        ...VALID_DTO,
+        onboardingType: 'COEXISTENCE',
+      });
+
+      expect(graph.getPhoneCoexistenceStatus).toHaveBeenCalledWith(
+        'pid-1',
+        'real-token',
+      );
+      expect(accounts.update).toHaveBeenCalledWith('acc-1', {
+        is_on_biz_app: true,
+        platform_type: 'CLOUD_API',
+      });
+    });
+
+    it('does NOT fail onboarding when Meta has not yet confirmed Coexistence (is_on_biz_app false / wrong platform_type)', async () => {
+      graph.getPhoneCoexistenceStatus.mockResolvedValueOnce({
+        isOnBizApp: false,
+        platformType: 'CLOUD_API',
+      });
+
+      const account = await service.complete(TENANT, {
+        ...VALID_DTO,
+        onboardingType: 'COEXISTENCE',
+      });
+
+      // The connection itself is still valid — a mismatch is reported, not fatal.
+      expect(account.connection_status).toBe(
+        WHATSAPP_CONNECTION_STATUS.CONNECTED,
+      );
+    });
+
+    it('does NOT fail onboarding when the verification READ itself fails (Graph timeout, etc.)', async () => {
+      graph.getPhoneCoexistenceStatus.mockRejectedValueOnce(
+        new Error('Meta did not respond in time'),
+      );
+
+      await expect(
+        service.complete(TENANT, {
+          ...VALID_DTO,
+          onboardingType: 'COEXISTENCE',
+        }),
+      ).resolves.toMatchObject({
+        connection_status: WHATSAPP_CONNECTION_STATUS.CONNECTED,
+      });
+    });
+
+    it('kicks off the coexistence sync job for the connected account', async () => {
+      await service.complete(TENANT, {
+        ...VALID_DTO,
+        onboardingType: 'COEXISTENCE',
+      });
+
+      expect(queue.enqueueWhatsappCoexistenceSync).toHaveBeenCalledWith({
+        tenantId: TENANT,
+        accountId: 'acc-1',
+      });
+    });
+
+    it('does NOT fail onboarding when enqueueing the sync job fails', async () => {
+      queue.enqueueWhatsappCoexistenceSync.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
+
+      await expect(
+        service.complete(TENANT, {
+          ...VALID_DTO,
+          onboardingType: 'COEXISTENCE',
+        }),
+      ).resolves.toMatchObject({
+        connection_status: WHATSAPP_CONNECTION_STATUS.CONNECTED,
+      });
     });
   });
 });

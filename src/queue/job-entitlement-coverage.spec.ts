@@ -30,6 +30,14 @@ const TENANT_JOBS_WITHOUT_A_CAPABILITY: ReadonlySet<JobName> = new Set<JobName>(
     // never gets to see once access is restored. What the ingested data goes on
     // to DO is gated at the execution seam instead.
     JOB.INTEGRATION_INBOUND,
+    // SYNC, same reasoning as WHATSAPP_WEBHOOK_PROCESS/INTEGRATION_INBOUND
+    // above: this pulls the clinic's OWN WhatsApp Business App message
+    // history/state from Meta. Refusing it for a suspended/unentitled tenant
+    // does not protect anything (no send, no AI/messaging spend) — it only
+    // leaves the number permanently unsynced once access is restored, and
+    // Meta's docs are explicit that a sync cannot simply be re-run later
+    // without re-onboarding.
+    JOB.WHATSAPP_COEXISTENCE_SYNC,
   ],
 );
 

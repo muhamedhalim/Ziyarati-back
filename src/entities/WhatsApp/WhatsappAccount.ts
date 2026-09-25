@@ -175,6 +175,58 @@ export class WhatsappAccount {
   last_synced_at?: Date;
 
   /**
+   * 'STANDARD' | 'COEXISTENCE' — see WHATSAPP_ONBOARDING_TYPE. Set once at
+   * Embedded Signup and never changed afterward; decides whether the
+   * onboarding/sync flow treats this number as already registered on the
+   * clinic's own WhatsApp Business App (skip registration, run smb_app_data
+   * sync) or as a normal managed Cloud API number.
+   */
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: 'STANDARD',
+  })
+  onboarding_type!: string;
+
+  /**
+   * Meta's own verdict from `GET /{phone_number_id}?fields=is_on_biz_app,
+   * platform_type`, captured right after Coexistence onboarding. NULL means
+   * "never checked" (a STANDARD account, or a check that hasn't run yet) —
+   * distinct from `false`, which means Meta was asked and said no.
+   */
+  @Column({ type: 'boolean', nullable: true })
+  is_on_biz_app?: boolean | null;
+
+  /** Meta's `platform_type` for this number, e.g. `CLOUD_API`. NULL = never checked. */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  platform_type?: string | null;
+
+  /** See COEXISTENCE_SYNC_STATUS. NULL for a STANDARD account (not applicable). */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  coexistence_state_sync_status?: string;
+
+  /** When the state-sync POST was accepted by Meta, or confirmed by webhook. */
+  @Column({ type: 'timestamptz', nullable: true })
+  coexistence_state_sync_at?: Date;
+
+  /** See COEXISTENCE_SYNC_STATUS. NULL for a STANDARD account (not applicable). */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  coexistence_history_sync_status?: string;
+
+  /** When the history POST was accepted by Meta, or confirmed by webhook. */
+  @Column({ type: 'timestamptz', nullable: true })
+  coexistence_history_sync_at?: Date;
+
+  /**
+   * Last error message from either sync step (Graph rejection, timeout).
+   * Overwritten on every attempt; cleared (NULL) on success. Diagnostics
+   * only — never a token/secret (see MetaGraphClient — Graph errors are
+   * already stripped of credentials before they reach here).
+   */
+  @Column({ type: 'text', nullable: true })
+  coexistence_last_sync_error?: string | null;
+
+  /**
    * The tenant's preferred number when no branch-specific one applies. At most
    * one live default per tenant (partial unique index in the migration) — the
    * explicit answer to "which number?", replacing an implicit oldest-row guess.

@@ -655,8 +655,12 @@ export class WhatsappInboundAiService {
    * customer id is bound into the AI session, see `processTurn`). A synthetic,
    * globally-unique email is used since `customers.email` has no NULL/blank
    * fallback in this schema and WhatsApp never supplies one.
+   *
+   * Public: also reused by `WhatsappCoexistenceEchoService` to resolve the
+   * same contact/customer identity for a `smb_message_echo`'s recipient —
+   * one contact per (tenant, wa_id), never a second lookup implementation.
    */
-  private async findOrCreateContact(
+  async findOrCreateContact(
     tenantId: string,
     waId: string,
     displayName?: string,
@@ -744,8 +748,12 @@ export class WhatsappInboundAiService {
    * replies (tapped buttons / selected list rows) become their title so the
    * model sees the user's choice; media/location/voice become a descriptor so
    * the AI can respond helpfully (native STT/OCR is a provider add-on).
+   *
+   * Public: also reused by `WhatsappCoexistenceEchoService` to render a
+   * `smb_message_echo`'s content for the unified timeline — same message
+   * object shape, same rendering rules, one implementation.
    */
-  private extractContent(message: MetaWebhookMessage): string | undefined {
+  extractContent(message: MetaWebhookMessage): string | undefined {
     switch (message.type) {
       case 'text':
         return message.text?.body?.trim() || undefined;

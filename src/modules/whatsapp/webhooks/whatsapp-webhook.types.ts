@@ -29,10 +29,26 @@ export interface MetaWebhookMessage {
   /** Legacy quick-reply button payload. */
   button?: { text?: string; payload?: string };
   image?: { id?: string; mime_type?: string; caption?: string };
-  document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
+  document?: {
+    id?: string;
+    mime_type?: string;
+    filename?: string;
+    caption?: string;
+  };
   audio?: { id?: string; mime_type?: string; voice?: boolean };
   video?: { id?: string; mime_type?: string; caption?: string };
-  location?: { latitude?: number; longitude?: number; name?: string; address?: string };
+  location?: {
+    latitude?: number;
+    longitude?: number;
+    name?: string;
+    address?: string;
+  };
+  /**
+   * Present on `message_echoes` items (a business-app-sent message going TO
+   * a customer) per Meta's Coexistence documentation — absent on ordinary
+   * inbound `messages` items, where the recipient is implicitly "us".
+   */
+  to?: string;
 }
 
 export interface MetaWebhookContact {
@@ -53,6 +69,24 @@ export interface MetaWebhookChangeValue {
   contacts?: MetaWebhookContact[];
   messages?: MetaWebhookMessage[];
   statuses?: MetaWebhookStatus[];
+  /**
+   * Coexistence (`smb_message_echoes` change field). Meta documents these as
+   * message objects sent by the business FROM the WhatsApp Business App —
+   * same object shape as `messages` above — echoed back to the Cloud API
+   * webhook so ZiyaraTech can mirror them. Never patient-originated: see
+   * `WhatsappCoexistenceEchoService`, the only consumer.
+   */
+  message_echoes?: MetaWebhookMessage[];
+  /**
+   * Coexistence `history`/`smb_app_state_sync` change fields. Deliberately
+   * typed as `unknown` — Meta's exact payload shape for these two fields
+   * isn't asserted anywhere in this codebase (no verified sample payload was
+   * available at implementation time). `WhatsappWebhookService` only reads
+   * this to derive a content-hash idempotency key and to record that a sync
+   * confirmation arrived; nothing here is parsed into typed message content —
+   * see `coexistence-webhook.adapter.ts`, which isolates that uncertainty.
+   */
+  event?: unknown;
 }
 
 export interface MetaWebhookChange {
