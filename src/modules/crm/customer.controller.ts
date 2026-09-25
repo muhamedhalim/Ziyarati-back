@@ -32,7 +32,9 @@ import { QueryCustomersDto } from './dto/query-customers.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { AppError, ErrorCode } from '../../common/errors';
 import { PERMISSION, ROLE } from '../../rbac/rbac.constants';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
 import { ActiveTenantGuard } from '../../core/tenant-context/active-tenant.guard';
@@ -181,7 +183,9 @@ export class CustomerController {
   @ApiOperation({
     summary: 'Update a customer',
     description:
-      '**Protected — `crm.customers.manage`. Clinic active.** Partial update; ID number uniqueness re-checked when changed.',
+      '**Protected — `crm.customers.manage` OR `crm.customers.update_own`. Clinic active.** Partial update; ID number uniqueness re-checked when changed. ' +
+      'A `crm.customers.update_own` holder (doctor) without `manage` may edit only a patient they have an appointment with (403 otherwise) and only contact/demographic fields ' +
+      '(full_name, phone, email, gender, date_of_birth, preferred_locale, has_chronic_diseases, chronic_diseases) — any other field is refused with 403, never silently dropped.',
   })
   @ApiParam({
     name: 'id',
@@ -195,7 +199,8 @@ export class CustomerController {
     schema: S_ERROR,
   })
   @ApiForbiddenResponse({
-    description: 'Caller lacks `crm.customers.manage`, or clinic inactive.',
+    description:
+      'Caller lacks `crm.customers.manage` and `crm.customers.update_own`, or clinic inactive, or (update_own only) the patient is not theirs / a field outside their allow-list was supplied.',
     schema: S_ERROR,
   })
   @ApiNotFoundResponse({
@@ -207,12 +212,31 @@ export class CustomerController {
     schema: S_ERROR,
   })
   @Patch(':id')
-  @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
+  @RequireAnyPermission(
+    PERMISSION.CRM_CUSTOMERS_MANAGE,
+    PERMISSION.CRM_CUSTOMERS_UPDATE_OWN,
+  )
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCustomerDto,
   ) {
-    return this.customers.update(this.ctx.requireTenantId(), id, dto);
+    const tenantId = this.ctx.requireTenantId();
+    const user = this.ctx.getUser();
+    if (!user) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'An authenticated user is required for this operation',
+      });
+    }
+    // Mirrors PermissionsGuard's own super_admin bypass (role-based, not a
+    // literal '*' in `permissions`). A `manage` holder keeps the unchanged,
+    // clinic-wide edit; anyone admitted only by `update_own` is confined to
+    // their own patients and the provider field allow-list.
+    const canManage =
+      user.roles.includes(ROLE.SUPER_ADMIN) ||
+      user.permissions.includes(PERMISSION.CRM_CUSTOMERS_MANAGE);
+    return canManage
+      ? this.customers.update(tenantId, id, dto)
+      : this.customers.updateOwnPatient(tenantId, user.id, id, dto);
   }
 
   @ApiOperation({

@@ -126,8 +126,35 @@ describe('W3 — role-escalation attempts (T090)', () => {
   });
 
   describe('doctor (deliberately minimal) attempting write + admin actions', () => {
-    it('sanity: doctor role holds ONLY dashboard.access + appointments.read_own (rbac.constants.ts:1630-1633)', () => {
-      expect(permissionsForPrincipal('doctor').sort()).toEqual(['appointments.read_own', 'dashboard.access'].sort());
+    it('sanity: doctor role holds its 12 reviewed permissions — own-scoped appointment read/status, own-patient edit, read-only CRM context — and NONE of the tenant-wide appointment/analytics slugs the escalation targets below need (rbac.constants.ts ROLE_PERMISSIONS[doctor])', () => {
+      const perms = permissionsForPrincipal('doctor');
+      expect([...perms].sort()).toEqual(
+        [
+          'appointments.read_own',
+          'appointments.status.update',
+          'clinical.records.manage',
+          'clinical.records.read',
+          'crm.customers.read',
+          'crm.customers.update_own',
+          'crm.files.read',
+          'crm.notes.read',
+          'crm.tags.read',
+          'dashboard.access',
+          'staff.read_own',
+          'staff.schedule.read',
+        ].sort(),
+      );
+      // The slugs each refusal below depends on — a doctor must never hold them.
+      for (const forbidden of [
+        'appointments.create',
+        'appointments.reschedule',
+        'appointments.cancel',
+        'appointments.read',
+        'appointments.update',
+        'analytics.dashboard.read',
+      ]) {
+        expect(perms).not.toContain(forbidden);
+      }
     });
 
     const doctorEscalations: EscalationCase[] = [

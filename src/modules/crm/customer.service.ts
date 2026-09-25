@@ -7,6 +7,7 @@ import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
 import { Customer } from '../../entities/CRM/Customer';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { AppError, ErrorCode } from '../../common/errors';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
@@ -16,6 +17,32 @@ import { UsageService } from '../subscription-billing/usage.service';
 
 /** How many same-phone rows are compared by name when a public booking arrives. */
 const SAME_PHONE_LOOKUP_LIMIT = 20;
+
+/**
+ * The ONLY `UpdateCustomerDto` fields a provider (a doctor holding
+ * `crm.customers.update_own` without `crm.customers.manage`) may change on a
+ * patient they treat — contact and demographic details, plus the chronic-disease
+ * intake answer. Everything else still needs `crm.customers.manage`:
+ *   - `is_active`            deactivates the record
+ *   - `marketing_opt_in`     a consent flag
+ *   - `source`               attribution
+ *   - `national_id`          the sole hard identity key
+ *   - `whatsapp_id`/`_name`  the messaging identity the bot/inbox matches on
+ *   - `has_health_insurance` drives the AI booking payment-link decision, i.e.
+ *                            billing-adjacent
+ * An explicit allow-list (not a deny-list) so a field added to the DTO later is
+ * refused for providers until someone decides it is safe.
+ */
+export const PROVIDER_EDITABLE_CUSTOMER_FIELDS: ReadonlySet<string> = new Set([
+  'full_name',
+  'phone',
+  'email',
+  'gender',
+  'date_of_birth',
+  'preferred_locale',
+  'has_chronic_diseases',
+  'chronic_diseases',
+]);
 
 /**
  * A person's name reduced to what identifies them, for a same-person comparison:
@@ -58,6 +85,7 @@ export class CustomerService {
     @InjectRepository(Customer)
     private readonly customers: Repository<Customer>,
     private readonly usage: UsageService,
+    private readonly staffScope: StaffScopeService,
   ) {}
 
   async create(tenantId: string, dto: CreateCustomerDto): Promise<Customer> {
@@ -183,7 +211,84 @@ export class CustomerService {
     dto: UpdateCustomerDto,
   ): Promise<Customer> {
     const customer = await this.findOneOrThrow(tenantId, id);
+    return this.applyUpdate(tenantId, id, customer, dto);
+  }
 
+  /**
+   * Edit path for a provider holding `crm.customers.update_own` but NOT
+   * `crm.customers.manage` (the doctor). Reached only from the controller,
+   * which sends `manage` holders (and the integration API) through
+   * {@link update} unchanged.
+   *
+   *   1. the customer must exist in THIS tenant (404 otherwise — a foreign
+   *      tenant's id is indistinguishable from a missing one);
+   *   2. the caller must have a (non-deleted) appointment with the patient
+   *      (403 — patients are readable clinic-wide, so a 404 would hide
+   *      nothing, and a clear refusal is the better answer);
+   *   3. only {@link PROVIDER_EDITABLE_CUSTOMER_FIELDS} may carry a value
+   *      (403 naming the refused fields — never silently dropped, mirroring the
+   *      clinical-field rule in `CustomerProfileService.upsert`).
+   */
+  async updateOwnPatient(
+    tenantId: string,
+    userId: string,
+    id: string,
+    dto: UpdateCustomerDto,
+  ): Promise<Customer> {
+    const customer = await this.loadOwnPatientOrThrow(tenantId, userId, id);
+
+    const refused = Object.entries(dto)
+      .filter(
+        ([key, value]) =>
+          value !== undefined && !PROVIDER_EDITABLE_CUSTOMER_FIELDS.has(key),
+      )
+      .map(([key]) => key);
+    if (refused.length > 0) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: `Changing ${refused.join(', ')} requires crm.customers.manage`,
+      });
+    }
+
+    return this.applyUpdate(tenantId, id, customer, dto);
+  }
+
+  /**
+   * Ownership gate for the provider's other write surface (the 1:1 profile).
+   * Same rules 1–2 as {@link updateOwnPatient}.
+   */
+  async assertOwnPatient(
+    tenantId: string,
+    userId: string,
+    id: string,
+  ): Promise<void> {
+    await this.loadOwnPatientOrThrow(tenantId, userId, id);
+  }
+
+  private async loadOwnPatientOrThrow(
+    tenantId: string,
+    userId: string,
+    id: string,
+  ): Promise<Customer> {
+    const customer = await this.findOneOrThrow(tenantId, id);
+    const owns = await this.staffScope.hasAppointmentWithCustomer(
+      tenantId,
+      userId,
+      id,
+    );
+    if (!owns) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'You can only edit patients you have an appointment with',
+      });
+    }
+    return customer;
+  }
+
+  private async applyUpdate(
+    tenantId: string,
+    id: string,
+    customer: Customer,
+    dto: UpdateCustomerDto,
+  ): Promise<Customer> {
     if (dto.national_id && dto.national_id !== customer.national_id) {
       await this.assertNationalIdUnique(tenantId, dto.national_id, id);
     }

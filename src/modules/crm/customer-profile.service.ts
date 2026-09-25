@@ -62,6 +62,25 @@ export class CustomerProfileService {
   }
 
   /**
+   * The provider (doctor, `crm.customers.update_own`) write path: the patient
+   * must be theirs (tenant-existing + an appointment with the caller — see
+   * `CustomerService.assertOwnPatient`), then the SAME upsert as everyone else,
+   * so the clinical-field rule below still applies unchanged. Every profile
+   * field (emergency contact + the 4 clinical ones) is in scope for a provider;
+   * the clinical four are additionally gated by `clinical.records.manage`.
+   */
+  async upsertForOwnPatient(
+    tenantId: string,
+    userId: string,
+    customerId: string,
+    dto: UpdateCustomerProfileDto,
+    hasClinicalManage: boolean,
+  ): Promise<CustomerProfile> {
+    await this.customers.assertOwnPatient(tenantId, userId, customerId);
+    return this.upsert(tenantId, customerId, dto, hasClinicalManage);
+  }
+
+  /**
    * Create-or-update the profile (idempotent). A caller without
    * `clinical.records.manage` who submits ANY of the 4 clinical fields is
    * refused with 403 — never silently dropped (silent data loss on an

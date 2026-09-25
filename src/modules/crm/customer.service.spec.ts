@@ -1,9 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import { CustomerService } from './customer.service';
+import {
+  CustomerService,
+  PROVIDER_EDITABLE_CUSTOMER_FIELDS,
+} from './customer.service';
 import { Customer } from '../../entities/CRM/Customer';
 import { ErrorCode } from '../../common/errors';
+import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
 import {
   createMockRepository,
   createMockQueryBuilder,
@@ -17,9 +21,11 @@ describe('CustomerService', () => {
   let service: CustomerService;
   let customers: MockRepository;
   let usage: { assertResourceWithinLimit: jest.Mock };
+  let staffScope: { hasAppointmentWithCustomer: jest.Mock };
 
   beforeEach(async () => {
     customers = createMockRepository();
+    staffScope = { hasAppointmentWithCustomer: jest.fn().mockResolvedValue(true) };
     // T044 (015-db-api-efficiency-audit, P7-2/ORM-001): list() now reads the
     // tenant FK column via entity metadata (R-11 — Customer exposes no plain
     // `tenantId` property), the same `.metadata.findRelationWithPropertyPath`
@@ -38,6 +44,7 @@ describe('CustomerService', () => {
         CustomerService,
         { provide: getRepositoryToken(Customer), useValue: customers },
         { provide: UsageService, useValue: usage },
+        { provide: StaffScopeService, useValue: staffScope },
       ],
     }).compile();
     service = moduleRef.get(CustomerService);
@@ -293,6 +300,170 @@ describe('CustomerService', () => {
         full_name: 'New',
       } as any);
       expect(res.chronic_diseases).toBe('Asthma');
+    });
+  });
+
+  // Doctor's `crm.customers.update_own` path — ownership + a field allow-list.
+  describe('updateOwnPatient / assertOwnPatient', () => {
+    const DOCTOR_USER = 'doctor-user';
+
+    it('lets a provider edit the contact/demographic fields of a patient they have an appointment with', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500' });
+      customers.save.mockImplementationOnce(async (c: any) => c);
+
+      const res = await service.updateOwnPatient(TENANT, DOCTOR_USER, 'c1', {
+        full_name: 'New Name',
+        phone: '+966511',
+        email: 'new@x.com',
+        gender: 'FEMALE',
+        date_of_birth: '1990-01-01',
+        preferred_locale: 'ar',
+      } as any);
+
+      expect(res).toEqual(
+        expect.objectContaining({ full_name: 'New Name', phone: '+966511' }),
+      );
+      expect(staffScope.hasAppointmentWithCustomer).toHaveBeenCalledWith(
+        TENANT,
+        DOCTOR_USER,
+        'c1',
+      );
+    });
+
+    it('costs exactly ONE customer lookup — the shared update body is not re-loaded', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500' });
+      customers.save.mockImplementationOnce(async (c: any) => c);
+
+      await service.updateOwnPatient(TENANT, DOCTOR_USER, 'c1', {
+        full_name: 'X',
+      } as any);
+
+      expect(customers.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a patient the provider has NO appointment with (403) and never writes', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c2' });
+      staffScope.hasAppointmentWithCustomer.mockResolvedValueOnce(false);
+
+      await expect(
+        service.updateOwnPatient(TENANT, DOCTOR_USER, 'c2', {
+          full_name: 'Hijack',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      expect(customers.save).not.toHaveBeenCalled();
+    });
+
+    it('404s a customer that is not in this tenant BEFORE asking about the relationship — a foreign id is indistinguishable from a missing one', async () => {
+      customers.findOne.mockResolvedValueOnce(null);
+
+      await expect(
+        service.updateOwnPatient(TENANT, DOCTOR_USER, 'foreign', {
+          full_name: 'x',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(staffScope.hasAppointmentWithCustomer).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'is_active',
+      'marketing_opt_in',
+      'source',
+      'national_id',
+      'whatsapp_id',
+      'whatsapp_name',
+      'has_health_insurance',
+    ])(
+      'refuses %s (needs crm.customers.manage) with 403, naming the field — never silently dropped',
+      async (field) => {
+        customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500' });
+
+        await expect(
+          service.updateOwnPatient(TENANT, DOCTOR_USER, 'c1', {
+            full_name: 'ok',
+            [field]: field === 'is_active' ? false : 'x',
+          } as any),
+        ).rejects.toMatchObject({
+          code: ErrorCode.FORBIDDEN,
+          message: expect.stringContaining(field),
+        });
+        expect(customers.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('a refused field is refused even when it is the ONLY field, and an undefined value does not trip the allow-list', async () => {
+      customers.findOne.mockResolvedValue({ id: 'c1', phone: '+966500' });
+      customers.save.mockImplementation(async (c: any) => c);
+
+      await expect(
+        service.updateOwnPatient(TENANT, DOCTOR_USER, 'c1', {
+          national_id: 'ID-9',
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+
+      // A DTO instance can carry own keys whose value is undefined; those must
+      // not count as an attempted change.
+      await expect(
+        service.updateOwnPatient(TENANT, DOCTOR_USER, 'c1', {
+          full_name: 'ok',
+          is_active: undefined,
+          national_id: undefined,
+        } as any),
+      ).resolves.toBeDefined();
+    });
+
+    it('the allow-list is an ALLOW-list: exactly the intake/contact fields, nothing else', () => {
+      expect([...PROVIDER_EDITABLE_CUSTOMER_FIELDS].sort()).toEqual([
+        'chronic_diseases',
+        'date_of_birth',
+        'email',
+        'full_name',
+        'gender',
+        'has_chronic_diseases',
+        'phone',
+        'preferred_locale',
+      ]);
+    });
+
+    it('keeps the chronic-disease cross-field rule authoritative on the provider path too', async () => {
+      customers.findOne.mockResolvedValueOnce({
+        id: 'c1',
+        phone: '+966500',
+        has_chronic_diseases: false,
+        chronic_diseases: null,
+      });
+
+      await expect(
+        service.updateOwnPatient(TENANT, DOCTOR_USER, 'c1', {
+          has_chronic_diseases: true,
+        } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+    });
+
+    it('assertOwnPatient (used by the profile write) applies the same tenant + relationship rules', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c1' });
+      await expect(
+        service.assertOwnPatient(TENANT, DOCTOR_USER, 'c1'),
+      ).resolves.toBeUndefined();
+
+      customers.findOne.mockResolvedValueOnce({ id: 'c2' });
+      staffScope.hasAppointmentWithCustomer.mockResolvedValueOnce(false);
+      await expect(
+        service.assertOwnPatient(TENANT, DOCTOR_USER, 'c2'),
+      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+
+      customers.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.assertOwnPatient(TENANT, DOCTOR_USER, 'nope'),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+
+    it('the ordinary update() path (manage holders, the integration API) never consults the relationship', async () => {
+      customers.findOne.mockResolvedValueOnce({ id: 'c1', phone: '+966500' });
+      customers.save.mockImplementationOnce(async (c: any) => c);
+
+      await service.update(TENANT, 'c1', { national_id: undefined, source: 'x' } as any);
+
+      expect(staffScope.hasAppointmentWithCustomer).not.toHaveBeenCalled();
     });
   });
 
