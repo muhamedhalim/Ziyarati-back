@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { User } from '../../entities/Auth&RBAC/User';
@@ -43,23 +43,23 @@ export interface DashboardAccessState {
 const PROTECTED_ROLE_SLUGS: readonly string[] = [ROLE.SUPER_ADMIN, ROLE.OWNER];
 
 /**
- * Grants / revokes Reception Dashboard access for an EXISTING staff member.
+ * Resends a dashboard set-password invitation for an EXISTING staff member
+ * already holding dashboard access, and derives that access state.
  *
  * ─── DOMAIN MODEL (verified against the schema, not assumed) ────────────────
- * `staff_profiles.user_id` is UNIQUE and every creation path
- * (`StaffService.create` links an existing user, `createWithNewUser`
- * provisions one) always populates it — the model is a strict 1:1
- * Staff↔User. There is therefore NO "staff member without a login account"
- * state, and this service never creates or links an account. Granting access
- * is purely a ROLE CHANGE on the already-linked user, plus the independent
- * `users.is_active` switch for enable/disable.
+ * `staff_profiles.user_id` is UNIQUE and every creation path always populates
+ * it — the model is a strict 1:1 Staff↔User. This service never creates or
+ * links an account; access state is derived from `user_roles` and
+ * `users.is_active`, never stored.
  *
  * ─── AUTHORIZATION ──────────────────────────────────────────────────────────
  * `tenantId` always comes from the authenticated principal (never the body).
  * Every lookup is tenant-scoped, so passing another clinic's staff id yields a
- * 404 rather than any cross-tenant effect (IDOR-safe). The receptionist role is
- * resolved server-side from {@link ROLE}; no role is ever read from the
- * request, so this endpoint cannot be used to mint an owner/manager/admin.
+ * 404 rather than any cross-tenant effect (IDOR-safe).
+ *
+ * Used by `IntegrationStaffProvisioningService` and platform support actions
+ * to re-send a set-password invitation; the clinic-facing "grant dashboard
+ * access" flow that used to live on `/app/staff` has been removed.
  */
 @Injectable()
 export class StaffAccessService {
@@ -75,7 +75,6 @@ export class StaffAccessService {
     private readonly passwordResets: Repository<PasswordReset>,
     @InjectRepository(AuditLog)
     private readonly auditLogs: Repository<AuditLog>,
-    private readonly dataSource: DataSource,
     private readonly authService: AuthService,
     private readonly rolesService: RolesService,
     private readonly email: EmailService,
@@ -208,125 +207,6 @@ export class StaffAccessService {
         message: `Cannot change dashboard access for a "${protectedRole.slug}" account`,
       });
     }
-  }
-
-  /**
-   * Grants Reception Dashboard access: REPLACES the linked account's tenant
-   * role(s) with `receptionist`, re-enables login, invalidates existing
-   * sessions (the permission set changed) and — if the person has never signed
-   * in — emails a single-use set-password invitation.
-   *
-   * Idempotent: re-running for an already-active receptionist is a no-op that
-   * neither re-revokes their sessions nor re-sends an invitation, so a
-   * double-submitted request cannot sign the user out.
-   */
-  async grant(
-    tenantId: string,
-    staffId: string,
-    actorUserId: string,
-    ipAddress?: string,
-  ): Promise<DashboardAccessState> {
-    const { user, roles } = await this.loadTarget(tenantId, staffId);
-    this.assertNotProtected(roles);
-
-    const alreadyReception =
-      roles.length === 1 && roles[0].slug === ROLE.RECEPTIONIST;
-    if (alreadyReception && user.is_active) {
-      // Nothing to change — return current state without side effects.
-      return this.stateFor(user.id);
-    }
-
-    if (!user.email) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message:
-          'This staff member has no email address, so they cannot be given dashboard access',
-      });
-    }
-
-    // Resolved server-side from the RBAC catalogue — never from the request.
-    const receptionRole = await this.rolesService.findAssignableRoleBySlug(
-      ROLE.RECEPTIONIST,
-      tenantId,
-    );
-
-    const previousRoles = roles.map((r) => r.slug);
-
-    await this.dataSource.transaction(async (manager) => {
-      await manager.getRepository(UserRole).delete({ user: { id: user.id } });
-      await manager.getRepository(UserRole).save(
-        manager.getRepository(UserRole).create({
-          user: { id: user.id } as User,
-          role: { id: receptionRole.id } as Role,
-        }),
-      );
-      await manager
-        .getRepository(User)
-        .update({ id: user.id }, { is_active: true });
-    });
-
-    // The permission set changed — existing access/refresh tokens must not
-    // keep carrying the old one.
-    await this.authService.revokeAllForUser(user.id);
-
-    if (!user.last_login_at) {
-      await this.sendInvitation(tenantId, user);
-    }
-
-    await this.audit({
-      tenantId,
-      actorUserId,
-      action: 'staff.dashboard_access.granted',
-      targetUserId: user.id,
-      staffId,
-      ipAddress,
-      oldValues: { roles: previousRoles, is_active: user.is_active },
-      newValues: { roles: [ROLE.RECEPTIONIST], is_active: true },
-    });
-
-    return this.stateFor(user.id);
-  }
-
-  /**
-   * Enables or disables the account's ability to sign in. The StaffProfile —
-   * and every appointment, note and record the person created — is untouched;
-   * only `users.is_active` flips. Disabling also revokes refresh tokens so
-   * live sessions die immediately rather than lingering until expiry.
-   */
-  async setEnabled(
-    tenantId: string,
-    staffId: string,
-    enabled: boolean,
-    actorUserId: string,
-    ipAddress?: string,
-  ): Promise<DashboardAccessState> {
-    const { user, roles } = await this.loadTarget(tenantId, staffId);
-    this.assertNotProtected(roles);
-
-    if (!roles.some((r) => r.slug === ROLE.RECEPTIONIST)) {
-      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-        message: 'This staff member does not have dashboard access yet',
-      });
-    }
-
-    if (user.is_active === enabled) return this.stateFor(user.id); // idempotent
-
-    await this.users.update({ id: user.id }, { is_active: enabled });
-    if (!enabled) await this.authService.revokeAllForUser(user.id);
-
-    await this.audit({
-      tenantId,
-      actorUserId,
-      action: enabled
-        ? 'staff.dashboard_access.enabled'
-        : 'staff.dashboard_access.disabled',
-      targetUserId: user.id,
-      staffId,
-      ipAddress,
-      oldValues: { is_active: user.is_active },
-      newValues: { is_active: enabled },
-    });
-
-    return this.stateFor(user.id);
   }
 
   /**

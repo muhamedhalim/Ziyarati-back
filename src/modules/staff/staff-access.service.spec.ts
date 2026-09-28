@@ -1,5 +1,4 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { StaffAccessService } from './staff-access.service';
@@ -15,15 +14,10 @@ import { ErrorCode } from '../../common/errors';
 import { ROLE } from '../../rbac/rbac.constants';
 import {
   createMockRepository,
-  createMockEntityManager,
-  createMockDataSource,
   MockRepository,
-  MockDataSource,
-  MockEntityManager,
 } from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
-const OTHER_TENANT = 't2';
 const STAFF_ID = 'staff-1';
 const USER_ID = 'u1';
 const ACTOR = 'owner-1';
@@ -41,8 +35,6 @@ describe('StaffAccessService', () => {
   let userRoles: MockRepository;
   let passwordResets: MockRepository;
   let auditLogs: MockRepository;
-  let dataSource: MockDataSource;
-  let manager: MockEntityManager;
   let authService: {
     revokeAllForUser: jest.Mock;
     issuePasswordSetupToken: jest.Mock;
@@ -50,7 +42,6 @@ describe('StaffAccessService', () => {
   };
   let rolesService: {
     listUserRoles: jest.Mock;
-    findAssignableRoleBySlug: jest.Mock;
   };
   let email: { sendInvitation: jest.Mock };
 
@@ -116,8 +107,6 @@ describe('StaffAccessService', () => {
     userRoles = createMockRepository();
     passwordResets = createMockRepository();
     auditLogs = createMockRepository();
-    manager = createMockEntityManager();
-    dataSource = createMockDataSource(manager);
 
     authService = {
       revokeAllForUser: jest.fn().mockResolvedValue(undefined),
@@ -126,7 +115,6 @@ describe('StaffAccessService', () => {
     };
     rolesService = {
       listUserRoles: jest.fn(),
-      findAssignableRoleBySlug: jest.fn().mockResolvedValue(receptionRole),
     };
     email = { sendInvitation: jest.fn().mockResolvedValue(undefined) };
 
@@ -138,7 +126,6 @@ describe('StaffAccessService', () => {
         { provide: getRepositoryToken(UserRole), useValue: userRoles },
         { provide: getRepositoryToken(PasswordReset), useValue: passwordResets },
         { provide: getRepositoryToken(AuditLog), useValue: auditLogs },
-        { provide: DataSource, useValue: dataSource },
         { provide: AuthService, useValue: authService },
         { provide: RolesService, useValue: rolesService },
         { provide: EmailService, useValue: email },
@@ -149,209 +136,6 @@ describe('StaffAccessService', () => {
   });
 
   afterEach(() => jest.clearAllMocks());
-
-  const repo = (entity: unknown) =>
-    manager.getRepository(entity) as unknown as MockRepository;
-
-  // ─────────────────────────────── grant ──────────────────────────────────── //
-
-  describe('grant', () => {
-    it('replaces the existing role with receptionist and re-enables the account', async () => {
-      arrangeTarget({ roles: [{ id: 'role-x', slug: 'custom-role' }] });
-      arrangeStateRead();
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      // Old roles cleared, receptionist inserted — a REPLACE, not an add.
-      expect(repo(UserRole).delete).toHaveBeenCalledWith({
-        user: { id: USER_ID },
-      });
-      expect(repo(UserRole).create).toHaveBeenCalledWith({
-        user: { id: USER_ID },
-        role: { id: receptionRole.id },
-      });
-      expect(repo(User).update).toHaveBeenCalledWith(
-        { id: USER_ID },
-        { is_active: true },
-      );
-    });
-
-    it('resolves the role server-side from the RBAC catalogue, never from input', async () => {
-      arrangeTarget();
-      arrangeStateRead();
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      expect(rolesService.findAssignableRoleBySlug).toHaveBeenCalledWith(
-        ROLE.RECEPTIONIST,
-        TENANT,
-      );
-    });
-
-    it('revokes existing sessions because the permission set changed', async () => {
-      arrangeTarget();
-      arrangeStateRead();
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      expect(authService.revokeAllForUser).toHaveBeenCalledWith(USER_ID);
-    });
-
-    it('emails a set-password invitation when the person has never signed in', async () => {
-      arrangeTarget({ user: { last_login_at: null } });
-      arrangeStateRead();
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      expect(authService.issuePasswordSetupToken).toHaveBeenCalledWith(USER_ID);
-      expect(email.sendInvitation).toHaveBeenCalledWith(
-        expect.objectContaining({ to: 'rec@clinic.com', role: 'Receptionist' }),
-      );
-    });
-
-    it('does not re-send an invitation to someone who has already signed in', async () => {
-      arrangeTarget({ user: { last_login_at: new Date() } });
-      arrangeStateRead({ lastLoginAt: new Date() });
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      expect(email.sendInvitation).not.toHaveBeenCalled();
-    });
-
-    it('is idempotent for an already-active receptionist (no session wipe, no email)', async () => {
-      arrangeTarget({ roles: [receptionRole], user: { is_active: true } });
-      arrangeStateRead();
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      expect(repo(UserRole).delete).not.toHaveBeenCalled();
-      expect(authService.revokeAllForUser).not.toHaveBeenCalled();
-      expect(email.sendInvitation).not.toHaveBeenCalled();
-    });
-
-    it('refuses to touch an owner account', async () => {
-      arrangeTarget({ roles: [{ id: 'r-owner', slug: ROLE.OWNER }] });
-
-      await expect(
-        service.grant(TENANT, STAFF_ID, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
-      expect(repo(UserRole).delete).not.toHaveBeenCalled();
-    });
-
-    it('refuses to touch a super admin account', async () => {
-      arrangeTarget({ roles: [{ id: 'r-sa', slug: ROLE.SUPER_ADMIN }] });
-
-      await expect(
-        service.grant(TENANT, STAFF_ID, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
-    });
-
-    it('rejects a staff id from another clinic as not-found (IDOR)', async () => {
-      staff.findOne.mockResolvedValueOnce(null);
-
-      await expect(
-        service.grant(OTHER_TENANT, STAFF_ID, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
-      // The tenant filter is applied in the query itself.
-      expect(staff.findOne).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: STAFF_ID, tenant: { id: OTHER_TENANT } },
-        }),
-      );
-    });
-
-    it('rejects when the linked account is not in the caller clinic', async () => {
-      arrangeTarget({ userFound: false });
-
-      await expect(
-        service.grant(TENANT, STAFF_ID, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
-    });
-
-    it('rejects a staff member with no email address', async () => {
-      arrangeTarget({ user: { email: undefined } });
-
-      await expect(
-        service.grant(TENANT, STAFF_ID, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
-    });
-
-    it('records an audit entry without any token or credential', async () => {
-      arrangeTarget();
-      arrangeStateRead();
-
-      await service.grant(TENANT, STAFF_ID, ACTOR);
-
-      expect(auditLogs.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: 'staff.dashboard_access.granted',
-          entity_type: 'staff_profile',
-          entity_id: STAFF_ID,
-        }),
-      );
-      const logged = JSON.stringify(auditLogs.create.mock.calls[0][0]);
-      expect(logged).not.toContain('raw-token');
-    });
-  });
-
-  // ───────────────────────────── enable/disable ───────────────────────────── //
-
-  describe('setEnabled', () => {
-    it('disables login and kills live sessions without deleting the staff record', async () => {
-      arrangeTarget({ roles: [receptionRole], user: { is_active: true } });
-      arrangeStateRead({ isActive: false });
-
-      await service.setEnabled(TENANT, STAFF_ID, false, ACTOR);
-
-      expect(users.update).toHaveBeenCalledWith(
-        { id: USER_ID },
-        { is_active: false },
-      );
-      expect(authService.revokeAllForUser).toHaveBeenCalledWith(USER_ID);
-      // The staff profile itself is never removed or soft-deleted here.
-      expect(staff.softRemove).not.toHaveBeenCalled();
-      expect(staff.remove).not.toHaveBeenCalled();
-      expect(staff.save).not.toHaveBeenCalled();
-    });
-
-    it('re-enables login without revoking sessions', async () => {
-      arrangeTarget({ roles: [receptionRole], user: { is_active: false } });
-      arrangeStateRead({ isActive: true });
-
-      await service.setEnabled(TENANT, STAFF_ID, true, ACTOR);
-
-      expect(users.update).toHaveBeenCalledWith(
-        { id: USER_ID },
-        { is_active: true },
-      );
-      expect(authService.revokeAllForUser).not.toHaveBeenCalled();
-    });
-
-    it('is a no-op when already in the requested state', async () => {
-      arrangeTarget({ roles: [receptionRole], user: { is_active: true } });
-      arrangeStateRead();
-
-      await service.setEnabled(TENANT, STAFF_ID, true, ACTOR);
-
-      expect(users.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects a staff member who was never granted access', async () => {
-      arrangeTarget({ roles: [{ id: 'r', slug: 'custom-role' }] });
-
-      await expect(
-        service.setEnabled(TENANT, STAFF_ID, false, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
-    });
-
-    it('refuses to disable an owner account', async () => {
-      arrangeTarget({ roles: [{ id: 'r-owner', slug: ROLE.OWNER }] });
-
-      await expect(
-        service.setEnabled(TENANT, STAFF_ID, false, ACTOR),
-      ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
-    });
-  });
 
   // ──────────────────────────── resend invitation ─────────────────────────── //
 

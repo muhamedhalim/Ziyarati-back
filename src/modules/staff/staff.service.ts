@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
-import { DataSource, ILike, In, Not, Repository } from 'typeorm';
+import { DataSource, ILike, In, Repository } from 'typeorm';
 
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { StaffService as StaffServiceEntity } from '../../entities/Staff/StaffService';
@@ -15,22 +15,16 @@ import { Service } from '../../entities/Services/Service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
-import { AppError, ErrorCode, isUniqueViolation } from '../../common/errors';
+import { AppError, ErrorCode } from '../../common/errors';
 import { slugify, uniqueSlug } from '../../common/utils/slugify.util';
-import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { QueryStaffDto } from './dto/query-staff.dto';
 import { AssignServicesDto } from './dto/assign-services.dto';
 import { AssignBranchesDto } from './dto/assign-branches.dto';
-import { EligibleUsersQueryDto } from './dto/eligible-users-query.dto';
 import { CreateStaffWithNewUserDto } from './dto/create-staff-with-new-user.dto';
 
 import { AuthService } from '../auth/auth.service';
 import { RolesService } from '../auth/roles.service';
-import {
-  StaffAccessService,
-  type DashboardAccessState,
-} from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { EmailService } from '../email/email.service';
@@ -119,7 +113,6 @@ export class StaffService {
     private readonly staffServices: Repository<StaffServiceEntity>,
     @InjectRepository(BranchUser)
     private readonly branchUsers: Repository<BranchUser>,
-    @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(UserRole)
     private readonly userRoles: Repository<UserRole>,
     @InjectRepository(AuditLog)
@@ -129,37 +122,11 @@ export class StaffService {
     private readonly dataSource: DataSource,
     private readonly authService: AuthService,
     private readonly rolesService: RolesService,
-    private readonly access: StaffAccessService,
     private readonly storage: StorageService,
     private readonly usage: UsageService,
     private readonly email: EmailService,
     private readonly branchScope: BranchScopeService,
   ) {}
-
-  /**
-   * Attaches each profile's derived Reception Dashboard access state so the
-   * Staff page can render an access column without a second round-trip.
-   * Resolved in bulk (one set of queries for the whole page, never per row).
-   *
-   * Transient/presentation-only — `dashboard_access` is not a column and is
-   * never persisted; write paths load through `loadProfile`, which skips this.
-   */
-  private async withAccessState<T extends StaffProfile>(
-    profiles: T[],
-  ): Promise<(T & { dashboard_access?: DashboardAccessState })[]> {
-    const userIds = profiles.map((p) => p.user?.id).filter(Boolean) as string[];
-    const states = await this.access.getAccessStates(userIds);
-
-    return profiles.map((profile) => {
-      const decorated = profile as T & {
-        dashboard_access?: DashboardAccessState;
-      };
-      if (profile.user?.id) {
-        decorated.dashboard_access = states.get(profile.user.id);
-      }
-      return decorated;
-    });
-  }
 
   /** Roles this tenant may assign to staff — backs the Add Staff role selector. */
   async findAssignableRoles(
@@ -224,8 +191,8 @@ export class StaffService {
    * doctor system role, or the synthesized custom ("Other") role, with its
    * exact permission set — so the Edit Staff dialog can prefill the role
    * selector without a second round-trip. Bulk (one query for the whole
-   * page), mirroring {@link withAccessState}. Assumes the established
-   * single-role-per-staff-account model (see StaffAccessService docblock);
+   * page, never per row). Assumes the established single-role-per-staff-
+   * account model (see StaffAccessService docblock);
    * a user holding more than one role is defensively left with `role: null`
    * here rather than guessing which one to show.
    */
@@ -319,16 +286,6 @@ export class StaffService {
     return uniqueSlug(base, (candidate) => taken.has(candidate));
   }
 
-  /** `error` came from a `staff_profiles` INSERT that violated a unique
-   *  constraint — true only when it was specifically `public_slug`. */
-  private isPublicSlugConflict(error: unknown): boolean {
-    return (
-      isUniqueViolation(error) &&
-      (error as { constraint?: string }).constraint ===
-        'UQ_staff_profiles_public_slug'
-    );
-  }
-
   /**
    * The write-time half of {@link PUBLIC_BOOKING_EXCLUDED_ROLES} (see its
    * own docblock in rbac.constants.ts): forces `is_available_for_booking`
@@ -379,85 +336,6 @@ export class StaffService {
         { is_available_for_booking: false },
       );
     }
-  }
-
-  async create(tenantId: string, dto: CreateStaffDto): Promise<StaffProfile> {
-    const user = await this.users.findOne({
-      where: { id: dto.userId, tenant: { id: tenantId } },
-    });
-    if (!user) {
-      throw new AppError(ErrorCode.NOT_FOUND, {
-        message: 'User not found in this clinic',
-      });
-    }
-
-    // `user_id` is globally unique on staff_profiles. Include soft-deleted
-    // rows here: a deleted profile still owns that user_id in PostgreSQL, so
-    // treating it as eligible would only defer the conflict to INSERT.
-    const existing = await this.staff.findOne({
-      where: { user: { id: dto.userId } },
-      withDeleted: true,
-    });
-    if (existing) {
-      throw new AppError(ErrorCode.CONFLICT, {
-        message: 'This user already has a staff profile',
-      });
-    }
-
-    if (dto.avatarStorageKey) {
-      this.storage.assertKeyBelongsToTenant(dto.avatarStorageKey, tenantId);
-    }
-
-    // Public-booking exclusion (write-time invariant) — `dto.userId` links
-    // an EXISTING user, whose role(s) were assigned separately (this method
-    // never assigns one), so their CURRENT role decides bookability here.
-    const existingRoles = await this.rolesService.listUserRoles(
-      dto.userId,
-      tenantId,
-    );
-    const bookable = this.resolveBookableFlag(
-      existingRoles.map((r) => r.slug),
-      dto.isAvailableForBooking ?? true,
-    );
-
-    let saved: StaffProfile | undefined;
-    const MAX_SLUG_ATTEMPTS = 5;
-    for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
-      const publicSlug = await this.generatePublicSlug(user.full_name);
-      const profile = this.staff.create({
-        tenant: { id: tenantId } as Tenant,
-        user: { id: dto.userId } as User,
-        title: dto.title,
-        bio: dto.bio,
-        avatar_storage_key: dto.avatarStorageKey,
-        booking_buffer_minutes: dto.bookingBufferMinutes ?? 0,
-        is_available_for_booking: bookable,
-        public_slug: publicSlug,
-      });
-      try {
-        saved = await this.staff.save(profile);
-        break;
-      } catch (error) {
-        // Two independent unique constraints can fail this INSERT:
-        // `user_id` (the pre-insert existence check above gives the clear
-        // response for the ordinary case; this is the race-safe backstop
-        // when two requests pass that check concurrently) and, now,
-        // `public_slug` (this generation loop's own race backstop — retry
-        // with a freshly regenerated candidate rather than surface a
-        // confusing conflict to the caller for an internal implementation
-        // detail they never supplied).
-        if (this.isPublicSlugConflict(error) && attempt < MAX_SLUG_ATTEMPTS) {
-          continue;
-        }
-        if (isUniqueViolation(error)) {
-          throw new AppError(ErrorCode.CONFLICT, {
-            message: 'This user already has a staff profile',
-          });
-        }
-        throw error;
-      }
-    }
-    return this.findOne(tenantId, saved!.id);
   }
 
   /**
@@ -833,64 +711,7 @@ export class StaffService {
       data.map((profile) => this.withResolvedAvatar(profile, tenantId)),
     );
     return {
-      data: await this.withRoleDetail(await this.withAccessState(data)),
-      total,
-      page: query.page,
-      limit: query.limit,
-    };
-  }
-
-  /**
-   * Users this tenant can turn into staff via "Link existing user": active,
-   * belong to the tenant, and don't already have a staff profile (including a
-   * soft-deleted one, because the one-to-one database constraint still retains
-   * that user ID). Two bulk queries rather than per-user staff lookups, so
-   * this stays free of N+1 queries while retaining typed repository access.
-   */
-  async findEligibleUsers(tenantId: string, query: EligibleUsersQueryDto) {
-    // This deliberately has no tenant condition: the database relationship is
-    // one-to-one globally, so a corrupted cross-tenant row must still prevent
-    // this picker from advertising a user that cannot be linked.
-    const linked = await this.staff.find({
-      relations: { user: true },
-      select: { id: true, user: { id: true } },
-      withDeleted: true,
-    });
-    const linkedIds = linked.map((sp) => sp.user.id);
-
-    const base: Record<string, unknown> = {
-      tenant: { id: tenantId },
-      is_active: true,
-      ...(linkedIds.length ? { id: Not(In(linkedIds)) } : {}),
-    };
-
-    const where = query.search
-      ? [
-          { ...base, full_name: ILike(`%${query.search}%`) },
-          { ...base, email: ILike(`%${query.search}%`) },
-        ]
-      : base;
-
-    const [data, total] = await this.users.findAndCount({
-      where,
-      relations: { userRoles: { role: true } },
-      order: { full_name: 'ASC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
-    });
-
-    return {
-      data: data.map((user) => ({
-        id: user.id,
-        fullName: user.full_name ?? null,
-        email: user.email ?? null,
-        role: user.userRoles?.[0]?.role
-          ? {
-              slug: user.userRoles[0].role.slug,
-              name: user.userRoles[0].role.name,
-            }
-          : null,
-      })),
+      data: await this.withRoleDetail(data),
       total,
       page: query.page,
       limit: query.limit,
@@ -927,8 +748,7 @@ export class StaffService {
   async findOne(tenantId: string, id: string): Promise<StaffProfile> {
     const profile = await this.loadProfile(tenantId, id);
     await this.withResolvedAvatar(profile, tenantId);
-    const [withAccess] = await this.withAccessState([profile]);
-    const [decorated] = await this.withRoleDetail([withAccess]);
+    const [decorated] = await this.withRoleDetail([profile]);
     return decorated;
   }
 
