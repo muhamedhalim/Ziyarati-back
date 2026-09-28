@@ -11,6 +11,7 @@ import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
 
 import { TenantService } from './tenant.service';
 import { BranchService } from './branch.service';
+import { BranchCityService } from './branch-city.service';
 import { TenantVerificationService } from './tenant-verification.service';
 
 import { TenantController } from './tenant.controller';
@@ -60,7 +61,12 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     BranchController,
     TenantVerificationController,
   ],
-  providers: [TenantService, BranchService, TenantVerificationService],
+  providers: [
+    TenantService,
+    BranchService,
+    BranchCityService,
+    TenantVerificationService,
+  ],
   exports: [TenantService, BranchService, TenantVerificationService],
 })
 export class TenantModule {}

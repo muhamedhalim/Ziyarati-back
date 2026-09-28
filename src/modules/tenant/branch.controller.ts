@@ -64,7 +64,18 @@ const S_BRANCH_DETAIL = {
       nullable: true,
       example: 'King Fahad Rd, Olaya, Riyadh 12211',
     },
-    cityId: { type: 'string', format: 'uuid', nullable: true },
+    city_id: { type: 'string', format: 'uuid', nullable: true },
+    city: {
+      type: 'object',
+      nullable: true,
+      description:
+        'The city of this branch, resolved from `city_id` (the same data the public booking site shows). `null` when none is recorded.',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        name_ar: { type: 'string', nullable: true, example: 'الرياض' },
+        name_en: { type: 'string', nullable: true, example: 'Riyadh' },
+      },
+    },
     phone: { type: 'string', nullable: true, example: '+966112345678' },
     whatsappPhone: {
       type: 'string',
@@ -107,8 +118,9 @@ export class BranchController {
 **Protected — \`branches.create\` required (granted to \`owner\`/\`manager\` today). Tenant must be active.**
 
 Creates a new physical branch (location) for the caller's clinic.
-Each branch can have its own phone number, WhatsApp number, city, and
-timezone — supporting clinics with multiple independent locations.
+Each branch can have its own phone number, WhatsApp number, city
+(\`city\`, free text in any language — reused or created in the shared
+\`cities\` lookup), and timezone — supporting clinics with multiple independent locations.
 
 **Branch-level WhatsApp:** If \`whatsappPhone\` is set, this branch
 runs its own AI chatbot instance for appointment bookings. Without it,
