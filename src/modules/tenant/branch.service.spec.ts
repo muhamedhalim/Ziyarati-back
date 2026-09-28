@@ -5,6 +5,8 @@ import { BranchService } from './branch.service';
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { BranchUser } from '../../entities/Multi Branch/BranchUser';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
+import { Tenant } from '../../entities/SaaS-Core/Tenant';
+import { BranchCityService } from './branch-city.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { AppRedisService } from '../../queue/app-redis.service';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
@@ -23,6 +25,12 @@ describe('BranchService', () => {
   let branches: MockRepository;
   let branchUsers: MockRepository;
   let appointments: MockRepository;
+  let tenants: MockRepository;
+  let cities: {
+    resolveByName: jest.Mock;
+    exists: jest.Mock;
+    loadByIds: jest.Mock;
+  };
   let usage: { assertCountWithinLimit: jest.Mock };
   let redis: { application: { get: jest.Mock; set: jest.Mock } };
 
@@ -30,6 +38,17 @@ describe('BranchService', () => {
     branches = createMockRepository();
     branchUsers = createMockRepository();
     appointments = createMockRepository();
+    tenants = createMockRepository();
+    tenants.findOne.mockResolvedValue({
+      id: TENANT,
+      default_timezone: 'Africa/Cairo',
+      country_id: 3,
+    });
+    cities = {
+      resolveByName: jest.fn().mockResolvedValue('city-1'),
+      exists: jest.fn().mockResolvedValue(true),
+      loadByIds: jest.fn().mockResolvedValue(new Map()),
+    };
     usage = { assertCountWithinLimit: jest.fn().mockResolvedValue(undefined) };
     redis = {
       application: {
@@ -50,6 +69,8 @@ describe('BranchService', () => {
         { provide: getRepositoryToken(Branch), useValue: branches },
         { provide: getRepositoryToken(BranchUser), useValue: branchUsers },
         { provide: getRepositoryToken(Appointment), useValue: appointments },
+        { provide: getRepositoryToken(Tenant), useValue: tenants },
+        { provide: BranchCityService, useValue: cities },
         { provide: UsageService, useValue: usage },
         { provide: AppRedisService, useValue: redis },
         { provide: TenantContextService, useValue: new TenantContextService() },
@@ -82,6 +103,139 @@ describe('BranchService', () => {
       service.create(TENANT, { name: 'X' } as any),
     ).rejects.toBeDefined();
     expect(branches.save).not.toHaveBeenCalled();
+  });
+
+  describe('city / location', () => {
+    beforeEach(() => {
+      branches.create.mockImplementation((b: any) => b);
+      branches.save.mockImplementation(async (b: any) => ({ id: 'b1', ...b }));
+      cities.loadByIds.mockResolvedValue(
+        new Map([
+          ['city-1', { id: 'city-1', name_ar: null, name_en: 'Riyadh' }],
+        ]),
+      );
+    });
+
+    it('create resolves the typed city and persists it as city_id (reusing branches.city_id)', async () => {
+      branches.count.mockResolvedValueOnce(0);
+      const res = await service.create(TENANT, {
+        name: 'Main',
+        city: 'Riyadh',
+      } as any);
+      expect(cities.resolveByName).toHaveBeenCalledWith('Riyadh', 3);
+      expect(branches.save).toHaveBeenCalledWith(
+        expect.objectContaining({ city_id: 'city-1' }),
+      );
+      expect(res.city).toEqual({
+        id: 'city-1',
+        name_ar: null,
+        name_en: 'Riyadh',
+      });
+    });
+
+    it('create derives the tenant from the argument only and inherits the clinic default timezone', async () => {
+      branches.count.mockResolvedValueOnce(0);
+      await service.create(TENANT, { name: 'Main', city: 'Riyadh' } as any);
+      expect(tenants.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: TENANT } }),
+      );
+      expect(branches.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenant: { id: TENANT },
+          timezone: 'Africa/Cairo',
+        }),
+      );
+    });
+
+    it('an explicit timezone from an API caller still wins over the clinic default', async () => {
+      branches.count.mockResolvedValueOnce(0);
+      await service.create(TENANT, {
+        name: 'Main',
+        timezone: 'Asia/Dubai',
+      } as any);
+      expect(branches.save).toHaveBeenCalledWith(
+        expect.objectContaining({ timezone: 'Asia/Dubai' }),
+      );
+    });
+
+    it('update changes only the location and keeps the other fields', async () => {
+      branches.findOne.mockResolvedValue({
+        id: 'b1',
+        name: 'Main Branch',
+        city_id: 'old',
+        timezone: 'UTC',
+      });
+      const res = await service.update(TENANT, 'b1', {
+        city: 'الرياض',
+      } as any);
+      expect(cities.resolveByName).toHaveBeenCalledWith('الرياض', 3);
+      expect(res.name).toBe('Main Branch');
+      expect(res.city_id).toBe('city-1');
+    });
+
+    it('a partial update without a city never re-resolves or clears it', async () => {
+      branches.findOne.mockResolvedValue({
+        id: 'b1',
+        name: 'Main Branch',
+        city_id: 'old',
+      });
+      const res = await service.update(TENANT, 'b1', {
+        isActive: false,
+      } as any);
+      expect(cities.resolveByName).not.toHaveBeenCalled();
+      expect(res.city_id).toBe('old');
+    });
+
+    it("update is tenant-scoped: another clinic's branch is a 404 and nothing is written", async () => {
+      branches.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.update(TENANT, 'foreign', { city: 'Riyadh' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(branches.findOne).toHaveBeenCalledWith({
+        where: { id: 'foreign', tenant: { id: TENANT } },
+      });
+      expect(cities.resolveByName).not.toHaveBeenCalled();
+      expect(branches.save).not.toHaveBeenCalled();
+    });
+
+    it('update_own callers may not change the location of a branch they are not assigned to', async () => {
+      branches.findOne.mockResolvedValue({ id: 'b1', name: 'Main' });
+      branchUsers.find.mockResolvedValueOnce([{ branch: { id: 'other' } }]);
+      await expect(
+        service.update(TENANT, 'b1', { city: 'Riyadh' } as any, {
+          id: 'u2',
+          permissions: [PERMISSION.BRANCHES_UPDATE_OWN],
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.PERMISSION_DENIED });
+      expect(cities.resolveByName).not.toHaveBeenCalled();
+    });
+
+    it('rejects sending both city and cityId', async () => {
+      branches.findOne.mockResolvedValue({ id: 'b1', name: 'Main' });
+      await expect(
+        service.update(TENANT, 'b1', { city: 'Riyadh', cityId: 'x' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+    });
+
+    it('rejects a cityId that does not exist', async () => {
+      branches.findOne.mockResolvedValue({ id: 'b1', name: 'Main' });
+      cities.exists.mockResolvedValueOnce(false);
+      await expect(
+        service.update(TENANT, 'b1', { cityId: 'missing' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(branches.save).not.toHaveBeenCalled();
+    });
+
+    it("findAll attaches each branch's city with a single batched lookup", async () => {
+      branches.find.mockResolvedValueOnce([
+        { id: 'b1', city_id: 'city-1' },
+        { id: 'b2', city_id: null },
+      ]);
+      const res = await service.findAll(TENANT);
+      expect(cities.loadByIds).toHaveBeenCalledTimes(1);
+      expect(res[0].city?.name_en).toBe('Riyadh');
+      expect(res[1].city).toBeNull();
+    });
   });
 
   it('findOne throws for an unknown branch', async () => {

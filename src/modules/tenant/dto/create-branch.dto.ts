@@ -1,4 +1,6 @@
+import { Transform } from 'class-transformer';
 import {
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
@@ -27,7 +29,23 @@ export class CreateBranchDto {
   address?: string;
 
   @ApiPropertyOptional({
-    description: 'City reference UUID (FK to cities lookup table).',
+    description:
+      'Human-readable city / area of the branch, in any language (e.g. "Riyadh", "الرياض", "Nasr City"). Resolved against the shared `cities` lookup — an existing city is reused, an unknown one is created — and persisted as the branch `city_id`, which the public booking site reads. Cannot be combined with `cityId`.',
+    example: 'Riyadh',
+    maxLength: 100,
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : value,
+  )
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  city?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'City reference UUID (FK to cities lookup table). Prefer `city` unless you already hold the id.',
     example: 'c1d2e3f4-0000-0000-0000-000000000050',
     format: 'uuid',
   })

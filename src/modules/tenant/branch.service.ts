@@ -14,6 +14,10 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { COUNT_LIMIT } from '../subscription-billing/usage-metric';
 import { PERMISSION } from '../../rbac/rbac.constants';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
+import { BranchCity, BranchCityService } from './branch-city.service';
+
+/** A branch plus its resolved city (`null` when none is recorded). */
+export type BranchWithCity = Branch & { city: BranchCity | null };
 
 /** Caller identity for the branches.update_own ownership check (FND-017). */
 export interface BranchCaller {
@@ -34,11 +38,16 @@ export class BranchService {
     private readonly branchUsers: Repository<BranchUser>,
     @InjectRepository(Appointment)
     private readonly appointments: Repository<Appointment>,
+    @InjectRepository(Tenant) private readonly tenants: Repository<Tenant>,
     private readonly usage: UsageService,
     private readonly branchScope: BranchScopeService,
+    private readonly cities: BranchCityService,
   ) {}
 
-  async create(tenantId: string, dto: CreateBranchDto): Promise<Branch> {
+  async create(
+    tenantId: string,
+    dto: CreateBranchDto,
+  ): Promise<BranchWithCity> {
     // Plan limit: max_branches. Counts the tenant's existing (non-deleted)
     // branches and rejects (422) when the cap would be exceeded. No-op under
     // free mode / active override.
@@ -51,27 +60,45 @@ export class BranchService {
       current,
     );
 
+    const tenant = await this.tenants.findOne({
+      where: { id: tenantId },
+      select: { id: true, default_timezone: true, country_id: true },
+    });
+    const cityId = await this.resolveCityId(dto, tenant?.country_id);
+
     const branch = this.branches.create({
       tenant: { id: tenantId } as Tenant,
       name: dto.name,
       address: dto.address,
-      city_id: dto.cityId,
+      city_id: cityId,
       phone: dto.phone,
       whatsapp_phone: dto.whatsappPhone,
-      timezone: dto.timezone ?? 'UTC',
+      // The branch form no longer asks for a timezone, so an unspecified one
+      // inherits the clinic's own default rather than a hard-coded 'UTC'.
+      timezone: dto.timezone ?? tenant?.default_timezone ?? 'UTC',
       is_active: true,
     });
-    return this.branches.save(branch);
+    return this.withCity(await this.branches.save(branch));
   }
 
-  findAll(tenantId: string): Promise<Branch[]> {
-    return this.branches.find({
+  async findAll(tenantId: string): Promise<BranchWithCity[]> {
+    const rows = await this.branches.find({
       where: { tenant: { id: tenantId } },
       order: { created_at: 'ASC' },
     });
+    const byId = await this.cities.loadByIds(rows.map((b) => b.city_id ?? ''));
+    return rows.map((b) => ({
+      ...b,
+      city: (b.city_id && byId.get(b.city_id)) || null,
+    }));
   }
 
-  async findOne(tenantId: string, id: string): Promise<Branch> {
+  async findOne(tenantId: string, id: string): Promise<BranchWithCity> {
+    return this.withCity(await this.findEntity(tenantId, id));
+  }
+
+  /** Tenant-scoped entity lookup — the one place a branch is fetched by id. */
+  private async findEntity(tenantId: string, id: string): Promise<Branch> {
     const branch = await this.branches.findOne({
       where: { id, tenant: { id: tenantId } },
     });
@@ -86,8 +113,8 @@ export class BranchService {
     id: string,
     dto: UpdateBranchDto,
     caller?: BranchCaller,
-  ): Promise<Branch> {
-    const branch = await this.findOne(tenantId, id);
+  ): Promise<BranchWithCity> {
+    const branch = await this.findEntity(tenantId, id);
     // FND-017 — a caller holding only branches.update_own (not the
     // tenant-wide branches.update) may update ONLY a branch they're
     // assigned to. Mirrors the APPOINTMENTS_READ_OWN pattern: the guard
@@ -96,16 +123,64 @@ export class BranchService {
     if (caller && !caller.permissions.includes(PERMISSION.BRANCHES_UPDATE)) {
       await this.assertOwnBranch(tenantId, id, caller.id);
     }
+    // Only touch the city when the caller actually sent one, so a partial
+    // update (e.g. the active toggle) never re-resolves or clears it.
+    let cityId = branch.city_id;
+    if (dto.city !== undefined || dto.cityId !== undefined) {
+      const tenant = await this.tenants.findOne({
+        where: { id: tenantId },
+        select: { id: true, country_id: true },
+      });
+      cityId = await this.resolveCityId(dto, tenant?.country_id);
+    }
     Object.assign(branch, {
       name: dto.name ?? branch.name,
       address: dto.address ?? branch.address,
-      city_id: dto.cityId ?? branch.city_id,
+      city_id: cityId,
       phone: dto.phone ?? branch.phone,
       whatsapp_phone: dto.whatsappPhone ?? branch.whatsapp_phone,
       timezone: dto.timezone ?? branch.timezone,
       is_active: dto.isActive ?? branch.is_active,
     });
-    return this.branches.save(branch);
+    return this.withCity(await this.branches.save(branch));
+  }
+
+  /**
+   * Turns the request's city input into a `cities.id`. `city` (free text) is
+   * find-or-created; `cityId` must reference an existing row. Sending both is
+   * ambiguous, so it is rejected rather than silently preferring one.
+   */
+  private async resolveCityId(
+    dto: { city?: string; cityId?: string },
+    countryId?: number | null,
+  ): Promise<string | undefined> {
+    if (dto.city !== undefined && dto.cityId !== undefined) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'Send either "city" or "cityId", not both',
+      });
+    }
+    if (dto.city !== undefined) {
+      return this.cities.resolveByName(dto.city, countryId);
+    }
+    if (dto.cityId !== undefined) {
+      if (!(await this.cities.exists(dto.cityId))) {
+        throw new AppError(ErrorCode.BAD_REQUEST, {
+          message: 'Unknown cityId',
+        });
+      }
+      return dto.cityId;
+    }
+    return undefined;
+  }
+
+  private async withCity(branch: Branch): Promise<BranchWithCity> {
+    const byId = await this.cities.loadByIds(
+      branch.city_id ? [branch.city_id] : [],
+    );
+    return {
+      ...branch,
+      city: (branch.city_id && byId.get(branch.city_id)) || null,
+    };
   }
 
   /**
@@ -117,7 +192,7 @@ export class BranchService {
    * preserves the branch row for their audit trail.
    */
   async remove(tenantId: string, id: string): Promise<void> {
-    const branch = await this.findOne(tenantId, id);
+    const branch = await this.findEntity(tenantId, id);
 
     const totalBranches = await this.branches.count({
       where: { tenant: { id: tenantId } },
