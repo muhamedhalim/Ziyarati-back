@@ -15,6 +15,11 @@ import {
   type TenantVerificationSubmittedEvent,
 } from '../../../events/tenant.events';
 
+import {
+  HANDOVER_EVENT,
+  type HandoverRequestedEvent,
+} from '../../../events/handover.events';
+
 import { InternalNotificationService } from './internal-notification.service';
 import { preview } from './notification-catalog';
 
@@ -154,6 +159,29 @@ export class InternalNotificationListener {
       tenantId: event.tenantId,
       actorUserId: event.actorUserId,
       variables: { clinicName: event.clinicName },
+    });
+  }
+
+  // ───────────────────────── Live Agent Handover ──────────────────────────── //
+
+  /**
+   * The ONE place either handover trigger (the patient asking for a human, or
+   * the assistant's promised-contact safety net — see
+   * `AiOrchestratorService.maybeEscalateOnPromisedContact`) reaches the
+   * internal inbox: both go through `HandoverRequestService.create()`, which
+   * emits this same event regardless of which trigger fired.
+   *
+   * `event.reason` is free text a caller supplied (the patient's own words,
+   * or the safety net's fixed sentence) — truncated to a single-line preview
+   * before it is stored, same treatment `SUPPORT_TICKET_REPLIED` gives a
+   * ticket reply. No customer name or message content is read or stored here.
+   */
+  @OnEvent(HANDOVER_EVENT.REQUESTED)
+  async onHandoverRequested(event: HandoverRequestedEvent): Promise<void> {
+    await this.notifications.emit('HANDOVER_REQUESTED', {
+      tenantId: event.tenantId,
+      variables: { reason: preview(event.reason) },
+      refs: { handoverId: event.handoverId, conversationId: event.conversationId },
     });
   }
 }

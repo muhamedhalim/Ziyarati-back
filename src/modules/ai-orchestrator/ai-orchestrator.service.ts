@@ -14,6 +14,8 @@ import { AppError, ErrorCode } from '../../common/errors';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
 import { ConfigService } from '@nestjs/config';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
+import { HandoverRequestService } from '../ai/handover-request.service';
+import { promisesHumanContact } from './human-contact-promise.util';
 
 export interface OrchestrateInput {
   channel: AiChannel;
@@ -123,6 +125,7 @@ export class AiOrchestratorService {
     private readonly config: ConfigService,
     private readonly tenantContext: TenantContextService,
     private readonly access: AiConversationAccessService,
+    private readonly handovers: HandoverRequestService,
   ) {}
 
   /**
@@ -185,6 +188,11 @@ export class AiOrchestratorService {
       },
       transport,
       memoryLoader,
+    );
+    await this.maybeEscalateOnPromisedContact(
+      tenantId,
+      conversationId,
+      result.message.content,
     );
     return {
       channel: input.channel,
@@ -259,6 +267,11 @@ export class AiOrchestratorService {
       memoryLoader,
       onToolEvent,
     );
+    await this.maybeEscalateOnPromisedContact(
+      tenantId,
+      conversationId,
+      result.message.content,
+    );
     return {
       channel: input.channel,
       aiConversationId: conversationId,
@@ -281,6 +294,49 @@ export class AiOrchestratorService {
       mirroredMessageId: result.mirroredMessageId,
       handedOver: false as const,
     };
+  }
+
+  /**
+   * Live Agent Handover's SECOND trigger: the assistant told the patient a
+   * clinic person will contact them, without calling `request_human_handover`
+   * itself. Runs on the FINAL reply of every turn, for both `handle` and
+   * `handleStream` — the one place both channels converge.
+   *
+   * Deliberately reuses `HandoverRequestService.requestForCustomer` — the
+   * EXACT method the tool (`AiToolDispatchService.requestHumanHandover`) and
+   * the socket's `ai:handover` event already call. That keeps this a second
+   * TRIGGER for the same one escalation path, not a second notification
+   * mechanism: the same domain event, the same realtime broadcast, and the
+   * same persisted internal notification fire either way.
+   *
+   * Guarded on the conversation's CURRENT status (re-read fresh, not the
+   * turn's own `handedOver: false` envelope constant) so this never fires
+   * twice for one escalation: if `request_human_handover` already ran earlier
+   * in this same turn, the conversation is already HANDED_OVER by the time
+   * this runs, and `create()`'s own idempotency guard covers everything else
+   * (a retried/duplicated turn, a double-tap on the same message).
+   *
+   * Never allowed to fail the turn: the reply was already sent to the patient.
+   */
+  private async maybeEscalateOnPromisedContact(
+    tenantId: string,
+    aiConversationId: string | undefined,
+    replyContent: string | null | undefined,
+  ): Promise<void> {
+    if (!aiConversationId || !promisesHumanContact(replyContent)) return;
+    try {
+      const aiConv = await this.conversations.findOne(tenantId, aiConversationId);
+      if (aiConv.status === AI_CONVERSATION_STATUS.HANDED_OVER) return;
+      await this.handovers.requestForCustomer(tenantId, this.tenantContext.getUser(), {
+        aiConversationId,
+        reason:
+          'Auto-detected: the assistant told the patient the clinic would contact them.',
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Auto-escalation on a promised human callback failed (aiConversationId=${aiConversationId}): ${(err as Error)?.message}`,
+      );
+    }
   }
 
   /** Shared envelope for a turn that was persisted but NOT answered (handed over). */

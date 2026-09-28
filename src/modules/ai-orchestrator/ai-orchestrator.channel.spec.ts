@@ -54,6 +54,7 @@ describe('AiOrchestratorService channel allow-list (F-13)', () => {
       new ConfigService({}),
       { getUser: jest.fn().mockReturnValue(principal) } as any,
       { assertAccess: jest.fn().mockResolvedValue(conv) } as any,
+      { requestForCustomer: jest.fn() } as any,
     );
     return { service, execution, sessions };
   }

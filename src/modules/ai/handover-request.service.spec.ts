@@ -69,10 +69,39 @@ describe('HandoverRequestService', () => {
 
   it('creates a handover and flips a linked AI conversation to HANDED_OVER', async () => {
     handovers.save.mockResolvedValueOnce({ id: 'h1' });
+    // First call is the new idempotency pre-check (no open handover yet); the
+    // second is the trailing `this.findOne()` that returns the saved row.
+    handovers.findOne.mockResolvedValueOnce(null);
     handovers.findOne.mockResolvedValueOnce({ id: 'h1', status: HANDOVER_STATUS.PENDING });
     aiConversations.findOne.mockResolvedValueOnce({ id: 'ai1', status: 'ACTIVE' });
     await service.create(TENANT, { conversationId: 'c1', aiConversationId: 'ai1' } as any);
     expect(aiConversations.save).toHaveBeenCalled();
+  });
+
+  describe('idempotency', () => {
+    it('returns the existing OPEN handover instead of creating a duplicate', async () => {
+      handovers.findOne.mockResolvedValueOnce({
+        id: 'h-existing',
+        status: HANDOVER_STATUS.PENDING,
+        conversation: { id: 'c1' },
+      });
+      const res = await service.create(TENANT, { conversationId: 'c1' } as any);
+      expect(res).toMatchObject({ id: 'h-existing' });
+      expect(handovers.save).not.toHaveBeenCalled();
+    });
+
+    it('a TERMINAL existing handover does not block a fresh one', async () => {
+      handovers.save.mockResolvedValueOnce({ id: 'h2' });
+      handovers.findOne.mockResolvedValueOnce({
+        id: 'h-old',
+        status: HANDOVER_STATUS.RESOLVED,
+        conversation: { id: 'c1' },
+      });
+      handovers.findOne.mockResolvedValueOnce({ id: 'h2', status: HANDOVER_STATUS.PENDING });
+      const res = await service.create(TENANT, { conversationId: 'c1' } as any);
+      expect(handovers.save).toHaveBeenCalled();
+      expect(res).toMatchObject({ id: 'h2' });
+    });
   });
 
   it('rejects a conversation not in the tenant with 422', async () => {
@@ -136,6 +165,7 @@ describe('HandoverRequestService', () => {
     });
 
     it('a staff / WhatsApp principal is filed under ITS OWN tenant, as before — the clinic resolver is never consulted', async () => {
+      handovers.findOne.mockResolvedValueOnce(null); // idempotency pre-check: nothing open yet
       aiConversations.findOne.mockResolvedValueOnce({ id: 'ai1', status: 'ACTIVE', conversation: { id: 'c1' } });
       await service.requestForCustomer(CLINIC, STAFF, { aiConversationId: 'ai1', reason: 'x' } as any);
       expect(publicBooking.resolveSelectedClinic).not.toHaveBeenCalled();
@@ -144,6 +174,7 @@ describe('HandoverRequestService', () => {
     });
 
     it("a guest is filed under the clinic the SERVER resolved, and its AI conversation is looked up in the guest's own tenant", async () => {
+      handovers.findOne.mockResolvedValueOnce(null); // idempotency pre-check: nothing open yet
       aiConversations.findOne.mockResolvedValueOnce({ id: 'ai1', status: 'ACTIVE', conversation: undefined });
       await service.requestForCustomer(DISCOVERY, GUEST, { aiConversationId: 'ai1', reason: 'wants a person' } as any);
 
@@ -154,6 +185,7 @@ describe('HandoverRequestService', () => {
     });
 
     it('a guest cannot choose the clinic: any tenant / conversation id in the DTO is ignored', async () => {
+      handovers.findOne.mockResolvedValueOnce(null); // idempotency pre-check: nothing open yet
       aiConversations.findOne.mockResolvedValueOnce({ id: 'ai1', status: 'ACTIVE' });
       await service.requestForCustomer(DISCOVERY, GUEST, {
         aiConversationId: 'ai1',
@@ -175,6 +207,7 @@ describe('HandoverRequestService', () => {
     });
 
     it("opens a FRESH conversation in the clinic and links the guest's AI conversation to it (a stale link from another tenant is never reused)", async () => {
+      handovers.findOne.mockResolvedValueOnce(null); // idempotency pre-check: nothing open yet
       aiConversations.findOne.mockResolvedValueOnce({
         id: 'ai1',
         status: 'ACTIVE',
@@ -205,6 +238,7 @@ describe('HandoverRequestService', () => {
     });
 
     it("seeds the clinic's conversation with the guest's recent chat, read ONLY from the guest's own tenant", async () => {
+      handovers.findOne.mockResolvedValueOnce(null); // idempotency pre-check: nothing open yet
       aiConversations.findOne.mockResolvedValueOnce({ id: 'ai1', status: 'ACTIVE' });
       aiMessages.find.mockResolvedValueOnce([
         { role: 'assistant', content: 'How can I help?' },
@@ -224,6 +258,7 @@ describe('HandoverRequestService', () => {
     });
 
     it("a failure while seeding the transcript never stops the request being filed", async () => {
+      handovers.findOne.mockResolvedValueOnce(null); // idempotency pre-check: nothing open yet
       aiConversations.findOne.mockResolvedValueOnce({ id: 'ai1', status: 'ACTIVE' });
       aiMessages.find.mockRejectedValueOnce(new Error('db hiccup'));
       await expect(
