@@ -57,9 +57,6 @@ export const ACTIVITY_VISIBLE_AUDIT_ACTIONS = [
   // new writer at all.
   'staff.role.assigned',
   'staff.role.changed',
-  'staff.dashboard_access.granted',
-  'staff.dashboard_access.enabled',
-  'staff.dashboard_access.disabled',
   'staff.dashboard_access.invitation_resent',
   // ── Marketing (S7 email, S8 segmentation) ───────────────────────────────
   'campaign.launched',

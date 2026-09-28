@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Logger } from '@nestjs/common';
-import { DataSource, In, QueryFailedError } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { StaffService } from './staff.service';
@@ -17,7 +17,6 @@ import { Branch } from '../../entities/SaaS-Core/Branch';
 import { AppError, ErrorCode } from '../../common/errors';
 import { AuthService } from '../auth/auth.service';
 import { RolesService } from '../auth/roles.service';
-import { StaffAccessService } from './staff-access.service';
 import { StorageService } from '../storage/storage.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import {
@@ -72,7 +71,6 @@ describe('StaffService', () => {
     assertCountWithinLimit: jest.Mock;
     assertUserSeatWithinLimit: jest.Mock;
   };
-  let staffAccess: { getAccessStates: jest.Mock };
 
   beforeEach(async () => {
     staff = createMockRepository();
@@ -108,7 +106,6 @@ describe('StaffService', () => {
       assertCountWithinLimit: jest.fn().mockResolvedValue(undefined),
       assertUserSeatWithinLimit: jest.fn().mockResolvedValue(undefined),
     };
-    staffAccess = { getAccessStates: jest.fn().mockResolvedValue(new Map()) };
     storage = {
       assertKeyBelongsToTenant: jest.fn(),
       getSignedDownloadUrl: jest
@@ -140,10 +137,6 @@ describe('StaffService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: AuthService, useValue: authService },
         { provide: RolesService, useValue: rolesService },
-        // Only used to decorate read results with derived access state; an
-        // empty map keeps `dashboard_access` undefined and leaves the shapes
-        // these tests assert on untouched.
-        { provide: StaffAccessService, useValue: staffAccess },
         { provide: StorageService, useValue: storage },
         { provide: UsageService, useValue: usage },
         { provide: EmailService, useValue: email },
@@ -171,64 +164,6 @@ describe('StaffService', () => {
 
   const repo = (entity: unknown) =>
     manager.getRepository(entity) as unknown as MockRepository;
-
-  describe('create', () => {
-    it('creates a profile for a tenant user', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'u1' });
-      staff.findOne.mockResolvedValueOnce(null); // no existing profile
-      staff.save.mockResolvedValueOnce({ id: 'staff-1' });
-      staff.findOne.mockResolvedValueOnce({ id: 'staff-1' }); // reload
-      await expect(
-        service.create(TENANT, { userId: 'u1' } as any),
-      ).resolves.toEqual({ id: 'staff-1' });
-      expect(staff.create).toHaveBeenCalledWith(
-        expect.objectContaining({ user: { id: 'u1' }, tenant: { id: TENANT } }),
-      );
-    });
-
-    it('rejects a user not in the clinic', async () => {
-      users.findOne.mockResolvedValueOnce(null);
-      await expect(
-        service.create(TENANT, { userId: 'x' } as any),
-      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
-      expect(users.findOne).toHaveBeenCalledWith({
-        where: { id: 'x', tenant: { id: TENANT } },
-      });
-      expect(staff.findOne).not.toHaveBeenCalled();
-    });
-
-    it('rejects a duplicate staff profile for a user', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'u1' });
-      staff.findOne.mockResolvedValueOnce({ id: 'existing' });
-      await expect(
-        service.create(TENANT, { userId: 'u1' } as any),
-      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
-      expect(staff.findOne).toHaveBeenCalledWith({
-        where: { user: { id: 'u1' } },
-        withDeleted: true,
-      });
-    });
-
-    it('rejects a concurrent duplicate insert with the same clear conflict', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'u1' });
-      staff.findOne.mockResolvedValueOnce(null);
-      staff.save.mockRejectedValueOnce(
-        Object.assign(
-          new QueryFailedError('INSERT', [], new Error('duplicate key')),
-          {
-            code: '23505',
-          },
-        ),
-      );
-
-      await expect(
-        service.create(TENANT, { userId: 'u1' } as any),
-      ).rejects.toMatchObject({
-        code: ErrorCode.CONFLICT,
-        message: 'This user already has a staff profile',
-      });
-    });
-  });
 
   describe('findAll', () => {
     it('returns empty when a branch filter matches no users', async () => {
@@ -383,14 +318,16 @@ describe('StaffService', () => {
       expect(result.avatar_url).toBe('https://legacy.example.com/a.png');
     });
 
-    it('create validates the uploaded key belongs to the tenant', async () => {
-      users.findOne.mockResolvedValueOnce({ id: 'u1' });
-      staff.findOne.mockResolvedValueOnce(null);
-      staff.save.mockResolvedValueOnce({ id: 'staff-1' });
+    it('createWithNewUser validates the uploaded key belongs to the tenant', async () => {
+      users.findOne.mockResolvedValueOnce(null);
+      authService.createUserWithRole.mockResolvedValueOnce({
+        id: 'new-user-1',
+      });
       staff.findOne.mockResolvedValueOnce({ id: 'staff-1' });
 
-      await service.create(TENANT, {
-        userId: 'u1',
+      await service.createWithNewUser(TENANT, {
+        email: 'new.staff@clinic.com',
+        fullName: 'New Staff',
         avatarStorageKey: `${TENANT}/staff-avatar/x.jpg`,
       } as any);
 
@@ -560,60 +497,6 @@ describe('StaffService', () => {
       } as any);
       expect(repo(BranchUser).delete).toHaveBeenCalled();
       expect(res).toEqual([{ id: 'bu1' }]);
-    });
-  });
-
-  describe('findEligibleUsers', () => {
-    it('excludes users who already have a staff profile and maps role info', async () => {
-      staff.find.mockResolvedValueOnce([
-        { id: 'sp1', user: { id: 'u-linked' } },
-      ]);
-      users.findAndCount.mockResolvedValueOnce([
-        [
-          {
-            id: 'u1',
-            full_name: 'Sara',
-            email: 's@x.com',
-            userRoles: [
-              { role: { slug: 'receptionist', name: 'Receptionist' } },
-            ],
-          },
-          { id: 'u2', full_name: 'No Role', email: 'n@x.com', userRoles: [] },
-        ],
-        2,
-      ]);
-
-      const res = await service.findEligibleUsers(TENANT, {
-        page: 1,
-        limit: 10,
-      } as any);
-
-      expect(staff.find).toHaveBeenCalledWith(
-        expect.objectContaining({ withDeleted: true }),
-      );
-      expect(res.total).toBe(2);
-      expect(res.data[0]).toEqual({
-        id: 'u1',
-        fullName: 'Sara',
-        email: 's@x.com',
-        role: { slug: 'receptionist', name: 'Receptionist' },
-      });
-      expect(res.data[1].role).toBeNull();
-    });
-
-    it('adds a name/email OR filter when search is provided', async () => {
-      staff.find.mockResolvedValueOnce([]);
-      users.findAndCount.mockResolvedValueOnce([[], 0]);
-
-      await service.findEligibleUsers(TENANT, {
-        page: 1,
-        limit: 10,
-        search: 'sara',
-      } as any);
-
-      const [{ where }] = users.findAndCount.mock.calls[0];
-      expect(Array.isArray(where)).toBe(true);
-      expect(where).toHaveLength(2);
     });
   });
 

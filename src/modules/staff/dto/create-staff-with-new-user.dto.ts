@@ -16,14 +16,14 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CUSTOM_ROLE_SENTINEL, ROLE } from '../../../rbac/rbac.constants';
 
 /**
- * "Create new staff user" — the second Add Staff Member path. Creates the
+ * "Create new staff user" — the Add Staff Member path. Creates the
  * User account, its role, and the StaffProfile in one atomic step (see
  * `StaffService.createWithNewUser`). No password field: the account is
  * provisioned with a system-generated temporary password, returned once in
  * the response — the admin never types or sees it beforehand.
  *
  * Tenant scoping: no `tenantId`. The tenant comes from the authenticated
- * principal, exactly like `CreateStaffDto`.
+ * principal.
  */
 export class CreateStaffWithNewUserDto {
   // ── Account ──────────────────────────────────────────────────────────── //
