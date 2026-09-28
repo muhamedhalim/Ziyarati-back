@@ -69,6 +69,7 @@ describe('AiOrchestratorService memory consent gate', () => {
       // F-1: resuming now goes through the ownership check rather than a bare
       // tenant-scoped findOne. A non-guest principal passes on tenant alone.
       { assertAccess: jest.fn().mockResolvedValue(conv) } as any,
+      { requestForCustomer: jest.fn() } as any,
     );
     return { service, memory, execution, sessions };
   }

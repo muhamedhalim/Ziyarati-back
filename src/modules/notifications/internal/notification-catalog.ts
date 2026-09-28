@@ -344,6 +344,73 @@ export const NOTIFICATION_CATALOG = {
     },
   },
 
+  // ───────────────────────── Live Agent Handover ─────────────────────────── //
+
+  /**
+   * A conversation needs a human — either the patient asked for one
+   * (`request_human_handover` / the widget's `ai:handover` socket event), or
+   * the assistant told the patient a clinic person would contact them and the
+   * backend's own safety net escalated it for them
+   * (`AiOrchestratorService.maybeEscalateOnPromisedContact`). Both triggers
+   * emit the exact same `HandoverRequestedEvent` through
+   * `HandoverRequestService.create()`, so this is the ONE catalog entry for
+   * both — see `internal-notification.listener.ts`.
+   *
+   * Recipients mirror the Agent Inbox's own audience (`ai.handover.read` —
+   * Owner/Manager/Receptionist by default), which is exactly who the realtime
+   * `ai:handover` broadcast already reaches; this is the durable counterpart
+   * for whoever was offline when it fired.
+   *
+   * No customer name or message content is carried — only the free-text
+   * `reason` a caller supplied (already length-bounded via `preview()` at the
+   * listener), which is either the patient's own stated reason or nothing at
+   * all. Identification is by clicking through to the conversation itself.
+   */
+  HANDOVER_REQUESTED: {
+    scope: NOTIFICATION_SCOPE.TENANT,
+    category: NOTIFICATION_CATEGORY.CONVERSATIONS,
+    priority: NOTIFICATION_PRIORITY.HIGH,
+    recipients: tenantPermission(PERMISSION.AI_HANDOVER_READ),
+    // A patient waiting on a human is not something a clinic should be able
+    // to silently miss.
+    mandatory: true,
+    variables: ['reason'],
+    // Keyed on the handover id: each genuinely new escalation (explicit or
+    // auto-detected) opens its own row, but `HandoverRequestService.create()`
+    // now refuses to open a second OPEN handover for the same conversation —
+    // so a retried trigger reuses the same id and produces zero extra rows.
+    dedupe: (ctx) => {
+      const handoverId = ref(ctx, 'handoverId');
+      return handoverId ? `handover:requested:${handoverId}` : null;
+    },
+    link: (ctx) => {
+      const conversationId = ref(ctx, 'conversationId');
+      return conversationId
+        ? `/app/conversations?conversationId=${conversationId}`
+        : '/app/conversations';
+    },
+    entity: (ctx) => ({
+      type: 'Conversation',
+      id: ref(ctx, 'conversationId') ?? undefined,
+    }),
+    render: {
+      en: (v) => ({
+        title: 'A patient needs a human agent',
+        body:
+          v.reason !== MISSING_VARIABLE_PLACEHOLDER
+            ? v.reason
+            : 'A conversation was escalated to a human agent and needs your attention.',
+      }),
+      ar: (v) => ({
+        title: 'يحتاج مريض إلى موظف بشري',
+        body:
+          v.reason !== MISSING_VARIABLE_PLACEHOLDER
+            ? v.reason
+            : 'تم تحويل محادثة إلى موظف بشري وتحتاج إلى انتباهك.',
+      }),
+    },
+  },
+
   /**
    * Migrated from `admin_notifications`, which this replaces as the platform
    * feed. It was that table's ONLY producer, and its read state was global

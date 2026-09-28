@@ -213,6 +213,23 @@ export class HandoverRequestService {
       await this.assertConversation(tenantId, conversationId!);
     }
 
+    // Idempotency: a conversation may have at most one OPEN (non-terminal)
+    // handover at a time. A double-tap on "talk to a human", a retried
+    // webhook re-running the same AI tool call, or the assistant's promised-
+    // contact safety net (`AiOrchestratorService.maybeEscalateOnPromisedContact`)
+    // firing on a conversation that was already escalated a moment earlier —
+    // all resolve to the SAME request instead of opening a duplicate. This
+    // also caps the notification fan-out: `HANDOVER_REQUESTED` dedupes on the
+    // handover id, so two handover rows would be two distinct notifications.
+    const existing = await this.handovers.findOne({
+      where: { conversation: { id: conversationId }, tenant: { id: tenantId } },
+      relations: { conversation: true, assigned_to: true, transferred_from: true },
+      order: { created_at: 'DESC' },
+    });
+    if (existing && !TERMINAL_HANDOVER_STATUSES.includes(existing.status as HandoverStatus)) {
+      return existing;
+    }
+
     const handover = await this.handovers.save(
       this.handovers.create({
         tenant: { id: tenantId } as Tenant,

@@ -58,6 +58,8 @@ describe('notification catalog', () => {
         eventId: 'dddddddd-0000-4000-8000-000000000004',
         overrideId: 'eeeeeeee-0000-4000-8000-000000000005',
         endsAt: '2026-01-01T00:00:00.000Z',
+        handoverId: 'ffffffff-0000-4000-8000-000000000006',
+        conversationId: '11111111-0000-4000-8000-000000000007',
       },
     };
   }
