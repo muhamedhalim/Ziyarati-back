@@ -69,6 +69,17 @@ export const INTEGRATION_SCOPE_REQUIRES: Partial<Record<IntegrationScope, Permis
   [INTEGRATION_SCOPE.APPOINTMENTS_WRITE]: PERMISSION.APPOINTMENTS_CREATE,
 };
 
+/**
+ * The scopes a TENANT-issued key may carry — every scope with a required
+ * internal permission. Deliberately excludes `marketplace:discovery` (SEC-11):
+ * it is a platform-level scope only ever minted by `createPlatformKey`, and
+ * letting the tenant DTO allowlist accept it meant a super-admin acting inside a
+ * tenant could mint a tenant-bound key carrying it.
+ */
+export const TENANT_GRANTABLE_SCOPES: IntegrationScope[] = INTEGRATION_SCOPES.filter(
+  (s) => INTEGRATION_SCOPE_REQUIRES[s] !== undefined,
+);
+
 /** Narrows an arbitrary string array to the ones that are valid scopes (legacy/junk-safe). */
 export function normalizeScopes(raw: unknown): IntegrationScope[] {
   if (!Array.isArray(raw)) return [];

@@ -1,4 +1,9 @@
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+
+import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import {
+  TENANT_GRANTABLE_SCOPES,
   assertScopesGrantable,
   normalizeScopes,
   INTEGRATION_SCOPE,
@@ -94,5 +99,25 @@ describe('integration-scopes.constants', () => {
         assertScopesGrantable([INTEGRATION_SCOPE.APPOINTMENTS_READ], [], true),
       ).not.toThrow();
     });
+  });
+});
+
+describe('SEC-11 — tenant-issued keys can never carry the platform-level scope', () => {
+  it('TENANT_GRANTABLE_SCOPES is exactly every scope that has a required permission', () => {
+    expect(TENANT_GRANTABLE_SCOPES).not.toContain(INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY);
+    expect([...TENANT_GRANTABLE_SCOPES].sort()).toEqual([...TENANT_SCOPED_ONLY].sort());
+  });
+
+  it('the create-key DTO rejects marketplace:discovery even though a super-admin could otherwise grant it', async () => {
+    const dto = plainToInstance(CreateApiKeyDto, {
+      permissions: [INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY],
+    });
+    const errors = await validate(dto);
+    expect(errors.map((e) => e.property)).toContain('permissions');
+  });
+
+  it('the create-key DTO still accepts every tenant scope', async () => {
+    const dto = plainToInstance(CreateApiKeyDto, { permissions: [...TENANT_GRANTABLE_SCOPES] });
+    expect(await validate(dto)).toEqual([]);
   });
 });

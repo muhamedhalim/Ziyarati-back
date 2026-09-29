@@ -798,7 +798,8 @@ describe('CustomerService', () => {
       // Pagination + ordering are untouched by the extra OR branch.
       expect(arg.skip).toBe(10);
       expect(arg.take).toBe(10);
-      expect(arg.order).toEqual({ created_at: 'DESC' });
+      // `id` is the unique tiebreaker: rows tying on created_at must not repeat/skip across pages.
+      expect(arg.order).toEqual({ created_at: 'DESC', id: 'DESC' });
     });
 
     it('search uses a single where object when no term is given', async () => {

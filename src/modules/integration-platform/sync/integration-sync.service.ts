@@ -586,9 +586,8 @@ export class IntegrationSyncService {
    * Recover runs left active by a dead worker (idempotent). NOTE (Phase 0):
    * `start()` no longer risks an enqueue-failure-stuck `pending` row — that
    * path now goes through the transactional outbox. This still matters for a
-   * worker that dies mid-`process()` (row already `running`). Not currently
-   * wired to a scheduled sweep — see the identical note on
-   * `IntegrationImportJobService.recoverStale`.
+   * worker that dies mid-`process()` (row already `running`). Scheduled every 2
+   * minutes by IntegrationRecoveryProcessor.
    */
   async recoverStale(olderThanMs = 60_000): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);

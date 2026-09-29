@@ -35,6 +35,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
     "pretest:e2e:integration-platform": "npm run build && node test/setup-e2e-db.js",
     "test:e2e:integration-platform": "jest --config ./test/jest-e2e-integration-platform.json",
+    "test:e2e:integration-simulation": "jest --config ./test/jest-e2e.json --runInBand test/integration-external-simulation.e2e-spec.ts test/integration-outbound-simulation.e2e-spec.ts",
     "test:security": "jest --config ./test/jest-security.json",
     "test:ai:live": "jest openai-model-compat",
     "test:ai:benchmark": "jest ai-evaluation.live",

@@ -8,9 +8,11 @@ import { StaffService } from '../../entities/Staff/StaffService';
 
 import { ServiceService } from './service.service';
 import { ServiceCategoryService } from './service-category.service';
+import { ServiceImportService } from './service-import.service';
 
 import { ServiceController } from './service.controller';
 import { ServiceCategoryController } from './service-category.controller';
+import { ServiceImportController } from './service-import.controller';
 
 /**
  * Service Catalog Domain — the central source of truth for every bookable
@@ -32,7 +34,8 @@ import { ServiceCategoryController } from './service-category.controller';
  *
  * Controller order matters: ServiceCategoryController is registered BEFORE
  * ServiceController so the static `services/categories` path is never shadowed
- * by the `services/:id` param route.
+ * by the `services/:id` param route. ServiceImportController (`services/import/*`)
+ * is registered before ServiceController for the same reason.
  */
 @Module({
   imports: [
@@ -41,8 +44,8 @@ import { ServiceCategoryController } from './service-category.controller';
     // upcoming bookings / active staff assignments before retiring a service.
     TypeOrmModule.forFeature([Service, ServiceCategory, AppointmentService, StaffService]),
   ],
-  controllers: [ServiceCategoryController, ServiceController],
-  providers: [ServiceService, ServiceCategoryService],
+  controllers: [ServiceCategoryController, ServiceImportController, ServiceController],
+  providers: [ServiceService, ServiceCategoryService, ServiceImportService],
   exports: [ServiceService, ServiceCategoryService],
 })
 export class ServicesModule {}

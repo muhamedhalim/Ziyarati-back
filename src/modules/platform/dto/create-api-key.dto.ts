@@ -9,7 +9,7 @@ import {
   MaxLength,
 } from 'class-validator';
 
-import { INTEGRATION_SCOPES } from '../integration-scopes.constants';
+import { TENANT_GRANTABLE_SCOPES } from '../integration-scopes.constants';
 
 /**
  * Create an API key for external (machine-to-machine) integrations — ERP, HIS,
@@ -30,17 +30,21 @@ export class CreateApiKeyDto {
       'each scope maps to (see integration-scopes.constants.ts), so a key can never exceed its ' +
       "issuer's own access.",
     type: [String],
-    enum: INTEGRATION_SCOPES,
+    enum: TENANT_GRANTABLE_SCOPES,
     example: ['integration.services.read', 'integration.appointments.read'],
   })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(INTEGRATION_SCOPES.length)
+  @ArrayMaxSize(TENANT_GRANTABLE_SCOPES.length)
   @IsString({ each: true })
-  @IsIn(INTEGRATION_SCOPES, { each: true })
+  @IsIn(TENANT_GRANTABLE_SCOPES, { each: true })
   permissions?: string[];
 
-  @ApiPropertyOptional({ description: 'Expiry timestamp (ISO-8601). Omit for no expiry.', example: '2027-01-01T00:00:00Z' })
+  @ApiPropertyOptional({
+    description:
+      'Expiry timestamp (ISO-8601). Must be in the future. Omit for no expiry — but a finite expiry is recommended (e.g. one year) for a credential handed to a third party.',
+    example: '2027-01-01T00:00:00Z',
+  })
   @IsOptional()
   @IsISO8601()
   expiresAt?: string;

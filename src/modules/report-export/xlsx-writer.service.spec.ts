@@ -77,4 +77,27 @@ describe('XlsxWriterService (T182)', () => {
     expect(rowCount).toBe(1);
     expect(fetchPage).toHaveBeenCalledTimes(1);
   });
+
+  it('SEC-05 — neutralises formula-looking text but leaves numbers and phone numbers intact', async () => {
+    const { buffer } = await writer.writeToBuffer(COLUMNS, async () => ({
+      rows: [
+        { a: '=HYPERLINK("http://evil","x")', b: -5 },
+        { a: '+966 50 123 4567', b: 12 },
+        { a: '@SUM(1+1)', b: 'Sara' },
+      ],
+      nextCursor: null,
+    }));
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
+    const sheet = workbook.worksheets[0];
+    // Text cells are prefixed so Excel shows them as text instead of running them…
+    expect(sheet.getRow(2).getCell(1).value).toBe(`'=HYPERLINK("http://evil","x")`);
+    expect(sheet.getRow(4).getCell(1).value).toBe("'@SUM(1+1)");
+    // …a phone number is not corrupted, and a numeric column stays numeric.
+    expect(sheet.getRow(3).getCell(1).value).toBe('+966 50 123 4567');
+    expect(sheet.getRow(2).getCell(2).value).toBe(-5);
+    // The header row is fixed, developer-authored text and is not touched.
+    expect(sheet.getRow(1).getCell(1).value).toBe('Column A');
+  });
 });

@@ -146,7 +146,7 @@ describe('ApiKeyService', () => {
   it('rotate issues a fresh secret + prefix for an existing key and audits it', async () => {
     keys.findOne.mockResolvedValueOnce({ id: 'k1', key_hash: 'old', key_prefix: 'zk_old' });
     keys.save.mockImplementationOnce(async (k: any) => k);
-    const res = await service.rotate(TENANT, 'k1', { userId: 'u1', ip: '1.2.3.4' });
+    const res = await service.rotate(TENANT, 'k1', { ...SUPER_ACTOR, ip: '1.2.3.4' });
     expect(res.apiKey).toEqual(expect.any(String));
     expect(res.key_prefix).not.toBe('zk_old');
     expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.ROTATE, TENANT, 'u1', 'k1', '1.2.3.4');
@@ -165,10 +165,161 @@ describe('ApiKeyService', () => {
   it('activate / deactivate toggle is_active and audit each transition', async () => {
     keys.findOne.mockResolvedValue({ id: 'k1', is_active: false });
     keys.save.mockImplementation(async (k: any) => k);
-    expect((await service.activate(TENANT, 'k1', { userId: 'u1' })).is_active).toBe(true);
+    expect((await service.activate(TENANT, 'k1', SUPER_ACTOR)).is_active).toBe(true);
     expect((await service.deactivate(TENANT, 'k1', { userId: 'u1' })).is_active).toBe(false);
     expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.ACTIVATE, TENANT, 'u1', 'k1', undefined);
     expect(audit.record).toHaveBeenCalledWith(API_KEY_AUDIT_ACTION.DEACTIVATE, TENANT, 'u1', 'k1', undefined);
+  });
+
+  describe('SEC-04 — expiry must be in the future', () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+
+    it('refuses a key created already expired, and writes nothing', async () => {
+      await expect(
+        service.create(TENANT, { permissions: [], expiresAt: past } as any, SUPER_ACTOR),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+      expect(keys.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses an unparseable expiry', async () => {
+      await expect(
+        service.create(TENANT, { permissions: [], expiresAt: 'soon' } as any, SUPER_ACTOR),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+    });
+
+    it('accepts a future expiry and stores it', async () => {
+      keys.save.mockImplementationOnce(async (k: any) => k);
+      await service.create(TENANT, { permissions: [], expiresAt: future } as any, SUPER_ACTOR);
+      expect(keys.save.mock.calls[0][0].expires_at).toEqual(new Date(future));
+    });
+
+    it('applies to platform keys too', async () => {
+      await expect(
+        service.createPlatformKey(
+          { permissions: [INTEGRATION_SCOPE.MARKETPLACE_DISCOVERY], expiresAt: past },
+          { userId: 'u1', isSuperAdmin: true },
+        ),
+      ).rejects.toMatchObject({ code: ErrorCode.BAD_REQUEST });
+    });
+  });
+
+  describe('SEC-03 — rotate/activate re-check the ACTING user against the key\'s scopes', () => {
+    const writeKey = (overrides: Record<string, unknown> = {}) => ({
+      id: 'k1',
+      key_hash: 'old',
+      key_prefix: 'zk_old',
+      is_active: false,
+      permissions: [INTEGRATION_SCOPE.SERVICES_WRITE],
+      expires_at: null,
+      ...overrides,
+    });
+    const noWriteActor: ApiKeyActor = {
+      userId: 'demoted',
+      isSuperAdmin: false,
+      permissions: [PERMISSION.SERVICES_READ],
+    };
+    const writeActor: ApiKeyActor = {
+      userId: 'owner',
+      isSuperAdmin: false,
+      permissions: [PERMISSION.SERVICES_CREATE],
+    };
+
+    it('rotate is refused for an actor who lacks a scope\'s underlying permission, and nothing is saved', async () => {
+      keys.findOne.mockResolvedValueOnce(writeKey({ is_active: true }));
+      await expect(service.rotate(TENANT, 'k1', noWriteActor)).rejects.toMatchObject({
+        code: ErrorCode.FORBIDDEN,
+      });
+      expect(keys.save).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('rotate succeeds for an actor who holds it, and for a super-admin', async () => {
+      keys.save.mockImplementation(async (k: any) => k);
+      keys.findOne.mockResolvedValueOnce(writeKey({ is_active: true }));
+      await expect(service.rotate(TENANT, 'k1', writeActor)).resolves.toMatchObject({ apiKey: expect.any(String) });
+      keys.findOne.mockResolvedValueOnce(writeKey({ is_active: true }));
+      await expect(service.rotate(TENANT, 'k1', SUPER_ACTOR)).resolves.toBeDefined();
+    });
+
+    it('activate is refused for an actor who lacks the underlying permission', async () => {
+      keys.findOne.mockResolvedValueOnce(writeKey());
+      await expect(service.activate(TENANT, 'k1', noWriteActor)).rejects.toMatchObject({
+        code: ErrorCode.FORBIDDEN,
+      });
+      expect(keys.save).not.toHaveBeenCalled();
+    });
+
+    it('activate succeeds for an actor who holds it', async () => {
+      keys.save.mockImplementation(async (k: any) => k);
+      keys.findOne.mockResolvedValueOnce(writeKey());
+      await expect(service.activate(TENANT, 'k1', writeActor)).resolves.toMatchObject({ is_active: true });
+    });
+
+    it('a key with no scopes can be rotated by anyone who may manage keys', async () => {
+      keys.save.mockImplementation(async (k: any) => k);
+      keys.findOne.mockResolvedValueOnce(writeKey({ permissions: [] }));
+      await expect(service.rotate(TENANT, 'k1', noWriteActor)).resolves.toBeDefined();
+    });
+
+    it('LEAST privilege can always be applied: deactivate and revoke need no scope check', async () => {
+      keys.save.mockImplementation(async (k: any) => k);
+      keys.findOne.mockResolvedValue(writeKey({ is_active: true }));
+      await expect(service.deactivate(TENANT, 'k1', noWriteActor)).resolves.toMatchObject({ is_active: false });
+      await expect(service.revoke(TENANT, 'k1', noWriteActor)).resolves.toMatchObject({ is_active: false });
+    });
+
+    it('rotate and activate refuse an expired/revoked key with a clear 422', async () => {
+      const expired = writeKey({ is_active: false, expires_at: new Date(Date.now() - 1000) });
+      keys.findOne.mockResolvedValue(expired);
+      await expect(service.rotate(TENANT, 'k1', SUPER_ACTOR)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+        message: expect.stringContaining('cannot be rotated'),
+      });
+      await expect(service.activate(TENANT, 'k1', SUPER_ACTOR)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+        message: expect.stringContaining('cannot be activated'),
+      });
+      expect(keys.save).not.toHaveBeenCalled();
+    });
+
+    it('a key whose expiry is still in the future can be rotated', async () => {
+      keys.save.mockImplementation(async (k: any) => k);
+      keys.findOne.mockResolvedValueOnce(writeKey({ is_active: true, expires_at: new Date(Date.now() + 86_400_000) }));
+      await expect(service.rotate(TENANT, 'k1', SUPER_ACTOR)).resolves.toBeDefined();
+    });
+  });
+
+  describe('describeOwn (GET /integrations/me)', () => {
+    it('returns the caller\'s own key, scoped by id AND tenant, with no hash and no tenant id', async () => {
+      keys.findOne.mockResolvedValueOnce({
+        id: 'k1',
+        key_hash: 'SECRET-HASH',
+        key_prefix: 'zk_abc',
+        name: 'ERP',
+        permissions: [INTEGRATION_SCOPE.SERVICES_READ, 'junk.scope'],
+        expires_at: new Date('2030-01-01T00:00:00Z'),
+        last_used_at: null,
+        tenant: { id: TENANT },
+      });
+      const me = await service.describeOwn(TENANT, 'k1');
+      expect(keys.findOne.mock.calls[0][0].where).toEqual({ id: 'k1', tenant: { id: TENANT } });
+      expect(me).toEqual({
+        keyId: 'k1',
+        keyPrefix: 'zk_abc',
+        name: 'ERP',
+        scopes: [INTEGRATION_SCOPE.SERVICES_READ],
+        expiresAt: new Date('2030-01-01T00:00:00Z'),
+        lastUsedAt: null,
+      });
+      expect(JSON.stringify(me)).not.toContain('SECRET-HASH');
+      expect(JSON.stringify(me)).not.toContain(TENANT);
+    });
+
+    it('404s when the key is not in that tenant', async () => {
+      keys.findOne.mockResolvedValueOnce(null);
+      await expect(service.describeOwn(TENANT, 'k1')).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
   });
 
   it('findOneOrThrow (via get) throws for an unknown key', async () => {
@@ -204,6 +355,39 @@ describe('ApiKeyService', () => {
         TENANT,
       );
       await expect(service.authenticate('plain')).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
+    });
+
+    it('SEC-06 — tells the guard WHICH key was refused and why, without changing the public 401', async () => {
+      await expect(service.authenticate(undefined)).rejects.toMatchObject({
+        internalContext: { reason: 'missing' },
+      });
+
+      mockAuthenticateQuery(null);
+      await expect(service.authenticate('plain')).rejects.toMatchObject({
+        internalContext: { reason: 'unknown' }, // no key row → no key id / tenant to leak or log
+      });
+
+      mockAuthenticateQuery({ id: 'k1', is_active: false }, TENANT);
+      await expect(service.authenticate('plain')).rejects.toMatchObject({
+        internalContext: { reason: 'inactive', keyId: 'k1', tenantId: TENANT },
+      });
+
+      mockAuthenticateQuery(
+        { id: 'k2', is_active: true, expires_at: new Date(Date.now() - 1000) },
+        TENANT,
+      );
+      await expect(service.authenticate('plain')).rejects.toMatchObject({
+        internalContext: { reason: 'expired', keyId: 'k2', tenantId: TENANT },
+      });
+    });
+
+    it('SEC-06 — the diagnostic context is never part of the client-visible error', async () => {
+      mockAuthenticateQuery({ id: 'k1', is_active: false }, TENANT);
+      const err = (await service.authenticate('plain').catch((e) => e)) as {
+        publicContext?: unknown;
+      };
+      // Only `publicContext` is serialised into the response (see AllExceptionsFilter).
+      expect(err.publicContext).toBeUndefined();
     });
 
     it('resolves the principal for a valid key, normalizing legacy scope junk', async () => {

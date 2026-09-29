@@ -153,6 +153,12 @@ export const JOB = {
   INTEGRATION_INBOUND: 'integration.inbound',
   /** Repeatable maintenance sweep — see QUEUE.INTEGRATION_MAINTENANCE. */
   INTEGRATION_RECOVER_STALE: 'integration.recoverStale',
+  /**
+   * Daily retention sweep on QUEUE.INTEGRATION_MAINTENANCE: deletes expired
+   * idempotency records, terminal inbound-event history past retention, and
+   * expired OAuth handshake states. Without it those tables grow without bound.
+   */
+  INTEGRATION_PURGE_EXPIRED: 'integration.purgeExpired',
   /** Repeatable maintenance sweep — see QUEUE.CAMPAIGNS_MAINTENANCE. */
   CAMPAIGNS_RECOVER_DLQ: 'campaigns.recoverDlq',
 

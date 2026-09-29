@@ -3,18 +3,19 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository, QueryFailedError } from 'typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
-import type ExcelJSType from 'exceljs';
 
 import { Customer } from '../../entities/CRM/Customer';
-import { AppError, ErrorCode, mapTypeOrmError } from '../../common/errors';
+import { AppError, mapTypeOrmError } from '../../common/errors';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { CustomerService } from './customer.service';
 import { UploadedFileLike } from '../storage/uploads.controller';
 import {
-  assertMagicBytes,
-  extensionMatchesMimeForPolicy,
-  policyAllowsMime,
-} from '../storage/storage.constants';
+  extractRow,
+  loadExcelJs,
+  parseBooleanCell,
+  parseXlsxRows,
+  titleCase,
+} from '../../common/import/xlsx-row-parser';
 import {
   CUSTOMER_IMPORT_COLUMNS,
   CUSTOMER_IMPORT_MAX_BYTES,
@@ -60,9 +61,6 @@ export interface CustomerImportCommitResult {
   errors: { row: number; messages: string[] }[];
 }
 
-const TRUE_TOKENS = new Set(['true', 'yes', 'y', '1']);
-const FALSE_TOKENS = new Set(['false', 'no', 'n', '0']);
-
 /**
  * Bulk customer import from an uploaded `.xlsx` file.
  *
@@ -95,7 +93,13 @@ export class CustomerImportService {
     tenantId: string,
     file: UploadedFileLike | undefined,
   ): Promise<CustomerImportPreviewResult> {
-    const { headerIndex, dataRows } = await this.parseWorkbook(file);
+    const { headerIndex, dataRows } = await parseXlsxRows(file, {
+      policy: CUSTOMER_IMPORT_UPLOAD_POLICY,
+      columns: CUSTOMER_IMPORT_COLUMNS,
+      maxBytes: CUSTOMER_IMPORT_MAX_BYTES,
+      maxRows: CUSTOMER_IMPORT_MAX_ROWS,
+      scanRowCeiling: CUSTOMER_IMPORT_SCAN_ROW_CEILING,
+    });
 
     const rows: CustomerImportRowResult[] = [];
     const seenEmails = new Map<string, number>();
@@ -103,19 +107,19 @@ export class CustomerImportService {
 
     for (const { rowNumber, cells } of dataRows) {
       const errors: string[] = [];
-      const raw = this.extractRow(headerIndex, cells);
+      const raw = extractRow(headerIndex, cells);
 
-      const marketingOptIn = this.parseBoolean(
+      const marketingOptIn = parseBooleanCell(
         raw.marketing_opt_in,
         'marketing_opt_in',
         errors,
       );
-      const hasChronicDiseases = this.parseBoolean(
+      const hasChronicDiseases = parseBooleanCell(
         raw.has_chronic_diseases,
         'has_chronic_diseases',
         errors,
       );
-      const hasHealthInsurance = this.parseBoolean(
+      const hasHealthInsurance = parseBooleanCell(
         raw.has_health_insurance,
         'has_health_insurance',
         errors,
@@ -219,13 +223,11 @@ export class CustomerImportService {
 
   /** Generates the downloadable `.xlsx` template (header row, one example row, an instructions sheet). */
   async buildTemplate(): Promise<Buffer> {
-    const ExcelJS = this.loadExcelJs();
+    const ExcelJS = loadExcelJs();
     const workbook = new ExcelJS.Workbook();
 
     const sheet = workbook.addWorksheet('Customers');
-    sheet.addRow(
-      CUSTOMER_IMPORT_COLUMNS.map((c) => this.titleCase(c.headers[0])),
-    );
+    sheet.addRow(CUSTOMER_IMPORT_COLUMNS.map((c) => titleCase(c.headers[0])));
     sheet.getRow(1).font = { bold: true };
     sheet.addRow([
       'Sara Al-Otaibi',
@@ -250,7 +252,7 @@ export class CustomerImportService {
     notes.getRow(1).font = { bold: true };
     for (const c of CUSTOMER_IMPORT_COLUMNS) {
       notes.addRow([
-        this.titleCase(c.headers[0]),
+        titleCase(c.headers[0]),
         c.required ? 'Yes' : 'No',
         this.noteFor(c.field),
       ]);
@@ -261,172 +263,6 @@ export class CustomerImportService {
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
-  }
-
-  // ── Parsing ──────────────────────────────────────────────────────────
-
-  private async parseWorkbook(file: UploadedFileLike | undefined): Promise<{
-    headerIndex: Map<string, number>;
-    dataRows: { rowNumber: number; cells: Map<number, unknown> }[];
-  }> {
-    if (!file) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: 'No file uploaded. Send the file under the field name "file".',
-      });
-    }
-    if (file.size > CUSTOMER_IMPORT_MAX_BYTES) {
-      throw new AppError(ErrorCode.FILE_TOO_LARGE, {
-        message: `File exceeds the ${Math.round(CUSTOMER_IMPORT_MAX_BYTES / 1024 / 1024)} MB limit.`,
-      });
-    }
-    if (!policyAllowsMime(CUSTOMER_IMPORT_UPLOAD_POLICY, file.mimetype)) {
-      throw new AppError(ErrorCode.UNSUPPORTED_FILE_TYPE, {
-        message: 'Only .xlsx Excel files are supported.',
-      });
-    }
-    if (
-      !extensionMatchesMimeForPolicy(
-        file.originalname,
-        file.mimetype,
-        CUSTOMER_IMPORT_UPLOAD_POLICY,
-      )
-    ) {
-      throw new AppError(ErrorCode.UNSUPPORTED_FILE_TYPE, {
-        message:
-          'The file extension does not match its declared type (.xlsx expected).',
-      });
-    }
-    assertMagicBytes(file.buffer, file.mimetype);
-
-    const ExcelJS = this.loadExcelJs();
-    const workbook = new ExcelJS.Workbook();
-    try {
-      await workbook.xlsx.load(file.buffer as unknown as ExcelJSType.Buffer);
-    } catch (err) {
-      throw new AppError(ErrorCode.UNSUPPORTED_FILE_TYPE, {
-        message: 'The file could not be read as a valid Excel workbook.',
-        cause: err,
-      });
-    }
-
-    const worksheet = workbook.worksheets[0];
-    if (!worksheet) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: 'The workbook has no worksheets.',
-      });
-    }
-    if (worksheet.rowCount > CUSTOMER_IMPORT_SCAN_ROW_CEILING) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: `The worksheet reports ${worksheet.rowCount} rows, which exceeds what this tool can process. Remove empty rows/formatting or split the file.`,
-      });
-    }
-
-    const headerRow = worksheet.getRow(1);
-    const headerIndex = new Map<string, number>();
-    headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-      const label = this.cellToString(cell.value)?.trim().toLowerCase();
-      if (!label) return;
-      const column = CUSTOMER_IMPORT_COLUMNS.find((c) =>
-        c.headers.includes(label),
-      );
-      if (column && !headerIndex.has(column.field)) {
-        headerIndex.set(column.field, colNumber);
-      }
-    });
-
-    const missingRequired = CUSTOMER_IMPORT_COLUMNS.filter(
-      (c) => c.required && !headerIndex.has(c.field),
-    );
-    if (missingRequired.length) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: `Missing required column(s): ${missingRequired
-          .map((c) => this.titleCase(c.headers[0]))
-          .join(', ')}. Download the template for the expected format.`,
-      });
-    }
-
-    const dataRows: { rowNumber: number; cells: Map<number, unknown> }[] = [];
-    for (let r = 2; r <= worksheet.rowCount; r++) {
-      const row = worksheet.getRow(r);
-      const cells = new Map<number, unknown>();
-      let hasAny = false;
-      for (const colNumber of headerIndex.values()) {
-        const value = row.getCell(colNumber).value;
-        if (
-          value !== null &&
-          value !== undefined &&
-          String(value).trim() !== ''
-        ) {
-          hasAny = true;
-        }
-        cells.set(colNumber, value);
-      }
-      if (!hasAny) continue;
-
-      if (dataRows.length >= CUSTOMER_IMPORT_MAX_ROWS) {
-        throw new AppError(ErrorCode.BAD_REQUEST, {
-          message: `The file has more than ${CUSTOMER_IMPORT_MAX_ROWS} data rows. Split it into smaller files and import in batches.`,
-        });
-      }
-      dataRows.push({ rowNumber: r, cells });
-    }
-
-    if (dataRows.length === 0) {
-      throw new AppError(ErrorCode.BAD_REQUEST, {
-        message: 'The file has no data rows.',
-      });
-    }
-
-    return { headerIndex, dataRows };
-  }
-
-  private extractRow(
-    headerIndex: Map<string, number>,
-    cells: Map<number, unknown>,
-  ): Record<string, string | undefined> {
-    const raw: Record<string, string | undefined> = {};
-    for (const [field, colNumber] of headerIndex) {
-      raw[field] = this.cellToString(cells.get(colNumber))?.trim() || undefined;
-    }
-    return raw;
-  }
-
-  private cellToString(value: unknown): string | undefined {
-    if (value === null || value === undefined) return undefined;
-    if (value instanceof Date) {
-      // UTC components — Excel serial dates carry no timezone, and reading
-      // local components back could shift the day depending on host TZ.
-      const y = value.getUTCFullYear();
-      const m = String(value.getUTCMonth() + 1).padStart(2, '0');
-      const d = String(value.getUTCDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    }
-    if (typeof value === 'object') {
-      const v = value as {
-        text?: string;
-        result?: unknown;
-        richText?: { text: string }[];
-      };
-      if (typeof v.text === 'string') return v.text;
-      if (Array.isArray(v.richText))
-        return v.richText.map((r) => r.text).join('');
-      if (v.result !== undefined) return this.cellToString(v.result);
-      return undefined;
-    }
-    return String(value);
-  }
-
-  private parseBoolean(
-    value: string | undefined,
-    field: string,
-    errors: string[],
-  ): boolean | undefined {
-    if (value === undefined) return undefined;
-    const token = value.trim().toLowerCase();
-    if (TRUE_TOKENS.has(token)) return true;
-    if (FALSE_TOKENS.has(token)) return false;
-    errors.push(`${field}: must be yes/no, true/false or 1/0`);
-    return undefined;
   }
 
   private flattenErrors(errors: ValidationError[]): string[] {
@@ -506,10 +342,6 @@ export class CustomerImportService {
     return 'This row could not be imported due to an unexpected error.';
   }
 
-  private titleCase(s: string): string {
-    return s.replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-
   private noteFor(field: string): string {
     switch (field) {
       case 'phone':
@@ -531,15 +363,5 @@ export class CustomerImportService {
       default:
         return '';
     }
-  }
-
-  /**
-   * `exceljs` is required lazily so the boot path and the queue worker
-   * process (which never handles an upload) never pay for loading it —
-   * mirrors `GuestAttachmentExtractionService`'s lazy `pdf-parse` require.
-   */
-  private loadExcelJs(): typeof ExcelJSType {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('exceljs') as typeof ExcelJSType;
   }
 }

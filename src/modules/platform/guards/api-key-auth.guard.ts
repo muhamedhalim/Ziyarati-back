@@ -5,10 +5,20 @@ import type { Request } from 'express';
 import { ApiKeyService, AuthenticatedApiKey } from '../api-key.service';
 import { TenantContextService } from '../../../core/tenant-context/tenant-context.service';
 import { TenantRateLimiterService } from '../../../queue/tenant-rate-limiter.service';
+import { MetricsService } from '../../../metrics/metrics.service';
+import { ApiLogService } from '../api-log.service';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { AppError, ErrorCode } from '../../../common/errors';
 
 const DEFAULT_RATE_PER_MINUTE = 120;
+
+/** At most one `api_logs` row per rejected key per window — a hammering client can't flood the log. */
+const AUTH_FAILURE_LOG_WINDOW_MS = 60_000;
+/** Bound on remembered keys so the throttle map can never grow without limit. */
+const AUTH_FAILURE_LOG_MAX_KEYS = 1_000;
+
+type RejectedReason = 'missing' | 'unknown' | 'inactive' | 'expired';
+const REJECTED_REASONS: readonly RejectedReason[] = ['missing', 'unknown', 'inactive', 'expired'];
 
 /**
  * Authenticates machine-to-machine requests with a platform API key.
@@ -30,17 +40,31 @@ const DEFAULT_RATE_PER_MINUTE = 120;
  * hardcoded. If Redis itself is unavailable, the request is ALLOWED — a
  * deliberate fail-open choice for this read-only API so a Redis outage never
  * takes down external integrations platform-wide; the failure is logged.
+ *
+ * Rejections are observable (SEC-06). `ApiLoggingInterceptor` runs AFTER the
+ * guards, so a 401 from here never reached `api_logs`. This guard therefore
+ * records it itself: a REVOKED / DISABLED / EXPIRED key is attributed to its
+ * tenant (the key row names it) as a 401 row — at most one per key per minute —
+ * so an owner can see a dead credential still being used. A key that matches
+ * nothing has no tenant to show it to, so it is only counted in Prometheus
+ * (`api_key_auth_failures_total`), never written per request: that path is
+ * open to anyone on the internet and must not become a way to fill the table.
+ * Nothing here can change the response — failures to record are swallowed.
  */
 @Injectable()
 export class ApiKeyAuthGuard implements CanActivate {
   private readonly logger = new Logger(ApiKeyAuthGuard.name);
   private readonly ratePerMinute: number;
+  /** keyId → last time a rejection row was written for it (per process). */
+  private readonly lastRejectionLoggedAt = new Map<string, number>();
 
   constructor(
     private readonly apiKeys: ApiKeyService,
     private readonly ctx: TenantContextService,
     private readonly rateLimiter: TenantRateLimiterService,
     config: ConfigService,
+    private readonly apiLogs: ApiLogService,
+    private readonly metrics: MetricsService,
   ) {
     const configured = Number(
       config.get<string>('INTEGRATION_API_RATE_LIMIT_PER_MINUTE') ?? String(DEFAULT_RATE_PER_MINUTE),
@@ -51,7 +75,13 @@ export class ApiKeyAuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Request>();
     const presented = this.extractKey(req);
-    const auth = await this.apiKeys.authenticate(presented); // throws UNAUTHORIZED on failure
+    let auth: AuthenticatedApiKey;
+    try {
+      auth = await this.apiKeys.authenticate(presented); // throws UNAUTHORIZED on failure
+    } catch (err) {
+      this.observeRejection(req, err);
+      throw err;
+    }
 
     await this.enforceRateLimit(auth);
 
@@ -64,6 +94,48 @@ export class ApiKeyAuthGuard implements CanActivate {
     };
     (req as Request & { user?: AuthenticatedUser }).user = user;
     this.ctx.setPrincipal(user);
+    return true;
+  }
+
+  /** Count the rejection, and log it against the key's tenant when one is known. Never throws. */
+  private observeRejection(req: Request, err: unknown): void {
+    try {
+      const internal = (err as { internalContext?: Record<string, unknown> })?.internalContext;
+      const reason = REJECTED_REASONS.find((r) => r === internal?.reason);
+      if (!reason) return; // not an authentication failure (e.g. a DB error) — nothing to attribute
+      this.metrics.recordApiKeyAuthFailure(reason);
+
+      const keyId = typeof internal?.keyId === 'string' ? internal.keyId : undefined;
+      const tenantId = typeof internal?.tenantId === 'string' ? internal.tenantId : undefined;
+      if (!keyId || !tenantId || !this.shouldLogRejection(keyId)) return;
+
+      const endpoint = (req.route as { path?: string } | undefined)?.path || req.path;
+      void this.apiLogs
+        .record(tenantId, {
+          endpoint: endpoint?.slice(0, 255),
+          method: req.method,
+          statusCode: 401,
+          ipAddress: (req.ip ?? req.socket?.remoteAddress ?? undefined)?.slice(0, 45),
+          apiKeyId: keyId,
+        })
+        .catch(() => undefined);
+    } catch (observeErr) {
+      this.logger.warn(`Could not record API key rejection: ${(observeErr as Error)?.message}`);
+    }
+  }
+
+  private shouldLogRejection(keyId: string): boolean {
+    const now = Date.now();
+    const last = this.lastRejectionLoggedAt.get(keyId);
+    if (last !== undefined && now - last < AUTH_FAILURE_LOG_WINDOW_MS) return false;
+    if (this.lastRejectionLoggedAt.size >= AUTH_FAILURE_LOG_MAX_KEYS) {
+      for (const [id, at] of this.lastRejectionLoggedAt) {
+        if (now - at >= AUTH_FAILURE_LOG_WINDOW_MS) this.lastRejectionLoggedAt.delete(id);
+      }
+      // Still full of recent entries: drop everything rather than grow unbounded.
+      if (this.lastRejectionLoggedAt.size >= AUTH_FAILURE_LOG_MAX_KEYS) this.lastRejectionLoggedAt.clear();
+    }
+    this.lastRejectionLoggedAt.set(keyId, now);
     return true;
   }
 

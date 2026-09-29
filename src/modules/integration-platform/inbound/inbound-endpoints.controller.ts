@@ -36,6 +36,8 @@ import {
 } from '../dto/webhook-endpoint.dto';
 import {
   INBOUND_EVENTS,
+  DEFAULT_WEBHOOK_SIGNATURE_SCHEME,
+  LEGACY_WEBHOOK_SIGNATURE_SCHEMES,
   WEBHOOK_SIGNATURE_SCHEMES,
 } from '../integration-platform.constants';
 import { RequireFeature } from '../../subscription-billing/decorators/require-feature.decorator';
@@ -73,6 +75,10 @@ export class IntegrationInboundEndpointsController {
     return {
       events: INBOUND_EVENTS,
       signatureSchemes: WEBHOOK_SIGNATURE_SCHEMES,
+      /** What a new endpoint gets when none is chosen. */
+      defaultSignatureScheme: DEFAULT_WEBHOOK_SIGNATURE_SCHEME,
+      /** Still accepted, but their event id/type headers are not signed (SEC-01). */
+      legacySignatureSchemes: LEGACY_WEBHOOK_SIGNATURE_SCHEMES,
     };
   }
 

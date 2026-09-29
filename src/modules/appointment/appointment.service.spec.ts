@@ -1037,7 +1037,8 @@ describe('AppointmentsService', () => {
       );
 
       const arg = appointments.findAndCount.mock.calls[0][0];
-      expect(arg.order).toEqual({ start_at: 'DESC' });
+      // Ties on start_at are common (several staff, one slot) — `id` keeps pages stable.
+      expect(arg.order).toEqual({ start_at: 'DESC', id: 'DESC' });
     });
 
     it('honours order=ASC — reaches the repository as ASCENDING', async () => {
@@ -1049,7 +1050,7 @@ describe('AppointmentsService', () => {
       );
 
       const arg = appointments.findAndCount.mock.calls[0][0];
-      expect(arg.order).toEqual({ start_at: 'ASC' });
+      expect(arg.order).toEqual({ start_at: 'ASC', id: 'ASC' });
     });
 
     it('filters by serviceIds (ANY-of match) when provided', async () => {

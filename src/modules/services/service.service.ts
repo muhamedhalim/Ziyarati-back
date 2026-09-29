@@ -234,7 +234,9 @@ export class ServiceService {
     const [data, total] = await this.services.findAndCount({
       where,
       relations: { category: true },
-      order: { [query.sortBy]: query.sortOrder },
+      // `id` is the unique tiebreaker so rows tying on the sort column (name, duration…)
+      // are never repeated or skipped between pages.
+      order: { [query.sortBy]: query.sortOrder, id: 'ASC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });

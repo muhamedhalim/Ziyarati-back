@@ -10,10 +10,10 @@ import { AppError, ErrorCode, isUniqueViolation } from '../../../common/errors';
 import { EncryptionService } from '../../../common/crypto/encryption.service';
 
 import {
+  DEFAULT_WEBHOOK_SIGNATURE_SCHEME,
   INBOUND_EVENTS,
   WEBHOOK_ENDPOINT_STATUS,
   WEBHOOK_MAX_TOLERANCE_SECONDS,
-  WEBHOOK_SIGNATURE_SCHEME,
   WEBHOOK_SIGNATURE_SCHEMES,
   WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS,
 } from '../integration-platform.constants';
@@ -237,7 +237,8 @@ export class IntegrationWebhookEndpointService {
   }
 
   private assertScheme(scheme: string | undefined): string {
-    const value = scheme ?? WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED;
+    // New endpoints default to v2, which signs the event id and type (SEC-01).
+    const value = scheme ?? DEFAULT_WEBHOOK_SIGNATURE_SCHEME;
     if (!WEBHOOK_SIGNATURE_SCHEMES.includes(value as never)) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Unsupported signature scheme' });
     }

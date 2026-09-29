@@ -87,11 +87,16 @@ export class IntegrationAdmissionService {
         );
         throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
           message: 'Integration admission control is temporarily unavailable — retry shortly',
+          publicContext: { retryAfterMs: 5_000 },
         });
       }
       if (!decision.allowed) {
         throw new AppError(ErrorCode.RATE_LIMITED, {
           message: `Rate limit exceeded for ${op} — slow down and retry later`,
+          // The limiter knows when a token frees up; the filter turns this into
+          // a `Retry-After` header so a client can back off precisely.
+          publicContext:
+            decision.reason === 'RATE' ? { retryAfterMs: decision.retryAfterMs } : undefined,
         });
       }
     }

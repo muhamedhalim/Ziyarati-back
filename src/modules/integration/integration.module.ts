@@ -8,6 +8,7 @@ import { AppointmentModule } from '../appointment/appointment.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
 import { IntegrationPlatformModule } from '../integration-platform/integration-platform.module';
 
+import { IntegrationMeController } from './integration-me.controller';
 import { IntegrationServicesController } from './integration-services.controller';
 import { IntegrationStaffController } from './integration-staff.controller';
 import { IntegrationCustomersController } from './integration-customers.controller';
@@ -51,6 +52,8 @@ import { IntegrationWriteAppointmentsController } from './integration-write-appo
     IntegrationPlatformModule,
   ],
   controllers: [
+    // Credential self-check — valid key, no particular scope.
+    IntegrationMeController,
     IntegrationServicesController,
     IntegrationStaffController,
     IntegrationCustomersController,

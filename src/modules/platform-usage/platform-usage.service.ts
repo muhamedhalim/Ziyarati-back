@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { AppError, ErrorCode } from '../../common/errors';
+import { escapeSpreadsheetCell } from '../../common/import/spreadsheet-escape';
 import { UsageService } from '../subscription-billing/usage.service';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
 import { AccessControlService } from '../subscription-billing/access-control.service';
@@ -1356,7 +1357,11 @@ export class PlatformUsageService {
   }
 
   private toCsv(headers: string[], rows: string[][]): string {
-    const esc = (v: string): string => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    // SEC-05: neutralise spreadsheet formulas before CSV quoting.
+    const esc = (raw: string): string => {
+      const v = escapeSpreadsheetCell(raw);
+      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    };
     return [headers.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n');
   }
 

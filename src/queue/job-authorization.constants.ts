@@ -177,6 +177,7 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   },
   [JOB.INTEGRATION_INBOUND]: TENANT,
   [JOB.INTEGRATION_RECOVER_STALE]: SYSTEM,
+  [JOB.INTEGRATION_PURGE_EXPIRED]: SYSTEM,
   [JOB.CAMPAIGNS_RECOVER_DLQ]: SYSTEM,
 
   // Spec 014 "Clinic Platform Completion".

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, Not, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, Not, Raw, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 
 import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
@@ -13,13 +13,17 @@ import { QUEUE, JOB } from '../../queue/queue.constants';
 
 import { WebhookEndpointService } from './webhook-endpoint.service';
 import { QueryWebhookDeliveriesDto } from './dto/query-webhook-deliveries.dto';
-import { WEBHOOK_DELIVERY_STATUS } from './webhook.constants';
+import { WEBHOOK_DELIVERY_STATUS, WEBHOOK_TEST_EVENT } from './webhook.constants';
 import { WebhookAuditService, WEBHOOK_AUDIT_ACTION } from './webhook-audit.service';
 
 export interface WebhookDeliveryActor {
   userId?: string;
   ip?: string;
 }
+
+/** "Send test event" is capped per endpoint so it cannot be used to hammer a receiver. */
+const TEST_EVENT_WINDOW_MS = 60_000;
+const TEST_EVENT_MAX_PER_WINDOW = 5;
 
 /**
  * Outbound webhook delivery orchestration (Phase 2 — Integration platform).
@@ -74,29 +78,7 @@ export class WebhookDeliveryService {
 
     for (const endpoint of subscribers) {
       try {
-        await this.dataSource.transaction(async (mgr) => {
-          const delivery = await mgr.save(
-            mgr.create(WebhookDelivery, {
-              tenant: { id: tenantId } as Tenant,
-              webhook_endpoint: { id: endpoint.id } as WebhookEndpoint,
-              // Immutable snapshot of the URL as of THIS dispatch instant — never
-              // re-derived from the (possibly since-edited) endpoint later.
-              webhook_endpoint_url_snapshot: endpoint.url,
-              event_type: eventType,
-              payload,
-              status: WEBHOOK_DELIVERY_STATUS.PENDING,
-            }),
-          );
-          await mgr.save(
-            mgr.create(OutboxJob, {
-              queue: QUEUE.WEBHOOKS_DELIVER,
-              job_name: JOB.WEBHOOKS_DELIVER,
-              dedupe_key: `webhook-delivery-${delivery.id}`,
-              payload: { tenantId, webhookDeliveryId: delivery.id },
-              opts: this.deliverJobOptions(),
-            }),
-          );
-        });
+        await this.enqueueDelivery(tenantId, endpoint, eventType, payload);
       } catch (err) {
         // One bad endpoint must never suppress delivery to the others. A
         // failure here means the ROW WAS NEVER COMMITTED (the transaction
@@ -106,6 +88,94 @@ export class WebhookDeliveryService {
         );
       }
     }
+  }
+
+  /**
+   * One delivery row + its outbox intent, in ONE transaction. Shared by the
+   * event fan-out and "Send test event" so both take exactly the same path.
+   */
+  private async enqueueDelivery(
+    tenantId: string,
+    endpoint: Pick<WebhookEndpoint, 'id' | 'url'>,
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): Promise<WebhookDelivery> {
+    return this.dataSource.transaction(async (mgr) => {
+      const delivery = await mgr.save(
+        mgr.create(WebhookDelivery, {
+          tenant: { id: tenantId } as Tenant,
+          webhook_endpoint: { id: endpoint.id } as WebhookEndpoint,
+          // Immutable snapshot of the URL as of THIS dispatch instant — never
+          // re-derived from the (possibly since-edited) endpoint later.
+          webhook_endpoint_url_snapshot: endpoint.url,
+          event_type: eventType,
+          payload,
+          status: WEBHOOK_DELIVERY_STATUS.PENDING,
+        }),
+      );
+      await mgr.save(
+        mgr.create(OutboxJob, {
+          queue: QUEUE.WEBHOOKS_DELIVER,
+          job_name: JOB.WEBHOOKS_DELIVER,
+          dedupe_key: `webhook-delivery-${delivery.id}`,
+          payload: { tenantId, webhookDeliveryId: delivery.id },
+          opts: this.deliverJobOptions(),
+        }),
+      );
+      return delivery;
+    });
+  }
+
+  /**
+   * Queue a `webhook.test` delivery to ONE endpoint of this tenant. The
+   * endpoint is resolved by id within the caller's tenant (404 otherwise), must
+   * be active (a disabled endpoint is never delivered to), and the outcome shows
+   * up in the normal delivery history — the caller polls that, nothing is sent
+   * synchronously. Rate-limited per endpoint.
+   */
+  async sendTest(tenantId: string, endpointId: string, actor: WebhookDeliveryActor) {
+    const endpoint = await this.endpointsService.get(tenantId, endpointId);
+    if (!endpoint.is_active) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'The webhook endpoint is disabled — activate it before sending a test event',
+      });
+    }
+
+    const recent = await this.deliveries.count({
+      where: {
+        tenant: { id: tenantId },
+        webhook_endpoint: { id: endpointId },
+        event_type: WEBHOOK_TEST_EVENT,
+        // Compared IN THE DATABASE against its own clock: `created_at` is stamped
+        // by the DB default, so a JS-side Date comparison drifts whenever the app
+        // host's timezone differs from the DB session's (seen in dev: 3 hours).
+        // (The interval is a module constant, not caller input.)
+        created_at: Raw((col) => `${col} > now() - interval '${TEST_EVENT_WINDOW_MS / 1000} seconds'`),
+      },
+    });
+    if (recent >= TEST_EVENT_MAX_PER_WINDOW) {
+      throw new AppError(ErrorCode.RATE_LIMITED, {
+        message: 'Too many test events for this endpoint — wait a minute and try again',
+        publicContext: { retryAfterMs: TEST_EVENT_WINDOW_MS },
+      });
+    }
+
+    const delivery = await this.enqueueDelivery(tenantId, endpoint, WEBHOOK_TEST_EVENT, {
+      test: true,
+      message: 'This is a test event from ZiyaraTech. No action is required.',
+      webhookEndpointId: endpointId,
+      sentAt: new Date().toISOString(),
+    });
+    await this.audit.record(
+      WEBHOOK_AUDIT_ACTION.TEST,
+      tenantId,
+      actor.userId,
+      'WebhookDelivery',
+      delivery.id,
+      actor.ip,
+      { webhookEndpointId: endpointId },
+    );
+    return this.get(tenantId, delivery.id);
   }
 
   async list(tenantId: string, query: QueryWebhookDeliveriesDto) {
