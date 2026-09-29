@@ -327,7 +327,9 @@ export class AppointmentsService {
         staff: true,
         services: { service: true },
       },
-      order: { start_at: query.order ?? 'DESC' },
+      // `id` breaks ties between appointments sharing a start time (very common), so
+      // paginated readers — including the partner API — never see a row twice or miss one.
+      order: { start_at: query.order ?? 'DESC', id: query.order ?? 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });

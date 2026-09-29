@@ -21,6 +21,7 @@ import {
   type OwnerFixture,
 } from './utils/whatsapp-e2e-app';
 
+import { IsNull } from 'typeorm';
 import { Permission } from '../src/entities/Auth&RBAC/Permission';
 import { Role } from '../src/entities/Auth&RBAC/Role';
 import { RolePermission } from '../src/entities/Auth&RBAC/RolePermission';
@@ -29,6 +30,7 @@ import { UserRole } from '../src/entities/Auth&RBAC/UserRole';
 import { AuditLog } from '../src/entities/Auth&RBAC/AuditLog';
 import { Tenant } from '../src/entities/SaaS-Core/Tenant';
 import { Service } from '../src/entities/Services/Service';
+import { ApiLog } from '../src/entities/System/ApiLog';
 import { Customer } from '../src/entities/CRM/Customer';
 import { PERMISSION } from '../src/rbac/rbac.constants';
 import { TenantApprovalStatus } from '../src/entities/enums';
@@ -113,6 +115,8 @@ describe('Integration API + API-key hardening — HTTP e2e', () => {
       services.create({
         tenant: { id: owner.tenantId } as Tenant,
         name: `Cleaning ${randomUUID().slice(0, 6)}`,
+        // `services.public_slug` is NOT NULL; a direct insert bypasses ServiceService.
+        public_slug: `cleaning-${randomUUID().slice(0, 8)}`,
         duration_minutes: 30,
         is_active: true,
       }),
@@ -334,21 +338,97 @@ describe('Integration API + API-key hardening — HTTP e2e', () => {
         .expect(401);
     });
 
-    it('expired key is rejected', async () => {
-      const created = await request(e2e.app.getHttpServer())
+    it('creating a key that is ALREADY expired is refused (SEC-04) — it would be dead on arrival', async () => {
+      const res = await request(e2e.app.getHttpServer())
         .post(`${API}/platform/api-keys`)
         .set(...authHeader(owner.token))
         .send({
           permissions: ['integration.services.read'],
           expiresAt: new Date(Date.now() - 60_000).toISOString(),
         })
+        .expect(400);
+      expect(JSON.stringify(res.body)).toMatch(/future/i);
+    });
+
+    it('expired key is rejected', async () => {
+      // A key can no longer be CREATED already-expired (SEC-04), so make it expire
+      // the way a real one does: issue it validly, then let its expiry pass.
+      const created = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/api-keys`)
+        .set(...authHeader(owner.token))
+        .send({
+          permissions: ['integration.services.read'],
+          expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        })
         .expect(201);
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/integrations/services`)
+        .set('X-API-Key', created.body.apiKey)
+        .expect(200);
+
+      await e2e.dataSource.query(
+        `UPDATE api_keys SET expires_at = now() - interval '1 day' WHERE id = $1`,
+        [created.body.id],
+      );
 
       await request(e2e.app.getHttpServer())
         .get(`${API}/integrations/services`)
         .set('X-API-Key', created.body.apiKey)
         .expect(401);
     });
+
+    it('SEC-06: a REVOKED key still being used is recorded against its own tenant — once per minute, with the same uniform 401', async () => {
+      const created = await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/api-keys`)
+        .set(...authHeader(owner.token))
+        .send({ permissions: ['integration.services.read'] })
+        .expect(201);
+      const key: string = created.body.apiKey;
+      const keyId: string = created.body.id;
+      await request(e2e.app.getHttpServer())
+        .post(`${API}/platform/api-keys/${keyId}/revoke`)
+        .set(...authHeader(owner.token))
+        .send({})
+        .expect(200);
+
+      for (let i = 0; i < 3; i++) {
+        const res = await request(e2e.app.getHttpServer())
+          .get(`${API}/integrations/services`)
+          .set('X-API-Key', key)
+          .expect(401);
+        // The client learns nothing about WHY, nor which key/tenant it was.
+        expect(JSON.stringify(res.body)).not.toContain(keyId);
+        expect(JSON.stringify(res.body)).not.toContain(owner.tenantId);
+      }
+
+      // The write is fire-and-forget; give it a moment.
+      const logs = e2e.dataSource.getRepository(ApiLog);
+      let rows: ApiLog[] = [];
+      for (let i = 0; i < 20 && rows.length === 0; i++) {
+        rows = await logs.find({
+          where: { api_key_id: keyId, status_code: 401 },
+          relations: { tenant: true },
+        });
+        if (rows.length === 0) await new Promise((r) => setTimeout(r, 100));
+      }
+      await new Promise((r) => setTimeout(r, 300)); // let any (wrongly) extra rows land
+      rows = await logs.find({
+        where: { api_key_id: keyId, status_code: 401 },
+        relations: { tenant: true },
+      });
+      expect(rows).toHaveLength(1); // 3 attempts inside a minute → ONE row
+      expect(rows[0].tenant?.id).toBe(owner.tenantId);
+      expect(rows[0].method).toBe('GET');
+
+      // An UNKNOWN key has no tenant to show it to: nothing is written for it.
+      const before = await logs.count({ where: { status_code: 401, api_key_id: IsNull() } });
+      await request(e2e.app.getHttpServer())
+        .get(`${API}/integrations/services`)
+        .set('X-API-Key', 'zk_' + '0'.repeat(48))
+        .expect(401);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(await logs.count({ where: { status_code: 401, api_key_id: IsNull() } })).toBe(before);
+    }, 30_000);
 
     it('missing scope is rejected (key lacks integration.customers.read)', async () => {
       const created = await request(e2e.app.getHttpServer())
@@ -390,6 +470,7 @@ describe('Integration API + API-key hardening — HTTP e2e', () => {
           services.create({
             tenant: { id: other.tenantId } as Tenant,
             name: 'Other clinic service',
+            public_slug: `other-${randomUUID().slice(0, 8)}`,
             duration_minutes: 15,
             is_active: true,
           }),

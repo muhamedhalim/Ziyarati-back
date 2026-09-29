@@ -2,12 +2,14 @@ import { Logger } from '@nestjs/common';
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 
-import { QUEUE, workerConcurrency } from '../../queue/queue.constants';
+import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import { BaseJobData } from '../../queue/job-data.interface';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { IntegrationImportJobService } from '../../modules/integration-platform/imports/integration-import-job.service';
 import { IntegrationSyncService } from '../../modules/integration-platform/sync/integration-sync.service';
 import { IntegrationInboundService } from '../../modules/integration-platform/inbound/integration-inbound.service';
+import { IntegrationIdempotencyService } from '../../modules/integration-platform/idempotency/integration-idempotency.service';
+import { IntegrationOAuthService } from '../../modules/integration-platform/oauth/integration-oauth.service';
 import { MetricsService } from '../../metrics/metrics.service';
 
 const LOCK_KEY = 'lock:integration-recover-stale';
@@ -19,8 +21,14 @@ const LOCK_KEY = 'lock:integration-recover-stale';
  */
 const LOCK_TTL_MS = 90_000;
 
+const PURGE_LOCK_KEY = 'lock:integration-purge-expired';
+/** A daily sweep, so a generous TTL: three expiry DELETEs, run one after another. */
+const PURGE_LOCK_TTL_MS = 600_000;
+
 /**
- * Consumes `integration.maintenance` (`integration.recoverStale`) — re-enqueues
+ * Consumes `integration.maintenance`: `integration.recoverStale` (every 2
+ * minutes) and `integration.purgeExpired` (daily; see `purgeExpired()` below).
+ * Recovery re-enqueues
  * import/sync/inbound rows left `running`/`processing` by a dead worker
  * (gap-closure pass — see docs/CACHING_QUEUES_AUDIT.md §0.8.8). The three
  * `recoverStale()` methods already exist and are already unit-tested; this
@@ -44,11 +52,16 @@ export class IntegrationRecoveryProcessor extends WorkerHost {
     private readonly syncs: IntegrationSyncService,
     private readonly inbound: IntegrationInboundService,
     private readonly metrics: MetricsService,
+    private readonly idempotency: IntegrationIdempotencyService,
+    private readonly oauth: IntegrationOAuthService,
   ) {
     super();
   }
 
-  async process(_job: Job<BaseJobData>) {
+  async process(job: Job<BaseJobData>) {
+    if (job?.name === JOB.INTEGRATION_PURGE_EXPIRED) {
+      return this.purgeExpired();
+    }
     const token = await this.lock.acquire(LOCK_KEY, LOCK_TTL_MS);
     if (!token) {
       this.logger.log(
@@ -74,6 +87,33 @@ export class IntegrationRecoveryProcessor extends WorkerHost {
       return summary;
     } finally {
       await this.lock.release(LOCK_KEY, token);
+    }
+  }
+
+  /**
+   * Retention sweep: expired idempotency records (24h TTL), terminal inbound
+   * events past their retention window (which also ends their replay-guard role
+   * — the signature timestamp window is minutes, so nothing replayable is lost),
+   * and expired OAuth handshake states. Each purge is a tenant-agnostic DELETE by
+   * expiry and is idempotent, so a lock-skipped or repeated run is harmless.
+   * Sequential on purpose — one DELETE at a time keeps DB pressure flat.
+   */
+  private async purgeExpired() {
+    const token = await this.lock.acquire(PURGE_LOCK_KEY, PURGE_LOCK_TTL_MS);
+    if (!token) {
+      this.logger.log('integration purge already in progress elsewhere — skipping this run');
+      return { skipped: true };
+    }
+    try {
+      const idempotencyPurged = await this.idempotency.purgeExpired();
+      const inboundEventsPurged = await this.inbound.purgeExpired();
+      const oauthStatesPurged = await this.oauth.purgeExpiredStates();
+      const summary = { idempotencyPurged, inboundEventsPurged, oauthStatesPurged };
+      this.logger.log(`integration retention purge removed: ${JSON.stringify(summary)}`);
+      this.metrics.setWorkerHeartbeat('integration.purgeExpired');
+      return summary;
+    } finally {
+      await this.lock.release(PURGE_LOCK_KEY, token);
     }
   }
 

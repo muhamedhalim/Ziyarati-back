@@ -26,6 +26,7 @@ import {
   TERMINAL_INBOUND_STATUSES,
   UPSERT_OUTCOME,
   WEBHOOK_ENDPOINT_STATUS,
+  WEBHOOK_SIGNATURE_SCHEME,
   WebhookSignatureScheme,
 } from '../integration-platform.constants';
 import { IntegrationAdmissionService } from '../admission/integration-admission.service';
@@ -158,6 +159,17 @@ export class IntegrationInboundService {
     if (!h.signature) {
       return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.MISSING_SIGNATURE, ip);
     }
+    // v2 signs the event id and type, so both headers are mandatory — say which
+    // is missing rather than reporting a bare "invalid signature". (A provider
+    // adapter that owns verification has its own scheme; this does not apply.)
+    if (scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2 && !this.hasAdapterVerifier(endpoint)) {
+      if (!h.eventId) {
+        return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.MISSING_EVENT_ID, ip);
+      }
+      if (!h.eventType) {
+        return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.MISSING_EVENT_TYPE, ip);
+      }
+    }
     const secret = this.endpoints.secretOf(endpoint);
     if (!secret || !this.verifySignature(endpoint, scheme, secret, h, rawBody, headers)) {
       return this.rejectUnauthenticated(endpoint, tenantId, INBOUND_REJECTION.INVALID_SIGNATURE, ip);
@@ -188,8 +200,23 @@ export class IntegrationInboundService {
       return this.rejectAuthenticated(endpoint, tenantId, connectionId, null, null, INBOUND_REJECTION.MALFORMED, ip);
     }
 
-    const eventId = h.eventId ?? asString(body.eventId) ?? asString(body.id);
-    const eventType = h.eventType ?? asString(body.event) ?? asString(body.type);
+    // SEC-01: the body is covered by every scheme's MAC, the headers are not (under
+    // the legacy schemes). If the body states its own event id/type, a header that
+    // disagrees is a tampered or replayed delivery — refuse it rather than let the
+    // unsigned header win. (`id`/`type` are only fallbacks, not explicit claims.)
+    const bodyEventId = asString(body.eventId);
+    const bodyEventType = asString(body.event);
+    if (
+      (h.eventId && bodyEventId && h.eventId !== bodyEventId) ||
+      (h.eventType && bodyEventType && h.eventType !== bodyEventType)
+    ) {
+      return this.rejectAuthenticated(
+        endpoint, tenantId, connectionId, null, null, INBOUND_REJECTION.HEADER_BODY_MISMATCH, ip,
+      );
+    }
+
+    const eventId = h.eventId ?? bodyEventId ?? asString(body.id);
+    const eventType = h.eventType ?? bodyEventType ?? asString(body.type);
     const externalId = asString(body.externalId);
 
     if (!eventId) {
@@ -226,6 +253,27 @@ export class IntegrationInboundService {
       payload = this.stagePayload(mapped.resource, body.data, mapped.action);
     } catch {
       return this.rejectAuthenticated(endpoint, tenantId, connectionId, eventId, eventType, INBOUND_REJECTION.PROTECTED_FIELDS, ip);
+    }
+
+    // 9b. Replay pre-check. The unique index below stays the RACE guard (two
+    //     concurrent deliveries can both pass a read), but it is not the only
+    //     line of defence: a database missing that index (schema drift — see the
+    //     dev-DB notes) would otherwise accept a replay and process it twice.
+    //     Same key as the index: (tenant, endpoint, provider event id).
+    const alreadySeen = await this.events.findOne({
+      where: {
+        tenant: { id: tenantId },
+        endpoint: { id: endpoint.id },
+        provider_event_id: eventId,
+      },
+      select: { id: true },
+    });
+    if (alreadySeen) {
+      await this.endpoints.recordOutcome(endpoint.id, true);
+      return {
+        status: 200,
+        body: { received: true, eventId, status: INBOUND_STATUS.DUPLICATE, reason: INBOUND_REJECTION.REPLAYED },
+      };
     }
 
     // 10. Persist + enqueue-intent in ONE transaction via the transactional
@@ -396,7 +444,7 @@ export class IntegrationInboundService {
    * `PROCESSING`, or `ACCEPTED` past the point the outbox relay should have
    * picked it up). NOTE (Phase 0): `receive()` no longer has an enqueue-failure
    * path — see the identical note on `IntegrationImportJobService.recoverStale`.
-   * Not currently wired to a scheduled sweep.
+   * Scheduled every 2 minutes by IntegrationRecoveryProcessor.
    */
   async recoverStale(olderThanMs = 60_000): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);
@@ -469,7 +517,16 @@ export class IntegrationInboundService {
     if (adapter?.verifyWebhook) {
       return adapter.verifyWebhook(headers, rawBody, secret);
     }
-    return verifyInboundSignature(scheme, secret, h.timestamp, rawBody, h.signature as string);
+    return verifyInboundSignature(scheme, secret, h.timestamp, rawBody, h.signature as string, {
+      eventId: h.eventId,
+      eventType: h.eventType,
+    });
+  }
+
+  /** True when the endpoint's provider adapter supplies its own verifier. */
+  private hasAdapterVerifier(endpoint: IntegrationWebhookEndpoint): boolean {
+    const providerKey = (endpoint.connection as IntegrationConnection | undefined)?.provider;
+    return !!(providerKey && resolveProviderAdapter(providerKey)?.verifyWebhook);
   }
 
   /**

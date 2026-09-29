@@ -49,7 +49,7 @@ export class IntegrationInboundWebhookController {
     summary: 'Receive an inbound integration event',
     description: [
       'Signed by the connection endpoint secret. Required headers:',
-      `\`${INBOUND_HEADER.SIGNATURE}\` (\`sha256=<hex>\` over \`"{timestamp}.{rawBody}"\`),`,
+      `\`${INBOUND_HEADER.SIGNATURE}\` (\`sha256=<hex>\` HMAC-SHA256 — recommended scheme \`hmac_sha256_timestamped_v2\` signs \`"{timestamp}\\n{eventId}\\n{eventType}\\n{rawBody}"\`; the legacy \`hmac_sha256_timestamped\` signs \`"{timestamp}.{rawBody}"\` and does not cover the event headers),`,
       `\`${INBOUND_HEADER.TIMESTAMP}\` (unix seconds),`,
       `\`${INBOUND_HEADER.EVENT_ID}\` (the provider's own event id — the replay key),`,
       `\`${INBOUND_HEADER.EVENT_TYPE}\` (must be on the endpoint allowlist).`,

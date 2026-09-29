@@ -79,6 +79,13 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // guarded in IntegrationRecoveryProcessor so a stalled-job redelivery
       // can't run the sweep twice concurrently.
       await this.queue.addRepeatable(QUEUE.INTEGRATION_MAINTENANCE, JOB.INTEGRATION_RECOVER_STALE, { tenantId: null }, '*/2 * * * *');
+      // Integration retention purge — 03:50 UTC daily, offset 5 minutes after
+      // the auth-token purge (03:45) and clear of the other daily sweeps.
+      // Bounds integration_idempotency_keys / integration_inbound_events /
+      // integration_oauth_states, which previously grew without limit (their
+      // purge methods existed but nothing scheduled them). Lock-guarded in
+      // IntegrationRecoveryProcessor.
+      await this.queue.addRepeatable(QUEUE.INTEGRATION_MAINTENANCE, JOB.INTEGRATION_PURGE_EXPIRED, { tenantId: null }, '50 3 * * *');
       // Campaign dead-letter recovery sweep (FND-020) — every 5 minutes.
       // Lock-guarded in CampaignDlqRecoveryProcessor, mirrors the integration
       // recovery sweep above exactly. A dead-lettered recipient whose DLQ
@@ -108,7 +115,7 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       // same instant.
       await this.queue.addRepeatable(QUEUE.PLATFORM, JOB.PLATFORM_FREE_ACCESS_EXPIRY_SWEEP, { tenantId: null }, '20 * * * *');
 
-      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions ×2, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, campaigns-recover-dlq, waitlist-expiry, queue-day-close, export-expiry, birthday-greetings, free-access-expiry-sweep)');
+      this.logger.log('Repeatable jobs registered (analytics ×4, settlements, subscriptions ×2, refunds-reaper, notifications-reaper, platform-log-cleanup, usage-report-tick, ai-batch-poll, integration-recover-stale, integration-purge-expired, campaigns-recover-dlq, waitlist-expiry, queue-day-close, export-expiry, birthday-greetings, free-access-expiry-sweep)');
     } catch (err) {
       this.logger.error(`Could not register repeatable jobs (is Redis reachable?): ${(err as Error)?.message}`);
     }

@@ -22,6 +22,16 @@ export const WEBHOOK_EVENT = {
 
 export type WebhookEventName = (typeof WEBHOOK_EVENT)[keyof typeof WEBHOOK_EVENT];
 
+/**
+ * Synthetic event behind "Send test event" — lets an integrator verify their
+ * receiver (URL reachable, signature verified, 2xx returned) without waiting for
+ * a real appointment/payment. Deliberately NOT part of `WEBHOOK_EVENT`: it is
+ * never subscribable (an endpoint's `events` allowlist rejects it) and is only
+ * ever created by `WebhookDeliveryService.sendTest`, straight through the
+ * normal delivery pipeline (same signing, SSRF guard, retries and history).
+ */
+export const WEBHOOK_TEST_EVENT = 'webhook.test';
+
 export const WEBHOOK_EVENTS: WebhookEventName[] = Object.values(WEBHOOK_EVENT);
 const WEBHOOK_EVENT_SET = new Set<string>(WEBHOOK_EVENTS);
 

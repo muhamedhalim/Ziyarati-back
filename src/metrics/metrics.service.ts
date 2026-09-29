@@ -75,6 +75,19 @@ export class MetricsService {
    * indefinite loss of cross-replica rate-limit consistency — same rationale
    * as `loginProtectionEvents`' `store_unavailable` label above.
    */
+  /**
+   * SEC-06 — rejected API-key authentications by reason. The only signal for an
+   * UNKNOWN key (no tenant to attribute a log row to), so credential-guessing or a
+   * leaked-then-revoked key shows up as a rate here. Labels are a closed set —
+   * no key id, prefix or IP — so there is no cardinality risk.
+   */
+  private readonly apiKeyAuthFailures = new Counter({
+    name: 'api_key_auth_failures_total',
+    help: 'Rejected API-key authentications by reason (missing, unknown, inactive, expired).',
+    labelNames: ['reason'] as const,
+    registers: [this.registry],
+  });
+
   private readonly throttlerStorageEvents = new Counter({
     name: 'throttler_storage_events_total',
     help: 'Global throttler storage outcomes by event, e.g. degraded fallback to in-memory limiting when Redis is unavailable.',
@@ -238,6 +251,10 @@ export class MetricsService {
     event: 'engaged' | 'blocked' | 'cleared' | 'store_unavailable',
   ): void {
     this.loginProtectionEvents.inc({ event });
+  }
+
+  recordApiKeyAuthFailure(reason: 'missing' | 'unknown' | 'inactive' | 'expired'): void {
+    this.apiKeyAuthFailures.inc({ reason });
   }
 
   recordThrottlerStorageEvent(

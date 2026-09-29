@@ -15,6 +15,7 @@ export const WEBHOOK_AUDIT_ACTION = {
   DELETE: 'webhook.delete',
   REPLAY: 'webhook.replay',
   RETRY: 'webhook.retry',
+  TEST: 'webhook.test',
 } as const;
 
 export type WebhookAuditAction = (typeof WEBHOOK_AUDIT_ACTION)[keyof typeof WEBHOOK_AUDIT_ACTION];

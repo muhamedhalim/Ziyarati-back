@@ -106,8 +106,8 @@ export class IntegrationImportJobService {
     // outbox (Phase 0 — see docs/CACHING_QUEUES_AUDIT.md §0.5 item 4 / original
     // audit H6). Previously the enqueue happened after commit with only a
     // try/catch — the job row itself already tolerated that gap (it stays
-    // `pending`), but nothing besides the never-wired `recoverStale()` sweep
-    // (see that method's own note) would ever re-enqueue it.
+    // `pending`), but nothing besides the `recoverStale()` sweep (run every 2
+    // minutes by IntegrationRecoveryProcessor) would ever re-enqueue it.
     const job = await this.dataSource.transaction(async (mgr) => {
       const created = await mgr.save(
         mgr.create(IntegrationImportJob, {
@@ -456,9 +456,9 @@ export class IntegrationImportJobService {
    * longer result from an enqueue failure at `create()` time — that path now
    * goes through the transactional outbox, whose own relay handles recovery.
    * This method still matters for the case the outbox does NOT cover: a
-   * worker that dies AFTER dequeuing (row already `running`). Not currently
-   * wired to a scheduled sweep (found, not fixed, in this pass — flagged
-   * separately rather than silently left as dead code).
+   * worker that dies AFTER dequeuing (row already `running`). Scheduled: the
+   * `integration.recoverStale` repeatable job (every 2 minutes — see
+   * ScheduleRegistrarService) calls this via IntegrationRecoveryProcessor.
    */
   async recoverStale(olderThanMs = 60_000): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);

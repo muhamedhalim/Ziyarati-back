@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiAcceptedResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
@@ -23,9 +24,11 @@ import {
   ApiParam,
   ApiTags,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 
 import { WebhookEndpointService } from './webhook-endpoint.service';
+import { WebhookDeliveryService } from './webhook-delivery.service';
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
 import { QueryWebhookEndpointsDto } from './dto/query-webhook-endpoints.dto';
@@ -64,6 +67,7 @@ const S_ERROR = {
 export class WebhookEndpointController {
   constructor(
     private readonly endpoints: WebhookEndpointService,
+    private readonly deliveries: WebhookDeliveryService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -281,5 +285,25 @@ export class WebhookEndpointController {
       userId,
       ip,
     });
+  }
+
+  @Post(':id/test')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions(PERMISSION.PLATFORM_WEBHOOKS_OUTBOUND_MANAGE)
+  @ApiOperation({
+    summary: 'Send a test event to an endpoint',
+    description:
+      '**Protected — `platform.webhooks.outbound.manage`. Clinic active.** Queues a signed `webhook.test` delivery to this endpoint through the normal delivery pipeline (same headers, signature, retries and history) so you can verify your receiver. Returns the queued delivery; follow its outcome under Deliveries. The endpoint must be active. Limited to 5 per minute per endpoint.',
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiAcceptedResponse({ description: 'Test delivery queued.' })
+  @ApiUnprocessableEntityResponse({ description: 'The endpoint is disabled.', schema: S_ERROR })
+  @ApiNotFoundResponse({ description: 'Endpoint not found in this tenant.', schema: S_ERROR })
+  sendTest(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    return this.deliveries.sendTest(this.ctx.requireTenantId(), id, { userId, ip });
   }
 }

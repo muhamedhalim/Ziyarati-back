@@ -74,6 +74,7 @@ export class ApiKeyService {
     actor: ApiKeyActor,
   ): Promise<SafeApiKey & { apiKey: string }> {
     assertScopesGrantable(dto.permissions, actor.permissions, actor.isSuperAdmin);
+    this.assertFutureExpiry(dto.expiresAt);
 
     const { plaintext, hash } = generateApiKey();
     const scopes = normalizeScopes(dto.permissions);
@@ -117,6 +118,7 @@ export class ApiKeyService {
         message: 'Only a super-admin may issue a platform-level API key',
       });
     }
+    this.assertFutureExpiry(dto.expiresAt);
     const scopes = normalizeScopes(dto.permissions);
     const tenantScoped = scopes.filter((s) => INTEGRATION_SCOPE_REQUIRES[s]);
     if (tenantScoped.length > 0) {
@@ -148,13 +150,23 @@ export class ApiKeyService {
     return { ...this.toSafe(saved), apiKey: plaintext };
   }
 
-  /** Issue a new secret for an existing key (same id/name/permissions). */
+  /**
+   * Issue a new secret for an existing key (same id/name/permissions).
+   *
+   * SEC-03: the ACTING user must themselves hold the underlying permission of
+   * every scope the key carries — rotating hands out a fresh working credential
+   * for those scopes, so it is a grant just like `create`. A demoted manager can
+   * no longer keep re-issuing a powerful key. A revoked/expired key is refused:
+   * a fresh secret could not make it work anyway (its expiry has passed).
+   */
   async rotate(
     tenantId: string,
     id: string,
-    actor: Pick<ApiKeyActor, 'userId' | 'ip'>,
+    actor: ApiKeyActor,
   ): Promise<SafeApiKey & { apiKey: string }> {
     const key = await this.findOneOrThrow(tenantId, id);
+    this.assertNotExpired(key, 'rotated');
+    assertScopesGrantable(normalizeScopes(key.permissions), actor.permissions, actor.isSuperAdmin);
     const { plaintext, hash } = generateApiKey();
     key.key_hash = hash;
     key.key_prefix = keyPrefix(plaintext);
@@ -177,12 +189,19 @@ export class ApiKeyService {
     return this.toSafe(saved);
   }
 
+  /**
+   * Re-enable a deactivated key. Same SEC-03 rule as `rotate` (re-enabling is a
+   * grant), and an expired/revoked key is refused rather than "activated" into
+   * a state where every request still fails with 401.
+   */
   async activate(
     tenantId: string,
     id: string,
-    actor: Pick<ApiKeyActor, 'userId' | 'ip'>,
+    actor: ApiKeyActor,
   ): Promise<SafeApiKey> {
     const key = await this.findOneOrThrow(tenantId, id);
+    this.assertNotExpired(key, 'activated');
+    assertScopesGrantable(normalizeScopes(key.permissions), actor.permissions, actor.isSuperAdmin);
     key.is_active = true;
     const saved = await this.keys.save(key);
     await this.audit.record(API_KEY_AUDIT_ACTION.ACTIVATE, tenantId, actor.userId, id, actor.ip);
@@ -203,6 +222,34 @@ export class ApiKeyService {
 
   async get(tenantId: string, id: string): Promise<SafeApiKey> {
     return this.toSafe(await this.findOneOrThrow(tenantId, id));
+  }
+
+  /**
+   * What a partner may learn about the key it is calling with (`GET
+   * /integrations/me`). Looked up by the key's own id AND the tenant the guard
+   * resolved from it, so it can only ever describe the caller's own key. Never
+   * includes the hash or the tenant id.
+   */
+  async describeOwn(
+    tenantId: string,
+    keyId: string,
+  ): Promise<{
+    keyId: string;
+    keyPrefix: string | null;
+    name: string | null;
+    scopes: string[];
+    expiresAt: Date | null;
+    lastUsedAt: Date | null;
+  }> {
+    const key = await this.findOneOrThrow(tenantId, keyId);
+    return {
+      keyId: key.id,
+      keyPrefix: key.key_prefix ?? null,
+      name: key.name ?? null,
+      scopes: normalizeScopes(key.permissions),
+      expiresAt: key.expires_at ?? null,
+      lastUsedAt: key.last_used_at ?? null,
+    };
   }
 
   async list(tenantId: string, query: QueryApiKeysDto) {
@@ -230,8 +277,14 @@ export class ApiKeyService {
    * UNAUTHORIZED for any failure so callers can't distinguish reasons.
    */
   async authenticate(plaintext: string | undefined): Promise<AuthenticatedApiKey> {
+    // `internalContext` never reaches the HTTP response (only `publicContext` does),
+    // so the client still sees one uniform 401. It lets ApiKeyAuthGuard record
+    // WHICH key was refused (SEC-06) without a second lookup.
     if (!plaintext || typeof plaintext !== 'string') {
-      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'API key required' });
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'API key required',
+        internalContext: { reason: 'missing' },
+      });
     }
     // P5-2 (015-db-api-efficiency-audit, AUTH-006): the guard's synthetic
     // principal only ever reads `key.tenant?.id`, so loading the full Tenant
@@ -248,11 +301,26 @@ export class ApiKeyService {
       .where('k.key_hash = :hash', { hash: hashApiKey(plaintext) })
       .getRawAndEntities();
     const key = entities[0];
-    if (!key || !key.is_active) {
-      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'Invalid or inactive API key' });
+    if (!key) {
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'Invalid or inactive API key',
+        internalContext: { reason: 'unknown' },
+      });
+    }
+    const tenantId = (raw[0]?.tenant_fk as string | null) ?? null;
+    if (!key.is_active) {
+      // Revoked keys are stored inactive too — the key row names the tenant, so
+      // an owner can see someone still presenting a credential they killed.
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'Invalid or inactive API key',
+        internalContext: { reason: 'inactive', keyId: key.id, tenantId },
+      });
     }
     if (key.expires_at && key.expires_at.getTime() <= Date.now()) {
-      throw new AppError(ErrorCode.UNAUTHORIZED, { message: 'API key has expired' });
+      throw new AppError(ErrorCode.UNAUTHORIZED, {
+        message: 'API key has expired',
+        internalContext: { reason: 'expired', keyId: key.id, tenantId },
+      });
     }
 
     const now = Date.now();
@@ -262,7 +330,7 @@ export class ApiKeyService {
 
     return {
       keyId: key.id,
-      tenantId: (raw[0]?.tenant_fk as string | null) ?? null,
+      tenantId,
       // Legacy/junk-safe: only recognised scope strings ever reach the principal.
       permissions: normalizeScopes(key.permissions),
     };
@@ -279,6 +347,26 @@ export class ApiKeyService {
       );
     }
     return column;
+  }
+
+  /** SEC-04: a key created already-expired would be dead on arrival — refuse it. */
+  private assertFutureExpiry(expiresAt: string | undefined): void {
+    if (!expiresAt) return;
+    const at = new Date(expiresAt).getTime();
+    if (!Number.isFinite(at) || at <= Date.now()) {
+      throw new AppError(ErrorCode.BAD_REQUEST, {
+        message: 'expiresAt must be a date in the future',
+      });
+    }
+  }
+
+  /** Revoked keys are stored as inactive + expired, so one expiry check covers both. */
+  private assertNotExpired(key: ApiKey, verb: 'rotated' | 'activated'): void {
+    if (key.expires_at && key.expires_at.getTime() <= Date.now()) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: `This key has expired or been revoked and cannot be ${verb} — create a new key instead`,
+      });
+    }
   }
 
   private async findOneOrThrow(tenantId: string, id: string): Promise<ApiKey> {

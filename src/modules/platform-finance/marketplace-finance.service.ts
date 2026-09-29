@@ -6,6 +6,7 @@ import { Payment } from '../../entities/Payments/Payment';
 import { Transaction } from '../../entities/Payments/Transaction';
 import { Refund } from '../../entities/Payments/Refund';
 import { AppError, ErrorCode } from '../../common/errors';
+import { escapeSpreadsheetCell } from '../../common/import/spreadsheet-escape';
 import { round2 } from '../payments/payments.constants';
 import { QueryMarketplaceTransactionsDto } from './dto/query-marketplace-transactions.dto';
 import {
@@ -900,7 +901,9 @@ export class MarketplaceFinanceService {
       'Refund Status', 'Settlement Date', 'Paid At', 'Created At',
     ];
     const esc = (v: unknown): string => {
-      const s = v == null ? '' : String(v);
+      // SEC-05: patient/clinic names are user-controlled — neutralise formulas.
+      // Only string values are escaped, so numeric amounts stay numeric.
+      const s = v == null ? '' : String(escapeSpreadsheetCell(v));
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = rows.data.map((r) =>

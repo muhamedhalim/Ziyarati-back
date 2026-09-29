@@ -171,6 +171,8 @@ import { IntegrationOAuthController } from './oauth/oauth.controller';
     IntegrationServiceAccountService,
     IntegrationStaffProvisioningService,
     IntegrationOAuthService,
+    // The worker's retention sweep purges expired idempotency records.
+    IntegrationIdempotencyService,
   ],
 })
 export class IntegrationPlatformModule {}

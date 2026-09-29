@@ -511,6 +511,9 @@ export const INBOUND_REJECTION = {
   EVENT_NOT_ALLOWED: 'event_not_allowed',
   UNSUPPORTED_EVENT: 'unsupported_event',
   MISSING_EVENT_ID: 'missing_event_id',
+  MISSING_EVENT_TYPE: 'missing_event_type',
+  /** The event id/type in a header disagrees with the one inside the signed body. */
+  HEADER_BODY_MISMATCH: 'header_body_mismatch',
   MISSING_EXTERNAL_ID: 'missing_external_id',
   PAYLOAD_TOO_LARGE: 'payload_too_large',
   PROTECTED_FIELDS: 'protected_fields',
@@ -520,15 +523,40 @@ export type InboundRejection = (typeof INBOUND_REJECTION)[keyof typeof INBOUND_R
 
 /** Compiled signature schemes. A tenant selects one; it can never supply code. */
 export const WEBHOOK_SIGNATURE_SCHEME = {
-  /** HMAC-SHA256 over `"{timestamp}.{rawBody}"`, header `sha256=<hex>`. */
+  /**
+   * HMAC-SHA256 over `"{timestamp}.{rawBody}"`, header `sha256=<hex>`. LEGACY:
+   * the event-id and event-type headers are NOT covered by the MAC (SEC-01), so
+   * a captured delivery can be replayed with a fresh event id.
+   */
   HMAC_SHA256_TIMESTAMPED: 'hmac_sha256_timestamped',
-  /** HMAC-SHA256 over the raw body alone, header `sha256=<hex>`. */
+  /**
+   * HMAC-SHA256 over the raw body alone, header `sha256=<hex>`. LEGACY: no
+   * timestamp and no event metadata are signed, so it has no replay window.
+   */
   HMAC_SHA256_BODY: 'hmac_sha256_body',
+  /**
+   * HMAC-SHA256 over `"{timestamp}\n{eventId}\n{eventType}\n{rawBody}"`, header
+   * `sha256=<hex>`. The event id and type are bound INTO the MAC, so neither can
+   * be swapped to bypass the replay guard or change what the event means.
+   *
+   * Newline-separated on purpose: an HTTP header value can never contain a
+   * newline, so the four parts cannot be re-split differently (a dot separator
+   * would let `ts="1.5", id="x"` and `ts="1", id="5.x"` sign identically).
+   */
+  HMAC_SHA256_TIMESTAMPED_V2: 'hmac_sha256_timestamped_v2',
 } as const;
 export type WebhookSignatureScheme =
   (typeof WEBHOOK_SIGNATURE_SCHEME)[keyof typeof WEBHOOK_SIGNATURE_SCHEME];
 export const WEBHOOK_SIGNATURE_SCHEMES: WebhookSignatureScheme[] =
   Object.values(WEBHOOK_SIGNATURE_SCHEME);
+/** Scheme a NEW endpoint gets when the caller does not choose one. */
+export const DEFAULT_WEBHOOK_SIGNATURE_SCHEME: WebhookSignatureScheme =
+  WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2;
+/** Still accepted (existing endpoints keep working) but do not sign the event metadata. */
+export const LEGACY_WEBHOOK_SIGNATURE_SCHEMES: WebhookSignatureScheme[] = [
+  WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED,
+  WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_BODY,
+];
 
 /** Inbound request headers the platform reads. */
 export const INBOUND_HEADER = {

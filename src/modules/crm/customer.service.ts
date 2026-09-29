@@ -395,6 +395,7 @@ export class CustomerService {
       .createQueryBuilder('c')
       .where(`c."${tenantFk}" = :tenantId`, { tenantId })
       .orderBy('c.created_at', 'DESC')
+      .addOrderBy('c.id', 'DESC') // stable pagination — see note on ties
       .limit(query.limit)
       .offset((query.page - 1) * query.limit);
     if (query.isActive !== undefined) {
@@ -443,7 +444,7 @@ export class CustomerService {
     const [data, total] = await this.customers.findAndCount({
       where,
       relations: { tags: { tag: true } },
-      order: { created_at: 'DESC' },
+      order: { created_at: 'DESC', id: 'DESC' }, // id = stable-pagination tiebreaker
       skip: (dto.page - 1) * dto.limit,
       take: dto.limit,
     });

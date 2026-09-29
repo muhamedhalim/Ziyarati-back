@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PassThrough } from 'node:stream';
 import type ExcelJSType from 'exceljs';
 
+import { escapeSpreadsheetRow } from '../../common/import/spreadsheet-escape';
 import { ExportColumn } from './export-registry';
 
 /** One page of rows plus the cursor to resume from (`null` = no more pages). */
@@ -76,7 +77,9 @@ export class XlsxWriterService {
     for (;;) {
       const page = await fetchPage(cursor, pageSize);
       for (const row of page.rows) {
-        sheet.addRow(row).commit();
+        // SEC-05: text starting = + - @ would run as a formula when staff open
+        // the export. Escaped here, at the boundary — stored data is unchanged.
+        sheet.addRow(escapeSpreadsheetRow(row)).commit();
         rowCount++;
       }
       if (!page.nextCursor || page.rows.length === 0) break;

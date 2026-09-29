@@ -46,15 +46,31 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb);
 }
 
-/** The signed string for a scheme. Timestamped schemes bind ts INTO the MAC. */
+/** Event metadata a v2 signature binds into the MAC. Ignored by the legacy schemes. */
+export interface SignedEventMeta {
+  eventId?: string;
+  eventType?: string;
+}
+
+/**
+ * The signed string for a scheme. Timestamped schemes bind ts INTO the MAC; v2
+ * additionally binds the event id and type, so they cannot be edited on a
+ * captured request (SEC-01). Returns `null` when v2 metadata is missing —
+ * nothing can be verified without it, and signing an empty string would let an
+ * attacker who omits the headers match a MAC over empty values.
+ */
 export function signingPayload(
   scheme: WebhookSignatureScheme,
   timestamp: string | undefined,
   rawBody: string,
-): string {
-  return scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_BODY
-    ? rawBody
-    : `${timestamp ?? ''}.${rawBody}`;
+  meta: SignedEventMeta = {},
+): string | null {
+  if (scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_BODY) return rawBody;
+  if (scheme === WEBHOOK_SIGNATURE_SCHEME.HMAC_SHA256_TIMESTAMPED_V2) {
+    if (!meta.eventId || !meta.eventType) return null;
+    return [timestamp ?? '', meta.eventId, meta.eventType, rawBody].join('\n');
+  }
+  return `${timestamp ?? ''}.${rawBody}`;
 }
 
 /** `sha256=<hex>` for the given scheme — the value a caller must send. */
@@ -63,10 +79,13 @@ export function computeInboundSignature(
   secret: string,
   timestamp: string | undefined,
   rawBody: string,
+  meta: SignedEventMeta = {},
 ): string {
-  const digest = createHmac('sha256', secret)
-    .update(signingPayload(scheme, timestamp, rawBody))
-    .digest('hex');
+  const payload = signingPayload(scheme, timestamp, rawBody, meta);
+  if (payload === null) {
+    throw new Error('v2 signing needs both an event id and an event type');
+  }
+  const digest = createHmac('sha256', secret).update(payload).digest('hex');
   return `sha256=${digest}`;
 }
 
@@ -81,9 +100,12 @@ export function verifyInboundSignature(
   timestamp: string | undefined,
   rawBody: string,
   presented: string,
+  meta: SignedEventMeta = {},
 ): boolean {
   if (!presented || !secret) return false;
-  const expected = computeInboundSignature(scheme, secret, timestamp, rawBody);
+  // v2 without an event id/type cannot be verified — refuse rather than sign blanks.
+  if (signingPayload(scheme, timestamp, rawBody, meta) === null) return false;
+  const expected = computeInboundSignature(scheme, secret, timestamp, rawBody, meta);
   if (safeEqual(expected, presented)) return true;
   // Tolerate a bare hex digest (no `sha256=` prefix).
   return safeEqual(expected.slice('sha256='.length), presented);

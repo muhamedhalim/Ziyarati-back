@@ -14,6 +14,11 @@ import type { NormalizedError } from '../errors/error-normalizer';
 import { ErrorResponseBody } from '../interfaces/error-response.interface';
 import { sanitizeForLog, sanitizeUrlForLog } from '../utils/sanitize.util';
 
+/** `Retry-After` bounds (seconds). A 429 with no hint falls back to the length of the rate-limit windows in use. */
+const RETRY_AFTER_MIN_SECONDS = 1;
+const RETRY_AFTER_MAX_SECONDS = 3600;
+const RETRY_AFTER_DEFAULT_429_SECONDS = 60;
+
 /**
  * Catches EVERY exception thrown anywhere in the request lifecycle (guards,
  * pipes, controllers, services) and renders the single canonical error shape.
@@ -64,7 +69,42 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     this.writeLog(normalized, exception, request, requestId);
 
+    const retryAfter = this.retryAfterSeconds(normalized, response);
+    if (retryAfter !== undefined) response.setHeader('Retry-After', String(retryAfter));
+
     response.status(normalized.statusCode).json(body);
+  }
+
+  /**
+   * `Retry-After` for throttled/unavailable responses, so an integrator can back
+   * off precisely instead of guessing.
+   *  - never overrides a header something upstream already set (the Nest
+   *    throttler sets its own);
+   *  - 429 and 503 only;
+   *  - the value comes from the error's own client-safe `retryAfterMs` hint when
+   *    it has one; a 429 without a hint falls back to a full window; a 503 without
+   *    a hint gets NO header (maintenance windows have no honest estimate).
+   */
+  private retryAfterSeconds(
+    normalized: NormalizedError,
+    response: Response,
+  ): number | undefined {
+    const status = normalized.statusCode;
+    if (status !== HttpStatus.TOO_MANY_REQUESTS && status !== HttpStatus.SERVICE_UNAVAILABLE) {
+      return undefined;
+    }
+    if (response.getHeader('Retry-After') !== undefined) return undefined;
+
+    const hintMs = normalized.context?.retryAfterMs;
+    if (typeof hintMs === 'number' && Number.isFinite(hintMs) && hintMs > 0) {
+      return Math.min(
+        RETRY_AFTER_MAX_SECONDS,
+        Math.max(RETRY_AFTER_MIN_SECONDS, Math.ceil(hintMs / 1000)),
+      );
+    }
+    return status === HttpStatus.TOO_MANY_REQUESTS
+      ? RETRY_AFTER_DEFAULT_429_SECONDS
+      : undefined;
   }
 
   // ----------------------------------------------------------------------- //

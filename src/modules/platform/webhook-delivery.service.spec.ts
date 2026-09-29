@@ -1,10 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Not } from 'typeorm';
+import { FindOperator, Not } from 'typeorm';
 
 import { WebhookDeliveryService } from './webhook-delivery.service';
 import { WebhookEndpointService } from './webhook-endpoint.service';
+import { WEBHOOK_EVENTS, WEBHOOK_TEST_EVENT } from './webhook.constants';
 import {
   WebhookAuditService,
   WEBHOOK_AUDIT_ACTION,
@@ -13,7 +14,7 @@ import { WebhookDelivery } from '../../entities/System/WebhookDelivery';
 import { OutboxJob } from '../../entities/Campaigns/OutboxJob';
 import { QueueService } from '../../queue/queue.service';
 import { DataSource } from 'typeorm';
-import { ErrorCode } from '../../common/errors';
+import { AppError, ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
   MockRepository,
@@ -29,7 +30,7 @@ const TENANT = 't1';
 describe('WebhookDeliveryService', () => {
   let service: WebhookDeliveryService;
   let deliveries: MockRepository;
-  let endpointsService: { findActiveSubscribers: jest.Mock };
+  let endpointsService: { findActiveSubscribers: jest.Mock; get: jest.Mock };
   let queue: {
     enqueueWebhookDeliver: jest.Mock;
     retryWebhookDeliver: jest.Mock;
@@ -42,6 +43,7 @@ describe('WebhookDeliveryService', () => {
     deliveries = createMockRepository();
     endpointsService = {
       findActiveSubscribers: jest.fn().mockResolvedValue([]),
+      get: jest.fn(),
     };
     queue = {
       enqueueWebhookDeliver: jest.fn().mockResolvedValue({ id: 'job-1' }),
@@ -323,6 +325,95 @@ describe('WebhookDeliveryService', () => {
       deliveries.update.mockResolvedValueOnce({ affected: 0 });
       const result = await service.markDeadLettered('d1', 'exhausted again');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('sendTest (webhook.test through the normal delivery pipeline)', () => {
+    const ENDPOINT = 'ep1';
+    const ACTOR = { userId: 'u1', ip: '1.2.3.4' };
+
+    beforeEach(() => {
+      endpointsService.get.mockResolvedValue({ id: ENDPOINT, url: 'https://partner.example/hook', is_active: true });
+      manager.save.mockImplementation(async (d: any) => ({ ...d, id: d.id ?? 'delivery-1' }));
+      jest.spyOn(service, 'get').mockResolvedValue({ id: 'delivery-1', status: 'PENDING' } as never);
+    });
+
+    it('writes a webhook.test delivery + outbox row in one transaction, exactly like a real event', async () => {
+      const view = await service.sendTest(TENANT, ENDPOINT, ACTOR);
+
+      expect(endpointsService.get).toHaveBeenCalledWith(TENANT, ENDPOINT);
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      const delivery = manager.create.mock.calls.find((c) => c[0] === WebhookDelivery)![1];
+      expect(delivery).toMatchObject({
+        tenant: { id: TENANT },
+        webhook_endpoint: { id: ENDPOINT },
+        webhook_endpoint_url_snapshot: 'https://partner.example/hook',
+        event_type: 'webhook.test',
+        status: 'PENDING',
+        payload: expect.objectContaining({ test: true, webhookEndpointId: ENDPOINT }),
+      });
+      const outbox = manager.create.mock.calls.find((c) => c[0] === OutboxJob)![1];
+      expect(outbox).toMatchObject({ queue: 'webhooks.deliver', job_name: 'webhooks.deliver' });
+      expect(outbox.dedupe_key).toMatch(/^webhook-delivery-/);
+      // Never the direct-enqueue path, and the caller gets the queued delivery back.
+      expect(queue.enqueueWebhookDeliver).not.toHaveBeenCalled();
+      expect(view).toMatchObject({ id: 'delivery-1', status: 'PENDING' });
+    });
+
+    it('the test event is a distinct, non-subscribable event name', () => {
+      expect(WEBHOOK_TEST_EVENT).toBe('webhook.test');
+      expect(WEBHOOK_EVENTS).not.toContain(WEBHOOK_TEST_EVENT);
+    });
+
+    it('audits the test with the actor and endpoint, never the payload or any secret', async () => {
+      await service.sendTest(TENANT, ENDPOINT, ACTOR);
+      expect(audit.record).toHaveBeenCalledWith(
+        'webhook.test',
+        TENANT,
+        'u1',
+        'WebhookDelivery',
+        'delivery-1',
+        '1.2.3.4',
+        { webhookEndpointId: ENDPOINT },
+      );
+    });
+
+    it('is refused for a disabled endpoint, and nothing is written', async () => {
+      endpointsService.get.mockResolvedValue({ id: ENDPOINT, url: 'https://x', is_active: false });
+      await expect(service.sendTest(TENANT, ENDPOINT, ACTOR)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it("404s for another tenant's (or unknown) endpoint — the lookup is tenant-scoped and nothing is written", async () => {
+      endpointsService.get.mockRejectedValue(new AppError(ErrorCode.NOT_FOUND, { message: 'Webhook endpoint not found' }));
+      await expect(service.sendTest(TENANT, ENDPOINT, ACTOR)).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('is rate-limited per endpoint (5 per minute) with a retry hint, before writing anything', async () => {
+      deliveries.count.mockResolvedValueOnce(5);
+      await expect(service.sendTest(TENANT, ENDPOINT, ACTOR)).rejects.toMatchObject({
+        code: ErrorCode.RATE_LIMITED,
+        publicContext: { retryAfterMs: 60_000 },
+      });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      const where = deliveries.count.mock.calls[0][0].where;
+      // The window is evaluated by the database, never against a JS Date (timezone-safe).
+      expect(where.created_at).toBeInstanceOf(FindOperator);
+      expect(where.created_at.type).toBe('raw');
+      expect(where).toMatchObject({
+        tenant: { id: TENANT },
+        webhook_endpoint: { id: ENDPOINT },
+        event_type: 'webhook.test',
+      });
+    });
+
+    it('still allows a test when fewer than 5 were sent in the window', async () => {
+      deliveries.count.mockResolvedValueOnce(4);
+      await expect(service.sendTest(TENANT, ENDPOINT, ACTOR)).resolves.toBeDefined();
     });
   });
 });

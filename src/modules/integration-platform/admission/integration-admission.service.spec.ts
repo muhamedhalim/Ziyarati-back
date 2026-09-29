@@ -37,6 +37,20 @@ describe('IntegrationAdmissionService', () => {
       });
     });
 
+    it('carries the limiter\'s own retry hint so the response can advertise Retry-After', async () => {
+      const limiter = { consume: jest.fn().mockResolvedValue({ allowed: false, reason: 'RATE', retryAfterMs: 4200 }) };
+      await expect(make(limiter).admit(ADMISSION_OP.WRITE, { tenantId: 't1', keyId: 'k1' })).rejects.toMatchObject({
+        publicContext: { retryAfterMs: 4200 },
+      });
+    });
+
+    it('a 503 from an unreachable limiter suggests retrying in a few seconds', async () => {
+      const limiter = { consume: jest.fn().mockRejectedValue(new Error('redis down')) };
+      await expect(make(limiter).admit(ADMISSION_OP.WRITE, { tenantId: 't1', keyId: 'k1' })).rejects.toMatchObject({
+        publicContext: { retryAfterMs: 5000 },
+      });
+    });
+
     it('FAILS CLOSED (503, retryable) when the limiter is unavailable — never fail-open like the read API', async () => {
       const limiter = { consume: jest.fn().mockRejectedValue(new Error('redis down')) };
       const svc = make(limiter);

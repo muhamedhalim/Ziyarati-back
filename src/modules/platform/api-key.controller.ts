@@ -23,7 +23,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
-import { ApiKeyService } from './api-key.service';
+import { ApiKeyActor, ApiKeyService } from './api-key.service';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 import { QueryApiKeysDto } from './dto/query-api-keys.dto';
 
@@ -64,6 +64,16 @@ export class ApiKeyController {
     private readonly ctx: TenantContextService,
   ) {}
 
+  /** The acting user's identity + CURRENT privilege — what scope-grant checks compare against. */
+  private actorOf(user: AuthenticatedUser, ip: string): ApiKeyActor {
+    return {
+      userId: user.id,
+      permissions: user.permissions,
+      isSuperAdmin: user.roles.includes(ROLE.SUPER_ADMIN),
+      ip,
+    };
+  }
+
   @ApiOperation({
     summary: 'Create an API key',
     description:
@@ -87,12 +97,7 @@ export class ApiKeyController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.keys.create(this.ctx.requireTenantId(), dto, {
-      userId: user.id,
-      permissions: user.permissions,
-      isSuperAdmin: user.roles.includes(ROLE.SUPER_ADMIN),
-      ip,
-    });
+    return this.keys.create(this.ctx.requireTenantId(), dto, this.actorOf(user, ip));
   }
 
   @ApiOperation({
@@ -148,7 +153,7 @@ export class ApiKeyController {
   @ApiOperation({
     summary: 'Rotate an API key',
     description:
-      '**Protected — `platform.api-keys.manage`. Clinic active.** Issues a new secret (returned once); the old secret stops working.',
+      '**Protected — `platform.api-keys.manage`. Clinic active.** Issues a new secret (returned once); the old secret stops working. You must hold the underlying permission of every scope the key carries, and an expired or revoked key cannot be rotated (422) — create a new key instead.',
   })
   @ApiParam({
     name: 'id',
@@ -176,10 +181,10 @@ export class ApiKeyController {
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
   rotate(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.keys.rotate(this.ctx.requireTenantId(), id, { userId, ip });
+    return this.keys.rotate(this.ctx.requireTenantId(), id, this.actorOf(user, ip));
   }
 
   @ApiOperation({
@@ -220,7 +225,7 @@ export class ApiKeyController {
   @ApiOperation({
     summary: 'Activate an API key',
     description:
-      '**Protected — `platform.api-keys.manage`. Clinic active.** Re-enables a deactivated key.',
+      '**Protected — `platform.api-keys.manage`. Clinic active.** Re-enables a deactivated key. You must hold the underlying permission of every scope the key carries; an expired or revoked key cannot be re-enabled (422).',
   })
   @ApiParam({
     name: 'id',
@@ -246,10 +251,10 @@ export class ApiKeyController {
   @RequirePermissions(PERMISSION.PLATFORM_API_KEYS_MANAGE)
   activate(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.keys.activate(this.ctx.requireTenantId(), id, { userId, ip });
+    return this.keys.activate(this.ctx.requireTenantId(), id, this.actorOf(user, ip));
   }
 
   @ApiOperation({

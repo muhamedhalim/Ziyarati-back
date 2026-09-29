@@ -702,7 +702,7 @@ export class StaffService {
     const [data, total] = await this.staff.findAndCount({
       where,
       relations: { user: true },
-      order: { created_at: 'DESC' },
+      order: { created_at: 'DESC', id: 'DESC' }, // id = stable-pagination tiebreaker
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });

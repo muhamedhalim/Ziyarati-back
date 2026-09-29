@@ -62,9 +62,22 @@ import { QueueService } from '../src/queue/queue.service';
 
 const API = '/api/v1';
 
-/** Signs exactly like the receiver verifies: HMAC over "{ts}.{rawBody}". */
+/** Signs exactly like the receiver verifies: HMAC over "{ts}.{rawBody}" (the legacy v1 scheme). */
 function signInbound(secret: string, ts: string, rawBody: string): string {
   return `sha256=${createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex')}`;
+}
+
+/** v2: HMAC over "{ts}\n{eventId}\n{eventType}\n{rawBody}" — the event id and type are SIGNED (SEC-01). */
+function signInboundV2(
+  secret: string,
+  ts: string,
+  eventId: string,
+  eventType: string,
+  rawBody: string,
+): string {
+  return `sha256=${createHmac('sha256', secret)
+    .update([ts, eventId, eventType, rawBody].join('\n'))
+    .digest('hex')}`;
 }
 
 function nowSeconds(): string {
@@ -160,6 +173,9 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
         services.create({
           tenant: { id: owner.tenantId } as Tenant,
           name: `Consult ${randomUUID().slice(0, 6)}`,
+          // `services.public_slug` is NOT NULL (unique per tenant); direct inserts
+          // bypass ServiceService, which is what normally generates it.
+          public_slug: `consult-${randomUUID().slice(0, 8)}`,
           duration_minutes: 30,
           is_active: true,
         }),
@@ -725,7 +741,14 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
       const res = await request(server())
         .post(`${API}/platform/integrations/webhooks/endpoints`)
         .set(...authHeader(owner.token))
-        .send({ connectionId, allowedEvents: ['customer.upserted'] })
+        // Pinned to the LEGACY scheme on purpose: new endpoints now default to v2
+        // (see 'inbound webhooks — v2' below), and existing partners on
+        // timestamp.body signing must keep working unchanged.
+        .send({
+          connectionId,
+          allowedEvents: ['customer.upserted'],
+          signatureScheme: 'hmac_sha256_timestamped',
+        })
         .expect(201);
       endpointId = res.body.id;
       secret = res.body.secret;
@@ -998,6 +1021,144 @@ describe('Integration Platform — FULL HTTP e2e (Postgres + Redis + BullMQ + wo
         .set(...authHeader(owner.token))
         .send({ active: true })
         .expect(200);
+    });
+  });
+
+  // ── Inbound webhooks v2: event id + type are SIGNED (SEC-01) ──────────────
+
+  describe('inbound webhooks — v2 (SEC-01)', () => {
+    let v2ConnectionId: string;
+    let v2Secret: string;
+
+    const send = (
+      headers: Record<string, string>,
+      body: string,
+      connId: string = v2ConnectionId,
+    ) =>
+      request(server())
+        .post(`${API}/integrations/inbound/${connId}`)
+        .set('Content-Type', 'application/json')
+        .set(headers)
+        .send(body);
+
+    /** A correctly v2-signed set of headers for (eventId, eventType, body). */
+    const signedHeaders = (eventId: string, body: string, eventType = 'customer.upserted') => {
+      const ts = nowSeconds();
+      return {
+        'X-Ziyarati-Timestamp': ts,
+        'X-Ziyarati-Event-Id': eventId,
+        'X-Ziyarati-Event': eventType,
+        'X-Ziyarati-Signature': signInboundV2(v2Secret, ts, eventId, eventType, body),
+      };
+    };
+
+    const customerBody = () =>
+      JSON.stringify({
+        externalId: `V2-${randomUUID().slice(0, 8)}`,
+        data: {
+          full_name: 'V2 Customer',
+          phone: `+9665${(Date.now() + 23) % 100000000}`,
+          email: `e2e-${randomUUID().slice(0, 8)}@example.test`,
+        },
+      });
+
+    const rowFor = (eventId: string) =>
+      e2e.dataSource.getRepository(IntegrationInboundEvent).find({
+        where: { tenant: { id: owner.tenantId }, provider_event_id: eventId },
+      });
+
+    beforeAll(async () => {
+      // One endpoint per connection, so v2 gets its own connection.
+      const conn = await request(server())
+        .post(`${API}/platform/integrations/connections`)
+        .set(...authHeader(owner.token))
+        .send({ name: 'E2E v2 inbound', provider: 'custom', authType: 'none' })
+        .expect(201);
+      v2ConnectionId = conn.body.id;
+
+      // NO scheme sent: proves the default for a new endpoint is v2.
+      const ep = await request(server())
+        .post(`${API}/platform/integrations/webhooks/endpoints`)
+        .set(...authHeader(owner.token))
+        .send({ connectionId: v2ConnectionId, allowedEvents: ['customer.upserted'] })
+        .expect(201);
+      expect(ep.body.signatureScheme).toBe('hmac_sha256_timestamped_v2');
+      v2Secret = ep.body.secret;
+    }, 60_000);
+
+    it('ACCEPTS a delivery whose event id and type were signed', async () => {
+      const eventId = `evt-v2-${randomUUID()}`;
+      const body = customerBody();
+      const res = await send(signedHeaders(eventId, body), body).expect(202);
+      expect(res.body).toMatchObject({ received: true, eventId, status: 'accepted' });
+      expect((await rowFor(eventId)).map((r) => r.status)).toEqual(['accepted']);
+    }, 60_000);
+
+    it('REJECTS the SEC-01 replay: a captured request re-sent with a NEW event id header', async () => {
+      const capturedId = `evt-v2-${randomUUID()}`;
+      const body = customerBody();
+      const captured = signedHeaders(capturedId, body);
+      await send(captured, body).expect(202);
+
+      // The attacker keeps the body, timestamp and signature and only edits the
+      // (previously unsigned) event-id header to dodge the replay guard.
+      const attackerId = `evt-attacker-${randomUUID()}`;
+      const res = await send({ ...captured, 'X-Ziyarati-Event-Id': attackerId }, body).expect(403);
+      expect(res.body.context?.reason).toBe('invalid_signature');
+      // Nothing was stored for the attacker's id — and the original stayed single.
+      expect(await rowFor(attackerId)).toHaveLength(0);
+      expect(await rowFor(capturedId)).toHaveLength(1);
+    }, 60_000);
+
+    it('REJECTS a swapped event type on a captured delivery', async () => {
+      const eventId = `evt-v2-${randomUUID()}`;
+      const body = customerBody();
+      const captured = signedHeaders(eventId, body, 'customer.upserted');
+      const res = await send({ ...captured, 'X-Ziyarati-Event': 'appointment.cancelled' }, body).expect(403);
+      expect(res.body.context?.reason).toBe('invalid_signature');
+      expect(await rowFor(eventId)).toHaveLength(0);
+    });
+
+    it('acks the SAME event id twice as 202 then 200 duplicate, storing exactly one row', async () => {
+      const eventId = `evt-v2-${randomUUID()}`;
+      const body = customerBody();
+      const headers = signedHeaders(eventId, body);
+      await send(headers, body).expect(202);
+      const again = await send(headers, body).expect(200);
+      expect(again.body).toMatchObject({ status: 'duplicate', reason: 'replayed' });
+      expect(await rowFor(eventId)).toHaveLength(1);
+    }, 60_000);
+
+    it('names the missing event header instead of a bare "invalid signature"', async () => {
+      const body = customerBody();
+      const full = signedHeaders(`evt-v2-${randomUUID()}`, body);
+      const { 'X-Ziyarati-Event-Id': _omitId, ...noId } = full;
+      expect((await send(noId, body).expect(403)).body.context?.reason).toBe('missing_event_id');
+      const { 'X-Ziyarati-Event': _omitType, ...noType } = full;
+      expect((await send(noType, body).expect(403)).body.context?.reason).toBe('missing_event_type');
+    });
+
+    it('rejects (422) a header event id that contradicts the signed body, and records it for the partner', async () => {
+      const bodyObj = JSON.parse(customerBody()) as Record<string, unknown>;
+      const body = JSON.stringify({ ...bodyObj, eventId: `evt-in-body-${randomUUID()}` });
+      const headerId = `evt-in-header-${randomUUID()}`;
+      const res = await send(signedHeaders(headerId, body), body).expect(422);
+      expect(res.body.context?.reason).toBe('header_body_mismatch');
+    });
+
+    it('a v1-signed request is refused by a v2 endpoint (no downgrade)', async () => {
+      const body = customerBody();
+      const ts = nowSeconds();
+      const res = await send(
+        {
+          'X-Ziyarati-Timestamp': ts,
+          'X-Ziyarati-Event-Id': `evt-v2-${randomUUID()}`,
+          'X-Ziyarati-Event': 'customer.upserted',
+          'X-Ziyarati-Signature': signInbound(v2Secret, ts, body),
+        },
+        body,
+      ).expect(403);
+      expect(res.body.context?.reason).toBe('invalid_signature');
     });
   });
 

@@ -13,6 +13,8 @@ describe('AllExceptionsFilter', () => {
   let filter: AllExceptionsFilter;
   let json: jest.Mock;
   let status: jest.Mock;
+  let setHeader: jest.Mock;
+  let getHeader: jest.Mock;
   let host: any;
   let request: any;
 
@@ -20,6 +22,8 @@ describe('AllExceptionsFilter', () => {
     filter = new AllExceptionsFilter();
     json = jest.fn();
     status = jest.fn().mockReturnValue({ json });
+    setHeader = jest.fn();
+    getHeader = jest.fn().mockReturnValue(undefined);
     request = {
       requestId: 'req-1',
       method: 'POST',
@@ -30,7 +34,7 @@ describe('AllExceptionsFilter', () => {
     host = {
       switchToHttp: () => ({
         getRequest: () => request,
-        getResponse: () => ({ status }),
+        getResponse: () => ({ status, setHeader, getHeader }),
       }),
     };
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -45,6 +49,63 @@ describe('AllExceptionsFilter', () => {
     filter.catch(new AppError(ErrorCode.FORBIDDEN, { message: 'no' }), host);
     expect(status).toHaveBeenCalledWith(HttpStatus.FORBIDDEN);
     expect(bodySent()).toMatchObject({ code: ErrorCode.FORBIDDEN, requestId: 'req-1', path: '/api/v1/x' });
+  });
+
+  describe('Retry-After', () => {
+    it('sets it (rounded UP to whole seconds) from a 429\'s own retryAfterMs hint', () => {
+      filter.catch(
+        new AppError(ErrorCode.RATE_LIMITED, { publicContext: { retryAfterMs: 2_300 } }),
+        host,
+      );
+      expect(status).toHaveBeenCalledWith(HttpStatus.TOO_MANY_REQUESTS);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '3');
+    });
+
+    it('falls back to a full 60 s window for a 429 with no hint', () => {
+      filter.catch(new AppError(ErrorCode.RATE_LIMITED, { message: 'slow down' }), host);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '60');
+    });
+
+    it('sets it on a 503 that carries a hint', () => {
+      filter.catch(
+        new AppError(ErrorCode.SERVICE_UNAVAILABLE, { publicContext: { retryAfterMs: 5_000 } }),
+        host,
+      );
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '5');
+    });
+
+    it('sets NOTHING for a 503 without a hint (no honest estimate, e.g. maintenance)', () => {
+      filter.catch(new AppError(ErrorCode.SERVICE_UNAVAILABLE, { message: 'maintenance' }), host);
+      expect(setHeader).not.toHaveBeenCalled();
+    });
+
+    it('clamps an absurd or tiny hint into [1, 3600] seconds', () => {
+      filter.catch(new AppError(ErrorCode.RATE_LIMITED, { publicContext: { retryAfterMs: 50 } }), host);
+      filter.catch(new AppError(ErrorCode.RATE_LIMITED, { publicContext: { retryAfterMs: 9_999_999_999 } }), host);
+      expect(setHeader.mock.calls.map((c) => c[1])).toEqual(['1', '3600']);
+    });
+
+    it.each([0, -5, Number.NaN, 'soon'])('ignores an invalid hint (%p) and uses the 429 default', (bad) => {
+      filter.catch(new AppError(ErrorCode.RATE_LIMITED, { publicContext: { retryAfterMs: bad as never } }), host);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '60');
+    });
+
+    it('never overrides a Retry-After that something upstream already set', () => {
+      getHeader.mockReturnValue('42');
+      filter.catch(new AppError(ErrorCode.RATE_LIMITED, { publicContext: { retryAfterMs: 2_000 } }), host);
+      expect(setHeader).not.toHaveBeenCalled();
+    });
+
+    it('is never set for other statuses', () => {
+      filter.catch(new AppError(ErrorCode.FORBIDDEN, { publicContext: { retryAfterMs: 2_000 } }), host);
+      filter.catch(new AppError(ErrorCode.CONFLICT, { message: 'x' }), host);
+      expect(setHeader).not.toHaveBeenCalled();
+    });
+
+    it('the hint still reaches the JSON body\'s context (unchanged behaviour)', () => {
+      filter.catch(new AppError(ErrorCode.RATE_LIMITED, { publicContext: { retryAfterMs: 2_000 } }), host);
+      expect(bodySent().context).toMatchObject({ retryAfterMs: 2_000 });
+    });
   });
 
   it('maps a QueryFailedError (unique violation) to a 409', () => {
