@@ -408,15 +408,21 @@ describe('External clinic system ↔ ZiyaraTech — simulated partner over the d
       const before = await e2e.dataSource
         .getRepository(Customer)
         .count({ where: { tenant: { id: owner.tenantId } } });
-      const res = await call('post', '/integrations/customers/upsert', {
-        key: writeKey,
-        raw: JSON.stringify({
-          connectionId,
-          externalId: `BIG-${uniq()}`,
-          data: { ...goodCustomer(), notes: 'x'.repeat(400_000) },
-        }),
-      });
-      expect([400, 413, 422]).toContain(res.status);
+      // The PUBLISHED limit is the HTTP body cap, 100 KB (integration-api-guide.ts) —
+      // not the 256 KB constant deeper in the write path, which a JSON body can
+      // never reach. 150 KB sits between the two, so it pins the documented number.
+      for (const size of [150_000, 400_000]) {
+        const res = await call('post', '/integrations/customers/upsert', {
+          key: writeKey,
+          raw: JSON.stringify({
+            connectionId,
+            externalId: `BIG-${uniq()}`,
+            data: { ...goodCustomer(), notes: 'x'.repeat(size) },
+          }),
+        });
+        expect({ size, status: res.status }).toEqual({ size, status: 413 });
+        expect(res.body.code).toBe('VALIDATION_ERROR');
+      }
       const after = await e2e.dataSource
         .getRepository(Customer)
         .count({ where: { tenant: { id: owner.tenantId } } });
@@ -869,7 +875,7 @@ describe('External clinic system ↔ ZiyaraTech — simulated partner over the d
         data: { full_name: 'x'.repeat(600_000) },
       });
       const res = await send(body, v2Headers(secret, evt, body));
-      expect([400, 413]).toContain(res.status);
+      expect(res.status).toBe(413);
       expect(await rows(evt)).toHaveLength(0);
     });
 

@@ -136,8 +136,25 @@ while the API held a valid value, and every email failed for four weeks.
 
 `TYPEORM_SYNCHRONIZE`, `TYPEORM_LOGGING`, `AUTH_EXPOSE_RESET_TOKEN`
 (each is a hard boot error when `true`), plus `ENABLE_API_DOCS`,
-`ENABLE_INTEGRATION_DOCS`, `INTEGRATION_OAUTH_TEST_PROVIDER`,
-`INTEGRATION_ALLOW_INSECURE_BASE_URL`, `INTEGRATION_ALLOW_PRIVATE_BASE_URL`.
+`INTEGRATION_OAUTH_TEST_PROVIDER`, `INTEGRATION_ALLOW_INSECURE_BASE_URL`,
+`INTEGRATION_ALLOW_PRIVATE_BASE_URL`.
+
+### Partner API reference (`ENABLE_INTEGRATION_DOCS`) — an operator decision
+
+`false` by default in production. Set it to `true` **only when you want to
+publish the partner integration guide** at `<api-host>/docs/integrations`
+(and the machine-readable `/docs/integrations-json`). It is unauthenticated by
+design, so a partner can read it before they have a key. What it exposes is
+limited to the 14 external `/api/v1/integrations/*` routes (API-key auth only —
+no dashboard, admin or platform route can appear in it; the e2e suite proves
+that) plus the written guide: authentication, scopes, limits, error codes,
+inbound/outbound webhook signature schemes. It contains no tenant data and no
+secrets. It is independent of `ENABLE_API_DOCS`, which must stay `false` (that
+one lists the whole internal route surface).
+
+The dashboard's Developer → Overview tab links to it when the frontend has
+`NEXT_PUBLIC_API_PUBLIC_URL` set (the dashboard origin does not proxy `/docs`);
+without it the tab shows the path instead of a dead link.
 
 ### Recommended
 

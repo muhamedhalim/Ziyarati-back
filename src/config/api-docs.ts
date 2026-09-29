@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 
 import { IntegrationModule } from '../modules/integration/integration.module';
+import { INTEGRATION_API_GUIDE } from './integration-api-guide';
 
 /**
  * Mounts the two API documentation surfaces, each gated by its own
@@ -64,34 +65,10 @@ export function mountApiDocs(
   if (enableIntegrationDocs) {
     const integrationSwaggerConfig = new DocumentBuilder()
       .setTitle('Ziyarati Integration API')
-      .setDescription(
-        `
-Read-only API for connecting an existing clinic system to Ziyarati.
-
-**Authentication** — every request needs an API key, created from the clinic's
-Developer Options page. Send it as either:
-- \`X-API-Key: zk_...\`, or
-- \`Authorization: ApiKey zk_...\`
-
-**Scopes** — a key only works for the scopes it was granted at creation
-(e.g. \`integration.services.read\`). A request to an endpoint the key wasn't
-granted the scope for returns 403.
-
-**Pagination** — list endpoints accept \`page\` (1-based) and \`limit\` (max 100)
-and return \`{ data, total, page, limit }\`.
-
-**Rate limits** — each key is limited per minute (429 \`RATE_LIMITED\` when
-exceeded, with a \`context.retryAfterMs\` hint). The limit is configured per
-deployment.
-
-**Errors** — every error response has the shape
-\`{ statusCode, code, error, message, path, timestamp, requestId, context? }\`.
-Clients should branch on \`code\`. Common codes: \`UNAUTHORIZED\`
-(missing/invalid/expired/revoked key, or the owning clinic is suspended),
-\`FORBIDDEN\` (missing scope), \`NOT_FOUND\` (unknown id, or the resource belongs
-to another clinic), \`VALIDATION_ERROR\` (bad query params), \`RATE_LIMITED\`.
-      `.trim(),
-      )
+      // The full partner guide (auth, limits, errors, both webhook directions
+      // and their signature schemes) lives in its own module so its claims can
+      // be pinned to the runtime constants by a spec.
+      .setDescription(INTEGRATION_API_GUIDE)
       .setVersion('1.0')
       .addApiKey(
         { type: 'apiKey', name: 'X-API-Key', in: 'header' },

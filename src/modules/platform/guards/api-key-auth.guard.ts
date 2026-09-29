@@ -10,7 +10,7 @@ import { ApiLogService } from '../api-log.service';
 import { AuthenticatedUser } from '../../auth/interfaces/authenticated-user.interface';
 import { AppError, ErrorCode } from '../../../common/errors';
 
-const DEFAULT_RATE_PER_MINUTE = 120;
+export const DEFAULT_RATE_PER_MINUTE = 120;
 
 /** At most one `api_logs` row per rejected key per window — a hammering client can't flood the log. */
 const AUTH_FAILURE_LOG_WINDOW_MS = 60_000;
