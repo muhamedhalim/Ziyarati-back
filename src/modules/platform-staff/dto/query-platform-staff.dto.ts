@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -9,6 +10,10 @@ import {
   Min,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+
+import { QueryBoolean } from '../../../common/http/query-boolean.transform';
+import type { RoleSlug } from '../../../rbac/rbac.constants';
+import { PLATFORM_ASSIGNABLE_ROLE_SLUGS } from '../platform-staff.constants';
 
 export class QueryPlatformStaffDto {
   @ApiPropertyOptional({
@@ -25,9 +30,19 @@ export class QueryPlatformStaffDto {
     example: true,
   })
   @IsOptional()
-  @Type(() => Boolean)
+  // NOT `@Type(() => Boolean)`: that runs Boolean('false') === true, so the
+  // "Inactive" filter used to return active staff.
+  @QueryBoolean()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Filter to one platform role.',
+    enum: PLATFORM_ASSIGNABLE_ROLE_SLUGS,
+  })
+  @IsOptional()
+  @IsIn(PLATFORM_ASSIGNABLE_ROLE_SLUGS)
+  role?: RoleSlug;
 
   @ApiPropertyOptional({ example: 1, minimum: 1, default: 1 })
   @IsOptional()

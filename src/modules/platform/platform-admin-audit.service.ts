@@ -58,6 +58,20 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SUPPORT_NOTIFICATION_RETRY_REJECTED:
     'platform_support.notification_retry_rejected',
   SUPPORT_INTEGRATION_RECHECKED: 'platform_support.integration_rechecked',
+  // Sales Staff Management. `platform_admin.%` so they surface in the Super
+  // Admin activity feed automatically; deliberately NOT added to the support
+  // desk's allow-list. `tenantId` on the assignment rows is the CLINIC.
+  SALES_ASSIGNMENT_CREATED: 'platform_admin.sales.assignment_created',
+  SALES_ASSIGNMENT_ENDED: 'platform_admin.sales.assignment_ended',
+  SALES_ASSIGNMENT_TRANSFERRED: 'platform_admin.sales.assignment_transferred',
+  SALES_IMPORT_COMMITTED: 'platform_admin.sales.import_committed',
+  SALES_TARGET_SET: 'platform_admin.sales.target_set',
+  SALES_TARGET_DELETED: 'platform_admin.sales.target_deleted',
+  SALES_BONUS_APPROVED: 'platform_admin.sales.bonus_approved',
+  SALES_BONUS_MARKED_PAID: 'platform_admin.sales.bonus_marked_paid',
+  SALES_BONUS_VOIDED: 'platform_admin.sales.bonus_voided',
+  SALES_ACTIVITY_LOGGED: 'platform_admin.sales.activity_logged',
+  SALES_ACTIVITY_DELETED: 'platform_admin.sales.activity_deleted',
 } as const;
 
 export type PlatformAdminAuditAction =

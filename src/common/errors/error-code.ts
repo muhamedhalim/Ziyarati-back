@@ -115,6 +115,36 @@ export enum ErrorCode {
    * `context.requires` is always `'CONFIRM_APPOINTMENT'`.
    */
   AWAITING_CONFIRMATION = 'AWAITING_CONFIRMATION',
+
+  // ── Sales Staff Management (platform) ──────────────────────────────────
+  /** The id is not a live platform user holding `platform_sales`. Also returned for a tenant user, a super admin or a deleted user — existence is never leaked. */
+  SALES_EMPLOYEE_NOT_FOUND = 'SALES_EMPLOYEE_NOT_FOUND',
+  /** The employee exists but is deactivated — nothing new may be assigned to them. */
+  SALES_EMPLOYEE_INACTIVE = 'SALES_EMPLOYEE_INACTIVE',
+  /** The clinic already has an active sales owner (`UQ_sales_assignment_active_tenant`). */
+  SALES_CLINIC_ALREADY_ASSIGNED = 'SALES_CLINIC_ALREADY_ASSIGNED',
+  /** The assignment id does not exist (or does not belong to the employee in the route). */
+  SALES_ASSIGNMENT_NOT_FOUND = 'SALES_ASSIGNMENT_NOT_FOUND',
+  /** No target exists for that employee / month / metric. */
+  SALES_TARGET_NOT_FOUND = 'SALES_TARGET_NOT_FOUND',
+  /** Someone else changed the target since the caller loaded it (`expectedVersion` mismatch, or a concurrent create). */
+  SALES_TARGET_VERSION_CONFLICT = 'SALES_TARGET_VERSION_CONFLICT',
+  /** The target's bonus is approved (or the month is closed and the request tries to delete it) — it can no longer be changed. */
+  SALES_TARGET_LOCKED = 'SALES_TARGET_LOCKED',
+  /** Writing to a closed month needs a written reason. */
+  SALES_REASON_REQUIRED = 'SALES_REASON_REQUIRED',
+  /** A live (approved or paid) bonus already exists for this target — approving twice, or approving a locked target. */
+  SALES_BONUS_EXISTS = 'SALES_BONUS_EXISTS',
+  /** A bonus can only be approved once its month has closed. */
+  SALES_PERIOD_NOT_CLOSED = 'SALES_PERIOD_NOT_CLOSED',
+  /** The target has no bonus rule, so there is nothing to approve. */
+  SALES_BONUS_NO_RULE = 'SALES_BONUS_NO_RULE',
+  /** The bonus id does not exist (or belongs to a different employee than the one in the route). */
+  SALES_BONUS_NOT_FOUND = 'SALES_BONUS_NOT_FOUND',
+  /** The bonus is not in the state the action needs (e.g. marking a void or already-paid bonus as paid). */
+  SALES_BONUS_STATE_CONFLICT = 'SALES_BONUS_STATE_CONFLICT',
+  /** The activity id does not exist, was deleted, or belongs to a different employee than the one in the route. */
+  SALES_ACTIVITY_NOT_FOUND = 'SALES_ACTIVITY_NOT_FOUND',
 }
 
 export interface ErrorCodeMeta {
@@ -321,5 +351,62 @@ export const ERROR_CODE_METADATA: Record<ErrorCode, ErrorCodeMeta> = {
     status: HttpStatus.CONFLICT,
     message:
       'This appointment is still awaiting payment confirmation and cannot be started yet.',
+  },
+
+  [ErrorCode.SALES_EMPLOYEE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Sales employee not found',
+  },
+  [ErrorCode.SALES_EMPLOYEE_INACTIVE]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This sales employee is deactivated',
+  },
+  [ErrorCode.SALES_CLINIC_ALREADY_ASSIGNED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This clinic is already assigned to a sales employee',
+  },
+  [ErrorCode.SALES_ASSIGNMENT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Sales assignment not found',
+  },
+  [ErrorCode.SALES_TARGET_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Sales target not found',
+  },
+  [ErrorCode.SALES_TARGET_VERSION_CONFLICT]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This target was changed by someone else. Reload it and try again.',
+  },
+  [ErrorCode.SALES_TARGET_LOCKED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This target is locked and can no longer be changed',
+  },
+  [ErrorCode.SALES_REASON_REQUIRED]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'A reason is required for this change',
+  },
+  [ErrorCode.SALES_BONUS_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A bonus has already been approved for this target',
+  },
+  [ErrorCode.SALES_PERIOD_NOT_CLOSED]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'A bonus can only be approved after its month has closed',
+  },
+  [ErrorCode.SALES_BONUS_NO_RULE]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'This target has no bonus rule, so there is nothing to approve',
+  },
+  [ErrorCode.SALES_BONUS_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Bonus not found',
+  },
+  [ErrorCode.SALES_BONUS_STATE_CONFLICT]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This bonus is no longer in a state that allows this action',
+  },
+  [ErrorCode.SALES_ACTIVITY_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Sales activity not found',
   },
 };

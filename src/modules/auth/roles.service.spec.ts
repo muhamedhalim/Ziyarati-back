@@ -186,6 +186,26 @@ describe('RolesService', () => {
       });
     });
 
+    it.each([ROLE.PLATFORM_SUPPORT, ROLE.PLATFORM_SALES])(
+      'BLOCKS assigning the platform role %s through the API',
+      async (slug) => {
+        users.findOne.mockResolvedValueOnce({
+          id: 'u1',
+          tenant: { id: TENANT },
+        });
+        roles.findOne.mockResolvedValueOnce({
+          id: `r-${slug}`,
+          slug,
+          is_system: true,
+          tenant: null,
+        });
+
+        await expect(
+          service.assignRoleToUser('u1', `r-${slug}`, TENANT),
+        ).rejects.toMatchObject({ code: ErrorCode.FORBIDDEN });
+      },
+    );
+
     it('rejects a duplicate role assignment', async () => {
       users.findOne.mockResolvedValueOnce({ id: 'u1', tenant: { id: TENANT } });
       roles.findOne.mockResolvedValueOnce(assignableRole);

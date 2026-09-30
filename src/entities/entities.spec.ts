@@ -58,6 +58,9 @@ const ENTITY_PATHS: string[] = [
   'Patients/Patient',
   // Campaigns
   'Campaigns/Campaign', 'Campaigns/CampaignRun', 'Campaigns/CampaignRecipient', 'Campaigns/OutboxJob',
+  // Sales Staff Management
+  'Sales/SalesClinicAssignment', 'Sales/SalesTarget', 'Sales/SalesTargetRevision',
+  'Sales/SalesBonusRecord', 'Sales/SalesActivity',
 ];
 
 describe('Entity layer (construction smoke test)', () => {

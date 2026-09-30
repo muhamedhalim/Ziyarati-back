@@ -30,6 +30,8 @@ import {
 
 export type PlatformStaffInvitationStatus =
   | 'no_access'
+  /** Created with `sendInvitation: false` and never invited since — no token has ever been issued. */
+  | 'not_invited'
   | 'invitation_pending'
   | 'invitation_expired'
   | 'invitation_failed'
@@ -50,6 +52,11 @@ export interface PlatformStaffSummary {
   invitationStatus: PlatformStaffInvitationStatus;
   createdAt: Date;
 }
+
+/** A status change also reports how many clinics the account still owns, so a UI can prompt a hand-off. */
+export type PlatformStaffStatusResult = PlatformStaffSummary & {
+  activeAssignments: number;
+};
 
 /**
  * Super Admin management of Platform Customer Service (and any future
@@ -105,12 +112,25 @@ export class PlatformStaffService {
     if (query.isActive !== undefined) {
       qb.andWhere('u.is_active = :isActive', { isActive: query.isActive });
     }
+    if (query.role) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM user_roles ur2
+          INNER JOIN roles r2 ON r2.id = ur2."roleId"
+          WHERE ur2."userId" = u.id AND r2.slug = :roleFilter AND r2."tenantId" IS NULL
+        )`,
+        { roleFilter: query.role },
+      );
+    }
     if (query.search) {
       const term = `%${query.search}%`;
       qb.andWhere('(u.email ILIKE :term OR u.full_name ILIKE :term)', { term });
     }
 
+    // `id` tiebreaker: `created_at` alone is not unique, so rows sharing a
+    // timestamp could repeat or vanish across pages under LIMIT/OFFSET.
     qb.orderBy('u.created_at', 'DESC')
+      .addOrderBy('u.id', 'DESC')
       .skip((query.page - 1) * query.limit)
       .take(query.limit);
 
@@ -181,14 +201,31 @@ export class PlatformStaffService {
       return user.id;
     });
 
-    await this.sendInvitation(userId, email, dto.fullName, dto.roleSlug, null);
+    // `sendInvitation: false` provisions the account WITHOUT issuing a token or
+    // sending mail (a sales employee needs no login in v1). It is issued later
+    // through the ordinary resend route. Default stays "invite now".
+    const invited = dto.sendInvitation !== false;
+    if (invited) {
+      await this.sendInvitation(
+        userId,
+        email,
+        dto.fullName,
+        dto.roleSlug,
+        null,
+      );
+    }
 
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.STAFF_CREATE,
       userId: actorUserId,
       entityType: 'PlatformStaff',
       entityId: userId,
-      after: { email, fullName: dto.fullName, roleSlug: dto.roleSlug },
+      after: {
+        email,
+        fullName: dto.fullName,
+        roleSlug: dto.roleSlug,
+        invited,
+      },
     });
 
     return this.summaryFor(userId);
@@ -275,7 +312,7 @@ export class PlatformStaffService {
     id: string,
     dto: SetPlatformStaffStatusDto,
     actorUserId: string,
-  ): Promise<PlatformStaffSummary> {
+  ): Promise<PlatformStaffStatusResult> {
     if (id === actorUserId) {
       throw new AppError(ErrorCode.FORBIDDEN, {
         message: 'You cannot change your own account status',
@@ -284,7 +321,7 @@ export class PlatformStaffService {
     const { user } = await this.loadTarget(id);
 
     if (user.is_active === dto.isActive) {
-      return this.summaryFor(id); // idempotent — no side effect
+      return this.withActiveAssignments(id); // idempotent — no side effect
     }
 
     await this.users.update({ id }, { is_active: dto.isActive });
@@ -303,7 +340,7 @@ export class PlatformStaffService {
       after: { isActive: dto.isActive },
     });
 
-    return this.summaryFor(id);
+    return this.withActiveAssignments(id);
   }
 
   /**
@@ -343,6 +380,22 @@ export class PlatformStaffService {
     }
 
     const previousSlugs = currentRoles.map((r) => r.slug);
+
+    // A sales employee who still owns clinics must not lose the sales role:
+    // the assignments would be left owned by an account the sales module
+    // refuses to recognise. The clinics are handed off first.
+    if (
+      previousSlugs.includes(ROLE.PLATFORM_SALES) &&
+      !slugs.includes(ROLE.PLATFORM_SALES)
+    ) {
+      const activeAssignments = await this.countActiveAssignments(id);
+      if (activeAssignments > 0) {
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: `This employee still owns ${activeAssignments} clinic(s). Transfer or unassign them before removing the sales role.`,
+          publicContext: { activeAssignments },
+        });
+      }
+    }
 
     await this.dataSource.transaction(async (manager) => {
       await manager.getRepository(UserRole).delete({ user: { id: user.id } });
@@ -523,7 +576,45 @@ export class PlatformStaffService {
     // required, not that everything is fine and pending.
     if (input.lastInviteFailed) return 'invitation_failed';
     if (input.hasLiveInvite) return 'invitation_pending';
-    return input.everInvited ? 'invitation_expired' : 'invitation_pending';
+    // No token was EVER issued (created with `sendInvitation: false`). Every
+    // other creation path issues a token, so this state is new-account-only.
+    return input.everInvited ? 'invitation_expired' : 'not_invited';
+  }
+
+  /**
+   * Summaries (with the same batched decoration `list` uses) for an explicit
+   * set of ids, in the order given. Ids that are not live platform-scope
+   * users are omitted. The sales module's own listings page by SQL and then
+   * call this, so invitation status and roles are derived in ONE place.
+   */
+  async summarize(ids: readonly string[]): Promise<PlatformStaffSummary[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.users.find({
+      where: { id: In([...ids]), tenant: IsNull() },
+    });
+    const byId = new Map((await this.decorate(rows)).map((s) => [s.id, s]));
+    return ids
+      .map((id) => byId.get(id))
+      .filter((s): s is PlatformStaffSummary => Boolean(s));
+  }
+
+  private async countActiveAssignments(userId: string): Promise<number> {
+    const [row] = (await this.dataSource.query(
+      `SELECT COUNT(*)::int AS c FROM sales_clinic_assignments
+        WHERE sales_user_id = $1 AND ended_at IS NULL`,
+      [userId],
+    )) as Array<{ c: number }>;
+    return row?.c ?? 0;
+  }
+
+  private async withActiveAssignments(
+    userId: string,
+  ): Promise<PlatformStaffStatusResult> {
+    const [summary, activeAssignments] = await Promise.all([
+      this.summaryFor(userId),
+      this.countActiveAssignments(userId),
+    ]);
+    return { ...summary, activeAssignments };
   }
 
   private async summaryFor(userId: string): Promise<PlatformStaffSummary> {

@@ -594,6 +594,15 @@ export const ROLE = {
    * API_PROTECTED_ROLE_SLUGS in roles.service.ts).
    */
   PLATFORM_SUPPORT: 'platform_support',
+  /**
+   * Platform-level system role (tenant = NULL, is_system = true) for a ZiyaraTech
+   * field-sales employee. Holds NO permissions: every `/platform/sales/**` route
+   * is Super Admin role-gated, so this role only classifies the account (it is
+   * what `SalesEmployeeService.requireEmployee` verifies before a clinic can be
+   * assigned to a user). Never assigned to a tenant user (see
+   * NON_STAFF_ROLE_SLUGS and API_PROTECTED_ROLE_SLUGS in roles.service.ts).
+   */
+  PLATFORM_SALES: 'platform_sales',
 } as const;
 
 export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
@@ -833,6 +842,7 @@ export const NON_STAFF_ROLE_SLUGS: readonly RoleSlug[] = [
   // Platform-level role — never a clinic staff role. Belongs only to a
   // tenantId = NULL user, provisioned exclusively via /platform/staff.
   ROLE.PLATFORM_SUPPORT,
+  ROLE.PLATFORM_SALES,
   // Retired from staff assignment in favor of branch_manager. See docblock.
   ROLE.MANAGER,
 ];
@@ -1666,6 +1676,12 @@ export const ROLES: RoleDef[] = [
     description:
       'ZiyaraTech support employee. Triages clinic support tickets across tenants. Cannot close tickets or access Super Admin functionality.',
   },
+  {
+    slug: ROLE.PLATFORM_SALES,
+    name: 'Platform Sales',
+    description:
+      'ZiyaraTech field-sales employee. Owns a portfolio of clinics with monthly targets, managed by Super Admin. Holds no console permissions.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2292,4 +2308,10 @@ export const ROLE_PERMISSIONS: Record<
     PERMISSION.PLATFORM_SUPPORT_TICKETS_REPLY,
     ...PLATFORM_SUPPORT_DIAGNOSTIC_SLUGS,
   ],
+
+  // Platform Sales: classification only. Every /platform/sales/** route is
+  // gated on Super Admin by role (like /platform/staff), so this role has no
+  // permission slug — and therefore no console, no clinic-workspace access
+  // (no DASHBOARD_ACCESS) and no platform diagnostics.
+  [ROLE.PLATFORM_SALES]: [],
 };

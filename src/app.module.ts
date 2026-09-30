@@ -49,6 +49,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { ClinicDashboardModule } from './modules/clinic-dashboard/clinic-dashboard.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { PlatformStaffModule } from './modules/platform-staff/platform-staff.module';
+import { PlatformSalesModule } from './modules/platform-sales/platform-sales.module';
 import { PlatformSupportModule } from './modules/platform-support/platform-support.module';
 import { MaintenanceGuard } from './modules/platform/guards/maintenance.guard';
 import { IntegrationModule } from './modules/integration/integration.module';
@@ -195,6 +196,7 @@ import { validate } from './config/env.validation';
     ClinicDashboardModule,
     PlatformModule,
     PlatformStaffModule,
+    PlatformSalesModule,
     PlatformSupportModule,
     IntegrationModule,
     IntegrationPlatformModule,
