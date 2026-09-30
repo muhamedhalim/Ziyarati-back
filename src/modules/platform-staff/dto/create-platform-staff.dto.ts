@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEmail,
   IsIn,
   IsOptional,
@@ -55,4 +56,13 @@ export class CreatePlatformStaffDto {
   })
   @IsIn(PLATFORM_ASSIGNABLE_ROLE_SLUGS)
   roleSlug!: RoleSlug;
+
+  @ApiPropertyOptional({
+    description:
+      'Email the set-password invitation now. Defaults to true. Pass false to provision the account without a login (e.g. a sales employee who needs no access yet); the invitation can be sent later with `resend-invitation`.',
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  sendInvitation?: boolean;
 }

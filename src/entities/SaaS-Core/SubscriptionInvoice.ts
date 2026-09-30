@@ -11,6 +11,12 @@ import { InvoiceStatus } from '../enums';
   unique: true,
   where: `"status" = 'OPEN'`,
 })
+// Sales Staff Management: revenue / conversion attribution filters PAID
+// invoices by tenant and `paid_at` window. Partial, so it stays small and
+// costs nothing on the OPEN/VOID/RETRY write path.
+@Index('IX_subscription_invoices_tenant_paid', ['tenant_id', 'paid_at'], {
+  where: `"status" = 'PAID'`,
+})
 export class SubscriptionInvoice {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

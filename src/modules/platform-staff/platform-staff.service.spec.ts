@@ -368,6 +368,17 @@ describe('PlatformStaffService', () => {
       expect(result.total).toBe(1);
       expect(result.data).toHaveLength(1);
     });
+
+    it('orders by created_at DESC with an id tiebreaker so paging is stable when timestamps tie', async () => {
+      const qb = createMockQueryBuilder();
+      qb.getManyAndCount = jest.fn().mockResolvedValueOnce([[], 0]);
+      users.createQueryBuilder = jest.fn(() => qb);
+
+      await service.list({ page: 1, limit: 20 } as any);
+
+      expect(qb.orderBy).toHaveBeenCalledWith('u.created_at', 'DESC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('u.id', 'DESC');
+    });
   });
 
   // ──────────────────────── invitation delivery status ───────────────────── //
@@ -462,6 +473,176 @@ describe('PlatformStaffService', () => {
       const result = await service.list({ page: 1, limit: 20 } as any);
 
       expect(result.data[0].invitationStatus).toBe('invitation_pending');
+    });
+
+    it('is not_invited when no token was ever issued (created with sendInvitation: false)', async () => {
+      mockListOf(baseUser);
+      userRoles.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, role: { slug: ROLE.PLATFORM_SALES } },
+      ]);
+      passwordResets.find.mockResolvedValueOnce([]); // never invited
+
+      const result = await service.list({ page: 1, limit: 20 } as any);
+
+      expect(result.data[0].invitationStatus).toBe('not_invited');
+    });
+
+    it('an expired (but once-issued) token is invitation_expired, never not_invited', async () => {
+      mockListOf(baseUser);
+      userRoles.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, role: { slug: ROLE.PLATFORM_SALES } },
+      ]);
+      passwordResets.find.mockResolvedValueOnce([
+        { user: { id: TARGET_ID }, used_at: null, expires_at: new Date(Date.now() - 60_000) },
+      ]);
+
+      const result = await service.list({ page: 1, limit: 20 } as any);
+
+      expect(result.data[0].invitationStatus).toBe('invitation_expired');
+    });
+  });
+
+  // ─────────────────── sales role: provisioning without login ───────────────── //
+  describe('sales employees (platform_sales)', () => {
+    const salesRole = {
+      id: 'role-sales',
+      slug: ROLE.PLATFORM_SALES,
+      name: 'Platform Sales',
+    } as Role;
+    const salesDto = {
+      email: 'Rep@ZiyaraTech.com',
+      fullName: 'Sales Rep',
+      roleSlug: ROLE.PLATFORM_SALES,
+    } as any;
+
+    function primeCreate() {
+      roles.findOne.mockResolvedValueOnce(salesRole);
+      users.findOne.mockResolvedValueOnce({ id: TARGET_ID, email: 'rep@ziyaratech.com', is_active: true });
+      userRoles.find.mockResolvedValueOnce([]);
+      passwordResets.find.mockResolvedValueOnce([]);
+    }
+
+    it('creates a platform_sales user, invited by default', async () => {
+      primeCreate();
+      await service.create(salesDto, ACTOR_ID);
+      expect(authService.createUserWithRole).toHaveBeenCalledWith(
+        dataSource.manager,
+        expect.anything(),
+        salesRole,
+        null,
+      );
+      expect(authService.issuePasswordSetupToken).toHaveBeenCalledWith(TARGET_ID);
+      expect(email.sendInvitation).toHaveBeenCalledTimes(1);
+    });
+
+    it('sendInvitation:false provisions the account with NO token and NO email, and audits invited:false', async () => {
+      primeCreate();
+      await service.create({ ...salesDto, sendInvitation: false }, ACTOR_ID);
+      expect(authService.createUserWithRole).toHaveBeenCalledTimes(1);
+      expect(authService.issuePasswordSetupToken).not.toHaveBeenCalled();
+      expect(email.sendInvitation).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: PLATFORM_ADMIN_AUDIT_ACTION.STAFF_CREATE,
+          after: expect.objectContaining({ invited: false }),
+        }),
+      );
+    });
+
+    it('setStatus reports how many clinics the account still owns (so the UI can prompt a hand-off)', async () => {
+      users.findOne
+        .mockResolvedValueOnce({ id: TARGET_ID, is_active: true }) // loadTarget
+        .mockResolvedValueOnce({ id: TARGET_ID, is_active: false }); // summaryFor
+      userRoles.find.mockResolvedValue([]);
+      passwordResets.find.mockResolvedValue([]);
+      dataSource.query.mockResolvedValueOnce([{ c: 12 }]);
+
+      const res = await service.setStatus(TARGET_ID, { isActive: false } as any, ACTOR_ID);
+
+      expect(res.activeAssignments).toBe(12);
+      const [sql, params] = dataSource.query.mock.calls[0];
+      expect(sql).toContain('ended_at IS NULL');
+      expect(params).toEqual([TARGET_ID]);
+    });
+
+    it('removing the sales role is REFUSED while the employee still owns clinics', async () => {
+      users.findOne.mockResolvedValueOnce({ id: TARGET_ID });
+      userRoles.find.mockResolvedValueOnce([{ slug: ROLE.PLATFORM_SALES }].map((r) => ({ role: r })));
+      roles.find.mockResolvedValueOnce([platformSupportRole]);
+      dataSource.query.mockResolvedValueOnce([{ c: 3 }]);
+
+      await expect(
+        service.setRoles(TARGET_ID, { roleSlugs: [ROLE.PLATFORM_SUPPORT] } as any, ACTOR_ID),
+      ).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+        publicContext: { activeAssignments: 3 },
+      });
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(authService.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    it('removing the sales role is allowed once the portfolio is empty', async () => {
+      users.findOne
+        .mockResolvedValueOnce({ id: TARGET_ID })
+        .mockResolvedValueOnce({ id: TARGET_ID, is_active: true });
+      userRoles.find
+        .mockResolvedValueOnce([{ role: { slug: ROLE.PLATFORM_SALES } }])
+        .mockResolvedValueOnce([{ role: { slug: ROLE.PLATFORM_SUPPORT } }]);
+      passwordResets.find.mockResolvedValueOnce([]);
+      roles.find.mockResolvedValueOnce([platformSupportRole]);
+      dataSource.query.mockResolvedValueOnce([{ c: 0 }]);
+
+      await service.setRoles(TARGET_ID, { roleSlugs: [ROLE.PLATFORM_SUPPORT] } as any, ACTOR_ID);
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeping the sales role does not even count assignments', async () => {
+      users.findOne
+        .mockResolvedValueOnce({ id: TARGET_ID })
+        .mockResolvedValueOnce({ id: TARGET_ID, is_active: true });
+      userRoles.find
+        .mockResolvedValueOnce([{ role: { slug: ROLE.PLATFORM_SALES } }])
+        .mockResolvedValueOnce([{ role: { slug: ROLE.PLATFORM_SALES } }]);
+      passwordResets.find.mockResolvedValueOnce([]);
+      roles.find.mockResolvedValueOnce([salesRole]);
+
+      await service.setRoles(TARGET_ID, { roleSlugs: [ROLE.PLATFORM_SALES] } as any, ACTOR_ID);
+
+      expect(dataSource.query).not.toHaveBeenCalled();
+    });
+
+    it('list can be filtered to one platform role', async () => {
+      const qb = createMockQueryBuilder();
+      qb.getManyAndCount = jest.fn().mockResolvedValueOnce([[], 0]);
+      users.createQueryBuilder = jest.fn(() => qb);
+
+      await service.list({ page: 1, limit: 20, role: ROLE.PLATFORM_SALES } as any);
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('r2.slug = :roleFilter'),
+        { roleFilter: ROLE.PLATFORM_SALES },
+      );
+    });
+
+    it('summarize returns platform-scope users in the REQUESTED order and drops unknown ids', async () => {
+      users.find.mockResolvedValueOnce([
+        { id: 'a', email: 'a@x.io', is_active: true, created_at: new Date() },
+        { id: 'b', email: 'b@x.io', is_active: true, created_at: new Date() },
+      ]);
+      userRoles.find.mockResolvedValueOnce([]);
+      passwordResets.find.mockResolvedValueOnce([]);
+
+      const res = await service.summarize(['b', 'ghost', 'a']);
+
+      expect(res.map((s) => s.id)).toEqual(['b', 'a']);
+      // one users query + the 3 batched decorate queries, regardless of size
+      expect(users.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('summarize([]) touches nothing', async () => {
+      await expect(service.summarize([])).resolves.toEqual([]);
+      expect(users.find).not.toHaveBeenCalled();
     });
   });
 });

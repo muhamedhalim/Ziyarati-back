@@ -8,6 +8,7 @@ import { ROLE, RoleSlug } from '../../rbac/rbac.constants';
  */
 export const PLATFORM_ASSIGNABLE_ROLE_SLUGS: readonly RoleSlug[] = [
   ROLE.PLATFORM_SUPPORT,
+  ROLE.PLATFORM_SALES,
 ];
 
 export function isPlatformAssignableRole(slug: string): slug is RoleSlug {

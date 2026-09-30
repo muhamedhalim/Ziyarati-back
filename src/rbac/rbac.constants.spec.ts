@@ -1034,3 +1034,14 @@ describe('OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES', () => {
     ]);
   });
 });
+
+describe('platform_sales role (Sales Staff Management)', () => {
+  it('holds NO permission slug — every /platform/sales route is Super Admin role-gated', () => {
+    expect(ROLE_PERMISSIONS[ROLE.PLATFORM_SALES]).toEqual([]);
+  });
+
+  it('is a catalogued system role and never a clinic staff role', () => {
+    expect(ROLES.map((r) => r.slug)).toContain(ROLE.PLATFORM_SALES);
+    expect(NON_STAFF_ROLE_SLUGS).toContain(ROLE.PLATFORM_SALES);
+  });
+});
