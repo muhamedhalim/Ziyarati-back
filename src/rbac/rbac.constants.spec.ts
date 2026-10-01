@@ -37,11 +37,23 @@ import {
   isStatusWriteScopedToOwnStaff,
   canViewAppointmentFinancials,
   OWN_STAFF_SETTABLE_APPOINTMENT_STATUSES,
+  APPOINTMENT_BOOKABLE_STAFF_ROLES,
   PUBLIC_BOOKING_EXCLUDED_ROLES,
 } from './rbac.constants';
 import { getRisk, getScope } from './permission-metadata';
 
 const SRC_ROOT = path.join(__dirname, '..');
+
+describe('APPOINTMENT_BOOKABLE_STAFF_ROLES', () => {
+  it('includes doctors, nurses and managers but excludes receptionists', () => {
+    expect(APPOINTMENT_BOOKABLE_STAFF_ROLES).toEqual([
+      ROLE.DOCTOR,
+      ROLE.NURSE,
+      ROLE.MANAGER,
+    ]);
+    expect(APPOINTMENT_BOOKABLE_STAFF_ROLES).not.toContain(ROLE.RECEPTIONIST);
+  });
+});
 
 /** Files whose own references to PERMISSION.<KEY> don't count as "enforcement". */
 const EXCLUDED_FILES = new Set(
@@ -742,9 +754,9 @@ describe('nurse role', () => {
 
   describe('clinical.records.nursing — reserved + ownership-scoped', () => {
     it('is reserved — a clinic Owner can never delegate it into a tenant custom role', () => {
-      expect(RESERVED_PERMISSION_SLUGS.has(PERMISSION.CLINICAL_RECORDS_NURSING)).toBe(
-        true,
-      );
+      expect(
+        RESERVED_PERMISSION_SLUGS.has(PERMISSION.CLINICAL_RECORDS_NURSING),
+      ).toBe(true);
     });
 
     it('is registered as ownership-scoped (ABAC) — correction is author-restricted', () => {
@@ -821,15 +833,13 @@ describe('canViewAppointmentFinancials', () => {
   });
 
   it('a tenant custom role holding ONLY appointments.read also loses financial visibility — the documented, accepted side effect', () => {
-    expect(
-      canViewAppointmentFinancials([PERMISSION.APPOINTMENTS_READ]),
-    ).toBe(false);
+    expect(canViewAppointmentFinancials([PERMISSION.APPOINTMENTS_READ])).toBe(
+      false,
+    );
   });
 
   it('an otherwise-bare caller holding only payments.read still sees financials', () => {
-    expect(canViewAppointmentFinancials([PERMISSION.PAYMENTS_READ])).toBe(
-      true,
-    );
+    expect(canViewAppointmentFinancials([PERMISSION.PAYMENTS_READ])).toBe(true);
   });
 
   it('an empty permission set sees no financials', () => {
@@ -933,9 +943,9 @@ describe('doctor role — operational permissions', () => {
     });
 
     it('is NOT ownership-scoped — the service verifies TENANT ownership of the branch, not a per-user relationship', () => {
-      expect(OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.STAFF_SCHEDULE_READ)).toBe(
-        false,
-      );
+      expect(
+        OWNERSHIP_SCOPED_PERMISSIONS.has(PERMISSION.STAFF_SCHEDULE_READ),
+      ).toBe(false);
     });
   });
 

@@ -579,7 +579,7 @@ export const ROLE = {
    * actions (`appointments.status.update`, never the tenant-wide
    * `appointments.update`); writes only NOTE/VITALS clinical entries and
    * corrects only their own (`clinical.records.nursing`, never `.manage`).
-   * Never a bookable provider — see {@link PUBLIC_BOOKING_EXCLUDED_ROLES}.
+   * Never publicly bookable — see {@link PUBLIC_BOOKING_EXCLUDED_ROLES}.
    * No finance, staff, roles, users, settings, services or branch slug.
    */
   NURSE: 'nurse',
@@ -609,8 +609,8 @@ export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
 
 /**
  * Roles whose staff may be chosen as the "Employee" of a NEW appointment made
- * from the clinic dashboard — doctors and the manager. Receptionists (and every
- * other role) run the front desk; they are not bookable as the provider.
+ * from the clinic dashboard — doctors, nurses and managers. Receptionists (and
+ * every other role) run the front desk; they are not bookable as the provider.
  *
  * Single source of truth for BOTH halves of the rule: the `bookable` filter on
  * `GET /staff` (what the picker offers) and the create-time check in
@@ -619,13 +619,14 @@ export type RoleSlug = (typeof ROLE)[keyof typeof ROLE];
  */
 export const APPOINTMENT_BOOKABLE_STAFF_ROLES: readonly RoleSlug[] = [
   ROLE.DOCTOR,
+  ROLE.NURSE,
   ROLE.MANAGER,
 ];
 
 /**
  * Roles that must NEVER be publicly listed as a bookable provider —
  * distinct from {@link APPOINTMENT_BOOKABLE_STAFF_ROLES} above, which is an
- * ALLOW-list for the dashboard "Employee" picker (doctor + manager only).
+ * ALLOW-list for the dashboard "Employee" picker (doctor, nurse and manager).
  * This is a narrower DENY-list consulted only when a staff profile's
  * `is_available_for_booking` flag is being SET to `true` — see
  * `StaffService.resolveBookableFlag` — so it forces the flag back to
@@ -640,9 +641,7 @@ export const APPOINTMENT_BOOKABLE_STAFF_ROLES: readonly RoleSlug[] = [
  * unrelated behavior change. This list only ever grows by an explicit,
  * reviewed decision — currently just the role this predicate exists for.
  */
-export const PUBLIC_BOOKING_EXCLUDED_ROLES: readonly RoleSlug[] = [
-  ROLE.NURSE,
-];
+export const PUBLIC_BOOKING_EXCLUDED_ROLES: readonly RoleSlug[] = [ROLE.NURSE];
 
 /**
  * THE definition of "this principal may only see/act on its own branch(es)".
@@ -2225,12 +2224,10 @@ export const ROLE_PERMISSIONS: Record<
   // shape:
   //
   //   - DASHBOARD_ACCESS: reach the workspace shell at all.
-  //   - APPOINTMENTS_READ (tenant-wide, NOT `_read_own`): a nurse is never
-  //     the assigned provider on an appointment (nurse is not in
-  //     APPOINTMENT_BOOKABLE_STAFF_ROLES), so `_read_own` would resolve to
-  //     no StaffProfile ownership and show nothing — the "own" ABAC pattern
-  //     only fits a role that IS the assigned staff member. Tenant-wide read
-  //     is what lets a nurse see the appointments/queue they support.
+  //   - APPOINTMENTS_READ (tenant-wide, NOT `_read_own`): a nurse may be the
+  //     assigned provider on a manually-created appointment, but still needs
+  //     the clinic-wide appointment/queue view to support patient flow. The
+  //     `_read_own` grant would hide that rest of the queue.
   //   - APPOINTMENTS_STATUS_UPDATE (NOT the tenant-wide APPOINTMENTS_UPDATE):
   //     queue check-in/call/start/complete/skip/recall/no-show and
   //     `POST /appointments/:id/status` only — never reassigning the

@@ -122,8 +122,8 @@ describe('Availability windows — soft-deleted staff schedule (real Postgres)',
     );
     liveStaffId = liveStaff.id;
     // Phase 6 fix: `AppointmentService.create` only accepts a staff member
-    // whose USER holds a role in `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor or
-    // manager) — this suite's own booking assertion was unreachable before
+    // whose USER holds a role in `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor,
+    // nurse or manager) — this suite's own booking assertion was unreachable before
     // (the seed crashed on the missing `public_slug` NOT NULL above), so the
     // missing role assignment was never exercised until now.
     const doctorRole = await ds

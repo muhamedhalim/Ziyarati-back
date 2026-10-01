@@ -190,9 +190,10 @@ describe('StaffService', () => {
     describe('bookable filter (appointment Employee picker)', () => {
       const query = { page: 1, limit: 10, bookable: 'true' } as any;
 
-      it('resolves only doctor + manager accounts, scoped to the caller tenant', async () => {
+      it('resolves doctor, nurse and manager accounts, scoped to the caller tenant', async () => {
         userRoles.find.mockResolvedValueOnce([
           { user: { id: 'u-doctor' } },
+          { user: { id: 'u-nurse' } },
           { user: { id: 'u-manager' } },
         ]);
         staff.findAndCount.mockResolvedValueOnce([[{ id: 'staff-1' }], 1]);
@@ -201,13 +202,13 @@ describe('StaffService', () => {
 
         const roleQuery = userRoles.find.mock.calls[0][0];
         expect(roleQuery.where.role.slug).toEqual(
-          In([ROLE.DOCTOR, ROLE.MANAGER]),
+          In([ROLE.DOCTOR, ROLE.NURSE, ROLE.MANAGER]),
         );
         expect(roleQuery.where.user).toEqual({ tenant: { id: TENANT } });
         // The staff query itself is narrowed to exactly those accounts AND the tenant.
         const staffQuery = staff.findAndCount.mock.calls[0][0];
         expect(staffQuery.where.user).toEqual({
-          id: In(['u-doctor', 'u-manager']),
+          id: In(['u-doctor', 'u-nurse', 'u-manager']),
         });
         expect(staffQuery.where.tenant).toEqual({ id: TENANT });
       });
@@ -221,7 +222,7 @@ describe('StaffService', () => {
         expect(slugs).not.toContain(ROLE.OWNER);
       });
 
-      it('returns an empty page without querying staff when no doctor/manager exists', async () => {
+      it('returns an empty page without querying staff when no eligible role exists', async () => {
         userRoles.find.mockResolvedValueOnce([]);
         const res = await service.findAll(TENANT, query);
         expect(res).toEqual({ data: [], total: 0, page: 1, limit: 10 });
@@ -1209,7 +1210,12 @@ describe('StaffService', () => {
       rolesService.findAssignableForStaff.mockResolvedValueOnce(roles);
 
       await expect(service.findAssignableRoles(TENANT)).resolves.toEqual([
-        { id: 'r1', slug: 'receptionist', name: 'Receptionist', bookable: false },
+        {
+          id: 'r1',
+          slug: 'receptionist',
+          name: 'Receptionist',
+          bookable: false,
+        },
       ]);
       expect(rolesService.findAssignableForStaff).toHaveBeenCalledWith(TENANT);
     });
