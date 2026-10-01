@@ -131,24 +131,21 @@ export class StaffService {
   /** Roles this tenant may assign to staff — backs the Add Staff role selector. */
   async findAssignableRoles(
     tenantId: string,
-  ): Promise<
-    { id: string; slug: string; name: string; bookable: boolean }[]
-  > {
+  ): Promise<{ id: string; slug: string; name: string; bookable: boolean }[]> {
     const roles = await this.rolesService.findAssignableForStaff(tenantId);
     // Slim projection for the dropdown — the full Role (with its permission
     // set) is more than this endpoint needs to expose. `bookable` mirrors
-    // APPOINTMENT_BOOKABLE_STAFF_ROLES (never a tenant custom role, which is
-    // always excluded here) so the Add/Edit Staff dialog can default the
-    // "available for public booking" toggle from the SAME rule the backend
-    // enforces — see StaffService.resolveBookableFlag — rather than
-    // hardcoding a client-side guess that could drift from it.
+    // appointment-eligible roles, while excluding roles explicitly barred from
+    // public booking (such as nurse) through StaffService.resolveBookableFlag.
     return roles.map((r) => ({
       id: r.id,
       slug: r.slug,
       name: r.name,
-      bookable: (APPOINTMENT_BOOKABLE_STAFF_ROLES as readonly string[]).includes(
-        r.slug,
-      ),
+      bookable:
+        (APPOINTMENT_BOOKABLE_STAFF_ROLES as readonly string[]).includes(
+          r.slug,
+        ) &&
+        !(PUBLIC_BOOKING_EXCLUDED_ROLES as readonly string[]).includes(r.slug),
     }));
   }
 
@@ -1050,7 +1047,12 @@ export class StaffService {
         profile.user.id,
         tenantId,
       );
-      if (!this.resolveBookableFlag(roles.map((r) => r.slug), true)) {
+      if (
+        !this.resolveBookableFlag(
+          roles.map((r) => r.slug),
+          true,
+        )
+      ) {
         throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
           message:
             "This staff member's role cannot be made available for public booking",

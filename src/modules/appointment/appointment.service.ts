@@ -1473,7 +1473,8 @@ export class AppointmentsService {
 
   /**
    * Rejects a staff member whose linked account holds none of
-   * `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor, manager) — e.g. a receptionist.
+   * `APPOINTMENT_BOOKABLE_STAFF_ROLES` (doctor, nurse, manager) — e.g. a
+   * receptionist.
    *
    * This is the server-side half of the "Employee" picker rule: the picker is
    * filtered by the same constant, but a hand-crafted `POST /appointments`
@@ -1506,7 +1507,7 @@ export class AppointmentsService {
     if (!bookable) {
       throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
         message:
-          'This staff member cannot be booked for appointments. Choose a doctor or the manager.',
+          'This staff member cannot be booked for appointments. Choose a doctor, nurse, or manager.',
         publicContext: { staffId },
       });
     }

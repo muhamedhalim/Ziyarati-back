@@ -258,7 +258,7 @@ describe('AppointmentsService', () => {
         user: { id: 'u-staff' },
       };
 
-      it('books a staff member whose account holds the doctor or manager role', async () => {
+      it('books a staff member whose account holds an appointment-eligible role', async () => {
         primeValidRefs();
         repo(StaffProfile).findOne.mockResolvedValue(staffWithUser);
         repo(UserRole).exists.mockResolvedValue(true);
@@ -266,11 +266,11 @@ describe('AppointmentsService', () => {
         await service.create(TENANT, USER, dto, { requireBookableStaff: true });
 
         // Matched through THIS staff member's own user, inside THIS tenant,
-        // against exactly the doctor + manager slugs.
+        // against exactly the appointment-eligible role slugs.
         expect(repo(UserRole).exists).toHaveBeenCalledWith({
           where: {
             user: { id: 'u-staff', tenant: { id: TENANT } },
-            role: { slug: In([ROLE.DOCTOR, ROLE.MANAGER]) },
+            role: { slug: In([ROLE.DOCTOR, ROLE.NURSE, ROLE.MANAGER]) },
           },
         });
         expect(repo(Appointment).save).toHaveBeenCalled();
