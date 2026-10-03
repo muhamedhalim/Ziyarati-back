@@ -20,7 +20,11 @@ import { SettlementItemService } from './settlement-item.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { GenerateSettlementDto } from './dto/generate-settlement.dto';
 import { QuerySettlementsDto } from './dto/query-settlements.dto';
-import { DEFAULT_PAYMENT_CURRENCY } from './payments.constants';
+import {
+  CLINIC_REVENUE_PURPOSES,
+  DEFAULT_PAYMENT_CURRENCY,
+  SETTLEMENT_MODE,
+} from './payments.constants';
 
 /**
  * Settlement batches (`settlements`).
@@ -29,6 +33,10 @@ import { DEFAULT_PAYMENT_CURRENCY } from './payments.constants';
  * into a single batch, maps each payment via SettlementItemService, and flags
  * the payments IN_BATCH so they cannot be settled twice. Runs in one DB
  * transaction. Tenant-scoped via the `tenant` relation throughout.
+ *
+ * Eligible = the clinic's own money (`purpose` BOOKING/MANUAL) that ZiyaraTech
+ * itself collected (`settlement_mode` INTERNAL). Platform revenue and
+ * provider-settled payments are never batched.
  */
 @Injectable()
 export class SettlementService {
@@ -69,6 +77,20 @@ export class SettlementService {
         })
         .andWhere('settlement_status = :unsettled', {
           unsettled: SettlementStatus.UNSETTLED,
+        })
+        // ONLY money that is owed to the clinic AND that ZiyaraTech holds.
+        // Without these two predicates the run claimed every PAID payment of
+        // the tenant — including the clinic's own add-on / billing-upgrade
+        // payments TO the platform (settled "back" to the clinic as payable),
+        // and, under Tap Platform, charges Tap already settled straight to the
+        // clinic's merchant account (a second payout of the same money). A
+        // positive allow-list on purpose: a purpose added later is never
+        // settled to a clinic until someone decides it should be.
+        .andWhere('purpose IN (:...purposes)', {
+          purposes: [...CLINIC_REVENUE_PURPOSES],
+        })
+        .andWhere('settlement_mode = :internalMode', {
+          internalMode: SETTLEMENT_MODE.INTERNAL,
         });
       if (dto.branchId) {
         qb.andWhere(`"${branchCol}" = :branchId`, { branchId: dto.branchId });

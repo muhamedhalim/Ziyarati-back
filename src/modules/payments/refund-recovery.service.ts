@@ -13,6 +13,7 @@ import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
+import { PAYMENT_OUTCOME, enqueuePaymentOutcome } from './payment-outcome.outbox';
 
 const toCents = (v: number | string): number => Math.round(Number(v) * 100);
 
@@ -221,6 +222,15 @@ export class RefundRecoveryService {
           newSucceeded,
           toCents(locked.amount),
         );
+        // REL-005: the entitlement reversal rides in this same transaction, so a
+        // crash between the commit and the emit below cannot leave a refunded
+        // add-on still granted.
+        await enqueuePaymentOutcome(m, {
+          tenantId,
+          paymentId: payment.id,
+          outcome: PAYMENT_OUTCOME.REFUND_RECORDED,
+          refundId: fresh.id,
+        });
         return 'succeeded';
       }
 

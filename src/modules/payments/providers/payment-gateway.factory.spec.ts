@@ -40,6 +40,42 @@ describe('PaymentGatewayFactory (strategy selection)', () => {
     expect(moyasar.supports).toHaveBeenCalledWith('moyasar');
   });
 
+  describe('Tap alongside legacy Moyasar (resolution is by NAME)', () => {
+    const moyasar = () => ({ name: 'moyasar', supports: jest.fn((n?: string) => n === 'moyasar') });
+    const tap = () => ({ name: 'tap', supports: jest.fn((n?: string) => n === 'tap') });
+
+    it('PAYMENT_PROVIDER=tap sends NEW payments to Tap', () => {
+      const m = moyasar();
+      const t = tap();
+      const factory = new PaymentGatewayFactory([m, t] as any, fallback, config({ PAYMENT_PROVIDER: 'tap' }));
+      expect(factory.resolve()).toBe(t);
+    });
+
+    it('historic Moyasar rows still resolve to Moyasar once Tap is the default (verify/refund keep working)', () => {
+      const m = moyasar();
+      const t = tap();
+      const factory = new PaymentGatewayFactory([m, t] as any, fallback, config({ PAYMENT_PROVIDER: 'tap' }));
+      expect(factory.resolve('moyasar')).toBe(m);
+    });
+
+    it('a stored gateway="tap" resolves to Tap even while the default is still moyasar', () => {
+      const m = moyasar();
+      const t = tap();
+      const factory = new PaymentGatewayFactory([m, t] as any, fallback, config({ PAYMENT_PROVIDER: 'moyasar' }));
+      expect(factory.resolve('tap')).toBe(t);
+    });
+
+    it('FAILS CLOSED in production when tap is selected but unconfigured (no silent Noop that fakes PAID)', () => {
+      const unconfigured = { name: 'tap', supports: jest.fn().mockReturnValue(false) };
+      const factory = new PaymentGatewayFactory(
+        [moyasar(), unconfigured] as any,
+        fallback,
+        config({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
+      );
+      expect(() => factory.resolve()).toThrow(/not available/i);
+    });
+  });
+
   it('FAILS CLOSED in production: no silent Noop fallback while payments are live', () => {
     // Noop SIMULATES paid — resolving it for a live gateway would fake revenue.
     const factory = new PaymentGatewayFactory(

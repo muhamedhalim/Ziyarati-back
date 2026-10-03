@@ -90,14 +90,20 @@ export class MoyasarProvider implements PaymentGatewayProvider {
   }
 
   async verifyPayment(gatewayPaymentId: string): Promise<GatewayPaymentResult> {
-    const { ok, json } = await this.request(
+    const { ok, status, json } = await this.request(
       'GET',
       `/payments/${encodeURIComponent(gatewayPaymentId)}`,
     );
     if (!ok) {
+      // No response / 429 / 5xx = the gateway could not answer, NOT "the payment
+      // failed". Reporting 'failed' here made reconciliation and confirm mark a
+      // possibly-captured payment FAILED during an outage, which drops the
+      // one-PENDING guard and permits a second charge. Definitive client errors
+      // (e.g. 404) keep their previous 'failed' meaning.
+      const transient = status === 0 || status === 429 || status >= 500;
       return {
         success: false,
-        status: 'failed',
+        status: transient ? 'unknown' : 'failed',
         failureReason: this.extractError(json),
         raw: json,
       };

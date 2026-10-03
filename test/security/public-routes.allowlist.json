@@ -103,5 +103,10 @@
     "method": "POST",
     "path": "/payments/webhooks/moyasar",
     "reason": "Moyasar payment-provider webhook — authenticated by a constant-time shared-secret comparison, fail-closed in production, not JWT."
+  },
+  {
+    "method": "POST",
+    "path": "/payments/webhooks/tap",
+    "reason": "Tap payment-provider webhook — authenticated by an HMAC-SHA256 'hashstring' header (constant-time compare, fail-closed with no dev bypass), then the charge is re-fetched from Tap with our own key before any state change; not JWT."
   }
 ]

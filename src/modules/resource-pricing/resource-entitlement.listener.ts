@@ -76,50 +76,11 @@ export class ResourceEntitlementListener {
     return qb.getOne();
   }
 
+  /** Fast path: the in-process event. Failures are logged, never rethrown. */
   @OnEvent(PAYMENT_EVENT.SUCCEEDED)
   async onPaymentSucceeded(event: PaymentSucceededEvent): Promise<void> {
     try {
-      await this.dataSource.transaction(async (manager) => {
-        const purchase = await this.lockPurchaseByPayment(manager, event.paymentId, true);
-        if (!purchase) return; // not a resource purchase
-
-        // G14 closure: refuse EVERY terminal status, not just 'completed' —
-        // a late success after a refund must never re-grant.
-        if (TERMINAL_PURCHASE_STATUSES.has(purchase.status)) return;
-
-        const deltaUnits = Number(purchase.delta_units);
-        const kind = purchase.kind as SellableKind;
-
-        // The grant is the audit record for BOTH kinds. The DB backstop
-        // (UNIQUE(sourcePurchaseId) WHERE direction='grant') makes a
-        // concurrent double-application impossible even if this in-process
-        // check somehow raced — belt AND suspenders.
-        await this.ledger.grant({
-          tenantId: purchase.tenant.id,
-          metric: purchase.item_key as LedgerMetric,
-          kind,
-          amountUnits: deltaUnits,
-          reason: LEDGER_REASON.PURCHASE,
-          sourcePurchaseId: purchase.id,
-          manager,
-        });
-
-        if (kind === SELLABLE_KIND.CREDIT) {
-          // The OPERATIONAL balance for a credit item lives in
-          // tenant_metric_credits, not derived from the ledger — the grant
-          // above is audit-only for credits.
-          await this.credits.credit(
-            purchase.tenant.id,
-            purchase.item_key as UsageMetric,
-            deltaUnits,
-            manager,
-          );
-        }
-
-        purchase.status = 'completed';
-        purchase.completed_at = new Date();
-        await manager.getRepository(ResourcePurchase).save(purchase);
-      });
+      await this.applyPaid(event.paymentId);
     } catch (err) {
       this.logger.error(
         `Failed to apply entitlement for purchase (payment ${event.paymentId}): ${(err as Error).message}`,
@@ -127,24 +88,80 @@ export class ResourceEntitlementListener {
     }
   }
 
+  /**
+   * Grant the purchase for a CAPTURED payment. Idempotent (see the class doc) and
+   * — unlike the event handler above — it THROWS on failure: the durable
+   * `payments.outcome` consumer (REL-005) calls this directly and needs the error
+   * so the job is retried instead of being marked done.
+   */
+  async applyPaid(paymentId: string): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const purchase = await this.lockPurchaseByPayment(manager, paymentId, true);
+      if (!purchase) return; // not a resource purchase
+
+      // G14 closure: refuse EVERY terminal status, not just 'completed' —
+      // a late success after a refund must never re-grant.
+      if (TERMINAL_PURCHASE_STATUSES.has(purchase.status)) return;
+
+      const deltaUnits = Number(purchase.delta_units);
+      const kind = purchase.kind as SellableKind;
+
+      // The grant is the audit record for BOTH kinds. The DB backstop
+      // (UNIQUE(sourcePurchaseId) WHERE direction='grant') makes a
+      // concurrent double-application impossible even if this in-process
+      // check somehow raced — belt AND suspenders.
+      await this.ledger.grant({
+        tenantId: purchase.tenant.id,
+        metric: purchase.item_key as LedgerMetric,
+        kind,
+        amountUnits: deltaUnits,
+        reason: LEDGER_REASON.PURCHASE,
+        sourcePurchaseId: purchase.id,
+        manager,
+      });
+
+      if (kind === SELLABLE_KIND.CREDIT) {
+        // The OPERATIONAL balance for a credit item lives in
+        // tenant_metric_credits, not derived from the ledger — the grant
+        // above is audit-only for credits.
+        await this.credits.credit(
+          purchase.tenant.id,
+          purchase.item_key as UsageMetric,
+          deltaUnits,
+          manager,
+        );
+      }
+
+      purchase.status = 'completed';
+      purchase.completed_at = new Date();
+      await manager.getRepository(ResourcePurchase).save(purchase);
+    });
+  }
+
+  /** Fast path: the in-process event. Failures are logged, never rethrown. */
   @OnEvent(PAYMENT_EVENT.FAILED)
   async onPaymentFailed(event: PaymentFailedEvent): Promise<void> {
     try {
-      await this.dataSource.transaction(async (manager) => {
-        const purchase = await this.lockPurchaseByPayment(manager, event.paymentId, false);
-        if (!purchase) return;
-        // Only a purchase still awaiting this payment transitions.
-        if (purchase.status !== 'payment_processing') return;
-
-        purchase.status = 'payment_failed';
-        purchase.failed_at = new Date();
-        await manager.getRepository(ResourcePurchase).save(purchase);
-      });
+      await this.applyFailed(event.paymentId);
     } catch (err) {
       this.logger.error(
         `Failed to record purchase payment failure (payment ${event.paymentId}): ${(err as Error).message}`,
       );
     }
+  }
+
+  /** Throwing twin of {@link onPaymentFailed} for the durable consumer. Idempotent. */
+  async applyFailed(paymentId: string): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const purchase = await this.lockPurchaseByPayment(manager, paymentId, false);
+      if (!purchase) return;
+      // Only a purchase still awaiting this payment transitions.
+      if (purchase.status !== 'payment_processing') return;
+
+      purchase.status = 'payment_failed';
+      purchase.failed_at = new Date();
+      await manager.getRepository(ResourcePurchase).save(purchase);
+    });
   }
 
   /**
@@ -157,65 +174,83 @@ export class ResourceEntitlementListener {
    * `onPaymentSucceeded`, guarded by the SAME terminal-status set, will
    * simply never fire for a purchase whose payment ultimately failed).
    */
+  /** Fast path: the in-process event. Failures are logged, never rethrown. */
   @OnEvent(REFUND_EVENT.RECORDED)
   async onRefundRecorded(event: RefundRecordedEvent): Promise<void> {
     try {
-      await this.dataSource.transaction(async (manager) => {
-        const purchase = await this.lockPurchaseByPayment(manager, event.paymentId, true);
-        if (!purchase) return; // not a resource-purchase payment
-
-        const deltaUnits = BigInt(purchase.delta_units);
-        const totalMinor = BigInt(purchase.total_minor);
-        const refundedCumulativeMinor = BigInt(Math.round(event.refundedCumulativeMinor));
-
-        const targetRevoked = (deltaUnits * refundedCumulativeMinor) / totalMinor; // BigInt division floors
-        const alreadyRevoked = BigInt(
-          await this.ledger.sumRevokedForPurchase(purchase.id, manager),
-        );
-        const newRevoke = targetRevoked - alreadyRevoked;
-        if (newRevoke <= 0n) return; // nothing new to revoke — redelivery or pre-grant refund
-
-        const kind = purchase.kind as SellableKind;
-        let unrecoverableUnits = 0n;
-
-        if (kind === SELLABLE_KIND.CREDIT) {
-          // The credit balance may already be partly/fully spent — claw
-          // back only what remains, record the rest as unrecoverable
-          // (plan §14 "partly used" / "fully used").
-          const result = await this.credits.revoke(
-            purchase.tenant.id,
-            purchase.item_key as UsageMetric,
-            Number(newRevoke),
-            manager,
-          );
-          unrecoverableUnits = BigInt(result.unrecoverableUnits);
-        }
-        // Capacity needs no clawback call of its own — `capacityMap`'s
-        // GREATEST(SUM(...), 0) already floors at 0 once the revoke row
-        // below is appended; there is no separate balance to touch.
-
-        await this.ledger.revoke({
-          tenantId: purchase.tenant.id,
-          metric: purchase.item_key as LedgerMetric,
-          kind,
-          amountUnits: Number(newRevoke),
-          unrecoverableUnits: Number(unrecoverableUnits),
-          reason: LEDGER_REASON.REFUND,
-          sourcePurchaseId: purchase.id,
-          sourceRefundId: event.refundId,
-          manager,
-        });
-
-        if (refundedCumulativeMinor >= totalMinor && purchase.status !== 'refunded') {
-          purchase.status = 'refunded';
-          purchase.refunded_at = new Date();
-          await manager.getRepository(ResourcePurchase).save(purchase);
-        }
-      });
+      await this.applyRefund(
+        event.paymentId,
+        event.refundId,
+        event.refundedCumulativeMinor,
+      );
     } catch (err) {
       this.logger.error(
         `Failed to reverse entitlement for refund ${event.refundId} (payment ${event.paymentId}): ${(err as Error).message}`,
       );
     }
+  }
+
+  /**
+   * Revoke in proportion to the CUMULATIVE refunded amount. Idempotent: only the
+   * delta against what was already revoked is applied, so a redelivered or
+   * out-of-order call converges. THROWS on failure (see {@link applyPaid}).
+   */
+  async applyRefund(
+    paymentId: string,
+    refundId: string,
+    refundedCumulativeMinorUnits: number,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const purchase = await this.lockPurchaseByPayment(manager, paymentId, true);
+      if (!purchase) return; // not a resource-purchase payment
+
+      const deltaUnits = BigInt(purchase.delta_units);
+      const totalMinor = BigInt(purchase.total_minor);
+      const refundedCumulativeMinor = BigInt(Math.round(refundedCumulativeMinorUnits));
+
+      const targetRevoked = (deltaUnits * refundedCumulativeMinor) / totalMinor; // BigInt division floors
+      const alreadyRevoked = BigInt(
+        await this.ledger.sumRevokedForPurchase(purchase.id, manager),
+      );
+      const newRevoke = targetRevoked - alreadyRevoked;
+      if (newRevoke <= 0n) return; // nothing new to revoke — redelivery or pre-grant refund
+
+      const kind = purchase.kind as SellableKind;
+      let unrecoverableUnits = 0n;
+
+      if (kind === SELLABLE_KIND.CREDIT) {
+        // The credit balance may already be partly/fully spent — claw
+        // back only what remains, record the rest as unrecoverable
+        // (plan §14 "partly used" / "fully used").
+        const result = await this.credits.revoke(
+          purchase.tenant.id,
+          purchase.item_key as UsageMetric,
+          Number(newRevoke),
+          manager,
+        );
+        unrecoverableUnits = BigInt(result.unrecoverableUnits);
+      }
+      // Capacity needs no clawback call of its own — `capacityMap`'s
+      // GREATEST(SUM(...), 0) already floors at 0 once the revoke row
+      // below is appended; there is no separate balance to touch.
+
+      await this.ledger.revoke({
+        tenantId: purchase.tenant.id,
+        metric: purchase.item_key as LedgerMetric,
+        kind,
+        amountUnits: Number(newRevoke),
+        unrecoverableUnits: Number(unrecoverableUnits),
+        reason: LEDGER_REASON.REFUND,
+        sourcePurchaseId: purchase.id,
+        sourceRefundId: refundId,
+        manager,
+      });
+
+      if (refundedCumulativeMinor >= totalMinor && purchase.status !== 'refunded') {
+        purchase.status = 'refunded';
+        purchase.refunded_at = new Date();
+        await manager.getRepository(ResourcePurchase).save(purchase);
+      }
+    });
   }
 }

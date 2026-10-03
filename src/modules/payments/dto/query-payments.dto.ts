@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsISO8601,
   IsOptional,
@@ -11,6 +12,7 @@ import {
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 import { PaymentStatus, SettlementStatus } from '../../../entities/enums';
+import { PAYMENT_PURPOSE, type PaymentPurpose } from '../payments.constants';
 
 /** Filter + pagination for payments (always tenant-scoped). */
 export class QueryPaymentsDto {
@@ -23,6 +25,15 @@ export class QueryPaymentsDto {
   @IsOptional()
   @IsEnum(SettlementStatus)
   settlementStatus?: SettlementStatus;
+
+  @ApiPropertyOptional({
+    description:
+      "Filter by what the payment is for. When omitted the list shows only the clinic's own money (BOOKING and MANUAL); the clinic's add-on and billing-upgrade payments to the platform are returned only when asked for by name.",
+    enum: Object.values(PAYMENT_PURPOSE),
+  })
+  @IsOptional()
+  @IsIn(Object.values(PAYMENT_PURPOSE))
+  purpose?: PaymentPurpose;
 
   @ApiPropertyOptional({ description: 'Only payments for this customer.', format: 'uuid' })
   @IsOptional()

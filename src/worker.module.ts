@@ -45,6 +45,14 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { SubscriptionBillingModule } from './modules/subscription-billing/subscription-billing.module';
 import { EmailModule } from './modules/email/email.module';
+// REL-005 — `PaymentOutcomeService` (below) applies the idempotent post-payment
+// consumers directly. A provider in THIS module only sees what a module it
+// imports DIRECTLY exports, so each owner is imported here by name. The first is
+// already in the worker's tree transitively; the other two were API-only until now.
+import { AppointmentModule } from './modules/appointment/appointment.module';
+import { BillingUpgradeModule } from './modules/billing-upgrades/billing-upgrade.module';
+import { ResourcePricingModule } from './modules/resource-pricing/resource-pricing.module';
+import { PaymentOutcomeService } from './worker/payment-outcome.service';
 // T183 (spec 014, US13) — AnalyticsProcessor's `analytics.exportGenerate`
 // branch and PlatformProcessor's `platform.exportExpiry` branch.
 import { ReportExportModule } from './modules/report-export/report-export.module';
@@ -342,10 +350,20 @@ const WORKER_PROVIDERS =
     // T183 (spec 014, US13) — AnalyticsProcessor's exportGenerate branch and
     // PlatformProcessor's exportExpiry branch.
     ReportExportModule,
+    // REL-005 — PaymentOutcomeService. Importing these two also registers their
+    // `@OnEvent` entitlement listeners in the worker, which closes a gap that
+    // predates the outbox: `payments.reconcile` runs HERE and emits
+    // `payment.succeeded` for a payment it recovers, but neither listener was
+    // loaded in this process, so a reconciled add-on / billing-upgrade payment
+    // never granted its entitlement.
+    AppointmentModule,
+    BillingUpgradeModule,
+    ResourcePricingModule,
   ],
   providers: [
     AuthTokenMaintenanceService,
     FreeAccessNoticeService,
+    PaymentOutcomeService,
     ...WORKER_PROVIDERS,
   ],
 })

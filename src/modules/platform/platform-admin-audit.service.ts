@@ -39,6 +39,13 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SUBSCRIPTION_RENEWAL_ATTEMPTED: 'subscription.renewal_attempted',
   SUBSCRIPTION_RENEWAL_DECLINED: 'subscription.renewal_declined',
   SUBSCRIPTION_RENEWAL_SETTLED: 'subscription.renewal_settled',
+  // Tap migration (Phase 3) — ANY subscription invoice settling (initial
+  // payment, upgrade, reactivation), recorded by the single settle path.
+  SUBSCRIPTION_PAYMENT_SETTLED: 'subscription.payment_settled',
+  // A captured payment that could NOT be applied to its subscription (invoice
+  // void/refunded, or the subscription is cancelled/suspended). Money moved;
+  // an operator must decide — usually a refund.
+  SUBSCRIPTION_PAYMENT_UNAPPLIED: 'subscription.payment_unapplied',
   // Platform Customer Service staff provisioning (PlatformStaffService).
   STAFF_CREATE: 'platform_admin.staff.create',
   STAFF_UPDATE: 'platform_admin.staff.update',

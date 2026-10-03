@@ -58,6 +58,7 @@ export const DASHBOARD_SUBSCRIPTION_STATE = {
   GRACE_EXPIRED: SubscriptionStatus.GRACE_EXPIRED,
   CANCELLED: SubscriptionStatus.CANCELLED,
   SUSPENDED: SubscriptionStatus.SUSPENDED,
+  PENDING_PAYMENT: SubscriptionStatus.PENDING_PAYMENT,
   /** No non-deleted `subscriptions` row for this tenant. */
   NONE: 'NONE',
 } as const;
@@ -82,7 +83,7 @@ export function effectiveStatusSql(sub: string, grace: string): string {
   return `
     CASE
       WHEN ${sub}.id IS NULL THEN '${DASHBOARD_SUBSCRIPTION_STATE.NONE}'
-      WHEN ${sub}.status IN ('${SubscriptionStatus.CANCELLED}','${SubscriptionStatus.SUSPENDED}','${SubscriptionStatus.GRACE_EXPIRED}')
+      WHEN ${sub}.status IN ('${SubscriptionStatus.CANCELLED}','${SubscriptionStatus.SUSPENDED}','${SubscriptionStatus.GRACE_EXPIRED}','${SubscriptionStatus.PENDING_PAYMENT}')
         THEN ${sub}.status::text
       WHEN ${sub}.status = '${SubscriptionStatus.PAST_DUE}'
            AND ${sub}.grace_started_at IS NOT NULL

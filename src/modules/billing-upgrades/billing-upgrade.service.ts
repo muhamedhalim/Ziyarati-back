@@ -13,8 +13,10 @@ import { UsageService } from '../subscription-billing/usage.service';
 import { FeatureFlagService } from '../subscription-billing/feature-flag.service';
 import { UsageMetric } from '../subscription-billing/usage-metric';
 import { PaymentService } from '../payments/payment.service';
+import { PAYMENT_PURPOSE } from '../payments/payments.constants';
 
 import { BillingUpgradeEventService } from './billing-upgrade-event.service';
+import { lockRequest } from './billing-upgrade-lock.util';
 import { CreateBillingUpgradeRequestDto } from './dto/create-billing-upgrade-request.dto';
 import { QueryBillingUpgradeRequestsDto } from './dto/query-billing-upgrade-requests.dto';
 import {
@@ -251,11 +253,9 @@ export class BillingUpgradeService {
   async accept(tenantId: string, id: string, actor: BillingUpgradeActor): Promise<AcceptBillingUpgradeResult> {
     const phase = await this.dataSource.transaction<AcceptPhaseResult>(async (manager) => {
       const repo = manager.getRepository(BillingUpgradeRequest);
-      const request = await repo.findOne({
-        where: { id, tenant: { id: tenantId } },
-        relations: { payment: true },
-        lock: { mode: 'pessimistic_write' },
-      });
+      // Lock first, join after: FOR UPDATE + a LEFT JOINed `payment` is refused by
+      // Postgres. The payment is only needed on the resume branch below.
+      const request = await lockRequest(manager, { id, tenant: { id: tenantId } });
       if (!request) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Request not found' });
       }
@@ -270,6 +270,11 @@ export class BillingUpgradeService {
         // Already accepted and in flight — repeated-approval / double-click
         // guard. If a prior attempt crashed before linking a payment, resume
         // it (charge) instead of rejecting the owner outright.
+        const withPayment = await repo.findOne({
+          where: { id: request.id },
+          relations: { payment: true },
+        });
+        if (withPayment?.payment) request.payment = withPayment.payment;
         return request.payment ? { action: 'resume', request } : { action: 'charge', request };
       }
 
@@ -324,12 +329,13 @@ export class BillingUpgradeService {
     }
 
     // action === 'charge': create the payment OUTSIDE any lock (network call).
-    // `platformRevenue: true` (Phase 1.5, plan §12) — this charge is the
-    // clinic paying the PLATFORM for a plan/feature upgrade, not a
-    // patient/customer payment, so it must never require the clinic's own
-    // merchant-onboarding approval and must never carry a marketplace split
+    // `purpose: BILLING_UPGRADE` (Phase 1.5 plan §12; Tap Phase 2) — this
+    // charge is the clinic paying the PLATFORM for a plan/feature upgrade, not
+    // a patient/customer payment, so it must never require the clinic's own
+    // merchant-onboarding approval, must never carry a marketplace split
     // (which would incorrectly route platform revenue back to the clinic's
-    // own gateway recipient).
+    // own gateway recipient), and is recorded as platform revenue so no clinic
+    // settlement can ever claim it.
     const { payment, redirectUrl } = await this.payments.create(
       tenantId,
       {
@@ -338,7 +344,7 @@ export class BillingUpgradeService {
         description: this.paymentDescription(phase.request),
         idempotencyKey: randomUUID(),
       },
-      { platformRevenue: true },
+      { purpose: PAYMENT_PURPOSE.BILLING_UPGRADE },
     );
 
     // Race-safe link: only the first concurrent "charge" attempt (e.g. a

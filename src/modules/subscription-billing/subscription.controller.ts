@@ -90,6 +90,7 @@ const S_SUBSCRIPTION = {
             'CANCELLED',
             'SUSPENDED',
             'GRACE_EXPIRED',
+            'PENDING_PAYMENT',
           ],
           example: 'ACTIVE',
         },
@@ -121,6 +122,7 @@ const S_SUBSCRIPTION = {
         'CANCELLED',
         'SUSPENDED',
         'GRACE_EXPIRED',
+        'PENDING_PAYMENT',
       ],
       example: 'ACTIVE',
       description:
@@ -134,7 +136,13 @@ const S_SUBSCRIPTION = {
     },
     accessState: {
       type: 'string',
-      enum: ['active', 'expired-in-grace', 'grace-expired', 'terminal'],
+      enum: [
+        'active',
+        'expired-in-grace',
+        'grace-expired',
+        'terminal',
+        'pending-payment',
+      ],
       example: 'active',
       description:
         'FND-031 — the three (plus terminal) access states named in the finding. Additive; never derive this from `status` client-side (LG-10).',
@@ -145,6 +153,28 @@ const S_SUBSCRIPTION = {
       nullable: true,
       description:
         'FND-031 — set only while accessState is "expired-in-grace"; when new billable/usage-increasing actions will start being refused.',
+    },
+    pendingPlan: {
+      ...S_PLAN,
+      nullable: true,
+      description:
+        'A downgrade scheduled for the next renewal: the plan the subscription will switch to when the current period ends. Null when nothing is scheduled.',
+    },
+    openInvoice: {
+      type: 'object',
+      nullable: true,
+      description:
+        'The one OPEN invoice there is to pay (first payment, upgrade, renewal). Pay it through POST /billing/invoices/{id}/checkout.',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        kind: {
+          type: 'string',
+          enum: ['INITIAL', 'UPGRADE', 'RENEWAL', 'REACTIVATION'],
+          nullable: true,
+        },
+        amount: { type: 'string', example: '299.00' },
+        currency: { type: 'string', example: 'SAR' },
+      },
     },
   },
 };
@@ -242,6 +272,13 @@ Subscribes the caller's tenant to a plan, computing \`starts_at\`/\`ends_at\`
 from the plan's billing cycle. For non-trial subscriptions, the first
 invoice is issued automatically (OPEN).
 
+**Activation only after payment.** When online payment is available, a paid
+plan starts as \`PENDING_PAYMENT\` (not usable) and the response carries the
+\`openInvoice\` to pay through \`POST /billing/invoices/{id}/checkout\`. It
+becomes \`ACTIVE\`, with its period counted from the payment, only when that
+invoice is paid. A trial, a free plan, or an environment with no online
+payment activates immediately, as before.
+
 **Business rules**
 - The plan must exist and be active (422 otherwise).
 - One active subscription per tenant — a second attempt returns 409.
@@ -320,17 +357,49 @@ passed) and an \`isUsable\` flag the frontend can use to gate UI.
     description: `
 **Protected — requires \`subscription.manage\`.**
 
-Switches the current subscription to a different active plan. Direction
-(upgrade/downgrade) is implied by price; proration is abstracted — an
-invoice for the new plan price is issued.
+Moves the current subscription to a different active plan. Direction is
+implied by price; nothing is prorated. The response carries \`mode\`:
+
+- \`checkout\` — an **upgrade** (or trial → paid). An invoice for the full new
+  price was issued (\`invoiceId\`); the plan switches, with a fresh period
+  from the payment, ONLY when it is paid. Nothing changes before that.
+- \`scheduled\` — a **downgrade**. No charge now; it takes effect at the next
+  renewal (\`effectiveAt\`), which is billed at the lower price. Re-selecting
+  the current plan withdraws it (\`mode: 'cleared'\`).
+- \`switched\` — applied at once: no online payment is available, or the
+  target plan is free.
 
 **Business rules:** target plan must exist, be active, and differ from the
-current plan (409 if same).
+current plan (409 if same). 409 as well while another invoice is open or being
+paid — settle or cancel it first.
 
 **Who can call this:** Owner (\`subscription.manage\`).
     `.trim(),
   })
-  @ApiOkResponse({ description: 'Plan changed.', schema: S_SUBSCRIPTION })
+  @ApiOkResponse({
+    description:
+      'Plan change accepted — see mode for what happened (checkout / scheduled / switched / cleared).',
+    schema: {
+      type: 'object',
+      properties: {
+        ...S_SUBSCRIPTION.properties,
+        mode: {
+          type: 'string',
+          enum: ['switched', 'checkout', 'scheduled', 'cleared'],
+        },
+        invoiceId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Present when mode is "checkout".',
+        },
+        effectiveAt: {
+          type: 'string',
+          format: 'date-time',
+          description: 'Present when mode is "scheduled".',
+        },
+      },
+    },
+  })
   @ApiBadRequestResponse({ description: 'Validation failed.', schema: S_ERROR })
   @ApiUnauthorizedResponse({
     description: 'Missing or invalid access token.',
@@ -403,11 +472,15 @@ persist it).
     description: `
 **Protected — requires \`subscription.manage\`.**
 
-Returns a cancelled or past-due subscription to ACTIVE and re-enables
-auto-renew. If the period had already lapsed, a fresh period is started
-from now using the plan's billing cycle.
+Re-enables auto-renew and brings a cancelled or past-due subscription back.
+A period that is still paid for resumes at once. A LAPSED one must be paid for
+again when online payment is available: a reactivation invoice is issued
+(\`openInvoice\` in the response) and a cancelled subscription waits as
+\`PENDING_PAYMENT\` until it is paid; a past-due one pays its outstanding
+renewal invoice. With no online payment available it returns to ACTIVE with a
+fresh period, as before.
 
-**Business rules:** 409 if already active.
+**Business rules:** 409 if already active, suspended, or still on a trial.
 
 **Who can call this:** Owner (\`subscription.manage\`).
     `.trim(),

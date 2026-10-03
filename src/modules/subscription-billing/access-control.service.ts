@@ -568,13 +568,17 @@ export class AccessControlService {
    * non-terminal: ACTIVE, TRIAL, PAST_DUE ("expired-in-grace" — full
    * capabilities, unchanged), AND GRACE_EXPIRED (read access preserved —
    * FR-B007d; only billable actions are refused there, via
-   * `isBillableAllowed`, never here). Only CANCELLED/SUSPENDED are not usable.
+   * `isBillableAllowed`, never here). Only CANCELLED/SUSPENDED — and a
+   * subscription whose first payment has not been captured yet (PENDING_PAYMENT,
+   * Tap migration D2) — are not usable. That is an ADDITION to the not-usable
+   * set: it does not re-derive the precedence chain above.
    */
   private isUsable(subscription: Subscription): boolean {
     const status = this.effective(subscription);
     return (
       status !== SubscriptionStatus.CANCELLED &&
-      status !== SubscriptionStatus.SUSPENDED
+      status !== SubscriptionStatus.SUSPENDED &&
+      status !== SubscriptionStatus.PENDING_PAYMENT
     );
   }
 
@@ -590,7 +594,9 @@ export class AccessControlService {
     if (
       subscription.status === SubscriptionStatus.CANCELLED ||
       subscription.status === SubscriptionStatus.SUSPENDED ||
-      subscription.status === SubscriptionStatus.GRACE_EXPIRED
+      subscription.status === SubscriptionStatus.GRACE_EXPIRED ||
+      // Its dates are provisional until it is paid — never live-derived into PAST_DUE.
+      subscription.status === SubscriptionStatus.PENDING_PAYMENT
     ) {
       return subscription.status;
     }

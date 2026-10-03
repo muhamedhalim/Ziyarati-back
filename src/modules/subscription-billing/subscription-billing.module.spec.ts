@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { resolveSubscriptionPaymentProvider } from './subscription-billing.module';
 import { StubPaymentProvider } from './payment/stub-payment.provider';
 import { RecurringUnavailableProvider } from './payment/recurring-unavailable.provider';
+import { TapSubscriptionProvider } from './payment/tap-subscription.provider';
 
 describe('resolveSubscriptionPaymentProvider (T087)', () => {
   const configWith = (values: Record<string, string | undefined>) =>
@@ -46,5 +47,69 @@ describe('resolveSubscriptionPaymentProvider (T087)', () => {
       configWith({ NODE_ENV: 'Production' }),
     );
     expect(provider).toBeInstanceOf(StubPaymentProvider);
+  });
+
+  describe('Tap (Phase 3)', () => {
+    const tap = (configured: boolean) =>
+      ({ isConfigured: configured }) as unknown as TapSubscriptionProvider;
+
+    it('binds Tap in ANY environment once it is the selected gateway AND a key exists (so a sandbox works in dev)', () => {
+      const t = tap(true);
+      for (const nodeEnv of ['production', 'development', 'test', undefined]) {
+        expect(
+          resolveSubscriptionPaymentProvider(
+            configWith({ NODE_ENV: nodeEnv, PAYMENT_PROVIDER: 'tap' }),
+            t,
+          ),
+        ).toBe(t);
+      }
+    });
+
+    it('does NOT bind Tap without a key — production falls back to the honest decliner, never the stub', () => {
+      const p = resolveSubscriptionPaymentProvider(
+        configWith({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'tap' }),
+        tap(false),
+      );
+      expect(p).toBeInstanceOf(RecurringUnavailableProvider);
+    });
+
+    it('does NOT bind Tap in dev without a key either (the stub keeps dev runnable)', () => {
+      const p = resolveSubscriptionPaymentProvider(
+        configWith({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'tap' }),
+        tap(false),
+      );
+      expect(p).toBeInstanceOf(StubPaymentProvider);
+    });
+
+    it('does not bind Tap unless PAYMENT_PROVIDER says so, however configured it is', () => {
+      for (const provider of ['moyasar', 'noop', undefined, '', 'TAP ']) {
+        const p = resolveSubscriptionPaymentProvider(
+          configWith({ NODE_ENV: 'production', PAYMENT_PROVIDER: provider }),
+          tap(true),
+        );
+        expect(p).toBeInstanceOf(RecurringUnavailableProvider);
+      }
+    });
+
+    it('adding Tap cannot make the stub reachable in production', () => {
+      for (const provider of ['tap', 'moyasar', 'noop', 'stub', undefined]) {
+        for (const configured of [true, false]) {
+          expect(
+            resolveSubscriptionPaymentProvider(
+              configWith({
+                NODE_ENV: 'production',
+                PAYMENT_PROVIDER: provider,
+              }),
+              tap(configured),
+            ),
+          ).not.toBeInstanceOf(StubPaymentProvider);
+        }
+      }
+    });
+
+    it('the production stand-ins and the stub cannot take a checkout (so D2 never locks a clinic behind a payment that cannot be made)', () => {
+      expect(new StubPaymentProvider().supportsCheckout).toBe(false);
+      expect(new RecurringUnavailableProvider().supportsCheckout).toBe(false);
+    });
   });
 });

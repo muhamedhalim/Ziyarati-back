@@ -9,8 +9,20 @@ import { AccessControlService } from './access-control.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
-import { BillingCycle, SubscriptionStatus } from '../../entities/enums';
+import {
+  BillingCycle,
+  InvoiceStatus,
+  SubscriptionInvoiceKind,
+  SubscriptionStatus,
+} from '../../entities/enums';
 import { ErrorCode } from '../../common/errors';
+import {
+  SubscriptionActivatedEvent,
+  SubscriptionCancelledEvent,
+  SubscriptionPlanChangedEvent,
+  SubscriptionReactivatedEvent,
+  SubscriptionTrialStartedEvent,
+} from '../../events/subscription.events';
 import {
   createMockRepository,
   createMockQueryBuilder,
@@ -18,15 +30,23 @@ import {
 } from '../../../test/utils/mock-factories';
 
 const TENANT = 't1';
-const future = new Date(Date.now() + 86_400_000);
+const future = new Date(Date.now() + 30 * 86_400_000);
 const past = new Date(Date.now() - 86_400_000);
 
 describe('SubscriptionService', () => {
   let service: SubscriptionService;
   let subscriptions: MockRepository;
   let plans: MockRepository;
-  let billing: { generateInvoice: jest.Mock };
+  let billing: {
+    supportsCheckout: boolean;
+    providerName: string;
+    generateInvoice: jest.Mock;
+    findOpenInvoice: jest.Mock;
+    voidOpenInvoices: jest.Mock;
+    isPaymentInFlight: jest.Mock;
+  };
   let access: { assertUsable: jest.Mock; invalidate: jest.Mock };
+  let emitter: { emit: jest.Mock };
 
   const plan = (overrides = {}) => ({
     id: 'p1',
@@ -36,27 +56,52 @@ describe('SubscriptionService', () => {
     ...overrides,
   });
 
+  /** The ONE in-memory subscription every `findOne` returns: the service mutates it in place. */
+  const liveSub = (overrides: Record<string, unknown> = {}) => {
+    const sub: Record<string, any> = {
+      id: 'sub1',
+      status: SubscriptionStatus.ACTIVE,
+      starts_at: past,
+      ends_at: future,
+      auto_renew: true,
+      plan: plan(),
+      pending_plan: null,
+      grace_started_at: null,
+      grace_expired_at: null,
+      ...overrides,
+    };
+    subscriptions.findOne.mockImplementation(async () => sub);
+    return sub;
+  };
+
   beforeEach(async () => {
     subscriptions = createMockRepository();
-    // T046 (015-db-api-efficiency-audit, P7-2/ORM-001): getCurrent now reads
-    // the tenant FK column via entity metadata (R-11 — Subscription exposes
-    // no plain `tenantId` property), the same
-    // `.metadata.findRelationWithPropertyPath` pattern used elsewhere in this
-    // audit. `tenantId` matches the real column name (BaselineSchema
-    // migration: `subscriptions."tenantId"`).
+    // T046 (015-db-api-efficiency-audit, P7-2/ORM-001): getCurrent reads the
+    // tenant FK column via entity metadata (R-11 — Subscription exposes no plain
+    // `tenantId` property). `tenantId` matches the real column name.
     (subscriptions as unknown as { metadata: unknown }).metadata = {
       name: 'Subscription',
       findRelationWithPropertyPath: (path: string) =>
-        path === 'tenant' ? { joinColumns: [{ databaseName: 'tenantId' }] } : undefined,
+        path === 'tenant'
+          ? { joinColumns: [{ databaseName: 'tenantId' }] }
+          : undefined,
     };
     plans = createMockRepository();
-    billing = { generateInvoice: jest.fn().mockResolvedValue(undefined) };
+    billing = {
+      supportsCheckout: false, // the legacy world unless a test opts in
+      providerName: 'tap',
+      generateInvoice: jest.fn().mockResolvedValue({ id: 'inv-new' }),
+      findOpenInvoice: jest.fn().mockResolvedValue(null),
+      voidOpenInvoices: jest.fn().mockResolvedValue(0),
+      isPaymentInFlight: jest.fn().mockReturnValue(false),
+    };
     access = {
       assertUsable: jest.fn().mockResolvedValue(undefined),
       // Every lifecycle transition busts the tenant's cached decisions — a plan
       // change alters both entitlement and quota policy.
       invalidate: jest.fn(),
     };
+    emitter = { emit: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -67,9 +112,13 @@ describe('SubscriptionService', () => {
         { provide: AccessControlService, useValue: access },
         {
           provide: SystemSettingService,
-          useValue: { getTyped: jest.fn().mockResolvedValue(14) },
+          useValue: {
+            getTyped: jest.fn(async (key: string) =>
+              /currency/i.test(key) ? 'SAR' : 14,
+            ),
+          },
         },
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: EventEmitter2, useValue: emitter },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue(14) },
@@ -81,40 +130,126 @@ describe('SubscriptionService', () => {
 
   afterEach(() => jest.clearAllMocks());
 
+  const emitted = (EventClass: { eventName: string }) =>
+    emitter.emit.mock.calls.filter(([name]) => name === EventClass.eventName);
+
+  // ───────────────────────────────── create ─────────────────────────────── //
+
   describe('create', () => {
-    it('creates a paid subscription and issues the first invoice', async () => {
-      plans.findOne.mockResolvedValueOnce(plan());
-      subscriptions.findOne.mockResolvedValueOnce(null); // no existing
+    const created = (status: SubscriptionStatus) => {
       subscriptions.save.mockResolvedValueOnce({ id: 'sub1' });
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
-        status: SubscriptionStatus.ACTIVE,
-        ends_at: future,
-        plan: plan(),
-      });
+      subscriptions.findOne
+        .mockResolvedValueOnce(null) // no existing subscription
+        .mockResolvedValueOnce({
+          id: 'sub1',
+          status,
+          ends_at: future,
+          plan: plan(),
+        });
+    };
+
+    it('creates a paid subscription ACTIVE and issues a legacy (kind-less) first invoice when no provider can check out', async () => {
+      plans.findOne.mockResolvedValueOnce(plan());
+      created(SubscriptionStatus.ACTIVE);
 
       const res = await service.create(TENANT, { planId: 'p1' } as any);
+
       expect(billing.generateInvoice).toHaveBeenCalledWith(
         TENANT,
         'sub1',
         100,
         expect.any(Date),
         expect.any(Date),
-        14,
+        'SAR',
+        InvoiceStatus.OPEN,
+        {},
       );
       expect(res.isUsable).toBe(true);
+      expect(emitted(SubscriptionActivatedEvent)).toHaveLength(1);
+    });
+
+    describe('D2 — a paid plan is ACTIVE only after payment (a provider that can check out is bound)', () => {
+      beforeEach(() => {
+        billing.supportsCheckout = true;
+      });
+
+      it('starts PENDING_PAYMENT with an INITIAL invoice for the plan, and activates nothing', async () => {
+        plans.findOne.mockResolvedValueOnce(plan());
+        created(SubscriptionStatus.PENDING_PAYMENT);
+        billing.findOpenInvoice.mockResolvedValueOnce({
+          id: 'inv-new',
+          kind: SubscriptionInvoiceKind.INITIAL,
+          amount: '100.00',
+          currency: 'SAR',
+        });
+
+        const res = await service.create(TENANT, { planId: 'p1' } as any);
+
+        expect(subscriptions.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: SubscriptionStatus.PENDING_PAYMENT,
+          }),
+        );
+        expect(billing.generateInvoice).toHaveBeenCalledWith(
+          TENANT,
+          'sub1',
+          100,
+          expect.any(Date),
+          expect.any(Date),
+          'SAR',
+          InvoiceStatus.OPEN,
+          {
+            kind: SubscriptionInvoiceKind.INITIAL,
+            targetPlanId: 'p1',
+            provider: 'tap',
+          },
+        );
+        expect(res.isUsable).toBe(false);
+        expect(res.accessState).toBe('pending-payment');
+        expect(res.effectiveStatus).toBe(SubscriptionStatus.PENDING_PAYMENT);
+        expect(res.openInvoice).toEqual(
+          expect.objectContaining({ id: 'inv-new', kind: 'INITIAL' }),
+        );
+        // Nothing is activated until the invoice is paid (the settle path emits it).
+        expect(emitted(SubscriptionActivatedEvent)).toHaveLength(0);
+        expect(access.invalidate).toHaveBeenCalledWith(TENANT);
+      });
+
+      it('a trial is still a trial: no invoice, no payment, TRIAL', async () => {
+        plans.findOne.mockResolvedValueOnce(plan());
+        created(SubscriptionStatus.TRIAL);
+        await service.create(TENANT, { planId: 'p1', startTrial: true } as any);
+        expect(subscriptions.create).toHaveBeenCalledWith(
+          expect.objectContaining({ status: SubscriptionStatus.TRIAL }),
+        );
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+        expect(emitted(SubscriptionTrialStartedEvent)).toHaveLength(1);
+      });
+
+      it('a FREE plan needs no payment: ACTIVE at once, as before', async () => {
+        plans.findOne.mockResolvedValueOnce(plan({ price: 0 }));
+        created(SubscriptionStatus.ACTIVE);
+        await service.create(TENANT, { planId: 'p1' } as any);
+        expect(subscriptions.create).toHaveBeenCalledWith(
+          expect.objectContaining({ status: SubscriptionStatus.ACTIVE }),
+        );
+        expect(emitted(SubscriptionActivatedEvent)).toHaveLength(1);
+        expect(billing.generateInvoice).toHaveBeenCalledWith(
+          TENANT,
+          'sub1',
+          0,
+          expect.any(Date),
+          expect.any(Date),
+          'SAR',
+          InvoiceStatus.OPEN,
+          {},
+        );
+      });
     });
 
     it('does not invoice a trial subscription', async () => {
       plans.findOne.mockResolvedValueOnce(plan());
-      subscriptions.findOne.mockResolvedValueOnce(null);
-      subscriptions.save.mockResolvedValueOnce({ id: 'sub1' });
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
-        status: SubscriptionStatus.TRIAL,
-        ends_at: future,
-        plan: plan(),
-      });
+      created(SubscriptionStatus.TRIAL);
       await service.create(TENANT, { planId: 'p1', startTrial: true } as any);
       expect(billing.generateInvoice).not.toHaveBeenCalled();
     });
@@ -128,7 +263,7 @@ describe('SubscriptionService', () => {
       });
     });
 
-    it('rejects when a subscription already exists', async () => {
+    it('rejects when a subscription already exists (a PENDING_PAYMENT one counts)', async () => {
       plans.findOne.mockResolvedValueOnce(plan());
       subscriptions.findOne.mockResolvedValueOnce({ id: 'existing' });
       await expect(
@@ -137,85 +272,524 @@ describe('SubscriptionService', () => {
     });
   });
 
-  describe('changePlan', () => {
-    it('switches plans and invoices the new price', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
-        plan: { id: 'p1' },
-        starts_at: past,
-        ends_at: future,
-      }); // getActiveSubscription
+  // ─────────────────────────────── changePlan ───────────────────────────── //
+
+  describe('changePlan — no provider can check out (legacy)', () => {
+    it('switches at once, supersedes the open invoice, and invoices the new price for NOW (the old same-period invoice collided with the unique index)', async () => {
+      const sub = liveSub({ plan: plan({ id: 'p1' }) });
       plans.findOne.mockResolvedValueOnce(plan({ id: 'p2', price: 200 }));
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
-        status: SubscriptionStatus.ACTIVE,
-        ends_at: future,
-        plan: plan({ id: 'p2' }),
-      });
-      await service.changePlan(TENANT, { planId: 'p2' } as any);
-      expect(billing.generateInvoice).toHaveBeenCalledWith(
-        TENANT,
+
+      const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+      expect(sub.plan).toEqual({ id: 'p2' });
+      expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(billing.voidOpenInvoices).toHaveBeenCalledWith(
         'sub1',
-        200,
-        past,
-        future,
-        14,
+        expect.stringContaining('plan change'),
       );
+      const call = billing.generateInvoice.mock.calls[0];
+      expect(call.slice(0, 3)).toEqual([TENANT, 'sub1', 200]);
+      // period_start is the moment of change, never the subscription's existing period start
+      expect((call[3] as Date).getTime()).toBeGreaterThan(past.getTime());
+      expect(call[4]).toBe(future);
+      expect(res.mode).toBe('switched');
+      expect(emitted(SubscriptionPlanChangedEvent)).toHaveLength(1);
+      expect(access.invalidate).toHaveBeenCalledWith(TENANT);
+    });
+
+    it('an already-lapsed period gets a fresh invoice period rather than an end before its start', async () => {
+      liveSub({ plan: plan({ id: 'p1' }), ends_at: past });
+      plans.findOne.mockResolvedValueOnce(plan({ id: 'p2', price: 200 }));
+      await service.changePlan(TENANT, { planId: 'p2' } as any);
+      const [, , , start, end] = billing.generateInvoice.mock
+        .calls[0] as Date[];
+      expect(end.getTime()).toBeGreaterThan(start.getTime());
     });
 
     it('rejects changing to the same plan', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
-        plan: { id: 'p1' },
-      });
+      liveSub({ plan: plan({ id: 'p1' }) });
       await expect(
         service.changePlan(TENANT, { planId: 'p1' } as any),
       ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
     });
   });
 
-  describe('cancel / reactivate', () => {
-    it('cancels immediately when not at period end', async () => {
-      subscriptions.findOne
-        .mockResolvedValueOnce({
-          id: 'sub1',
-          plan: { id: 'p1' },
-          status: SubscriptionStatus.ACTIVE,
-        })
-        .mockResolvedValueOnce({
-          id: 'sub1',
-          status: SubscriptionStatus.CANCELLED,
-          ends_at: future,
-          plan: plan(),
-        });
-      await service.cancel(TENANT, { cancelAtPeriodEnd: false } as any);
-      expect(subscriptions.save).toHaveBeenCalledWith(
-        expect.objectContaining({ status: SubscriptionStatus.CANCELLED }),
+  describe('changePlan — D4 (a provider that can check out is bound)', () => {
+    beforeEach(() => {
+      billing.supportsCheckout = true;
+    });
+
+    const target = (over = {}) =>
+      plans.findOne.mockResolvedValueOnce(
+        plan({ id: 'p2', price: 200, ...over }),
+      );
+
+    it('UPGRADE: issues an UPGRADE invoice for the full new price and changes NOTHING until it is paid', async () => {
+      const sub = liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      target();
+      billing.generateInvoice.mockResolvedValueOnce({ id: 'inv-up' });
+
+      const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+      expect(res.mode).toBe('checkout');
+      expect(res.invoiceId).toBe('inv-up');
+      expect(billing.generateInvoice).toHaveBeenCalledWith(
+        TENANT,
+        'sub1',
+        200,
+        expect.any(Date),
+        expect.any(Date),
+        'SAR',
+        InvoiceStatus.OPEN,
+        {
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          targetPlanId: 'p2',
+          provider: 'tap',
+        },
+      );
+      expect(sub.plan.id).toBe('p1'); // nothing switches before payment
+      expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(subscriptions.save).not.toHaveBeenCalled();
+      expect(emitted(SubscriptionPlanChangedEvent)).toHaveLength(0);
+    });
+
+    it("the upgrade invoice starts NOW — it can never collide with the existing period's invoice", async () => {
+      liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      target();
+      await service.changePlan(TENANT, { planId: 'p2' } as any);
+      const start = billing.generateInvoice.mock.calls[0][3] as Date;
+      expect(Math.abs(start.getTime() - Date.now())).toBeLessThan(5_000);
+    });
+
+    it('TRIAL -> paid is an upgrade even when the price is not higher', async () => {
+      liveSub({
+        status: SubscriptionStatus.TRIAL,
+        plan: plan({ id: 'p1', price: 500 }),
+      });
+      target({ price: 200 });
+      const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+      expect(res.mode).toBe('checkout');
+      expect(billing.generateInvoice).toHaveBeenCalledWith(
+        TENANT,
+        'sub1',
+        200,
+        expect.any(Date),
+        expect.any(Date),
+        'SAR',
+        InvoiceStatus.OPEN,
+        expect.objectContaining({ kind: SubscriptionInvoiceKind.UPGRADE }),
       );
     });
 
-    it('reactivate rejects an already-active subscription', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
-        status: SubscriptionStatus.ACTIVE,
-        plan: plan(),
+    it('clicking the same upgrade again hands back the open invoice instead of issuing a second', async () => {
+      liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      target();
+      billing.findOpenInvoice.mockResolvedValue({
+        id: 'inv-open',
+        kind: SubscriptionInvoiceKind.UPGRADE,
+        target_plan_id: 'p2',
       });
+
+      const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+      expect(res).toMatchObject({ mode: 'checkout', invoiceId: 'inv-open' });
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+    });
+
+    it('re-quotes an idle upgrade for a DIFFERENT plan (voids the old quote, issues the new one)', async () => {
+      liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      target();
+      billing.findOpenInvoice.mockResolvedValue({
+        id: 'inv-old',
+        kind: SubscriptionInvoiceKind.UPGRADE,
+        target_plan_id: 'p9',
+      });
+
+      const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+      expect(billing.voidOpenInvoices).toHaveBeenCalledWith(
+        'sub1',
+        expect.stringContaining('quote'),
+      );
+      expect(res.mode).toBe('checkout');
+      expect(billing.generateInvoice).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses to re-quote an upgrade a clinic is paying right now — a live charge must not point at a voided invoice', async () => {
+      liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      target();
+      billing.findOpenInvoice.mockResolvedValue({
+        id: 'inv-old',
+        kind: SubscriptionInvoiceKind.UPGRADE,
+        target_plan_id: 'p9',
+      });
+      billing.isPaymentInFlight.mockReturnValue(true);
+
+      await expect(
+        service.changePlan(TENANT, { planId: 'p2' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a renewal invoice', SubscriptionInvoiceKind.RENEWAL],
+      ['a legacy invoice', null],
+      ['a reactivation invoice', SubscriptionInvoiceKind.REACTIVATION],
+    ])(
+      'refuses to upgrade while %s is open — settle it first',
+      async (_l, kind) => {
+        liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+        target();
+        billing.findOpenInvoice.mockResolvedValue({ id: 'inv-x', kind });
+        await expect(
+          service.changePlan(TENANT, { planId: 'p2' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+      },
+    );
+
+    it('DOWNGRADE: scheduled for the next renewal — no invoice, the plan is unchanged now', async () => {
+      const sub = liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      plans.findOne.mockResolvedValueOnce(plan({ id: 'p0', price: 40 }));
+
+      const res = await service.changePlan(TENANT, { planId: 'p0' } as any);
+
+      expect(res.mode).toBe('scheduled');
+      expect(res.effectiveAt).toBe(sub.ends_at);
+      expect(sub.pending_plan).toEqual({ id: 'p0' });
+      expect(sub.plan.id).toBe('p1');
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(subscriptions.save).toHaveBeenCalledWith(sub);
+    });
+
+    it('a same-price plan is also scheduled, not charged', async () => {
+      liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      plans.findOne.mockResolvedValueOnce(plan({ id: 'p5', price: 100 }));
+      const res = await service.changePlan(TENANT, { planId: 'p5' } as any);
+      expect(res.mode).toBe('scheduled');
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+    });
+
+    it('re-selecting the CURRENT plan withdraws a scheduled downgrade (instead of the old 409)', async () => {
+      const sub = liveSub({
+        plan: plan({ id: 'p1' }),
+        pending_plan: plan({ id: 'p0', price: 40 }),
+      });
+      const res = await service.changePlan(TENANT, { planId: 'p1' } as any);
+      expect(res.mode).toBe('cleared');
+      expect(sub.pending_plan).toBeNull();
+      expect(subscriptions.save).toHaveBeenCalledWith(sub);
+    });
+
+    it('re-selecting the current plan with nothing scheduled is still a 409', async () => {
+      liveSub({ plan: plan({ id: 'p1' }) });
+      await expect(
+        service.changePlan(TENANT, { planId: 'p1' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+    });
+
+    it('a SUSPENDED subscription cannot change plan (nothing could apply the payment)', async () => {
+      liveSub({ status: SubscriptionStatus.SUSPENDED });
+      target();
+      await expect(
+        service.changePlan(TENANT, { planId: 'p2' } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+    });
+
+    it('a FREE target plan switches at once — nothing to charge', async () => {
+      const sub = liveSub({ plan: plan({ id: 'p1', price: 100 }) });
+      plans.findOne.mockResolvedValueOnce(plan({ id: 'pf', price: 0 }));
+
+      const res = await service.changePlan(TENANT, { planId: 'pf' } as any);
+
+      expect(res.mode).toBe('switched');
+      expect(sub.plan).toEqual({ id: 'pf' });
+      expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(billing.voidOpenInvoices).toHaveBeenCalled();
+      expect(emitted(SubscriptionPlanChangedEvent)).toHaveLength(1);
+    });
+
+    describe('PENDING_PAYMENT — another plan simply re-quotes the unpaid first invoice', () => {
+      it('voids the unpaid quote, switches the plan, and issues a new INITIAL invoice', async () => {
+        const sub = liveSub({
+          status: SubscriptionStatus.PENDING_PAYMENT,
+          plan: plan({ id: 'p1', price: 100 }),
+        });
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-old',
+          kind: SubscriptionInvoiceKind.INITIAL,
+        });
+        billing.generateInvoice.mockResolvedValueOnce({ id: 'inv-q2' });
+
+        const res = await service.changePlan(TENANT, { planId: 'p2' } as any);
+
+        expect(billing.voidOpenInvoices).toHaveBeenCalled();
+        expect(sub.plan).toEqual({ id: 'p2' });
+        expect(sub.status).toBe(SubscriptionStatus.PENDING_PAYMENT); // still unpaid
+        expect(res).toMatchObject({ mode: 'checkout', invoiceId: 'inv-q2' });
+        expect(billing.generateInvoice).toHaveBeenCalledWith(
+          TENANT,
+          'sub1',
+          200,
+          expect.any(Date),
+          expect.any(Date),
+          'SAR',
+          InvoiceStatus.OPEN,
+          expect.objectContaining({
+            kind: SubscriptionInvoiceKind.INITIAL,
+            targetPlanId: 'p2',
+          }),
+        );
+      });
+
+      it('keeps a REACTIVATION quote a reactivation', async () => {
+        liveSub({ status: SubscriptionStatus.PENDING_PAYMENT });
+        target();
+        billing.findOpenInvoice.mockResolvedValue({
+          id: 'inv-old',
+          kind: SubscriptionInvoiceKind.REACTIVATION,
+        });
+        await service.changePlan(TENANT, { planId: 'p2' } as any);
+        expect(billing.generateInvoice).toHaveBeenCalledWith(
+          TENANT,
+          'sub1',
+          200,
+          expect.any(Date),
+          expect.any(Date),
+          'SAR',
+          InvoiceStatus.OPEN,
+          expect.objectContaining({
+            kind: SubscriptionInvoiceKind.REACTIVATION,
+          }),
+        );
+      });
+
+      it('refuses while the unpaid invoice has a checkout open', async () => {
+        liveSub({ status: SubscriptionStatus.PENDING_PAYMENT });
+        target();
+        billing.findOpenInvoice.mockResolvedValue({ id: 'inv-old' });
+        billing.isPaymentInFlight.mockReturnValue(true);
+        await expect(
+          service.changePlan(TENANT, { planId: 'p2' } as any),
+        ).rejects.toMatchObject({ code: ErrorCode.CONFLICT });
+        expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ───────────────────────────── cancel / reactivate ────────────────────── //
+
+  describe('cancel', () => {
+    it('cancels immediately when not at period end, and drops any scheduled downgrade', async () => {
+      const sub = liveSub({ pending_plan: plan({ id: 'p0' }) });
+      await service.cancel(TENANT, { cancelAtPeriodEnd: false } as any);
+      expect(sub.status).toBe(SubscriptionStatus.CANCELLED);
+      expect(sub.auto_renew).toBe(false);
+      expect(sub.pending_plan).toBeNull();
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+      expect(emitted(SubscriptionCancelledEvent)[0][1]).toMatchObject({
+        cancelAtPeriodEnd: false,
+      });
+    });
+
+    it('cancel-at-period-end keeps the status and access until ends_at', async () => {
+      const sub = liveSub();
+      await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
+      expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(sub.auto_renew).toBe(false);
+    });
+
+    it('a PENDING_PAYMENT subscription is cancelled at once even at period end — and its unpaid invoice is voided', async () => {
+      const sub = liveSub({ status: SubscriptionStatus.PENDING_PAYMENT });
+      await service.cancel(TENANT, { cancelAtPeriodEnd: true } as any);
+      expect(sub.status).toBe(SubscriptionStatus.CANCELLED);
+      expect(billing.voidOpenInvoices).toHaveBeenCalledWith(
+        'sub1',
+        expect.stringContaining('before payment'),
+      );
+      expect(access.invalidate).toHaveBeenCalledWith(TENANT);
+      expect(emitted(SubscriptionCancelledEvent)[0][1]).toMatchObject({
+        cancelAtPeriodEnd: false,
+      });
+    });
+  });
+
+  describe('reactivate — no provider can check out (legacy)', () => {
+    it('rejects an already-active subscription', async () => {
+      liveSub({ status: SubscriptionStatus.ACTIVE });
       await expect(service.reactivate(TENANT)).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
       });
     });
 
-    it('reactivate renews an expired subscription window', async () => {
-      subscriptions.findOne.mockResolvedValueOnce({
-        id: 'sub1',
+    it('renews an expired subscription window straight back to ACTIVE', async () => {
+      const sub = liveSub({
         status: SubscriptionStatus.PAST_DUE,
         ends_at: past,
-        plan: plan(),
       });
       const res = await service.reactivate(TENANT);
       expect(res.subscription.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(sub.ends_at.getTime()).toBeGreaterThan(Date.now());
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(emitted(SubscriptionReactivatedEvent)).toHaveLength(1);
+    });
+
+    it('a FREE plan reactivates immediately even where a provider could check out', async () => {
+      billing.supportsCheckout = true;
+      liveSub({
+        status: SubscriptionStatus.CANCELLED,
+        ends_at: past,
+        plan: plan({ price: 0 }),
+      });
+      const res = await service.reactivate(TENANT);
+      expect(res.subscription.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
     });
   });
+
+  describe('reactivate — D2 (a provider that can check out is bound)', () => {
+    beforeEach(() => {
+      billing.supportsCheckout = true;
+    });
+
+    it('PENDING_PAYMENT: nothing new is issued — the same open invoice is handed back', async () => {
+      liveSub({ status: SubscriptionStatus.PENDING_PAYMENT });
+      billing.findOpenInvoice.mockResolvedValue({
+        id: 'inv-pending',
+        kind: 'INITIAL',
+        amount: '100.00',
+        currency: 'SAR',
+      });
+      const res = await service.reactivate(TENANT);
+      expect(res.openInvoice).toMatchObject({ id: 'inv-pending' });
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(subscriptions.save).not.toHaveBeenCalled();
+    });
+
+    it('CANCELLED but the paid period is still running: resumes at once, no charge', async () => {
+      const sub = liveSub({
+        status: SubscriptionStatus.CANCELLED,
+        ends_at: future,
+        auto_renew: false,
+      });
+      const res = await service.reactivate(TENANT);
+      expect(sub.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(sub.auto_renew).toBe(true);
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(res.isUsable).toBe(true);
+      expect(emitted(SubscriptionReactivatedEvent)).toHaveLength(1);
+    });
+
+    it('CANCELLED and lapsed: a REACTIVATION invoice is issued and the subscription waits as PENDING_PAYMENT (not usable)', async () => {
+      const sub = liveSub({
+        status: SubscriptionStatus.CANCELLED,
+        ends_at: past,
+        auto_renew: false,
+      });
+      const res = await service.reactivate(TENANT);
+
+      expect(billing.generateInvoice).toHaveBeenCalledWith(
+        TENANT,
+        'sub1',
+        100,
+        expect.any(Date),
+        expect.any(Date),
+        'SAR',
+        InvoiceStatus.OPEN,
+        {
+          kind: SubscriptionInvoiceKind.REACTIVATION,
+          targetPlanId: 'p1',
+          provider: 'tap',
+        },
+      );
+      expect(sub.status).toBe(SubscriptionStatus.PENDING_PAYMENT);
+      expect(sub.auto_renew).toBe(true);
+      expect(sub.ends_at.getTime()).toBeGreaterThan(Date.now());
+      expect(res.isUsable).toBe(false);
+      // Not reactivated yet — the settle path announces it when the invoice is paid.
+      expect(emitted(SubscriptionReactivatedEvent)).toHaveLength(0);
+    });
+
+    it('PAST_DUE with its renewal invoice already open: pay THAT one — no second invoice, status untouched', async () => {
+      const sub = liveSub({
+        status: SubscriptionStatus.PAST_DUE,
+        ends_at: past,
+        auto_renew: false,
+      });
+      billing.findOpenInvoice.mockResolvedValue({
+        id: 'inv-renewal',
+        kind: SubscriptionInvoiceKind.RENEWAL,
+        amount: '100.00',
+        currency: 'SAR',
+      });
+      const res = await service.reactivate(TENANT);
+      expect(billing.generateInvoice).not.toHaveBeenCalled();
+      expect(sub.status).toBe(SubscriptionStatus.PAST_DUE); // grace rules still apply
+      expect(sub.auto_renew).toBe(true); // the retry job resumes
+      expect(res.openInvoice).toMatchObject({ id: 'inv-renewal' });
+    });
+
+    it('GRACE_EXPIRED with nothing open: a REACTIVATION invoice is issued and the status is NOT downgraded to PENDING_PAYMENT', async () => {
+      const sub = liveSub({
+        status: SubscriptionStatus.GRACE_EXPIRED,
+        ends_at: past,
+      });
+      await service.reactivate(TENANT);
+      expect(billing.generateInvoice).toHaveBeenCalledWith(
+        TENANT,
+        'sub1',
+        100,
+        expect.any(Date),
+        expect.any(Date),
+        'SAR',
+        InvoiceStatus.OPEN,
+        expect.objectContaining({ kind: SubscriptionInvoiceKind.REACTIVATION }),
+      );
+      expect(sub.status).toBe(SubscriptionStatus.GRACE_EXPIRED);
+    });
+
+    it('a lapsed CANCELLED one with an idle stale invoice voids it before issuing its own', async () => {
+      liveSub({ status: SubscriptionStatus.CANCELLED, ends_at: past });
+      billing.findOpenInvoice.mockResolvedValue({
+        id: 'inv-stale',
+        kind: null,
+      });
+      await service.reactivate(TENANT);
+      expect(billing.voidOpenInvoices).toHaveBeenCalledWith(
+        'sub1',
+        expect.stringContaining('reactivation'),
+      );
+      expect(billing.generateInvoice).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses while an invoice of that subscription is being paid right now', async () => {
+      liveSub({ status: SubscriptionStatus.CANCELLED, ends_at: past });
+      billing.findOpenInvoice.mockResolvedValue({ id: 'inv-live', kind: null });
+      billing.isPaymentInFlight.mockReturnValue(true);
+      await expect(service.reactivate(TENANT)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+      expect(billing.voidOpenInvoices).not.toHaveBeenCalled();
+    });
+
+    it.each([SubscriptionStatus.SUSPENDED, SubscriptionStatus.TRIAL])(
+      'a %s subscription is not reactivated by the clinic',
+      async (status) => {
+        liveSub({ status });
+        await expect(service.reactivate(TENANT)).rejects.toMatchObject({
+          code: ErrorCode.CONFLICT,
+        });
+        expect(billing.generateInvoice).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  // ──────────────────────── effective status / access ───────────────────── //
 
   describe('getEffectiveStatus / getCurrent', () => {
     // FND-031: the OLD 'EXPIRED' derivation made an active-past-end-date
@@ -261,6 +835,15 @@ describe('SubscriptionService', () => {
       ).toBe(SubscriptionStatus.PAST_DUE);
     });
 
+    it('PENDING_PAYMENT passes through unchanged — its provisional dates are NEVER live-derived into PAST_DUE', () => {
+      expect(
+        service.getEffectiveStatus({
+          status: SubscriptionStatus.PENDING_PAYMENT,
+          ends_at: past,
+        } as any),
+      ).toBe(SubscriptionStatus.PENDING_PAYMENT);
+    });
+
     /** Wires `subscriptions.createQueryBuilder()` to return `getOne()`
      *  resolving to `row` for exactly the next call — getCurrent's real
      *  mechanism (T046), replacing the old `findOne` mock. */
@@ -282,13 +865,61 @@ describe('SubscriptionService', () => {
     // for a foreign tenant, soft-delete exclusion left to TypeORM rather
     // than hand-written, statement count).
     it('getCurrent resolves the subscription identically to before (a matching row)', async () => {
-      mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      mockCurrentOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+      });
       const result = await service.getCurrent(TENANT);
       expect(result.subscription.id).toBe('sub-1');
     });
 
+    it('getCurrent also loads the scheduled downgrade, and reports it with the open invoice', async () => {
+      const qb = mockCurrentOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+        pending_plan: { id: 'p0' },
+      });
+      billing.findOpenInvoice.mockResolvedValueOnce({
+        id: 'inv-9',
+        kind: 'RENEWAL',
+        amount: '40.00',
+        currency: 'SAR',
+      });
+
+      const result = await service.getCurrent(TENANT);
+
+      expect(qb.leftJoinAndSelect).toHaveBeenCalledWith(
+        's.pending_plan',
+        'pending_plan',
+      );
+      expect(result.pendingPlan).toEqual({ id: 'p0' });
+      expect(result.openInvoice).toEqual({
+        id: 'inv-9',
+        kind: 'RENEWAL',
+        amount: '40.00',
+        currency: 'SAR',
+      });
+    });
+
+    it('getCurrent reports null (not undefined) when nothing is scheduled or open', async () => {
+      mockCurrentOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+      });
+      const result = await service.getCurrent(TENANT);
+      expect(result.pendingPlan).toBeNull();
+      expect(result.openInvoice).toBeNull();
+    });
+
     it('getCurrent scopes strictly by the FK column resolved from metadata — a foreign tenant id never widens the filter', async () => {
-      const qb = mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      const qb = mockCurrentOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+      });
       await service.getCurrent('other-tenant');
       expect(qb.where).toHaveBeenCalledWith('s."tenantId" = :tenantId', {
         tenantId: 'other-tenant',
@@ -296,14 +927,24 @@ describe('SubscriptionService', () => {
     });
 
     it('getCurrent never hand-writes a deleted_at predicate — soft-delete exclusion is TypeORM auto-injection, not a copy that could drift', async () => {
-      const qb = mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+      const qb = mockCurrentOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+      });
       await service.getCurrent(TENANT);
       const allCalls = [...qb.where.mock.calls, ...qb.andWhere.mock.calls];
-      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(false);
+      expect(allCalls.some(([sql]) => /deleted_at/i.test(String(sql)))).toBe(
+        false,
+      );
     });
 
-    it('getCurrent issues exactly one query (createQueryBuilder, not findOne) with limit(1), never take/skip', async () => {
-      const qb = mockCurrentOnce({ id: 'sub-1', status: SubscriptionStatus.ACTIVE, ends_at: future });
+    it('getCurrent reads the subscription with exactly one query (createQueryBuilder, not findOne) with limit(1), never take/skip', async () => {
+      const qb = mockCurrentOnce({
+        id: 'sub-1',
+        status: SubscriptionStatus.ACTIVE,
+        ends_at: future,
+      });
       await service.getCurrent(TENANT);
 
       expect(subscriptions.createQueryBuilder).toHaveBeenCalledTimes(1);
@@ -321,7 +962,8 @@ describe('SubscriptionService', () => {
     // asserted through AccessControlService with a FeatureKey in hand.
 
     // FR-B007d: read access (isUsable) is preserved in EVERY non-terminal
-    // state, including grace-expired — only CANCELLED/SUSPENDED are not usable.
+    // state, including grace-expired — only CANCELLED/SUSPENDED, and a
+    // subscription not paid for yet (PENDING_PAYMENT), are not usable.
     it.each([
       [SubscriptionStatus.ACTIVE, true],
       [SubscriptionStatus.TRIAL, true],
@@ -329,6 +971,7 @@ describe('SubscriptionService', () => {
       [SubscriptionStatus.GRACE_EXPIRED, true],
       [SubscriptionStatus.CANCELLED, false],
       [SubscriptionStatus.SUSPENDED, false],
+      [SubscriptionStatus.PENDING_PAYMENT, false],
     ])(
       'isUsable(%s) === %s (read access preserved through grace)',
       (status, expected) => {
@@ -337,6 +980,16 @@ describe('SubscriptionService', () => {
         );
       },
     );
+
+    it.each([
+      [SubscriptionStatus.PENDING_PAYMENT, 'pending-payment'],
+      [SubscriptionStatus.CANCELLED, 'terminal'],
+      [SubscriptionStatus.GRACE_EXPIRED, 'grace-expired'],
+      [SubscriptionStatus.ACTIVE, 'active'],
+    ])('the access state of %s is "%s"', async (status, accessState) => {
+      mockCurrentOnce({ id: 'sub-1', status, ends_at: future });
+      expect((await service.getCurrent(TENANT)).accessState).toBe(accessState);
+    });
   });
 
   describe('assertBillableActionAllowed (FND-031/T082)', () => {

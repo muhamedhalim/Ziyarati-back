@@ -23,15 +23,25 @@ import { PaymentSucceededEvent } from '../../events/payment.events';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
 import { PaymentFinancialsService } from './payment-financials.service';
+import { PaymentsConfig } from './payments.config';
+import { buildPayer } from './providers/payer.util';
+import type { GatewayPayer } from './providers/payment-gateway.provider.interface';
 import { MerchantAccountService } from './merchant-account.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { QueryPaymentsDto } from './dto/query-payments.dto';
 import {
+  CLINIC_REVENUE_PURPOSES,
   DEFAULT_PAYMENT_CURRENCY,
+  PAYMENT_PURPOSE,
+  SETTLEMENT_MODE,
   TRANSACTION_TYPE,
+  isPlatformRevenuePurpose,
   round2,
+  type PaymentPurpose,
+  type SettlementMode,
 } from './payments.constants';
+import { PAYMENT_OUTCOME, enqueuePaymentOutcome } from './payment-outcome.outbox';
 
 /**
  * Options for {@link PaymentService.create} that are NEVER reachable from an
@@ -43,15 +53,23 @@ import {
  */
 export interface CreatePaymentOptions {
   /**
-   * True when the PAYER is the platform's own tenant paying the platform
-   * directly (a resource add-on purchase, or the legacy billing-upgrade
-   * flow) — never a clinic's patient/customer. Skips the merchant-onboarding
-   * gate (the clinic's OWN onboarding status is irrelevant when it is the
-   * payer, not the recipient) and forces the marketplace split to `null`, so
-   * the whole charge settles to the platform account with no split leg.
-   * Defaults to `false` — every existing caller is unaffected.
+   * What the payment is FOR. It decides whose money it is, and therefore the
+   * whole routing of the charge:
+   *
+   *  - BOOKING / MANUAL (the default, by whether an appointment is attached) —
+   *    the clinic's money: the merchant-onboarding gate applies and the
+   *    marketplace split may apply.
+   *  - ADDON / BILLING_UPGRADE — the clinic is the PAYER and the platform is
+   *    the recipient (a resource add-on purchase, or the billing-upgrade
+   *    flow). The clinic's OWN onboarding status is irrelevant, the split is
+   *    forced to `null` so the whole charge settles to the platform account,
+   *    and the row is recorded with `settlement_mode = NONE` so no clinic
+   *    payout can ever claim it.
+   *
+   * This REPLACED the earlier `platformRevenue` boolean: two inputs that had to
+   * agree is how a platform charge ends up classified as clinic revenue.
    */
-  platformRevenue?: boolean;
+  purpose?: PaymentPurpose;
 }
 
 /**
@@ -78,6 +96,7 @@ export class PaymentService {
     private readonly financials: PaymentFinancialsService,
     private readonly merchants: MerchantAccountService,
     private readonly emitter: EventEmitter2,
+    private readonly config: PaymentsConfig,
   ) {}
 
   async create(
@@ -109,11 +128,20 @@ export class PaymentService {
       }
     }
 
+    // What this payment is for. An attached appointment is a booking payment;
+    // anything else the caller did not classify is a manual (staff) payment —
+    // the clinic's money either way. Only a service-level caller can name a
+    // platform purpose (it is not on the DTO).
+    const purpose: PaymentPurpose =
+      opts.purpose ??
+      (dto.appointmentId ? PAYMENT_PURPOSE.BOOKING : PAYMENT_PURPOSE.MANUAL);
+    const platformRevenue = isPlatformRevenuePurpose(purpose);
+
     // Marketplace gate: a clinic whose merchant account is not APPROVED cannot
     // collect live money (no-op in the dev/test Noop flow). Skipped for
     // platform-revenue charges — the clinic is the PAYER here, not the
     // recipient, so its own merchant-onboarding status is irrelevant.
-    if (!opts.platformRevenue) {
+    if (!platformRevenue) {
       await this.merchants.assertChargeable(tenantId);
     }
 
@@ -138,15 +166,29 @@ export class PaymentService {
       authoritative?.currency ?? dto.currency ?? DEFAULT_PAYMENT_CURRENCY;
     const customerId = dto.customerId ?? authoritative?.customerId;
 
-    const provider = this.gateways.resolve(dto.gateway);
+    // The SERVER chooses the gateway (PAYMENT_PROVIDER). A client-supplied
+    // `dto.gateway` is ignored: honoring it would let a caller steer a charge
+    // onto a provider the platform did not intend.
+    const provider = this.gateways.resolve();
 
     // Marketplace split context (null unless the feature is contractually
     // enabled AND the clinic is approved with a gateway recipient id).
     // Forced null for platform-revenue charges — never split money back to
     // the payer when the payer IS the platform's own beneficiary.
-    const split = opts.platformRevenue
+    const split = platformRevenue
       ? null
       : await this.merchants.splitContext(tenantId);
+
+    // Only gateways that cannot charge anonymously ask for payer identity, so
+    // the others pay no extra read.
+    const payer = provider.requiresPayerDetails
+      ? await this.resolvePayer(tenantId, customerId, platformRevenue)
+      : undefined;
+
+    const settlementMode = this.settlementModeFor(
+      platformRevenue,
+      provider.settlesDirectlyToPayee === true,
+    );
 
     let payment: Payment;
     try {
@@ -162,6 +204,8 @@ export class PaymentService {
           currency,
           status: PaymentStatus.PENDING,
           gateway: provider.name,
+          purpose,
+          settlement_mode: settlementMode,
           idempotency_key: idempotencyKey,
           sub_merchant_id: split?.recipientId,
         }),
@@ -207,6 +251,7 @@ export class PaymentService {
     }
 
     let redirectUrl: string | undefined;
+    let createdGatewayId: string | undefined;
     try {
       const result = await provider.createPayment({
         tenantId,
@@ -214,7 +259,12 @@ export class PaymentService {
         amount: Number(payment.amount),
         currency,
         description: dto.description,
-        callbackUrl: dto.callbackUrl,
+        // Server-built — a client-supplied `dto.callbackUrl` is an open redirect.
+        returnUrl: this.config.paymentReturnUrl(platformRevenue),
+        // Booking funds belong to the clinic; add-ons/subscriptions to the platform.
+        payee: platformRevenue ? 'platform' : 'clinic',
+        customer: payer,
+        reference: dto.appointmentId ? { order: dto.appointmentId } : undefined,
         metadata: { tenantId, paymentId: payment.id },
         idempotencyKey: dto.idempotencyKey,
         // Single split routing the clinic's net (gross − platform fee) to its
@@ -237,15 +287,22 @@ export class PaymentService {
 
       if (result.gatewayPaymentId) {
         payment.gateway_payment_id = result.gatewayPaymentId;
+        createdGatewayId = result.gatewayPaymentId;
       }
       // Some gateways capture immediately; reflect that without a second call.
       if (result.status === 'paid') {
         payment.status = PaymentStatus.PAID;
         payment.paid_at = new Date();
-        // Freeze the fee breakdown (gateway fee from raw if reported).
-        this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
+        // Freeze the fee breakdown (adapter-parsed when it reports them).
+        this.financials.applyOnPaid(
+          payment,
+          result.fees ?? this.financials.extractFromRaw(result.raw),
+        );
       } else if (result.status === 'failed') {
         payment.status = PaymentStatus.FAILED;
+        // Adapters supply a short, user-safe reason (never raw provider text), so
+        // staff can see why an online payment could not start.
+        payment.failure_reason = result.failureReason;
       }
 
       // Persist the hosted-page URL so a refresh/retry can REUSE the active
@@ -270,6 +327,23 @@ export class PaymentService {
           },
           manager,
         );
+        // REL-005: an outcome reached at create time (a gateway that captures
+        // synchronously, or rejects the request outright) has consequences too —
+        // an add-on purchase or billing upgrade is waiting on this payment. The
+        // intent commits with the state change, never in a later best-effort emit.
+        if (payment.status === PaymentStatus.PAID) {
+          await enqueuePaymentOutcome(manager, {
+            tenantId,
+            paymentId: payment.id,
+            outcome: PAYMENT_OUTCOME.PAID,
+          });
+        } else if (payment.status === PaymentStatus.FAILED) {
+          await enqueuePaymentOutcome(manager, {
+            tenantId,
+            paymentId: payment.id,
+            outcome: PAYMENT_OUTCOME.FAILED,
+          });
+        }
       });
     } catch (err) {
       // Leave the payment PENDING; confirm() or a webhook can still resolve it.
@@ -277,9 +351,99 @@ export class PaymentService {
         `Gateway createPayment failed for ${payment.id}`,
         err as Error,
       );
+      // REL-002: the gateway may already hold a live charge we failed to record.
+      // Never hand the payer a URL for a payment we are not tracking, and report
+      // what the DATABASE says (PENDING), not the in-memory outcome that never
+      // committed. The gateway echoes our payment id, so a webhook can still
+      // find it; persist its id too when we got that far so the reconciliation
+      // sweep (which only scans rows that have one) can see it.
+      redirectUrl = undefined;
+      payment.status = PaymentStatus.PENDING;
+      payment.paid_at = undefined;
+      await this.markCreateUncertain(payment, createdGatewayId);
     }
 
     return { payment, status: payment.status, redirectUrl };
+  }
+
+  /**
+   * Who moves this payment's money to the clinic.
+   *
+   *  - platform revenue → NONE: the money IS the platform's, nothing is owed on.
+   *  - the gateway settles straight to the clinic's merchant (Tap Platform) →
+   *    PROVIDER: ZiyaraTech never holds the funds, so there is nothing to batch.
+   *  - otherwise → INTERNAL: ZiyaraTech collected it and owes the clinic a payout.
+   *
+   * Decided once, at creation, from the provider that is actually charging.
+   */
+  private settlementModeFor(
+    platformRevenue: boolean,
+    providerSettlesToPayee: boolean,
+  ): SettlementMode {
+    if (platformRevenue) return SETTLEMENT_MODE.NONE;
+    return providerSettlesToPayee
+      ? SETTLEMENT_MODE.PROVIDER
+      : SETTLEMENT_MODE.INTERNAL;
+  }
+
+  /**
+   * Best-effort: flag a payment whose gateway create succeeded (or may have) but
+   * whose bookkeeping did not commit. Failure here is logged, not thrown — the
+   * caller is already on the error path and the webhook correlation still works.
+   */
+  private async markCreateUncertain(
+    payment: Payment,
+    gatewayPaymentId?: string,
+  ): Promise<void> {
+    try {
+      const { redirect_url: _unreferenced, ...rest } = (payment.metadata ??
+        {}) as Record<string, unknown>;
+      payment.metadata = { ...rest, create_uncertain: true };
+      await this.payments.update(payment.id, {
+        ...(gatewayPaymentId ? { gateway_payment_id: gatewayPaymentId } : {}),
+        metadata: payment.metadata,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Could not flag payment ${payment.id} as create_uncertain`,
+        err as Error,
+      );
+    }
+  }
+
+  /**
+   * Who is paying, for gateways that require identity. A tenant paying the
+   * platform is identified by its contact details; a patient by their customer
+   * record. Placeholder addresses (WhatsApp `@bot.internal`) are never passed on.
+   */
+  private async resolvePayer(
+    tenantId: string,
+    customerId: string | undefined,
+    platformRevenue: boolean,
+  ): Promise<GatewayPayer | undefined> {
+    if (platformRevenue) {
+      const tenant = await this.dataSource
+        .getRepository(Tenant)
+        .findOne({ where: { id: tenantId } });
+      if (!tenant) return undefined;
+      return buildPayer({
+        name: tenant.legal_name ?? tenant.name,
+        email: tenant.contact_email,
+        phone: tenant.contact_phone,
+        fallbackFirstName: 'Clinic',
+      });
+    }
+    if (!customerId) return undefined;
+    const customer = await this.dataSource
+      .getRepository(Customer)
+      .findOne({ where: { id: customerId, tenant: { id: tenantId } } });
+    if (!customer) return undefined;
+    return buildPayer({
+      name: customer.full_name ?? customer.whatsapp_name,
+      email: customer.email,
+      phone: customer.phone,
+      fallbackFirstName: 'Patient',
+    });
   }
 
   /**
@@ -493,8 +657,14 @@ export class PaymentService {
           manager,
         );
 
-        // A webhook may have settled it between phases — don't regress a terminal state.
-        if (payment.status === PaymentStatus.PAID) {
+        // A webhook may have settled it between phases — don't regress a terminal
+        // state. A refund that landed between the phases counts too: REFUNDED /
+        // PARTIALLY_REFUNDED were paid, and must never be moved back to PAID.
+        if (
+          payment.status === PaymentStatus.PAID ||
+          payment.status === PaymentStatus.REFUNDED ||
+          payment.status === PaymentStatus.PARTIALLY_REFUNDED
+        ) {
           return { payment, becamePaid: false };
         }
         if (result.status === 'paid') {
@@ -505,12 +675,30 @@ export class PaymentService {
           this.assertCapturedMatches(payment, result);
           payment.status = PaymentStatus.PAID;
           payment.paid_at = new Date();
-          this.financials.applyOnPaid(payment, this.financials.extractFromRaw(result.raw));
-          return { payment: await repo.save(payment), becamePaid: true };
+          this.financials.applyOnPaid(
+            payment,
+            result.fees ?? this.financials.extractFromRaw(result.raw),
+          );
+          const saved = await repo.save(payment);
+          // REL-005: same transaction as the PAID flip.
+          await enqueuePaymentOutcome(manager, {
+            tenantId,
+            paymentId: payment.id,
+            outcome: PAYMENT_OUTCOME.PAID,
+          });
+          return { payment: saved, becamePaid: true };
         }
         if (result.status === 'failed') {
           payment.status = PaymentStatus.FAILED;
+          const saved = await repo.save(payment);
+          await enqueuePaymentOutcome(manager, {
+            tenantId,
+            paymentId: payment.id,
+            outcome: PAYMENT_OUTCOME.FAILED,
+          });
+          return { payment: saved, becamePaid: false };
         }
+        // 'pending' / 'unknown': the gateway could not say — change nothing.
         return { payment: await repo.save(payment), becamePaid: false };
       },
     );
@@ -601,6 +789,12 @@ export class PaymentService {
     if (query.status) where.status = query.status;
     if (query.settlementStatus) where.settlement_status = query.settlementStatus;
     if (query.customerId) where.customer = { id: query.customerId };
+    // The clinic's payments page is about the clinic's own money. Its add-on and
+    // billing-upgrade payments (the clinic paying the PLATFORM) used to be mixed
+    // in; they are only returned when asked for by name.
+    where.purpose = query.purpose
+      ? query.purpose
+      : In([...CLINIC_REVENUE_PURPOSES]);
     if (query.from && query.to) {
       where.created_at = Between(new Date(query.from), new Date(query.to));
     } else if (query.from) {

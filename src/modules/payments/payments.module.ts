@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PlatformModule } from '../platform/platform.module';
+import { PaymentsCoreModule } from './payments-core.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
 import { StorageModule } from '../storage/storage.module';
 
@@ -36,7 +37,6 @@ import { PaymentFinancialsService } from './payment-financials.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { MerchantAccountService } from './merchant-account.service';
-import { PaymentsConfig } from './payments.config';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
 import { PaymentsOpsController } from './payments-ops.controller';
@@ -55,6 +55,9 @@ import { NoopGatewayProvider } from './providers/noop-gateway.provider';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { PAYMENT_GATEWAY_PROVIDERS } from './providers/payment-gateway.provider.interface';
 import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
+import { TapGatewayProvider } from './providers/tap/tap-gateway.provider';
+import { TapWebhookVerifier } from './webhooks/tap-webhook.verifier';
+import { TapWebhookHandler } from './webhooks/tap-webhook.handler';
 import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
 
 /**
@@ -69,10 +72,11 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
  *  - Everything else is strictly tenant-scoped; tenants only CONSUME payments.
  *
  * The gateway integration is decoupled behind a strategy/factory: real adapters
- * (MoyasarProvider) register into PAYMENT_GATEWAY_PROVIDERS; PaymentGatewayFactory
- * resolves one and falls back to NoopGatewayProvider when none is configured, so
- * the app runs end-to-end locally with no live credentials. Moyasar credentials
- * + webhook secret are platform config (ConfigService) only — never per tenant.
+ * (MoyasarProvider legacy, TapGatewayProvider) register into
+ * PAYMENT_GATEWAY_PROVIDERS; PaymentGatewayFactory resolves one and falls back
+ * to NoopGatewayProvider when none is configured, so the app runs end-to-end
+ * locally with no live credentials. Gateway credentials + webhook secrets are
+ * platform config (ConfigService) only — never per tenant.
  */
 @Module({
   imports: [
@@ -93,6 +97,9 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     ]),
     // Provides SystemSettingService for payment link TTL and default currency.
     PlatformModule,
+    // PaymentsConfig + the single TapApiClient, shared with subscription-billing
+    // (which this module imports — see PaymentsCoreModule for why it is separate).
+    PaymentsCoreModule,
     // T084 (spec 014, US5) — PaymentReconciliationService's subscription
     // sweep verifies through the SAME PAYMENT_PROVIDER binding
     // BillingService uses, never a second one.
@@ -135,18 +142,26 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     PaymentWebhookService,
     PaymentReconciliationService,
     MerchantAccountService,
-    // Central typed payments config (provider selection, Moyasar keys, knobs).
-    PaymentsConfig,
+    // PaymentsConfig (typed config) and TapApiClient come from PaymentsCoreModule.
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
     MoyasarProvider,
+    TapGatewayProvider,
     NoopGatewayProvider,
     PaymentGatewayFactory,
     MoyasarWebhookVerifier,
+    TapWebhookVerifier,
+    TapWebhookHandler,
     PaymentsSchemaBootstrap,
     {
       provide: PAYMENT_GATEWAY_PROVIDERS,
-      useFactory: (moyasar: MoyasarProvider) => [moyasar],
-      inject: [MoyasarProvider],
+      // Resolution is by NAME (PAYMENT_PROVIDER for new payments, the stored
+      // Payment.gateway for historic rows), so listing both is what keeps
+      // legacy Moyasar rows verifiable/refundable once Tap is the default.
+      useFactory: (moyasar: MoyasarProvider, tap: TapGatewayProvider) => [
+        moyasar,
+        tap,
+      ],
+      inject: [MoyasarProvider, TapGatewayProvider],
     },
   ],
   exports: [

@@ -177,6 +177,58 @@ describe('AccessControlService', () => {
       expect((await service.resolve('t1')).allowed).toBe(true);
     });
 
+    // Tap migration D2 — a paid subscription whose first payment has not been
+    // captured is NOT usable. It is an ADDITION to the not-usable set; the
+    // precedence chain around it is unchanged.
+    describe('PENDING_PAYMENT (D2)', () => {
+      it.each([
+        ['future provisional end date', future],
+        ['past provisional end date', past],
+      ])(
+        'is denied with a %s — and is never live-derived into PAST_DUE',
+        async (_l, endsAt) => {
+          billingMode.isPaidMode.mockResolvedValue(true);
+          subscriptions.findOne.mockResolvedValue({
+            ...activeSub,
+            status: SubscriptionStatus.PENDING_PAYMENT,
+            ends_at: endsAt,
+          });
+          const d = await service.resolve('t1');
+          expect(d.allowed).toBe(false);
+          expect(d.source).toBe(AccessSource.DENIED);
+          expect(d.reason).toContain(SubscriptionStatus.PENDING_PAYMENT);
+          expect(d.reason).not.toContain(SubscriptionStatus.PAST_DUE);
+        },
+      );
+
+      it('FREE mode and an admin free-access grant STILL outrank it (the chain is not re-derived)', async () => {
+        subscriptions.findOne.mockResolvedValue({
+          ...activeSub,
+          status: SubscriptionStatus.PENDING_PAYMENT,
+        });
+        billingMode.isPaidMode.mockResolvedValue(false);
+        expect((await service.resolve('t1')).allowed).toBe(true);
+
+        billingMode.isPaidMode.mockResolvedValue(true);
+        overrides.getActive.mockResolvedValue({ ends_at: future });
+        expect((await service.resolve('t1')).source).toBe(
+          AccessSource.ADMIN_FREE_ACCESS,
+        );
+      });
+
+      it('a per-feature super-admin grant still admits that one feature', async () => {
+        billingMode.isPaidMode.mockResolvedValue(true);
+        subscriptions.findOne.mockResolvedValue({
+          ...activeSub,
+          status: SubscriptionStatus.PENDING_PAYMENT,
+        });
+        featureFlags.getStates.mockResolvedValue(granted(FeatureKey.WHATSAPP));
+        const d = await service.resolve('t1', FeatureKey.WHATSAPP);
+        expect(d.allowed).toBe(true);
+        expect(d.source).toBe(AccessSource.FEATURE_OVERRIDE);
+      });
+    });
+
     it('CANCELLED remains denied (terminal)', async () => {
       billingMode.isPaidMode.mockResolvedValue(true);
       subscriptions.findOne.mockResolvedValue({

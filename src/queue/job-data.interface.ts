@@ -26,6 +26,20 @@ export type RefundsReapJob = BaseJobData;
 // ── Payments (reconciliation sweep — platform-level, tenantId null) ─────────
 export type PaymentsReconcileJob = BaseJobData;
 
+/**
+ * REL-005 — one durable post-payment effect (see `JOB.PAYMENTS_OUTCOME`). The
+ * payload names WHAT happened; the consumer re-reads the payment and acts on its
+ * CURRENT state, never on a figure carried here, so a delayed or redelivered job
+ * converges instead of replaying stale data.
+ */
+export interface PaymentsOutcomeJob extends BaseJobData {
+  tenantId: string;
+  paymentId: string;
+  outcome: 'paid' | 'failed' | 'refunded' | 'refund_recorded';
+  /** `refund_recorded` only: the refund that triggered the reversal. */
+  refundId?: string;
+}
+
 // ── Email (transactional send) ─────────────────────────────────────────────
 export interface EmailSendJob extends BaseJobData {
   /** Recipient address(es). */

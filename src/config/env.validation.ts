@@ -470,7 +470,33 @@ export const validate = (config: Record<string, unknown>) => {
     // the app boots and runs without a live integration); in PRODUCTION a real
     // provider with missing essential keys fails the boot — see the explicit
     // check after schema validation below.
-    // PAYMENT_PROVIDER: Joi.string().valid('moyasar', 'noop').default('moyasar'),
+    // `.empty('')`: an empty `PAYMENT_PROVIDER=` line means "unset" (default), not an
+    // invalid value that would refuse to boot. 'moyasar' stays the default until
+    // an operator sets `tap` deliberately.
+    PAYMENT_PROVIDER: Joi.string()
+      .valid('moyasar', 'tap', 'noop')
+      .empty('')
+      .default('moyasar'),
+    // Tap Payments (platform-level, https://developers.tap.company). Secret keys
+    // are validated by PREFIX in the post-validation block below — never with a
+    // Joi pattern, whose error message would echo the secret into boot logs.
+    // TAP_ENV has no default here on purpose: production + tap must set it
+    // explicitly (PaymentsConfig falls back to 'sandbox' for dev only).
+    TAP_ENV: Joi.string().valid('sandbox', 'live').empty(''),
+    TAP_MERCHANT_ID: Joi.string().allow('', null),
+    TAP_TEST_SECRET_KEY: Joi.string().allow('', null),
+    TAP_TEST_PUBLIC_KEY: Joi.string().allow('', null),
+    TAP_LIVE_SECRET_KEY: Joi.string().allow('', null),
+    TAP_LIVE_PUBLIC_KEY: Joi.string().allow('', null),
+    TAP_PLATFORM_ID: Joi.string().allow('', null),
+    TAP_WEBHOOK_URL: Joi.string().allow('', null),
+    TAP_API_BASE: Joi.string().allow('', null),
+    TAP_REQUEST_TIMEOUT_MS: Joi.number().integer().min(1000).max(120000),
+    // Opt-in payable window for a hosted charge (Tap allows 5–60 minutes).
+    TAP_CHARGE_EXPIRY_MINUTES: Joi.number().integer().min(5).max(60),
+    // Clinic-not-present renewals + card saving. Off until Tap has activated
+    // Save Card and non-3DS merchant-initiated charges on the account.
+    TAP_RECURRING_ENABLED: Joi.boolean().truthy('true').falsy('false').empty(''),
     // MOYASAR_SECRET_KEY: Joi.string().allow('', null),
     // MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
     // MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
@@ -1151,6 +1177,70 @@ export const validate = (config: Record<string, unknown>) => {
   //     );
   //   }
   // }
+
+  // ── Tap checks ───────────────────────────────────────────────────────────
+  // (a) Key PREFIXES, in every environment, whenever a key is present: a live key
+  //     pasted into the test slot (or the reverse) is how real money gets charged
+  //     from "sandbox", so it must not boot. Names only — never the value.
+  // (b) Production + PAYMENT_PROVIDER=tap: the active credentials, the explicit
+  //     environment and a reachable webhook URL are mandatory. Unlike the legacy
+  //     Moyasar block above (disabled in commit 3c28259), this one is scoped to
+  //     the provider being chosen deliberately, so it cannot block an existing
+  //     deployment. Opt out explicitly with PAYMENT_PROVIDER=noop.
+  {
+    const tapTestKey = String(value.TAP_TEST_SECRET_KEY ?? '').trim();
+    const tapLiveKey = String(value.TAP_LIVE_SECRET_KEY ?? '').trim();
+    const tapProblems: string[] = [];
+    if (tapTestKey && !tapTestKey.startsWith('sk_test_')) {
+      tapProblems.push('TAP_TEST_SECRET_KEY must start with "sk_test_"');
+    }
+    if (tapLiveKey && !tapLiveKey.startsWith('sk_live_')) {
+      tapProblems.push('TAP_LIVE_SECRET_KEY must start with "sk_live_"');
+    }
+
+    if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER === 'tap') {
+      const missing: string[] = [];
+      if (!value.TAP_ENV) missing.push('TAP_ENV');
+      if (!String(value.TAP_MERCHANT_ID ?? '').trim()) missing.push('TAP_MERCHANT_ID');
+      const activeKeyVar =
+        value.TAP_ENV === 'live' ? 'TAP_LIVE_SECRET_KEY' : 'TAP_TEST_SECRET_KEY';
+      if (!String(value[activeKeyVar] ?? '').trim()) missing.push(activeKeyVar);
+
+      const webhookUrl = String(value.TAP_WEBHOOK_URL ?? '').trim();
+      if (!webhookUrl) {
+        missing.push('TAP_WEBHOOK_URL');
+      } else {
+        let ok = false;
+        try {
+          const u = new URL(webhookUrl);
+          ok =
+            u.protocol === 'https:' &&
+            !['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname);
+        } catch {
+          ok = false;
+        }
+        if (!ok) {
+          tapProblems.push(
+            'TAP_WEBHOOK_URL must be a public https URL (Tap cannot post to localhost)',
+          );
+        }
+      }
+      if (missing.length > 0) {
+        tapProblems.push(
+          `PAYMENT_PROVIDER is "tap" in production but ${missing.join(', ')} ${
+            missing.length === 1 ? 'is' : 'are'
+          } not set`,
+        );
+      }
+    }
+
+    if (tapProblems.length > 0) {
+      throw new Error(
+        `❌ Env validation error: ${tapProblems.join('; ')}. ` +
+          `Set the variable(s) correctly, or set PAYMENT_PROVIDER=noop to explicitly disable live payments.`,
+      );
+    }
+  }
 
   // ── Credential-encryption fail-fast (production only, HRD-001) ────────────
   // Mirrors the payments fail-fast above (the reference pattern constitution

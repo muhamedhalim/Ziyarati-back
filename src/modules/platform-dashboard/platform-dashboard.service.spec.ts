@@ -567,7 +567,8 @@ describe('effectiveStatusSql ≡ SubscriptionService.getEffectiveStatus', () => 
     if (
       sub.status === SubscriptionStatus.CANCELLED ||
       sub.status === SubscriptionStatus.SUSPENDED ||
-      sub.status === SubscriptionStatus.GRACE_EXPIRED
+      sub.status === SubscriptionStatus.GRACE_EXPIRED ||
+      sub.status === SubscriptionStatus.PENDING_PAYMENT
     ) {
       return sub.status;
     }
@@ -661,6 +662,24 @@ describe('effectiveStatusSql ≡ SubscriptionService.getEffectiveStatus', () => 
       name: 'SUSPENDED is terminal and passes through',
       sub: { status: SubscriptionStatus.SUSPENDED, ends_at: past, grace_started_at: null },
       expected: SubscriptionStatus.SUSPENDED,
+    },
+    {
+      name: 'PENDING_PAYMENT passes through even with a past provisional end date (never PAST_DUE)',
+      sub: {
+        status: SubscriptionStatus.PENDING_PAYMENT,
+        ends_at: past,
+        grace_started_at: null,
+      },
+      expected: SubscriptionStatus.PENDING_PAYMENT,
+    },
+    {
+      name: 'PENDING_PAYMENT with a future provisional end date',
+      sub: {
+        status: SubscriptionStatus.PENDING_PAYMENT,
+        ends_at: future,
+        grace_started_at: null,
+      },
+      expected: SubscriptionStatus.PENDING_PAYMENT,
     },
     {
       name: 'already GRACE_EXPIRED passes through',

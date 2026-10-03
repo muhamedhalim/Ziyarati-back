@@ -67,6 +67,35 @@ describe('WorkerAuthorizationService', () => {
     });
   });
 
+  // REL-005 — payments.outcome applies the consequences of money that has ALREADY
+  // moved. Tenant tier would reject it permanently (UnrecoverableError, no retry)
+  // for a tenant suspended or deactivated in the meantime, stranding a captured
+  // payment with no booking and no entitlement.
+  describe('payments.outcome (REL-005) — system tier even though every row carries a tenantId', () => {
+    it('is NOT rejected for a suspended / unapproved / inactive tenant', async () => {
+      tenantLookup.findById.mockResolvedValue({
+        id: 't1',
+        approval_status: TenantApprovalStatus.APPROVED,
+        is_active: false,
+      });
+      await expect(
+        service.assertAuthorized(JOB.PAYMENTS_OUTCOME, { tenantId: 't1' }),
+      ).resolves.toBeUndefined();
+      expect(tenantLookup.findById).not.toHaveBeenCalled();
+    });
+
+    it('is registered, so it is not caught by the fail-closed unregistered-job rule', async () => {
+      await expect(
+        service.assertAuthorized(JOB.PAYMENTS_OUTCOME, { tenantId: 't1' }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('asks nothing of the access policy (no entitlement gate on a captured payment)', async () => {
+      await service.assertAuthorized(JOB.PAYMENTS_OUTCOME, { tenantId: 't1' });
+      expect(access.resolve).not.toHaveBeenCalled();
+    });
+  });
+
   describe('tenant-tier jobs (e.g. notifications.dispatch — job type ALWAYS carries a real tenantId)', () => {
     it('allows a job for an APPROVED, active tenant', async () => {
       tenantLookup.findById.mockResolvedValueOnce(approvedTenant);

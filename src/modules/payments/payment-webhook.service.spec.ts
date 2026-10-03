@@ -12,6 +12,7 @@ import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { PaymentFinancialsService } from './payment-financials.service';
+import { InvoiceSettlementService } from '../subscription-billing/invoice-settlement.service';
 import {
   PlatformAdminAuditService,
   PLATFORM_ADMIN_AUDIT_ACTION,
@@ -39,6 +40,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
   let financials: { applyOnPaid: jest.Mock; extractFromRaw: jest.Mock };
   let audit: { record: jest.Mock };
   let emitter: { emit: jest.Mock };
+  let settlement: { settleInvoicePaid: jest.Mock };
 
   /** ZT-H02 — a fresh ISO-8601 timestamp, well inside the freshness window. */
   const freshCreatedAt = () => new Date().toISOString();
@@ -75,6 +77,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
     };
     audit = { record: jest.fn().mockResolvedValue(undefined) };
     emitter = { emit: jest.fn() };
+    settlement = { settleInvoicePaid: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -91,6 +94,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         { provide: PaymentFinancialsService, useValue: financials },
         { provide: PlatformAdminAuditService, useValue: audit },
         { provide: EventEmitter2, useValue: emitter },
+        { provide: InvoiceSettlementService, useValue: settlement },
       ],
     }).compile();
     service = moduleRef.get(PaymentWebhookService);
@@ -343,7 +347,9 @@ describe('PaymentWebhookService.handleMoyasar', () => {
   });
 
   // T083 (spec 014, US5) — the subscription-invoice half of this same
-  // webhook stream, reached only when no one-time Payment matches.
+  // webhook stream, reached only when no one-time Payment matches. A PAID event
+  // is handed to the ONE settle path (Tap migration, Phase 3); a failed event
+  // stays evidence-only here.
   describe('subscription invoice events (T083)', () => {
     const invoiceRepo = () =>
       manager.getRepository(SubscriptionInvoice) as unknown as MockRepository;
@@ -361,11 +367,28 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       status: InvoiceStatus.OPEN,
       webhook_event_id: null as string | null,
       provider_reference: undefined as string | undefined,
+      checkout_charge_id: null as string | null,
+      checkout_started_at: null as Date | null,
       failure_reason: null as string | null,
       failure_class: null as string | null,
       retry_count: 0,
       next_retry_at: null as Date | null,
     });
+
+    const paidEvent = (overrides: Record<string, unknown> = {}) =>
+      ({
+        id: 'e1',
+        type: 'payment_paid',
+        created_at: freshCreatedAt(),
+        data: {
+          id: 'gw-sub-1',
+          status: 'paid',
+          amount: 10000,
+          currency: 'SAR',
+          metadata: { subscriptionInvoiceId: 'inv-1' },
+          ...overrides,
+        },
+      }) as any;
 
     beforeEach(() => {
       // No one-time Payment ever matches these events.
@@ -374,76 +397,67 @@ describe('PaymentWebhookService.handleMoyasar', () => {
 
     it('correlates via the metadata BillingService.payInvoice attaches, not just provider_reference', async () => {
       invoices.findOne.mockResolvedValueOnce(ownerInvoice());
-      const invoice = lockedInvoice();
-      invoiceRepo().findOne.mockResolvedValueOnce(invoice);
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: { ...lockedInvoice(), status: InvoiceStatus.PAID },
+      });
 
-      await service.handleMoyasar({
-        id: 'e1',
-        type: 'payment_paid',
-        created_at: freshCreatedAt(),
-        data: {
-          id: 'gw-sub-1',
-          status: 'paid',
-          amount: 10000,
-          currency: 'SAR',
-          metadata: { subscriptionInvoiceId: 'inv-1' },
-        },
-      } as any);
+      await service.handleMoyasar(paidEvent());
 
       expect(invoices.findOne).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: 'inv-1' } }),
       );
     });
 
-    it('settles the invoice PAID when the captured amount and currency match, and audits it', async () => {
+    it('hands a PAID event to the single settle path with the captured figures and its dedupe key', async () => {
       invoices.findOne.mockResolvedValueOnce(ownerInvoice());
-      const invoice = lockedInvoice();
-      invoiceRepo().findOne.mockResolvedValueOnce(invoice);
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: { ...lockedInvoice(), status: InvoiceStatus.PAID },
+      });
 
-      const res = await service.handleMoyasar({
-        id: 'e1',
-        type: 'payment_paid',
-        created_at: freshCreatedAt(),
-        data: {
-          id: 'gw-sub-1',
-          status: 'paid',
-          amount: 10000,
-          currency: 'SAR',
-          metadata: { subscriptionInvoiceId: 'inv-1' },
-        },
-      } as any);
+      const res = await service.handleMoyasar(paidEvent());
 
-      expect(invoice.status).toBe(InvoiceStatus.PAID);
-      expect(invoice.provider_reference).toBe('gw-sub-1');
-      expect(res.status).toBe(InvoiceStatus.PAID);
-      expect(audit.record).toHaveBeenCalledWith(
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith(
+        'inv-1',
         expect.objectContaining({
-          action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_SETTLED,
-          entityId: 'inv-1',
-          tenantId: 't1',
+          source: 'webhook',
+          provider: 'moyasar',
+          reference: 'gw-sub-1',
+          webhookEventId: 'e1',
+          capturedMinorUnits: 10000,
+          capturedCurrency: 'SAR',
+        }),
+      );
+      expect(res).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          matched: true,
+          status: InvoiceStatus.PAID,
+          deduplicated: false,
         }),
       );
     });
 
-    it('REFUSES to settle when the captured amount mismatches (anti-tampering)', async () => {
+    it('reports an already-paid / rejected settle outcome as deduplicated (retrying cannot change it) and never throws', async () => {
+      for (const outcome of ['already_paid', 'rejected']) {
+        invoices.findOne.mockResolvedValueOnce(ownerInvoice());
+        settlement.settleInvoicePaid.mockResolvedValueOnce({
+          outcome,
+          invoice: { ...lockedInvoice(), status: InvoiceStatus.OPEN },
+        });
+        const res = await service.handleMoyasar(paidEvent());
+        expect(res.deduplicated).toBe(true);
+      }
+    });
+
+    it('lets a transient settle failure propagate so the gateway retries the webhook', async () => {
       invoices.findOne.mockResolvedValueOnce(ownerInvoice());
-      const invoice = lockedInvoice();
-      invoiceRepo().findOne.mockResolvedValueOnce(invoice);
+      settlement.settleInvoicePaid.mockRejectedValueOnce(new Error('db down'));
 
-      await service.handleMoyasar({
-        id: 'e1',
-        type: 'payment_paid',
-        created_at: freshCreatedAt(),
-        data: {
-          id: 'gw-sub-1',
-          status: 'paid',
-          amount: 99999,
-          currency: 'SAR',
-          metadata: { subscriptionInvoiceId: 'inv-1' },
-        },
-      } as any);
-
-      expect(invoice.status).toBe(InvoiceStatus.OPEN);
+      await expect(service.handleMoyasar(paidEvent())).rejects.toThrow(
+        'db down',
+      );
     });
 
     it("records a decline without touching retry_count/next_retry_at — that stays RenewalService's own schedule", async () => {
@@ -466,6 +480,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
         },
       } as any);
 
+      expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
       expect(invoice.status).toBe(InvoiceStatus.OPEN); // unchanged — decline doesn't move status
       expect(invoice.failure_reason).toBeTruthy();
       expect(invoice.retry_count).toBe(1); // untouched
@@ -475,6 +490,53 @@ describe('PaymentWebhookService.handleMoyasar', () => {
           action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_DECLINED,
         }),
       );
+    });
+
+    it("a failed event on the invoice's own hosted checkout frees it for a new one at once", async () => {
+      invoices.findOne.mockResolvedValueOnce(ownerInvoice());
+      const invoice = {
+        ...lockedInvoice(),
+        checkout_charge_id: 'gw-sub-1',
+        checkout_started_at: new Date(),
+      };
+      invoiceRepo().findOne.mockResolvedValueOnce(invoice);
+
+      await service.handleMoyasar({
+        id: 'e1',
+        type: 'payment_failed',
+        created_at: freshCreatedAt(),
+        data: {
+          id: 'gw-sub-1',
+          status: 'failed',
+          metadata: { subscriptionInvoiceId: 'inv-1' },
+        },
+      } as any);
+
+      expect(invoice.checkout_started_at).toBeNull();
+    });
+
+    it('a failed event for a DIFFERENT charge leaves the open checkout alone', async () => {
+      invoices.findOne.mockResolvedValueOnce(ownerInvoice());
+      const started = new Date();
+      const invoice = {
+        ...lockedInvoice(),
+        checkout_charge_id: 'some-other-charge',
+        checkout_started_at: started,
+      };
+      invoiceRepo().findOne.mockResolvedValueOnce(invoice);
+
+      await service.handleMoyasar({
+        id: 'e1',
+        type: 'payment_failed',
+        created_at: freshCreatedAt(),
+        data: {
+          id: 'gw-sub-1',
+          status: 'failed',
+          metadata: { subscriptionInvoiceId: 'inv-1' },
+        },
+      } as any);
+
+      expect(invoice.checkout_started_at).toBe(started);
     });
 
     it('never moves a terminal invoice backward — a late "failed" after PAID is a no-op dedup', async () => {
@@ -498,20 +560,18 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       expect(audit.record).not.toHaveBeenCalled();
     });
 
-    it('deduplicates a redelivered subscription webhook (same event id)', async () => {
+    it('deduplicates a redelivered FAILED subscription webhook (same event id)', async () => {
       invoices.findOne.mockResolvedValueOnce(ownerInvoice());
       const invoice = { ...lockedInvoice(), webhook_event_id: 'e1' };
       invoiceRepo().findOne.mockResolvedValueOnce(invoice);
 
       const res = await service.handleMoyasar({
         id: 'e1',
-        type: 'payment_paid',
+        type: 'payment_failed',
         created_at: freshCreatedAt(),
         data: {
           id: 'gw-sub-1',
-          status: 'paid',
-          amount: 10000,
-          currency: 'SAR',
+          status: 'failed',
           metadata: { subscriptionInvoiceId: 'inv-1' },
         },
       } as any);
@@ -531,6 +591,7 @@ describe('PaymentWebhookService.handleMoyasar', () => {
       } as any);
 
       expect(res).toEqual({ accepted: true, matched: false });
+      expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
     });
   });
 });

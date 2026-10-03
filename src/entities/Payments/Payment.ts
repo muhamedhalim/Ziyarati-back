@@ -20,6 +20,9 @@ import { decimalTransformer } from '../../common/transformers/decimal.transforme
 @Index(['tenant', 'status'])
 @Index(['paid_at'])
 @Index(['appointment'])
+// Explicit name: the migration creates the same index, so a dev `synchronize`
+// boot recognises it instead of adding a differently-named duplicate.
+@Index('idx_payments_tenant_purpose_status', ['tenant', 'purpose', 'status'])
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -124,6 +127,32 @@ idempotency_key?: string;
   /** Payment instrument as reported by the gateway (e.g. `creditcard`, `applepay`). */
   @Column({ nullable: true })
   payment_method?: string;
+
+  /**
+   * What this payment is FOR — see `PAYMENT_PURPOSE`. Decides whose money it is:
+   * BOOKING/MANUAL are the clinic's, ADDON/BILLING_UPGRADE are the platform's.
+   * Defaults to BOOKING so a row written by any path that predates the column
+   * keeps its historical meaning.
+   */
+  @Column({ type: 'varchar', length: 24, default: 'BOOKING' })
+  purpose!: string;
+
+  /**
+   * Who moves the money to the clinic — see `SETTLEMENT_MODE`. The settlement
+   * run claims only INTERNAL rows; a provider-settled (Tap) or platform-revenue
+   * payment must never be batched into a clinic payout.
+   */
+  @Column({ type: 'varchar', length: 16, default: 'INTERNAL' })
+  settlement_mode!: string;
+
+  /**
+   * When `gateway_fee` / `net_amount` became FINAL. NULL = provisional: a Tap
+   * charge reports no fee at capture, so the figures are filled in later by
+   * reconciliation (Phase 5). Gateways that report the fee at capture stamp it
+   * immediately.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  fees_reconciled_at?: Date | null;
 
   /** Gateway merchant identifiers (marketplace split context), when provided. */
   @Column({ nullable: true })

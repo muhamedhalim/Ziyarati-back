@@ -194,4 +194,47 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
 
     expect(summary.succeeded).toBe(1); // 60 headroom covers this 60 row — untouched by the new guard
   });
+
+  // REL-005 — same guarantee as RefundService.create, for a refund the reaper finalizes.
+  describe('REL-005 — durable refund_recorded row', () => {
+    const outboxRows = () =>
+      (manager.createQueryBuilder as jest.Mock).mock.results
+        .map((r) => r.value as ReturnType<typeof createMockQueryBuilder>)
+        .flatMap((qb) => qb.values.mock.calls.map(([row]) => row))
+        .filter((row) => row?.job_name === 'payments.outcome');
+
+    it('writes a refund_recorded row when the reaper finalizes a refund SUCCEEDED', async () => {
+      const refund = pendingRefund();
+      refunds.find.mockResolvedValueOnce([refund]);
+      paymentsRepo.findOne.mockResolvedValueOnce({ id: 'pay-1', amount: 100, settlement_status: 'UNSETTLED' });
+      refunds.findOneBy.mockResolvedValueOnce({ ...refund, status: REFUND_STATUS.PENDING });
+      succeededCentsRow = [{ sum: '0.00' }];
+
+      await service.reapStalePending();
+
+      expect(outboxRows()).toEqual([
+        expect.objectContaining({
+          dedupe_key: 'payment-outcome-refund-rf-1',
+          payload: {
+            tenantId: 't1',
+            paymentId: 'pay-1',
+            outcome: 'refund_recorded',
+            refundId: 'rf-1',
+          },
+        }),
+      ]);
+    });
+
+    it('writes NO row when the refund cannot be finalized yet, or is finalized FAILED', async () => {
+      const refund = pendingRefund({ amount: 60 });
+      refunds.find.mockResolvedValueOnce([refund]);
+      paymentsRepo.findOne.mockResolvedValueOnce({ id: 'pay-1', amount: 100, settlement_status: 'UNSETTLED' });
+      refunds.findOneBy.mockResolvedValueOnce({ ...refund, status: REFUND_STATUS.PENDING });
+      succeededCentsRow = [{ sum: '60.00' }]; // this 60 would exceed the 100 payment
+
+      await service.reapStalePending();
+
+      expect(outboxRows()).toEqual([]);
+    });
+  });
 });

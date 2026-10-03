@@ -21,7 +21,7 @@
  */
 import { ConfigService } from '@nestjs/config';
 import { INestApplication } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
+import { Test, TestingModule, TestingModuleBuilder } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import { randomUUID, createHmac } from 'node:crypto';
@@ -150,19 +150,25 @@ export interface E2eApp {
  * Boots the app with the SAME middleware/pipe stack as `main.ts` (minus
  * Swagger, the health/root shims, and the Socket.IO Redis adapter — none of
  * which the HTTP/webhook scenarios below exercise).
+ *
+ * `customize` (optional) lets a spec add its OWN provider overrides — e.g. a
+ * gateway client stubbed at its network boundary — on top of the standard Meta
+ * mocks, without duplicating this whole bootstrap. Omitted = unchanged behaviour.
  */
-export async function createE2eApp(): Promise<E2eApp> {
+export async function createE2eApp(
+  customize?: (builder: TestingModuleBuilder) => TestingModuleBuilder,
+): Promise<E2eApp> {
   const metaGraph = createMetaGraphMock();
   const whatsappProvider = createWhatsappProviderMock();
 
-  const moduleRef = await Test.createTestingModule({
+  const builder = Test.createTestingModule({
     imports: [AppModule],
   })
     .overrideProvider(MetaGraphClient)
     .useValue(metaGraph)
     .overrideProvider(MetaWhatsappProvider)
-    .useValue(whatsappProvider)
-    .compile();
+    .useValue(whatsappProvider);
+  const moduleRef = await (customize ? customize(builder) : builder).compile();
 
   const app = moduleRef.createNestApplication({ rawBody: true });
 

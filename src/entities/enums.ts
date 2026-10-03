@@ -33,6 +33,30 @@ export enum SubscriptionStatus {
   SUSPENDED = 'SUSPENDED',
   /** FND-031/M-02 — grace window elapsed with no settlement. New billable/usage-increasing actions refused; read access preserved. */
   GRACE_EXPIRED = 'GRACE_EXPIRED',
+  /**
+   * Tap migration D2 — a paid subscription exists but its first payment has not
+   * been captured yet. NOT usable: access begins only when the invoice settles
+   * (`BillingService.settleInvoicePaid`), which moves it to ACTIVE with a period
+   * counted from the payment. Only created when the bound provider can take a
+   * checkout (`PaymentProvider.supportsCheckout`).
+   */
+  PENDING_PAYMENT = 'PENDING_PAYMENT',
+}
+
+/**
+ * What a subscription invoice BUYS (`subscription_invoices.kind`, free-form
+ * varchar so a new kind never needs an ALTER). NULL = a legacy invoice issued
+ * before the column existed; settling one only marks it PAID, as it always did.
+ */
+export enum SubscriptionInvoiceKind {
+  /** First payment of a new subscription (PENDING_PAYMENT -> ACTIVE). */
+  INITIAL = 'INITIAL',
+  /** Pay-now plan upgrade, or trial -> paid. Switches the plan on payment. */
+  UPGRADE = 'UPGRADE',
+  /** The next period of an existing subscription (renewal cycle). */
+  RENEWAL = 'RENEWAL',
+  /** A lapsed/cancelled subscription coming back (PENDING_PAYMENT -> ACTIVE). */
+  REACTIVATION = 'REACTIVATION',
 }
 
 export enum InvoiceStatus {

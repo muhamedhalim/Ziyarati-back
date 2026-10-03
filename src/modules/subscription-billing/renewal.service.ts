@@ -1,11 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, Not, Repository } from 'typeorm';
 
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
-import { InvoiceStatus, SubscriptionStatus } from '../../entities/enums';
+import {
+  InvoiceStatus,
+  SubscriptionInvoiceKind,
+  SubscriptionStatus,
+} from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import { EmailService } from '../email/email.service';
 import { SystemSettingService } from '../platform/system-setting.service';
@@ -30,6 +34,8 @@ export interface RenewalBillResult {
   attempted: number;
   settled: number;
   declined: number;
+  /** The provider accepted the charge but could not say yet; the webhook / reconcile sweep settles it. */
+  pending: number;
   skipped: number;
 }
 
@@ -43,16 +49,26 @@ export interface RenewalBillResult {
  * machine already exists, unconditionally, in `SubscriptionsProcessor`'s
  * `transitionToGrace`/`transitionGraceExpired` (driven purely by `ends_at`/
  * `grace_started_at`, on the `renewalCheck` sweep), and duplicating it here
- * is exactly what T080 says not to do. This service only ever REVIVES a
- * subscription on a SUCCESSFUL charge (PAST_DUE → ACTIVE, period advanced);
- * every failure path is a no-op on `Subscription.status`, left entirely to
- * that existing sweep.
+ * is exactly what T080 says not to do. A SUCCESSFUL charge revives the
+ * subscription (PAST_DUE → ACTIVE, period advanced) — but that now happens in
+ * ONE place, `InvoiceSettlementService`, which every payment path (this job,
+ * the hosted checkout, the webhook, the reconciliation sweep) goes through;
+ * this service no longer advances a subscription itself. Every failure path is
+ * a no-op on `Subscription.status`, left entirely to the existing sweep.
  *
  * Consequence worth stating plainly: because `renewalCheck` (02:00 UTC) and
  * `renewalBill` (02:15 UTC) are two different cron ticks on the SAME queue
  * (T024), a HEALTHY renewal still passes through a brief (~15 minute)
  * PAST_DUE state before this service revives it the same night — not a bug,
  * a direct consequence of not reimplementing the transition here.
+ *
+ * THE PERIOD IT BILLS (Tap migration fix). The renewal invoice covers the NEXT
+ * period — it starts where the paid period ENDS (`subscription.ends_at`) — and
+ * is priced from the plan that period will run on (`pending_plan ?? plan`, so a
+ * scheduled downgrade is what gets billed). It used to be keyed on the period
+ * that had just ended (`starts_at`), which the subscription's own first invoice
+ * already owns: the first renewal of a paid subscription found that invoice
+ * PAID and was skipped forever, so the subscription drifted to GRACE_EXPIRED.
  *
  * Idempotency is enforced at the DATABASE level (`UQ_sub_invoice_period`,
  * T079), not just by the worker's own lock: a period's invoice is created
@@ -85,7 +101,7 @@ export class RenewalService {
 
   /**
    * The daily pass: every PAST_DUE, auto-renewing subscription either gets
-   * its first charge attempt for the current period, or a due retry.
+   * its first charge attempt for the next period, or a due retry.
    */
   async processDueBills(): Promise<RenewalBillResult> {
     const result: RenewalBillResult = {
@@ -93,6 +109,7 @@ export class RenewalService {
       attempted: 0,
       settled: 0,
       declined: 0,
+      pending: 0,
       skipped: 0,
     };
 
@@ -103,7 +120,7 @@ export class RenewalService {
           auto_renew: true,
           deleted_at: IsNull(),
         },
-        relations: { tenant: true, plan: true },
+        relations: { tenant: true, plan: true, pending_plan: true },
         order: { id: 'ASC' },
         skip: offset,
         take: RENEWAL_BILL_PAGE_SIZE,
@@ -118,8 +135,13 @@ export class RenewalService {
           );
           return 'skipped' as const;
         });
-        if (outcome === 'settled' || outcome === 'declined')
+        if (
+          outcome === 'settled' ||
+          outcome === 'declined' ||
+          outcome === 'pending'
+        ) {
           result.attempted += 1;
+        }
         result[outcome] += 1;
       }
       if (page.length < RENEWAL_BILL_PAGE_SIZE) break;
@@ -127,20 +149,21 @@ export class RenewalService {
 
     this.logger.log(
       `renewalBill: ${result.due} PAST_DUE due, ${result.attempted} attempted ` +
-        `(${result.settled} settled, ${result.declined} declined), ${result.skipped} skipped`,
+        `(${result.settled} settled, ${result.declined} declined, ${result.pending} pending), ${result.skipped} skipped`,
     );
     return result;
   }
 
   /**
-   * One subscription's turn. Returns which bucket it landed in — 'settled'
-   * and 'declined' are both attempts (the caller also counts them toward
-   * `result.attempted`); 'skipped' never was one (nothing due yet, a
-   * terminal invoice, or a race lost to a concurrent attempt).
+   * One subscription's turn. Returns which bucket it landed in — 'settled',
+   * 'declined' and 'pending' are all attempts (the caller also counts them
+   * toward `result.attempted`); 'skipped' never was one (nothing due yet, a
+   * terminal invoice, a checkout the clinic has open, or a race lost to a
+   * concurrent attempt).
    */
   private async processOne(
     subscription: Subscription,
-  ): Promise<'settled' | 'declined' | 'skipped'> {
+  ): Promise<'settled' | 'declined' | 'pending' | 'skipped'> {
     const invoice = await this.findOrCreatePeriodInvoice(subscription);
     if (!invoice) return 'skipped'; // terminal invoice already exists for this period
 
@@ -148,6 +171,11 @@ export class RenewalService {
     const isFirstAttempt = invoice.retry_count === 0 && !invoice.next_retry_at;
     const retryDue = invoice.next_retry_at && invoice.next_retry_at <= now;
     if (!isFirstAttempt && !retryDue) return 'skipped'; // not due yet
+
+    // The clinic is paying this very invoice by hand right now (hosted checkout
+    // open, or a charge already claimed): standing down is what keeps one
+    // obligation from being captured twice.
+    if (this.billing.isPaymentInFlight(invoice)) return 'skipped';
 
     await this.audit.record({
       action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_ATTEMPTED,
@@ -163,8 +191,10 @@ export class RenewalService {
         subscription.tenant!.id,
         invoice.id,
       );
-      await this.onSettled(subscription, paid);
-      return 'settled';
+      // PAID = captured and the subscription advanced (by the settle path).
+      // Anything else is a charge the provider has not resolved yet: the claim
+      // is held and the webhook / reconciliation sweep finishes it.
+      return paid.status === InvoiceStatus.PAID ? 'settled' : 'pending';
     } catch (err) {
       if (err instanceof AppError && err.code === ErrorCode.CONFLICT) {
         // Claimed by a concurrent attempt (or already PAID) — not a
@@ -177,33 +207,31 @@ export class RenewalService {
   }
 
   /**
-   * Finds the invoice already covering the subscription's CURRENT period, or
-   * creates it — race-safe via the DB's own `UQ_sub_invoice_period`
-   * constraint (same insert-or-fetch shape as `TransactionService
-   * .recordWebhookOnce`), not an application-level check-then-insert.
-   * Returns null when the period's invoice is already terminal (PAID, VOID,
-   * REFUNDED) — nothing left for this service to do.
+   * Finds the invoice already covering the NEXT period, or creates it — race-safe
+   * via the DB's own `UQ_sub_invoice_period` constraint (same insert-or-fetch
+   * shape as `TransactionService.recordWebhookOnce`), not an application-level
+   * check-then-insert. Returns null when that period's invoice is already
+   * terminal (PAID, REFUNDED) or another invoice is being paid instead — nothing
+   * left for this service to do.
    */
   private async findOrCreatePeriodInvoice(
     subscription: Subscription,
   ): Promise<SubscriptionInvoice | null> {
-    const existing = await this.invoices.findOne({
-      where: {
-        subscription_id: subscription.id,
-        period_start: subscription.starts_at,
-      },
-    });
-    if (existing) {
-      if (
-        existing.status === InvoiceStatus.PAID ||
-        existing.status === InvoiceStatus.VOID ||
-        existing.status === InvoiceStatus.REFUNDED
-      ) {
-        return null;
-      }
-      return existing;
-    }
+    const periodStart = subscription.ends_at;
+    const existing = await this.findPeriodInvoice(subscription.id, periodStart);
+    if (existing) return this.isTerminal(existing) ? null : existing;
 
+    // An unpaid pre-Tap creation invoice, or a stale upgrade quote, still holds
+    // the subscription's single OPEN slot. Neither bills the period that is about
+    // to start, and nobody is paying them: supersede them so the renewal can issue
+    // its own. (An invoice a clinic IS paying right now is never touched.)
+    await this.billing.voidSupersededOpenInvoices(
+      subscription.id,
+      'Superseded by the renewal invoice for the next period',
+    );
+
+    // The plan the next period runs on: a scheduled downgrade wins.
+    const billedPlan = subscription.pending_plan ?? subscription.plan!;
     const currency = await this.platformSettings.getTyped<string>(
       SettingKey.DEFAULT_CURRENCY,
     );
@@ -211,69 +239,51 @@ export class RenewalService {
       return await this.billing.generateInvoice(
         subscription.tenant!.id,
         subscription.id,
-        Number(subscription.plan!.price),
-        subscription.starts_at,
-        subscription.ends_at,
+        Number(billedPlan.price),
+        periodStart,
+        computeNextPeriodEnd(periodStart, billedPlan),
         currency,
+        InvoiceStatus.OPEN,
+        {
+          kind: SubscriptionInvoiceKind.RENEWAL,
+          targetPlanId: billedPlan.id,
+          provider: this.billing.providerName,
+        },
       );
     } catch (err) {
-      // Lost the race to a concurrent sweep — fetch what it created.
+      // Lost the race to a concurrent sweep — fetch what it created. (The other
+      // 23505, a different OPEN invoice a clinic is paying, finds nothing here
+      // and is skipped.)
       if ((err as { code?: string })?.code === '23505') {
-        const winner = await this.invoices.findOne({
-          where: {
-            subscription_id: subscription.id,
-            period_start: subscription.starts_at,
-          },
-        });
-        return winner &&
-          winner.status !== InvoiceStatus.PAID &&
-          winner.status !== InvoiceStatus.VOID &&
-          winner.status !== InvoiceStatus.REFUNDED
-          ? winner
-          : null;
+        const winner = await this.findPeriodInvoice(
+          subscription.id,
+          periodStart,
+        );
+        return winner && !this.isTerminal(winner) ? winner : null;
       }
       throw err;
     }
   }
 
-  /** A successful charge revives the subscription: ACTIVE, period advanced,
-   *  grace cleared. Never touched by the failure path. */
-  private async onSettled(
-    subscription: Subscription,
-    invoice: SubscriptionInvoice,
-  ): Promise<void> {
-    subscription.status = SubscriptionStatus.ACTIVE;
-    subscription.starts_at = subscription.ends_at;
-    subscription.ends_at = computeNextPeriodEnd(
-      subscription.starts_at,
-      subscription.plan!,
-    );
-    subscription.grace_started_at = null;
-    subscription.grace_expired_at = null;
-    await this.subscriptions.save(subscription);
-
-    await this.audit.record({
-      action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_SETTLED,
-      userId: undefined,
-      entityType: 'subscription',
-      entityId: subscription.id,
-      tenantId: subscription.tenant?.id,
-      after: {
-        invoiceId: invoice.id,
-        providerReference: invoice.provider_reference,
-        newEndsAt: subscription.ends_at.toISOString(),
+  private findPeriodInvoice(
+    subscriptionId: string,
+    periodStart: Date,
+  ): Promise<SubscriptionInvoice | null> {
+    return this.invoices.findOne({
+      where: {
+        subscription_id: subscriptionId,
+        period_start: periodStart,
+        status: Not(InvoiceStatus.VOID),
       },
     });
+  }
 
-    if (subscription.tenant?.contact_email) {
-      this.email.sendInvoice({
-        to: subscription.tenant.contact_email,
-        amount: invoice.amount,
-        planName: subscription.plan?.name,
-        tenantId: subscription.tenant.id,
-        invoiceNumber: invoice.id,
-      });
-    }
+  private isTerminal(invoice: SubscriptionInvoice): boolean {
+    return (
+      invoice.status === InvoiceStatus.PAID ||
+      invoice.status === InvoiceStatus.VOID ||
+      invoice.status === InvoiceStatus.REFUNDED
+    );
   }
 
   /**

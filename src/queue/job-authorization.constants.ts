@@ -141,6 +141,16 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   [JOB.SUBSCRIPTIONS_RENEWAL_CHECK]: SYSTEM,
   [JOB.REFUNDS_REAP]: SYSTEM,
   [JOB.PAYMENTS_RECONCILE]: SYSTEM,
+  // SYSTEM, though every row carries a tenantId — DELIBERATELY not `tenant`
+  // tier. The tenant tier refuses a suspended or unapproved tenant, but this
+  // job applies the consequences of money that has ALREADY moved: confirming a
+  // booking the patient paid for, or granting an add-on the clinic paid for.
+  // Rejecting it permanently because the tenant was suspended in the meantime
+  // would leave a captured payment with no booking and no entitlement, with no
+  // retry — the in-process event path never made that check either. The payment
+  // row itself is the trust anchor: the consumer re-reads it and verifies the
+  // tenant id in the payload matches.
+  [JOB.PAYMENTS_OUTCOME]: SYSTEM,
   [JOB.PLATFORM_LOG_CLEANUP]: SYSTEM,
   // AUTH-005 retention sweep. SYSTEM, never tenant-scoped: `refresh_tokens`
   // has no tenant column (it hangs off `users`), and the sweep's predicate is

@@ -509,30 +509,191 @@ describe('env.validation', () => {
   });
 
   describe('payments fail-fast (production)', () => {
-    it('FAILS the boot in production when the real provider has no credentials', () => {
-      expect(() => validate({ ...prodBase })).toThrow(
-        /MOYASAR_SECRET_KEY.*MOYASAR_WEBHOOK_SECRET|MOYASAR_SECRET_KEY, MOYASAR_WEBHOOK_SECRET/,
-      );
-    });
-
-    it('names ONLY the missing variables, never values', () => {
-      try {
-        validate({ ...prodBase, MOYASAR_SECRET_KEY: 'sk_live_secret' });
-        fail('expected validation to throw');
-      } catch (err) {
-        expect((err as Error).message).toContain('MOYASAR_WEBHOOK_SECRET');
-        expect((err as Error).message).not.toContain('sk_live_secret');
-      }
-    });
-
-    it('boots in production once the essential payment variables are set', () => {
+    // The legacy Moyasar production fail-fast was DISABLED in commit 3c28259
+    // ("deploy"): it required MOYASAR_SECRET_KEY/MOYASAR_WEBHOOK_SECRET at boot
+    // and the production env does not necessarily carry them. These tests pin
+    // the behaviour that actually ships — the runtime still fails CLOSED
+    // (PaymentGatewayFactory refuses to fall back to the Noop simulator) — and
+    // the new Tap rules, which are scoped to Tap being chosen deliberately.
+    it('legacy default (moyasar) still boots in production without keys — its boot-time check is disabled, the runtime fails closed instead', () => {
       const value = validate({
         ...prodBase,
-        MOYASAR_SECRET_KEY: 'sk',
-        MOYASAR_WEBHOOK_SECRET: 'whs',
         CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
       });
       expect(value.PAYMENT_PROVIDER).toBe('moyasar');
+    });
+
+    describe('Tap (PAYMENT_PROVIDER=tap) in production', () => {
+      const tapProd = {
+        ...prodBase,
+        CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY,
+        PAYMENT_PROVIDER: 'tap',
+      };
+      const sandboxOk = {
+        ...tapProd,
+        TAP_ENV: 'sandbox',
+        TAP_MERCHANT_ID: '1234567',
+        TAP_TEST_SECRET_KEY: 'sk_test_SandboxKeyNotARealSecret',
+        TAP_WEBHOOK_URL: 'https://api.example.com/api/v1/payments/webhooks/tap',
+      };
+      const liveOk = {
+        ...tapProd,
+        TAP_ENV: 'live',
+        TAP_MERCHANT_ID: '1234567',
+        TAP_LIVE_SECRET_KEY: 'sk_live_LiveKeyNotARealSecretValue',
+        TAP_WEBHOOK_URL: 'https://api.example.com/api/v1/payments/webhooks/tap',
+      };
+
+      it('FAILS the boot when nothing is configured, naming every missing variable', () => {
+        let message = '';
+        try {
+          validate({ ...tapProd });
+        } catch (err) {
+          message = (err as Error).message;
+        }
+        expect(message).toMatch(/Env validation error/);
+        for (const name of ['TAP_ENV', 'TAP_MERCHANT_ID', 'TAP_TEST_SECRET_KEY', 'TAP_WEBHOOK_URL']) {
+          expect(message).toContain(name);
+        }
+        expect(message).toContain('PAYMENT_PROVIDER=noop'); // the explicit opt-out is offered
+      });
+
+      it('names ONLY the missing variables, never a value', () => {
+        try {
+          validate({
+            ...liveOk,
+            TAP_MERCHANT_ID: undefined,
+          });
+          fail('expected validation to throw');
+        } catch (err) {
+          const m = (err as Error).message;
+          expect(m).toContain('TAP_MERCHANT_ID');
+          expect(m).not.toContain('sk_live_LiveKeyNotARealSecretValue');
+          expect(m).not.toContain('api.example.com');
+        }
+      });
+
+      it('boots with a complete SANDBOX configuration (staging runs NODE_ENV=production with test keys)', () => {
+        const value = validate({ ...sandboxOk });
+        expect(value.PAYMENT_PROVIDER).toBe('tap');
+        expect(value.TAP_ENV).toBe('sandbox');
+      });
+
+      it('boots with a complete LIVE configuration', () => {
+        expect(validate({ ...liveOk }).TAP_ENV).toBe('live');
+      });
+
+      it('requires the key for the ACTIVE environment: live needs TAP_LIVE_SECRET_KEY even when a test key is set', () => {
+        expect(() =>
+          validate({
+            ...liveOk,
+            TAP_LIVE_SECRET_KEY: undefined,
+            TAP_TEST_SECRET_KEY: 'sk_test_SandboxKeyNotARealSecret',
+          }),
+        ).toThrow(/TAP_LIVE_SECRET_KEY/);
+      });
+
+      it('requires TAP_ENV to be EXPLICIT — a missing value must never silently pick an environment', () => {
+        expect(() => validate({ ...sandboxOk, TAP_ENV: undefined })).toThrow(/TAP_ENV/);
+        expect(() => validate({ ...sandboxOk, TAP_ENV: '' })).toThrow(/TAP_ENV/);
+      });
+
+      it.each([
+        ['plain http', 'http://api.example.com/hook'],
+        ['localhost', 'https://localhost/hook'],
+        ['127.0.0.1', 'https://127.0.0.1:3000/hook'],
+        ['IPv6 loopback', 'https://[::1]/hook'],
+        ['a non-URL', 'not a url'],
+      ])('rejects a webhook URL that Tap cannot reach: %s', (_label, url) => {
+        expect(() => validate({ ...sandboxOk, TAP_WEBHOOK_URL: url })).toThrow(
+          /TAP_WEBHOOK_URL must be a public https URL/,
+        );
+      });
+
+      it('Tap variables are NOT required when a different provider is selected, even in production', () => {
+        expect(() =>
+          validate({ ...prodBase, CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY, PAYMENT_PROVIDER: 'moyasar' }),
+        ).not.toThrow();
+        expect(() =>
+          validate({ ...prodBase, CREDENTIALS_ENCRYPTION_KEY: PROD_ENCRYPTION_KEY, PAYMENT_PROVIDER: 'noop' }),
+        ).not.toThrow();
+      });
+
+      it('is not enforced outside production (dev can run keyless)', () => {
+        expect(() => validate({ ...base, PAYMENT_PROVIDER: 'tap' })).not.toThrow();
+      });
+
+      it('TAP_RECURRING_ENABLED is optional, defaults to unset, and accepts only true/false', () => {
+        expect(() => validate({ ...sandboxOk })).not.toThrow();
+        expect(validate({ ...sandboxOk }).TAP_RECURRING_ENABLED).toBeUndefined();
+        expect(validate({ ...sandboxOk, TAP_RECURRING_ENABLED: 'true' }).TAP_RECURRING_ENABLED).toBe(true);
+        expect(validate({ ...sandboxOk, TAP_RECURRING_ENABLED: 'false' }).TAP_RECURRING_ENABLED).toBe(false);
+        expect(validate({ ...sandboxOk, TAP_RECURRING_ENABLED: '' }).TAP_RECURRING_ENABLED).toBeUndefined();
+        expect(() => validate({ ...sandboxOk, TAP_RECURRING_ENABLED: 'maybe' })).toThrow(/TAP_RECURRING_ENABLED/);
+      });
+    });
+
+    describe('Tap key prefixes (every environment) — a live key in the test slot is how real money moves from "sandbox"', () => {
+      it.each([
+        ['TAP_TEST_SECRET_KEY', 'sk_live_LooksLikeALiveKeyValue000'],
+        ['TAP_TEST_SECRET_KEY', 'pk_test_ThisIsAPublicKeyNotSecret'],
+        ['TAP_LIVE_SECRET_KEY', 'sk_test_LooksLikeATestKeyValue0000'],
+        ['TAP_LIVE_SECRET_KEY', 'garbage'],
+      ])('rejects %s=%s — naming the variable, never echoing the value', (name, value) => {
+        try {
+          validate({ ...base, [name]: value });
+          fail('expected validation to throw');
+        } catch (err) {
+          const m = (err as Error).message;
+          expect(m).toContain(name);
+          expect(m).toMatch(/must start with/);
+          expect(m).not.toContain(value);
+        }
+      });
+
+      it('accepts correctly-prefixed keys, and blank ones (unset)', () => {
+        expect(() =>
+          validate({
+            ...base,
+            TAP_TEST_SECRET_KEY: 'sk_test_ok',
+            TAP_LIVE_SECRET_KEY: 'sk_live_ok',
+          }),
+        ).not.toThrow();
+        expect(() => validate({ ...base, TAP_TEST_SECRET_KEY: '', TAP_LIVE_SECRET_KEY: '' })).not.toThrow();
+      });
+
+      it('the prefix check applies even when Tap is not the selected provider (the key is still wrong)', () => {
+        expect(() =>
+          validate({ ...base, PAYMENT_PROVIDER: 'moyasar', TAP_TEST_SECRET_KEY: 'sk_live_wrongSlot000000' }),
+        ).toThrow(/TAP_TEST_SECRET_KEY/);
+      });
+    });
+
+    describe('Tap schema', () => {
+      it('accepts sandbox | live (or unset) for TAP_ENV and rejects anything else', () => {
+        expect(validate({ ...base, TAP_ENV: 'live' }).TAP_ENV).toBe('live');
+        expect(validate({ ...base, TAP_ENV: '' }).TAP_ENV).toBeUndefined();
+        expect(() => validate({ ...base, TAP_ENV: 'production' })).toThrow(/Env validation error/);
+      });
+
+      it('bounds the charge-expiry window to Tap\'s 5–60 minutes', () => {
+        expect(validate({ ...base, TAP_CHARGE_EXPIRY_MINUTES: '45' }).TAP_CHARGE_EXPIRY_MINUTES).toBe(45);
+        expect(() => validate({ ...base, TAP_CHARGE_EXPIRY_MINUTES: '4' })).toThrow(/Env validation error/);
+        expect(() => validate({ ...base, TAP_CHARGE_EXPIRY_MINUTES: '61' })).toThrow(/Env validation error/);
+      });
+
+      it('bounds the request timeout', () => {
+        expect(validate({ ...base, TAP_REQUEST_TIMEOUT_MS: '8000' }).TAP_REQUEST_TIMEOUT_MS).toBe(8000);
+        expect(() => validate({ ...base, TAP_REQUEST_TIMEOUT_MS: '10' })).toThrow(/Env validation error/);
+      });
+
+      it('an EMPTY PAYMENT_PROVIDER line means "unset" (default), not an invalid value that refuses to boot', () => {
+        expect(validate({ ...base, PAYMENT_PROVIDER: '' }).PAYMENT_PROVIDER).toBe('moyasar');
+      });
+
+      it('accepts tap as a provider', () => {
+        expect(validate({ ...base, PAYMENT_PROVIDER: 'tap' }).PAYMENT_PROVIDER).toBe('tap');
+      });
     });
 
     it('boots in production with payments explicitly disabled (PAYMENT_PROVIDER=noop)', () => {

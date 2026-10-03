@@ -13,6 +13,7 @@ import { FeatureFlagSource } from '../../entities/SaaS-Core/FeatureFlag';
 import {
   createMockDataSource,
   createMockEntityManager,
+  createMockQueryBuilder,
   createMockRepository,
   MockDataSource,
   MockRepository,
@@ -46,9 +47,23 @@ describe('BillingUpgradeEntitlementListener', () => {
 
   afterEach(() => jest.clearAllMocks());
 
+  /**
+   * The request the by-payment LOCK query finds. The listener locks the row with
+   * a query builder on the raw "paymentId" column (no join — Postgres refuses
+   * FOR UPDATE across the nullable side of an outer join) and then re-reads its
+   * relations UNLOCKED, so both reads return the same row.
+   */
+  const foundByPayment = (row: unknown) => {
+    const qb = createMockQueryBuilder();
+    qb.getOne.mockResolvedValueOnce(row);
+    requests.createQueryBuilder.mockReturnValueOnce(qb);
+    requests.findOne.mockResolvedValueOnce(row);
+    return qb;
+  };
+
   describe('onPaymentSucceeded', () => {
     it('applies a feature grant and marks the request completed', async () => {
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
         type: BILLING_UPGRADE_TYPE.FEATURE,
@@ -80,7 +95,7 @@ describe('BillingUpgradeEntitlementListener', () => {
     });
 
     it('applies a usage-limit override with the admin-approved quantity', async () => {
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-2',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
         type: BILLING_UPGRADE_TYPE.USAGE_LIMIT,
@@ -110,7 +125,7 @@ describe('BillingUpgradeEntitlementListener', () => {
       // A request row created before the typed registry (or naming a renamed
       // capability) must fail loudly. Writing the flag anyway would leave a
       // customer who has PAID with a row that grants nothing.
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-3',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
         type: BILLING_UPGRADE_TYPE.FEATURE,
@@ -129,7 +144,7 @@ describe('BillingUpgradeEntitlementListener', () => {
     });
 
     it('is idempotent — a duplicate/re-delivered webhook does not re-apply the entitlement', async () => {
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.COMPLETED, // already applied by an earlier delivery
         type: BILLING_UPGRADE_TYPE.FEATURE,
@@ -146,7 +161,7 @@ describe('BillingUpgradeEntitlementListener', () => {
     });
 
     it('is a silent no-op for a payment that is not linked to any billing-upgrade request', async () => {
-      requests.findOne.mockResolvedValueOnce(null);
+      foundByPayment(null);
       await expect(
         listener.onPaymentSucceeded(
           new PaymentSucceededEvent(
@@ -162,7 +177,7 @@ describe('BillingUpgradeEntitlementListener', () => {
     });
 
     it('never throws (and never leaves the request completed) when the entitlement write fails', async () => {
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
         type: BILLING_UPGRADE_TYPE.FEATURE,
@@ -182,7 +197,7 @@ describe('BillingUpgradeEntitlementListener', () => {
 
   describe('onPaymentFailed', () => {
     it('marks a payment_processing request as payment_failed without touching entitlements', async () => {
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
       });
@@ -202,7 +217,7 @@ describe('BillingUpgradeEntitlementListener', () => {
     });
 
     it('leaves an already-terminal request untouched', async () => {
-      requests.findOne.mockResolvedValueOnce({
+      foundByPayment({
         id: 'req-1',
         status: BILLING_UPGRADE_STATUS.CANCELLED,
       });
@@ -210,6 +225,116 @@ describe('BillingUpgradeEntitlementListener', () => {
         new PaymentFailedEvent('t1', 'pay-1', undefined),
       );
       expect(requests.save).not.toHaveBeenCalled();
+    });
+  });
+
+  // REL-005 — the durable `payments.outcome` consumer calls applyPaid/applyFailed
+  // directly. They share one implementation with the event handlers, but unlike
+  // the handlers they must THROW, so a failed apply is retried instead of lost.
+  describe('applyPaid / applyFailed (REL-005 durable consumer)', () => {
+    const feature = () => ({
+      id: 'req-1',
+      status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
+      type: BILLING_UPGRADE_TYPE.FEATURE,
+      feature_key: FeatureKey.AI_ASSISTANT,
+      tenant: { id: 't1' },
+    });
+
+    it('applyPaid applies the grant exactly as the event handler does', async () => {
+      foundByPayment(feature());
+      requests.save.mockImplementationOnce(async (r: any) => r);
+
+      await listener.applyPaid('pay-1');
+
+      expect(featureFlags.set).toHaveBeenCalledWith(
+        't1',
+        FeatureKey.AI_ASSISTANT,
+        true,
+        expect.objectContaining({ source: FeatureFlagSource.BILLING_UPGRADE }),
+      );
+      expect(requests.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: BILLING_UPGRADE_STATUS.COMPLETED }),
+      );
+      // The lock is taken on the request row ALONE, filtering the raw FK column —
+      // never findOne({ relations, lock }) / findOne({ where: { payment } , lock }),
+      // which Postgres refuses ("FOR UPDATE cannot be applied to the nullable side
+      // of an outer join").
+      const qb = requests.createQueryBuilder.mock.results[0].value;
+      expect(qb.where).toHaveBeenCalledWith(
+        'request."paymentId" = :paymentId',
+        {
+          paymentId: 'pay-1',
+        },
+      );
+      expect(qb.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(requests.findOne).not.toHaveBeenCalledWith(
+        expect.objectContaining({ lock: expect.anything() }),
+      );
+    });
+
+    it('applyPaid is idempotent: an already-COMPLETED request is a no-op', async () => {
+      foundByPayment({
+        ...feature(),
+        status: BILLING_UPGRADE_STATUS.COMPLETED,
+      });
+      await listener.applyPaid('pay-1');
+      expect(featureFlags.set).not.toHaveBeenCalled();
+      expect(requests.save).not.toHaveBeenCalled();
+    });
+
+    it('applyPaid THROWS when the apply fails (so the job is retried)…', async () => {
+      foundByPayment(feature());
+      featureFlags.set.mockRejectedValueOnce(new Error('deadlock detected'));
+      await expect(listener.applyPaid('pay-1')).rejects.toThrow(
+        'deadlock detected',
+      );
+    });
+
+    it('…while the event handler swallows the SAME failure (it must not fail the webhook)', async () => {
+      foundByPayment(feature());
+      featureFlags.set.mockRejectedValueOnce(new Error('deadlock detected'));
+      await expect(
+        listener.onPaymentSucceeded(
+          new PaymentSucceededEvent('t1', 'pay-1', 150.5, 'SAR', undefined),
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it('applyFailed moves a request still awaiting the payment to payment_failed', async () => {
+      foundByPayment({
+        id: 'req-1',
+        status: BILLING_UPGRADE_STATUS.PAYMENT_PROCESSING,
+      });
+      requests.save.mockImplementationOnce(async (r: any) => r);
+      await listener.applyFailed('pay-1');
+      expect(requests.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: BILLING_UPGRADE_STATUS.PAYMENT_FAILED,
+        }),
+      );
+    });
+
+    it('applyFailed leaves a request that has since COMPLETED untouched (a late success is never regressed)', async () => {
+      foundByPayment({
+        id: 'req-1',
+        status: BILLING_UPGRADE_STATUS.COMPLETED,
+      });
+      await listener.applyFailed('pay-1');
+      expect(requests.save).not.toHaveBeenCalled();
+    });
+
+    it('applyFailed THROWS on failure; the event handler swallows it', async () => {
+      requests.createQueryBuilder.mockImplementation(() => {
+        const qb = createMockQueryBuilder();
+        qb.getOne.mockRejectedValue(new Error('db down'));
+        return qb;
+      });
+      await expect(listener.applyFailed('pay-1')).rejects.toThrow('db down');
+      await expect(
+        listener.onPaymentFailed(
+          new PaymentFailedEvent('t1', 'pay-1', undefined),
+        ),
+      ).resolves.toBeUndefined();
     });
   });
 });
