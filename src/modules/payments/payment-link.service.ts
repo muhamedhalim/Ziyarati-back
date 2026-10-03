@@ -17,8 +17,27 @@ import {
   round2,
 } from './payments.constants';
 import { MerchantAccountService } from './merchant-account.service';
+import { PaymentsConfig } from './payments.config';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
+
+/**
+ * What the PUBLIC pay surface needs to know about a link — a plain object, not
+ * the entity, so the `PaymentLink` import stays confined to this file (the
+ * VER-009 guard in payment-link.controller.spec.ts proves it is the only one).
+ * The link token IS the authorisation here: it is the capability the patient was
+ * given, and nothing else (no tenant, no user) identifies the caller.
+ */
+export interface PublicPayLinkRef {
+  linkId: string;
+  tenantId: string;
+  appointmentId: string;
+  status: string;
+  expiresAt?: Date;
+}
+
+/** Shape guard: junk tokens never reach the database. */
+const PUBLIC_TOKEN_SHAPE = /^[A-Za-z0-9_-]{16,64}$/;
 
 /**
  * Shareable payment links (`payment_links`).
@@ -37,6 +56,7 @@ export class PaymentLinkService {
     private readonly platformSettings: SystemSettingService,
     private readonly merchants: MerchantAccountService,
     private readonly dataSource: DataSource,
+    private readonly config: PaymentsConfig,
   ) {}
 
   async create(tenantId: string, dto: CreatePaymentLinkDto): Promise<PaymentLink> {
@@ -97,6 +117,8 @@ export class PaymentLinkService {
 
     const [data, total] = await this.links.findAndCount({
       where,
+      // The appointment's id is all `toView` needs, to know a booking is attached.
+      loadRelationIds: { relations: ['appointment'] },
       order: { created_at: 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
@@ -107,6 +129,7 @@ export class PaymentLinkService {
   async findOne(tenantId: string, id: string): Promise<PaymentLink> {
     const link = await this.links.findOne({
       where: { id, tenant: { id: tenantId } },
+      loadRelationIds: { relations: ['appointment'] },
     });
     if (!link) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment link not found' });
@@ -128,7 +151,14 @@ export class PaymentLinkService {
     tenantId: string,
     appointment: Appointment,
   ): Promise<
-    { token: string; amount: number; currency: string; expiresAt?: string } | undefined
+    | {
+        token: string;
+        amount: number;
+        currency: string;
+        expiresAt?: string;
+        payUrl?: string;
+      }
+    | undefined
   > {
     try {
       const settings = await this.tenantSettings.findOne({
@@ -148,10 +178,94 @@ export class PaymentLinkService {
         amount: Number(link.amount),
         currency: appointment.currency,
         expiresAt: link.expires_at?.toISOString(),
+        payUrl: this.payUrlFor(link.link_token),
       };
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * The durable public URL a patient opens to pay. Built here, once, so every
+   * surface that hands a link to a patient (public booking, WhatsApp / AI, staff)
+   * produces the same URL — and none of them ever builds one itself.
+   *
+   * `undefined` when the deployment cannot complete a patient payment on that
+   * page (legacy Moyasar in production): a patient is never handed a dead link.
+   */
+  payUrlFor(token: string): string | undefined {
+    return this.config.patientPayPageServed
+      ? this.config.payLinkUrl(token)
+      : undefined;
+  }
+
+  /**
+   * A link as the staff API returns it: the row plus the URL to share.
+   *
+   * Only a link tied to a booking has one. The public pay page prices a payment
+   * from the appointment and names the payer from its patient; an amount-only
+   * link has neither, so offering a URL for it would hand a patient a page that
+   * can never take their money. Callers load the `appointment` relation (id
+   * only is enough) for this to be decided correctly.
+   */
+  toView(link: PaymentLink): PaymentLink & { pay_url?: string } {
+    const url = link.appointment ? this.payUrlFor(link.link_token) : undefined;
+    return url ? { ...link, pay_url: url } : { ...link };
+  }
+
+  /**
+   * Resolve a link for the PUBLIC pay surface. No tenant filter — the token is
+   * the credential. Returns null for anything that is not a real link (unknown,
+   * malformed): callers answer with one uniform 404 so a token's existence is
+   * never disclosed. An expired ACTIVE link is lazily flipped to EXPIRED, same
+   * as the staff read path.
+   */
+  async findPublicByToken(token: string): Promise<PublicPayLinkRef | null> {
+    if (typeof token !== 'string' || !PUBLIC_TOKEN_SHAPE.test(token)) {
+      return null;
+    }
+    const link = await this.links.findOne({
+      where: { link_token: token },
+      relations: { tenant: true, appointment: true },
+    });
+    // A link with no appointment cannot be paid through the booking surface.
+    if (!link || !link.tenant?.id || !link.appointment?.id) return null;
+
+    if (
+      link.status === PAYMENT_LINK_STATUS.ACTIVE &&
+      link.expires_at &&
+      link.expires_at.getTime() < Date.now()
+    ) {
+      link.status = PAYMENT_LINK_STATUS.EXPIRED;
+      await this.links.update(link.id, { status: PAYMENT_LINK_STATUS.EXPIRED });
+    }
+    return {
+      linkId: link.id,
+      tenantId: link.tenant.id,
+      appointmentId: link.appointment.id,
+      status: link.status,
+      expiresAt: link.expires_at ?? undefined,
+    };
+  }
+
+  /**
+   * The booking was paid: its ACTIVE links are spent. Idempotent (only ACTIVE
+   * rows move) and tenant-scoped, so the durable outcome job can call it on every
+   * redelivery. A DISABLED or EXPIRED link stays as it was — that history matters.
+   */
+  async markUsedForAppointment(
+    tenantId: string,
+    appointmentId: string,
+  ): Promise<number> {
+    const res = await this.links
+      .createQueryBuilder()
+      .update(PaymentLink)
+      .set({ status: PAYMENT_LINK_STATUS.USED })
+      .where('"appointmentId" = :appointmentId', { appointmentId })
+      .andWhere('"tenantId" = :tenantId', { tenantId })
+      .andWhere('status = :active', { active: PAYMENT_LINK_STATUS.ACTIVE })
+      .execute();
+    return res.affected ?? 0;
   }
 
   /**
@@ -176,8 +290,12 @@ export class PaymentLinkService {
   /** Disable an active link so it can no longer be used. */
   async disable(tenantId: string, id: string): Promise<PaymentLink> {
     const link = await this.findOne(tenantId, id);
+    // A column UPDATE, not `save(link)`: the row was loaded with the appointment
+    // as a bare id (`loadRelationIds`), which is not worth round-tripping
+    // through the relation cascade logic just to flip one status.
+    await this.links.update(link.id, { status: PAYMENT_LINK_STATUS.DISABLED });
     link.status = PAYMENT_LINK_STATUS.DISABLED;
-    return this.links.save(link);
+    return link;
   }
 
   /**
@@ -187,6 +305,7 @@ export class PaymentLinkService {
   async getByToken(tenantId: string, token: string): Promise<PaymentLink> {
     const link = await this.links.findOne({
       where: { link_token: token, tenant: { id: tenantId } },
+      loadRelationIds: { relations: ['appointment'] },
     });
     if (!link) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment link not found' });
@@ -197,7 +316,7 @@ export class PaymentLinkService {
       link.expires_at.getTime() < Date.now()
     ) {
       link.status = PAYMENT_LINK_STATUS.EXPIRED;
-      await this.links.save(link);
+      await this.links.update(link.id, { status: PAYMENT_LINK_STATUS.EXPIRED });
     }
     return link;
   }

@@ -1676,7 +1676,13 @@ export class AiToolDispatchService {
     tenantId: string,
     appt: Appointment,
   ): Promise<
-    | { token: string; amount: number; currency: string; expiresAt?: string }
+    | {
+        token: string;
+        amount: number;
+        currency: string;
+        expiresAt?: string;
+        payUrl?: string;
+      }
     | undefined
   > {
     try {
@@ -1695,6 +1701,8 @@ export class AiToolDispatchService {
         amount: Number(link.amount),
         currency: appt.currency,
         expiresAt: link.expires_at?.toISOString(),
+        // The patient-facing page. Built by the payments module, never here.
+        payUrl: this.paymentLinks.payUrlFor(link.link_token),
       };
     } catch (err) {
       this.logger.warn(

@@ -249,7 +249,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
       "Before booking, you must know the patient's health-insurance status: call get_customer_insurance_status first. " +
       'If it returns a known value, confirm it with the patient rather than asking again. If it returns null (unknown), ask a plain yes/no question, IN THE LANGUAGE THE PATIENT HAS BEEN USING (never a fixed script and never switch language for this one question), then pass the answer as hasInsurance. ' +
       'Insured patients are never charged online: no payment link is generated for them, regardless of what you say. ' +
-      "Uninsured patients may get a payment link in this tool's result when the clinic requires online payment for this booking — if `paymentLink` is present in the result, share its details with the patient so they can complete payment; the decision to include it is made by the backend, not by you. " +
+      "Uninsured patients may get a payment link in this tool's result when the clinic requires online payment for this booking — if `paymentLink` is present in the result, share its `payUrl` and amount with the patient so they can complete payment; the decision to include it is made by the backend, not by you. " +
       'The booking itself is validated for real availability and fails if the slot is taken.',
     parameters: {
       type: 'object',

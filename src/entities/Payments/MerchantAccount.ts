@@ -6,6 +6,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 
 import { Tenant } from '../SaaS-Core/Tenant';
@@ -76,6 +77,36 @@ export class MerchantAccount {
     at: string;
     note?: string;
   }>;
+
+  /** Tap `led_…` created for this clinic by the Connect onboarding flow. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  provider_lead_id?: string;
+
+  /**
+   * What the provider has told us about this merchant. For Tap this is the
+   * CLAIM recorded from the onboarding callback — `{ claim: { merchantId,
+   * isAcceptanceAllowed, isPayoutAllowed, receivedAt } }` — and is advisory
+   * only: it never makes an account chargeable, a platform admin's review does.
+   * Allow-listed fields only: never a raw payload, never a credential.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  provider_capabilities?: Record<string, unknown>;
+
+  /**
+   * sha256 of the secret embedded in the URL the provider posts onboarding
+   * events to. Tap documents no signature for those events, so that URL is the
+   * only authenticator; only its hash is kept.
+   */
+  @Index('UQ_merchant_accounts_callback_token_hash', {
+    unique: true,
+    where: '"provider_callback_token_hash" IS NOT NULL',
+  })
+  @Column({ type: 'varchar', length: 64, nullable: true, select: false })
+  provider_callback_token_hash?: string;
+
+  /** Atomic claim: two concurrent "connect" clicks must create exactly one lead. */
+  @Column({ type: 'timestamptz', nullable: true })
+  provider_onboarding_claimed_at?: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   submitted_at?: Date;

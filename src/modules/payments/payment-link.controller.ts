@@ -64,7 +64,7 @@ export class PaymentLinkController {
   @ApiOperation({
     summary: 'Generate a payment link',
     description:
-      '**Protected — `payments.manage`. Clinic active.** Mints an unguessable, tenant-scoped link with an optional expiry (defaults to 72h).',
+      '**Protected — `payments.manage`. Clinic active.** Mints an unguessable, tenant-scoped link with an optional expiry (defaults to 72h). The response carries `pay_url`: the public page a patient opens to pay.',
   })
   @ApiOkResponse({ description: 'Payment link created.' })
   @ApiUnauthorizedResponse({
@@ -77,8 +77,10 @@ export class PaymentLinkController {
   })
   @Post()
   @RequirePermissions(PERMISSION.PAYMENTS_MANAGE)
-  create(@Body() dto: CreatePaymentLinkDto) {
-    return this.links.create(this.ctx.requireTenantId(), dto);
+  async create(@Body() dto: CreatePaymentLinkDto) {
+    return this.links.toView(
+      await this.links.create(this.ctx.requireTenantId(), dto),
+    );
   }
 
   @ApiOperation({
@@ -97,8 +99,9 @@ export class PaymentLinkController {
   })
   @Get()
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
-  list(@Query() query: QueryPaymentLinksDto) {
-    return this.links.list(this.ctx.requireTenantId(), query);
+  async list(@Query() query: QueryPaymentLinksDto) {
+    const page = await this.links.list(this.ctx.requireTenantId(), query);
+    return { ...page, data: page.data.map((l) => this.links.toView(l)) };
   }
 
   @ApiOperation({
@@ -122,8 +125,10 @@ export class PaymentLinkController {
   })
   @Get('token/:token')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
-  getByToken(@Param('token') token: string) {
-    return this.links.getByToken(this.ctx.requireTenantId(), token);
+  async getByToken(@Param('token') token: string) {
+    return this.links.toView(
+      await this.links.getByToken(this.ctx.requireTenantId(), token),
+    );
   }
 
   @ApiOperation({
@@ -152,8 +157,10 @@ export class PaymentLinkController {
   })
   @Get(':id')
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.links.findOne(this.ctx.requireTenantId(), id);
+  async findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.links.toView(
+      await this.links.findOne(this.ctx.requireTenantId(), id),
+    );
   }
 
   @ApiOperation({
@@ -183,7 +190,9 @@ export class PaymentLinkController {
   @Post(':id/disable')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(PERMISSION.PAYMENTS_MANAGE)
-  disable(@Param('id', ParseUUIDPipe) id: string) {
-    return this.links.disable(this.ctx.requireTenantId(), id);
+  async disable(@Param('id', ParseUUIDPipe) id: string) {
+    return this.links.toView(
+      await this.links.disable(this.ctx.requireTenantId(), id),
+    );
   }
 }

@@ -179,6 +179,16 @@ export class PaymentService {
       ? null
       : await this.merchants.splitContext(tenantId);
 
+    // Where a CLINIC charge settles: the clinic's own merchant (Tap Platform).
+    // Resolved by the same capability rule that already gated this charge above,
+    // so a charge can never carry routing the gate would have refused. Null for a
+    // platform charge (the platform's own account) and for providers that do not
+    // route by merchant. A Tap clinic charge WITHOUT routing is refused by the
+    // adapter before any request is made — it can never land in our own account.
+    const routing = platformRevenue
+      ? null
+      : await this.merchants.routingContext(tenantId);
+
     // Only gateways that cannot charge anonymously ask for payer identity, so
     // the others pay no extra read.
     const payer = provider.requiresPayerDetails
@@ -263,6 +273,7 @@ export class PaymentService {
         returnUrl: this.config.paymentReturnUrl(platformRevenue),
         // Booking funds belong to the clinic; add-ons/subscriptions to the platform.
         payee: platformRevenue ? 'platform' : 'clinic',
+        settlementMerchantId: routing?.settlementMerchantId,
         customer: payer,
         reference: dto.appointmentId ? { order: dto.appointmentId } : undefined,
         metadata: { tenantId, paymentId: payment.id },
@@ -308,7 +319,15 @@ export class PaymentService {
       // Persist the hosted-page URL so a refresh/retry can REUSE the active
       // payment attempt instead of creating a second gateway charge.
       if (redirectUrl) {
-        payment.metadata = { ...(payment.metadata ?? {}), redirect_url: redirectUrl };
+        payment.metadata = {
+          ...(payment.metadata ?? {}),
+          redirect_url: redirectUrl,
+          // When the payer was handed that URL, as an ISO instant. Age checks use
+          // THIS, never `created_at`: that column is `timestamp without time zone`,
+          // which node-postgres reads back as LOCAL time, so any server not on UTC
+          // sees a skew of its whole UTC offset.
+          redirect_issued_at: new Date().toISOString(),
+        };
       }
 
       // Ledger atomicity: the status change and its CHARGE audit row commit
@@ -396,8 +415,12 @@ export class PaymentService {
     gatewayPaymentId?: string,
   ): Promise<void> {
     try {
-      const { redirect_url: _unreferenced, ...rest } = (payment.metadata ??
-        {}) as Record<string, unknown>;
+      // The URL was never handed out, so neither is the instant it would have been.
+      const {
+        redirect_url: _url,
+        redirect_issued_at: _issuedAt,
+        ...rest
+      } = (payment.metadata ?? {}) as Record<string, unknown>;
       payment.metadata = { ...rest, create_uncertain: true };
       await this.payments.update(payment.id, {
         ...(gatewayPaymentId ? { gateway_payment_id: gatewayPaymentId } : {}),
@@ -768,6 +791,43 @@ export class PaymentService {
         },
       });
     }
+  }
+
+  /**
+   * Close an abandoned PENDING attempt so a fresh one can replace it (the
+   * one-PENDING-per-booking index would otherwise hold the booking hostage to a
+   * charge nobody can complete: an expired hosted page, or an attempt that never
+   * reached the gateway and so never gave the payer a URL).
+   *
+   * Returns false when the row is no longer PENDING (a webhook settled it while
+   * the caller was deciding) — the caller must then re-read, never overwrite.
+   * Only PENDING can move: a payment that was captured is never touched here.
+   */
+  async supersedePending(tenantId: string, id: string): Promise<boolean> {
+    return this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(Payment);
+      const payment = await repo.findOne({
+        where: { id, tenant: { id: tenantId } },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!payment || payment.status !== PaymentStatus.PENDING) return false;
+
+      payment.status = PaymentStatus.FAILED;
+      payment.failure_reason = 'Superseded by a new payment attempt';
+      await repo.save(payment);
+      await this.transactions.record(
+        tenantId,
+        payment.id,
+        {
+          type: TRANSACTION_TYPE.VERIFY,
+          amount: Number(payment.amount),
+          status: 'failed',
+          gatewayTransactionId: payment.gateway_payment_id,
+        },
+        manager,
+      );
+      return true;
+    });
   }
 
   async getStatus(tenantId: string, id: string) {

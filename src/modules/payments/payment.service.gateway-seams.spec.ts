@@ -95,6 +95,7 @@ describe('PaymentService.create — gateway seams (Tap Phase 1)', () => {
           useValue: {
             assertChargeable: jest.fn().mockResolvedValue(undefined),
             splitContext: jest.fn().mockResolvedValue(null),
+            routingContext: jest.fn().mockResolvedValue(null),
           },
         },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },

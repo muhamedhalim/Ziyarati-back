@@ -21,6 +21,9 @@ import { Service } from '../../entities/Services/Service';
 import { SchedulingModule } from '../scheduling/scheduling.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { SubscriptionBillingModule } from '../subscription-billing/subscription-billing.module';
+// The single answer to "can this clinic collect an online booking payment?" — config +
+// DataSource only, so it does not pull the payments module into the appointments domain.
+import { PaymentsCoreModule } from '../payments/payments-core.module';
 
 import { AppointmentsService } from './appointment.service';
 import { AppointmentReviewService } from './appointment-review.service';
@@ -62,6 +65,8 @@ import { ReviewController } from './review.controller';
     SchedulingModule,
     // Usage-quota enforcement (UsageService) for appointment creation.
     SubscriptionBillingModule,
+    // OnlinePaymentCapabilityService: decides PENDING_PAYMENT vs CONFIRMED at booking.
+    PaymentsCoreModule,
     // The single clinic-wide audit INSERT path (ActivityAuditService), which
     // AppointmentAuditService delegates to.
     ActivityLogModule,

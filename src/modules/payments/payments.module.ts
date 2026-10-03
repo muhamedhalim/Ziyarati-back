@@ -37,6 +37,8 @@ import { PaymentFinancialsService } from './payment-financials.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { MerchantAccountService } from './merchant-account.service';
+import { TapOnboardingService } from './tap-onboarding.service';
+import { PublicPaymentService } from './public-payment.service';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
 import { PaymentsOpsController } from './payments-ops.controller';
@@ -49,6 +51,8 @@ import { SettlementController } from './settlement.controller';
 import { PaymentWebhookController } from './payment-webhook.controller';
 import { MerchantAccountController } from './merchant-account.controller';
 import { MerchantAccountAdminController } from './merchant-account-admin.controller';
+import { TapOnboardingCallbackController } from './tap-onboarding-callback.controller';
+import { PublicPaymentController } from './public-payment.controller';
 
 import { MoyasarProvider } from './providers/moyasar.provider';
 import { NoopGatewayProvider } from './providers/noop-gateway.provider';
@@ -113,6 +117,11 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
   controllers: [
     PaymentGatewayController,
     PaymentsOpsController,
+    // MUST precede PaymentController: Nest registers routes in this order, and
+    // `GET /payments/:id` (a uuid-validated param) would otherwise capture
+    // `GET /payments/merchant-account` first and answer 400 — the clinic could
+    // never read its own onboarding status. (Guarded by payments.module.spec.)
+    MerchantAccountController,
     PaymentController,
     PaymentLinkController,
     TransactionController,
@@ -120,8 +129,11 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     InvoiceController,
     SettlementController,
     PaymentWebhookController,
-    MerchantAccountController,
     MerchantAccountAdminController,
+    // Tap clinic-onboarding callback (public, token-authenticated, advisory only).
+    TapOnboardingCallbackController,
+    // Patient pay page API (public, authorised by the pay-link token).
+    PublicPaymentController,
   ],
   providers: [
     PaymentGatewayService,
@@ -142,7 +154,10 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     PaymentWebhookService,
     PaymentReconciliationService,
     MerchantAccountService,
-    // PaymentsConfig (typed config) and TapApiClient come from PaymentsCoreModule.
+    TapOnboardingService,
+    PublicPaymentService,
+    // PaymentsConfig (typed config), TapApiClient and OnlinePaymentCapabilityService
+    // come from PaymentsCoreModule.
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
     MoyasarProvider,
     TapGatewayProvider,

@@ -81,6 +81,8 @@ function buildService(overrides: BuildOverrides = {}) {
         amount: 200,
         expires_at: new Date('2026-08-13T00:00:00Z'),
       }),
+    // The payments module builds the patient-facing URL; the AI layer never does.
+    payUrlFor: jest.fn((token: string) => `https://app.test/pay/${token}`),
   };
   const dataSource = buildDataSourceMock();
   // AI-016/AI-017 (T072/T073): writeAttemptRow/run() now call
@@ -146,6 +148,25 @@ describe('AiToolDispatchService — insurance-aware booking', () => {
         paymentLink: expect.objectContaining({ token: 'tok_abc' }),
       }),
     );
+  });
+
+  it('hands the model the durable pay page URL (built by the payments module) so the patient can actually pay — WhatsApp / AI path', async () => {
+    const { service, paymentLinks } = buildService();
+
+    const result: any = await service.execute(ctx as any, {
+      id: 'call-1',
+      name: 'book_appointment',
+      arguments: JSON.stringify({ ...baseArgs, hasInsurance: false }),
+    });
+
+    expect(paymentLinks.payUrlFor).toHaveBeenCalledWith('tok_abc');
+    expect(result.paymentLink).toEqual({
+      token: 'tok_abc',
+      amount: 200,
+      currency: expect.any(String),
+      expiresAt: '2026-08-13T00:00:00.000Z',
+      payUrl: 'https://app.test/pay/tok_abc',
+    });
   });
 
   it('books without a payment link when insured, even though the clinic requires payment', async () => {

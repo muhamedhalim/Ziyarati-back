@@ -39,9 +39,10 @@ import { AI_MESSAGE_MAX_CHARS } from '../ai/ai.constants';
  * Wire shape of `book_public_appointment`'s successful `toolResult` (see
  * `AiToolDispatchService.bookPublicAppointment`), forwarded on `ai:done` so a
  * booking-capable client can render a confirmation without trusting anything
- * the model said in its text reply. `paymentLink` carries no URL — only the
- * fields the payment-link service actually returns (`token`, `amount`,
- * `currency`, `expiresAt`); a client resolves the token into a route itself.
+ * the model said in its text reply. `paymentLink` carries the fields the
+ * payment-link service returns (`token`, `amount`, `currency`, `expiresAt`)
+ * plus `payUrl`, the durable public page a patient opens to pay — a client
+ * links to it as-is and never builds a payment URL itself.
  */
 export interface PublicBookingConfirmationPayload {
   appointmentId: string;
@@ -59,6 +60,7 @@ export interface PublicBookingConfirmationPayload {
     amount: number;
     currency: string;
     expiresAt?: string;
+    payUrl?: string;
   };
 }
 

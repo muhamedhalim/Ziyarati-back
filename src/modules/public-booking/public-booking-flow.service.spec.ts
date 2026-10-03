@@ -331,6 +331,7 @@ describe('PublicBookingFlowService.confirm', () => {
       token: 'pl-token',
       amount: 100,
       currency: 'SAR',
+      payUrl: 'https://app.test/pay/pl-token',
     });
 
     const result = await service.confirm(TENANT, CONV, PRINCIPAL, {
@@ -367,7 +368,13 @@ describe('PublicBookingFlowService.confirm', () => {
     expect(result).toMatchObject({
       appointmentId: 'appt-1',
       hasInsurance: false,
-      paymentLink: { token: 'pl-token', amount: 100, currency: 'SAR' },
+      // the server-built pay page URL reaches the visitor untouched
+      paymentLink: {
+        token: 'pl-token',
+        amount: 100,
+        currency: 'SAR',
+        payUrl: 'https://app.test/pay/pl-token',
+      },
     });
   });
 

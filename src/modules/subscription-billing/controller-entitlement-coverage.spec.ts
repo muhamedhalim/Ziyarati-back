@@ -114,6 +114,15 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'integration-platform/inbound/inbound-webhook.controller.ts',
   'notifications/notification-webhook.controller.ts',
   'payments/payment-webhook.controller.ts',
+  // Tap migration Phase 4 — the patient pay page API. A patient has no tenant
+  // principal to evaluate an entitlement against, and a payment must be possible
+  // (and a clinic's money must reach the clinic) regardless of the clinic's own
+  // billing state; the link token is the credential and abuse is bounded by the
+  // per-route throttles, not a subscription gate.
+  'payments/public-payment.controller.ts',
+  // The Tap clinic-onboarding callback: posted by Tap, authenticated by the
+  // unguessable per-session URL token, no tenant principal at all.
+  'payments/tap-onboarding-callback.controller.ts',
   'whatsapp/whatsapp-webhook.controller.ts',
   // Phase 11 (US7, T134/T136, spec 014) — a recipient must be able to
   // unsubscribe regardless of the clinic's billing state (see the table

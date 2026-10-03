@@ -39,6 +39,7 @@ import { TapSandbox, settle } from './utils/tap-e2e';
 
 import { TapApiClient } from '../src/modules/payments/providers/tap/tap-api.client';
 import { PaymentReconciliationService } from '../src/modules/payments/payment-reconciliation.service';
+import { PaymentLinkService } from '../src/modules/payments/payment-link.service';
 import { ResourceEntitlementListener } from '../src/modules/resource-pricing/resource-entitlement.listener';
 import { BillingUpgradeEntitlementListener } from '../src/modules/billing-upgrades/billing-upgrade-entitlement.listener';
 import { AppointmentsService } from '../src/modules/appointment/appointment.service';
@@ -105,6 +106,7 @@ describe('Payments â€” finance classification & durable outcomes (Tap Phase 2) â
       get(AppointmentsService),
       get(BillingUpgradeEntitlementListener),
       get(ResourceEntitlementListener),
+      get(PaymentLinkService),
     );
     const processor = new PaymentsProcessor(
       get(PaymentReconciliationService),

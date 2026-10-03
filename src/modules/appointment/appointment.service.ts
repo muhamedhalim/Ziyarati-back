@@ -52,6 +52,7 @@ import {
 import { UserRole } from '../../entities/Auth&RBAC/UserRole';
 import { BranchScopeService } from '../../core/branch-scope/branch-scope.service';
 import { StaffScopeService } from '../../core/staff-scope/staff-scope.service';
+import { OnlinePaymentCapabilityService } from '../payments/online-payment-capability.service';
 
 /** Authenticated principal's identity + permission set — enough to apply ownership scoping. */
 export interface AppointmentCaller {
@@ -200,6 +201,9 @@ export class AppointmentsService {
     private readonly branchScope: BranchScopeService,
     /** The one authority on "which StaffProfile, if any, IS this caller". */
     private readonly staffScope: StaffScopeService,
+    /** Can this clinic actually collect an online payment right now? Decides
+     *  PENDING_PAYMENT vs CONFIRMED at booking (see `isOnlinePaymentDue`). */
+    private readonly onlinePayments: OnlinePaymentCapabilityService,
   ) {}
 
   // ────────────────────── Activity / audit trail ─────────────────────────── //
@@ -1296,7 +1300,17 @@ export class AppointmentsService {
     tenantId: string,
     appointmentId: string,
     outcome: 'paid' | 'refunded' | 'partially_refunded',
-    triggeredBy = 'system:payment',
+    /**
+     * The staff actor, if any — and a payment-driven change has none. NULL, NOT a
+     * descriptive placeholder: `appointment_status_logs.triggered_by` and
+     * `appointment_history.changed_by` are uuid columns, and the old default
+     * (the literal `'system:payment'`) made Postgres reject the whole transaction
+     * with "invalid input syntax for type uuid" — so on a real database a PAID
+     * booking was never confirmed and its payment_status never moved. The mocked
+     * unit tests could not see it. The history note ("Confirmed by verified
+     * payment") carries the attribution instead.
+     */
+    triggeredBy: string | null = null,
   ): Promise<void> {
     const confirmed = await this.dataSource.transaction(async (manager) => {
       const appointment = await this.loadForWrite(
@@ -1741,7 +1755,13 @@ export class AppointmentsService {
    *   1. the patient has health insurance — never charged online, by policy;
    *   2. there is nothing payable (no services, or a zero total); or
    *   3. the clinic does not collect online payment at all
-   *      (`tenant_settings.payment_required = false`).
+   *      (`tenant_settings.payment_required = false`); or
+   *   4. the clinic WANTS online payment but cannot take one: on Tap, the
+   *      booking-payments flag is off, or the clinic has no APPROVED Tap
+   *      merchant to settle to (`OnlinePaymentCapabilityService`). A patient
+   *      must never be left holding a PENDING_PAYMENT booking with no way to pay
+   *      it — it is confirmed as "pay at the clinic" instead, exactly like (3).
+   *      Not on Tap, this adds nothing: the legacy / simulator flow is untouched.
    *
    * Read through the transaction's manager so the decision is taken on the same
    * snapshot as the rest of the booking. A missing settings row is treated as
@@ -1761,7 +1781,11 @@ export class AppointmentsService {
       `SELECT payment_required FROM tenant_settings WHERE tenant_id = $1 LIMIT 1`,
       [tenantId],
     );
-    return rows[0]?.payment_required ?? true;
+    if (!(rows[0]?.payment_required ?? true)) return false;
+
+    // The clinic asks for online payment — but can it actually take one?
+    const capability = await this.onlinePayments.resolve(tenantId, manager);
+    return capability.available;
   }
 
   /**

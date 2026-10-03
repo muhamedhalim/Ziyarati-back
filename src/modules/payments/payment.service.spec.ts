@@ -34,6 +34,7 @@ describe('PaymentService.create (booking payments)', () => {
   let merchants: {
     assertChargeable: jest.Mock;
     splitContext: jest.Mock;
+    routingContext: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -59,6 +60,7 @@ describe('PaymentService.create (booking payments)', () => {
     merchants = {
       assertChargeable: jest.fn().mockResolvedValue(undefined),
       splitContext: jest.fn().mockResolvedValue(null),
+      routingContext: jest.fn().mockResolvedValue(null),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -243,6 +245,110 @@ describe('PaymentService.create (booking payments)', () => {
         service.create(TENANT, { amount: 50 } as any, { purpose: 'BILLING_UPGRADE' }),
       ).resolves.toMatchObject({ status: expect.any(String) });
       expect(gateway.createPayment).toHaveBeenCalled();
+    });
+  });
+
+  // Tap Phase 4 — a clinic charge settles to the CLINIC's own merchant.
+  describe('clinic routing (Tap Platform, Phase 4)', () => {
+    it('passes the clinic\'s merchant to the gateway for a clinic payment', async () => {
+      merchants.routingContext.mockResolvedValueOnce({ settlementMerchantId: 'merchant_abc123' });
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+
+      await service.create(TENANT, { appointmentId: 'appt-1' } as any);
+
+      expect(merchants.routingContext).toHaveBeenCalledWith(TENANT);
+      expect(gateway.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ payee: 'clinic', settlementMerchantId: 'merchant_abc123' }),
+      );
+    });
+
+    it('records WHEN the payer was handed the hosted-page URL (an ISO instant), so age is never read from the tz-less created_at', async () => {
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+      const before = Date.now();
+      const res = await service.create(TENANT, { appointmentId: 'appt-1' } as any);
+      const meta = res.payment.metadata as Record<string, string>;
+      expect(meta.redirect_url).toBe('https://pay');
+      const issued = Date.parse(meta.redirect_issued_at);
+      expect(Number.isFinite(issued)).toBe(true);
+      expect(issued).toBeGreaterThanOrEqual(before);
+      expect(issued).toBeLessThanOrEqual(Date.now());
+      expect(meta.redirect_issued_at).toBe(new Date(issued).toISOString());
+    });
+
+    it('sends NO routing when the provider does not route by merchant (null) — unchanged legacy behaviour', async () => {
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+      await service.create(TENANT, { appointmentId: 'appt-1' } as any);
+      expect(gateway.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ settlementMerchantId: undefined }),
+      );
+    });
+
+    it('NEVER routes a platform charge (add-on / upgrade) to a clinic merchant — and does not even look one up', async () => {
+      merchants.routingContext.mockResolvedValue({ settlementMerchantId: 'merchant_abc123' });
+      await service.create(TENANT, { amount: 50 } as any, { purpose: 'ADDON' });
+      expect(merchants.routingContext).not.toHaveBeenCalled();
+      expect(gateway.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ payee: 'platform', settlementMerchantId: undefined }),
+      );
+    });
+
+    it('a clinic that fails the gate never reaches routing or the gateway', async () => {
+      merchants.assertChargeable.mockRejectedValueOnce(
+        Object.assign(new Error('not approved'), { code: ErrorCode.UNPROCESSABLE_ENTITY }),
+      );
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+      await expect(service.create(TENANT, { appointmentId: 'appt-1' } as any)).rejects.toBeDefined();
+      expect(merchants.routingContext).not.toHaveBeenCalled();
+      expect(gateway.createPayment).not.toHaveBeenCalled();
+    });
+  });
+
+  // Tap Phase 4 — closing an abandoned attempt so a fresh one can replace it.
+  describe('supersedePending', () => {
+    const locked = (over: Record<string, unknown> = {}) => ({
+      id: 'pay-1',
+      status: PaymentStatus.PENDING,
+      amount: 200,
+      gateway_payment_id: 'chg_abc12345',
+      ...over,
+    });
+
+    it('moves a PENDING payment to FAILED under the row lock and writes the ledger row in the SAME transaction', async () => {
+      const repo = manager.getRepository(Payment) as unknown as MockRepository;
+      repo.findOne.mockResolvedValueOnce(locked());
+
+      expect(await service.supersedePending(TENANT, 'pay-1')).toBe(true);
+
+      expect(repo.findOne).toHaveBeenCalledWith({
+        where: { id: 'pay-1', tenant: { id: TENANT } },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(repo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: PaymentStatus.FAILED, failure_reason: 'Superseded by a new payment attempt' }),
+      );
+      const txns = (service as any).transactions.record as jest.Mock;
+      expect(txns).toHaveBeenCalledWith(
+        TENANT,
+        'pay-1',
+        expect.objectContaining({ status: 'failed', gatewayTransactionId: 'chg_abc12345' }),
+        manager,
+      );
+    });
+
+    it.each([PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED, PaymentStatus.FAILED])(
+      'NEVER touches a %s payment — a captured payment is not "abandoned" (a webhook may have settled it while the caller decided)',
+      async (status) => {
+        const repo = manager.getRepository(Payment) as unknown as MockRepository;
+        repo.findOne.mockResolvedValueOnce(locked({ status }));
+        expect(await service.supersedePending(TENANT, 'pay-1')).toBe(false);
+        expect(repo.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns false for a payment that does not exist in this tenant', async () => {
+      const repo = manager.getRepository(Payment) as unknown as MockRepository;
+      repo.findOne.mockResolvedValueOnce(null);
+      expect(await service.supersedePending(TENANT, 'nope')).toBe(false);
     });
   });
 

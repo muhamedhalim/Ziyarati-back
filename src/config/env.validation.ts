@@ -497,6 +497,16 @@ export const validate = (config: Record<string, unknown>) => {
     // Clinic-not-present renewals + card saving. Off until Tap has activated
     // Save Card and non-3DS merchant-initiated charges on the account.
     TAP_RECURRING_ENABLED: Joi.boolean().truthy('true').falsy('false').empty(''),
+    // Patient booking payments, settled by Tap straight to each clinic's merchant
+    // (Tap Platform). Off until the platform is activated (TAP_PLATFORM_ID) and a
+    // clinic has been onboarded and approved.
+    TAP_BOOKING_PAYMENTS_ENABLED: Joi.boolean()
+      .truthy('true')
+      .falsy('false')
+      .empty(''),
+    // [OPTIONAL] Tap documents a separate "segment" secret key for the Lead /
+    // Connect (clinic onboarding) calls. Unset = the active merchant secret key.
+    TAP_SEGMENT_SECRET_KEY: Joi.string().allow('', null),
     // MOYASAR_SECRET_KEY: Joi.string().allow('', null),
     // MOYASAR_PUBLISHABLE_KEY: Joi.string().allow('', null),
     // MOYASAR_WEBHOOK_SECRET: Joi.string().allow('', null),
@@ -1196,6 +1206,26 @@ export const validate = (config: Record<string, unknown>) => {
     }
     if (tapLiveKey && !tapLiveKey.startsWith('sk_live_')) {
       tapProblems.push('TAP_LIVE_SECRET_KEY must start with "sk_live_"');
+    }
+    // The segment key follows TAP_ENV like the merchant keys do (one variable,
+    // so it must match the environment that is active).
+    const tapSegmentKey = String(value.TAP_SEGMENT_SECRET_KEY ?? '').trim();
+    const tapSegmentPrefix = value.TAP_ENV === 'live' ? 'sk_live_' : 'sk_test_';
+    if (tapSegmentKey && !tapSegmentKey.startsWith(tapSegmentPrefix)) {
+      tapProblems.push(
+        `TAP_SEGMENT_SECRET_KEY must start with "${tapSegmentPrefix}" while TAP_ENV is ${value.TAP_ENV ?? 'sandbox'}`,
+      );
+    }
+    // Charging on a clinic's behalf needs the platform id Tap issues on
+    // activation; without it every clinic charge would be refused at run time,
+    // so refuse to boot the flag instead.
+    if (
+      value.TAP_BOOKING_PAYMENTS_ENABLED === true &&
+      !String(value.TAP_PLATFORM_ID ?? '').trim()
+    ) {
+      tapProblems.push(
+        'TAP_BOOKING_PAYMENTS_ENABLED is true but TAP_PLATFORM_ID is not set',
+      );
     }
 
     if (value.NODE_ENV === 'production' && value.PAYMENT_PROVIDER === 'tap') {

@@ -26,6 +26,7 @@ import { Service, PricingType } from '../../entities/Services/Service';
 import { AvailabilityService } from '../scheduling/availability.service';
 import { UsageService } from '../subscription-billing/usage.service';
 import { SubscriptionService } from '../subscription-billing/subscription.service';
+import { OnlinePaymentCapabilityService } from '../payments/online-payment-capability.service';
 import {
   AppointmentStatus,
   AppointmentPaymentStatus,
@@ -68,6 +69,7 @@ describe('AppointmentsService', () => {
     resolveOwnStaffId: jest.Mock;
     assertMayDriveAppointment: jest.Mock;
   };
+  let onlinePayments: { resolve: jest.Mock };
 
   /** Full tenant-wide access — the default caller for existing tests. */
   const FULL_ACCESS_CALLER = {
@@ -116,6 +118,12 @@ describe('AppointmentsService', () => {
       assertMayDriveAppointment: jest.fn().mockResolvedValue(false),
     };
 
+    // Not on Tap (the legacy / simulator flow): an online payment can always be
+    // taken, so every pre-existing booking assertion below keeps its meaning.
+    onlinePayments = {
+      resolve: jest.fn().mockResolvedValue({ available: true }),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         AppointmentsService,
@@ -161,6 +169,7 @@ describe('AppointmentsService', () => {
           },
         },
         { provide: StaffScopeService, useValue: staffScope },
+        { provide: OnlinePaymentCapabilityService, useValue: onlinePayments },
       ],
     }).compile();
     service = moduleRef.get(AppointmentsService);
@@ -364,6 +373,48 @@ describe('AppointmentsService', () => {
       expect(repo(Appointment).create.mock.calls[0][0].status).toBe(
         AppointmentStatus.CONFIRMED,
       );
+    });
+
+    it('[Tap P4] confirms (pay at the clinic) when the clinic wants online payment but cannot take one', async () => {
+      primeValidRefs();
+      onlinePayments.resolve.mockResolvedValue({
+        available: false,
+        reason: 'CLINIC_NOT_ONBOARDED',
+      });
+
+      await service.create(TENANT, USER, dto);
+
+      const created = repo(Appointment).create.mock.calls[0][0];
+      // No PENDING_PAYMENT booking that nothing can ever pay: the two axes agree.
+      expect(created.status).toBe(AppointmentStatus.CONFIRMED);
+      expect(created.payment_status).toBe(AppointmentPaymentStatus.UNPAID);
+      expect(onlinePayments.resolve).toHaveBeenCalledWith(TENANT, manager);
+    });
+
+    it('[Tap P4] stays PENDING_PAYMENT when the clinic can take the payment', async () => {
+      primeValidRefs();
+      onlinePayments.resolve.mockResolvedValue({
+        available: true,
+        settlementMerchantId: 'merchant_abc',
+      });
+
+      await service.create(TENANT, USER, dto);
+
+      expect(repo(Appointment).create.mock.calls[0][0].status).toBe(
+        AppointmentStatus.PENDING_PAYMENT,
+      );
+    });
+
+    it('[Tap P4] does not even ask about capability when nothing is payable online (insured / not required)', async () => {
+      primeValidRefs();
+      manager.query.mockImplementation(async (sql: string) =>
+        sql.includes('tenant_settings') ? [{ payment_required: false }] : [],
+      );
+
+      await service.create(TENANT, USER, dto);
+      await service.create(TENANT, USER, { ...dto, hasInsurance: true });
+
+      expect(onlinePayments.resolve).not.toHaveBeenCalled();
     });
 
     it('[F-5] prices the booking from service_prices at THIS branch, not base_price', async () => {
@@ -777,6 +828,30 @@ describe('AppointmentsService', () => {
       expect(appt.status).toBe(AppointmentStatus.CONFIRMED);
       expect(appt.payment_status).toBe(AppointmentPaymentStatus.PAID);
       expect(repo(Appointment).save).toHaveBeenCalledWith(appt);
+    });
+
+    it('writes NO non-uuid actor into the uuid columns — a payment-driven confirmation has no staff actor (regression: the literal "system:payment" made Postgres reject the whole transaction, so a paid booking was never confirmed)', async () => {
+      const UUID =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const appt: any = booked();
+      repo(Appointment).findOne.mockResolvedValueOnce(appt);
+
+      await service.applyPaymentOutcome(TENANT, 'appt-1', 'paid');
+
+      const log = repo(AppointmentStatusLog).create.mock.calls[0][0];
+      const hist = repo(AppointmentHistory).create.mock.calls[0][0];
+      // NULL / absent — never a descriptive placeholder in a uuid column
+      for (const actor of [log.triggered_by, hist.changed_by]) {
+        expect(actor === undefined || UUID.test(actor)).toBe(true);
+      }
+      expect(log.triggered_by).toBeUndefined();
+      expect(hist.changed_by).toBeUndefined();
+      // attribution lives in the note instead
+      expect(hist.note).toBe('Confirmed by verified payment');
+      expect(hist).toMatchObject({
+        old_status: AppointmentStatus.PENDING_PAYMENT,
+        new_status: AppointmentStatus.CONFIRMED,
+      });
     });
 
     it('is idempotent: an outcome already reflected is a no-op', async () => {
