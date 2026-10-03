@@ -696,6 +696,56 @@ describe('env.validation', () => {
       });
     });
 
+    describe('Tap booking payments (Phase 4)', () => {
+      it('TAP_BOOKING_PAYMENTS_ENABLED is optional, defaults to unset, and accepts only true/false', () => {
+        expect(validate({ ...base }).TAP_BOOKING_PAYMENTS_ENABLED).toBeUndefined();
+        expect(validate({ ...base, TAP_BOOKING_PAYMENTS_ENABLED: '' }).TAP_BOOKING_PAYMENTS_ENABLED).toBeUndefined();
+        expect(validate({ ...base, TAP_BOOKING_PAYMENTS_ENABLED: 'false' }).TAP_BOOKING_PAYMENTS_ENABLED).toBe(false);
+        expect(() => validate({ ...base, TAP_BOOKING_PAYMENTS_ENABLED: 'maybe' })).toThrow(
+          /TAP_BOOKING_PAYMENTS_ENABLED/,
+        );
+      });
+
+      it('refuses to boot with the flag ON and no TAP_PLATFORM_ID — every clinic charge would be refused at run time', () => {
+        expect(() => validate({ ...base, TAP_BOOKING_PAYMENTS_ENABLED: 'true' })).toThrow(
+          /TAP_BOOKING_PAYMENTS_ENABLED is true but TAP_PLATFORM_ID is not set/,
+        );
+        expect(() =>
+          validate({ ...base, TAP_BOOKING_PAYMENTS_ENABLED: 'true', TAP_PLATFORM_ID: '  ' }),
+        ).toThrow(/TAP_PLATFORM_ID/);
+      });
+
+      it('boots with the flag ON when the platform id is set', () => {
+        const v = validate({
+          ...base,
+          TAP_BOOKING_PAYMENTS_ENABLED: 'true',
+          TAP_PLATFORM_ID: 'commerce_platform_x',
+        });
+        expect(v.TAP_BOOKING_PAYMENTS_ENABLED).toBe(true);
+      });
+
+      it('the segment key follows the ACTIVE environment — a live key in a sandbox deployment must not boot, and the value is never echoed', () => {
+        try {
+          validate({ ...base, TAP_ENV: 'sandbox', TAP_SEGMENT_SECRET_KEY: 'sk_live_WrongEnvironment0' });
+          fail('expected validation to throw');
+        } catch (err) {
+          const m = (err as Error).message;
+          expect(m).toContain('TAP_SEGMENT_SECRET_KEY');
+          expect(m).toMatch(/must start with "sk_test_"/);
+          expect(m).not.toContain('sk_live_WrongEnvironment0');
+        }
+        expect(() =>
+          validate({ ...base, TAP_ENV: 'live', TAP_SEGMENT_SECRET_KEY: 'sk_test_WrongEnvironment0' }),
+        ).toThrow(/must start with "sk_live_"/);
+      });
+
+      it('accepts a matching segment key (or none)', () => {
+        expect(() => validate({ ...base, TAP_ENV: 'sandbox', TAP_SEGMENT_SECRET_KEY: 'sk_test_ok' })).not.toThrow();
+        expect(() => validate({ ...base, TAP_ENV: 'live', TAP_SEGMENT_SECRET_KEY: 'sk_live_ok' })).not.toThrow();
+        expect(() => validate({ ...base, TAP_SEGMENT_SECRET_KEY: '' })).not.toThrow();
+      });
+    });
+
     it('boots in production with payments explicitly disabled (PAYMENT_PROVIDER=noop)', () => {
       const value = validate({
         ...prodBase,

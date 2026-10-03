@@ -112,6 +112,28 @@ export interface TapRefund {
   [key: string]: unknown;
 }
 
+/**
+ * `POST /v3/lead` result. Tap documents the response only as the echo of the
+ * request plus an `id` (`led_…`); no onboarding-state field is documented, so
+ * none is modelled.
+ */
+export interface TapLead {
+  id: string;
+  object?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * `POST /v3/connect` result: the hosted onboarding page the clinic is sent to.
+ * Documented as `connect.url` (a shortened URL); the `token` and `operator`
+ * fields it also returns are never read or stored.
+ */
+export interface TapConnect {
+  id?: string;
+  connect?: { url?: string };
+  [key: string]: unknown;
+}
+
 /** A Tap webhook body IS the object itself (charge/refund/…) — there is no envelope and no event id. */
 export type TapWebhookPayload = TapCharge | TapRefund;
 

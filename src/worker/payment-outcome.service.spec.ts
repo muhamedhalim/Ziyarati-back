@@ -25,6 +25,7 @@ describe('PaymentOutcomeService (REL-005)', () => {
   let payments: MockRepository;
   let dataSource: MockDataSource;
   let appointments: { applyPaymentOutcome: jest.Mock };
+  let paymentLinks: { markUsedForAppointment: jest.Mock };
   let billing: { applyPaid: jest.Mock; applyFailed: jest.Mock };
   let resources: {
     applyPaid: jest.Mock;
@@ -59,6 +60,7 @@ describe('PaymentOutcomeService (REL-005)', () => {
     appointments = {
       applyPaymentOutcome: jest.fn().mockResolvedValue(undefined),
     };
+    paymentLinks = { markUsedForAppointment: jest.fn().mockResolvedValue(1) };
     billing = {
       applyPaid: jest.fn().mockResolvedValue(undefined),
       applyFailed: jest.fn().mockResolvedValue(undefined),
@@ -73,6 +75,7 @@ describe('PaymentOutcomeService (REL-005)', () => {
       appointments as never,
       billing as never,
       resources as never,
+      paymentLinks as never,
     );
   });
 
@@ -114,7 +117,37 @@ describe('PaymentOutcomeService (REL-005)', () => {
       );
       expect(resources.applyPaid).not.toHaveBeenCalled();
       expect(billing.applyPaid).not.toHaveBeenCalled();
-      expect(res).toMatchObject({ applied: true, consumers: ['appointment'] });
+      expect(res).toMatchObject({
+        applied: true,
+        consumers: ['appointment', 'payment-link'],
+      });
+    });
+
+    it('BOOKING → also spends the booking’s pay link (tenant-scoped), so re-opening it says "already paid"', async () => {
+      withPayment({ purpose: 'BOOKING' });
+      await service.process(job());
+      expect(paymentLinks.markUsedForAppointment).toHaveBeenCalledWith(
+        TENANT,
+        APPOINTMENT,
+      );
+    });
+
+    it('does NOT touch a pay link for add-on / billing-upgrade payments, or when nothing was captured', async () => {
+      withPayment({ purpose: 'ADDON' });
+      await service.process(job());
+      withPayment({ purpose: 'BILLING_UPGRADE' });
+      await service.process(job());
+      withPayment({ purpose: 'BOOKING', status: PaymentStatus.PENDING });
+      await service.process(job());
+      expect(paymentLinks.markUsedForAppointment).not.toHaveBeenCalled();
+    });
+
+    it('a pay-link failure fails the job (so BullMQ retries) — the booking is already confirmed, the retry is a cheap no-op', async () => {
+      withPayment({ purpose: 'BOOKING' });
+      paymentLinks.markUsedForAppointment.mockRejectedValueOnce(
+        new Error('db down'),
+      );
+      await expect(service.process(job())).rejects.toThrow('db down');
     });
 
     it('MANUAL with an appointment is treated like a booking; without one it is a no-op', async () => {

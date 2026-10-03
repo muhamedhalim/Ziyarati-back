@@ -9,6 +9,7 @@ import { AppointmentsService } from '../modules/appointment/appointment.service'
 import { BillingUpgradeEntitlementListener } from '../modules/billing-upgrades/billing-upgrade-entitlement.listener';
 import { ResourceEntitlementListener } from '../modules/resource-pricing/resource-entitlement.listener';
 import { PAYMENT_PURPOSE } from '../modules/payments/payments.constants';
+import { PaymentLinkService } from '../modules/payments/payment-link.service';
 import { PAYMENT_OUTCOME } from '../modules/payments/payment-outcome.outbox';
 
 export type PaymentOutcomeResult =
@@ -55,6 +56,7 @@ export class PaymentOutcomeService {
     private readonly appointments: AppointmentsService,
     private readonly billingUpgrades: BillingUpgradeEntitlementListener,
     private readonly resources: ResourceEntitlementListener,
+    private readonly paymentLinks: PaymentLinkService,
   ) {}
 
   async process(job: PaymentsOutcomeJob): Promise<PaymentOutcomeResult> {
@@ -130,6 +132,14 @@ export class PaymentOutcomeService {
         );
         await this.reflectRefundOnAppointment(payment, appointmentId);
         consumers.push('appointment');
+        // The booking is paid, so its pay link is spent: a patient re-opening it
+        // sees "already paid" instead of being offered a second charge. Idempotent
+        // (only ACTIVE links move), so a redelivered job is a no-op.
+        await this.paymentLinks.markUsedForAppointment(
+          payment.tenant.id,
+          appointmentId,
+        );
+        consumers.push('payment-link');
       }
     }
   }

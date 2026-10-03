@@ -98,6 +98,47 @@ export const PAYMENT_LINK_STATUS = {
 } as const;
 
 /**
+ * Per-IP throttles for the `@Public()` patient pay routes. Same shape as
+ * `PATIENT_ACTION_LINK_*_THROTTLE`: the platform-wide default is far too loose
+ * for routes reachable by anyone holding (or guessing at) a link, and `checkout`
+ * can create a charge at the gateway, so it is the tightest.
+ */
+const publicThrottle = (limit: number) => ({
+  default: {
+    limit: process.env.NODE_ENV === 'test' ? 1_000_000 : limit,
+    ttl: 60_000,
+  },
+});
+export const PUBLIC_PAY_RESOLVE_THROTTLE = publicThrottle(60);
+export const PUBLIC_PAY_CHECKOUT_THROTTLE = publicThrottle(10);
+export const PUBLIC_PAY_RETURN_THROTTLE = publicThrottle(30);
+/** The Tap onboarding callback: low volume by nature (a handful per clinic, ever). */
+export const TAP_ONBOARDING_CALLBACK_THROTTLE = publicThrottle(20);
+
+/**
+ * Why a clinic cannot take an online booking payment right now. Reason CODES
+ * only — what a patient sees is chosen by the frontend, so no gateway or
+ * onboarding detail ever leaks through a public response.
+ */
+export const ONLINE_PAYMENT_UNAVAILABLE = {
+  /** `TAP_BOOKING_PAYMENTS_ENABLED` is off. */
+  DISABLED: 'DISABLED',
+  /** The platform has no usable Tap credentials / `TAP_PLATFORM_ID`. */
+  NOT_CONFIGURED: 'NOT_CONFIGURED',
+  /** The clinic has no APPROVED Tap merchant with a merchant id. */
+  CLINIC_NOT_ONBOARDED: 'CLINIC_NOT_ONBOARDED',
+} as const;
+
+export type OnlinePaymentUnavailableReason =
+  (typeof ONLINE_PAYMENT_UNAVAILABLE)[keyof typeof ONLINE_PAYMENT_UNAVAILABLE];
+
+/**
+ * A "connect" claim older than this is treated as abandoned (the process that
+ * took it died between claiming and creating the lead), so a retry may proceed.
+ */
+export const TAP_ONBOARDING_CLAIM_STALE_MS = 2 * 60_000;
+
+/**
  * MerchantAccount.status values (free-form string column, Refund precedent).
  * The financial-onboarding state of a clinic. A clinic can accept LIVE payments
  * only in APPROVED; every other state fails `assertChargeable` with a clear
@@ -116,6 +157,14 @@ export const MERCHANT_ACCOUNT_STATUS = {
 
 export type MerchantAccountStatusValue =
   (typeof MERCHANT_ACCOUNT_STATUS)[keyof typeof MERCHANT_ACCOUNT_STATUS];
+
+/**
+ * Shape check for a provider-issued merchant id (Tap `merchant_…`, or a numeric
+ * legacy MID). It is interpolated into a charge request and into logs, so
+ * anything outside a conservative token charset is refused outright.
+ */
+export const isProviderMerchantId = (v: unknown): v is string =>
+  typeof v === 'string' && /^[A-Za-z0-9_-]{3,64}$/.test(v);
 
 /** Round monetary values to 2 decimal places (avoids float drift in totals). */
 export const round2 = (n: number): number => Math.round(Number(n) * 100) / 100;

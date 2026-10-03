@@ -56,6 +56,8 @@ export interface ConfirmedBooking {
     amount: number;
     currency: string;
     expiresAt?: string;
+    /** The durable public page the patient opens to pay (`/pay/{token}`); absent where the deployment cannot complete a patient payment there. */
+    payUrl?: string;
   };
 }
 

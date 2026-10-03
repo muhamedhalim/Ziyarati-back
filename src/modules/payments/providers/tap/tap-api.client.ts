@@ -1,7 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { PaymentsConfig } from '../../payments.config';
-import type { TapCharge, TapRefund, TapToken } from './tap.types';
+import type {
+  TapCharge,
+  TapConnect,
+  TapLead,
+  TapRefund,
+  TapToken,
+} from './tap.types';
 
 export interface TapResponse<T = any> {
   /** HTTP 2xx. */
@@ -82,12 +88,33 @@ export class TapApiClient {
     );
   }
 
+  /**
+   * Clinic onboarding (Platform model): create the Lead. Authenticated with the
+   * onboarding key — Tap documents a separate "segment" secret for Lead/Connect —
+   * which falls back to the active merchant key when none is configured.
+   */
+  createLead(body: Record<string, unknown>): Promise<TapResponse<TapLead>> {
+    return this.request('POST', '/v3/lead', body, {
+      secretKey: this.config.tapOnboardingSecretKey,
+    });
+  }
+
+  /** Clinic onboarding: turn a Lead into the hosted Connect URL the clinic completes. */
+  createConnect(
+    body: Record<string, unknown>,
+  ): Promise<TapResponse<TapConnect>> {
+    return this.request('POST', '/v3/connect', body, {
+      secretKey: this.config.tapOnboardingSecretKey,
+    });
+  }
+
   async request<T = any>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body?: unknown,
+    opts?: { secretKey?: string },
   ): Promise<TapResponse<T>> {
-    const secret = this.config.tapSecretKey;
+    const secret = opts?.secretKey ?? this.config.tapSecretKey;
     if (!secret) {
       // A configuration problem, not an outage: say so, don't claim "transient".
       this.logger.error(

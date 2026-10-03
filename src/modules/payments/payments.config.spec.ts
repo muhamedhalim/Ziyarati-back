@@ -167,6 +167,36 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
       });
     });
 
+    describe('tapBookingPaymentsEnabled — OFF unless explicitly true (patient booking payments through Tap Platform)', () => {
+      it('defaults to off, and off for blank / garbage', () => {
+        expect(config().tapBookingPaymentsEnabled).toBe(false);
+        expect(config({ TAP_BOOKING_PAYMENTS_ENABLED: '' }).tapBookingPaymentsEnabled).toBe(false);
+        expect(config({ TAP_BOOKING_PAYMENTS_ENABLED: 'yes' }).tapBookingPaymentsEnabled).toBe(false);
+        expect(config({ TAP_BOOKING_PAYMENTS_ENABLED: 'false' }).tapBookingPaymentsEnabled).toBe(false);
+      });
+      it('is on for true — as a string OR as the boolean Joi converts it to', () => {
+        expect(config({ TAP_BOOKING_PAYMENTS_ENABLED: 'true' }).tapBookingPaymentsEnabled).toBe(true);
+        expect(config({ TAP_BOOKING_PAYMENTS_ENABLED: true }).tapBookingPaymentsEnabled).toBe(true);
+        expect(config({ TAP_BOOKING_PAYMENTS_ENABLED: false }).tapBookingPaymentsEnabled).toBe(false);
+      });
+    });
+
+    describe('tapOnboardingSecretKey — the Lead/Connect key', () => {
+      it('is the dedicated segment key when one is set', () => {
+        expect(
+          config({ TAP_TEST_SECRET_KEY: 'sk_test_merchant', TAP_SEGMENT_SECRET_KEY: 'sk_test_segment' })
+            .tapOnboardingSecretKey,
+        ).toBe('sk_test_segment');
+      });
+      it('falls back to the ACTIVE merchant key when none is set (blank counts as unset)', () => {
+        expect(config({ TAP_TEST_SECRET_KEY: 'sk_test_merchant' }).tapOnboardingSecretKey).toBe('sk_test_merchant');
+        expect(
+          config({ TAP_TEST_SECRET_KEY: 'sk_test_merchant', TAP_SEGMENT_SECRET_KEY: '  ' }).tapOnboardingSecretKey,
+        ).toBe('sk_test_merchant');
+        expect(config().tapOnboardingSecretKey).toBeUndefined();
+      });
+    });
+
     it('gatewayConfigured for tap follows the ACTIVE environment\'s secret key', () => {
       expect(config({ PAYMENT_PROVIDER: 'tap' }).gatewayConfigured).toBe(false);
       expect(config({ PAYMENT_PROVIDER: 'tap', TAP_TEST_SECRET_KEY: 'sk_test_T' }).gatewayConfigured).toBe(true);
@@ -189,6 +219,51 @@ describe('PaymentsConfig — isProduction / paymentsLive / gatewayConfigured (HR
       const c = config({ APP_URL: 'https://app.test' });
       expect(c.paymentReturnUrl(true)).toBe('https://app.test/app/billing?checkout=return');
       expect(c.paymentReturnUrl(false)).toBe('https://app.test/pay/return');
+    });
+  });
+
+  describe('patientPayPageServed — a patient is never handed a pay page that cannot take their money', () => {
+    it('Tap serves it in every environment', () => {
+      expect(config({ PAYMENT_PROVIDER: 'tap' }).patientPayPageServed).toBe(true);
+      expect(config({ PAYMENT_PROVIDER: 'tap', NODE_ENV: 'production' }).patientPayPageServed).toBe(true);
+    });
+    it('outside production anything serves it (the simulator)', () => {
+      expect(config().patientPayPageServed).toBe(true); // default provider, no NODE_ENV
+      expect(config({ PAYMENT_PROVIDER: 'moyasar', NODE_ENV: 'development' }).patientPayPageServed).toBe(true);
+      expect(config({ PAYMENT_PROVIDER: 'noop', NODE_ENV: 'test' }).patientPayPageServed).toBe(true);
+    });
+    it('in PRODUCTION neither legacy Moyasar nor "payments disabled" serves it', () => {
+      expect(config({ PAYMENT_PROVIDER: 'moyasar', NODE_ENV: 'production' }).patientPayPageServed).toBe(false);
+      expect(config({ NODE_ENV: 'production' }).patientPayPageServed).toBe(false); // default = moyasar
+      expect(config({ PAYMENT_PROVIDER: 'noop', NODE_ENV: 'production' }).patientPayPageServed).toBe(false);
+    });
+  });
+
+  describe('patient pay page + onboarding URLs (all server-built)', () => {
+    const c = config({
+      APP_URL: 'https://app.test',
+      TAP_WEBHOOK_URL: 'https://api.test/api/v1/payments/webhooks/tap',
+    });
+
+    it('payLinkUrl is OUR durable page, locale-less (the proxy resolves the patient\'s own locale) and encodes the token', () => {
+      expect(c.payLinkUrl('abcDEF_123-xyz')).toBe('https://app.test/pay/abcDEF_123-xyz');
+      expect(c.payLinkUrl('a/b?c')).toBe('https://app.test/pay/a%2Fb%3Fc');
+    });
+
+    it('tapOnboardingReturnUrl brings the clinic back to its payments page', () => {
+      expect(c.tapOnboardingReturnUrl()).toBe('https://app.test/app/payments?onboarding=return');
+    });
+
+    it('tapOnboardingCallbackUrl hangs the per-session token off the configured webhook URL', () => {
+      expect(c.tapOnboardingCallbackUrl('tok_1')).toBe(
+        'https://api.test/api/v1/payments/webhooks/tap/onboarding/tok_1',
+      );
+      const trailing = config({ TAP_WEBHOOK_URL: 'https://api.test/hook/' });
+      expect(trailing.tapOnboardingCallbackUrl('t')).toBe('https://api.test/hook/onboarding/t');
+    });
+
+    it('tapOnboardingCallbackUrl is undefined while TAP_WEBHOOK_URL is unset — never a URL pointing nowhere', () => {
+      expect(config().tapOnboardingCallbackUrl('tok_1')).toBeUndefined();
     });
   });
 

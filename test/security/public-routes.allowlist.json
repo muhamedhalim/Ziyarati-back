@@ -108,5 +108,25 @@
     "method": "POST",
     "path": "/payments/webhooks/tap",
     "reason": "Tap payment-provider webhook — authenticated by an HMAC-SHA256 'hashstring' header (constant-time compare, fail-closed with no dev bypass), then the charge is re-fetched from Tap with our own key before any state change; not JWT."
+  },
+  {
+    "method": "POST",
+    "path": "/payments/webhooks/tap/onboarding/:token",
+    "reason": "Tap clinic-onboarding (Connect) callback — Tap documents no signature, so the unguessable per-session token in the URL (sha256-hashed at rest, constant 200 for any token) is the only authenticator, and the body is only ever recorded as an advisory, allow-listed claim for platform-admin review: it can never approve a clinic or choose where money goes. Throttled; never logs the body; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/payments/links/:token",
+    "reason": "Patient pay page: describes a pay link (clinic, services, time, amount, state — no patient identity). Authorised by the unguessable link token; a bad token is a uniform 404; per-IP throttled; not JWT (the payer has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/payments/links/:token/checkout",
+    "reason": "Patient pay page: starts or resumes the payment behind a pay link. Authorised by the link token and accepts NO body — price, clinic and merchant are derived server-side; per-IP throttled (tightest of the three); not JWT (the payer has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/payments/return",
+    "reason": "Patient return page: takes a gateway charge id and reports what the gateway says about a booking payment. Cannot settle anything the gateway did not capture (amount/currency re-verified); an unknown charge is a uniform 404; per-IP throttled; the signed webhook stays the authority; not JWT."
   }
 ]

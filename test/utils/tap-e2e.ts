@@ -8,6 +8,10 @@
  * produces correctly SIGNED webhook deliveries. No request ever leaves the
  * machine.
  *
+ * Phase 4 adds clinic onboarding: `POST /v3/lead` and `POST /v3/connect`, with
+ * scripted outcomes (`leadResult`, `connectResult`) and the request bodies kept
+ * so a spec can assert exactly what the app sent.
+ *
  * Phase 3 adds the recurring surface: `POST /v2/tokens` (saved card → single-use
  * token), `DELETE /v2/card/{customer}/{card}`, the saved-card ids a CAPTURED
  * save-card charge reports, and scripted answers for a merchant-initiated charge.
@@ -73,6 +77,14 @@ export class TapSandbox {
    * resolved yet; DECLINED = the card refused.
    */
   mitStatus: 'CAPTURED' | 'INITIATED' | 'DECLINED' = 'CAPTURED';
+  /** The bodies the app sent to `POST /v3/lead`, in order. */
+  readonly leadRequests: TapObject[] = [];
+  /** The bodies the app sent to `POST /v3/connect`, in order. */
+  readonly connectRequests: TapObject[] = [];
+  /** `ok` = Tap creates the lead; `rejected` = a 400; `outage` = a 503. */
+  leadResult: 'ok' | 'rejected' | 'outage' = 'ok';
+  /** `ok` = a hosted https URL; `outage` = a 503; `http` = an insecure URL; `none` = no URL. */
+  connectResult: 'ok' | 'outage' | 'http' | 'none' = 'ok';
   /** When set, the next `POST /v2/charges` fails like an outage (no charge is created). */
   failNextCreateWith: { status: number; errorCode?: string } | null = null;
 
@@ -125,6 +137,32 @@ export class TapSandbox {
     }
     this.charges.set(id, charge);
     return ok(charge);
+  });
+
+  readonly createLead = jest.fn(async (body: TapObject) => {
+    this.leadRequests.push(body);
+    if (this.leadResult === 'rejected') {
+      return { ok: false, status: 400, json: {}, transient: false };
+    }
+    if (this.leadResult === 'outage') {
+      return { ok: false, status: 503, json: {}, transient: true };
+    }
+    return ok({ id: `led_${randomUUID().replace(/-/g, '')}`, object: 'lead' });
+  });
+
+  readonly createConnect = jest.fn(async (body: TapObject) => {
+    this.connectRequests.push(body);
+    if (this.connectResult === 'outage') {
+      return { ok: false, status: 503, json: {}, transient: true };
+    }
+    const id = `connect_${randomUUID().replace(/-/g, '')}`;
+    const url =
+      this.connectResult === 'http'
+        ? `http://connect.tap.test/${id}`
+        : this.connectResult === 'none'
+          ? undefined
+          : `https://connect.tap.test/${id}`;
+    return ok({ id, ...(url ? { connect: { url } } : {}) });
   });
 
   readonly createTokenFromSavedCard = jest.fn(async (body: TapObject) => {
@@ -181,6 +219,8 @@ export class TapSandbox {
       getRefund: this.getRefund,
       createTokenFromSavedCard: this.createTokenFromSavedCard,
       deleteSavedCard: this.deleteSavedCard,
+      createLead: this.createLead,
+      createConnect: this.createConnect,
     };
   }
 

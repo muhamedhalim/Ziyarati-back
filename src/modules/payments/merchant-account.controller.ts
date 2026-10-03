@@ -1,9 +1,18 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
   ApiUnprocessableEntityResponse,
@@ -11,6 +20,8 @@ import {
 
 import { MerchantAccountService } from './merchant-account.service';
 import { SubmitMerchantAccountDto } from './dto/submit-merchant-account.dto';
+import { StartTapOnboardingDto } from './dto/start-tap-onboarding.dto';
+import { TapOnboardingService } from './tap-onboarding.service';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -46,13 +57,14 @@ const S_ERROR = {
 export class MerchantAccountController {
   constructor(
     private readonly merchants: MerchantAccountService,
+    private readonly tapOnboarding: TapOnboardingService,
     private readonly ctx: TenantContextService,
   ) {}
 
   @ApiOperation({
     summary: 'Get this clinic’s merchant onboarding status',
     description:
-      '**Protected — `payments.read`. Clinic active.** The clinic’s financial onboarding record (status, masked bank details). A missing record reads as NOT_STARTED.',
+      '**Protected — `payments.read`. Clinic active.** The clinic’s financial onboarding record (status, masked bank details) plus `online_payments`: whether Tap onboarding can be started and whether patients can pay this clinic online right now. A missing record reads as NOT_STARTED.',
   })
   @ApiOkResponse({ description: 'Merchant account.' })
   @ApiUnauthorizedResponse({
@@ -66,7 +78,7 @@ export class MerchantAccountController {
   @Get()
   @RequirePermissions(PERMISSION.PAYMENTS_READ)
   get() {
-    return this.merchants.getForTenant(this.ctx.requireTenantId());
+    return this.merchants.getClinicView(this.ctx.requireTenantId());
   }
 
   @ApiOperation({
@@ -94,6 +106,52 @@ export class MerchantAccountController {
       this.ctx.requireTenantId(),
       dto,
       this.ctx.getUser()?.id,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Start (or resume) Tap online-payment onboarding',
+    description:
+      '**Protected — `payments.manage`. Clinic active.** Creates the clinic’s Tap lead (once) and returns the URL of Tap’s hosted onboarding page — redirect the browser there. KYC, national ID and bank details are entered on Tap’s page and never reach ZiyaraTech. The clinic can pay patients’ bookings online only after a platform admin has approved the resulting merchant.',
+  })
+  @ApiOkResponse({
+    description: 'Tap’s hosted onboarding URL.',
+    schema: {
+      type: 'object',
+      properties: {
+        connectUrl: {
+          type: 'string',
+          example: 'https://connect.tap.company/…',
+        },
+        status: { type: 'string', example: 'PENDING_DOCUMENTS' },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `payments.manage`, or clinic inactive.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Onboarding is unavailable, or the account status does not allow it.',
+    schema: S_ERROR,
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'Tap is temporarily unavailable.',
+    schema: S_ERROR,
+  })
+  @Post('tap/connect')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.PAYMENTS_MANAGE)
+  connectTap(@Body() dto: StartTapOnboardingDto) {
+    return this.tapOnboarding.start(
+      this.ctx.requireTenantId(),
+      this.ctx.getUser()?.id,
+      dto.locale,
     );
   }
 }

@@ -155,6 +155,33 @@ export class PaymentsConfig {
     );
   }
 
+  /**
+   * Patient booking payments through Tap Platform (a charge on a clinic's own
+   * merchant). OFF until Tap has activated the platform (`TAP_PLATFORM_ID`) and a
+   * clinic has been onboarded and approved: while off, a booking is confirmed as
+   * "pay at the clinic" and no pay link is issued.
+   */
+  get tapBookingPaymentsEnabled(): boolean {
+    const raw = this.config.get<string | boolean>(
+      'TAP_BOOKING_PAYMENTS_ENABLED',
+    );
+    return (
+      raw === true ||
+      String(raw ?? '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  /**
+   * Secret key for the Lead / Connect (clinic onboarding) calls. Tap documents a
+   * separate "segment" key for those; when none is configured the active
+   * merchant secret key is used. Never returned by any API, never logged.
+   */
+  get tapOnboardingSecretKey(): string | undefined {
+    return this.trimmed('TAP_SEGMENT_SECRET_KEY') ?? this.tapSecretKey;
+  }
+
   // ── Server-built return URLs (never client-supplied) ──────────────────────
 
   /**
@@ -180,6 +207,46 @@ export class PaymentsConfig {
     return platformRevenue
       ? `${this.appUrl}/app/billing?checkout=return`
       : `${this.appUrl}/pay/return`;
+  }
+
+  /**
+   * TRUE when the public pay page can actually complete a patient's payment: Tap,
+   * or any non-production environment (the simulator). In PRODUCTION only Tap
+   * qualifies: the legacy Moyasar create call was never proven and has no return
+   * flow, and `noop` there is "payments explicitly disabled" — a pay URL handed to
+   * a patient in either case would be a dead end. When FALSE no pay URL is issued
+   * and the page itself reads "unavailable"; booking behaviour for such a
+   * deployment is untouched.
+   */
+  get patientPayPageServed(): boolean {
+    return this.providerName === 'tap' || !this.isProduction;
+  }
+
+  /**
+   * The durable, public pay page a patient opens from a WhatsApp / e-mail / SMS
+   * message. NOT a Tap URL: a hosted Tap charge expires within the hour, so the
+   * link a patient keeps is ours and mints a fresh charge when it is opened. The
+   * locale is left off on purpose — the frontend proxy resolves it from the
+   * patient's own cookie / browser language.
+   */
+  payLinkUrl(token: string): string {
+    return `${this.appUrl}/pay/${encodeURIComponent(token)}`;
+  }
+
+  /** Where Tap's hosted onboarding (Connect) sends the clinic when it is done. */
+  tapOnboardingReturnUrl(): string {
+    return `${this.appUrl}/app/payments?onboarding=return`;
+  }
+
+  /**
+   * The URL Tap posts onboarding (Connect) events to. It carries an unguessable
+   * per-clinic token because Tap documents no signature for these events, so the
+   * URL itself is the only thing that authenticates them. Derived from
+   * `TAP_WEBHOOK_URL`; undefined while that is unset.
+   */
+  tapOnboardingCallbackUrl(token: string): string | undefined {
+    const base = this.tapWebhookUrl?.replace(/\/+$/, '');
+    return base ? `${base}/onboarding/${encodeURIComponent(token)}` : undefined;
   }
 
   /** TRUE when the selected real gateway has its essential credential set. */

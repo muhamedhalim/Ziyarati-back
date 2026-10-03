@@ -64,6 +64,60 @@ describe('TapApiClient', () => {
     );
   });
 
+  describe('clinic onboarding (Lead / Connect)', () => {
+    const SEGMENT = 'sk_test_SegmentKeyNotARealSecret0';
+
+    it('createLead POSTs /v3/lead authenticated with the ONBOARDING key, not the merchant key', async () => {
+      fetchMock.mockResolvedValueOnce(res(200, { id: 'led_1' }));
+      const out = await build(
+        config({ tapOnboardingSecretKey: SEGMENT }),
+      ).createLead({ country: 'SA' });
+      expect(out.json.id).toBe('led_1');
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.tap.company/v3/lead');
+      expect(init.method).toBe('POST');
+      expect(init.headers.Authorization).toBe(`Bearer ${SEGMENT}`);
+      expect(JSON.parse(init.body)).toEqual({ country: 'SA' });
+    });
+
+    it('createConnect POSTs /v3/connect with the onboarding key', async () => {
+      fetchMock.mockResolvedValueOnce(
+        res(200, { connect: { url: 'https://connect.tap.test/x' } }),
+      );
+      const out = await build(
+        config({ tapOnboardingSecretKey: SEGMENT }),
+      ).createConnect({
+        scope: 'merchant',
+      });
+      expect(out.json.connect?.url).toBe('https://connect.tap.test/x');
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.tap.company/v3/connect');
+      expect(init.headers.Authorization).toBe(`Bearer ${SEGMENT}`);
+    });
+
+    it('charges and retrievals still use the merchant key — the onboarding key is not a general override', async () => {
+      fetchMock.mockResolvedValueOnce(res(200, { id: 'chg_1' }));
+      await build(config({ tapOnboardingSecretKey: SEGMENT })).getCharge(
+        'chg_1',
+      );
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+        `Bearer ${SECRET}`,
+      );
+    });
+
+    it('with no key at all it makes no request and reports a configuration problem, not an outage', async () => {
+      const out = await build(
+        config({ tapSecretKey: undefined, tapOnboardingSecretKey: undefined }),
+      ).createLead({});
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(out).toMatchObject({
+        ok: false,
+        transient: false,
+        errorCode: 'TAP_NOT_CONFIGURED',
+      });
+    });
+  });
+
   it('POSTs a JSON body for create calls', async () => {
     fetchMock.mockResolvedValueOnce(res(200, { id: 'chg_2' }));
     await build().createCharge({ amount: 10, currency: 'SAR' });

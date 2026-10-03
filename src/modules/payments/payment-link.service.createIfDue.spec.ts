@@ -31,6 +31,10 @@ function build(opts: {
     {} as never,
     {} as never,
     {} as never,
+    {
+      patientPayPageServed: true,
+      payLinkUrl: (t: string) => `https://app.test/pay/${t}`,
+    } as never,
   );
   if (opts.createImpl) {
     (service as unknown as { create: jest.Mock }).create = opts.createImpl;
@@ -53,6 +57,8 @@ describe('PaymentLinkService.createIfDue (T067, US4)', () => {
       amount: 200,
       currency: 'SAR',
       expiresAt: '2026-09-01T00:00:00.000Z',
+      // The durable public page the patient opens — built by the payments module.
+      payUrl: 'https://app.test/pay/tok-1',
     });
   });
 
