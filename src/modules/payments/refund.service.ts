@@ -17,6 +17,7 @@ import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { CreateRefundDto } from './dto/create-refund.dto';
 import { QueryRefundsDto } from './dto/query-refunds.dto';
 import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
+import { PAYMENT_OUTCOME, enqueuePaymentOutcome } from './payment-outcome.outbox';
 
 /** Single, bounded major-units → integer-cents conversion (no float arithmetic downstream). */
 const toCents = (v: number | string): number => Math.round(Number(v) * 100);
@@ -100,6 +101,9 @@ export class RefundService {
       const result = await this.gateways.resolve(intent.gateway).refundPayment({
         tenantId,
         paymentId: intent.paymentId,
+        // The PENDING refund row already exists (Phase 1), so its id is the
+        // stable per-refund key idempotent gateways need (Tap reference.idempotent).
+        refundId: intent.refundId,
         gatewayPaymentId: intent.gatewayPaymentId,
         amount: fromCents(intent.amountC),
         currency: intent.currency,
@@ -199,6 +203,15 @@ export class RefundService {
           refundedC,
           toCents(payment.amount),
         );
+        // REL-005: the entitlement reversal commits WITH the refund (see the
+        // same call in RefundRecoveryService). The in-process emit below stays
+        // as the fast path.
+        await enqueuePaymentOutcome(m, {
+          tenantId,
+          paymentId: payment.id,
+          outcome: PAYMENT_OUTCOME.REFUND_RECORDED,
+          refundId: refund.id,
+        });
       }
 
       return refund;

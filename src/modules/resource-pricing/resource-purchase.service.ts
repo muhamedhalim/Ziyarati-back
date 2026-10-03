@@ -16,6 +16,7 @@ import { PlanLimitColumn } from '../subscription-billing/plan-limit-status.servi
 import { findSellableResource } from './sellable-resource.registry';
 import { computeTotalMinor, computeDeltaUnits, toBigInt } from './money';
 import { PaymentService } from '../payments/payment.service';
+import { PAYMENT_PURPOSE } from '../payments/payments.constants';
 import { CreateResourcePurchaseDto } from './dto/create-resource-purchase.dto';
 import { PreviewResourcePurchaseDto } from './dto/preview-resource-purchase.dto';
 import { QueryResourcePurchasesDto } from './dto/query-resource-purchases.dto';
@@ -186,7 +187,7 @@ export class ResourcePurchaseService {
         description: `${item.item_key} × ${dto.quantity}`,
         idempotencyKey: `rp:${purchase.id}`,
       },
-      { platformRevenue: true },
+      { purpose: PAYMENT_PURPOSE.ADDON },
     );
 
     // Race-safe link — only the first concurrent attempt wins, mirrors

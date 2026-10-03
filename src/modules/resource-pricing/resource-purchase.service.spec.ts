@@ -189,7 +189,7 @@ describe('ResourcePurchaseService (Phase 2.2 — plan §16/§17/§20)', () => {
   });
 
   describe('create', () => {
-    it('creates the purchase, charges via platformRevenue, and links the payment', async () => {
+    it('creates the purchase, charges it as ADDON platform revenue, and links the payment', async () => {
       const result = await service.create(
         TENANT,
         { itemKey: 'branches', quantity: 2, idempotencyKey: 'idem-1' },
@@ -214,7 +214,7 @@ describe('ResourcePurchaseService (Phase 2.2 — plan §16/§17/§20)', () => {
           currency: 'SAR',
           idempotencyKey: 'rp:purchase-1',
         }),
-        { platformRevenue: true },
+        { purpose: 'ADDON' },
       );
       expect(dataSource.query).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE "resource_purchases"'),

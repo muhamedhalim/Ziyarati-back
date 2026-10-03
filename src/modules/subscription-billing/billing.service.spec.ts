@@ -9,7 +9,9 @@ import {
   FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
   PAYMENT_PROVIDER,
 } from './payment/payment-provider.interface';
-import { InvoiceStatus } from '../../entities/enums';
+import { InvoiceStatus, SubscriptionInvoiceKind } from '../../entities/enums';
+import { InvoiceSettlementService } from './invoice-settlement.service';
+import { PaymentMethodService } from './payment-method.service';
 import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
@@ -28,7 +30,14 @@ describe('BillingService', () => {
   let service: BillingService;
   let invoices: MockRepository;
   let tenants: MockRepository;
-  let payment: { charge: jest.Mock };
+  let payment: {
+    name: string;
+    supportsCheckout: boolean;
+    checkoutWindowMinutes: number;
+    charge: jest.Mock;
+  };
+  let settlement: { settleInvoicePaid: jest.Mock };
+  let methods: { resolveForCharge: jest.Mock };
   let dataSource: MockDataSource;
   let manager: MockEntityManager;
   let claimQb: MockQueryBuilder;
@@ -39,7 +48,14 @@ describe('BillingService', () => {
   beforeEach(async () => {
     invoices = createMockRepository();
     tenants = createMockRepository();
-    payment = { charge: jest.fn() };
+    payment = {
+      name: 'tap',
+      supportsCheckout: true,
+      checkoutWindowMinutes: 30,
+      charge: jest.fn(),
+    };
+    settlement = { settleInvoicePaid: jest.fn() };
+    methods = { resolveForCharge: jest.fn().mockResolvedValue(null) };
     manager = createMockEntityManager();
     dataSource = createMockDataSource(manager);
     claimQb = createMockQueryBuilder();
@@ -55,6 +71,8 @@ describe('BillingService', () => {
         { provide: getRepositoryToken(Tenant), useValue: tenants },
         { provide: PAYMENT_PROVIDER, useValue: payment },
         { provide: DataSource, useValue: dataSource },
+        { provide: InvoiceSettlementService, useValue: settlement },
+        { provide: PaymentMethodService, useValue: methods },
       ],
     }).compile();
     service = moduleRef.get(BillingService);
@@ -143,33 +161,130 @@ describe('BillingService', () => {
   });
 
   describe('payInvoice (atomic charge claim)', () => {
-    it('claims the invoice, charges the provider, and finalizes PAID with the provider reference', async () => {
+    const claimed = () =>
       claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
-      invoices.findOne.mockResolvedValueOnce({
-        id: 'inv1',
-        status: InvoiceStatus.OPEN,
-        amount: '100',
-        currency: 'SAR',
-      });
+    const openInvoice = (over: Record<string, unknown> = {}) => ({
+      id: 'inv1',
+      status: InvoiceStatus.OPEN,
+      amount: '100',
+      currency: 'SAR',
+      retry_count: 0,
+      ...over,
+    });
+
+    it('claims the invoice, charges the provider, and books the capture through the single settle path', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
       payment.charge.mockResolvedValueOnce({
         success: true,
         reference: 'gw-ref-1',
       });
-      lockedRepo().findOne.mockResolvedValueOnce({
-        id: 'inv1',
-        status: InvoiceStatus.OPEN,
-        amount: '100',
+      const settledInvoice = {
+        ...openInvoice(),
+        status: InvoiceStatus.PAID,
+        provider_reference: 'gw-ref-1',
+      };
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: settledInvoice,
       });
 
       const res = await service.payInvoice(TENANT, 'inv1');
-      expect(res.status).toBe(InvoiceStatus.PAID);
-      expect(res.paid_at).toBeInstanceOf(Date);
-      expect(res.provider_reference).toBe('gw-ref-1');
+
+      expect(res).toBe(settledInvoice);
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith('inv1', {
+        source: 'charge',
+        provider: 'tap',
+        reference: 'gw-ref-1',
+        paymentMethodId: undefined,
+        savedPaymentMethod: undefined,
+      });
       // T079/T081 — the charge uses the INVOICE's own currency (snapshotted
       // at issue time from the platform default), never a hardcoded value.
       expect(payment.charge).toHaveBeenCalledWith(
         expect.objectContaining({ currency: 'SAR' }),
       );
+    });
+
+    it("charges the clinic's saved card and records which one", async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice({ retry_count: 2 }));
+      const ref = {
+        customerId: 'cus_1',
+        cardId: 'card_1',
+        agreementId: 'agr_1',
+      };
+      methods.resolveForCharge.mockResolvedValueOnce({ id: 'pm-1', ref });
+      payment.charge.mockResolvedValueOnce({
+        success: true,
+        reference: 'gw-1',
+      });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: { id: 'inv1', status: InvoiceStatus.PAID },
+      });
+
+      await service.payInvoice(TENANT, 'inv1');
+
+      expect(methods.resolveForCharge).toHaveBeenCalledWith(TENANT);
+      expect(payment.charge).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentMethod: ref, attempt: 2 }),
+      );
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith(
+        'inv1',
+        expect.objectContaining({ paymentMethodId: 'pm-1' }),
+      );
+    });
+
+    it('falls back to a synthetic reference when a provider reports success without one', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({ success: true });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: { id: 'inv1', status: InvoiceStatus.PAID },
+      });
+      await service.payInvoice(TENANT, 'inv1');
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith(
+        'inv1',
+        expect.objectContaining({ reference: 'tap:inv1' }),
+      );
+    });
+
+    it('returns the invoice untouched when the settle path says it was already paid (idempotent)', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: true,
+        reference: 'gw-ref-2',
+      });
+      const alreadyPaid = {
+        id: 'inv1',
+        status: InvoiceStatus.PAID,
+        provider_reference: 'gw-ref-1',
+      };
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'already_paid',
+        invoice: alreadyPaid,
+      });
+      expect(await service.payInvoice(TENANT, 'inv1')).toBe(alreadyPaid);
+    });
+
+    it('answers 409 when the capture cannot be booked (invoice voided under the charge) — the settle path raised the ALERT', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: true,
+        reference: 'gw-ref-1',
+      });
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'rejected',
+        reason: 'invoice_void',
+        invoice: { id: 'inv1', status: InvoiceStatus.VOID },
+      });
+      await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
     });
 
     it('rejects an already-paid invoice (409, no charge attempted)', async () => {
@@ -205,20 +320,61 @@ describe('BillingService', () => {
       });
       await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({
         code: ErrorCode.CONFLICT,
+        message: expect.stringContaining('already in progress'),
       });
       expect(payment.charge).not.toHaveBeenCalled();
     });
 
-    it('surfaces a provider decline as 422, records the reason, and releases the claim', async () => {
-      claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
+    it('returns 409 — and says why — when the clinic has a hosted checkout open (never double-captured by the renewal job)', async () => {
+      claimQb.execute.mockResolvedValueOnce({ affected: 0, raw: [] });
       invoices.findOne.mockResolvedValueOnce({
         id: 'inv1',
         status: InvoiceStatus.OPEN,
-        amount: '100',
+        checkout_started_at: new Date(),
       });
+      await expect(service.payInvoice(TENANT, 'inv1')).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+        message: expect.stringContaining('checkout'),
+      });
+      expect(payment.charge).not.toHaveBeenCalled();
+    });
+
+    it('the claim itself refuses an invoice whose hosted checkout is younger than the checkout window', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: false,
+        failureReason: 'x',
+      });
+      lockedRepo().findOne.mockResolvedValueOnce({
+        id: 'inv1',
+        status: InvoiceStatus.OPEN,
+      });
+      await service.payInvoice(TENANT, 'inv1').catch(() => undefined);
+
+      const predicates = claimQb.andWhere.mock.calls.map((c: unknown[]) =>
+        String(c[0]),
+      );
+      expect(
+        predicates.some((p: string) =>
+          p.includes('checkout_started_at IS NULL OR checkout_started_at <'),
+        ),
+      ).toBe(true);
+      const params = claimQb.andWhere.mock.calls.find((c: unknown[]) =>
+        String(c[0]).includes('checkout_started_at'),
+      )![1] as { checkoutStaleBefore: Date };
+      const windowMs = Date.now() - params.checkoutStaleBefore.getTime();
+      expect(windowMs).toBeGreaterThanOrEqual(29 * 60_000);
+      expect(windowMs).toBeLessThan(31 * 60_000);
+    });
+
+    it('surfaces a provider decline as 422, records the reason and class, and releases the claim', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
       payment.charge.mockResolvedValueOnce({
         success: false,
         failureReason: 'card declined',
+        failureClass: FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
       });
       const locked: any = {
         id: 'inv1',
@@ -232,31 +388,217 @@ describe('BillingService', () => {
         code: ErrorCode.UNPROCESSABLE_ENTITY,
       });
       expect(locked.failure_reason).toBe('card declined');
+      expect(locked.failure_class).toBe(FAILURE_CLASS_TOKENIZATION_UNAVAILABLE);
       expect(locked.charge_started_at).toBeNull();
       expect(lockedRepo().save).toHaveBeenCalledWith(locked);
+      expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
     });
 
-    it('is idempotent: an invoice already PAID at finalize is returned untouched', async () => {
-      claimQb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
-      invoices.findOne.mockResolvedValueOnce({
-        id: 'inv1',
-        status: InvoiceStatus.OPEN,
-        amount: '100',
-      });
+    it('a decline whose invoice turned PAID meanwhile is returned untouched (idempotent finalize)', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
       payment.charge.mockResolvedValueOnce({
-        success: true,
-        reference: 'gw-ref-2',
+        success: false,
+        failureReason: 'late',
       });
-      const alreadyPaid = {
-        id: 'inv1',
-        status: InvoiceStatus.PAID,
-        provider_reference: 'gw-ref-1',
-      };
+      const alreadyPaid = { id: 'inv1', status: InvoiceStatus.PAID };
       lockedRepo().findOne.mockResolvedValueOnce(alreadyPaid);
 
-      const res = await service.payInvoice(TENANT, 'inv1');
-      expect(res).toBe(alreadyPaid);
+      expect(await service.payInvoice(TENANT, 'inv1')).toBe(alreadyPaid);
       expect(lockedRepo().save).not.toHaveBeenCalled();
+    });
+
+    it('PENDING with a charge id: keeps the claim, remembers the charge, returns the OPEN invoice, throws nothing', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: false,
+        status: 'pending',
+        reference: 'chg_pending_1',
+      });
+      const locked: any = {
+        id: 'inv1',
+        status: InvoiceStatus.OPEN,
+        charge_started_at: new Date(),
+        checkout_charge_id: null,
+      };
+      lockedRepo().findOne.mockResolvedValueOnce(locked);
+      lockedRepo().save.mockImplementationOnce(async (i: any) => i);
+
+      const res = await service.payInvoice(TENANT, 'inv1');
+
+      expect(res.status).toBe(InvoiceStatus.OPEN);
+      expect(locked.charge_started_at).toBeInstanceOf(Date); // claim KEPT — reconcile/webhook settles it
+      expect(locked.checkout_charge_id).toBe('chg_pending_1');
+      expect(locked.failure_reason ?? null).toBeNull(); // not a decline
+      expect(settlement.settleInvoicePaid).not.toHaveBeenCalled();
+    });
+
+    it('PENDING with no charge id: releases the claim (nothing to verify — the retry reuses the same idempotency key)', async () => {
+      claimed();
+      invoices.findOne.mockResolvedValueOnce(openInvoice());
+      payment.charge.mockResolvedValueOnce({
+        success: false,
+        status: 'pending',
+      });
+      const locked: any = {
+        id: 'inv1',
+        status: InvoiceStatus.OPEN,
+        charge_started_at: new Date(),
+      };
+      lockedRepo().findOne.mockResolvedValueOnce(locked);
+      lockedRepo().save.mockImplementationOnce(async (i: any) => i);
+
+      const res = await service.payInvoice(TENANT, 'inv1');
+
+      expect(res.status).toBe(InvoiceStatus.OPEN);
+      expect(locked.charge_started_at).toBeNull();
+      expect(locked.failure_reason ?? null).toBeNull();
+    });
+  });
+
+  describe('Tap migration helpers (Phase 3)', () => {
+    it('generateInvoice stamps kind / target plan / provider, and leaves them NULL for a legacy caller', async () => {
+      invoices.save.mockImplementation(async (i: any) => i);
+      const t = new Date('2026-01-01T00:00:00.000Z');
+      const withExtra = await service.generateInvoice(
+        TENANT,
+        's',
+        10,
+        t,
+        t,
+        'SAR',
+        InvoiceStatus.OPEN,
+        {
+          kind: SubscriptionInvoiceKind.UPGRADE,
+          targetPlanId: 'plan-2',
+          provider: 'tap',
+        },
+      );
+      expect(withExtra).toMatchObject({
+        kind: 'UPGRADE',
+        target_plan_id: 'plan-2',
+        provider: 'tap',
+      });
+
+      const legacy = await service.generateInvoice(
+        TENANT,
+        's',
+        10,
+        t,
+        t,
+        'SAR',
+      );
+      expect(legacy).toMatchObject({
+        kind: null,
+        target_plan_id: null,
+        provider: null,
+      });
+    });
+
+    it('exposes whether the bound provider can take a checkout, and its name', () => {
+      expect(service.supportsCheckout).toBe(true);
+      expect(service.providerName).toBe('tap');
+    });
+
+    it('voidOpenInvoices voids only OPEN invoices of ONE subscription and reports how many', async () => {
+      const qb = createMockQueryBuilder();
+      qb.execute.mockResolvedValueOnce({ affected: 2, raw: [] });
+      invoices.createQueryBuilder.mockReturnValueOnce(qb);
+
+      const n = await service.voidOpenInvoices('sub-1', 'Superseded');
+
+      expect(n).toBe(2);
+      expect(qb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: InvoiceStatus.VOID,
+          failure_reason: 'Superseded',
+        }),
+      );
+      expect(qb.where).toHaveBeenCalledWith(
+        'subscription_id = :subscriptionId',
+        { subscriptionId: 'sub-1' },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith('status = :open', {
+        open: InvoiceStatus.OPEN,
+      });
+    });
+
+    it('voidSupersededOpenInvoices touches only legacy/upgrade invoices that nobody is paying right now', async () => {
+      const qb = createMockQueryBuilder();
+      qb.execute.mockResolvedValueOnce({ affected: 1, raw: [] });
+      invoices.createQueryBuilder.mockReturnValueOnce(qb);
+
+      await service.voidSupersededOpenInvoices(
+        'sub-1',
+        'Superseded by renewal',
+      );
+
+      const predicates = qb.andWhere.mock.calls.map((c: unknown[]) =>
+        String(c[0]),
+      );
+      expect(predicates).toEqual(
+        expect.arrayContaining([
+          'status = :open',
+          '(kind IS NULL OR kind = :upgrade)',
+          expect.stringContaining('charge_started_at'),
+          expect.stringContaining('checkout_started_at'),
+        ]),
+      );
+      // a RENEWAL / INITIAL / REACTIVATION invoice is never in that set
+      const kindParams = qb.andWhere.mock.calls.find((c: unknown[]) =>
+        String(c[0]).includes('kind'),
+      )![1];
+      expect(kindParams).toEqual({ upgrade: SubscriptionInvoiceKind.UPGRADE });
+    });
+
+    it("findOpenInvoice looks up the subscription's single OPEN invoice", async () => {
+      invoices.findOne.mockResolvedValueOnce({ id: 'inv-9' });
+      expect(await service.findOpenInvoice('sub-1')).toEqual({ id: 'inv-9' });
+      expect(invoices.findOne).toHaveBeenCalledWith({
+        where: { subscription_id: 'sub-1', status: InvoiceStatus.OPEN },
+      });
+    });
+
+    it('isPaymentInFlight: a fresh claim or an open checkout counts; stale or absent ones do not', () => {
+      const now = Date.now();
+      const mins = (m: number) => new Date(now - m * 60_000);
+      expect(
+        service.isPaymentInFlight({ charge_started_at: mins(2) } as any, now),
+      ).toBe(true);
+      expect(
+        service.isPaymentInFlight(
+          { checkout_started_at: mins(10) } as any,
+          now,
+        ),
+      ).toBe(true);
+      expect(
+        service.isPaymentInFlight({ charge_started_at: mins(11) } as any, now),
+      ).toBe(false);
+      expect(
+        service.isPaymentInFlight(
+          { checkout_started_at: mins(31) } as any,
+          now,
+        ),
+      ).toBe(false);
+      expect(service.isPaymentInFlight({} as any, now)).toBe(false);
+    });
+
+    it('settleInvoicePaid delegates to the settle service unchanged', async () => {
+      settlement.settleInvoicePaid.mockResolvedValueOnce({
+        outcome: 'settled',
+        invoice: null,
+      });
+      const evidence = {
+        source: 'webhook',
+        provider: 'tap',
+        reference: 'chg_1',
+      } as const;
+      await service.settleInvoicePaid('inv-1', evidence);
+      expect(settlement.settleInvoicePaid).toHaveBeenCalledWith(
+        'inv-1',
+        evidence,
+      );
     });
   });
 

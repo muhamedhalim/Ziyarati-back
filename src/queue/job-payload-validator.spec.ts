@@ -108,4 +108,15 @@ describe('validateJobPayload', () => {
       ).toThrow(UnrecoverableError);
     }
   });
+
+  it('requires tenantId, paymentId and outcome for payments.outcome (REL-005)', () => {
+    const valid = { tenantId: 't1', paymentId: 'p1', outcome: 'paid' };
+    expect(() => validateJobPayload(JOB.PAYMENTS_OUTCOME, valid)).not.toThrow();
+    for (const field of ['tenantId', 'paymentId', 'outcome']) {
+      const { [field]: _removed, ...rest } = valid as Record<string, unknown>;
+      expect(() => validateJobPayload(JOB.PAYMENTS_OUTCOME, rest)).toThrow(
+        UnrecoverableError,
+      );
+    }
+  });
 });

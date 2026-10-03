@@ -14,6 +14,8 @@ import {
 } from './utils/subscription-e2e-fixtures';
 import { ResourcePriceCatalog } from '../src/entities/ResourcePricing/ResourcePriceCatalog';
 import { ResourcePurchase } from '../src/entities/ResourcePricing/ResourcePurchase';
+import { Payment } from '../src/entities/Payments/Payment';
+import { PaymentStatus } from '../src/entities/enums';
 
 const API = '/api/v1';
 
@@ -159,5 +161,12 @@ describe('Add-on entitlement — webhook redelivery & terminal-status guard (pla
     );
     expect(Number(capacityAfter[0].capacity)).toBe(0); // NOT re-granted
     expect((await purchases.findOneOrFail({ where: { id: purchase.id } })).status).toBe('refunded');
+
+    // Tap Phase 2: the PAYMENT row must not regress either. Each Moyasar delivery
+    // carries a fresh event id, so this late success is NOT de-duplicated — the old
+    // guard ("not already PAID") flipped the REFUNDED payment back to PAID.
+    expect(
+      (await e2e.dataSource.getRepository(Payment).findOneByOrFail({ id: purchase.payment!.id })).status,
+    ).toBe(PaymentStatus.REFUNDED);
   });
 });

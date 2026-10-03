@@ -12,10 +12,21 @@ import { AppError, ErrorCode } from '../../common/errors';
 
 import { MoyasarWebhookVerifier } from './webhooks/moyasar-webhook.verifier';
 import { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
+import { GatewayWebhookEvent } from './webhooks/gateway-webhook.types';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
 import { PaymentFinancialsService } from './payment-financials.service';
-import { REFUND_STATUS, TRANSACTION_TYPE, round2 } from './payments.constants';
+import { InvoiceSettlementService } from '../subscription-billing/invoice-settlement.service';
+import {
+  REFUND_STATUS,
+  TRANSACTION_TYPE,
+  isUuid,
+  round2,
+} from './payments.constants';
+import {
+  PAYMENT_OUTCOME,
+  enqueuePaymentOutcome,
+} from './payment-outcome.outbox';
 import {
   PaymentFailedEvent,
   PaymentRefundedEvent,
@@ -67,11 +78,16 @@ export interface WebhookResult {
 }
 
 /**
- * Moyasar webhook orchestration — the platform-side ingestion seam.
+ * Gateway webhook orchestration — the platform-side ingestion seam.
+ *
+ * Two layers:
+ *   - an ADAPTER per gateway (`handleMoyasar` here; `TapWebhookHandler` for Tap)
+ *     authenticates the gateway's own wire format and reduces it to a neutral
+ *     `GatewayWebhookEvent`;
+ *   - `process()` — provider-neutral — does everything after authentication.
  *
  * Flow (per the integration contract):
- *   1. Authenticate via the shared secret (MoyasarWebhookVerifier) — never trust
- *      the body for identity.
+ *   1. Authenticate (adapter) — never trust the body for identity.
  *   2. De-duplicate on the provider event id (idempotent — safe to redeliver).
  *   3. Resolve OUR payment from `gateway_payment_id`; the tenant comes from that
  *      payment row, NEVER from the webhook body (no cross-tenant exposure).
@@ -97,6 +113,7 @@ export class PaymentWebhookService {
     private readonly financials: PaymentFinancialsService,
     private readonly audit: PlatformAdminAuditService,
     private readonly emitter: EventEmitter2,
+    private readonly settlement: InvoiceSettlementService,
   ) {}
 
   async handleMoyasar(
@@ -127,34 +144,60 @@ export class PaymentWebhookService {
     // unmodified request stays replayable, nothing more.
     this.enforceEventFreshness(event);
 
-    const eventId = event?.id;
-
-    // 3. Resolve our payment from the gateway payment id (tenant comes from it).
-    const gatewayPaymentId = event?.data?.id;
-    if (!gatewayPaymentId) {
+    // 3. Nothing to resolve without the gateway payment id.
+    if (!event?.data?.id) {
       this.logger.warn('Moyasar webhook without data.id — ignored');
       return { accepted: true, matched: false };
     }
 
-    const owner = await this.payments.findOne({
+    return this.process(this.toGatewayEvent(event));
+  }
+
+  /**
+   * Provider-neutral processing of an ALREADY AUTHENTICATED gateway event:
+   * resolve the payment (tenant comes from OUR row), dedupe, apply the state
+   * change under a row lock, then emit domain events after commit.
+   */
+  async process(event: GatewayWebhookEvent): Promise<WebhookResult> {
+    const eventId = event.dedupeKey;
+    const gatewayPaymentId = event.gatewayPaymentId;
+    const target = event.target;
+
+    // 3. Resolve our payment from the gateway payment id (tenant comes from it).
+    let owner = await this.payments.findOne({
       where: { gateway_payment_id: gatewayPaymentId },
       relations: { tenant: true, customer: true, appointment: true },
     });
+
+    // REL-002: the gateway create succeeded but our finalize transaction failed,
+    // so the gateway id was never persisted. The gateway echoed OUR payment id
+    // back (Tap `reference.transaction`), so match on that — scoped to the same
+    // provider, and never onto a payment that already holds a DIFFERENT charge.
+    let viaCorrelation = false;
+    if (!owner && isUuid(event.correlationId)) {
+      const byCorrelation = await this.payments.findOne({
+        where: { id: event.correlationId, gateway: event.provider },
+        relations: { tenant: true, customer: true, appointment: true },
+      });
+      if (
+        byCorrelation &&
+        (!byCorrelation.gateway_payment_id ||
+          byCorrelation.gateway_payment_id === gatewayPaymentId)
+      ) {
+        owner = byCorrelation;
+        viaCorrelation = true;
+      }
+    }
+
     if (!owner || !owner.tenant) {
       // T083 (spec 014, US5) — no ONE-TIME payment matched; a subscription
       // renewal charge is the other thing this same webhook stream can be
-      // about. Tried second (rarer today — no real recurring provider is
-      // bound yet, see RecurringUnavailableProvider), never a second
-      // controller/route.
-      const invoiceResult = await this.handleSubscriptionInvoiceEvent(
-        event,
-        eventId,
-        gatewayPaymentId,
-      );
+      // about. Tried second, never a second controller/route.
+      const invoiceResult = await this.handleSubscriptionInvoiceEvent(event);
       if (invoiceResult) return invoiceResult;
 
       this.logger.warn(
-        `Moyasar webhook for unknown gateway payment ${gatewayPaymentId}`,
+        `${event.provider} webhook for unknown gateway payment ${gatewayPaymentId}`,
       );
       return { accepted: true, matched: false };
     }
@@ -162,7 +205,6 @@ export class PaymentWebhookService {
     const tenantId = owner.tenant.id;
     const customerId = owner.customer?.id;
     const appointmentId = owner.appointment?.id;
-    const target = this.mapEvent(event);
 
     // Tracks which domain event (and its name) to emit after the transaction commits.
     let pendingEventName: string | null = null;
@@ -186,6 +228,24 @@ export class PaymentWebhookService {
       });
       if (!payment) return { status: owner.status, deduplicated: false };
 
+      // REL-002: persist the gateway id the create call never got to save, so the
+      // reconciliation sweep (which only scans rows that HAVE one) can see it
+      // too. Correlation matches only — a normal match already holds the id.
+      if (viaCorrelation) {
+        if (!payment.gateway_payment_id) {
+          payment.gateway_payment_id = gatewayPaymentId;
+          await repo.save(payment);
+        } else if (payment.gateway_payment_id !== gatewayPaymentId) {
+          // The "no different charge" check above ran BEFORE this lock; if another
+          // charge was attached in between, this event is about the wrong charge.
+          // Booking it could mark a payment PAID off a capture that is not its own.
+          this.logger.error(
+            `${event.provider} event for charge ${gatewayPaymentId} matched payment ${payment.id} by correlation, but it now holds a different charge — ignored`,
+          );
+          return { status: payment.status, deduplicated: false };
+        }
+      }
+
       // H4: atomic dedup — insert the raw event under the partial UNIQUE index
       // (gateway_transaction_id where type='webhook'). A redelivery loses the
       // insert race and is skipped, so the state change runs at most once.
@@ -196,9 +256,9 @@ export class PaymentWebhookService {
           {
             type: TRANSACTION_TYPE.WEBHOOK,
             amount: Number(payment.amount),
-            status: event?.type ?? target,
+            status: event.eventLabel,
             gatewayTransactionId: eventId,
-            raw: this.sanitizeEvent(event),
+            raw: event.raw,
           },
           manager,
         );
@@ -211,9 +271,9 @@ export class PaymentWebhookService {
           {
             type: TRANSACTION_TYPE.WEBHOOK,
             amount: Number(payment.amount),
-            status: event?.type ?? target,
+            status: event.eventLabel,
             gatewayTransactionId: eventId,
-            raw: this.sanitizeEvent(event),
+            raw: event.raw,
           },
           manager,
         );
@@ -226,8 +286,28 @@ export class PaymentWebhookService {
           tenantId,
           payment,
           event,
-          eventId,
         );
+        // REL-005: the durable twin of the two in-process events emitted below,
+        // written in THIS transaction so a crash after the commit cannot lose them.
+        if (
+          status === PaymentStatus.REFUNDED ||
+          status === PaymentStatus.PARTIALLY_REFUNDED
+        ) {
+          await enqueuePaymentOutcome(manager, {
+            tenantId,
+            paymentId: payment.id,
+            outcome: PAYMENT_OUTCOME.REFUNDED,
+            refundedMinor: Math.round(Number(payment.refunded_amount) * 100),
+          });
+        }
+        if (recordedEvent) {
+          await enqueuePaymentOutcome(manager, {
+            tenantId,
+            paymentId: payment.id,
+            outcome: PAYMENT_OUTCOME.REFUND_RECORDED,
+            refundId: recordedEvent.refundId,
+          });
+        }
         if (
           status === PaymentStatus.REFUNDED ||
           status === PaymentStatus.PARTIALLY_REFUNDED
@@ -248,7 +328,16 @@ export class PaymentWebhookService {
       }
 
       let changed = false;
-      if (target === 'paid' && payment.status !== PaymentStatus.PAID) {
+      // Only a PENDING or FAILED payment may become PAID. FAILED on purpose: a
+      // late success after a failed attempt is real captured money. REFUNDED and
+      // PARTIALLY_REFUNDED are excluded — they WERE paid, and a late or replayed
+      // 'paid' event must not move them backwards (it used to flip refunded money
+      // back to PAID and re-fire the succeeded event).
+      if (
+        target === 'paid' &&
+        (payment.status === PaymentStatus.PENDING ||
+          payment.status === PaymentStatus.FAILED)
+      ) {
         // Anti under/over-payment & tampering: honor a 'paid' event only when the
         // reported captured amount/currency match our payment. A mismatch is NOT
         // flipped to PAID (left for review); we still return 200 so the provider
@@ -259,9 +348,7 @@ export class PaymentWebhookService {
           // Freeze the fee breakdown from the gateway-reported figures.
           this.financials.applyOnPaid(
             payment,
-            this.financials.extractFromRaw(
-              event as unknown as Record<string, unknown>,
-            ),
+            event.fees ?? this.financials.extractFromRaw(event.raw),
           );
           changed = true;
           pendingEventName = PaymentSucceededEvent.eventName;
@@ -284,9 +371,7 @@ export class PaymentWebhookService {
       ) {
         payment.status = PaymentStatus.FAILED;
         payment.failure_reason =
-          event.data?.source?.message ??
-          event.data?.status ??
-          'Gateway reported failure';
+          event.failureReason ?? 'Gateway reported failure';
         changed = true;
         pendingEventName = PaymentFailedEvent.eventName;
         pendingEvent = new PaymentFailedEvent(
@@ -297,7 +382,20 @@ export class PaymentWebhookService {
         );
       }
 
-      if (changed) await repo.save(payment);
+      if (changed) {
+        await repo.save(payment);
+        // REL-005: only a real PENDING→PAID / PENDING→FAILED flip reaches here.
+        // The consequences (booking confirmed, add-on granted, upgrade applied)
+        // commit with it; the in-process event below is just the fast path.
+        await enqueuePaymentOutcome(manager, {
+          tenantId,
+          paymentId: payment.id,
+          outcome:
+            payment.status === PaymentStatus.PAID
+              ? PAYMENT_OUTCOME.PAID
+              : PAYMENT_OUTCOME.FAILED,
+        });
+      }
       return { status: payment.status, deduplicated: false };
     });
 
@@ -344,16 +442,11 @@ export class PaymentWebhookService {
    * the one-time-payment path already uses for an unmatched event.
    */
   private async handleSubscriptionInvoiceEvent(
-    event: MoyasarWebhookEvent,
-    eventId: string | undefined,
-    gatewayPaymentId: string,
+    event: GatewayWebhookEvent,
   ): Promise<WebhookResult | null> {
-    const metadataInvoiceId = (
-      event.data as Record<string, unknown> | undefined
-    )?.metadata as Record<string, unknown> | undefined;
-    const correlatedId = metadataInvoiceId?.subscriptionInvoiceId as
-      | string
-      | undefined;
+    const eventId = event.dedupeKey;
+    const gatewayPaymentId = event.gatewayPaymentId;
+    const correlatedId = event.subscriptionInvoiceId;
 
     const owner = correlatedId
       ? await this.invoices.findOne({ where: { id: correlatedId } })
@@ -362,26 +455,49 @@ export class PaymentWebhookService {
         });
     if (!owner) return null;
 
-    const target = this.mapEvent(event);
+    const target = event.target;
     if (target !== 'paid' && target !== 'failed') {
       // Refunds/unknowns on subscription revenue: accepted and logged, but
       // not acted on here — subscription refunds go through the
-      // `PaymentProvider.refund()` abstraction (`RecurringUnavailableProvider`
-      // today), never this webhook path.
+      // `PaymentProvider.refund()` abstraction, never this webhook path.
       return { accepted: true, matched: true };
     }
 
+    if (target === 'paid') {
+      // The ONE settle path: marks the invoice PAID and moves the subscription in
+      // a single transaction (and checks amount/currency, replays and duplicate
+      // captures itself). Transient failures propagate so the gateway retries.
+      const settled = await this.settlement.settleInvoicePaid(owner.id, {
+        source: 'webhook',
+        provider: event.provider,
+        reference: gatewayPaymentId,
+        webhookEventId: eventId ?? null,
+        capturedMinorUnits: event.capturedMinorUnits,
+        capturedCurrency: event.capturedCurrency,
+        savedPaymentMethod: event.savedPaymentMethod,
+      });
+      return {
+        accepted: true,
+        matched: true,
+        status: settled.invoice?.status ?? owner.status,
+        deduplicated:
+          settled.outcome === 'already_paid' || settled.outcome === 'rejected',
+      };
+    }
+
+    // 'failed': evidence only. It never invents a retry cadence (that belongs to
+    // RenewalService's own synchronous decline path) and never moves a terminal
+    // invoice backward (FR-B015).
     const result = await this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(SubscriptionInvoice);
       const locked = await repo.findOne({
         where: { id: owner.id },
         lock: { mode: 'pessimistic_write' },
       });
-      if (!locked)
-        return { status: owner.status, deduplicated: false, settled: false };
+      if (!locked) return { status: owner.status, deduplicated: false };
 
       if (eventId && locked.webhook_event_id === eventId) {
-        return { status: locked.status, deduplicated: true, settled: false };
+        return { status: locked.status, deduplicated: true };
       }
 
       if (
@@ -393,39 +509,22 @@ export class PaymentWebhookService {
           locked.webhook_event_id = eventId;
           await repo.save(locked);
         }
-        return { status: locked.status, deduplicated: true, settled: false };
+        return { status: locked.status, deduplicated: true };
       }
 
-      let settled = false;
-      if (target === 'paid') {
-        if (this.subscriptionAmountMatches(locked, event)) {
-          locked.status = InvoiceStatus.PAID;
-          locked.paid_at = new Date();
-          locked.provider_reference = gatewayPaymentId;
-          locked.failure_reason = null;
-          locked.failure_class = null;
-          settled = true;
-        } else {
-          this.logger.error(
-            `Webhook 'paid' for subscription invoice ${locked.id} rejected: captured amount/currency mismatch`,
-          );
-        }
-      } else {
-        locked.failure_reason =
-          event.data?.source?.message ??
-          event.data?.status ??
-          'Gateway reported failure';
+      locked.failure_reason = event.failureReason ?? 'Gateway reported failure';
+      if (gatewayPaymentId && locked.checkout_charge_id === gatewayPaymentId) {
+        // The hosted checkout is dead: the clinic may open another at once.
+        locked.checkout_started_at = null;
       }
       if (eventId) locked.webhook_event_id = eventId;
       await repo.save(locked);
-      return { status: locked.status, deduplicated: false, settled };
+      return { status: locked.status, deduplicated: false };
     });
 
     if (!result.deduplicated) {
       await this.audit.record({
-        action: result.settled
-          ? PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_SETTLED
-          : PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_DECLINED,
+        action: PLATFORM_ADMIN_AUDIT_ACTION.SUBSCRIPTION_RENEWAL_DECLINED,
         userId: undefined,
         entityType: 'subscription_invoice',
         entityId: owner.id,
@@ -440,27 +539,6 @@ export class PaymentWebhookService {
       status: result.status,
       deduplicated: result.deduplicated,
     };
-  }
-
-  /** Same anti-tampering reasoning as `capturedMatches`, for a subscription
-   *  invoice's plain `amount`/`currency` columns. */
-  private subscriptionAmountMatches(
-    invoice: SubscriptionInvoice,
-    event: MoyasarWebhookEvent,
-  ): boolean {
-    const reportedAmount = event.data?.amount;
-    if (reportedAmount != null) {
-      const expectedC = Math.round(Number(invoice.amount) * 100);
-      if (Math.round(Number(reportedAmount)) !== expectedC) return false;
-    }
-    const reportedCurrency = event.data?.currency;
-    if (
-      reportedCurrency &&
-      reportedCurrency.toUpperCase() !== invoice.currency.toUpperCase()
-    ) {
-      return false;
-    }
-    return true;
   }
 
   /**
@@ -479,17 +557,16 @@ export class PaymentWebhookService {
     manager: EntityManager,
     tenantId: string,
     payment: Payment,
-    event: MoyasarWebhookEvent,
-    eventId?: string,
+    event: GatewayWebhookEvent,
   ): Promise<{ status: PaymentStatus; recordedEvent?: RefundRecordedEvent }> {
+    const eventId = event.dedupeKey;
     const paymentCents = Math.round(Number(payment.amount) * 100);
 
     // Moyasar reports `refunded` in halalas (== our cents). Absent on a refund
     // event ⇒ treat as full refund. Clamp to [0, paymentCents] so a unit
     // mismatch / gateway anomaly can never over-refund the ledger.
-    const reported = event.data?.refunded;
-    let gatewayCents =
-      reported != null ? Math.round(Number(reported)) : paymentCents;
+    const reported = event.refundedMinorUnits;
+    let gatewayCents = reported != null ? reported : paymentCents;
     gatewayCents = Math.max(0, Math.min(gatewayCents, paymentCents));
 
     const recordedCents = await this.sumRefundsCents(manager, payment.id, [
@@ -535,7 +612,7 @@ export class PaymentWebhookService {
           amount: deltaCents / 100,
           status: REFUND_STATUS.SUCCEEDED.toLowerCase(),
           gatewayTransactionId: eventId,
-          raw: this.sanitizeEvent(event),
+          raw: event.raw,
         },
         manager,
       );
@@ -615,14 +692,14 @@ export class PaymentWebhookService {
    */
   private capturedMatches(
     payment: Payment,
-    event: MoyasarWebhookEvent,
+    event: GatewayWebhookEvent,
   ): boolean {
-    const reportedAmount = event.data?.amount;
+    const reportedAmount = event.capturedMinorUnits;
     if (reportedAmount != null) {
       const expectedC = Math.round(Number(payment.amount) * 100);
-      if (Math.round(Number(reportedAmount)) !== expectedC) return false;
+      if (reportedAmount !== expectedC) return false;
     }
-    const reportedCurrency = event.data?.currency;
+    const reportedCurrency = event.capturedCurrency;
     if (
       reportedCurrency &&
       reportedCurrency.toUpperCase() !== payment.currency.toUpperCase()
@@ -669,6 +746,32 @@ export class PaymentWebhookService {
           message: 'Webhook event carries no verifiable timestamp',
         });
     }
+  }
+
+  /**
+   * Reduce an authenticated Moyasar event to the neutral shape. Moyasar reports
+   * amounts in halalas (== the domain's cents), `refunded` as a CUMULATIVE
+   * total, and echoes our subscription invoice id in `data.metadata`.
+   */
+  private toGatewayEvent(event: MoyasarWebhookEvent): GatewayWebhookEvent {
+    const target = this.mapEvent(event);
+    const data = event.data as Record<string, any> | undefined;
+    return {
+      provider: 'moyasar',
+      gatewayPaymentId: event.data!.id!,
+      dedupeKey: event.id,
+      target,
+      eventLabel: event.type ?? target,
+      capturedMinorUnits:
+        data?.amount != null ? Math.round(Number(data.amount)) : undefined,
+      capturedCurrency: data?.currency,
+      refundedMinorUnits:
+        data?.refunded != null ? Math.round(Number(data.refunded)) : undefined,
+      failureReason:
+        data?.source?.message ?? data?.status ?? 'Gateway reported failure',
+      subscriptionInvoiceId: data?.metadata?.subscriptionInvoiceId,
+      raw: this.sanitizeEvent(event),
+    };
   }
 
   /** Normalize a Moyasar event/status into our target transition. */

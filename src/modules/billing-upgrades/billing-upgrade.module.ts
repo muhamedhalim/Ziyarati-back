@@ -54,5 +54,8 @@ import { PlatformBillingUpgradeController } from './platform-billing-upgrade.con
     BillingUpgradeEntitlementListener,
     BillingUpgradeBootstrap,
   ],
+  // The worker's durable `payments.outcome` consumer (REL-005) applies the same
+  // idempotent entitlement the in-process event does, via `applyPaid/applyFailed`.
+  exports: [BillingUpgradeEntitlementListener],
 })
 export class BillingUpgradeModule {}

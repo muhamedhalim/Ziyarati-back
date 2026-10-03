@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  CheckoutRequest,
+  CheckoutResult,
+  SavedPaymentMethodRef,
+  VerifyCheckoutResult,
   ChargeRequest,
   ChargeResult,
   FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
@@ -26,6 +30,11 @@ import {
 @Injectable()
 export class RecurringUnavailableProvider implements PaymentProvider {
   private readonly logger = new Logger('RecurringUnavailableProvider');
+
+  /** No hosted page either: a paid subscription stays on the legacy path until a real provider is bound. */
+  readonly name = 'none';
+  readonly supportsCheckout = false;
+  readonly checkoutWindowMinutes = 30;
 
   async charge(request: ChargeRequest): Promise<ChargeResult> {
     this.logger.warn(
@@ -60,5 +69,24 @@ export class RecurringUnavailableProvider implements PaymentProvider {
       `Verify requested for invoice ${invoiceId} — recurring payments are not yet enabled, nothing to verify`,
     );
     return { status: 'unknown' };
+  }
+
+  async createCheckout(request: CheckoutRequest): Promise<CheckoutResult> {
+    this.logger.warn(
+      `Checkout for invoice ${request.invoiceId} refused: online payment is not enabled`,
+    );
+    return {
+      status: 'failed',
+      failureCode: 'CHECKOUT_UNAVAILABLE',
+      failureReason: 'Online payment is not available yet',
+    };
+  }
+
+  async verifyCheckout(): Promise<VerifyCheckoutResult> {
+    return { status: 'unknown' };
+  }
+
+  async deletePaymentMethod(_method: SavedPaymentMethodRef): Promise<boolean> {
+    return true; // nothing was ever stored at a provider
   }
 }

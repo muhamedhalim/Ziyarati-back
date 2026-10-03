@@ -12,6 +12,7 @@ import { UsageMetric } from '../subscription-billing/usage-metric';
 import { computeTotalMinor, toBigInt } from '../resource-pricing/money';
 
 import { BillingUpgradeEventService } from './billing-upgrade-event.service';
+import { lockRequest } from './billing-upgrade-lock.util';
 import { BillingUpgradeAiEstimateService } from './billing-upgrade-ai-estimate.service';
 import { QuoteBillingUpgradeRequestDto } from './dto/quote-billing-upgrade-request.dto';
 import { RejectBillingUpgradeRequestDto } from './dto/reject-billing-upgrade-request.dto';
@@ -204,11 +205,8 @@ export class BillingUpgradeAdminService {
 
     return this.dataSource.transaction(async (manager) => {
       const repo = manager.getRepository(BillingUpgradeRequest);
-      const request = await repo.findOne({
-        where: { id },
-        relations: { tenant: true },
-        lock: { mode: 'pessimistic_write' },
-      });
+      // Lock first, join after: FOR UPDATE + a LEFT JOINed relation is refused by Postgres.
+      const request = await lockRequest(manager, { id }, { tenant: true });
       if (!request) {
         throw new AppError(ErrorCode.NOT_FOUND, { message: 'Request not found' });
       }

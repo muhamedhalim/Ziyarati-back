@@ -89,6 +89,28 @@ describe('MoyasarProvider', () => {
     });
   });
 
+  describe('verifyPayment — an outage is NOT a failed payment', () => {
+    const httpError = (status: number) => ({ ok: false, status, json: async () => ({ message: 'x' }) });
+
+    it('a network error (no response) → "unknown", never "failed"', async () => {
+      fetchMock.mockRejectedValueOnce(new Error('ECONNRESET'));
+      const result = await build().verifyPayment('gw-1');
+      expect(result).toMatchObject({ success: false, status: 'unknown' });
+    });
+
+    it.each([500, 502, 503, 504, 429])('HTTP %i → "unknown", never "failed"', async (status) => {
+      fetchMock.mockResolvedValueOnce(httpError(status));
+      const result = await build().verifyPayment('gw-1');
+      expect(result).toMatchObject({ success: false, status: 'unknown' });
+    });
+
+    it.each([400, 404])('a definitive HTTP %i keeps its previous "failed" meaning', async (status) => {
+      fetchMock.mockResolvedValueOnce(httpError(status));
+      const result = await build().verifyPayment('gw-1');
+      expect(result).toMatchObject({ success: false, status: 'failed' });
+    });
+  });
+
   describe('refundPayment', () => {
     it('returns the gateway refund id on success', async () => {
       fetchMock.mockResolvedValueOnce(okResponse({ id: 'refund-1' }));

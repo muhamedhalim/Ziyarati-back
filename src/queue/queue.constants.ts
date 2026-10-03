@@ -132,6 +132,16 @@ export const JOB = {
   SUBSCRIPTIONS_RENEWAL_CHECK: 'subscriptions.renewalCheck',
   REFUNDS_REAP: 'refunds.reap',
   PAYMENTS_RECONCILE: 'payments.reconcile',
+  /**
+   * REL-005 — durable post-payment effects. Written to `outbox_jobs` in the SAME
+   * transaction that moves a payment to PAID/FAILED (or records a refund), so the
+   * consequences that DEPEND on that change — confirming the booking, granting an
+   * add-on, applying a billing upgrade, reversing an entitlement on refund —
+   * cannot be lost to a crash between the commit and an in-process event emit.
+   * Consumed by `PaymentsProcessor` on the existing `payments` queue. SYSTEM tier
+   * (the money has already moved; see job-authorization.constants.ts).
+   */
+  PAYMENTS_OUTCOME: 'payments.outcome',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
   /**
    * AUTH-005 (see docs/AUTH_CONCURRENCY_GC_AUDIT.md) — repeatable retention

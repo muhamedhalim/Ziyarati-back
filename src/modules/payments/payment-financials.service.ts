@@ -52,6 +52,15 @@ export class PaymentFinancialsService {
     payment.platform_fee = platformFee;
     payment.net_amount = round2(gross - gatewayFee - platformFee);
 
+    // A fee the gateway REPORTED at capture is final. When it reported none
+    // (a Tap charge carries no fee), the figures above are provisional — the
+    // `net = gross` default — and stay marked so until reconciliation fills in
+    // the real fee. Never overwritten once stamped: a later re-application of
+    // the same capture must not make a final figure look newer.
+    if (input.gatewayFee != null && !payment.fees_reconciled_at) {
+      payment.fees_reconciled_at = new Date();
+    }
+
     if (input.paymentMethod && !payment.payment_method) {
       payment.payment_method = input.paymentMethod;
     }

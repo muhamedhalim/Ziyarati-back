@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
   DataSource,
+  EntityManager,
   FindOptionsWhere,
   In,
   MoreThanOrEqual,
@@ -12,7 +13,7 @@ import {
 
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { InvoiceStatus } from '../../entities/enums';
+import { InvoiceStatus, SubscriptionInvoiceKind } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
 import {
   FAILURE_CLASS_TOKENIZATION_UNAVAILABLE,
@@ -20,6 +21,19 @@ import {
 } from './payment/payment-provider.interface';
 import type { PaymentProvider } from './payment/payment-provider.interface';
 import { QueryInvoicesDto } from './dto/query-invoices.dto';
+import {
+  InvoiceSettlementService,
+  type SettleEvidence,
+} from './invoice-settlement.service';
+import { PaymentMethodService } from './payment-method.service';
+
+/** Optional fields a caller sets when it issues an invoice (all NULL on a legacy invoice). */
+export interface GenerateInvoiceExtra {
+  kind?: SubscriptionInvoiceKind;
+  /** The plan this invoice pays for — settling it makes this the subscription's plan. */
+  targetPlanId?: string;
+  provider?: string;
+}
 
 /**
  * Billing & invoices.
@@ -39,7 +53,23 @@ export class BillingService {
     @Inject(PAYMENT_PROVIDER)
     private readonly payment: PaymentProvider,
     private readonly dataSource: DataSource,
+    private readonly settlement: InvoiceSettlementService,
+    private readonly methods: PaymentMethodService,
   ) {}
+
+  /**
+   * TRUE when the bound provider can take a payment from a present payer through
+   * a hosted page. Decision D2 (a paid subscription is ACTIVE only after payment)
+   * applies exactly then — see `PaymentProvider.supportsCheckout`.
+   */
+  get supportsCheckout(): boolean {
+    return this.payment.supportsCheckout;
+  }
+
+  /** The bound provider's name — stored on the invoices it settles. */
+  get providerName(): string {
+    return this.payment.name;
+  }
 
   /**
    * Issues an invoice for a billing cycle (status OPEN). Called by
@@ -59,6 +89,7 @@ export class BillingService {
     periodEnd: Date,
     currency: string,
     status: InvoiceStatus = InvoiceStatus.OPEN,
+    extra: GenerateInvoiceExtra = {},
   ): Promise<SubscriptionInvoice> {
     const invoice = this.invoices.create({
       tenant_id: tenantId,
@@ -69,8 +100,112 @@ export class BillingService {
       period_start: periodStart,
       period_end: periodEnd,
       currency,
+      kind: extra.kind ?? null,
+      target_plan_id: extra.targetPlanId ?? null,
+      provider: extra.provider ?? null,
     });
     return this.invoices.save(invoice);
+  }
+
+  /**
+   * Voids every OPEN invoice of a subscription (a superseded quote, a cancelled
+   * pending payment). VOID frees both unique indexes: `UQ_sub_invoice_period`
+   * ignores VOID rows and `UQ_sub_invoice_open_per_subscription` only counts OPEN.
+   * A payment that still arrives for a voided invoice is NOT booked — it raises
+   * an ALERT in the settle path so an operator can refund it.
+   */
+  async voidOpenInvoices(
+    subscriptionId: string,
+    reason: string,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const repo = manager
+      ? manager.getRepository(SubscriptionInvoice)
+      : this.invoices;
+    const res = await repo
+      .createQueryBuilder()
+      .update(SubscriptionInvoice)
+      .set({
+        status: InvoiceStatus.VOID,
+        failure_reason: reason,
+        charge_started_at: null,
+        next_retry_at: null,
+      })
+      .where('subscription_id = :subscriptionId', { subscriptionId })
+      .andWhere('status = :open', { open: InvoiceStatus.OPEN })
+      .execute();
+    return res.affected ?? 0;
+  }
+
+  /**
+   * Voids the OPEN invoices that a renewal makes obsolete — a pre-Tap creation
+   * invoice (kind NULL) or an upgrade quote — but ONLY those nobody is paying
+   * right now (no fresh charge claim, no open checkout). They would otherwise
+   * hold the subscription's single OPEN-invoice slot and block the renewal
+   * invoice from ever being issued.
+   */
+  async voidSupersededOpenInvoices(
+    subscriptionId: string,
+    reason: string,
+  ): Promise<number> {
+    const now = Date.now();
+    const res = await this.invoices
+      .createQueryBuilder()
+      .update(SubscriptionInvoice)
+      .set({
+        status: InvoiceStatus.VOID,
+        failure_reason: reason,
+        next_retry_at: null,
+      })
+      .where('subscription_id = :subscriptionId', { subscriptionId })
+      .andWhere('status = :open', { open: InvoiceStatus.OPEN })
+      .andWhere('(kind IS NULL OR kind = :upgrade)', {
+        upgrade: SubscriptionInvoiceKind.UPGRADE,
+      })
+      .andWhere(
+        '(charge_started_at IS NULL OR charge_started_at < :chargeStale)',
+        { chargeStale: new Date(now - BillingService.CHARGE_CLAIM_STALE_MS) },
+      )
+      .andWhere(
+        '(checkout_started_at IS NULL OR checkout_started_at < :checkoutStale)',
+        {
+          checkoutStale: new Date(
+            now - this.payment.checkoutWindowMinutes * 60_000,
+          ),
+        },
+      )
+      .execute();
+    return res.affected ?? 0;
+  }
+
+  /** The subscription's single OPEN invoice, if any (the open-invoice unique index makes it at most one). */
+  findOpenInvoice(subscriptionId: string): Promise<SubscriptionInvoice | null> {
+    return this.invoices.findOne({
+      where: { subscription_id: subscriptionId, status: InvoiceStatus.OPEN },
+    });
+  }
+
+  /**
+   * TRUE while a payment for this invoice may still land: a merchant-initiated
+   * charge holds a fresh claim, or a hosted checkout was opened within its
+   * payable window. Used to refuse changes (re-quoting, voiding) that would leave
+   * a live charge pointing at an invoice that no longer exists.
+   */
+  isPaymentInFlight(invoice: SubscriptionInvoice, now = Date.now()): boolean {
+    const checkoutOpen =
+      !!invoice.checkout_started_at &&
+      now - invoice.checkout_started_at.getTime() <
+        this.payment.checkoutWindowMinutes * 60_000;
+    const claimed =
+      !!invoice.charge_started_at &&
+      now - invoice.charge_started_at.getTime() <
+        BillingService.CHARGE_CLAIM_STALE_MS;
+    return checkoutOpen || claimed;
+  }
+
+  /** Settles an invoice from a proof of payment. See {@link InvoiceSettlementService}. */
+  settleInvoicePaid(invoiceId: string, evidence: SettleEvidence) {
+    return this.settlement.settleInvoicePaid(invoiceId, evidence);
   }
 
   async listInvoices(tenantId: string, query: QueryInvoicesDto) {
@@ -112,15 +247,27 @@ export class BillingService {
    * Settles an open invoice via the payment abstraction. Double-charge safe at
    * the DATABASE level: an atomic claim on `charge_started_at` means one
    * financial obligation can have at most one in-flight charge attempt — a
-   * concurrent retry gets a 409 instead of a second provider charge. The
-   * provider is called OUTSIDE any lock; the outcome is finalized under a row
-   * lock (idempotent: an invoice already PAID is returned as-is). The provider
-   * reference is persisted for support/reconciliation.
+   * concurrent retry gets a 409 instead of a second provider charge. The claim
+   * also refuses an invoice whose hosted checkout is still open
+   * (`checkout_started_at` younger than the checkout window), so a clinic paying
+   * by hand can never be double-captured by the renewal job.
+   *
+   * The provider is called OUTSIDE any lock. A captured charge is booked through
+   * the ONE settle path (`InvoiceSettlementService`), which also advances the
+   * subscription; a decline / still-pending outcome is finalized here under a row
+   * lock (idempotent: an invoice already PAID is returned as-is).
+   *
+   * `pending` (the provider accepted the charge but cannot say yet): with a
+   * provider charge id the claim is KEPT and the invoice stays OPEN — the webhook
+   * or the reconciliation sweep settles it; without one the claim is released
+   * (there is nothing to verify, and the retry reuses the same idempotency key).
    */
   async payInvoice(tenantId: string, id: string): Promise<SubscriptionInvoice> {
-    // ── Phase 1: atomic claim (UPDATE … WHERE claim free/stale) ──
-    const staleBefore = new Date(
-      Date.now() - BillingService.CHARGE_CLAIM_STALE_MS,
+    // ── Phase 1: atomic claim (UPDATE … WHERE claim free/stale, no fresh checkout) ──
+    const now = Date.now();
+    const staleBefore = new Date(now - BillingService.CHARGE_CLAIM_STALE_MS);
+    const checkoutStaleBefore = new Date(
+      now - this.payment.checkoutWindowMinutes * 60_000,
     );
     const claim = await this.invoices
       .createQueryBuilder()
@@ -140,6 +287,10 @@ export class BillingService {
           staleBefore,
         },
       )
+      .andWhere(
+        '(checkout_started_at IS NULL OR checkout_started_at < :checkoutStaleBefore)',
+        { checkoutStaleBefore },
+      )
       .execute();
 
     if (!claim.affected) {
@@ -158,7 +309,11 @@ export class BillingService {
         });
       }
       throw new AppError(ErrorCode.CONFLICT, {
-        message: 'A charge for this invoice is already in progress',
+        message:
+          invoice.checkout_started_at &&
+          invoice.checkout_started_at >= checkoutStaleBefore
+            ? 'A checkout for this invoice is already open'
+            : 'A charge for this invoice is already in progress',
       });
     }
 
@@ -169,6 +324,7 @@ export class BillingService {
     // time from the platform's billing default) — never a caller-supplied
     // value, which previously defaulted to a hardcoded 'USD' regardless of
     // what the invoice actually said.
+    const method = await this.methods.resolveForCharge(tenantId);
     const result = await this.payment.charge({
       tenantId,
       invoiceId: invoice.id,
@@ -179,9 +335,33 @@ export class BillingService {
       // this invoice even when `provider_reference` was never recorded (the
       // "lost confirmation" case FR-B016 names).
       metadata: { subscriptionInvoiceId: invoice.id },
+      paymentMethod: method?.ref,
+      // Stable across a retry of the SAME attempt, new for the next one.
+      attempt: invoice.retry_count,
     });
+    const outcome = result.status ?? (result.success ? 'paid' : 'failed');
 
-    // ── Phase 3: finalize under a row lock (idempotent) ──
+    // ── Phase 3a: a captured charge goes through the single settle path ──
+    if (outcome === 'paid') {
+      const settled = await this.settlement.settleInvoicePaid(id, {
+        source: 'charge',
+        provider: this.payment.name,
+        reference: result.reference ?? `${this.payment.name}:${invoice.id}`,
+        paymentMethodId: method?.id,
+        savedPaymentMethod: result.savedPaymentMethod,
+      });
+      if (settled.outcome === 'rejected' || !settled.invoice) {
+        // Money moved but the invoice cannot take it (voided under us, amount
+        // mismatch). The settle path already raised the ALERT.
+        throw new AppError(ErrorCode.CONFLICT, {
+          message: 'Invoice can no longer be paid',
+          internalContext: { reason: settled.reason },
+        });
+      }
+      return settled.invoice;
+    }
+
+    // ── Phase 3b: decline / pending — finalize under a row lock (idempotent) ──
     // The decline write MUST commit — it must never THROW from inside this
     // callback: `DataSource.transaction()` rolls back everything the
     // callback did the moment it throws, which silently discarded
@@ -205,24 +385,25 @@ export class BillingService {
         return { declined: false as const, invoice: locked };
       }
 
-      if (!result.success) {
-        locked.failure_reason = result.failureReason ?? 'Payment was declined';
-        // T081 — an ordinary decline (undefined) is distinct from a
-        // structural refusal like TOKENIZATION_UNAVAILABLE; never treated
-        // as a system error, never retried faster, never marked paid.
-        locked.failure_class = result.failureClass ?? null;
-        locked.charge_started_at = null; // release the claim for a future retry
+      if (outcome === 'pending') {
+        if (result.reference) {
+          // Keep the claim: a charge exists and must be verified, not re-created.
+          locked.checkout_charge_id = result.reference;
+        } else {
+          locked.charge_started_at = null; // nothing to verify — free for a retry
+        }
         const saved = await repo.save(locked);
-        return { declined: true as const, invoice: saved };
+        return { declined: false as const, invoice: saved };
       }
 
-      locked.status = InvoiceStatus.PAID;
-      locked.paid_at = new Date();
-      locked.provider_reference = result.reference;
-      locked.failure_reason = null;
-      locked.failure_class = null;
+      locked.failure_reason = result.failureReason ?? 'Payment was declined';
+      // T081 — an ordinary decline (undefined) is distinct from a
+      // structural refusal like TOKENIZATION_UNAVAILABLE; never treated
+      // as a system error, never retried faster, never marked paid.
+      locked.failure_class = result.failureClass ?? null;
+      locked.charge_started_at = null; // release the claim for a future retry
       const saved = await repo.save(locked);
-      return { declined: false as const, invoice: saved };
+      return { declined: true as const, invoice: saved };
     });
 
     if (finalized.declined) {

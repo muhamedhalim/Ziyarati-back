@@ -41,6 +41,9 @@ const PATTERNS: NamedPattern[] = [
   { name: 'postgres-connection-string-with-password', regex: /\bpostgres(?:ql)?:\/\/[^:\s'"]+:[^@\s'"]+@[^\s'"]+/gi },
   { name: 'redis-connection-string-with-password', regex: /\bredis(?:s)?:\/\/[^:\s'"]*:[^@\s'"]+@[^\s'"]+/gi },
   { name: 'aws-style-access-key-id', regex: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+  // Tap secret keys (sk_test_… / sk_live_…). Public keys (pk_…) are browser-safe
+  // by design and deliberately NOT matched.
+  { name: 'tap-secret-key', regex: /\bsk_(?:test|live)_[A-Za-z0-9]{16,}\b/g },
   // Named env vars: `KEY=value` / `KEY: "value"` / `KEY = 'value'` shapes for
   // every credential-bearing config key in env.validation.ts. Requires a
   // non-trivial value (>=6 chars) so `OPENAI_API_KEY=` (empty, the audit's
@@ -48,7 +51,7 @@ const PATTERNS: NamedPattern[] = [
   {
     name: 'named-credential-env-assignment',
     regex:
-      /\b(JWT_ACCESS_SECRET|JWT_REFRESH_SECRET|MOYASAR_SECRET_KEY|MOYASAR_WEBHOOK_SECRET|RESEND_API_KEY|META_APP_SECRET|WHATSAPP_APP_SECRET|WHATSAPP_VERIFY_TOKEN|CREDENTIALS_ENCRYPTION_KEY|OPENAI_API_KEY|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|METRICS_TOKEN|DB_PASSWORD)\s*[:=]\s*['"]?([^\s'",;]{6,})['"]?/g,
+      /\b(JWT_ACCESS_SECRET|JWT_REFRESH_SECRET|MOYASAR_SECRET_KEY|MOYASAR_WEBHOOK_SECRET|TAP_TEST_SECRET_KEY|TAP_LIVE_SECRET_KEY|RESEND_API_KEY|META_APP_SECRET|WHATSAPP_APP_SECRET|WHATSAPP_VERIFY_TOKEN|CREDENTIALS_ENCRYPTION_KEY|OPENAI_API_KEY|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|METRICS_TOKEN|DB_PASSWORD)\s*[:=]\s*['"]?([^\s'",;]{6,})['"]?/g,
   },
   // Generic high-entropy bearer token in an Authorization header.
   { name: 'bearer-token', regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/g },

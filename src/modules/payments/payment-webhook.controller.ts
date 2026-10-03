@@ -15,6 +15,8 @@ import {
 
 import { PaymentWebhookService } from './payment-webhook.service';
 import type { MoyasarWebhookEvent } from './webhooks/moyasar-webhook.types';
+import { TapWebhookHandler } from './webhooks/tap-webhook.handler';
+import type { TapWebhookPayload } from './providers/tap/tap.types';
 
 import { Public } from '../auth/decorators/public.decorator';
 
@@ -30,9 +32,10 @@ const S_ERROR = {
 };
 
 /**
- * Moyasar inbound webhook — the PLATFORM endpoint the gateway calls.
+ * Gateway inbound webhooks — the PLATFORM endpoints the gateways call.
  *
- * Public (no JWT): authenticated by the shared secret, NOT by a user token. The
+ * Public (no JWT): each route authenticates the gateway's own signature scheme
+ * (Moyasar: shared secret; Tap: HMAC `hashstring`), NOT a user token. The
  * tenant is resolved internally from our own Payment row (via the gateway
  * payment id) — never from the request body. Processing is idempotent.
  *
@@ -42,7 +45,10 @@ const S_ERROR = {
 @ApiTags('Payments Webhooks')
 @Controller('payments/webhooks')
 export class PaymentWebhookController {
-  constructor(private readonly webhooks: PaymentWebhookService) {}
+  constructor(
+    private readonly webhooks: PaymentWebhookService,
+    private readonly tapWebhooks: TapWebhookHandler,
+  ) {}
 
   @ApiOperation({
     summary: 'Ingest a Moyasar webhook event (public)',
@@ -73,5 +79,36 @@ export class PaymentWebhookController {
     @Headers('x-moyasar-token') token?: string,
   ) {
     return this.webhooks.handleMoyasar(body, token);
+  }
+
+  @ApiOperation({
+    summary: 'Ingest a Tap webhook event (public)',
+    description:
+      '**Public endpoint — called by Tap, not by app users.** Verifies the `hashstring` header (HMAC-SHA256 of the posted charge fields, keyed by the Tap secret key), re-fetches the charge from Tap with our own key, de-duplicates on `tap:{chargeId}:{status}`, resolves the payment by gateway id (falling back to our echoed `reference.transaction`) and updates the tenant-scoped record idempotently. Invalid signature → 401. Tap unreachable while re-fetching → 503 so Tap retries.',
+  })
+  @ApiOkResponse({
+    description: 'Event accepted.',
+    schema: {
+      type: 'object',
+      properties: {
+        accepted: { type: 'boolean', example: true },
+        matched: { type: 'boolean', example: true },
+        deduplicated: { type: 'boolean', example: false },
+        status: { type: 'string', example: 'PAID' },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Invalid webhook signature.',
+    schema: S_ERROR,
+  })
+  @Public()
+  @Post('tap')
+  @HttpCode(HttpStatus.OK)
+  ingestTap(
+    @Body() body: TapWebhookPayload,
+    @Headers('hashstring') hashstring?: string,
+  ) {
+    return this.tapWebhooks.handle(body, hashstring);
   }
 }

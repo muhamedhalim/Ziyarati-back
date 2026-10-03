@@ -50,6 +50,7 @@ const REQUIRED_FIELDS: Partial<Record<string, RequiredFields>> = {
   [JOB.AI_EXECUTE]: {
     strings: ['aiConversationId', 'content', 'idempotencyKey'],
   },
+  [JOB.PAYMENTS_OUTCOME]: { strings: ['tenantId', 'paymentId', 'outcome'] },
   [JOB.WORKFLOW_RUN]: { strings: ['runId'] },
   [JOB.WORKFLOW_ACTION]: { strings: ['runId'], numbers: ['actionIndex'] },
   [JOB.WEBHOOKS_DELIVER]: { strings: ['webhookDeliveryId'] },

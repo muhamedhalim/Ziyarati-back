@@ -58,6 +58,14 @@ import { ResourcePurchaseController } from './resource-purchase.controller';
     ResourcePurchaseService,
     ResourceEntitlementListener,
   ],
-  exports: [ResourceCatalogService, ResourceCatalogAdminService, ResourcePurchaseService],
+  // `ResourceEntitlementListener` is exported for the worker's durable
+  // `payments.outcome` consumer (REL-005), which applies the same idempotent
+  // grant/revoke the in-process events do via `applyPaid/applyFailed/applyRefund`.
+  exports: [
+    ResourceCatalogService,
+    ResourceCatalogAdminService,
+    ResourcePurchaseService,
+    ResourceEntitlementListener,
+  ],
 })
 export class ResourcePricingModule {}

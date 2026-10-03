@@ -281,7 +281,7 @@ describe('BillingUpgradeService', () => {
         // Phase 1.5 (plan §12) — this charge is the clinic paying the
         // platform, not a patient payment: must bypass the merchant gate
         // and never carry a marketplace split.
-        { platformRevenue: true },
+        { purpose: 'BILLING_UPGRADE' },
       );
       expect(result.redirectUrl).toBe('https://pay.example/checkout/1');
     });

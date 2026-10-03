@@ -3,6 +3,7 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  JoinColumn,
   Index,
   CreateDateColumn,
   UpdateDateColumn,
@@ -39,6 +40,18 @@ export class Subscription {
 
   @Column({ default: true })
   auto_renew!: boolean;
+
+  /**
+   * Tap migration D4 — a downgrade chosen mid-period. It takes effect at the
+   * next renewal (the renewal invoice is priced from it, and settling that
+   * invoice switches `plan` to it). NULL = nothing scheduled.
+   */
+  @ManyToOne(() => SubscriptionPlan, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({
+    name: 'pending_plan_id',
+    foreignKeyConstraintName: 'FK_subscriptions_pending_plan',
+  })
+  pending_plan?: SubscriptionPlan | null;
 
   /** FND-031/M-03: when PAST_DUE was entered — the grace boundary is this plus the configured duration. NULL = never entered grace (still active, or terminal). */
   @Column({ type: 'timestamptz', nullable: true })

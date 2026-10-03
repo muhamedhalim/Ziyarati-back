@@ -3,11 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { PlatformModule } from '../platform/platform.module';
+import { PaymentsCoreModule } from '../payments/payments-core.module';
 
 import { SubscriptionPlan } from '../../entities/SaaS-Core/SubscriptionPlan';
 import { Subscription } from '../../entities/SaaS-Core/Subscription';
 import { SubscriptionUsage } from '../../entities/SaaS-Core/SubscriptionUsage';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
+import { TenantPaymentMethod } from '../../entities/SaaS-Core/TenantPaymentMethod';
 import { FeatureFlag } from '../../entities/SaaS-Core/FeatureFlag';
 import { FeatureDefinition } from '../../entities/SaaS-Core/FeatureDefinition';
 import { FeaturePlan } from '../../entities/SaaS-Core/FeaturePlan';
@@ -20,6 +22,9 @@ import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
 import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { RenewalService } from './renewal.service';
+import { InvoiceSettlementService } from './invoice-settlement.service';
+import { SubscriptionCheckoutService } from './subscription-checkout.service';
+import { PaymentMethodService } from './payment-method.service';
 import { UsageService } from './usage.service';
 import { TenantUsageLimitOverrideService } from './tenant-usage-limit-override.service';
 import { FeatureFlagService } from './feature-flag.service';
@@ -52,6 +57,7 @@ import {
 } from './payment/payment-provider.interface';
 import { StubPaymentProvider } from './payment/stub-payment.provider';
 import { RecurringUnavailableProvider } from './payment/recurring-unavailable.provider';
+import { TapSubscriptionProvider } from './payment/tap-subscription.provider';
 
 /**
  * T087 (spec 014, US5) — the always-succeeds stub must be UNREACHABLE in
@@ -61,7 +67,14 @@ import { RecurringUnavailableProvider } from './payment/recurring-unavailable.pr
  */
 export function resolveSubscriptionPaymentProvider(
   config: ConfigService,
+  tap?: TapSubscriptionProvider,
 ): PaymentProvider {
+  // Tap (any environment, so a sandbox works in dev): only when it is the
+  // selected gateway AND a secret key exists for the active TAP_ENV. Never the
+  // stub, so this cannot widen what production may bind to.
+  if (config.get<string>('PAYMENT_PROVIDER') === 'tap' && tap?.isConfigured) {
+    return tap;
+  }
   return config.get<string>('NODE_ENV') === 'production'
     ? new RecurringUnavailableProvider()
     : new StubPaymentProvider();
@@ -88,6 +101,7 @@ export function resolveSubscriptionPaymentProvider(
       Subscription,
       SubscriptionUsage,
       SubscriptionInvoice,
+      TenantPaymentMethod,
       FeatureFlag,
       FeatureDefinition,
       FeaturePlan,
@@ -102,6 +116,9 @@ export function resolveSubscriptionPaymentProvider(
     // `FileUploadService` applies the plan's `max_storage_bytes` /
     // `max_uploaded_files` caps via `UsageService`.
     forwardRef(() => PlatformModule),
+    // PaymentsConfig + the single TapApiClient. A module of its own because
+    // PaymentsModule imports THIS module (it settles invoices from webhooks).
+    PaymentsCoreModule,
   ],
   controllers: [
     SubscriptionController,
@@ -114,6 +131,10 @@ export function resolveSubscriptionPaymentProvider(
   providers: [
     SubscriptionService,
     BillingService,
+    InvoiceSettlementService,
+    SubscriptionCheckoutService,
+    PaymentMethodService,
+    TapSubscriptionProvider,
     RenewalService,
     UsageService,
     TenantUsageLimitOverrideService,
@@ -148,13 +169,16 @@ export function resolveSubscriptionPaymentProvider(
     // other configuration able to bind the stub in production.
     {
       provide: PAYMENT_PROVIDER,
-      inject: [ConfigService],
+      inject: [ConfigService, TapSubscriptionProvider],
       useFactory: resolveSubscriptionPaymentProvider,
     },
   ],
   exports: [
     SubscriptionService,
     BillingService,
+    // The ONE path that marks a subscription invoice PAID — used by the webhook
+    // and the reconciliation sweep (payments module) as well as by BillingService.
+    InvoiceSettlementService,
     // T082 (spec 014, US5) — SubscriptionsProcessor (worker.module.ts)
     // invokes the renewal cycle from the `subscriptions.renewalBill` job.
     RenewalService,

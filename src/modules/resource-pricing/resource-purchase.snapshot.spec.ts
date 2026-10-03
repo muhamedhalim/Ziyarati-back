@@ -129,7 +129,7 @@ describe('ResourcePurchaseService — price snapshot (Phase 2.2, plan §17)', ()
     expect(paymentService.create).toHaveBeenCalledWith(
       TENANT(),
       expect.objectContaining({ amount: 200, currency: 'SAR' }),
-      { platformRevenue: true },
+      { purpose: 'ADDON' },
     );
   });
 

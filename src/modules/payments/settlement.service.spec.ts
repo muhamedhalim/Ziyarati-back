@@ -179,6 +179,50 @@ describe('SettlementService.generate (VER-010)', () => {
     expect(capturedQb!.andWhere).toHaveBeenCalledWith('settlement_status = :unsettled', { unsettled: 'UNSETTLED' });
   });
 
+  // Tap Phase 2 (plan §9) — the classification bug: the claim took EVERY PAID
+  // payment of the tenant, including the clinic's own add-on / billing-upgrade
+  // payments TO the platform, so they were batched as money owed back to it.
+  it("the claim takes ONLY the clinic's own money that ZiyaraTech itself collected (purpose allow-list + INTERNAL mode)", async () => {
+    let capturedQb: ReturnType<typeof createMockQueryBuilder> | undefined;
+    manager.createQueryBuilder.mockImplementationOnce(() => {
+      const qb = createMockQueryBuilder();
+      qb.execute = jest.fn().mockResolvedValue({ raw: [] });
+      capturedQb = qb;
+      return qb;
+    });
+
+    await expect(service.generate(TENANT, {})).rejects.toMatchObject({
+      code: ErrorCode.UNPROCESSABLE_ENTITY,
+    });
+
+    expect(capturedQb!.andWhere).toHaveBeenCalledWith('purpose IN (:...purposes)', {
+      purposes: ['BOOKING', 'MANUAL'],
+    });
+    expect(capturedQb!.andWhere).toHaveBeenCalledWith(
+      'settlement_mode = :internalMode',
+      { internalMode: 'INTERNAL' },
+    );
+  });
+
+  it('the purpose filter is a positive allow-list — platform revenue and any future purpose are never claimable', async () => {
+    let capturedQb: ReturnType<typeof createMockQueryBuilder> | undefined;
+    manager.createQueryBuilder.mockImplementationOnce(() => {
+      const qb = createMockQueryBuilder();
+      qb.execute = jest.fn().mockResolvedValue({ raw: [] });
+      capturedQb = qb;
+      return qb;
+    });
+    await service.generate(TENANT, {}).catch(() => undefined);
+
+    const purposeCall = capturedQb!.andWhere.mock.calls.find(
+      ([sql]) => sql === 'purpose IN (:...purposes)',
+    );
+    const purposes = purposeCall![1].purposes as string[];
+    expect(purposes).not.toContain('ADDON');
+    expect(purposes).not.toContain('BILLING_UPGRADE');
+    expect(purposes.sort()).toEqual(['BOOKING', 'MANUAL']);
+  });
+
   it('an optional branchId/period filter is applied as an additional andWhere, not a replacement of the base filter', async () => {
     let capturedQb: ReturnType<typeof createMockQueryBuilder> | undefined;
     manager.createQueryBuilder.mockImplementationOnce(() => {

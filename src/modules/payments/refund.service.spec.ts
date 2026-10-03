@@ -256,4 +256,59 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     );
     expect(lockedCalls.length).toBe(2); // persistIntent + the completion phase
   });
+
+  // REL-005 — the entitlement reversal rides in the SAME transaction as the
+  // refund, so a crash after the commit cannot leave a refunded add-on granted.
+  describe('REL-005 — durable refund_recorded row', () => {
+    const outboxRows = () =>
+      queryBuilders
+        .flatMap((qb) => qb.values.mock.calls.map(([row]) => row))
+        .filter((row) => row?.job_name === 'payments.outcome');
+
+    it('a SUCCEEDED refund writes a refund_recorded row keyed by the refund id, via the transaction manager', async () => {
+      payments.findOne.mockResolvedValue(paidPayment());
+      refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
+      refunds.save.mockImplementation(async (r: any) => r);
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      sumQueue = ['0.00', '0.00', '60.00'];
+
+      await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
+
+      expect(outboxRows()).toEqual([
+        expect.objectContaining({
+          queue: 'payments',
+          job_name: 'payments.outcome',
+          dedupe_key: 'payment-outcome-refund-rf-1',
+          payload: {
+            tenantId: TENANT,
+            paymentId: 'pay-1',
+            outcome: 'refund_recorded',
+            refundId: 'rf-1',
+          },
+        }),
+      ]);
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('writes NO row when the gateway declines the refund', async () => {
+      payments.findOne.mockResolvedValue(paidPayment());
+      refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
+      refunds.save.mockImplementation(async (r: any) => r);
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      sumQueue = ['0.00'];
+      gateway.refundPayment.mockResolvedValueOnce({ success: false, failureReason: 'declined', raw: {} });
+
+      await expect(
+        service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any),
+      ).rejects.toBeDefined();
+
+      expect(outboxRows()).toEqual([]);
+    });
+
+    it('writes NO row on an idempotency-key replay', async () => {
+      refunds.findOne.mockResolvedValueOnce({ id: 'rf-1', status: 'SUCCEEDED' });
+      await service.create(TENANT, { paymentId: 'pay-1', amount: 60, idempotencyKey: 'k1' } as any);
+      expect(outboxRows()).toEqual([]);
+    });
+  });
 });

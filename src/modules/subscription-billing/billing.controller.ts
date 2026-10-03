@@ -1,5 +1,7 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -9,6 +11,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
   ApiConflictResponse,
@@ -23,7 +26,11 @@ import {
 } from '@nestjs/swagger';
 
 import { BillingService } from './billing.service';
+import { SubscriptionCheckoutService } from './subscription-checkout.service';
+import { PaymentMethodService } from './payment-method.service';
+import { BILLING_CHECKOUT_THROTTLE } from './billing-checkout.constants';
 import { QueryInvoicesDto } from './dto/query-invoices.dto';
+import { VerifyCheckoutDto } from './dto/verify-checkout.dto';
 
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -66,6 +73,20 @@ const S_INVOICE = {
       nullable: true,
       example: 'TOKENIZATION_UNAVAILABLE',
     },
+    kind: {
+      type: 'string',
+      enum: ['INITIAL', 'UPGRADE', 'RENEWAL', 'REACTIVATION'],
+      nullable: true,
+      description:
+        'What the invoice buys. Null on an invoice issued before this field existed.',
+      example: 'RENEWAL',
+    },
+    provider: {
+      type: 'string',
+      nullable: true,
+      description: 'Payment gateway that settled (or is settling) it.',
+      example: 'tap',
+    },
   },
 };
 
@@ -107,6 +128,8 @@ const S_SUMMARY = {
 export class BillingController {
   constructor(
     private readonly billing: BillingService,
+    private readonly checkout: SubscriptionCheckoutService,
+    private readonly paymentMethods: PaymentMethodService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -252,5 +275,246 @@ is marked PAID; on a decline it stays unpaid and returns 422.
   @RequirePermissions(PERMISSION.BILLING_MANAGE)
   payInvoice(@Param('id', ParseUUIDPipe) id: string) {
     return this.billing.payInvoice(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: 'Open (or resume) the hosted checkout for an invoice',
+    description: `
+**Protected — requires \`billing.manage\`.**
+
+Opens the payment provider's hosted page for an unpaid invoice — the way a
+clinic pays its first subscription invoice, an upgrade, or a renewal it was
+asked to pay by hand. The card is entered ONLY on the provider's page; nothing
+card-related ever reaches this API.
+
+Returns \`{ status: 'redirect', redirectUrl }\` — send the browser there — or
+\`{ status: 'paid' }\` when the invoice turned out to be paid already. A
+checkout that is still open is RESUMED, never duplicated. The clinic comes
+back to \`/app/billing?checkout=return\`; the subscription activates when the
+payment is confirmed (return page, webhook or reconciliation — whichever
+lands first, exactly once).
+
+**Failure scenarios**
+- Already paid → 409. VOID/REFUNDED → 422.
+- Subscription cancelled/suspended → 409 (nothing to apply a payment to).
+- Another payment for the invoice is in progress → 409.
+- Online payment not available / provider down → 422 / 503.
+
+**Who can call this:** Owner (\`billing.manage\`).
+
+**Tenant scoping:** Only the caller's own invoices; another tenant's → 404.
+    `.trim(),
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Invoice UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Checkout opened (or invoice already paid).',
+    schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['redirect', 'paid'] },
+        invoiceId: { type: 'string', format: 'uuid' },
+        redirectUrl: {
+          type: 'string',
+          description: 'Present when status is "redirect".',
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Invoice not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'Invoice already paid, or a payment is already in progress.',
+    schema: S_ERROR,
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Invoice not payable, or online payment unavailable.',
+    schema: S_ERROR,
+  })
+  @Throttle(BILLING_CHECKOUT_THROTTLE)
+  @Post('invoices/:id/checkout')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.BILLING_MANAGE)
+  openCheckout(@Param('id', ParseUUIDPipe) id: string) {
+    return this.checkout.createCheckout(this.ctx.requireTenantId(), id);
+  }
+
+  @ApiOperation({
+    summary: 'Verify a hosted checkout after the clinic returns',
+    description: `
+**Protected — requires \`billing.manage\`.**
+
+Called by the return page with the provider's charge id (\`tap_id\`). The
+server asks the provider about that charge ITSELF — the client's word is never
+trusted — and, if it is captured for the invoice's exact amount, settles the
+invoice and activates / switches the subscription. Safe to call repeatedly and
+alongside the webhook: it settles at most once.
+
+Returns \`{ status, invoiceId, subscriptionStatus }\`. \`status\` is \`paid\`,
+\`pending\` (keep polling), \`failed\`, or \`unknown\` (provider unreachable —
+check again shortly).
+
+**Tenant scoping:** a charge that is not one of the caller's own invoice
+charges — including another clinic's — is a plain 404.
+
+**Who can call this:** Owner (\`billing.manage\`).
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'Verification result.',
+    schema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          enum: ['paid', 'pending', 'failed', 'unknown'],
+        },
+        invoiceId: { type: 'string', format: 'uuid' },
+        subscriptionStatus: { type: 'string', example: 'ACTIVE' },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: "Charge is not one of this tenant's invoice charges.",
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description: 'The captured payment could not be applied to the invoice.',
+    schema: S_ERROR,
+  })
+  @Throttle(BILLING_CHECKOUT_THROTTLE)
+  @Post('checkout/verify')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.BILLING_MANAGE)
+  verifyCheckout(@Body() dto: VerifyCheckoutDto) {
+    return this.checkout.verifyCheckout(
+      this.ctx.requireTenantId(),
+      dto.chargeId,
+    );
+  }
+
+  @ApiOperation({
+    summary: "Get the clinic's saved payment method",
+    description: `
+**Protected — requires \`billing.read\`.**
+
+The card saved at the last checkout (brand, scheme, last four digits) — never
+the provider's ids. \`recurringCapable: false\` means renewals cannot charge it
+without the clinic present, so each renewal must be paid by hand.
+
+**Who can call this:** Owner, Manager (\`billing.read\`).
+    `.trim(),
+  })
+  @ApiOkResponse({
+    description: 'The default saved card, or null.',
+    schema: {
+      type: 'object',
+      properties: {
+        paymentMethod: {
+          type: 'object',
+          nullable: true,
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            provider: { type: 'string', example: 'tap' },
+            brand: { type: 'string', nullable: true, example: 'VISA' },
+            scheme: { type: 'string', nullable: true, example: 'VISA' },
+            lastFour: { type: 'string', nullable: true, example: '1019' },
+            recurringCapable: { type: 'boolean' },
+            isDefault: { type: 'boolean' },
+            createdAt: { type: 'string', format: 'date-time' },
+          },
+        },
+        checkoutAvailable: {
+          type: 'boolean',
+          description: 'Whether online payment is available at all.',
+        },
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.read`.',
+    schema: S_ERROR,
+  })
+  @Get('payment-method')
+  @RequirePermissions(PERMISSION.BILLING_READ)
+  async getPaymentMethod() {
+    const paymentMethod = await this.paymentMethods.getDefault(
+      this.ctx.requireTenantId(),
+    );
+    return { paymentMethod, checkoutAvailable: this.billing.supportsCheckout };
+  }
+
+  @ApiOperation({
+    summary: "Remove the clinic's saved payment method",
+    description: `
+**Protected — requires \`billing.manage\`.**
+
+Revokes the saved card (it can never be charged again) and deletes it at the
+provider. The next renewal then asks the clinic to pay by hand; paying through
+checkout saves a new card. To REPLACE a card, simply pay the next invoice with
+the new one — the most recently saved card becomes the default.
+
+**Who can call this:** Owner (\`billing.manage\`).
+
+**Tenant scoping:** Only the caller's own cards; another tenant's → 404.
+    `.trim(),
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Payment method UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: 'Removed.',
+    schema: {
+      type: 'object',
+      properties: { removed: { type: 'boolean', example: true } },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing or invalid access token.',
+    schema: S_ERROR,
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller lacks `billing.manage`.',
+    schema: S_ERROR,
+  })
+  @ApiNotFoundResponse({
+    description: 'Payment method not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @Delete('payment-method/:id')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.BILLING_MANAGE)
+  async removePaymentMethod(@Param('id', ParseUUIDPipe) id: string) {
+    await this.paymentMethods.remove(this.ctx.requireTenantId(), id);
+    return { removed: true };
   }
 }

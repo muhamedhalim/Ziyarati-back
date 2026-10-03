@@ -19,6 +19,7 @@ export const USAGE_STATE_FILTER = [
   'SUSPENDED',
   'CANCELLED',
   'EXPIRED',
+  'PENDING_PAYMENT', // a paid subscription whose first payment has not been captured
   'NONE', // no subscription at all
 ] as const;
 

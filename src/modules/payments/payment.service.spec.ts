@@ -11,6 +11,7 @@ import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
 import { PaymentFinancialsService } from './payment-financials.service';
 import { MerchantAccountService } from './merchant-account.service';
+import { PaymentsConfig } from './payments.config';
 import { ErrorCode } from '../../common/errors';
 import {
   createMockRepository,
@@ -77,6 +78,10 @@ describe('PaymentService.create (booking payments)', () => {
         },
         { provide: MerchantAccountService, useValue: merchants },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        {
+          provide: PaymentsConfig,
+          useValue: { paymentReturnUrl: jest.fn().mockReturnValue('https://app.test/pay/return') },
+        },
       ],
     }).compile();
     service = moduleRef.get(PaymentService);
@@ -190,11 +195,12 @@ describe('PaymentService.create (booking payments)', () => {
     );
   });
 
-  // Phase 1.5 (plan §12) — `platformRevenue` is a service-only option, never
-  // a DTO field: `payment.controller.ts` calls `create(tenantId, dto)` with
-  // exactly two arguments, so nothing over HTTP can ever reach this branch.
-  describe('platformRevenue option (Phase 1.5 — plan §12)', () => {
-    it('platformRevenue: true bypasses the marketplace entirely — no merchant gate, no split', async () => {
+  // Phase 1.5 (plan §12) — the platform purposes are a service-only option,
+  // never a DTO field: `payment.controller.ts` calls `create(tenantId, dto)`
+  // with exactly two arguments, so nothing over HTTP can ever reach this branch.
+  // (Tap Phase 2: the `platformRevenue` boolean became `purpose`.)
+  describe('platform purposes (ADDON / BILLING_UPGRADE — Phase 1.5 plan §12, Tap Phase 2)', () => {
+    it('a platform purpose bypasses the marketplace entirely — no merchant gate, no split', async () => {
       // Splits ARE contractually enabled — proves the bypass is deliberate,
       // not just "nothing to split anyway".
       merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
@@ -202,7 +208,7 @@ describe('PaymentService.create (booking payments)', () => {
       const res = await service.create(
         TENANT,
         { amount: 50 } as any,
-        { platformRevenue: true },
+        { purpose: 'ADDON' },
       );
 
       expect(merchants.assertChargeable).not.toHaveBeenCalled();
@@ -213,7 +219,7 @@ describe('PaymentService.create (booking payments)', () => {
       expect(res.payment.sub_merchant_id).toBeUndefined();
     });
 
-    it('WITHOUT the flag (default), the merchant gate runs and splits ARE populated when enabled — the negative case', async () => {
+    it('WITHOUT a platform purpose (default), the merchant gate runs and splits ARE populated when enabled — the negative case', async () => {
       merchants.splitContext.mockResolvedValueOnce({ recipientId: 'rcp_1' });
 
       const res = await service.create(TENANT, { amount: 50 } as any);
@@ -228,13 +234,13 @@ describe('PaymentService.create (booking payments)', () => {
       expect(res.payment.sub_merchant_id).toBe('rcp_1');
     });
 
-    it('platformRevenue: true still proceeds even when the clinic\'s OWN merchant account would fail the gate', async () => {
+    it('a platform purpose still proceeds even when the clinic\'s OWN merchant account would fail the gate', async () => {
       merchants.assertChargeable.mockRejectedValueOnce(
         Object.assign(new Error('not eligible'), { code: ErrorCode.UNPROCESSABLE_ENTITY }),
       );
 
       await expect(
-        service.create(TENANT, { amount: 50 } as any, { platformRevenue: true }),
+        service.create(TENANT, { amount: 50 } as any, { purpose: 'BILLING_UPGRADE' }),
       ).resolves.toMatchObject({ status: expect.any(String) });
       expect(gateway.createPayment).toHaveBeenCalled();
     });
@@ -516,6 +522,245 @@ describe('PaymentService.create (booking payments)', () => {
 
       const result = await service.confirm(TENANT, 'pay-1', {});
       expect(result.status).toBe(PaymentStatus.PENDING);
+    });
+  });
+
+  // ── Tap Phase 2 — finance classification + durable outcomes ──────────────
+  describe('finance classification (purpose / settlement_mode — Tap Phase 2)', () => {
+    /** The row handed to `payments.create(...)` — what is persisted. */
+    const created = () => payments.create.mock.calls[0][0];
+
+    it('an appointment payment is BOOKING / INTERNAL', async () => {
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+      await service.create(TENANT, { appointmentId: 'appt-1' } as any);
+      expect(created()).toMatchObject({ purpose: 'BOOKING', settlement_mode: 'INTERNAL' });
+    });
+
+    it('a payment with no appointment is MANUAL / INTERNAL — still the clinic\'s money', async () => {
+      await service.create(TENANT, { amount: 50 } as any);
+      expect(created()).toMatchObject({ purpose: 'MANUAL', settlement_mode: 'INTERNAL' });
+    });
+
+    it.each(['ADDON', 'BILLING_UPGRADE'] as const)(
+      '%s is persisted as platform revenue: settlement_mode NONE',
+      async (purpose) => {
+        await service.create(TENANT, { amount: 50 } as any, { purpose });
+        expect(created()).toMatchObject({ purpose, settlement_mode: 'NONE' });
+      },
+    );
+
+    it('a gateway that settles straight to the clinic (Tap Platform) records a clinic payment as PROVIDER', async () => {
+      (gateway as any).settlesDirectlyToPayee = true;
+      appointments.findOne.mockResolvedValueOnce(bookedAppointment());
+      await service.create(TENANT, { appointmentId: 'appt-1' } as any);
+      expect(created()).toMatchObject({ purpose: 'BOOKING', settlement_mode: 'PROVIDER' });
+    });
+
+    it('platform revenue is NONE even on a provider-settling gateway — the clinic is the payer, nothing is owed on', async () => {
+      (gateway as any).settlesDirectlyToPayee = true;
+      await service.create(TENANT, { amount: 50 } as any, { purpose: 'ADDON' });
+      expect(created()).toMatchObject({ purpose: 'ADDON', settlement_mode: 'NONE' });
+    });
+
+    it('a gateway that does not declare provider settlement defaults to INTERNAL (never silently PROVIDER)', async () => {
+      await service.create(TENANT, { amount: 50 } as any);
+      expect((gateway as any).settlesDirectlyToPayee).toBeUndefined();
+      expect(created().settlement_mode).toBe('INTERNAL');
+    });
+
+    it('an explicit clinic purpose is honoured over the appointment default', async () => {
+      await service.create(TENANT, { amount: 50 } as any, { purpose: 'BOOKING' });
+      expect(created().purpose).toBe('BOOKING');
+    });
+  });
+
+  describe('REL-005 — outcome rows written in the payment transaction', () => {
+    /** Outbox rows inserted through the transaction manager. */
+    const outboxRows = (): Array<Record<string, any>> =>
+      (manager.createQueryBuilder as jest.Mock).mock.results
+        .map((r) => r.value as { values: jest.Mock })
+        .flatMap((qb) => qb.values.mock.calls.map(([row]) => row))
+        .filter((row) => row?.job_name === 'payments.outcome');
+
+    describe('create — an outcome reached at create time', () => {
+      it('a synchronous capture writes a paid row, with the add-on or upgrade waiting on it', async () => {
+        gateway.createPayment.mockResolvedValueOnce({
+          success: true,
+          gatewayPaymentId: 'gw-1',
+          status: 'paid',
+          raw: {},
+        });
+        const res = await service.create(TENANT, { amount: 50 } as any, { purpose: 'ADDON' });
+        expect(res.status).toBe(PaymentStatus.PAID);
+        expect(outboxRows()).toEqual([
+          expect.objectContaining({
+            dedupe_key: expect.stringMatching(/^payment-outcome-paid-/),
+            payload: expect.objectContaining({ tenantId: TENANT, outcome: 'paid' }),
+          }),
+        ]);
+      });
+
+      it('a gateway that rejects the request outright writes a failed row (the purchase must not sit in payment_processing forever)', async () => {
+        gateway.createPayment.mockResolvedValueOnce({
+          success: false,
+          status: 'failed',
+          failureReason: 'Payment was declined by the card issuer',
+          raw: {},
+        });
+        const res = await service.create(TENANT, { amount: 50 } as any, { purpose: 'ADDON' });
+        expect(res.status).toBe(PaymentStatus.FAILED);
+        expect(outboxRows()).toEqual([
+          expect.objectContaining({
+            dedupe_key: expect.stringMatching(/^payment-outcome-failed-/),
+            payload: expect.objectContaining({ outcome: 'failed' }),
+          }),
+        ]);
+      });
+
+      it('the normal hosted-page flow (pending) writes NO row', async () => {
+        await service.create(TENANT, { amount: 50 } as any);
+        expect(outboxRows()).toEqual([]);
+      });
+
+      it('writes NO row when the create bookkeeping itself fails (the payment stays PENDING, create_uncertain)', async () => {
+        gateway.createPayment.mockResolvedValueOnce({
+          success: true,
+          gatewayPaymentId: 'gw-1',
+          status: 'paid',
+          raw: {},
+        });
+        dataSource.transaction.mockRejectedValueOnce(new Error('db down'));
+        const res = await service.create(TENANT, { amount: 50 } as any);
+        expect(res.status).toBe(PaymentStatus.PENDING);
+        expect(outboxRows()).toEqual([]);
+      });
+    });
+
+    describe('confirm', () => {
+      const pendingPayment = (over: Record<string, unknown> = {}) => ({
+        id: 'pay-1',
+        status: PaymentStatus.PENDING,
+        amount: 100,
+        currency: 'SAR',
+        gateway: 'moyasar',
+        gateway_payment_id: 'gw-1',
+        ...over,
+      });
+      const paymentRepo = () => manager.getRepository(Payment) as MockRepository;
+
+      it('PENDING → PAID writes a paid row in the SAME transaction (before the in-process event)', async () => {
+        paymentRepo().findOne.mockResolvedValue(pendingPayment());
+        paymentRepo().save.mockImplementation(async (p: any) => p);
+        gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+        await service.confirm(TENANT, 'pay-1', {});
+
+        expect(outboxRows()).toEqual([
+          expect.objectContaining({
+            dedupe_key: 'payment-outcome-paid-pay-1',
+            payload: { tenantId: TENANT, paymentId: 'pay-1', outcome: 'paid' },
+          }),
+        ]);
+        expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+      });
+
+      it('PENDING → FAILED now writes a failed row (confirm used to announce nothing at all)', async () => {
+        paymentRepo().findOne.mockResolvedValue(pendingPayment());
+        paymentRepo().save.mockImplementation(async (p: any) => p);
+        gateway.verifyPayment.mockResolvedValueOnce({ status: 'failed', raw: {} });
+
+        await service.confirm(TENANT, 'pay-1', {});
+
+        expect(outboxRows()).toEqual([
+          expect.objectContaining({
+            dedupe_key: 'payment-outcome-failed-pay-1',
+            payload: { tenantId: TENANT, paymentId: 'pay-1', outcome: 'failed' },
+          }),
+        ]);
+      });
+
+      it.each(['pending', 'unknown'] as const)(
+        'a gateway that says "%s" changes nothing and writes NO row',
+        async (status) => {
+          paymentRepo().findOne.mockResolvedValue(pendingPayment());
+          paymentRepo().save.mockImplementation(async (p: any) => p);
+          gateway.verifyPayment.mockResolvedValueOnce({ status, raw: {} });
+
+          const result = await service.confirm(TENANT, 'pay-1', {});
+
+          expect(result.status).toBe(PaymentStatus.PENDING);
+          expect(outboxRows()).toEqual([]);
+        },
+      );
+
+      it('an amount mismatch is refused and writes NO row', async () => {
+        paymentRepo().findOne.mockResolvedValue(pendingPayment({ amount: 100 }));
+        gateway.verifyPayment.mockResolvedValueOnce({
+          status: 'paid',
+          capturedMinorUnits: 5000,
+          raw: {},
+        });
+        await expect(service.confirm(TENANT, 'pay-1', {})).rejects.toBeDefined();
+        expect(outboxRows()).toEqual([]);
+      });
+
+      it('an already-PAID payment short-circuits and writes NO second row', async () => {
+        paymentRepo().findOne.mockResolvedValue(
+          pendingPayment({ status: PaymentStatus.PAID }),
+        );
+        await service.confirm(TENANT, 'pay-1', {});
+        expect(outboxRows()).toEqual([]);
+      });
+
+      it.each([PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED])(
+        'a refund that landed between the phases (%s) is never moved back to PAID, and writes NO row',
+        async (status) => {
+          paymentRepo().findOne
+            .mockResolvedValueOnce(pendingPayment()) // phase 1
+            .mockResolvedValueOnce(pendingPayment({ status })); // phase 3 re-lock
+          gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+
+          const result = await service.confirm(TENANT, 'pay-1', {});
+
+          expect(result.status).toBe(status);
+          expect(paymentRepo().save).not.toHaveBeenCalled();
+          expect(outboxRows()).toEqual([]);
+        },
+      );
+
+      it('a webhook that settled the payment between the phases yields NO duplicate row', async () => {
+        paymentRepo().findOne
+          .mockResolvedValueOnce(pendingPayment()) // phase 1
+          .mockResolvedValueOnce(pendingPayment({ status: PaymentStatus.PAID })); // phase 3
+        gateway.verifyPayment.mockResolvedValueOnce({ status: 'paid', raw: {} });
+        await service.confirm(TENANT, 'pay-1', {});
+        expect(outboxRows()).toEqual([]);
+      });
+    });
+  });
+
+  describe('list — the clinic payments page shows the clinic\'s own money', () => {
+    const whereOf = () => payments.findAndCount.mock.calls[0][0].where;
+
+    it('defaults to BOOKING + MANUAL only, so add-on and billing-upgrade payments to the platform are not mixed in', async () => {
+      payments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.list(TENANT, { page: 1, limit: 20 } as any);
+      const purpose = whereOf().purpose;
+      // TypeORM FindOperator("in", [...])
+      expect(purpose.type).toBe('in');
+      expect(purpose.value.sort()).toEqual(['BOOKING', 'MANUAL']);
+    });
+
+    it('an explicit purpose returns exactly that purpose (the add-on history is still reachable by name)', async () => {
+      payments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.list(TENANT, { page: 1, limit: 20, purpose: 'ADDON' } as any);
+      expect(whereOf().purpose).toBe('ADDON');
+    });
+
+    it('stays tenant-scoped', async () => {
+      payments.findAndCount.mockResolvedValueOnce([[], 0]);
+      await service.list(TENANT, { page: 1, limit: 20 } as any);
+      expect(whereOf().tenant).toEqual({ id: TENANT });
     });
   });
 });

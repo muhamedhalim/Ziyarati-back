@@ -109,4 +109,46 @@ export class SubscriptionInvoice {
    */
   @Column({ type: 'varchar', nullable: true })
   webhook_event_id?: string | null;
+
+  // ── Tap migration (Phase 3) ─────────────────────────────────────────────── //
+
+  /**
+   * What this invoice buys (`SubscriptionInvoiceKind`). NULL = legacy invoice
+   * issued before the column existed: settling one only marks it PAID.
+   */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  kind?: string | null;
+
+  /**
+   * The plan this invoice pays for. Settling it makes THIS the subscription's
+   * plan (INITIAL/UPGRADE/REACTIVATION/RENEWAL alike), so the outcome is driven
+   * by what was billed rather than by whatever the subscription says later.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  target_plan_id?: string | null;
+
+  /** Which gateway settled (or is settling) it: `tap`, `stub`, … NULL = legacy. */
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  provider?: string | null;
+
+  /** The saved card this invoice was charged to (merchant-initiated), if any. */
+  @Column({ type: 'uuid', nullable: true })
+  payment_method_id?: string | null;
+
+  /**
+   * Hosted-checkout bookkeeping. `checkout_charge_id` is the most recent hosted
+   * charge, `checkout_started_at` when it was opened, `checkout_attempts` the
+   * counter that makes each NEW checkout's idempotency key unique
+   * (`subinv:{id}:co:{n}`). A fresh checkout blocks a merchant-initiated charge
+   * of the same invoice, so a clinic paying by hand cannot be double-captured by
+   * the renewal job.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  checkout_charge_id?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  checkout_started_at?: Date | null;
+
+  @Column({ type: 'int', default: 0 })
+  checkout_attempts!: number;
 }
