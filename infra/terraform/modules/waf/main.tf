@@ -2,9 +2,11 @@
 #   - REST arrives from VERCEL egress IPs (Next.js rewrite) with the real client
 #     in X-Forwarded-For  → rate limits key on the FORWARDED IP;
 #   - WebSocket (/socket.io) arrives straight from browsers → source IP;
-#   - Meta / Moyasar webhooks → managed signature rules are scoped OUT (their
-#     payloads trip SQLi/XSS/size signatures; they are HMAC/secret-verified
-#     in-app instead).
+#   - Meta / payment-provider (Tap; legacy Moyasar) webhooks → managed signature
+#     rules are scoped OUT (their payloads trip SQLi/XSS/size signatures; they
+#     are HMAC/secret-verified in-app instead). The Tap Connect callback
+#     (/api/v1/payments/webhooks/tap/onboarding/<token>) lives under the same
+#     prefix and is covered by it.
 #
 # `mode = "count"` for the first 14 days, then "block". KnownBadInputs blocks
 # from day one (very low false-positive rate). SizeRestrictions_BODY stays

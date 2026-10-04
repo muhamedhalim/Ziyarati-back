@@ -124,7 +124,8 @@ while the API held a valid value, and every email failed for four weeks.
 
 | Variable | When |
 | --- | --- |
-| `MOYASAR_SECRET_KEY`, `MOYASAR_WEBHOOK_SECRET` | whenever `PAYMENT_PROVIDER` is not `noop` (the default is `moyasar`). Without them the boot fails rather than falling back to the provider that *simulates* successful payments. |
+| `MOYASAR_SECRET_KEY`, `MOYASAR_WEBHOOK_SECRET` | legacy provider; only while `PAYMENT_PROVIDER` is `moyasar` (the unset default). Not needed once it is `tap`. |
+| `TAP_ENV`, `TAP_MERCHANT_ID`, the active secret key (`TAP_LIVE_SECRET_KEY` when `TAP_ENV=live`, else `TAP_TEST_SECRET_KEY`), `TAP_WEBHOOK_URL` | whenever `NODE_ENV=production` **and** `PAYMENT_PROVIDER=tap`. The boot fails otherwise (`src/config/env.validation.ts`): the key must carry the prefix of its environment (`sk_live_` / `sk_test_`) and the webhook URL must be a public https URL. `TAP_RECURRING_ENABLED` and `TAP_BOOKING_PAYMENTS_ENABLED` default to `false`; the second also needs `TAP_PLATFORM_ID`. Procedure: [`infra/runbooks/tap-payments-rollout.md`](infra/runbooks/tap-payments-rollout.md). |
 | `META_APP_ID`, `META_APP_SECRET`, `META_EMBEDDED_SIGNUP_CONFIG_ID`, `META_WEBHOOK_VERIFY_TOKEN` | all four, or none. A *partial* Meta configuration is a boot error. |
 | `METRICS_TOKEN` | required in practice: with it unset, `/metrics` answers 401 in production. |
 | `RESEND_API_KEY`, `EMAIL_FROM` | whenever `EMAIL_PROVIDER=resend` (the default) and email is enabled (the production default). Boot fails when either is blank or `EMAIL_FROM` is not `addr` / `Name <addr>`. **Set them on the worker** — it is the process that sends. |
@@ -170,8 +171,10 @@ entirely when those two are unset; it never fabricates credentials.
 Set these as platform secrets — never in the image, never in the repository:
 
 `DATABASE_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`,
-`CREDENTIALS_ENCRYPTION_KEY`, `METRICS_TOKEN`, `MOYASAR_SECRET_KEY`,
-`MOYASAR_WEBHOOK_SECRET`, `MOYASAR_PUBLISHABLE_KEY`, `META_APP_SECRET`,
+`CREDENTIALS_ENCRYPTION_KEY`, `METRICS_TOKEN`, `TAP_LIVE_SECRET_KEY` (production) or
+`TAP_TEST_SECRET_KEY` (staging — each environment carries only its own key; Tap signs
+webhooks with the same key), `TAP_SEGMENT_SECRET_KEY` (only if Tap issues one), the legacy
+`MOYASAR_SECRET_KEY`, `MOYASAR_WEBHOOK_SECRET`, `MOYASAR_PUBLISHABLE_KEY`, `META_APP_SECRET`,
 `META_WEBHOOK_VERIFY_TOKEN`, `RESEND_API_KEY`, `OPENAI_API_KEY`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `DB_SSL_CA_CERT` (or the file
 behind `DB_SSL_CA`), and `ADMIN_PASSWORD` if used for a one-off seed run.
@@ -205,9 +208,11 @@ a re-encryption pass.
 * **CSRF** is double-submit: the API issues a non-HttpOnly `csrf_token` cookie
   and the SPA must echo it in `X-CSRF-Token` on state-changing requests.
 * **Webhooks** must be reachable at the public origin and are
-  signature-verified — Meta with `META_APP_SECRET`, Moyasar with
-  `MOYASAR_WEBHOOK_SECRET`. Both verifiers fail closed when their secret is
-  unset; there is no development bypass.
+  signature-verified — Meta with `META_APP_SECRET`, Tap with the active Tap secret
+  key (header `hashstring`; the handler also re-fetches the charge from Tap before
+  trusting it), legacy Moyasar with `MOYASAR_WEBHOOK_SECRET`. Every verifier fails
+  closed when its secret is unset; there is no development bypass. Check the Tap
+  route end to end with the preflight in §11.
 
 ---
 
@@ -258,3 +263,32 @@ platform variables (`STORAGE_PROVIDER=s3`, `EMAIL_PROVIDER=ses`,
 `DB_SSL_CA=/app/certs/rds-global-bundle.pem` — the RDS CA bundle is baked
 into the image — `REDIS_MEMORY_CONFIG_VERIFIED_VIA_IAC=true`, `NO_COLOR=1`)
 and inject secrets from Secrets Manager; see `infra/docs/DEPLOYMENT.md`.
+
+## 11. Tap payments — preflight and rollout
+
+The Tap integration ships **dark**: with `PAYMENT_PROVIDER` still `moyasar` (or unset)
+nothing in it runs. Switching on is a staged, reversible operator procedure with its
+own go/no-go gates — [`infra/runbooks/tap-payments-rollout.md`](infra/runbooks/tap-payments-rollout.md).
+Never change `PAYMENT_PROVIDER` in the same release as the code (the worker must run
+the new code before the first payment is taken).
+
+**Preflight** — a read-only check run inside the deployed image against the environment
+the service really boots with. Run it as a one-off task with the API task definition
+(it needs the API's env and secrets; nothing is written except, with `--probe-webhook`,
+one `FAILED` row in `webhook_logs`):
+
+```bash
+aws ecs run-task --cluster zt-<env> --launch-type FARGATE \
+  --task-definition zt-<env>-api \
+  --network-configuration "$(aws ecs describe-services --cluster zt-<env> --services zt-<env>-worker \
+        --query 'services[0].networkConfiguration' --output json)" \
+  --overrides '{"containerOverrides":[{"name":"api","command":["node","dist/src/tap-preflight.js","--expect-active","--expect-env=live","--expect-flags-off","--probe-webhook"]}]}'
+aws logs tail /ziyaratech/<env>/api --since 5m   # look for TAP_PREFLIGHT_OK
+```
+
+Flags: `--expect-active` (FAIL unless `PAYMENT_PROVIDER=tap`), `--expect-env=live|sandbox`,
+`--expect-flags-off`, `--probe-webhook`, `--no-frontend`, `--timeout-ms=N`. Output is
+`PASS|FAIL|WARN|SKIP` per check and ends with `TAP_PREFLIGHT_OK` or `TAP_PREFLIGHT_FAIL`
+(exit code 0 / 1). It prints no key, signature or value — only names, booleans and the key
+class. A green run proves the config, the key, the route and fail-closed verification; it
+does **not** prove Tap's own `hashstring` formula (only a real delivery does).

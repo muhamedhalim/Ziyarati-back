@@ -63,6 +63,45 @@ resource "aws_cloudwatch_log_metric_filter" "app_errors" {
   }
 }
 
+# ── Payments (Tap) log-derived metrics ───────────────────────────────────────
+# Every pattern is a literal fragment of a line the payments code already logs
+# (so no application change is needed); a code change to one of those messages
+# must update this table — the strings are pinned by tap-alert-log-lines.spec.ts.
+# The API logs webhook handling and charge creation; the worker logs the
+# reconciliation sweeps, so every filter is attached to both log groups.
+locals {
+  log_groups = { api = var.api_log_group_name, worker = var.worker_log_group_name }
+
+  payment_log_metrics = {
+    alert        = { pattern = "\"ALERT:\"", metric = "PaymentsAlerts" }
+    misrouted    = { pattern = "\"was NOT routed to the clinic merchant\"", metric = "TapMisroutedCharges" }
+    hook_reject  = { pattern = "\"Rejected Tap webhook\"", metric = "TapWebhooksRejected" }
+    refetch_fail = { pattern = "\"could not be re-fetched\"", metric = "TapWebhookRefetchFailed" }
+    unreachable  = { pattern = "\"Tap\" \"unreachable\"", metric = "TapApiUnavailable" }
+    timeout      = { pattern = "\"Tap\" \"timed out\"", metric = "TapApiUnavailable" }
+    no_key       = { pattern = "\"no secret key for TAP_ENV\"", metric = "TapNotConfigured" }
+  }
+
+  payment_log_filters = merge([
+    for gk, gv in local.log_groups : {
+      for fk, f in local.payment_log_metrics : "${gk}-${fk}" => merge(f, { group = gv })
+    }
+  ]...)
+}
+
+resource "aws_cloudwatch_log_metric_filter" "payments" {
+  for_each       = local.payment_log_filters
+  name           = "${var.name}-pay-${each.key}"
+  log_group_name = each.value.group
+  pattern        = each.value.pattern
+  metric_transformation {
+    name          = each.value.metric
+    namespace     = "ZiyaraTech/${var.environment}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
 # ── Alarm catalogue ──────────────────────────────────────────────────────────
 locals {
   simple_alarms = merge(
@@ -192,6 +231,42 @@ locals {
         ns   = "ZiyaraTech/${var.environment}", metric = "ErrorLines-api", stat = "Sum", dims = {}
         op   = "GreaterThanThreshold", threshold = 50, period = 300, evals = 2, missing = "notBreaching"
         desc = "API ERROR log lines > 50 / 5 min for 10 min"
+      }
+      # ── Payments (Tap) — runbook: infra/runbooks/tap-payments-rollout.md §7 ──
+      "critical-payments-alert" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "PaymentsAlerts", stat = "Sum", dims = {}
+        op   = "GreaterThanOrEqualToThreshold", threshold = 1, period = 900, evals = 1, missing = "notBreaching"
+        desc = "P-01: a money-state ALERT line (duplicate capture, reconciliation exception, exhausted payments.outcome, stuck refund, charge captured on a void invoice) — a person must look today"
+      }
+      "critical-tap-misrouted-charge" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "TapMisroutedCharges", stat = "Sum", dims = {}
+        op   = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evals = 1, missing = "notBreaching"
+        desc = "P-02: Tap put a clinic charge on ZiyaraTech's own account (or named no merchant) — refused, but the clinic's merchant id or the platform routing is wrong"
+      }
+      "critical-tap-not-configured" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "TapNotConfigured", stat = "Sum", dims = {}
+        op   = "GreaterThanOrEqualToThreshold", threshold = 1, period = 300, evals = 1, missing = "notBreaching"
+        desc = "P-03: a Tap call was skipped because no secret key is set for TAP_ENV — every payment attempt fails"
+      }
+      "warning-tap-webhooks-rejected" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "TapWebhooksRejected", stat = "Sum", dims = {}
+        op   = "GreaterThanOrEqualToThreshold", threshold = 3, period = 900, evals = 1, missing = "notBreaching"
+        desc = "P-04: >= 3 Tap webhooks refused for a bad signature in 15 min — a secret mismatch after rotation, or probing (payments still settle via return-page verify and the 10-minute sweep)"
+      }
+      "warning-tap-webhook-refetch-failed" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "TapWebhookRefetchFailed", stat = "Sum", dims = {}
+        op   = "GreaterThanOrEqualToThreshold", threshold = 3, period = 900, evals = 1, missing = "notBreaching"
+        desc = "P-05: >= 3 correctly-signed webhooks for charges Tap will not show us in 15 min — wrong environment/account, or a clinic charge our platform key cannot read"
+      }
+      "warning-tap-api-unavailable" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "TapApiUnavailable", stat = "Sum", dims = {}
+        op   = "GreaterThanThreshold", threshold = 5, period = 300, evals = 2, missing = "notBreaching"
+        desc = "P-06: > 5 Tap calls unreachable or timed out per 5 min for 10 min (outcomes stay 'unknown', never failed)"
+      }
+      "critical-tap-api-unavailable" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "TapApiUnavailable", stat = "Sum", dims = {}
+        op   = "GreaterThanThreshold", threshold = 30, period = 300, evals = 2, missing = "notBreaching"
+        desc = "P-06: > 30 Tap calls unreachable or timed out per 5 min for 10 min — payments cannot start; check NAT egress and Tap status"
       }
     },
     merge([for node in local.redis_nodes : {
@@ -427,6 +502,19 @@ resource "aws_cloudwatch_dashboard" "this" {
             ["AWS/SES", "Send"],
             [".", "Bounce"],
             [".", "Complaint"],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 0, y = 24, width = 12, height = 6
+        properties = {
+          title = "Payments — Tap", region = var.region, stat = "Sum", period = 300
+          metrics = [
+            ["ZiyaraTech/${var.environment}", "PaymentsAlerts"],
+            [".", "TapWebhooksRejected"],
+            [".", "TapWebhookRefetchFailed"],
+            [".", "TapApiUnavailable"],
+            [".", "TapMisroutedCharges"],
           ]
         }
       },

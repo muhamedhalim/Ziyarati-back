@@ -67,6 +67,15 @@ app_environment = {
   DEFAULT_LOCALE                       = "ar"
   ENABLE_API_DOCS                      = "false"
   ENABLE_INTEGRATION_DOCS              = "false"
+
+  # Tap — safe to ship while PAYMENT_PROVIDER is still "moyasar" (nothing reads these until it is "tap").
+  # PHASE 8 FLIP: PAYMENT_PROVIDER becomes "tap" here FIRST, on sandbox keys (runbook §4).
+  TAP_ENV                      = "sandbox"
+  TAP_WEBHOOK_URL              = "https://api.ziyaratech-staging.com/api/v1/payments/webhooks/tap"
+  TAP_RECURRING_ENABLED        = "false"
+  TAP_BOOKING_PAYMENTS_ENABLED = "false"
+  # PHASE 8 FLIP: the dashboard "Merchant ID" (an identifier, not a secret):
+  # TAP_MERCHANT_ID = "<numeric id>"
 }
 
 app_secret_keys = [
@@ -83,6 +92,9 @@ app_secret_keys = [
   "MOYASAR_WEBHOOK_SECRET",
   "MOYASAR_PUBLISHABLE_KEY",
   "EMAIL_UNSUBSCRIBE_SECRET",
+  # PHASE 8 FLIP — add ONLY after the key is stored in zt/staging/app (a listed key that is absent
+  # from the JSON stops every ECS task from starting). Staging carries the TEST key only.
+  # "TAP_TEST_SECRET_KEY",
 ]
 
 alert_emails       = ["alerts@ziyaratech.com"]

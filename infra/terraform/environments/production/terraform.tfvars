@@ -7,7 +7,7 @@ availability_zone_ids = ["mec1-az1", "mec1-az2", "mec1-az3"]
 vpc_cidr              = "10.20.0.0/16"
 nat_gateway_count     = 2
 
-domain           = "ziyaratech.com"
+domain = "ziyaratech.com"
 # Every browser origin that opens a socket or sends credentialed requests: the marketing/dashboard site
 # AND the patient marketplace (book.), whose AI widget dials wss://api.ziyaratech.com directly.
 frontend_origins = ["https://www.ziyaratech.com", "https://ziyaratech.com", "https://book.ziyaratech.com"]
@@ -70,6 +70,17 @@ app_environment = {
   ENABLE_API_DOCS                      = "false"
   ENABLE_INTEGRATION_DOCS              = "false"
   PLATFORM_API_LOG_ENABLED             = "false"
+
+  # Tap — safe to ship while PAYMENT_PROVIDER is still "moyasar" (nothing reads these until it is "tap").
+  # PHASE 8 FLIP: PAYMENT_PROVIDER becomes "tap" only after the checklist in
+  # infra/runbooks/tap-payments-rollout.md §5 — never in the same change as the first deploy.
+  # The two flags stay "false" until their own rollout step (runbook §5 steps 6 and 8).
+  TAP_ENV                      = "live"
+  TAP_WEBHOOK_URL              = "https://api.ziyaratech.com/api/v1/payments/webhooks/tap"
+  TAP_RECURRING_ENABLED        = "false"
+  TAP_BOOKING_PAYMENTS_ENABLED = "false"
+  # PHASE 8 FLIP: the dashboard "Merchant ID" (an identifier, not a secret) — runbook §5 step 3:
+  # TAP_MERCHANT_ID = "<numeric id>"
 }
 
 # Every key MUST exist in the zt/production/app JSON secret. Copy
@@ -89,6 +100,10 @@ app_secret_keys = [
   "MOYASAR_WEBHOOK_SECRET",
   "MOYASAR_PUBLISHABLE_KEY",
   "EMAIL_UNSUBSCRIBE_SECRET",
+  # PHASE 8 FLIP — add ONLY after `aws secretsmanager put-secret-value` has stored the key in
+  # zt/production/app; a key listed here but absent from the JSON stops every ECS task from
+  # starting. Production carries the LIVE key only (never TAP_TEST_SECRET_KEY).
+  # "TAP_LIVE_SECRET_KEY",
 ]
 
 alert_emails       = ["alerts@ziyaratech.com"] # set the real on-call mailbox(es)
