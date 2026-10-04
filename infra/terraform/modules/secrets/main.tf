@@ -36,7 +36,7 @@ resource "aws_secretsmanager_secret_version" "redis_url" {
 
 resource "aws_secretsmanager_secret" "app" {
   name                    = "${var.secret_prefix}/app"
-  description             = "JSON: JWT_*, CREDENTIALS_ENCRYPTION_KEY, METRICS_TOKEN, OPENAI_API_KEY, META_*, MOYASAR_*, ..."
+  description             = "JSON: JWT_*, CREDENTIALS_ENCRYPTION_KEY, METRICS_TOKEN, OPENAI_API_KEY, META_*, TAP_LIVE_SECRET_KEY (production) / TAP_TEST_SECRET_KEY (staging), legacy MOYASAR_*, ..."
   kms_key_id              = var.kms_key_arn
   recovery_window_in_days = var.recovery_window_in_days
   tags                    = local.tags
