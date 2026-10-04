@@ -117,6 +117,9 @@ export class TapGatewayProvider implements PaymentGatewayProvider {
       };
     }
 
+    const misrouted = this.misroutedClinicCharge(request, charge);
+    if (misrouted) return misrouted;
+
     const status = mapChargeStatus(charge.status);
     return {
       success: status !== 'failed',
@@ -362,6 +365,42 @@ export class TapGatewayProvider implements PaymentGatewayProvider {
       body.merchant = { id: this.config.tapMerchantId };
     }
     return body;
+  }
+
+  /**
+   * Tap does NOT reject a charge whose `merchant.id` it does not recognise: observed in
+   * the sandbox (2026-10-04), a charge sent with an unknown `merchant.id` and a made-up
+   * `platform.id` came back 200, echoed the fake platform id, and belonged to the
+   * AUTHENTICATED account (ours). For a clinic payment that would put the patient's
+   * money in ZiyaraTech's wallet — the one outcome D1 forbids. So the merchant Tap
+   * says the charge belongs to is checked before anyone is given its payment page.
+   *
+   * Refused when Tap echoes our own merchant, and when it echoes none (routing cannot
+   * be verified). Nothing is returned that links the orphaned INITIATED charge — its
+   * hosted URL is never shown, and Tap expires it by itself.
+   */
+  private misroutedClinicCharge(
+    request: GatewayCreatePaymentRequest,
+    charge: TapCharge,
+  ): GatewayPaymentResult | undefined {
+    if (!request.settlementMerchantId) return undefined;
+    const landedOn = charge.merchant?.id ? String(charge.merchant.id) : '';
+    const own = this.config.tapMerchantId;
+    const onOurOwnAccount = !!own && landedOn === String(own);
+    if (landedOn && !onOurOwnAccount) return undefined;
+    this.logger.error(
+      `Tap clinic charge ${charge.id} was NOT routed to the clinic merchant ` +
+        `(${onOurOwnAccount ? 'it belongs to the platform account' : 'the response names no merchant'}); payment refused`,
+    );
+    return {
+      success: false,
+      status: 'failed',
+      failureReason: 'Online payment is not enabled for this clinic yet',
+      failureCode: onOurOwnAccount
+        ? 'TAP_ROUTED_TO_PLATFORM'
+        : 'TAP_ROUTING_UNVERIFIED',
+      correlationId: request.paymentId,
+    };
   }
 
   /** A Tap charge reports no fee, so only the payment method is extracted. */

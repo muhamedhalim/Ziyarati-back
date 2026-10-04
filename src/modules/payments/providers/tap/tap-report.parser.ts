@@ -123,7 +123,39 @@ export function parseMoney(v: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-/** Epoch seconds / milliseconds, or anything `Date.parse` reads unambiguously. */
+/**
+ * Tap's CSV prints `DD/MM/YYYY hh:mm AM|PM` in UTC (sandbox, 2026-10-04: a charge made
+ * at 15:14 UTC on 4 October reads `04/10/2026 03:14 PM`). `Date.parse` would read that
+ * as 10 April in the SERVER's timezone, so a slash date is parsed here and nowhere else.
+ */
+const SLASH_DATE =
+  /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i;
+
+function parseSlashDate(t: string): Date | undefined {
+  const m = SLASH_DATE.exec(t);
+  if (!m) return undefined;
+  const [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  let hour = m[4] === undefined ? 0 : Number(m[4]);
+  const minute = m[5] === undefined ? 0 : Number(m[5]);
+  const second = m[6] === undefined ? 0 : Number(m[6]);
+  const meridiem = m[7]?.toUpperCase();
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return undefined;
+    hour = (hour % 12) + (meridiem === 'PM' ? 12 : 0);
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // `Date.UTC` rolls 31/02 into March — a date that does not exist is not a date.
+  return date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    ? date
+    : undefined;
+}
+
+/**
+ * Epoch seconds / milliseconds, Tap's `DD/MM/YYYY hh:mm AM|PM` (UTC), or an ISO string
+ * that `Date.parse` reads unambiguously. Any other slash form is refused, never guessed.
+ */
 export function parseReportDate(v: string | undefined): Date | undefined {
   if (v === undefined) return undefined;
   const t = v.trim();
@@ -131,6 +163,7 @@ export function parseReportDate(v: string | undefined): Date | undefined {
   if (/^\d{13}$/.test(t)) return new Date(Number(t));
   if (/^\d{10}$/.test(t)) return new Date(Number(t) * 1000);
   if (/^\d+$/.test(t)) return undefined; // some other bare number: not a date we can trust
+  if (t.includes('/')) return parseSlashDate(t);
   const ms = Date.parse(t);
   return Number.isNaN(ms) ? undefined : new Date(ms);
 }

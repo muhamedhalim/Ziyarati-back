@@ -95,6 +95,30 @@ describe('parseReportDate', () => {
       '2026-10-04T10:00:00.000Z',
     );
   });
+  it("reads Tap's real CSV format DD/MM/YYYY hh:mm AM|PM as UTC (never as MM/DD, never in the server's timezone)", () => {
+    // Captured from the real sandbox on 2026-10-04: a charge made at 15:14 UTC.
+    expect(parseReportDate('04/10/2026 03:14 PM')?.toISOString()).toBe(
+      '2026-10-04T15:14:00.000Z',
+    );
+    expect(parseReportDate('25/12/2026 12:05 AM')?.toISOString()).toBe(
+      '2026-12-25T00:05:00.000Z',
+    );
+    expect(parseReportDate('25/12/2026 12:05 PM')?.toISOString()).toBe(
+      '2026-12-25T12:05:00.000Z',
+    );
+    expect(parseReportDate('04/10/2026')?.toISOString()).toBe(
+      '2026-10-04T00:00:00.000Z',
+    );
+  });
+  it.each([
+    '13/13/2026 01:00 PM', // no month 13
+    '31/02/2026 01:00 PM', // no 31 February
+    '04/10/2026 13:14 PM', // 13 o'clock with a meridiem
+    '04/10/2026 00:14 AM',
+    '2026/10/04 03:14 PM', // year-first slash form is not Tap's
+  ])('%j (impossible / unknown slash form) → undefined', (v) =>
+    expect(parseReportDate(v)).toBeUndefined(),
+  );
   it.each(['', 'soon', '12345', undefined])('%j → undefined', (v) =>
     expect(parseReportDate(v as string | undefined)).toBeUndefined(),
   );
