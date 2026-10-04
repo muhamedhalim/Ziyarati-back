@@ -141,6 +141,9 @@ export const JOB_AUTHZ_POLICY: Partial<Record<JobName, JobAuthzPolicy>> = {
   [JOB.SUBSCRIPTIONS_RENEWAL_CHECK]: SYSTEM,
   [JOB.REFUNDS_REAP]: SYSTEM,
   [JOB.PAYMENTS_RECONCILE]: SYSTEM,
+  // Platform-wide, like the sweep above: it reads the gateway's reports for every
+  // merchant and records discrepancies. No tenant can trigger it.
+  [JOB.PAYMENTS_PROVIDER_RECONCILE]: SYSTEM,
   // SYSTEM, though every row carries a tenantId — DELIBERATELY not `tenant`
   // tier. The tenant tier refuses a suspended or unapproved tenant, but this
   // job applies the consequences of money that has ALREADY moved: confirming a

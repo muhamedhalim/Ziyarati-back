@@ -8,6 +8,7 @@ import {
   WebhookResult,
 } from '../payment-webhook.service';
 import { isUuid } from '../payments.constants';
+import { RefundWebhookService } from '../refund-webhook.service';
 import { TapApiClient } from '../providers/tap/tap-api.client';
 import {
   sanitizeTapCharge,
@@ -15,6 +16,7 @@ import {
 } from '../providers/tap/tap-redaction';
 import {
   mapChargeStatus,
+  mapRefundStatus,
   safeFailureReason,
 } from '../providers/tap/tap-status.mapper';
 import {
@@ -25,6 +27,7 @@ import {
   type TapWebhookPayload,
 } from '../providers/tap/tap.types';
 import type {
+  GatewayRefundEvent,
   GatewayWebhookEvent,
   GatewayWebhookTarget,
 } from './gateway-webhook.types';
@@ -56,9 +59,11 @@ const safeId = (v: unknown): string =>
  *   - Tap unreachable / 5xx  → 503   (transient — Tap's retry + our reconcile sweep)
  *   - handled / unmatched    → 200   (retrying cannot change the outcome)
  *
- * Refund webhooks are authenticated and logged but NOT applied yet: Tap refunds
- * are per-refund objects with their own lifecycle, which lands with the refund
- * phase (verifyRefund + reaper). Nothing creates a Tap refund before then.
+ * Refund webhooks take the same road: authenticate, RE-FETCH the refund from Tap
+ * (`GET /v2/refunds/{id}` — the body is only a pointer), reduce it to a neutral
+ * `GatewayRefundEvent` and let `RefundWebhookService` match it to OUR refund row.
+ * A Tap refund is its own object with its own lifecycle, so it is never read as a
+ * statement about the charge.
  */
 @Injectable()
 export class TapWebhookHandler {
@@ -68,6 +73,7 @@ export class TapWebhookHandler {
     private readonly verifier: TapWebhookVerifier,
     private readonly client: TapApiClient,
     private readonly webhooks: PaymentWebhookService,
+    private readonly refunds: RefundWebhookService,
     private readonly logs: WebhookLogService,
   ) {}
 
@@ -100,7 +106,7 @@ export class TapWebhookHandler {
       case TAP_OBJECT.CHARGE:
         return this.handleCharge(payload as TapCharge);
       case TAP_OBJECT.REFUND:
-        return this.acknowledgeRefund(payload as TapRefund);
+        return this.handleRefund(payload as TapRefund);
       default:
         // Authentic but not something we create (e.g. authorize): accept so Tap
         // does not retry, and leave a trace.
@@ -190,17 +196,98 @@ export class TapWebhookHandler {
     }
   }
 
-  private async acknowledgeRefund(refund: TapRefund): Promise<WebhookResult> {
-    this.logger.warn(
-      `Tap refund webhook ${safeId(refund.id)} (${safeId(refund.status)}) acknowledged but not applied — refund handling arrives with the refund phase`,
-    );
-    await this.record(
-      WEBHOOK_LOG_STATUS.SUCCESS,
-      `refund.${safeId(refund.status).toLowerCase()}`,
-      sanitizeTapRefund(refund),
-      'Acknowledged; not applied until the refund phase',
-    );
-    return { accepted: true, matched: false };
+  private async handleRefund(posted: TapRefund): Promise<WebhookResult> {
+    const label = `refund.${safeId(posted.status).toLowerCase()}`;
+
+    const res = await this.client.getRefund(posted.id);
+    if (!res.ok) {
+      if (res.transient) {
+        // Cannot confirm the refund right now: ask Tap to retry rather than trust
+        // an unverified body. The reaper is the backstop.
+        await this.record(
+          'FAILED',
+          label,
+          sanitizeTapRefund(posted),
+          'Could not re-fetch refund (transient)',
+        );
+        throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+          message: 'Payment gateway is temporarily unavailable',
+          internalContext: {
+            tapStatus: res.status,
+            tapErrorCode: res.errorCode,
+          },
+        });
+      }
+      this.logger.error(
+        `Tap refund ${safeId(posted.id)} could not be re-fetched (http ${res.status}, code ${res.errorCode ?? 'n/a'})`,
+      );
+      await this.record(
+        'FAILED',
+        label,
+        sanitizeTapRefund(posted),
+        `Re-fetch failed (http ${res.status})`,
+      );
+      return { accepted: true, matched: false };
+    }
+
+    const refund = res.json;
+    if (!refund || refund.id !== posted.id) {
+      this.logger.error(
+        `Tap returned a different refund than requested for ${safeId(posted.id)}`,
+      );
+      await this.record(
+        'FAILED',
+        label,
+        sanitizeTapRefund(posted),
+        'Re-fetched refund id mismatch',
+      );
+      return { accepted: true, matched: false };
+    }
+
+    const event = this.toRefundEvent(refund);
+    try {
+      const result = await this.refunds.process(event);
+      await this.record(
+        result.matched ? WEBHOOK_LOG_STATUS.SUCCESS : WEBHOOK_LOG_STATUS.FAILED,
+        event.eventLabel,
+        event.raw,
+        result.matched ? undefined : 'No matching payment',
+      );
+      return result;
+    } catch (err) {
+      await this.record(
+        WEBHOOK_LOG_STATUS.FAILED,
+        event.eventLabel,
+        event.raw,
+        (err as Error)?.message,
+      );
+      throw err;
+    }
+  }
+
+  /** Reduce the RE-FETCHED refund to the neutral event. Tap vocabulary stops here. */
+  private toRefundEvent(refund: TapRefund): GatewayRefundEvent {
+    const outcome = mapRefundStatus(refund.status);
+    const status = String(refund.status ?? 'unknown');
+    return {
+      provider: 'tap',
+      gatewayRefundId: refund.id,
+      gatewayPaymentId: refund.charge_id,
+      outcome,
+      amountMinorUnits: toDomainMinorUnits(refund.amount),
+      currency: refund.currency,
+      dedupeKey: `tap:${refund.id}:${status.toUpperCase()}`,
+      eventLabel: `refund.${status.toLowerCase()}`,
+      // Our refund id, when Tap echoes the `reference.merchant` we sent.
+      correlationId: isUuid(refund.reference?.merchant)
+        ? (refund.reference?.merchant as string)
+        : undefined,
+      failureReason:
+        outcome === 'failed'
+          ? 'Refund was rejected by the payment gateway'
+          : undefined,
+      raw: sanitizeTapRefund(refund),
+    };
   }
 
   /**

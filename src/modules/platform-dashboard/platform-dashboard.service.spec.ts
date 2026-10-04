@@ -734,3 +734,30 @@ describe('tenant lifecycle vocabulary', () => {
     expect(new Set(counted)).toEqual(new Set(Object.values(TenantApprovalStatus)));
   });
 });
+
+describe('PlatformDashboardService.summary — clinic money only', () => {
+  it('scopes every payment aggregate to what patients paid clinics, never a clinic\'s platform purchases', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const service = new PlatformDashboardService(
+      { query } as unknown as DataSource,
+      { get: jest.fn().mockReturnValue(GRACE_DAYS) } as unknown as ConfigService,
+      { healthSnapshot: jest.fn().mockResolvedValue(HEALTH) } as unknown as MonitoringService,
+      { kpis: jest.fn().mockResolvedValue({}) } as unknown as SupportTicketService,
+      noopCache() as unknown as QueueService,
+    );
+
+    await service.summary({ range: '7d' } as never);
+
+    const calls = query.mock.calls as Array<[string, unknown[]]>;
+    const money = calls.filter(
+      ([sql]) =>
+        /FROM payments/.test(sql) || /JOIN payments/.test(sql),
+    );
+    // the period metrics, the refunds join, the currency set and the revenue series
+    expect(money).toHaveLength(4);
+    for (const [sql, params] of money) {
+      expect(sql).toMatch(/purpose = ANY\(\$\d\)/);
+      expect(params).toContainEqual(['BOOKING', 'MANUAL']);
+    }
+  });
+});

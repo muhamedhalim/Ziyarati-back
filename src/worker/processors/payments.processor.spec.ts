@@ -4,6 +4,7 @@ import { PaymentsProcessor } from './payments.processor';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { JOB } from '../../queue/queue.constants';
 import { PaymentReconciliationService } from '../../modules/payments/payment-reconciliation.service';
+import { ProviderReconciliationService } from '../../modules/payments/reconciliation/provider-reconciliation.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { PaymentOutcomeService } from '../payment-outcome.service';
 
@@ -22,6 +23,10 @@ describe('PaymentsProcessor', () => {
         stillClaimed: 0,
       }),
     };
+    const providerReconciliation = {
+      enabled: true,
+      run: jest.fn().mockResolvedValue({ merchants: [], exceptions: 0 }),
+    };
     const metrics = { setWorkerHeartbeat: jest.fn() };
     const outcome = {
       process: jest
@@ -30,11 +35,19 @@ describe('PaymentsProcessor', () => {
     };
     const processor = new PaymentsProcessor(
       reconciliation as unknown as PaymentReconciliationService,
+      providerReconciliation as unknown as ProviderReconciliationService,
       outcome as unknown as PaymentOutcomeService,
       lock as unknown as DistributedLockService,
       metrics as unknown as MetricsService,
     );
-    return { processor, lock, reconciliation, metrics, outcome };
+    return {
+      processor,
+      lock,
+      reconciliation,
+      providerReconciliation,
+      metrics,
+      outcome,
+    };
   };
 
   it('acquires the lock, runs the reconciliation sweep, and releases the lock afterwards', async () => {
@@ -248,6 +261,87 @@ describe('PaymentsProcessor', () => {
 
         expect(logger.error).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  describe('payments.providerReconcile (Tap Phase 5)', () => {
+    const job = (lookbackDays?: number) =>
+      ({
+        name: JOB.PAYMENTS_PROVIDER_RECONCILE,
+        data: { tenantId: null, ...(lookbackDays ? { lookbackDays } : {}) },
+      }) as any;
+
+    it("runs the provider reconciliation under ITS OWN lock, with the job's look-back, and stamps its own heartbeat", async () => {
+      const {
+        processor,
+        lock,
+        providerReconciliation,
+        reconciliation,
+        metrics,
+      } = build('tok-1');
+
+      const result = await processor.process(job(30));
+
+      expect(lock.acquire).toHaveBeenCalledWith(
+        'lock:payments-provider-reconcile',
+        expect.any(Number),
+      );
+      expect(providerReconciliation.run).toHaveBeenCalledWith({
+        lookbackDays: 30,
+      });
+      expect(result).toEqual({ merchants: [], exceptions: 0 });
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:payments-provider-reconcile',
+        'tok-1',
+      );
+      expect(metrics.setWorkerHeartbeat).toHaveBeenCalledWith(
+        'payments.providerReconcile',
+      );
+      // never the 10-minute sweep, and never that sweep's lock
+      expect(reconciliation.reconcileStalePending).not.toHaveBeenCalled();
+      expect(lock.acquire).not.toHaveBeenCalledWith(
+        'lock:payments-reconcile',
+        expect.anything(),
+      );
+    });
+
+    it('defaults to the daily look-back when the job does not say', async () => {
+      const { processor, providerReconciliation } = build('tok-1');
+      await processor.process(job());
+      expect(providerReconciliation.run).toHaveBeenCalledWith({
+        lookbackDays: 3,
+      });
+    });
+
+    it('does nothing — and takes no lock — while Tap is not the active provider', async () => {
+      const { processor, lock, providerReconciliation } = build('tok-1');
+      providerReconciliation.enabled = false;
+
+      expect(await processor.process(job())).toEqual({
+        skipped: 'tap_not_active',
+      });
+      expect(lock.acquire).not.toHaveBeenCalled();
+      expect(providerReconciliation.run).not.toHaveBeenCalled();
+    });
+
+    it('skips when another replica already holds the lock', async () => {
+      const { processor, providerReconciliation, lock } = build(null);
+      expect(await processor.process(job())).toEqual({ skipped: true });
+      expect(providerReconciliation.run).not.toHaveBeenCalled();
+      expect(lock.release).not.toHaveBeenCalled();
+    });
+
+    it('releases the lock even when the run throws, and does not stamp a heartbeat', async () => {
+      const { processor, providerReconciliation, lock, metrics } =
+        build('tok-1');
+      providerReconciliation.run.mockRejectedValue(new Error('boom'));
+
+      await expect(processor.process(job())).rejects.toThrow('boom');
+      expect(lock.release).toHaveBeenCalledWith(
+        'lock:payments-provider-reconcile',
+        'tok-1',
+      );
+      expect(metrics.setWorkerHeartbeat).not.toHaveBeenCalled();
     });
   });
 });

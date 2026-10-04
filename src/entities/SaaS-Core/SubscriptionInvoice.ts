@@ -151,4 +151,24 @@ export class SubscriptionInvoice {
 
   @Column({ type: 'int', default: 0 })
   checkout_attempts!: number;
+
+  // ── Tap migration (Phase 5) — the platform's own refund of this invoice ──── //
+
+  /** The gateway's refund id (`re_…`) for the CURRENT refund attempt. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  refund_reference?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  refund_requested_at?: Date | null;
+
+  /** Set when the refund COMPLETED (the invoice is then REFUNDED). */
+  @Column({ type: 'timestamptz', nullable: true })
+  refunded_at?: Date | null;
+
+  /** Refund attempts so far — part of the gateway idempotency key, so a retry after a decline is a NEW refund. */
+  @Column({ type: 'int', default: 0 })
+  refund_attempts!: number;
+
+  @Column({ type: 'text', nullable: true })
+  refund_reason?: string | null;
 }

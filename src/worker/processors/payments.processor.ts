@@ -5,15 +5,26 @@ import { Job, UnrecoverableError } from 'bullmq';
 import { JOB, QUEUE, workerConcurrency } from '../../queue/queue.constants';
 import {
   PaymentsOutcomeJob,
+  PaymentsProviderReconcileJob,
   PaymentsReconcileJob,
 } from '../../queue/job-data.interface';
 import { validateJobPayload } from '../../queue/job-payload-validator';
 import { DistributedLockService } from '../../queue/distributed-lock.service';
 import { PaymentReconciliationService } from '../../modules/payments/payment-reconciliation.service';
+import { ProviderReconciliationService } from '../../modules/payments/reconciliation/provider-reconciliation.service';
+import { PROVIDER_RECONCILIATION } from '../../modules/payments/payments.constants';
 import { MetricsService } from '../../metrics/metrics.service';
 import { PaymentOutcomeService } from '../payment-outcome.service';
 
 const LOCK_KEY = 'lock:payments-reconcile';
+const PROVIDER_LOCK_KEY = 'lock:payments-provider-reconcile';
+/**
+ * A provider reconciliation downloads one report per merchant (every clinic with a
+ * Tap merchant) and one per payout. The lock must outlive a long run but not the
+ * next scheduled tick (daily 03:00, weekly 04:00 Sunday), and a crashed holder's
+ * lock must not block the next day's run.
+ */
+const PROVIDER_LOCK_TTL_MS = 50 * 60 * 1000;
 /**
  * Shorter than the repeatable job's own 10-minute cron interval (see
  * ScheduleRegistrarService) so a crashed holder's lock cannot outlive the
@@ -24,7 +35,7 @@ const LOCK_KEY = 'lock:payments-reconcile';
 const LOCK_TTL_MS = 8 * 60 * 1000;
 
 /**
- * Consumes the `payments` queue. Two job names share it:
+ * Consumes the `payments` queue. Three job names share it:
  *
  *  - `payments.outcome` (REL-005) — the durable consequences of one payment
  *    state change, written to the outbox in the same transaction as the change.
@@ -39,6 +50,11 @@ const LOCK_TTL_MS = 8 * 60 * 1000;
  *    sweep and a stalled-and-redelivered instance of it ever overlap.
  *    Lock-guarded to avoid that waste, not for correctness.
  *
+ *  - `payments.providerReconcile` (Tap Phase 5) — the daily / weekly comparison of
+ *    our records with the gateway's own reports: fees, payouts, discrepancies.
+ *    Read-only toward the gateway; lock-guarded so two replicas do not download the
+ *    same reports twice (correctness is in the DB: every write is conditional).
+ *
  * Dispatch is by job NAME. It used to be implicit — the single job type on this
  * queue ran the sweep unconditionally — which is exactly why a second job type
  * must never be added without the explicit branch below.
@@ -49,6 +65,7 @@ export class PaymentsProcessor extends WorkerHost {
 
   constructor(
     private readonly reconciliation: PaymentReconciliationService,
+    private readonly providerReconciliation: ProviderReconciliationService,
     private readonly outcome: PaymentOutcomeService,
     private readonly lock: DistributedLockService,
     private readonly metrics: MetricsService,
@@ -56,7 +73,11 @@ export class PaymentsProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<PaymentsReconcileJob | PaymentsOutcomeJob>) {
+  async process(
+    job: Job<
+      PaymentsReconcileJob | PaymentsOutcomeJob | PaymentsProviderReconcileJob
+    >,
+  ) {
     if (job.name === JOB.PAYMENTS_OUTCOME) {
       const data = job.data as PaymentsOutcomeJob;
       validateJobPayload(job.name, data);
@@ -66,6 +87,12 @@ export class PaymentsProcessor extends WorkerHost {
       // No worker heartbeat here, deliberately: this job is event-driven, so a
       // quiet hour with no payments would look like a dead worker.
       return this.outcome.process(data);
+    }
+
+    if (job.name === JOB.PAYMENTS_PROVIDER_RECONCILE) {
+      return this.runProviderReconcile(
+        job.data as PaymentsProviderReconcileJob,
+      );
     }
 
     const token = await this.lock.acquire(LOCK_KEY, LOCK_TTL_MS);
@@ -89,6 +116,33 @@ export class PaymentsProcessor extends WorkerHost {
       return { ...result, subscriptions: subscriptionResult };
     } finally {
       await this.lock.release(LOCK_KEY, token);
+    }
+  }
+
+  private async runProviderReconcile(data: PaymentsProviderReconcileJob) {
+    if (!this.providerReconciliation.enabled) {
+      return { skipped: 'tap_not_active' };
+    }
+    const token = await this.lock.acquire(
+      PROVIDER_LOCK_KEY,
+      PROVIDER_LOCK_TTL_MS,
+    );
+    if (!token) {
+      this.logger.log(
+        'provider reconciliation already running elsewhere — skipping this run',
+      );
+      return { skipped: true };
+    }
+    try {
+      const result = await this.providerReconciliation.run({
+        lookbackDays:
+          Number(data?.lookbackDays) ||
+          PROVIDER_RECONCILIATION.DAILY_LOOKBACK_DAYS,
+      });
+      this.metrics.setWorkerHeartbeat('payments.providerReconcile');
+      return result;
+    } finally {
+      await this.lock.release(PROVIDER_LOCK_KEY, token);
     }
   }
 

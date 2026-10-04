@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, MoreThanOrEqual, Repository } from 'typeorm';
+import { Between, In, MoreThanOrEqual, Repository } from 'typeorm';
 
 import { Branch } from '../../entities/SaaS-Core/Branch';
 import { Appointment } from '../../entities/Calendar&Appointments/Appointment';
@@ -19,6 +19,7 @@ import {
 } from '../../entities/enums';
 import { StaffProfile } from '../../entities/Staff/StaffProfile';
 import { AppError, ErrorCode } from '../../common/errors';
+import { CLINIC_REVENUE_PURPOSES } from '../payments/payments.constants';
 
 import {
   ACTIVE_CONVERSATION_WINDOW_DAYS,
@@ -267,7 +268,11 @@ export class AnalyticsAggregationService {
       this.customers.count({ where: { tenant: { id: tenantId } } }),
       this.appointments.count({ where: { tenant: { id: tenantId } } }),
       this.payments.count({
-        where: { tenant: { id: tenantId }, status: PaymentStatus.PAID },
+        where: {
+          tenant: { id: tenantId },
+          status: PaymentStatus.PAID,
+          purpose: In([...CLINIC_REVENUE_PURPOSES]),
+        },
       }),
       this.conversations.count({
         where: {
@@ -466,6 +471,9 @@ export class AnalyticsAggregationService {
       .where('t.id = :tenantId', { tenantId })
       .andWhere('b.id = :branchId', { branchId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .getRawOne<{ sum: string }>();
     return round2(Number(row?.sum ?? 0));
@@ -515,7 +523,10 @@ export class AnalyticsAggregationService {
       .select('COALESCE(SUM(p.amount), 0)', 'sum')
       .innerJoin('p.tenant', 't')
       .where('t.id = :tenantId', { tenantId })
-      .andWhere('p.status = :status', { status: PaymentStatus.PAID });
+      .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      });
     if (range) {
       qb = qb.andWhere('p.paid_at BETWEEN :start AND :end', range);
     }
@@ -701,6 +712,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy('staff.id');
 
@@ -811,6 +825,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
       .andWhere('p.currency = :currency', { currency })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end })
       .groupBy(dateExpr)
@@ -848,6 +865,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'amount')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
       .andWhere('p.currency != :currency', { currency })
       .andWhere('p.paid_at BETWEEN :start AND :end', { start, end });
 
@@ -1127,6 +1147,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
       // FR-A021 — same currency-scoping as revenueTrend/sumBranchRevenue's
       // sibling; a per-branch total must never silently mix currencies.
       .andWhere('p.currency = :currency', { currency })
@@ -1198,6 +1221,9 @@ export class AnalyticsAggregationService {
       .addSelect('COALESCE(SUM(p.amount), 0)', 'revenue')
       .where('t.id = :tenantId', { tenantId })
       .andWhere('p.status = :status', { status: PaymentStatus.PAID })
+      .andWhere('p.purpose IN (:...clinicPurposes)', {
+        clinicPurposes: [...CLINIC_REVENUE_PURPOSES],
+      })
       // FR-A021 — same currency-scoping as revenueTrend/sumBranchRevenue's
       // sibling; a per-channel total must never silently mix currencies.
       .andWhere('p.currency = :currency', { currency })

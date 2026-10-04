@@ -16,11 +16,13 @@ import {
 } from '@nestjs/swagger';
 
 import { MarketplaceFinanceService } from './marketplace-finance.service';
+import { SubscriptionFinanceService } from './subscription-finance.service';
 import {
   FinancialAuditService,
   FINANCIAL_AUDIT_ACTION,
 } from './financial-audit.service';
 import { QueryMarketplaceTransactionsDto } from './dto/query-marketplace-transactions.dto';
+import { QuerySubscriptionInvoicesDto } from './dto/query-subscription-invoices.dto';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -41,6 +43,7 @@ import { ROLE } from '../../rbac/rbac.constants';
 export class PlatformFinanceController {
   constructor(
     private readonly finance: MarketplaceFinanceService,
+    private readonly subscriptions: SubscriptionFinanceService,
     private readonly audit: FinancialAuditService,
   ) {}
 
@@ -127,6 +130,46 @@ export class PlatformFinanceController {
       ip,
       undefined,
       { metric },
+    );
+    return result;
+  }
+
+  @ApiOperation({
+    summary: 'Subscription revenue ledger (super-admin)',
+    description:
+      'What clinics paid ZiyaraTech for their plans — separate from the marketplace ledger (what patients paid clinics). Server-paginated and filtered, with totals per currency over the whole filter.',
+  })
+  @ApiOkResponse({
+    description: 'Paginated subscription invoices + a per-currency summary.',
+  })
+  @Get('subscription-invoices')
+  subscriptionInvoices(@Query() query: QuerySubscriptionInvoicesDto) {
+    return this.subscriptions.list(query);
+  }
+
+  @ApiOperation({
+    summary: 'Export the filtered subscription ledger as CSV (super-admin)',
+  })
+  @ApiOkResponse({
+    description: '{ filename, content } CSV payload (Excel-native).',
+  })
+  @Get('subscription-invoices/export')
+  async exportSubscriptionInvoices(
+    @Query() query: QuerySubscriptionInvoicesDto,
+    @CurrentUser('id') userId: string,
+    @Ip() ip: string,
+  ) {
+    const result = await this.subscriptions.exportCsv(query);
+    await this.audit.record(
+      FINANCIAL_AUDIT_ACTION.EXPORT,
+      userId,
+      ip,
+      undefined,
+      {
+        scope: 'subscription-invoices',
+        filters: { ...query },
+        rows: result.content.split('\n').length - 1,
+      },
     );
     return result;
   }

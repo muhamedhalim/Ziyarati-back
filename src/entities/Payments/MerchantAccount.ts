@@ -108,6 +108,18 @@ export class MerchantAccount {
   @Column({ type: 'timestamptz', nullable: true })
   provider_onboarding_claimed_at?: Date | null;
 
+  /**
+   * Whether the gateway's REPORTING API answered for this merchant with our
+   * credentials on the last reconciliation run (`OK` | `UNREACHABLE`). Tap
+   * documents that a sub-merchant reports with its own keys, so a clinic may be
+   * unreachable for fee / payout import — a recorded fact, not an error per charge.
+   */
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  provider_reports_status?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  provider_reports_checked_at?: Date | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   submitted_at?: Date;
 

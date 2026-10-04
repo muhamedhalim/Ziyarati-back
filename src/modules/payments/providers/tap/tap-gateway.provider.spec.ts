@@ -23,6 +23,7 @@ describe('TapGatewayProvider', () => {
     getCharge: jest.Mock;
     createRefund: jest.Mock;
     getRefund: jest.Mock;
+    listCharges: jest.Mock;
   };
   let cfg: Record<string, unknown>;
 
@@ -75,6 +76,7 @@ describe('TapGatewayProvider', () => {
       getCharge: jest.fn(),
       createRefund: jest.fn(),
       getRefund: jest.fn(),
+      listCharges: jest.fn(),
     };
   });
 
@@ -541,6 +543,261 @@ describe('TapGatewayProvider', () => {
       expect(res.failureReason).toBe(
         'Refund was rejected by the payment gateway',
       );
+    });
+  });
+
+  describe('refundPayment — what the domain is told', () => {
+    const refundReq = () => ({
+      tenantId: 't1',
+      paymentId: 'p1',
+      refundId: 'rf-1',
+      gatewayPaymentId: 'chg_1',
+      amount: 10,
+      currency: 'SAR',
+    });
+
+    it('a refund answer carries the charge it is against and its amount in domain cents, for the caller to cross-check', async () => {
+      client.createRefund.mockResolvedValueOnce(
+        ok({
+          id: 're_1',
+          status: 'PENDING',
+          charge_id: 'chg_1',
+          amount: 10,
+          currency: 'SAR',
+        }),
+      );
+      expect(await build().refundPayment(refundReq())).toMatchObject({
+        status: 'pending',
+        gatewayRefundId: 're_1',
+        gatewayPaymentId: 'chg_1',
+        amountMinorUnits: 1000,
+        currency: 'SAR',
+      });
+    });
+
+    it('keeps the provider response code for logs/audit on a decline — never in the user-facing reason', async () => {
+      client.createRefund.mockResolvedValueOnce(
+        ok({
+          id: 're_2',
+          status: 'DECLINED',
+          response: { code: '505', message: 'issuer says no' },
+        }),
+      );
+      const res = await build().refundPayment(refundReq());
+      expect(res).toMatchObject({ status: 'failed', failureCode: '505' });
+      expect(res.failureReason).not.toContain('issuer');
+    });
+
+    it('keeps the HTTP-level code on a rejected request', async () => {
+      client.createRefund.mockResolvedValueOnce(fail(400, '1161'));
+      expect(await build().refundPayment(refundReq())).toMatchObject({
+        status: 'failed',
+        failureCode: '1161',
+      });
+    });
+
+    it('a 2xx with no refund object is "unknown" — the refund may exist; the idempotent replay settles it', async () => {
+      client.createRefund.mockResolvedValueOnce(ok({} as any));
+      expect(await build().refundPayment(refundReq())).toMatchObject({
+        success: false,
+        status: 'unknown',
+      });
+    });
+  });
+
+  describe('verifyRefund', () => {
+    it('asks Tap for THAT refund by its id', async () => {
+      client.getRefund.mockResolvedValueOnce(
+        ok({
+          id: 're_1',
+          status: 'REFUNDED',
+          charge_id: 'chg_1',
+          amount: 12.5,
+          currency: 'SAR',
+        }),
+      );
+      const res = await build().verifyRefund('re_1');
+      expect(client.getRefund).toHaveBeenCalledWith('re_1');
+      expect(res).toMatchObject({
+        success: true,
+        status: 'succeeded',
+        gatewayRefundId: 're_1',
+        gatewayPaymentId: 'chg_1',
+        amountMinorUnits: 1250,
+        currency: 'SAR',
+      });
+    });
+
+    it.each([
+      ['PENDING', 'pending'],
+      ['ACCEPTED', 'pending'],
+      ['DECLINED', 'failed'],
+      ['FAILED', 'failed'],
+      ['RESTRICTED', 'failed'],
+      ['REJECTED', 'failed'],
+      ['TIMED_OUT', 'unknown'],
+      ['UNKNOWN', 'unknown'],
+    ])('%s → %s', async (status, expected) => {
+      client.getRefund.mockResolvedValueOnce(
+        ok({ id: 're_1', status, charge_id: 'chg_1' }),
+      );
+      expect((await build().verifyRefund('re_1')).status).toBe(expected);
+    });
+
+    it.each([
+      ['an outage (503)', fail(503)],
+      ['a rate limit (429)', fail(429)],
+      ['no response at all', fail(0, 'TIMEOUT', true)],
+      ['a 404 (a live id asked with a test key, say)', fail(404)],
+      ['a 401 (a rotated secret)', fail(401, '2104')],
+    ])('%s → unknown, never failed', async (_label, response) => {
+      client.getRefund.mockResolvedValueOnce(response);
+      const res = await build().verifyRefund('re_1');
+      expect(res).toMatchObject({
+        success: false,
+        status: 'unknown',
+        gatewayRefundId: 're_1',
+      });
+      expect(res.failureReason).toBe(
+        'Payment gateway is temporarily unavailable',
+      );
+    });
+
+    it('a 200 that carries no refund object is unknown too', async () => {
+      client.getRefund.mockResolvedValueOnce(ok({} as any));
+      expect((await build().verifyRefund('re_1')).status).toBe('unknown');
+    });
+
+    it('never includes payer data or the gateway text in what it returns for the ledger', async () => {
+      client.getRefund.mockResolvedValueOnce(
+        ok({
+          id: 're_1',
+          status: 'REFUNDED',
+          charge_id: 'chg_1',
+          customer: { email: 'x@y.test' },
+        } as any),
+      );
+      const res = await build().verifyRefund('re_1');
+      expect(JSON.stringify(res.raw)).not.toContain('x@y.test');
+    });
+  });
+
+  describe('findPaymentByReference (REL-002 backstop)', () => {
+    const PAYMENT = '11111111-1111-4111-8111-111111111111';
+    const charge = (over: Record<string, unknown> = {}) => ({
+      id: 'chg_1',
+      status: 'CAPTURED',
+      amount: 49.99,
+      currency: 'SAR',
+      reference: { transaction: PAYMENT },
+      ...over,
+    });
+
+    it('asks Tap for charges carrying OUR reference (reference.transaction = our payment id)', async () => {
+      client.listCharges.mockResolvedValueOnce(ok({ charges: [charge()] }));
+      await build().findPaymentByReference(PAYMENT);
+      expect(client.listCharges).toHaveBeenCalledWith({
+        reference: { transaction: [PAYMENT] },
+        limit: 5,
+      });
+    });
+
+    it('found: the charge is reduced to the SAME neutral result verifyPayment gives (paid + captured figures)', async () => {
+      client.listCharges.mockResolvedValueOnce(ok({ charges: [charge()] }));
+      const res = await build().findPaymentByReference(PAYMENT);
+      expect(res).toMatchObject({
+        status: 'found',
+        result: {
+          gatewayPaymentId: 'chg_1',
+          status: 'paid',
+          capturedMinorUnits: 4999,
+          capturedCurrency: 'SAR',
+          correlationId: PAYMENT,
+        },
+      });
+    });
+
+    it('an unpaid charge is found too (so its id can be attached), as pending', async () => {
+      client.listCharges.mockResolvedValueOnce(
+        ok({ charges: [charge({ status: 'INITIATED' })] }),
+      );
+      expect(await build().findPaymentByReference(PAYMENT)).toMatchObject({
+        status: 'found',
+        result: { status: 'pending', capturedMinorUnits: undefined },
+      });
+    });
+
+    it('not_found ONLY when Tap answered with an empty list', async () => {
+      client.listCharges.mockResolvedValueOnce(ok({ charges: [] }));
+      expect(await build().findPaymentByReference(PAYMENT)).toEqual({
+        status: 'not_found',
+      });
+      client.listCharges.mockResolvedValueOnce(ok({}));
+      expect(await build().findPaymentByReference(PAYMENT)).toEqual({
+        status: 'not_found',
+      });
+    });
+
+    it.each([
+      ['an outage', fail(503)],
+      ['a rate limit', fail(429)],
+      ['a refusal (our key may not see that merchant)', fail(403, '2106')],
+      ['a bad request', fail(400)],
+    ])(
+      '%s is "unknown", never "not found" — silence is not evidence that nothing was charged',
+      async (_l, response) => {
+        client.listCharges.mockResolvedValueOnce(response);
+        expect(await build().findPaymentByReference(PAYMENT)).toEqual({
+          status: 'unknown',
+        });
+      },
+    );
+
+    it('ignores a charge that merely came back but carries a DIFFERENT reference', async () => {
+      client.listCharges.mockResolvedValueOnce(
+        ok({
+          charges: [
+            charge({ reference: { transaction: 'someone-elses-payment' } }),
+          ],
+        }),
+      );
+      expect(await build().findPaymentByReference(PAYMENT)).toEqual({
+        status: 'not_found',
+      });
+    });
+
+    it('several charges for one payment: the single CAPTURED one wins; otherwise it is ambiguous, left to a human', async () => {
+      client.listCharges.mockResolvedValueOnce(
+        ok({
+          charges: [
+            charge({ id: 'chg_a', status: 'DECLINED' }),
+            charge({ id: 'chg_b' }),
+          ],
+        }),
+      );
+      expect(await build().findPaymentByReference(PAYMENT)).toMatchObject({
+        status: 'found',
+        result: { gatewayPaymentId: 'chg_b' },
+      });
+
+      client.listCharges.mockResolvedValueOnce(
+        ok({ charges: [charge({ id: 'chg_a' }), charge({ id: 'chg_b' })] }),
+      );
+      expect(await build().findPaymentByReference(PAYMENT)).toEqual({
+        status: 'unknown',
+      });
+
+      client.listCharges.mockResolvedValueOnce(
+        ok({
+          charges: [
+            charge({ id: 'chg_a', status: 'INITIATED' }),
+            charge({ id: 'chg_b', status: 'ABANDONED' }),
+          ],
+        }),
+      );
+      expect(await build().findPaymentByReference(PAYMENT)).toEqual({
+        status: 'unknown',
+      });
     });
   });
 });

@@ -3,7 +3,10 @@ import { ConfigService } from '@nestjs/config';
 
 import { JOB, QUEUE } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
-import { AnalyticsGenerateReportJob } from '../queue/job-data.interface';
+import {
+  AnalyticsGenerateReportJob,
+  PaymentsProviderReconcileJob,
+} from '../queue/job-data.interface';
 
 /**
  * Registers the platform's REPEATABLE (cron) jobs on worker startup, using
@@ -49,6 +52,12 @@ export class ScheduleRegistrarService implements OnApplicationBootstrap {
       await this.queue.addRepeatable(QUEUE.REFUNDS, JOB.REFUNDS_REAP, { tenantId: null }, '*/5 * * * *');
       // Payment reconciliation sweep — every 10 minutes (webhook-loss recovery).
       await this.queue.addRepeatable(QUEUE.PAYMENTS, JOB.PAYMENTS_RECONCILE, { tenantId: null }, '*/10 * * * *');
+      // Provider reconciliation (Tap Phase 5): fees, payouts, discrepancies, from the
+      // gateway's own reports. Daily over a 3-day look-back (a late charge or payout is
+      // still caught) at 03:00 UTC, and weekly over Tap's whole 30-day window. Does
+      // nothing unless PAYMENT_PROVIDER=tap with a key. Read-only toward Tap.
+      await this.queue.addRepeatable(QUEUE.PAYMENTS, JOB.PAYMENTS_PROVIDER_RECONCILE, { tenantId: null, lookbackDays: 3 } as PaymentsProviderReconcileJob, '0 3 * * *');
+      await this.queue.addRepeatable(QUEUE.PAYMENTS, JOB.PAYMENTS_PROVIDER_RECONCILE, { tenantId: null, lookbackDays: 30 } as PaymentsProviderReconcileJob, '0 4 * * 0');
       // Notification durability sweep — every minute (reclaim stale PROCESSING +
       // re-enqueue due-but-unsent rows). Idempotent via deterministic jobId.
       await this.queue.addRepeatable(QUEUE.NOTIFICATIONS, JOB.NOTIFICATIONS_REAP, { tenantId: null }, '* * * * *');

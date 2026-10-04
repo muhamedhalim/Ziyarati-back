@@ -4,6 +4,7 @@ import { PaymentsConfig } from '../../payments/payments.config';
 import { TapApiClient } from '../../payments/providers/tap/tap-api.client';
 import {
   mapChargeStatus,
+  mapRefundStatus,
   safeFailureReason,
 } from '../../payments/providers/tap/tap-status.mapper';
 import {
@@ -11,6 +12,7 @@ import {
   toDomainMinorUnits,
   toTapAmount,
   type TapCharge,
+  type TapRefund,
 } from '../../payments/providers/tap/tap.types';
 import { extractSavedPaymentMethod } from '../../payments/providers/tap/tap-saved-method';
 import { isUuid } from '../../payments/payments.constants';
@@ -27,10 +29,12 @@ import {
   SavedPaymentMethodRef,
   VerifyChargeResult,
   VerifyCheckoutResult,
+  VerifyRefundResult,
 } from './payment-provider.interface';
 
 /** User-safe text — Tap's own wording is never forwarded. */
 const MSG_UNAVAILABLE = 'Payment gateway is temporarily unavailable';
+const MSG_REFUND_REJECTED = 'Refund was rejected by the payment gateway';
 
 /** `metadata.udf2` marker the Tap webhook handler uses to tell an invoice charge from a booking payment. */
 export const TAP_INVOICE_MARKER = 'subscription_invoice';
@@ -350,17 +354,86 @@ export class TapSubscriptionProvider implements PaymentProvider {
   }
 
   /**
-   * Subscription refunds arrive with the refund phase (the refund object has its
-   * own async lifecycle). Until then an attempt is refused up front rather than
-   * created and left half-tracked.
+   * Refund a PAID subscription invoice, in full, on ZiyaraTech's OWN merchant (the
+   * invoice was platform revenue, so no clinic wallet is involved).
+   *
+   * Tap refunds are asynchronous: `REFUNDED` is success, `PENDING` is NOT (Tap is
+   * still checking the wallet balance) and a transport error is `unknown` — the
+   * refund may exist. The per-attempt idempotency key `invrefund:{invoiceId}:{n}`
+   * means a re-send of the same attempt returns the original refund (Tap honours
+   * `reference.idempotent` for 24h) instead of paying out twice.
    */
   async refund(request: RefundRequest): Promise<RefundResult> {
-    this.logger.warn(
-      `Subscription refund for invoice ${request.invoiceId} refused: not enabled until the refund phase`,
-    );
+    const charge = request.chargeReference;
+    if (!charge || !charge.startsWith('chg_')) {
+      return {
+        success: false,
+        status: 'failed',
+        failureReason: 'This invoice has no payment reference to refund',
+      };
+    }
+    const attempt = request.attempt ?? 1;
+    const res = await this.client.createRefund({
+      charge_id: charge,
+      amount: toTapAmount(request.amount, request.currency),
+      currency: request.currency.toUpperCase(),
+      reason: request.reason?.trim() || 'requested_by_customer',
+      reference: {
+        merchant: request.invoiceId,
+        idempotent: `invrefund:${request.invoiceId}:${attempt}`,
+      },
+      ...(this.config.tapWebhookUrl
+        ? { post: { url: this.config.tapWebhookUrl } }
+        : {}),
+      metadata: {
+        udf1: request.invoiceId,
+        udf2: 'subscription_invoice_refund',
+        udf3: request.tenantId,
+      },
+    });
+    if (!res.ok) {
+      return {
+        success: false,
+        status: res.transient ? 'unknown' : 'failed',
+        failureReason: res.transient ? MSG_UNAVAILABLE : MSG_REFUND_REJECTED,
+        failureCode: res.errorCode ?? String(res.status),
+      };
+    }
+    return this.refundResult(res.json);
+  }
+
+  /** One refund by Tap's id. ANY non-2xx is `unknown` — never "the refund failed". */
+  async verifyRefund(reference: string): Promise<VerifyRefundResult> {
+    const res = await this.client.getRefund(reference);
+    if (!res.ok || !res.json?.id) {
+      return {
+        success: false,
+        status: 'unknown',
+        reference,
+        failureReason: MSG_UNAVAILABLE,
+        failureCode: res.errorCode ?? String(res.status),
+      };
+    }
+    return this.refundResult(res.json);
+  }
+
+  private refundResult(refund: TapRefund): VerifyRefundResult {
+    const outcome = mapRefundStatus(refund.status);
     return {
-      success: false,
-      failureReason: 'Subscription refunds are not available yet',
+      success: outcome === 'succeeded',
+      status: outcome,
+      reference: refund.id,
+      chargeReference: refund.charge_id,
+      amountMinorUnits: toDomainMinorUnits(refund.amount),
+      currency: refund.currency,
+      failureReason:
+        outcome === 'failed'
+          ? MSG_REFUND_REJECTED
+          : outcome === 'unknown'
+            ? MSG_UNAVAILABLE
+            : undefined,
+      failureCode:
+        outcome === 'failed' ? (refund.response?.code ?? undefined) : undefined,
     };
   }
 

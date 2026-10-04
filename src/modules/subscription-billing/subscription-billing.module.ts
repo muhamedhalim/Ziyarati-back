@@ -23,6 +23,7 @@ import { SubscriptionService } from './subscription.service';
 import { BillingService } from './billing.service';
 import { RenewalService } from './renewal.service';
 import { InvoiceSettlementService } from './invoice-settlement.service';
+import { SubscriptionInvoiceRefundService } from './subscription-invoice-refund.service';
 import { SubscriptionCheckoutService } from './subscription-checkout.service';
 import { PaymentMethodService } from './payment-method.service';
 import { UsageService } from './usage.service';
@@ -132,6 +133,7 @@ export function resolveSubscriptionPaymentProvider(
     SubscriptionService,
     BillingService,
     InvoiceSettlementService,
+    SubscriptionInvoiceRefundService,
     SubscriptionCheckoutService,
     PaymentMethodService,
     TapSubscriptionProvider,
@@ -179,6 +181,10 @@ export function resolveSubscriptionPaymentProvider(
     // The ONE path that marks a subscription invoice PAID — used by the webhook
     // and the reconciliation sweep (payments module) as well as by BillingService.
     InvoiceSettlementService,
+    // Tap Phase 5 — the platform's refund of an invoice it collected. Exported so the
+    // payments module's refund webhook and reconciliation sweep can complete a refund
+    // the provider finished asynchronously.
+    SubscriptionInvoiceRefundService,
     // T082 (spec 014, US5) — SubscriptionsProcessor (worker.module.ts)
     // invokes the renewal cycle from the `subscriptions.renewalBill` job.
     RenewalService,

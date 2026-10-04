@@ -5,8 +5,10 @@ import { Payment } from '../../entities/Payments/Payment';
 import { Transaction } from '../../entities/Payments/Transaction';
 import { Refund } from '../../entities/Payments/Refund';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
+import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 
 import { MarketplaceFinanceService } from './marketplace-finance.service';
+import { SubscriptionFinanceService } from './subscription-finance.service';
 import { FinancialAuditService } from './financial-audit.service';
 import { PlatformFinanceController } from './platform-finance.controller';
 
@@ -18,9 +20,21 @@ import { PlatformFinanceController } from './platform-finance.controller';
  * context is global. Reuses `audit_logs` for view/export auditing.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([Payment, Transaction, Refund, AuditLog])],
+  imports: [
+    TypeOrmModule.forFeature([
+      Payment,
+      Transaction,
+      Refund,
+      AuditLog,
+      SubscriptionInvoice,
+    ]),
+  ],
   controllers: [PlatformFinanceController],
-  providers: [MarketplaceFinanceService, FinancialAuditService],
+  providers: [
+    MarketplaceFinanceService,
+    SubscriptionFinanceService,
+    FinancialAuditService,
+  ],
   // Exported so the Platform Control Center reuses the marketplace ledger
   // aggregation rather than writing a second one over the same tables.
   exports: [MarketplaceFinanceService],

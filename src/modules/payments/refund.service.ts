@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager, FindOptionsWhere, Repository } from 'typeorm';
 
 import { Refund } from '../../entities/Payments/Refund';
@@ -9,21 +8,32 @@ import { Tenant } from '../../entities/SaaS-Core/Tenant';
 import { User } from '../../entities/Auth&RBAC/User';
 import { PaymentStatus } from '../../entities/enums';
 import { AppError, ErrorCode } from '../../common/errors';
-import { RefundRecordedEvent } from '../../events/refund.events';
 
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
+import type { GatewayRefundResult } from './providers/payment-gateway.provider.interface';
 import { TransactionService } from './transaction.service';
-import { SettlementAdjustmentService } from './settlement-adjustment.service';
+import { RefundCompletionService, RefundCompletion } from './refund-completion.service';
 import { CreateRefundDto } from './dto/create-refund.dto';
 import { QueryRefundsDto } from './dto/query-refunds.dto';
 import { REFUND_STATUS, TRANSACTION_TYPE } from './payments.constants';
-import { PAYMENT_OUTCOME, enqueuePaymentOutcome } from './payment-outcome.outbox';
 
 /** Single, bounded major-units → integer-cents conversion (no float arithmetic downstream). */
 const toCents = (v: number | string): number => Math.round(Number(v) * 100);
 const fromCents = (c: number): number => c / 100;
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * A gateway's answer, as one of four outcomes. Providers that predate the
+ * `status` field answer only `success`: true is a completed refund and false a
+ * definitive decline, exactly as before.
+ */
+export function refundOutcomeOf(
+  result: GatewayRefundResult,
+): 'succeeded' | 'failed' | 'pending' | 'unknown' {
+  if (result.status) return result.status;
+  return result.success ? 'succeeded' : 'failed';
+}
 
 interface RefundIntent {
   refundId: string;
@@ -59,8 +69,7 @@ export class RefundService {
     private readonly dataSource: DataSource,
     private readonly gateways: PaymentGatewayFactory,
     private readonly transactions: TransactionService,
-    private readonly adjustments: SettlementAdjustmentService,
-    private readonly emitter: EventEmitter2,
+    private readonly completion: RefundCompletionService,
   ) {}
 
   async create(
@@ -93,12 +102,13 @@ export class RefundService {
     }
 
     // ── Phase 2: gateway call OUTSIDE any tx/lock (C3) ──
-    let raw: Record<string, any> | undefined;
-    let ok = true;
-    let failureReason: string | undefined;
-    let gatewayRefundId: string | undefined;
+    // Four outcomes, not two. A gateway with asynchronous refunds (Tap) answers
+    // 'pending' — accepted, money not yet moved — and a transport error is
+    // 'unknown'. Neither is a failure: booking either as FAILED would release the
+    // reserved balance while the refund may still complete.
+    let result: GatewayRefundResult = { success: true, status: 'succeeded' };
     if (intent.gatewayPaymentId) {
-      const result = await this.gateways.resolve(intent.gateway).refundPayment({
+      result = await this.gateways.resolve(intent.gateway).refundPayment({
         tenantId,
         paymentId: intent.paymentId,
         // The PENDING refund row already exists (Phase 1), so its id is the
@@ -109,118 +119,82 @@ export class RefundService {
         currency: intent.currency,
         reason: dto.reason,
       });
-      ok = result.success;
-      raw = result.raw;
-      failureReason = result.failureReason;
-      gatewayRefundId = result.gatewayRefundId;
     }
+    const outcome = refundOutcomeOf(result);
 
     // ── Phase 3: short tx — finalize refund + payment status from SQL sum ──
-    let recordedEvent: RefundRecordedEvent | undefined;
-    const refund = await this.dataSource.transaction(async (m) => {
+    const finished = await this.dataSource.transaction(async (m) => {
       const payment = await m.getRepository(Payment).findOne({
         where: { id: intent.paymentId },
         lock: { mode: 'pessimistic_write' },
       });
+      if (!payment) {
+        throw new AppError(ErrorCode.NOT_FOUND, { message: 'Payment not found' });
+      }
       const refundRepo = m.getRepository(Refund);
       const refund = await refundRepo.findOneByOrFail({ id: intent.refundId });
 
-      // FND-026 / T018: re-clamp before trusting the gateway's `ok`. Phase 1's
-      // admission check is the primary guarantee, but this is the last point
-      // before a refund becomes irrevocably SUCCEEDED — recompute the ACTUAL
-      // succeeded total fresh, under this same lock, and refuse rather than
-      // admit past the payment amount. In the ordinary path this never
-      // triggers (admission already reserved the room); it exists for
-      // whatever the admission check didn't anticipate.
-      if (ok && payment) {
-        const succeededSoFarC = await this.sumSucceededCents(m, payment.id);
-        if (succeededSoFarC + intent.amountC > toCents(payment.amount)) {
-          ok = false;
-          failureReason =
-            failureReason ??
-            'Refund would exceed the remaining refundable balance at completion';
-        }
+      // A webhook or the reaper may have finished this refund while the gateway
+      // call was in flight (Tap can answer the webhook before the response is
+      // handled). Never apply it twice.
+      if (refund.status !== REFUND_STATUS.PENDING) {
+        return { refund, completion: undefined as RefundCompletion | undefined };
       }
 
-      refund.status = ok ? REFUND_STATUS.SUCCEEDED : REFUND_STATUS.FAILED;
-      // Persist the provider refund id for traceability + cross-checking against
-      // refund webhooks (H2 reconciliation).
-      if (gatewayRefundId) refund.gateway_refund_id = gatewayRefundId;
-      await refundRepo.save(refund);
+      if (outcome === 'succeeded' || outcome === 'failed') {
+        const completion = await this.completion.complete(m, {
+          tenantId,
+          payment,
+          refund,
+          outcome,
+          gatewayRefundId: result.gatewayRefundId,
+          failureReason: result.failureReason,
+          gatewayTransactionId: intent.gatewayPaymentId,
+          raw: result.raw,
+        });
+        return { refund, completion };
+      }
 
+      // pending | unknown: stays PENDING and keeps holding its balance. Persist the
+      // provider's refund id (webhook matching, the reaper's verifyRefund) and say
+      // what the gateway said in the ledger.
+      if (result.gatewayRefundId && !refund.gateway_refund_id) {
+        refund.gateway_refund_id = result.gatewayRefundId;
+        await refundRepo.save(refund);
+      }
       await this.transactions.record(
         tenantId,
         intent.paymentId,
         {
           type: TRANSACTION_TYPE.REFUND,
           amount: fromCents(intent.amountC),
-          status: refund.status.toLowerCase(),
+          status: outcome,
           gatewayTransactionId: intent.gatewayPaymentId,
-          raw,
+          raw: result.raw,
         },
         m,
       );
-
-      if (!ok) {
-        throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
-          message: 'Refund was declined by the gateway',
-          // Raw gateway decline text — a provider-response detail, not
-          // something we've curated as client-safe. Logs only.
-          internalContext: { reason: failureReason },
-        });
-      }
-
-      if (payment) {
-        // R1 clawback: if this payment was already claimed/settled, the refund
-        // can't mutate that batch — record an adjustment to net out of the next.
-        await this.adjustments.recordClawbackIfSettled(
-          m,
-          tenantId,
-          payment.id,
-          payment.settlement_status,
-          intent.amountC,
-          refund.id,
-        );
-
-        const refundedC = await this.sumSucceededCents(m, payment.id);
-        const fullyRefunded = refundedC >= toCents(payment.amount);
-        payment.status = fullyRefunded
-          ? PaymentStatus.REFUNDED
-          : PaymentStatus.PARTIALLY_REFUNDED;
-        // Denormalise refund aggregates for the admin financial dashboard.
-        payment.refunded_amount = fromCents(refundedC);
-        payment.refund_status = fullyRefunded ? 'FULL' : 'PARTIAL';
-        payment.refunded_at = new Date();
-        await m.getRepository(Payment).save(payment);
-
-        // Phase 1.6 (plan §14) — captured for POST-commit emission below;
-        // never emitted from inside the transaction (mirrors
-        // payment-reconciliation.service.ts's own pattern).
-        recordedEvent = new RefundRecordedEvent(
-          tenantId,
-          payment.id,
-          refund.id,
-          refundedC,
-          toCents(payment.amount),
-        );
-        // REL-005: the entitlement reversal commits WITH the refund (see the
-        // same call in RefundRecoveryService). The in-process emit below stays
-        // as the fast path.
-        await enqueuePaymentOutcome(m, {
-          tenantId,
-          paymentId: payment.id,
-          outcome: PAYMENT_OUTCOME.REFUND_RECORDED,
-          refundId: refund.id,
-        });
-      }
-
-      return refund;
+      return { refund, completion: undefined as RefundCompletion | undefined };
     });
 
-    if (recordedEvent) {
-      this.emitter.emit(RefundRecordedEvent.eventName, recordedEvent);
+    this.completion.emitAfterCommit(finished.completion);
+
+    // The FAILED state is COMMITTED above, so the refusal is raised only now.
+    // (It used to be thrown inside the transaction, which rolled the FAILED row
+    // and its ledger entry back: a declined refund stayed PENDING for ever,
+    // silently holding the balance it had reserved.)
+    if (finished.completion?.status === REFUND_STATUS.FAILED) {
+      throw new AppError(ErrorCode.UNPROCESSABLE_ENTITY, {
+        message: 'Refund was declined by the gateway',
+        // Raw gateway decline text — a provider-response detail, not
+        // something we've curated as client-safe. Logs only.
+        internalContext: {
+          reason: finished.completion.failureReason ?? result.failureReason,
+          code: result.failureCode,
+        },
+      });
     }
-    return refund;
+    return finished.refund;
   }
 
   async list(tenantId: string, query: QueryRefundsDto) {
@@ -305,27 +279,6 @@ export class RefundService {
       currency: payment.currency,
       amountC,
     };
-  }
-
-  /**
-   * Exact sum (SQL `numeric`) of SUCCEEDED refunds for a payment, in integer
-   * cents. This is the actually-completed ledger total — used to derive
-   * `payment.refunded_amount`/`status` and, at completion, to re-clamp before
-   * trusting a gateway `ok` (T018). Deliberately excludes `PENDING`: a
-   * still-in-flight refund has not actually moved money yet.
-   */
-  private async sumSucceededCents(
-    m: EntityManager,
-    paymentId: string,
-  ): Promise<number> {
-    const row = await m
-      .createQueryBuilder(Refund, 'r')
-      .innerJoin('r.payment', 'p')
-      .select('COALESCE(SUM(r.amount), 0)', 'sum')
-      .where('p.id = :pid', { pid: paymentId })
-      .andWhere('r.status = :s', { s: REFUND_STATUS.SUCCEEDED })
-      .getRawOne<{ sum: string }>();
-    return toCents(row?.sum ?? 0);
   }
 
   /**

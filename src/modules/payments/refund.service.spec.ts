@@ -3,7 +3,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import { RefundService } from './refund.service';
+import { RefundService, refundOutcomeOf } from './refund.service';
+import { RefundCompletionService } from './refund-completion.service';
 import { Payment } from '../../entities/Payments/Payment';
 import { Refund } from '../../entities/Payments/Refund';
 import { PaymentStatus } from '../../entities/enums';
@@ -89,6 +90,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         RefundService,
+        RefundCompletionService,
         { provide: getRepositoryToken(Refund), useValue: refunds },
         { provide: getRepositoryToken(Payment), useValue: payments },
         { provide: DataSource, useValue: dataSource },
@@ -107,7 +109,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     payments.findOne.mockResolvedValue(paidPayment());
     refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
     refunds.save.mockImplementation(async (r: any) => r);
-    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
     sumQueue = ['0.00']; // no prior PENDING/SUCCEEDED anywhere in this payment's history
 
     const result = await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
@@ -122,7 +124,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
       payments.findOne.mockResolvedValue(paidPayment());
       refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
       refunds.save.mockImplementation(async (r: any) => r);
-      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
       // admission=0, completion re-clamp=0, final cumulative-succeeded=60.
       sumQueue = ['0.00', '0.00', '60.00'];
 
@@ -144,7 +146,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
       payments.findOne.mockResolvedValue(paidPayment());
       refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
       refunds.save.mockImplementation(async (r: any) => r);
-      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
       sumQueue = ['0.00'];
       gateway.refundPayment.mockResolvedValueOnce({ success: false, failureReason: 'declined', raw: {} });
 
@@ -184,7 +186,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     payments.findOne.mockResolvedValue(paidPayment());
     refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
     refunds.save.mockImplementation(async (r: any) => r);
-    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
     sumQueue = ['0.00'];
 
     await service.create(TENANT, { paymentId: 'pay-1', amount: 10 } as any);
@@ -202,7 +204,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     payments.findOne.mockResolvedValue(paidPayment());
     refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
     refunds.save.mockImplementation(async (r: any) => r);
-    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
     // A prior refund attempt FAILED — the admission sum must read as if it never happened.
     sumQueue = ['0.00'];
 
@@ -214,7 +216,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     payments.findOne.mockResolvedValue(paidPayment());
     refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
     refunds.save.mockImplementation(async (r: any) => r);
-    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
     // 1st call = Phase-1 admission (0 admitted yet → this 60 is let through).
     // 2nd call = Phase-3 completion re-clamp — by now another refund has ALREADY
     // succeeded for 60, so admitting this one too would total 120 > 100.
@@ -235,7 +237,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     payments.findOne.mockResolvedValue(paidPayment());
     refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
     refunds.save.mockImplementation(async (r: any) => r);
-    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
     sumQueue = ['0.00', '0.00', '60.00']; // admission, re-clamp (0 succeeded so far), ledger (after save)
 
     const result = await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
@@ -246,7 +248,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
     payments.findOne.mockResolvedValue(paidPayment());
     refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
     refunds.save.mockImplementation(async (r: any) => r);
-    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+    (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
     sumQueue = ['0.00'];
 
     await service.create(TENANT, { paymentId: 'pay-1', amount: 10 } as any);
@@ -269,7 +271,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
       payments.findOne.mockResolvedValue(paidPayment());
       refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
       refunds.save.mockImplementation(async (r: any) => r);
-      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
       sumQueue = ['0.00', '0.00', '60.00'];
 
       await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
@@ -286,6 +288,15 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
             refundId: 'rf-1',
           },
         }),
+        // …and the booking is told its payment was refunded (staff refunds never did).
+        expect.objectContaining({
+          dedupe_key: 'payment-outcome-refunded-pay-1-6000',
+          payload: {
+            tenantId: TENANT,
+            paymentId: 'pay-1',
+            outcome: 'refunded',
+          },
+        }),
       ]);
       expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
     });
@@ -294,7 +305,7 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
       payments.findOne.mockResolvedValue(paidPayment());
       refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
       refunds.save.mockImplementation(async (r: any) => r);
-      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', status: 'PENDING' });
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
       sumQueue = ['0.00'];
       gateway.refundPayment.mockResolvedValueOnce({ success: false, failureReason: 'declined', raw: {} });
 
@@ -309,6 +320,135 @@ describe('RefundService.create — FND-026 admission and re-clamp', () => {
       refunds.findOne.mockResolvedValueOnce({ id: 'rf-1', status: 'SUCCEEDED' });
       await service.create(TENANT, { paymentId: 'pay-1', amount: 60, idempotencyKey: 'k1' } as any);
       expect(outboxRows()).toEqual([]);
+    });
+  });
+
+  // ── Tap-era behaviour: asynchronous refunds, persisted failure, idempotent replay ──
+  describe('asynchronous and failed gateway outcomes', () => {
+    const arrange = (sums: string[] = ['0.00']) => {
+      payments.findOne.mockResolvedValue(paidPayment());
+      refunds.create.mockImplementation((data: any) => ({ id: 'rf-1', ...data }));
+      refunds.save.mockImplementation(async (r: any) => r);
+      (refunds as any).findOneByOrFail.mockResolvedValue({ id: 'rf-1', amount: 60, status: 'PENDING' });
+      sumQueue = sums;
+    };
+    const outboxRows = () =>
+      queryBuilders
+        .flatMap((qb) => qb.values.mock.calls.map(([row]) => row))
+        .filter((row) => row?.job_name === 'payments.outcome');
+
+    it('a PENDING gateway answer keeps the refund PENDING, stores the gateway id, and moves nothing else', async () => {
+      arrange();
+      gateway.refundPayment.mockResolvedValueOnce({
+        success: false,
+        status: 'pending',
+        gatewayRefundId: 're_tap_1',
+        failureReason: 'Refund is pending at the payment gateway',
+        raw: { id: 're_tap_1' },
+      });
+
+      const result = await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
+
+      expect(result.status).toBe('PENDING');
+      // the provider's refund id is what the webhook and the reaper find it by
+      expect(refunds.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'PENDING', gateway_refund_id: 're_tap_1' }),
+      );
+      // the payment is untouched: no status change, no aggregates, no durable outcomes, no events
+      expect(payments.save).not.toHaveBeenCalled();
+      expect(outboxRows()).toEqual([]);
+      expect(emitter.emit).not.toHaveBeenCalled();
+      // …and the ledger says what the gateway said
+      expect(transactions.record).toHaveBeenCalledWith(
+        TENANT,
+        'pay-1',
+        expect.objectContaining({ type: 'refund', status: 'pending' }),
+        manager,
+      );
+    });
+
+    it('an UNKNOWN answer (outage / timeout) is never a failure: the refund stays PENDING', async () => {
+      arrange();
+      gateway.refundPayment.mockResolvedValueOnce({
+        success: false,
+        status: 'unknown',
+        failureReason: 'Payment gateway is temporarily unavailable',
+      });
+
+      const result = await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
+
+      expect(result.status).toBe('PENDING');
+      expect(refunds.save).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'FAILED' }));
+      expect(outboxRows()).toEqual([]);
+    });
+
+    it('a DECLINE is COMMITTED as FAILED before the error is raised (it used to roll back and stay PENDING)', async () => {
+      arrange();
+      gateway.refundPayment.mockResolvedValueOnce({
+        success: false,
+        status: 'failed',
+        failureReason: 'Refund was rejected by the payment gateway',
+        failureCode: '1161',
+      });
+      const order: string[] = [];
+      refunds.save.mockImplementation(async (r: any) => {
+        if (r.status === 'FAILED') order.push('saved-failed');
+        return r;
+      });
+      const realTransaction = dataSource.transaction.getMockImplementation()!;
+      dataSource.transaction.mockImplementation(async (cb: any) => {
+        const out = await realTransaction(cb);
+        order.push('committed');
+        return out;
+      });
+
+      await expect(
+        service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any),
+      ).rejects.toMatchObject({ code: ErrorCode.UNPROCESSABLE_ENTITY });
+
+      // FAILED was written inside the Phase-3 transaction, and that transaction
+      // committed — the refusal came after, so nothing was rolled back.
+      expect(order.indexOf('saved-failed')).toBeGreaterThan(-1);
+      expect(order.lastIndexOf('committed')).toBeGreaterThan(order.indexOf('saved-failed'));
+      expect(transactions.record).toHaveBeenCalledWith(
+        TENANT,
+        'pay-1',
+        expect.objectContaining({ type: 'refund', status: 'failed' }),
+        manager,
+      );
+      expect(payments.save).not.toHaveBeenCalled(); // the payment is untouched by a failed refund
+    });
+
+    it('does not apply twice when a webhook already finished the refund while the gateway call was in flight', async () => {
+      arrange();
+      (refunds as any).findOneByOrFail.mockResolvedValue({
+        id: 'rf-1',
+        amount: 60,
+        status: 'SUCCEEDED',
+        gateway_refund_id: 're_tap_1',
+      });
+
+      const result = await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
+
+      expect(result.status).toBe('SUCCEEDED');
+      expect(refunds.save).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCEEDED' }));
+      expect(outboxRows()).toEqual([]);
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('a provider that predates status (legacy Moyasar: only success) still maps true to succeeded, false to failed', () => {
+      expect(refundOutcomeOf({ success: true })).toBe('succeeded');
+      expect(refundOutcomeOf({ success: false })).toBe('failed');
+      expect(refundOutcomeOf({ success: false, status: 'pending' })).toBe('pending');
+      expect(refundOutcomeOf({ success: true, status: 'succeeded' })).toBe('succeeded');
+    });
+
+    it('passes the refund id to the gateway (the per-refund idempotency key)', async () => {
+      arrange();
+      await service.create(TENANT, { paymentId: 'pay-1', amount: 60 } as any);
+      expect(gateway.refundPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ refundId: 'rf-1', paymentId: 'pay-1' }),
+      );
     });
   });
 });

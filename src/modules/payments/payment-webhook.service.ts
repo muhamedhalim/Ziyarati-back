@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -19,10 +19,15 @@ import { PaymentFinancialsService } from './payment-financials.service';
 import { InvoiceSettlementService } from '../subscription-billing/invoice-settlement.service';
 import {
   REFUND_STATUS,
+  RECONCILIATION_KIND,
   TRANSACTION_TYPE,
   isUuid,
   round2,
 } from './payments.constants';
+import {
+  RaiseExceptionInput,
+  ReconciliationExceptionService,
+} from './reconciliation/reconciliation-exception.service';
 import {
   PAYMENT_OUTCOME,
   enqueuePaymentOutcome,
@@ -114,6 +119,10 @@ export class PaymentWebhookService {
     private readonly audit: PlatformAdminAuditService,
     private readonly emitter: EventEmitter2,
     private readonly settlement: InvoiceSettlementService,
+    // Optional: recording a discrepancy is bookkeeping, never a reason for a
+    // webhook to fail (and a unit under test that does not care need not supply it).
+    @Optional()
+    private readonly exceptions?: ReconciliationExceptionService,
   ) {}
 
   async handleMoyasar(
@@ -218,6 +227,9 @@ export class PaymentWebhookService {
     // PaymentRefundedEvent above (two different events, two different
     // consumer sets), so it cannot share the single pendingEvent slot.
     let pendingRefundRecordedEvent: RefundRecordedEvent | null = null;
+    // A captured amount that is not ours to book: recorded for a human AFTER the
+    // transaction (it writes to its own table, on its own connection).
+    let mismatch: RaiseExceptionInput | null = null;
 
     // 4. Apply state idempotently under a row lock.
     const result = await this.dataSource.transaction(async (manager) => {
@@ -364,6 +376,21 @@ export class PaymentWebhookService {
           this.logger.error(
             `Webhook 'paid' for payment ${payment.id} rejected: captured amount/currency mismatch`,
           );
+          mismatch = {
+            kind: RECONCILIATION_KIND.AMOUNT_MISMATCH,
+            provider: event.provider,
+            objectId: gatewayPaymentId,
+            tenantId,
+            paymentId: payment.id,
+            details: {
+              source: 'webhook',
+              expectedAmountCents: Math.round(Number(payment.amount) * 100),
+              expectedCurrency: payment.currency,
+              reportedAmountCents: event.capturedMinorUnits ?? null,
+              reportedCurrency: event.capturedCurrency ?? null,
+              paymentStatus: payment.status,
+            },
+          };
         }
       } else if (
         target === 'failed' &&
@@ -409,6 +436,9 @@ export class PaymentWebhookService {
         RefundRecordedEvent.eventName,
         pendingRefundRecordedEvent,
       );
+    }
+    if (mismatch && !result.deduplicated) {
+      await this.exceptions?.raiseQuietly(mismatch);
     }
 
     return {

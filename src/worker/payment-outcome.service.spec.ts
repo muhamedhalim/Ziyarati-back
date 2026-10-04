@@ -32,6 +32,7 @@ describe('PaymentOutcomeService (REL-005)', () => {
     applyFailed: jest.Mock;
     applyRefund: jest.Mock;
   };
+  let exceptions: { checkDuplicateBookingCapture: jest.Mock };
 
   const withPayment = (over: Partial<PaymentShape> = {}) => {
     payments.findOne.mockResolvedValueOnce({
@@ -70,12 +71,16 @@ describe('PaymentOutcomeService (REL-005)', () => {
       applyFailed: jest.fn().mockResolvedValue(undefined),
       applyRefund: jest.fn().mockResolvedValue(undefined),
     };
+    exceptions = {
+      checkDuplicateBookingCapture: jest.fn().mockResolvedValue(0),
+    };
     service = new PaymentOutcomeService(
       dataSource as never,
       appointments as never,
       billing as never,
       resources as never,
       paymentLinks as never,
+      exceptions as never,
     );
   });
 
@@ -343,6 +348,56 @@ describe('PaymentOutcomeService (REL-005)', () => {
       await service.process(job());
       await service.process(job());
       expect(resources.applyPaid).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('duplicate-capture check (Tap Phase 5)', () => {
+    it('after a BOOKING payment is applied, asks whether the booking now has two live captures', async () => {
+      withPayment();
+      await service.process(job());
+      expect(exceptions.checkDuplicateBookingCapture).toHaveBeenCalledWith(
+        PAYMENT_ID,
+      );
+    });
+
+    it('not for a failed payment, a refund outcome, or an add-on', async () => {
+      withPayment({ status: PaymentStatus.FAILED });
+      await service.process(job({ outcome: 'failed' }));
+      withPayment({ status: PaymentStatus.REFUNDED });
+      await service.process(job({ outcome: 'refunded' }));
+      withPayment({ purpose: 'ADDON', appointment: undefined });
+      await service.process(job());
+      expect(exceptions.checkDuplicateBookingCapture).not.toHaveBeenCalled();
+    });
+
+    it('a check that blows up never fails the outcome it rides on (the booking is already confirmed)', async () => {
+      exceptions.checkDuplicateBookingCapture.mockRejectedValue(
+        new Error('db hiccup'),
+      );
+      withPayment();
+
+      await expect(service.process(job())).resolves.toMatchObject({
+        applied: true,
+      });
+      expect(appointments.applyPaymentOutcome).toHaveBeenCalledWith(
+        TENANT,
+        APPOINTMENT,
+        'paid',
+      );
+    });
+
+    it('is optional: a consumer built without the exception service still applies the outcome', async () => {
+      const bare = new PaymentOutcomeService(
+        dataSource as never,
+        appointments as never,
+        billing as never,
+        resources as never,
+        paymentLinks as never,
+      );
+      withPayment();
+      await expect(bare.process(job())).resolves.toMatchObject({
+        applied: true,
+      });
     });
   });
 });

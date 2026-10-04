@@ -65,6 +65,20 @@ describe('Tap webhook — POST /payments/webhooks/tap (real Postgres, stubbed Ta
     string,
     Charge | { transient: true } | { notFound: true }
   >();
+  /** What "Tap" answers to GET /v2/refunds/{id}; keyed by refund id. */
+  const tapRefunds = new Map<string, Record<string, unknown>>();
+  const getRefund = jest.fn(async (id: string) => {
+    const answer = tapRefunds.get(id);
+    return answer
+      ? { ok: true, status: 200, json: answer, transient: false }
+      : {
+          ok: false,
+          status: 404,
+          json: {},
+          transient: false,
+          errorCode: '1142',
+        };
+  });
   const getCharge = jest.fn(async (id: string) => {
     const answer = tapCharges.get(id);
     if (!answer)
@@ -89,7 +103,7 @@ describe('Tap webhook — POST /payments/webhooks/tap (real Postgres, stubbed Ta
         getCharge,
         createCharge: jest.fn(),
         createRefund: jest.fn(),
-        getRefund: jest.fn(),
+        getRefund,
       }),
     );
     tenant = await createOwnerFixture(e2e, 'tap-webhook');
@@ -106,7 +120,9 @@ describe('Tap webhook — POST /payments/webhooks/tap (real Postgres, stubbed Ta
 
   beforeEach(() => {
     tapCharges.clear();
+    tapRefunds.clear();
     getCharge.mockClear();
+    getRefund.mockClear();
   });
 
   const db = () => e2e.dataSource;
@@ -504,7 +520,7 @@ describe('Tap webhook — POST /payments/webhooks/tap (real Postgres, stubbed Ta
   });
 
   describe('other objects', () => {
-    it('a validly-signed REFUND webhook is acknowledged and logged but not applied yet', async () => {
+    it('a validly-signed REFUND webhook is re-fetched from Tap (never the charge) and applied; the body alone decides nothing', async () => {
       const p = await seedPayment({
         status: PaymentStatus.PAID,
         paid_at: new Date(),
@@ -519,17 +535,39 @@ describe('Tap webhook — POST /payments/webhooks/tap (real Postgres, stubbed Ta
         created: String(Date.now()),
         reference: { gateway: 'RGW', payment: 'RPAY' },
       };
+      // Tap itself still says PENDING: the signed body's "REFUNDED" is only a pointer.
+      tapRefunds.set(refund.id, { ...refund, status: 'PENDING' });
+      const first = await post(refund).expect(200);
+      expect(first.body).toMatchObject({ accepted: true, matched: true });
+      expect((await reload(p.id)).status).toBe(PaymentStatus.PAID); // not applied
+
+      // Once Tap says REFUNDED, a refund we have no row for (issued outside ZiyaraTech) is booked.
+      tapRefunds.set(refund.id, refund);
       const res = await post(refund).expect(200);
-      expect(res.body).toEqual({ accepted: true, matched: false });
-      expect((await reload(p.id)).status).toBe(PaymentStatus.PAID); // unchanged
+      expect(res.body).toMatchObject({ accepted: true, matched: true });
+      expect((await reload(p.id)).status).toBe(
+        PaymentStatus.PARTIALLY_REFUNDED,
+      );
+      expect(getRefund).toHaveBeenCalledWith(refund.id);
       expect(getCharge).not.toHaveBeenCalled();
       const logs = await logRows(refund.id);
-      expect(logs).toHaveLength(1);
-      expect(logs[0]).toMatchObject({
-        source: 'tap',
-        event_type: 'refund.refunded',
-        status: 'SUCCESS',
-      });
+      expect(logs.length).toBeGreaterThanOrEqual(1);
+      expect(logs[0]).toMatchObject({ source: 'tap', status: 'SUCCESS' });
+    });
+
+    it('a refund webhook for a charge we have never heard of is accepted and ignored (nothing to apply)', async () => {
+      const refund = {
+        id: `re_${randomUUID()}`,
+        object: 'refund',
+        status: 'REFUNDED',
+        amount: 10,
+        currency: 'SAR',
+        charge_id: `chg_${randomUUID()}`,
+        created: String(Date.now()),
+      };
+      tapRefunds.set(refund.id, refund);
+      const res = await post(refund).expect(200);
+      expect(res.body).toEqual({ accepted: true, matched: false });
     });
 
     it('a refund webhook with a bad signature is rejected like any other', async () => {

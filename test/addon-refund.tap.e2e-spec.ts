@@ -2,12 +2,12 @@
  * Tap migration, Phase 2 gate — the add-on refund-reversal suite
  * (`addon-refund.e2e-spec.ts`) ported to TAP.
  *
- * Scope note. The legacy suite drives three emission paths. For Tap, only the
- * real `POST /refunds` HTTP path is live in Phase 2: Tap refund WEBHOOKS are
- * verified and logged but deliberately not applied until Phase 5 (a Tap refund
- * can be asynchronous, and `RefundService` cannot yet represent a PENDING one).
- * So the webhook-driven cases are not ported; instead this suite pins the
- * CURRENT safe behaviour of an asynchronous refund — nothing is revoked.
+ * Scope note. The legacy suite drives three emission paths. For Tap, Phase 2 had
+ * only the real `POST /refunds` HTTP path; Phase 5 makes a Tap refund first-class
+ * (a PENDING one is represented, and the signed refund webhook / the reaper
+ * complete it), so the last case below now proves an ASYNCHRONOUS refund revokes
+ * the add-on only WHEN it completes — never while it is merely accepted.
+ * The full refund matrix over Tap lives in `refund.tap.e2e-spec.ts`.
  *
  * Real Postgres + Redis + AppModule; only Tap's network is stubbed.
  */
@@ -223,10 +223,10 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     expect(revokes.length).toBe(1);
   });
 
-  // The CURRENT, deliberately-safe behaviour for an asynchronous Tap refund
-  // (Phase 5 will make it first-class). Pinned here so nobody enables Tap
-  // refunds believing they work end to end.
-  it('an ASYNCHRONOUS (PENDING) Tap refund revokes NOTHING and does not mark the payment refunded', async () => {
+  // Phase 5: an asynchronous Tap refund is first-class. While it is only
+  // ACCEPTED (PENDING) nothing is revoked and the payment is not refunded; when
+  // Tap completes it (signed webhook, re-fetched) the add-on is revoked once.
+  it('an ASYNCHRONOUS (PENDING) Tap refund revokes NOTHING until it completes, then revokes exactly once', async () => {
     const owner = await createSubscribedOwnerFixture(
       e2e,
       'tap-refund-pending',
@@ -235,14 +235,32 @@ describe('Add-on refund reversal over TAP (plan §14/§24) — real Postgres', (
     const purchase = await createAndPay(owner.token, 2);
     tap.refundStatus = 'PENDING';
 
-    const res = await refund(owner.token, purchase.payment!.id);
+    const res = await refund(owner.token, purchase.payment!.id).expect(201);
     await settle();
 
-    expect(res.status).toBeGreaterThanOrEqual(400); // refused, not silently "done"
-    expect(await capacityFor(owner.tenantId)).toBe(2); // nothing revoked
+    expect(res.body.status).toBe('PENDING'); // accepted, not done
+    expect(await capacityFor(owner.tenantId)).toBe(2); // nothing revoked yet
     expect((await purchaseOf(purchase.id)).status).toBe('completed');
     expect((await paymentOf(purchase.payment!.id)).status).toBe(
       PaymentStatus.PAID,
     );
+
+    // Tap completes the refund and posts it (the app re-fetches before trusting it)
+    const tapRefund = tap.lastRefund();
+    tap.setRefundStatus(tapRefund.id, 'REFUNDED');
+    await tap.deliverRefund(e2e.app, tapRefund).expect(200);
+    await tap.deliverRefund(e2e.app, tapRefund).expect(200); // a redelivery is harmless
+    await settle();
+
+    expect(await capacityFor(owner.tenantId)).toBe(0);
+    expect((await purchaseOf(purchase.id)).status).toBe('refunded');
+    expect((await paymentOf(purchase.payment!.id)).status).toBe(
+      PaymentStatus.REFUNDED,
+    );
+    const revokes = await e2e.dataSource.query(
+      `SELECT id FROM tenant_entitlement_ledger WHERE "sourcePurchaseId" = $1 AND direction = 'revoke'`,
+      [purchase.id],
+    );
+    expect(revokes.length).toBe(1);
   });
 });

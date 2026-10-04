@@ -89,6 +89,62 @@ export const REFUND_STATUS = {
   FAILED: 'FAILED',
 } as const;
 
+/**
+ * What a reconciliation exception is ABOUT (`payment_reconciliation_exceptions.kind`,
+ * free-form varchar so a new kind never needs an ALTER). Each one is a discrepancy
+ * between what the gateway says happened and what we recorded — surfaced to a
+ * human, never "fixed" by moving money.
+ */
+export const RECONCILIATION_KIND = {
+  /** Two live captures for one booking / invoice: the payer was charged twice. */
+  DUPLICATE_CAPTURE: 'DUPLICATE_CAPTURE',
+  /** The gateway captured a different amount / currency than we expected. */
+  AMOUNT_MISMATCH: 'AMOUNT_MISMATCH',
+  /** Captured at the gateway, but our record says it is not paid (or the reverse). */
+  STATUS_MISMATCH: 'STATUS_MISMATCH',
+  /** The gateway holds a capture we have no record of. */
+  UNKNOWN_CHARGE: 'UNKNOWN_CHARGE',
+  /** We booked a charge as paid that the gateway's report does not contain. */
+  MISSING_AT_PROVIDER: 'MISSING_AT_PROVIDER',
+  /** The gateway's fee changed after it was recorded, or its own figures disagree. */
+  FEE_MISMATCH: 'FEE_MISMATCH',
+  /** A payout does not equal the net of the charges it paid out. */
+  SETTLEMENT_MISMATCH: 'SETTLEMENT_MISMATCH',
+  /** A gateway refund object that does not match our refund row (charge / amount / currency). */
+  REFUND_MISMATCH: 'REFUND_MISMATCH',
+  /** The gateway's reporting API would not answer for a merchant with our credentials. */
+  REPORTS_UNREACHABLE: 'REPORTS_UNREACHABLE',
+} as const;
+
+export type ReconciliationKind =
+  (typeof RECONCILIATION_KIND)[keyof typeof RECONCILIATION_KIND];
+
+export const RECONCILIATION_EXCEPTION_STATUS = {
+  OPEN: 'OPEN',
+  RESOLVED: 'RESOLVED',
+  IGNORED: 'IGNORED',
+} as const;
+
+/** Tunables of the provider reconciliation (not env: they are correctness bounds, not deployment choices). */
+export const PROVIDER_RECONCILIATION = {
+  /** The daily sweep re-reads this many days, so a late-arriving charge or payout is still caught. */
+  DAILY_LOOKBACK_DAYS: 3,
+  /** The weekly sweep re-reads Tap's whole documented reporting window. */
+  WEEKLY_LOOKBACK_DAYS: 30,
+  /** Tap's list / download APIs accept at most a 30-day period. */
+  MAX_WINDOW_DAYS: 30,
+  /** A charge younger than this is never judged "missing" / "mismatched": webhooks and the sweep may not have landed yet. */
+  SETTLE_GRACE_MS: 2 * 60 * 60_000,
+  /** Money comparisons are in integer cents; one cent absorbs a rounding difference in the gateway's own figures. */
+  TOLERANCE_CENTS: 1,
+  /** Bounds a runaway pagination loop. */
+  MAX_REPORT_PAGES: 50,
+  /** Rows asked per report page. */
+  REPORT_PAGE_SIZE: 1000,
+  /** The largest manual report import, in characters. */
+  MAX_IMPORT_CHARS: 2_000_000,
+} as const;
+
 /** PaymentLink.status values (free-form string column). */
 export const PAYMENT_LINK_STATUS = {
   ACTIVE: 'ACTIVE',

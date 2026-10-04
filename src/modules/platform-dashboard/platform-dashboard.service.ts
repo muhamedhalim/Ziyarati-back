@@ -3,7 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 
 import { TenantApprovalStatus } from '../../entities/enums';
-import { round2 } from '../payments/payments.constants';
+import {
+  CLINIC_REVENUE_PURPOSES,
+  round2,
+} from '../payments/payments.constants';
 import { QueueService } from '../../queue/queue.service';
 import { MonitoringService } from '../platform-monitoring/monitoring.service';
 import { SupportTicketService } from '../support-tickets/support-ticket.service';
@@ -727,8 +730,9 @@ export class PlatformDashboardService {
          COUNT(*) FILTER (WHERE status = 'FAILED' AND created_at >= $3 AND created_at < $4)::int AS failed_prev,
          COUNT(DISTINCT "tenantId") FILTER (WHERE status = 'PAID' AND paid_at >= $1 AND paid_at < $2)::int AS paying_cur,
          COUNT(DISTINCT "tenantId") FILTER (WHERE status = 'PAID' AND paid_at >= $3 AND paid_at < $4)::int AS paying_prev
-       FROM payments`,
-      [r.from, r.to, r.previousFrom, r.previousTo],
+       FROM payments
+      WHERE purpose = ANY($5)`,
+      [r.from, r.to, r.previousFrom, r.previousTo, [...CLINIC_REVENUE_PURPOSES]],
     );
     return row ?? {};
   }
@@ -736,10 +740,12 @@ export class PlatformDashboardService {
   private async refundPeriodMetrics(r: ResolvedRange) {
     const [row] = await this.dataSource.query(
       `SELECT
-         COALESCE(SUM(amount) FILTER (WHERE created_at >= $1 AND created_at < $2), 0) AS cur,
-         COALESCE(SUM(amount) FILTER (WHERE created_at >= $3 AND created_at < $4), 0) AS prev
-       FROM refunds WHERE status = 'SUCCEEDED'`,
-      [r.from, r.to, r.previousFrom, r.previousTo],
+         COALESCE(SUM(rf.amount) FILTER (WHERE rf.created_at >= $1 AND rf.created_at < $2), 0) AS cur,
+         COALESCE(SUM(rf.amount) FILTER (WHERE rf.created_at >= $3 AND rf.created_at < $4), 0) AS prev
+       FROM refunds rf
+       JOIN payments rp ON rp.id = rf."paymentId"
+      WHERE rf.status = 'SUCCEEDED' AND rp.purpose = ANY($5)`,
+      [r.from, r.to, r.previousFrom, r.previousTo, [...CLINIC_REVENUE_PURPOSES]],
     );
     return row ?? {};
   }
@@ -754,9 +760,10 @@ export class PlatformDashboardService {
   private async currenciesInRange(r: ResolvedRange): Promise<string[]> {
     const rows = await this.dataSource.query(
       `SELECT DISTINCT currency FROM payments
-        WHERE status = 'PAID' AND currency IS NOT NULL AND paid_at >= $1 AND paid_at < $2
+        WHERE status = 'PAID' AND purpose = ANY($3) AND currency IS NOT NULL
+          AND paid_at >= $1 AND paid_at < $2
         ORDER BY currency`,
-      [r.from, r.to],
+      [r.from, r.to, [...CLINIC_REVENUE_PURPOSES]],
     );
     return rows.map((x: { currency: string }) => x.currency);
   }
@@ -809,10 +816,11 @@ export class PlatformDashboardService {
            FROM buckets
            LEFT JOIN payments p
              ON p.status = 'PAID'
+            AND p.purpose = ANY($3)
             AND p.paid_at >= b AND p.paid_at < b + interval '${step}'
             AND p.paid_at >= $1 AND p.paid_at < $2
           GROUP BY b ORDER BY b`,
-        [r.from, r.to],
+        [r.from, r.to, [...CLINIC_REVENUE_PURPOSES]],
       ),
     ]);
 

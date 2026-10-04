@@ -79,6 +79,17 @@ export const PLATFORM_ADMIN_AUDIT_ACTION = {
   SALES_BONUS_VOIDED: 'platform_admin.sales.bonus_voided',
   SALES_ACTIVITY_LOGGED: 'platform_admin.sales.activity_logged',
   SALES_ACTIVITY_DELETED: 'platform_admin.sales.activity_deleted',
+  // Tap migration (Phase 5) — the platform's own refunds and the reconciliation
+  // queue. `platform_admin.%` so they surface in the Super Admin activity feed.
+  SUBSCRIPTION_REFUND_REQUESTED: 'platform_admin.subscription.refund_requested',
+  SUBSCRIPTION_REFUNDED: 'platform_admin.subscription.refunded',
+  SUBSCRIPTION_REFUND_FAILED: 'platform_admin.subscription.refund_failed',
+  RECONCILIATION_EXCEPTION_RESOLVED:
+    'platform_admin.reconciliation.exception_resolved',
+  RECONCILIATION_EXCEPTION_IGNORED:
+    'platform_admin.reconciliation.exception_ignored',
+  RECONCILIATION_REPORT_IMPORTED:
+    'platform_admin.reconciliation.report_imported',
 } as const;
 
 export type PlatformAdminAuditAction =

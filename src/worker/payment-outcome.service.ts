@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { DataSource } from 'typeorm';
 
@@ -11,6 +11,7 @@ import { ResourceEntitlementListener } from '../modules/resource-pricing/resourc
 import { PAYMENT_PURPOSE } from '../modules/payments/payments.constants';
 import { PaymentLinkService } from '../modules/payments/payment-link.service';
 import { PAYMENT_OUTCOME } from '../modules/payments/payment-outcome.outbox';
+import { ReconciliationExceptionService } from '../modules/payments/reconciliation/reconciliation-exception.service';
 
 export type PaymentOutcomeResult =
   | {
@@ -57,6 +58,10 @@ export class PaymentOutcomeService {
     private readonly billingUpgrades: BillingUpgradeEntitlementListener,
     private readonly resources: ResourceEntitlementListener,
     private readonly paymentLinks: PaymentLinkService,
+    // Optional: a duplicate-capture check is bookkeeping and must never fail the
+    // outcome it rides on.
+    @Optional()
+    private readonly exceptions?: ReconciliationExceptionService,
   ) {}
 
   async process(job: PaymentsOutcomeJob): Promise<PaymentOutcomeResult> {
@@ -140,7 +145,22 @@ export class PaymentOutcomeService {
           appointmentId,
         );
         consumers.push('payment-link');
+        // Two live captures for this booking means the payer was charged twice. Noticed
+        // here, within seconds of the second one being applied, rather than at the next
+        // daily report. Recorded for a human to refund; nothing is moved.
+        await this.noticeDuplicateCapture(payment.id);
       }
+    }
+  }
+
+  private async noticeDuplicateCapture(paymentId: string): Promise<void> {
+    if (!this.exceptions) return;
+    try {
+      await this.exceptions.checkDuplicateBookingCapture(paymentId);
+    } catch (err) {
+      this.logger.warn(
+        `Duplicate-capture check failed for payment ${paymentId}: ${(err as Error).message}`,
+      );
     }
   }
 

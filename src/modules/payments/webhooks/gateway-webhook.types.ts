@@ -58,3 +58,31 @@ export interface GatewayWebhookEvent {
   /** Sanitised payload persisted on the append-only ledger. NEVER contains secrets. */
   raw: Record<string, any>;
 }
+
+/**
+ * Provider-NEUTRAL refund event, for gateways whose refunds are PER-REFUND
+ * objects with their own lifecycle (Tap). Moyasar reports a cumulative refunded
+ * total on the PAYMENT event instead, and keeps using `GatewayWebhookEvent`.
+ *
+ * Built from a refund the handler has RE-FETCHED from the gateway, never from
+ * the posted body alone. Tenant is NEVER carried: it comes from our own rows.
+ */
+export interface GatewayRefundEvent {
+  provider: string;
+  /** The gateway's refund id (`Refund.gateway_refund_id`). */
+  gatewayRefundId: string;
+  /** The gateway id of the PAYMENT this refund is against (`Payment.gateway_payment_id`). */
+  gatewayPaymentId?: string;
+  outcome: 'succeeded' | 'failed' | 'pending' | 'unknown';
+  /** This refund's amount, in the domain's cents. */
+  amountMinorUnits?: number;
+  currency?: string;
+  /** Synthetic stable key: `tap:{refundId}:{STATUS}`. Redelivery is a no-op. */
+  dedupeKey: string;
+  eventLabel: string;
+  /** Our Refund id, when the gateway echoes the `reference.merchant` we sent. */
+  correlationId?: string;
+  failureReason?: string;
+  /** Sanitised payload persisted on the append-only ledger. NEVER contains secrets. */
+  raw: Record<string, any>;
+}

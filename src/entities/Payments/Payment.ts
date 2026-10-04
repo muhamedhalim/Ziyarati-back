@@ -154,6 +154,10 @@ idempotency_key?: string;
   @Column({ type: 'timestamptz', nullable: true })
   fees_reconciled_at?: Date | null;
 
+  /** The gateway payout (Tap `payout_…`) that paid this charge out to the merchant, once known. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  provider_payout_id?: string | null;
+
   /** Gateway merchant identifiers (marketplace split context), when provided. */
   @Column({ nullable: true })
   merchant_id?: string;

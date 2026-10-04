@@ -44,6 +44,7 @@ import { ResourceEntitlementListener } from '../src/modules/resource-pricing/res
 import { BillingUpgradeEntitlementListener } from '../src/modules/billing-upgrades/billing-upgrade-entitlement.listener';
 import { AppointmentsService } from '../src/modules/appointment/appointment.service';
 import { PaymentOutcomeService } from '../src/worker/payment-outcome.service';
+import { ProviderReconciliationService } from '../src/modules/payments/reconciliation/provider-reconciliation.service';
 import { PaymentsProcessor } from '../src/worker/processors/payments.processor';
 import { OutboxRelayService } from '../src/worker/outbox-relay.service';
 import { DistributedLockService } from '../src/queue/distributed-lock.service';
@@ -110,6 +111,7 @@ describe('Payments â€” finance classification & durable outcomes (Tap Phase 2) â
     );
     const processor = new PaymentsProcessor(
       get(PaymentReconciliationService),
+      get(ProviderReconciliationService),
       outcome,
       get(DistributedLockService),
       get(MetricsService),

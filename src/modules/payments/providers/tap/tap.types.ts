@@ -134,6 +134,43 @@ export interface TapConnect {
   [key: string]: unknown;
 }
 
+/** `POST /v2/charges/list` result. */
+export interface TapChargeList {
+  object?: string;
+  count?: number;
+  has_more?: boolean;
+  charges?: TapCharge[];
+  [key: string]: unknown;
+}
+
+/**
+ * One payout in `POST /v2/payouts/list`. The `wallet.bank.beneficiary.iban` the
+ * response also carries is deliberately NOT modelled: ZiyaraTech never stores or
+ * reads a clinic's IBAN (Tap's hosted pages hold it).
+ */
+export interface TapPayout {
+  id: string;
+  /** `PAID_OUT` is the documented example; the full list is not published. */
+  status?: string;
+  /** Unix milliseconds. */
+  date?: number | string;
+  /** Documented as an integer in the schema; treated as the currency's MAJOR unit (UNVERIFIED — see the Phase 5 doc). */
+  amount?: number | string;
+  currency?: string;
+  merchant_id?: string;
+  bank_reference?: string;
+  settlements_available?: boolean;
+  [key: string]: unknown;
+}
+
+export interface TapPayoutList {
+  object?: string;
+  count?: number;
+  has_more?: boolean;
+  payouts?: TapPayout[];
+  [key: string]: unknown;
+}
+
 /** A Tap webhook body IS the object itself (charge/refund/…) — there is no envelope and no event id. */
 export type TapWebhookPayload = TapCharge | TapRefund;
 

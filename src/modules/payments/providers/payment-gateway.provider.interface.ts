@@ -148,6 +148,17 @@ export interface GatewayPaymentResult {
   raw?: Record<string, any>;
 }
 
+/**
+ * Answer to "does the gateway hold a payment for this reference of ours?" — what
+ * the sweep for payments whose gateway id was never stored (REL-002) asks.
+ * `not_found` is only ever a POSITIVE answer (the gateway answered, with nothing);
+ * anything that could be an outage or a permissions gap is `unknown`.
+ */
+export type GatewayLookupResult =
+  | { status: 'found'; result: GatewayPaymentResult }
+  | { status: 'not_found' }
+  | { status: 'unknown' };
+
 export interface GatewayRefundRequest {
   tenantId: string;
   paymentId: string;
@@ -174,7 +185,19 @@ export interface GatewayRefundResult {
    */
   status?: 'pending' | 'succeeded' | 'failed' | 'unknown';
   gatewayRefundId?: string;
+  /** User-safe text. The provider's own wording is never forwarded (FND-030). */
   failureReason?: string;
+  /** Provider response code behind a failure — for logs/audit, never shown to users. */
+  failureCode?: string;
+  /**
+   * What the provider says the refund is FOR — returned by `verifyRefund` so the
+   * domain can confirm a refund object really belongs to the payment and amount
+   * it is about to be booked against, instead of trusting an id alone.
+   */
+  gatewayPaymentId?: string;
+  /** Refunded amount in the domain's cents (`round(major × 100)`). */
+  amountMinorUnits?: number;
+  currency?: string;
   raw?: Record<string, any>;
 }
 
@@ -208,6 +231,26 @@ export interface PaymentGatewayProvider {
   createPayment(request: GatewayCreatePaymentRequest): Promise<GatewayPaymentResult>;
   verifyPayment(gatewayPaymentId: string): Promise<GatewayPaymentResult>;
   refundPayment(request: GatewayRefundRequest): Promise<GatewayRefundResult>;
+
+  /**
+   * Looks ONE refund up by the provider's own refund id. Gateways whose refunds
+   * are asynchronous (Tap) implement it: the refund reaper and the refund
+   * webhook use it to learn the refund's real outcome. A gateway without it
+   * (legacy Moyasar) keeps the old behaviour — the reaper infers the refund from
+   * the payment's cumulative refunded total.
+   *
+   * `unknown` (transport error, 5xx, 429, an unmapped status) is NEVER a failure:
+   * a refund that may have been paid out must not be marked failed on a guess.
+   */
+  verifyRefund?(gatewayRefundId: string): Promise<GatewayRefundResult>;
+
+  /**
+   * Looks a payment up by the reference WE sent (`reference.transaction` = our
+   * Payment id) instead of by the gateway's id. Used for a payment whose create
+   * call succeeded at the gateway but whose id we never persisted (REL-002): if
+   * its webhook is lost too, this is the only way to learn it was paid.
+   */
+  findPaymentByReference?(paymentId: string): Promise<GatewayLookupResult>;
 }
 
 /** DI token for the array of registered gateway providers. */
