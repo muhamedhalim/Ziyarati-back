@@ -425,6 +425,32 @@ describe('TapOnboardingService.start', () => {
       expect(merchants.releaseTapOnboardingClaim).toHaveBeenCalledWith('m1');
     });
 
+    it('a Connect answered HTTP 200 with an `errors` body is a failure (observed in the real sandbox: an unknown lead id → 200 + code 7016)', async () => {
+      const { service, merchants } = build({
+        connect: {
+          ok: true,
+          status: 200,
+          transient: false,
+          errorCode: '7016',
+          errorDescription: 'Invalid lead_id',
+          json: {
+            errors: [
+              {
+                code: '7016',
+                error: 'Invalid_Id',
+                description: 'Invalid lead_id',
+              },
+            ],
+          },
+        },
+      });
+      await expect(service.start(TENANT, USER)).rejects.toMatchObject({
+        code: ErrorCode.UNPROCESSABLE_ENTITY,
+      });
+      expect(merchants.recordTapOnboardingStarted).not.toHaveBeenCalled();
+      expect(merchants.releaseTapOnboardingClaim).toHaveBeenCalledWith('m1');
+    });
+
     it.each([
       ['http://insecure.tap.test/x', 'plain http'],
       ['javascript:alert(1)', 'a script URL'],

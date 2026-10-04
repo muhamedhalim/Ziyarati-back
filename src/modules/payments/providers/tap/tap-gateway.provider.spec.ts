@@ -170,13 +170,72 @@ describe('TapGatewayProvider', () => {
     });
 
     describe('Tap Platform routing', () => {
+      /** What Tap answers for a clinic charge — `merchant` is the account the charge belongs to. */
+      const chargeOwnedBy = (merchant?: string) =>
+        ok({
+          id: 'chg_1',
+          status: 'INITIATED',
+          reference: { transaction: '11111111-1111-4111-8111-111111111111' },
+          transaction: { url: 'https://checkout.payments.tap.company?t=T' },
+          ...(merchant ? { merchant: { id: merchant } } : {}),
+        });
+      const clinicRequest = () =>
+        request({ payee: 'clinic', settlementMerchantId: 'merchant_CLINIC' });
+
       it("charges on the clinic's behalf: merchant = clinic, platform = ours", async () => {
-        await build().createPayment(
-          request({ payee: 'clinic', settlementMerchantId: 'merchant_CLINIC' }),
+        client.createCharge.mockResolvedValueOnce(
+          chargeOwnedBy('merchant_CLINIC'),
         );
+        const res = await build().createPayment(clinicRequest());
         const body = client.createCharge.mock.calls[0][0];
         expect(body.merchant).toEqual({ id: 'merchant_CLINIC' });
         expect(body.platform).toEqual({ id: 'commerce_platform_1' });
+        expect(res).toMatchObject({ success: true, status: 'pending' });
+        expect(res.redirectUrl).toBeDefined();
+      });
+
+      it('REFUSES a clinic charge Tap put on the PLATFORM account (observed: Tap ignores an unknown merchant.id) — no payment page is handed out', async () => {
+        // Real sandbox behaviour 2026-10-04: unknown merchant.id + fake platform.id → 200,
+        // and the charge belongs to the authenticated (our own) merchant.
+        client.createCharge.mockResolvedValueOnce(
+          chargeOwnedBy('merchant_PLATFORM'),
+        );
+        const res = await build().createPayment(clinicRequest());
+        expect(res).toMatchObject({
+          success: false,
+          status: 'failed',
+          failureCode: 'TAP_ROUTED_TO_PLATFORM',
+          failureReason: 'Online payment is not enabled for this clinic yet',
+        });
+        expect(res.redirectUrl).toBeUndefined();
+        // Nothing links the orphaned INITIATED charge to the payment (a late event
+        // could otherwise be matched to it).
+        expect(res.gatewayPaymentId).toBeUndefined();
+      });
+
+      it('REFUSES a clinic charge whose response names no merchant (routing cannot be verified)', async () => {
+        client.createCharge.mockResolvedValueOnce(chargeOwnedBy(undefined));
+        const res = await build().createPayment(clinicRequest());
+        expect(res).toMatchObject({
+          success: false,
+          status: 'failed',
+          failureCode: 'TAP_ROUTING_UNVERIFIED',
+        });
+        expect(res.redirectUrl).toBeUndefined();
+      });
+
+      it("accepts the clinic's merchant in whatever form Tap echoes it (only 'our own account' is refused)", async () => {
+        client.createCharge.mockResolvedValueOnce(chargeOwnedBy('99887766'));
+        const res = await build().createPayment(clinicRequest());
+        expect(res.success).toBe(true);
+      });
+
+      it("a platform-revenue charge is MEANT to be on the platform's own account", async () => {
+        client.createCharge.mockResolvedValueOnce(
+          chargeOwnedBy('merchant_PLATFORM'),
+        );
+        const res = await build().createPayment(request({ payee: 'platform' }));
+        expect(res.success).toBe(true);
       });
 
       it('REFUSES a clinic payment with no routing — patient money must never land in the platform account', async () => {
