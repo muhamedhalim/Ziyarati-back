@@ -3,8 +3,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PaymentsConfig } from '../../payments.config';
 import type {
   TapCharge,
+  TapChargeList,
   TapConnect,
   TapLead,
+  TapPayoutList,
   TapRefund,
   TapToken,
 } from './tap.types';
@@ -24,6 +26,11 @@ export interface TapResponse<T = any> {
   /** First `errors[].code` Tap returned, e.g. `1117`. For logs/audit, never users. */
   errorCode?: string;
   errorDescription?: string;
+  /**
+   * Response headers, lower-cased. Only populated by the text (report download)
+   * calls: Tap pages a CSV through `has_more` / `last_charge_id` HEADERS.
+   */
+  headers?: Record<string, string>;
 }
 
 const MAX_429_RETRIES = 2;
@@ -65,6 +72,34 @@ export class TapApiClient {
 
   getRefund(refundId: string): Promise<TapResponse<TapRefund>> {
     return this.request('GET', `/v2/refunds/${encodeURIComponent(refundId)}`);
+  }
+
+  /**
+   * Reporting (Phase 5 reconciliation). `POST /v2/charges/list`: JSON, ≤ 50 per
+   * page, a ≤ 30-day window. Filterable by `merchants[]`, `charges[]`,
+   * `reference.transaction[]` (our payment id), `payouts.payout_id[]`.
+   */
+  listCharges(
+    body: Record<string, unknown>,
+  ): Promise<TapResponse<TapChargeList>> {
+    return this.request('POST', '/v2/charges/list', body);
+  }
+
+  /**
+   * `POST /v2/charges/download`: a CSV (`text/plain`) with one row per charge,
+   * INCLUDING `fee`, `fee_vat`, `net_amount`, `payout_id` and
+   * `settlement_date` — the only place Tap reports a charge's fee. `json` holds
+   * the raw text; paging state is in `headers`.
+   */
+  downloadCharges(body: Record<string, unknown>): Promise<TapResponse<string>> {
+    return this.request('POST', '/v2/charges/download', body, { text: true });
+  }
+
+  /** `POST /v2/payouts/list`: the payouts Tap made to a merchant (1–50 per call, no cursor). */
+  listPayouts(
+    body: Record<string, unknown>,
+  ): Promise<TapResponse<TapPayoutList>> {
+    return this.request('POST', '/v2/payouts/list', body);
   }
 
   /**
@@ -112,7 +147,7 @@ export class TapApiClient {
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body?: unknown,
-    opts?: { secretKey?: string },
+    opts?: { secretKey?: string; text?: boolean },
   ): Promise<TapResponse<T>> {
     const secret = opts?.secretKey ?? this.config.tapSecretKey;
     if (!secret) {
@@ -144,7 +179,14 @@ export class TapApiClient {
     }
 
     for (let attempt = 0; ; attempt += 1) {
-      const res = await this.once<T>(fetchFn, secret, method, path, body);
+      const res = await this.once<T>(
+        fetchFn,
+        secret,
+        method,
+        path,
+        body,
+        opts?.text === true,
+      );
       // 429 = rejected BEFORE processing, so a retry cannot double-act.
       if (res.status === 429 && attempt < MAX_429_RETRIES) {
         await this.sleep(BACKOFF_BASE_MS * 2 ** attempt);
@@ -160,6 +202,7 @@ export class TapApiClient {
     method: string,
     path: string,
     body?: unknown,
+    text = false,
   ): Promise<TapResponse<T>> {
     const controller = new AbortController();
     const timer = setTimeout(
@@ -177,7 +220,27 @@ export class TapApiClient {
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
-      const json = (await res.json().catch(() => ({}))) as any;
+      let json: any;
+      let headers: Record<string, string> | undefined;
+      if (text) {
+        // A report download answers CSV on success and a JSON error body otherwise.
+        const raw: string = await res.text().catch(() => '');
+        headers = {};
+        res.headers?.forEach?.((v: string, k: string) => {
+          headers![String(k).toLowerCase()] = String(v);
+        });
+        if (res.ok) {
+          json = raw;
+        } else {
+          try {
+            json = JSON.parse(raw);
+          } catch {
+            json = {};
+          }
+        }
+      } else {
+        json = (await res.json().catch(() => ({}))) as any;
+      }
       const status: number = res.status;
       const firstError = Array.isArray(json?.errors)
         ? json.errors[0]
@@ -199,6 +262,7 @@ export class TapApiClient {
           typeof firstError?.description === 'string'
             ? firstError.description
             : undefined,
+        ...(headers ? { headers } : {}),
       };
     } catch (err) {
       const aborted = (err as { name?: string })?.name === 'AbortError';

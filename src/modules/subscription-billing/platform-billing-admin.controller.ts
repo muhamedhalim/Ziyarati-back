@@ -21,6 +21,8 @@ import {
 
 import { BillingModeService } from './billing-mode.service';
 import { BillingService } from './billing.service';
+import { SubscriptionInvoiceRefundService } from './subscription-invoice-refund.service';
+import { RefundInvoiceDto } from './dto/refund-invoice.dto';
 import { FreeAccessOverrideService } from './free-access-override.service';
 import { PlanAdminService } from './plan-admin.service';
 import { CreatePlanDto, UpdatePlanDto } from './dto/upsert-plan.dto';
@@ -53,6 +55,7 @@ export class PlatformBillingAdminController {
     private readonly overrides: FreeAccessOverrideService,
     private readonly plans: PlanAdminService,
     private readonly billing: BillingService,
+    private readonly invoiceRefunds: SubscriptionInvoiceRefundService,
     private readonly ctx: TenantContextService,
   ) {}
 
@@ -243,5 +246,22 @@ export class PlatformBillingAdminController {
   @Get('renewals/tokenization-declines')
   listTokenizationDeclines() {
     return this.billing.listTokenizationDeclines();
+  }
+
+  // ─────────────────────────── Subscription invoice refund ─────────────────────────── //
+
+  @ApiOperation({
+    summary: 'Refund a paid subscription invoice (full amount)',
+    description:
+      'Platform-only. The platform refunds a subscription payment it collected: the invoice moves PAID → REFUNDED once the provider confirms. The refund may be asynchronous: a **pending** result means the provider accepted it but has not completed it — the webhook or the sweep finishes it, and repeating this call never starts a second refund. The subscription itself is not changed.',
+  })
+  @ApiOkResponse({ description: '{ status: "refunded" | "pending", invoice }.' })
+  @Post('invoices/:id/refund')
+  @HttpCode(HttpStatus.OK)
+  refundInvoice(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RefundInvoiceDto,
+  ) {
+    return this.invoiceRefunds.request(id, this.ctx.getUser()?.id, dto.reason);
   }
 }

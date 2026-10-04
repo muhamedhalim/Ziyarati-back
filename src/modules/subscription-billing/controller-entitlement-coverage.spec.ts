@@ -52,6 +52,8 @@ const PLATFORM_AND_PUBLIC_SURFACES = new Set([
   'payments/merchant-account-admin.controller.ts',
   'payments/payment-gateway.controller.ts',
   'payments/payments-ops.controller.ts',
+  // Tap Phase 5: the reconciliation queue — super admin only (RolesGuard), platform-wide data.
+  'payments/reconciliation/platform-reconciliation.controller.ts',
   'platform/platform-specialties.controller.ts',
   'platform/system-setting.controller.ts',
   'platform-ai-monitoring/platform-ai-monitoring.controller.ts',

@@ -11,6 +11,8 @@ import {
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
+import { PAYMENT_PURPOSE } from '../../payments/payments.constants';
+
 export const TXN_SORTABLE = [
   'created_at',
   'paid_at',
@@ -21,6 +23,14 @@ export const TXN_SORTABLE = [
   'status',
 ] as const;
 export type TxnSortBy = (typeof TXN_SORTABLE)[number];
+
+/** A payment purpose, or one of the two groups the finance screens switch between. */
+export const TXN_PURPOSE_FILTERS = [
+  ...Object.values(PAYMENT_PURPOSE),
+  'CLINIC_MONEY',
+  'PLATFORM_REVENUE',
+] as const;
+export type TxnPurposeFilter = (typeof TXN_PURPOSE_FILTERS)[number];
 
 /**
  * Server-side filtering / sorting / pagination for the marketplace
@@ -68,6 +78,26 @@ export class QueryMarketplaceTransactionsDto {
   @IsOptional() @IsString() payoutStatus?: string;
   @ApiPropertyOptional({ description: 'Refund status (NONE/PARTIAL/FULL).' })
   @IsOptional() @IsString() refundStatus?: string;
+
+  @ApiPropertyOptional({
+    enum: TXN_PURPOSE_FILTERS,
+    description:
+      'What the payment is for. A single purpose, or a group: CLINIC_MONEY (BOOKING + MANUAL — what patients paid clinics) or PLATFORM_REVENUE (ADDON + BILLING_UPGRADE — what clinics paid the platform). Omitted = every purpose.',
+  })
+  @IsOptional() @IsIn(TXN_PURPOSE_FILTERS as unknown as string[]) purpose?: string;
+
+  @ApiPropertyOptional({
+    enum: ['PROVISIONAL', 'RECONCILED'],
+    description:
+      'Fee status of captured money: PROVISIONAL = the provider fee has not been reported yet, RECONCILED = it was written from the provider report.',
+  })
+  @IsOptional() @IsIn(['PROVISIONAL', 'RECONCILED']) feeStatus?: 'PROVISIONAL' | 'RECONCILED';
+
+  @ApiPropertyOptional({
+    enum: ['true'],
+    description: 'Only payments that have an OPEN reconciliation exception.',
+  })
+  @IsOptional() @IsIn(['true']) hasOpenException?: 'true';
 
   // ── Date ranges (ISO) ───────────────────────────────────────────────────
   @ApiPropertyOptional() @IsOptional() @IsString() createdFrom?: string;

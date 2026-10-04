@@ -5,8 +5,10 @@ import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { RefundRecoveryService } from './refund-recovery.service';
+import { RefundCompletionService } from './refund-completion.service';
 import { Refund } from '../../entities/Payments/Refund';
 import { REFUND_STATUS } from './payments.constants';
+import { ReconciliationExceptionService } from './reconciliation/reconciliation-exception.service';
 import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
 import { SettlementAdjustmentService } from './settlement-adjustment.service';
@@ -32,6 +34,7 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
   let transactions: { record: jest.Mock };
   let adjustments: { recordClawbackIfSettled: jest.Mock };
   let emitter: { emit: jest.Mock };
+  let exceptions: { raiseQuietly: jest.Mock };
   /** `succeededCents` the completion phase reads via raw SQL `m.query(...)`. */
   let succeededCentsRow: Array<{ sum: string }>;
 
@@ -56,8 +59,12 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
     manager.getRepository = jest.fn((entity: unknown) =>
       entity === Refund ? refunds : paymentsRepo,
     );
-    manager.createQueryBuilder = jest.fn(() => createMockQueryBuilder());
     succeededCentsRow = [{ sum: '0.00' }];
+    manager.createQueryBuilder = jest.fn(() => {
+      const qb = createMockQueryBuilder();
+      qb.getRawOne = jest.fn(async () => succeededCentsRow[0]);
+      return qb;
+    });
     manager.query = jest.fn().mockImplementation(async (sql: string) => {
       if (typeof sql === 'string' && sql.includes('SUM(amount)')) return succeededCentsRow;
       if (typeof sql === 'string' && sql.includes('"tenantId"')) return [{ t: 't1' }];
@@ -69,10 +76,12 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
     transactions = { record: jest.fn().mockResolvedValue(undefined) };
     adjustments = { recordClawbackIfSettled: jest.fn().mockResolvedValue(undefined) };
     emitter = { emit: jest.fn() };
+    exceptions = { raiseQuietly: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         RefundRecoveryService,
+        RefundCompletionService,
         { provide: getRepositoryToken(Refund), useValue: refunds },
         { provide: DataSource, useValue: dataSource },
         { provide: PaymentGatewayFactory, useValue: gateways },
@@ -80,6 +89,7 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
         { provide: SettlementAdjustmentService, useValue: adjustments },
         { provide: ConfigService, useValue: createMockConfigService() },
         { provide: EventEmitter2, useValue: emitter },
+        { provide: ReconciliationExceptionService, useValue: exceptions },
       ],
     }).compile();
     service = moduleRef.get(RefundRecoveryService);
@@ -222,6 +232,10 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
             refundId: 'rf-1',
           },
         }),
+        // the booking learns its payment was refunded (the reaper never told it)
+        expect.objectContaining({
+          payload: { tenantId: 't1', paymentId: 'pay-1', outcome: 'refunded' },
+        }),
       ]);
     });
 
@@ -235,6 +249,184 @@ describe('RefundRecoveryService.reapStalePending — completion re-clamp', () =>
       await service.reapStalePending();
 
       expect(outboxRows()).toEqual([]);
+    });
+  });
+
+  // ── a gateway that can look ONE refund up (Tap) ─────────────────────────────
+  describe('provider path (verifyRefund)', () => {
+    let provider: { verifyRefund: jest.Mock; refundPayment: jest.Mock };
+
+    const tapRefund = (overrides: Record<string, unknown> = {}) =>
+      pendingRefund({
+        amount: 60,
+        reason: 'requested_by_customer',
+        gateway_refund_id: 're_tap_1',
+        payment: {
+          id: 'pay-1',
+          amount: 100,
+          currency: 'SAR',
+          gateway: 'tap',
+          gateway_payment_id: 'chg_1',
+          settlement_status: 'UNSETTLED',
+          settlement_mode: 'PROVIDER',
+        },
+        ...overrides,
+      });
+
+    const arrange = (refund: any, verdict?: Record<string, unknown>) => {
+      provider = {
+        verifyRefund: jest.fn().mockResolvedValue({
+          success: verdict?.status === 'succeeded',
+          gatewayRefundId: 're_tap_1',
+          gatewayPaymentId: 'chg_1',
+          amountMinorUnits: 6000,
+          currency: 'SAR',
+          raw: { id: 're_tap_1' },
+          ...verdict,
+        }),
+        refundPayment: jest.fn(),
+      };
+      gateways.resolve.mockReturnValue(provider);
+      refunds.find.mockResolvedValueOnce([refund]);
+      paymentsRepo.findOne.mockResolvedValueOnce({ ...refund.payment });
+      refunds.findOneBy.mockResolvedValueOnce({ ...refund, status: REFUND_STATUS.PENDING });
+    };
+
+    it('books a refund the gateway reports REFUNDED as SUCCEEDED, with the gateway refund id', async () => {
+      const refund = tapRefund();
+      arrange(refund, { status: 'succeeded' });
+
+      const summary = await service.reapStalePending();
+
+      expect(provider.verifyRefund).toHaveBeenCalledWith('re_tap_1');
+      expect(summary.succeeded).toBe(1);
+      expect(refunds.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: REFUND_STATUS.SUCCEEDED, gateway_refund_id: 're_tap_1' }),
+      );
+      expect(emitter.emit).toHaveBeenCalledWith('refund.recorded', expect.any(Object));
+    });
+
+    it('books a refund the gateway reports DECLINED as FAILED — the positive signal the legacy path never had', async () => {
+      const refund = tapRefund();
+      arrange(refund, { status: 'failed', failureReason: 'Refund was rejected by the payment gateway' });
+
+      const summary = await service.reapStalePending();
+
+      expect(summary.failed).toBe(1);
+      expect(refunds.save).toHaveBeenCalledWith(expect.objectContaining({ status: REFUND_STATUS.FAILED }));
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+
+    it.each(['pending', 'unknown'])('leaves the refund PENDING when the gateway says %s (never guessed)', async (status) => {
+      const refund = tapRefund();
+      arrange(refund, { status });
+
+      const summary = await service.reapStalePending();
+
+      expect(summary.stillPending).toBe(1);
+      expect(refunds.save).not.toHaveBeenCalled();
+      expect(emitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('never books a refund object that belongs to another charge — and RECORDS it for a human', async () => {
+      const refund = tapRefund();
+      arrange(refund, { status: 'succeeded', gatewayPaymentId: 'chg_OTHER' });
+
+      const summary = await service.reapStalePending();
+
+      expect(summary.succeeded).toBe(0);
+      expect(summary.stillPending).toBe(1);
+      expect(refunds.save).not.toHaveBeenCalled();
+      expect(exceptions.raiseQuietly).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'REFUND_MISMATCH',
+          provider: 'tap',
+          objectId: 're_tap_1',
+          paymentId: 'pay-1',
+          details: expect.objectContaining({
+            source: 'refund_reaper',
+            refundId: 'rf-1',
+            expectedChargeId: 'chg_1',
+            reportedChargeId: 'chg_OTHER',
+          }),
+        }),
+      );
+    });
+
+    it('never books a refund whose amount differs from ours', async () => {
+      const refund = tapRefund();
+      arrange(refund, { status: 'succeeded', amountMinorUnits: 9999 });
+
+      const summary = await service.reapStalePending();
+
+      expect(summary.succeeded).toBe(0);
+      expect(refunds.save).not.toHaveBeenCalled();
+    });
+
+    it('a provider-settled payment records NO internal clawback when refunded', async () => {
+      const refund = tapRefund({
+        payment: {
+          id: 'pay-1', amount: 100, currency: 'SAR', gateway: 'tap', gateway_payment_id: 'chg_1',
+          settlement_status: 'SETTLED', settlement_mode: 'PROVIDER',
+        },
+      });
+      arrange(refund, { status: 'succeeded' });
+      paymentsRepo.findOne.mockReset();
+      paymentsRepo.findOne.mockResolvedValueOnce({ ...refund.payment });
+
+      await service.reapStalePending();
+
+      expect(adjustments.recordClawbackIfSettled).not.toHaveBeenCalled();
+    });
+
+    describe('no gateway refund id (the create call never answered)', () => {
+      const noId = () => tapRefund({ gateway_refund_id: undefined });
+
+      it('re-sends the SAME per-refund request inside the replay window, then learns the id', async () => {
+        const refund = noId();
+        arrange(refund);
+        (dataSource as any).query.mockResolvedValue([{ age: String(60 * 60_000) }]); // 1h old
+        provider.refundPayment.mockResolvedValue({
+          success: false,
+          status: 'pending',
+          gatewayRefundId: 're_tap_9',
+          gatewayPaymentId: 'chg_1',
+          amountMinorUnits: 6000,
+          currency: 'SAR',
+        });
+
+        const summary = await service.reapStalePending();
+
+        expect(provider.verifyRefund).not.toHaveBeenCalled();
+        expect(provider.refundPayment).toHaveBeenCalledWith(
+          expect.objectContaining({ refundId: 'rf-1', gatewayPaymentId: 'chg_1', amount: 0.6 * 100, currency: 'SAR' }),
+        );
+        expect(summary.stillPending).toBe(1);
+        const qb = (refunds as any).createQueryBuilder.mock.results[0].value;
+        expect(qb.set).toHaveBeenCalledWith({ gateway_refund_id: 're_tap_9' });
+      });
+
+      it('does NOT re-send past the replay window — that would be a second refund — and leaves it for an operator', async () => {
+        const refund = noId();
+        arrange(refund);
+        (dataSource as any).query.mockResolvedValue([{ age: String(13 * 60 * 60_000) }]); // 13h old
+
+        const summary = await service.reapStalePending();
+
+        expect(provider.refundPayment).not.toHaveBeenCalled();
+        expect(summary.stillPending).toBe(1);
+        expect(refunds.save).not.toHaveBeenCalled();
+      });
+
+      it('does NOT re-send when the age cannot be read (fail safe)', async () => {
+        const refund = noId();
+        arrange(refund);
+        (dataSource as any).query.mockResolvedValue([]);
+
+        await service.reapStalePending();
+
+        expect(provider.refundPayment).not.toHaveBeenCalled();
+      });
     });
   });
 });

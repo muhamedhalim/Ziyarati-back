@@ -5,8 +5,10 @@ import {
   IsInt,
   IsISO8601,
   IsOptional,
+  IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
@@ -34,6 +36,25 @@ export class QueryPaymentsDto {
   @IsOptional()
   @IsIn(Object.values(PAYMENT_PURPOSE))
   purpose?: PaymentPurpose;
+
+  @ApiPropertyOptional({
+    enum: ['PROVISIONAL', 'RECONCILED'],
+    description:
+      'Fee status of captured money. PROVISIONAL = the payment provider has not reported its fee yet, so the net amount is an estimate; RECONCILED = the fee was written from the provider report.',
+  })
+  @IsOptional()
+  @IsIn(['PROVISIONAL', 'RECONCILED'])
+  feeStatus?: 'PROVISIONAL' | 'RECONCILED';
+
+  @ApiPropertyOptional({
+    description:
+      'Find a payment by the provider charge id (e.g. chg_…) or by the start of its payment id.',
+    maxLength: 80,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  search?: string;
 
   @ApiPropertyOptional({ description: 'Only payments for this customer.', format: 'uuid' })
   @IsOptional()

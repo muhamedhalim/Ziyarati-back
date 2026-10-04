@@ -279,4 +279,127 @@ describe('TapApiClient', () => {
     expect(all).not.toContain(SECRET);
     expect(all).not.toContain('patient@example.test');
   });
+
+  describe('reporting (Phase 5 reconciliation)', () => {
+    const textRes = (
+      status: number,
+      body: string,
+      headers: Record<string, string> = {},
+    ) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => body,
+      json: async () => JSON.parse(body),
+      headers: {
+        forEach: (cb: (v: string, k: string) => void) =>
+          Object.entries(headers).forEach(([k, v]) => cb(v, k)),
+      },
+    });
+
+    it('listCharges POSTs /v2/charges/list with the body and parses JSON', async () => {
+      fetchMock.mockResolvedValueOnce(
+        res(200, { charges: [{ id: 'chg_1' }], has_more: false, count: 1 }),
+      );
+      const out = await build().listCharges({
+        merchants: ['m1'],
+        reference: { transaction: ['pay-1'] },
+      });
+      expect(out.json.charges?.[0].id).toBe('chg_1');
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.tap.company/v2/charges/list');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body)).toEqual({
+        merchants: ['m1'],
+        reference: { transaction: ['pay-1'] },
+      });
+      expect(init.headers.Authorization).toBe(`Bearer ${SECRET}`);
+    });
+
+    it('listPayouts POSTs /v2/payouts/list', async () => {
+      fetchMock.mockResolvedValueOnce(
+        res(200, {
+          payouts: [{ id: 'payout_1', status: 'PAID_OUT' }],
+          has_more: false,
+        }),
+      );
+      const out = await build().listPayouts({ merchants: ['m1'] });
+      expect(out.json.payouts?.[0].id).toBe('payout_1');
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.tap.company/v2/payouts/list',
+      );
+    });
+
+    it('downloadCharges returns the CSV TEXT and the paging headers (lower-cased)', async () => {
+      const csv = 'charge_id,amount\nchg_1,10.00\n';
+      fetchMock.mockResolvedValueOnce(
+        textRes(200, csv, { has_more: 'true', Last_Charge_Id: 'chg_1' }),
+      );
+      const out = await build().downloadCharges({ merchants: ['m1'] });
+      expect(out.ok).toBe(true);
+      expect(out.json).toBe(csv);
+      expect(out.headers).toEqual({
+        has_more: 'true',
+        last_charge_id: 'chg_1',
+      });
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.tap.company/v2/charges/download',
+      );
+    });
+
+    it("downloadCharges: a non-2xx carries Tap's error code (parsed from the JSON error body), never the raw body", async () => {
+      fetchMock.mockResolvedValueOnce(
+        textRes(
+          400,
+          JSON.stringify({ errors: [{ code: '1109', description: 'nope' }] }),
+        ),
+      );
+      const out = await build().downloadCharges({ merchants: ['m1'] });
+      expect(out).toMatchObject({
+        ok: false,
+        status: 400,
+        transient: false,
+        errorCode: '1109',
+      });
+    });
+
+    it('downloadCharges: an unparsable error body is still a clean failure', async () => {
+      fetchMock.mockResolvedValueOnce(textRes(400, '<html>bad gateway</html>'));
+      const out = await build().downloadCharges({});
+      expect(out).toMatchObject({
+        ok: false,
+        status: 400,
+        errorCode: undefined,
+      });
+    });
+
+    it('downloadCharges: 429 is retried (rejected before processing), a 5xx is transient', async () => {
+      fetchMock
+        .mockResolvedValueOnce(textRes(429, '{}'))
+        .mockResolvedValueOnce(textRes(200, 'charge_id\nchg_1\n'));
+      const ok = await build().downloadCharges({});
+      expect(ok.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(textRes(503, '{}'));
+      const down = await build().downloadCharges({});
+      expect(down).toMatchObject({ ok: false, transient: true });
+    });
+
+    it('never puts the secret key or the response body in a log line', async () => {
+      const client = build();
+      const logged: string[] = [];
+      for (const level of ['warn', 'error', 'log'] as const) {
+        jest
+          .spyOn((client as any).logger, level)
+          .mockImplementation((m: string) => logged.push(String(m)));
+      }
+      fetchMock.mockResolvedValueOnce(
+        textRes(401, JSON.stringify({ errors: [{ code: '2104' }] })),
+      );
+      await client.downloadCharges({ merchants: ['m1'] });
+      expect(logged.join(' ')).not.toContain(SECRET);
+      expect(logged.join(' ')).not.toContain('m1');
+    });
+  });
 });

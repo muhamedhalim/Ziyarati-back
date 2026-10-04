@@ -142,6 +142,13 @@ export const JOB = {
    * (the money has already moved; see job-authorization.constants.ts).
    */
   PAYMENTS_OUTCOME: 'payments.outcome',
+  /**
+   * Tap migration (Phase 5) — the daily reconciliation against what the gateway
+   * says: fees, payouts, discrepancies. Platform-level (no tenant), on the existing
+   * `payments` queue. A daily sweep re-reads a short look-back window; a weekly one
+   * re-reads Tap's whole 30-day reporting window. Read-only toward the gateway.
+   */
+  PAYMENTS_PROVIDER_RECONCILE: 'payments.providerReconcile',
   PLATFORM_LOG_CLEANUP: 'platform.logCleanup',
   /**
    * AUTH-005 (see docs/AUTH_CONCURRENCY_GC_AUDIT.md) — repeatable retention

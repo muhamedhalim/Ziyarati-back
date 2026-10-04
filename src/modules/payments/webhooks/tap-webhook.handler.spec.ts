@@ -5,9 +5,10 @@ import type {
   TapResponse,
 } from '../providers/tap/tap-api.client';
 import type { PaymentWebhookService } from '../payment-webhook.service';
+import type { RefundWebhookService } from '../refund-webhook.service';
 import type { WebhookLogService } from '../../platform/webhook-log.service';
 import { ErrorCode } from '../../../common/errors';
-import type { TapCharge } from '../providers/tap/tap.types';
+import type { TapCharge, TapRefund } from '../providers/tap/tap.types';
 
 const PAYMENT_ID = '11111111-1111-4111-8111-111111111111';
 const INVOICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -40,14 +41,25 @@ const charge = (over: Partial<TapCharge> = {}): TapCharge => ({
 
 describe('TapWebhookHandler', () => {
   let verifier: { verify: jest.Mock };
-  let client: { getCharge: jest.Mock };
+  let client: { getCharge: jest.Mock; getRefund: jest.Mock };
+  let refundWebhooks: { process: jest.Mock };
   let webhooks: { process: jest.Mock };
   let logs: { record: jest.Mock };
   let handler: TapWebhookHandler;
 
   beforeEach(() => {
     verifier = { verify: jest.fn().mockReturnValue(true) };
-    client = { getCharge: jest.fn().mockResolvedValue(ok(charge())) };
+    client = {
+      getCharge: jest.fn().mockResolvedValue(ok(charge())),
+      getRefund: jest.fn(),
+    };
+    refundWebhooks = {
+      process: jest.fn().mockResolvedValue({
+        accepted: true,
+        matched: true,
+        status: 'REFUNDED',
+      }),
+    };
     webhooks = {
       process: jest
         .fn()
@@ -58,6 +70,7 @@ describe('TapWebhookHandler', () => {
       verifier as unknown as TapWebhookVerifier,
       client as unknown as TapApiClient,
       webhooks as unknown as PaymentWebhookService,
+      refundWebhooks as unknown as RefundWebhookService,
       logs as unknown as WebhookLogService,
     );
   });
@@ -435,31 +448,6 @@ describe('TapWebhookHandler', () => {
   });
 
   describe('other object types', () => {
-    it('a REFUND webhook is authenticated and logged but NOT applied yet, and is accepted so Tap stops retrying', async () => {
-      const refund = {
-        id: 're_1',
-        object: 'refund',
-        status: 'REFUNDED',
-        amount: 10,
-        currency: 'SAR',
-        charge_id: 'chg_1',
-      };
-      await expect(handler.handle(refund as any, 'h')).resolves.toEqual({
-        accepted: true,
-        matched: false,
-      });
-      expect(client.getCharge).not.toHaveBeenCalled();
-      expect(webhooks.process).not.toHaveBeenCalled();
-      expect(logs.record).toHaveBeenCalledWith(
-        null,
-        expect.objectContaining({
-          source: 'tap',
-          eventType: 'refund.refunded',
-          status: 'SUCCESS',
-        }),
-      );
-    });
-
     it('an authentic but unsupported object (e.g. authorize) is accepted and ignored', async () => {
       const auth = {
         id: 'auth_1',
@@ -483,6 +471,170 @@ describe('TapWebhookHandler', () => {
           'bad',
         ),
       ).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
+    });
+  });
+
+  describe('refund: re-fetch then process', () => {
+    const REFUND_ID = '33333333-3333-4333-8333-333333333333';
+    const posted = (over: Partial<TapRefund> = {}): TapRefund => ({
+      id: 're_1',
+      object: 'refund',
+      status: 'REFUNDED',
+      amount: 10,
+      currency: 'SAR',
+      charge_id: 'chg_1',
+      created: '1744036133441',
+      ...over,
+    });
+    const refundOk = (json: TapRefund): TapResponse<TapRefund> => ({
+      ok: true,
+      status: 200,
+      json,
+      transient: false,
+    });
+
+    beforeEach(() => {
+      client.getRefund.mockResolvedValue(refundOk(posted()));
+    });
+
+    it('re-fetches by the POSTED id and processes the neutral event built from the RE-FETCHED refund', async () => {
+      // The body says REFUNDED; Tap itself says DECLINED — only Tap's word counts.
+      client.getRefund.mockResolvedValue(
+        refundOk(
+          posted({
+            status: 'DECLINED',
+            amount: 10,
+            response: {
+              code: '505',
+              message: 'bank text that must not be forwarded',
+            },
+          }),
+        ),
+      );
+
+      const res = await handler.handle(posted({ status: 'REFUNDED' }), 'h');
+
+      expect(client.getRefund).toHaveBeenCalledWith('re_1');
+      expect(client.getCharge).not.toHaveBeenCalled();
+      expect(webhooks.process).not.toHaveBeenCalled(); // the charge path is not involved
+      const event = refundWebhooks.process.mock.calls[0][0];
+      expect(event).toMatchObject({
+        provider: 'tap',
+        gatewayRefundId: 're_1',
+        gatewayPaymentId: 'chg_1',
+        outcome: 'failed',
+        amountMinorUnits: 1000,
+        currency: 'SAR',
+        dedupeKey: 'tap:re_1:DECLINED',
+        failureReason: 'Refund was rejected by the payment gateway',
+      });
+      // the audit payload keeps the gateway's own response; what a user may see never does
+      expect(event.failureReason).not.toContain('bank text');
+      expect(res).toMatchObject({ accepted: true, matched: true });
+    });
+
+    it('maps each Tap refund status to a neutral outcome', async () => {
+      const cases: Array<[string, string]> = [
+        ['REFUNDED', 'succeeded'],
+        ['PENDING', 'pending'],
+        ['ACCEPTED', 'pending'],
+        ['DECLINED', 'failed'],
+        ['FAILED', 'failed'],
+        ['RESTRICTED', 'failed'],
+        ['TIMED_OUT', 'unknown'],
+        ['SOMETHING_NEW', 'unknown'],
+      ];
+      for (const [status, outcome] of cases) {
+        refundWebhooks.process.mockClear();
+        client.getRefund.mockResolvedValue(refundOk(posted({ status })));
+        await handler.handle(posted({ status }), 'h');
+        expect(refundWebhooks.process.mock.calls[0][0].outcome).toBe(outcome);
+      }
+    });
+
+    it('carries our refund id only when Tap echoes it as a uuid (reference.merchant)', async () => {
+      client.getRefund.mockResolvedValue(
+        refundOk(posted({ reference: { merchant: REFUND_ID } })),
+      );
+      await handler.handle(posted(), 'h');
+      expect(refundWebhooks.process.mock.calls[0][0].correlationId).toBe(
+        REFUND_ID,
+      );
+
+      refundWebhooks.process.mockClear();
+      client.getRefund.mockResolvedValue(
+        refundOk(posted({ reference: { merchant: 'not-a-uuid' } })),
+      );
+      await handler.handle(posted(), 'h');
+      expect(
+        refundWebhooks.process.mock.calls[0][0].correlationId,
+      ).toBeUndefined();
+    });
+
+    it('a transient re-fetch failure → 503 so Tap retries, nothing processed, the attempt is logged', async () => {
+      client.getRefund.mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: {},
+        transient: true,
+      } as any);
+
+      await expect(handler.handle(posted(), 'h')).rejects.toMatchObject({
+        code: ErrorCode.SERVICE_UNAVAILABLE,
+      });
+      expect(refundWebhooks.process).not.toHaveBeenCalled();
+      expect(logs.record).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ source: 'tap', status: 'FAILED' }),
+      );
+    });
+
+    it('a definitive re-fetch failure (Tap will not show us this refund) is accepted, unmatched, logged — retrying cannot help', async () => {
+      client.getRefund.mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: {},
+        transient: false,
+      } as any);
+
+      await expect(handler.handle(posted(), 'h')).resolves.toEqual({
+        accepted: true,
+        matched: false,
+      });
+      expect(refundWebhooks.process).not.toHaveBeenCalled();
+    });
+
+    it('a re-fetched refund with a DIFFERENT id is never processed', async () => {
+      client.getRefund.mockResolvedValue(refundOk(posted({ id: 're_OTHER' })));
+      await expect(handler.handle(posted(), 'h')).resolves.toEqual({
+        accepted: true,
+        matched: false,
+      });
+      expect(refundWebhooks.process).not.toHaveBeenCalled();
+    });
+
+    it('a processing error is logged FAILED and re-thrown (so Tap retries)', async () => {
+      refundWebhooks.process.mockRejectedValue(new Error('db down'));
+      await expect(handler.handle(posted(), 'h')).rejects.toThrow('db down');
+      expect(logs.record).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ status: 'FAILED', errorMessage: 'db down' }),
+      );
+    });
+
+    it('logs only the sanitised refund (allow-list), with the dedupe-relevant status in the label', async () => {
+      client.getRefund.mockResolvedValue(
+        refundOk(
+          posted({
+            status: 'REFUNDED',
+            customer: { email: 'x@y.test' },
+          } as any),
+        ),
+      );
+      await handler.handle(posted(), 'h');
+      const logged = logs.record.mock.calls[0][1];
+      expect(logged.eventType).toBe('refund.refunded');
+      expect(JSON.stringify(logged.payload)).not.toContain('x@y.test');
     });
   });
 });

@@ -5,9 +5,13 @@ import {
   Between,
   DataSource,
   FindOptionsWhere,
+  ILike,
   In,
+  IsNull,
   LessThan,
   MoreThanOrEqual,
+  Not,
+  Raw,
   Repository,
 } from 'typeorm';
 
@@ -42,6 +46,13 @@ import {
   type SettlementMode,
 } from './payments.constants';
 import { PAYMENT_OUTCOME, enqueuePaymentOutcome } from './payment-outcome.outbox';
+
+/** Statuses where money was captured, so a provider fee exists to be reconciled. */
+const CAPTURED_PAYMENT_STATUSES: readonly PaymentStatus[] = [
+  PaymentStatus.PAID,
+  PaymentStatus.PARTIALLY_REFUNDED,
+  PaymentStatus.REFUNDED,
+];
 
 /**
  * Options for {@link PaymentService.create} that are NEVER reachable from an
@@ -855,6 +866,12 @@ export class PaymentService {
     where.purpose = query.purpose
       ? query.purpose
       : In([...CLINIC_REVENUE_PURPOSES]);
+    if (query.feeStatus) {
+      // A fee only exists for captured money, so the filter implies it.
+      where.status = query.status ?? In([...CAPTURED_PAYMENT_STATUSES]);
+      where.fees_reconciled_at =
+        query.feeStatus === 'RECONCILED' ? Not(IsNull()) : IsNull();
+    }
     if (query.from && query.to) {
       where.created_at = Between(new Date(query.from), new Date(query.to));
     } else if (query.from) {
@@ -863,17 +880,53 @@ export class PaymentService {
       where.created_at = LessThan(new Date(query.to));
     }
 
+    // Support lookup: a provider charge id, or the start of a payment id. (Names are not
+    // searched here — use the customer filter.) `%`, `_` and `\` are matched literally.
+    const term = query.search?.trim().replace(/[\\%_]/g, '\\$&');
+    const filter: FindOptionsWhere<Payment> | FindOptionsWhere<Payment>[] = term
+      ? [
+          { ...where, gateway_payment_id: ILike(`%${term}%`) },
+          {
+            ...where,
+            id: Raw((alias) => `CAST(${alias} AS text) ILIKE :idTerm`, {
+              idTerm: `${term}%`,
+            }),
+          },
+        ]
+      : where;
+
     const [data, total] = await this.payments.findAndCount({
-      where,
+      where: filter,
+      // The page names the payer. Without the relation every row showed "—" — and only
+      // the NAME is sent on (see `forList`), not the patient's contact card.
+      relations: { customer: true },
       order: { created_at: 'DESC' },
       skip: (query.page - 1) * query.limit,
       take: query.limit,
     });
     return {
-      data: data.map((p) => this.sanitizeForClient(p)),
+      data: data.map((p) => this.forList(p)),
       total,
       page: query.page,
       limit: query.limit,
+    };
+  }
+
+  /**
+   * A row of the clinic's payments list: sanitised like every client payment, and the
+   * payer reduced to what the page shows — an id and a display name (the same fallback
+   * `resolvePayer` uses), never the phone / e-mail on the customer record.
+   */
+  private forList(payment: Payment): Payment {
+    const safe = this.sanitizeForClient(payment);
+    const c = safe.customer;
+    if (!c) return safe;
+    return {
+      ...safe,
+      customer: {
+        id: c.id,
+        full_name: c.full_name ?? c.whatsapp_name,
+      } as Customer,
     };
   }
 

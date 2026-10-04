@@ -868,5 +868,116 @@ describe('PaymentService.create (booking payments)', () => {
       await service.list(TENANT, { page: 1, limit: 20 } as any);
       expect(whereOf().tenant).toEqual({ id: TENANT });
     });
+
+    it("feeStatus separates captured money by whether the provider's fee has been reported", async () => {
+      payments.findAndCount.mockResolvedValue([[], 0]);
+      await service.list(TENANT, {
+        page: 1,
+        limit: 20,
+        feeStatus: 'PROVISIONAL',
+      } as any);
+      const provisional = payments.findAndCount.mock.calls.at(-1)[0].where;
+      expect(provisional.fees_reconciled_at.type).toBe('isNull');
+      // a fee only exists for captured money, so the filter implies it
+      expect(provisional.status.value.sort()).toEqual([
+        'PAID',
+        'PARTIALLY_REFUNDED',
+        'REFUNDED',
+      ]);
+
+      await service.list(TENANT, {
+        page: 1,
+        limit: 20,
+        feeStatus: 'RECONCILED',
+      } as any);
+      const reconciled = payments.findAndCount.mock.calls.at(-1)[0].where;
+      expect(reconciled.fees_reconciled_at.type).toBe('not');
+      expect(reconciled.fees_reconciled_at.child.type).toBe('isNull');
+    });
+
+    it('an explicit status is kept, not widened, when a fee status is also asked for', async () => {
+      payments.findAndCount.mockResolvedValue([[], 0]);
+      await service.list(TENANT, {
+        page: 1,
+        limit: 20,
+        status: 'PENDING',
+        feeStatus: 'PROVISIONAL',
+      } as any);
+      expect(payments.findAndCount.mock.calls.at(-1)[0].where.status).toBe(
+        'PENDING',
+      );
+    });
+
+    it('search matches a charge id or the start of a payment id — inside the tenant, and literally', async () => {
+      payments.findAndCount.mockResolvedValue([[], 0]);
+      await service.list(TENANT, {
+        page: 1,
+        limit: 20,
+        search: '  chg_1%_\\x ',
+      } as any);
+      const where = payments.findAndCount.mock.calls.at(-1)[0].where;
+      expect(Array.isArray(where)).toBe(true);
+      expect(where).toHaveLength(2);
+      // every alternative is still scoped to the tenant: an OR must never widen it
+      for (const w of where) expect(w.tenant).toEqual({ id: TENANT });
+      // `%`, `_` and `\` are escaped, so they match themselves instead of acting as wildcards
+      expect(where[0].gateway_payment_id.type).toBe('ilike');
+      expect(where[0].gateway_payment_id.value).toBe('%chg\\_1\\%\\_\\\\x%');
+      expect(where[1].id.type).toBe('raw');
+    });
+
+    it('a blank search is no search', async () => {
+      payments.findAndCount.mockResolvedValue([[], 0]);
+      await service.list(TENANT, { page: 1, limit: 20, search: '   ' } as any);
+      expect(
+        Array.isArray(payments.findAndCount.mock.calls.at(-1)[0].where),
+      ).toBe(false);
+    });
+
+    describe('the payer', () => {
+      const card = {
+        id: 'cus-1',
+        full_name: 'Amina Ali',
+        whatsapp_name: 'amina wa',
+        phone: '+966501110001',
+        email: 'amina@patient.test',
+      };
+
+      it('loads the customer, so the page can name who paid', async () => {
+        payments.findAndCount.mockResolvedValueOnce([[], 0]);
+        await service.list(TENANT, { page: 1, limit: 20 } as any);
+        expect(payments.findAndCount.mock.calls[0][0].relations).toEqual({
+          customer: true,
+        });
+      });
+
+      it('sends on the id and display name only — never the patient\'s phone or e-mail', async () => {
+        payments.findAndCount.mockResolvedValueOnce([
+          [{ id: 'pay-1', status: PaymentStatus.PAID, customer: card }],
+          1,
+        ]);
+        const { data } = await service.list(TENANT, { page: 1, limit: 20 } as any);
+        expect(data[0].customer).toEqual({ id: 'cus-1', full_name: 'Amina Ali' });
+        expect(JSON.stringify(data[0])).not.toContain('+966501110001');
+        expect(JSON.stringify(data[0])).not.toContain('amina@patient.test');
+      });
+
+      it('falls back to the WhatsApp name, and a payment with no customer stays without one', async () => {
+        payments.findAndCount.mockResolvedValueOnce([
+          [
+            {
+              id: 'pay-1',
+              status: PaymentStatus.PAID,
+              customer: { ...card, full_name: null },
+            },
+            { id: 'pay-2', status: PaymentStatus.PAID },
+          ],
+          2,
+        ]);
+        const { data } = await service.list(TENANT, { page: 1, limit: 20 } as any);
+        expect(data[0].customer?.full_name).toBe('amina wa');
+        expect(data[1].customer).toBeUndefined();
+      });
+    });
   });
 });

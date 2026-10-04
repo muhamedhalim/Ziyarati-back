@@ -99,12 +99,38 @@ export interface RefundRequest {
   amount: number;
   currency: string;
   reason?: string;
+  /** The provider charge being refunded (the invoice's `provider_reference`). */
+  chargeReference?: string;
+  /**
+   * This invoice's n-th refund attempt. Part of the provider idempotency key: the
+   * SAME attempt re-sent (a lost answer) returns the original refund, while a retry
+   * after a decline is deliberately a NEW one.
+   */
+  attempt?: number;
 }
 
 export interface RefundResult {
+  /** TRUE only when the refund is COMPLETE at the provider. */
   success: boolean;
+  /**
+   * `pending` = accepted, not complete (Tap checks the merchant wallet first);
+   * `unknown` = the provider could not say (timeout, 5xx) — the refund may exist,
+   * so the caller must NOT treat it as failed. Omitted = derived from `success`.
+   */
+  status?: 'succeeded' | 'pending' | 'failed' | 'unknown';
   reference?: string;
   failureReason?: string;
+  /** Provider response code, for logs/audit only — never shown to a user. */
+  failureCode?: string;
+}
+
+/** What the provider says about ONE refund, by ITS id. */
+export interface VerifyRefundResult extends RefundResult {
+  /** The charge the provider says this refund is against. */
+  chargeReference?: string;
+  /** The refunded amount in the domain's cents. */
+  amountMinorUnits?: number;
+  currency?: string;
 }
 
 /**
@@ -215,6 +241,11 @@ export interface PaymentProvider {
   readonly checkoutWindowMinutes: number;
   createCheckout(request: CheckoutRequest): Promise<CheckoutResult>;
   verifyCheckout(chargeId: string): Promise<VerifyCheckoutResult>;
+  /**
+   * Looks ONE refund up by the provider's id, for providers whose refunds are
+   * asynchronous. Absent on a provider whose refund() answers definitively.
+   */
+  verifyRefund?(reference: string): Promise<VerifyRefundResult>;
   /** Best-effort removal of a saved card at the provider. Resolves false when it could not be confirmed. */
   deletePaymentMethod(method: SavedPaymentMethodRef): Promise<boolean>;
 }

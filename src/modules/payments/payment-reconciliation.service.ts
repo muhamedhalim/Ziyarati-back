@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -19,7 +19,8 @@ import { PaymentGatewayFactory } from './providers/payment-gateway.factory';
 import { TransactionService } from './transaction.service';
 import { PaymentFinancialsService } from './payment-financials.service';
 import { PaymentsConfig } from './payments.config';
-import { TRANSACTION_TYPE } from './payments.constants';
+import { RECONCILIATION_KIND, TRANSACTION_TYPE } from './payments.constants';
+import { ReconciliationExceptionService } from './reconciliation/reconciliation-exception.service';
 import {
   PAYMENT_OUTCOME,
   enqueuePaymentOutcome,
@@ -29,6 +30,10 @@ import {
   type PaymentProvider,
 } from '../subscription-billing/payment/payment-provider.interface';
 import { InvoiceSettlementService } from '../subscription-billing/invoice-settlement.service';
+import {
+  InvoiceRefundSweepSummary,
+  SubscriptionInvoiceRefundService,
+} from '../subscription-billing/subscription-invoice-refund.service';
 
 /**
  * How far back a hosted subscription checkout is still worth re-verifying. Older
@@ -48,6 +53,12 @@ export interface ReconcileSummary {
   stillPending: number;
   /** Unresolved past the hard threshold → page an operator. */
   alerts: number;
+  /**
+   * PENDING payments whose gateway id was never stored (the create call reached the
+   * gateway, our finalize failed — REL-002) that the gateway turned out to hold:
+   * the id is now attached and the payment verified like any other.
+   */
+  attached: number;
 }
 
 type InvoiceOutcome = 'settled' | 'released' | 'stillClaimed' | 'skipped';
@@ -60,6 +71,8 @@ export interface SubscriptionReconcileSummary {
    *  a failed OR a successful charge, only as "nothing to confirm here". */
   released: number;
   stillClaimed: number;
+  /** Platform refunds of subscription invoices still in flight, asked about this run. */
+  refunds?: InvoiceRefundSweepSummary;
 }
 
 /**
@@ -100,6 +113,10 @@ export class PaymentReconciliationService {
     @Inject(PAYMENT_PROVIDER)
     private readonly subscriptionProvider: PaymentProvider,
     private readonly settlement: InvoiceSettlementService,
+    @Optional()
+    private readonly exceptions?: ReconciliationExceptionService,
+    @Optional()
+    private readonly invoiceRefunds?: SubscriptionInvoiceRefundService,
   ) {}
 
   /** Sweep stale PENDING payments and reconcile each against the gateway. */
@@ -125,7 +142,20 @@ export class PaymentReconciliationService {
       mismatches: 0,
       stillPending: 0,
       alerts: 0,
+      attached: 0,
     };
+
+    // REL-002: payments the gateway may hold but we have no id for. Looked up by
+    // OUR reference; once the id is attached they join the ordinary sweep below.
+    const recovered = await this.recoverUnattached().catch((err) => {
+      this.logger.error(
+        `Unattached-payment recovery failed: ${(err as Error).message}`,
+      );
+      return [] as Payment[];
+    });
+    summary.attached = recovered.length;
+    candidates.push(...recovered);
+    summary.scanned = candidates.length;
 
     for (const payment of candidates) {
       const outcome = await this.reconcileOne(payment).catch((err) => {
@@ -164,6 +194,95 @@ export class PaymentReconciliationService {
     return summary;
   }
 
+  /** A captured amount / currency that is not ours to book: recorded for a human, not just logged. */
+  private async raiseMismatch(
+    payment: Payment,
+    reportedAmountCents: number | undefined,
+    reportedCurrency: string | undefined,
+    expectedCents: number,
+  ): Promise<void> {
+    await this.exceptions?.raiseQuietly({
+      kind: RECONCILIATION_KIND.AMOUNT_MISMATCH,
+      provider: payment.gateway ?? 'unknown',
+      objectId: payment.gateway_payment_id ?? payment.id,
+      tenantId: payment.tenant?.id,
+      paymentId: payment.id,
+      details: {
+        source: 'reconciliation_sweep',
+        expectedAmountCents: expectedCents,
+        expectedCurrency: payment.currency,
+        reportedAmountCents: reportedAmountCents ?? null,
+        reportedCurrency: reportedCurrency ?? null,
+        paymentStatus: payment.status,
+      },
+    });
+  }
+
+  /**
+   * REL-002 backstop. A PENDING payment with NO gateway id is one whose create call
+   * may have succeeded at the gateway while our finalize transaction failed. Its
+   * webhook (matched by the reference we sent) normally recovers it; if THAT is lost
+   * too, the payer may have paid with nothing here to show it.
+   *
+   * Ask the gateway for a payment carrying OUR id. Only a positive answer acts: the
+   * gateway's id is attached (conditionally, only while still unset and PENDING) and
+   * the payment is handed to the ordinary verify-and-book path. "Nothing found" and
+   * "could not tell" both leave the row alone — silence is never evidence that
+   * nothing was charged.
+   */
+  private async recoverUnattached(): Promise<Payment[]> {
+    const cutoff = new Date(
+      Date.now() - this.config.reconStaleMinutes * 60_000,
+    );
+    const stuck = await this.payments.find({
+      where: {
+        status: PaymentStatus.PENDING,
+        gateway_payment_id: IsNull(),
+        gateway: Not(IsNull()),
+        created_at: LessThanOrEqual(cutoff),
+      },
+      relations: { tenant: true, customer: true, appointment: true },
+      order: { created_at: 'ASC' },
+      take: 100,
+    });
+
+    const attached: Payment[] = [];
+    for (const payment of stuck) {
+      const provider = this.gateways.resolve(payment.gateway);
+      if (!provider.findPaymentByReference) continue;
+      const found = await provider
+        .findPaymentByReference(payment.id)
+        .catch(() => null);
+      if (!found || found.status !== 'found' || !found.result.gatewayPaymentId)
+        continue;
+
+      let affected = 0;
+      try {
+        const res = await this.dataSource.query(
+          `UPDATE payments SET gateway_payment_id = $2
+            WHERE id = $1 AND gateway_payment_id IS NULL AND status = 'PENDING'`,
+          [payment.id, found.result.gatewayPaymentId],
+        );
+        affected =
+          Array.isArray(res) && typeof res[1] === 'number' ? res[1] : 0;
+      } catch (err) {
+        // The unique index on gateway_payment_id: another row already holds this charge.
+        this.logger.error(
+          `Payment ${payment.id}: the gateway's charge is already attached elsewhere (${(err as Error).message}) — left for review`,
+        );
+        continue;
+      }
+      if (affected > 0) {
+        payment.gateway_payment_id = found.result.gatewayPaymentId;
+        attached.push(payment);
+        this.logger.warn(
+          `Payment ${payment.id} had no gateway id; the gateway holds charge ${found.result.gatewayPaymentId} for it — attached`,
+        );
+      }
+    }
+    return attached;
+  }
+
   private async reconcileOne(payment: Payment): Promise<Outcome> {
     if (!payment.gateway_payment_id || !payment.tenant) return 'skipped';
     const tenantId = payment.tenant.id;
@@ -190,6 +309,12 @@ export class PaymentReconciliationService {
         this.logger.error(
           `Payment ${payment.id}: gateway captured ${verify.capturedMinorUnits} ≠ expected ${expectedC} minor units — left PENDING for manual review`,
         );
+        await this.raiseMismatch(
+          payment,
+          verify.capturedMinorUnits,
+          verify.capturedCurrency,
+          expectedC,
+        );
         return 'mismatch';
       }
       if (
@@ -198,6 +323,12 @@ export class PaymentReconciliationService {
       ) {
         this.logger.error(
           `Payment ${payment.id}: gateway currency ${verify.capturedCurrency} ≠ expected ${payment.currency} — left PENDING for manual review`,
+        );
+        await this.raiseMismatch(
+          payment,
+          verify.capturedMinorUnits,
+          verify.capturedCurrency,
+          expectedC,
         );
         return 'mismatch';
       }
@@ -348,6 +479,17 @@ export class PaymentReconciliationService {
       else if (outcome === 'released') summary.released++;
       else if (outcome === 'stillClaimed') summary.stillClaimed++;
     }
+
+    // The platform's own refunds that the provider has not completed (Tap refunds are
+    // asynchronous): asked about by id, or re-sent under the same idempotency key.
+    summary.refunds = await this.invoiceRefunds
+      ?.sweepInFlight()
+      .catch((err) => {
+        this.logger.error(
+          `Invoice refund sweep failed: ${(err as Error).message}`,
+        );
+        return undefined;
+      });
 
     if (summary.scanned > 0) {
       this.logger.warn(

@@ -35,6 +35,8 @@ describe('TapSubscriptionProvider', () => {
     getCharge: jest.Mock;
     createTokenFromSavedCard: jest.Mock;
     deleteSavedCard: jest.Mock;
+    createRefund: jest.Mock;
+    getRefund: jest.Mock;
   };
   let cfg: Record<string, unknown>;
 
@@ -94,6 +96,8 @@ describe('TapSubscriptionProvider', () => {
         .fn()
         .mockResolvedValue(ok({ id: 'tok_1' })),
       deleteSavedCard: jest.fn().mockResolvedValue(ok({ deleted: true })),
+      createRefund: jest.fn(),
+      getRefund: jest.fn(),
     };
   });
 
@@ -613,17 +617,6 @@ describe('TapSubscriptionProvider', () => {
   });
 
   describe('refund / deletePaymentMethod', () => {
-    it('refuses a subscription refund until the refund phase — nothing is sent to Tap', async () => {
-      const res = await build().refund({
-        tenantId: TENANT,
-        invoiceId: INVOICE,
-        amount: 10,
-        currency: 'SAR',
-      });
-      expect(res.success).toBe(false);
-      expect(client.createCharge).not.toHaveBeenCalled();
-    });
-
     it('deletes a saved card at Tap; a 404 means it is already gone, which is the state we wanted', async () => {
       expect(await build().deletePaymentMethod(METHOD)).toBe(true);
       expect(client.deleteSavedCard).toHaveBeenCalledWith('cus_1', 'card_1');
@@ -633,6 +626,173 @@ describe('TapSubscriptionProvider', () => {
 
       client.deleteSavedCard.mockResolvedValueOnce(fail(503));
       expect(await build().deletePaymentMethod(METHOD)).toBe(false);
+    });
+  });
+
+  // ─────────────────────────── refund (Phase 5) ─────────────────────────── //
+
+  describe('refund', () => {
+    const refundRequest = (over: Record<string, unknown> = {}) => ({
+      tenantId: TENANT,
+      invoiceId: INVOICE,
+      amount: 99,
+      currency: 'sar',
+      reason: 'duplicate signup',
+      chargeReference: 'chg_paid_1',
+      attempt: 2,
+      ...over,
+    });
+
+    it("refunds the paid charge on ZiyaraTech's OWN merchant (no clinic routing) with a per-attempt idempotency key", async () => {
+      client.createRefund.mockResolvedValueOnce(
+        ok({
+          id: 're_1',
+          status: 'REFUNDED',
+          charge_id: 'chg_paid_1',
+          amount: 99,
+          currency: 'SAR',
+        }),
+      );
+
+      const res = await build().refund(refundRequest());
+
+      expect(client.createRefund).toHaveBeenCalledWith({
+        charge_id: 'chg_paid_1',
+        amount: 99,
+        currency: 'SAR',
+        reason: 'duplicate signup',
+        reference: { merchant: INVOICE, idempotent: `invrefund:${INVOICE}:2` },
+        post: { url: 'https://api.test/api/v1/payments/webhooks/tap' },
+        metadata: {
+          udf1: INVOICE,
+          udf2: 'subscription_invoice_refund',
+          udf3: TENANT,
+        },
+      });
+      expect(res).toMatchObject({
+        success: true,
+        status: 'succeeded',
+        reference: 're_1',
+        chargeReference: 'chg_paid_1',
+        amountMinorUnits: 9900,
+      });
+    });
+
+    it('the attempt number is part of the key: attempt 1 and 2 never collide, a re-send of the same attempt does', async () => {
+      client.createRefund.mockResolvedValue(
+        ok({ id: 're_1', status: 'REFUNDED' }),
+      );
+      await build().refund(refundRequest({ attempt: 1 }));
+      await build().refund(refundRequest({ attempt: 1 }));
+      await build().refund(refundRequest({ attempt: 2 }));
+      const keys = client.createRefund.mock.calls.map(
+        ([b]) => b.reference.idempotent,
+      );
+      expect(keys).toEqual([
+        `invrefund:${INVOICE}:1`,
+        `invrefund:${INVOICE}:1`,
+        `invrefund:${INVOICE}:2`,
+      ]);
+    });
+
+    it('defaults the reason and the attempt', async () => {
+      client.createRefund.mockResolvedValue(
+        ok({ id: 're_1', status: 'REFUNDED' }),
+      );
+      await build().refund(refundRequest({ reason: '  ', attempt: undefined }));
+      const body = client.createRefund.mock.calls[0][0];
+      expect(body.reason).toBe('requested_by_customer');
+      expect(body.reference.idempotent).toBe(`invrefund:${INVOICE}:1`);
+    });
+
+    it("PENDING is accepted but NOT complete (success false), and carries Tap's id", async () => {
+      client.createRefund.mockResolvedValueOnce(
+        ok({ id: 're_2', status: 'PENDING' }),
+      );
+      expect(await build().refund(refundRequest())).toMatchObject({
+        success: false,
+        status: 'pending',
+        reference: 're_2',
+      });
+    });
+
+    it.each(['DECLINED', 'FAILED', 'RESTRICTED'])(
+      '%s → failed, with safe wording and the provider code kept apart',
+      async (status) => {
+        client.createRefund.mockResolvedValueOnce(
+          ok({
+            id: 're_3',
+            status,
+            response: { code: '505', message: 'issuer says no' },
+          }),
+        );
+        const res = await build().refund(refundRequest());
+        expect(res).toMatchObject({
+          success: false,
+          status: 'failed',
+          failureCode: '505',
+        });
+        expect(res.failureReason).toBe(
+          'Refund was rejected by the payment gateway',
+        );
+      },
+    );
+
+    it('a transport error / 5xx is "unknown" (it may exist), a definitive 4xx is "failed"', async () => {
+      client.createRefund.mockResolvedValueOnce(fail(503));
+      expect(await build().refund(refundRequest())).toMatchObject({
+        status: 'unknown',
+      });
+      client.createRefund.mockResolvedValueOnce(fail(400, '1161'));
+      expect(await build().refund(refundRequest())).toMatchObject({
+        status: 'failed',
+        failureCode: '1161',
+      });
+    });
+
+    it.each([undefined, '', 'pay_123', 'stub_ch_1'])(
+      'refuses without a Tap charge id (%j) — nothing is sent',
+      async (chargeReference) => {
+        const res = await build().refund(refundRequest({ chargeReference }));
+        expect(res).toMatchObject({ success: false, status: 'failed' });
+        expect(client.createRefund).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe('verifyRefund', () => {
+    it('asks Tap for THAT refund and reports the charge and amount it is about, for the caller to cross-check', async () => {
+      client.getRefund.mockResolvedValueOnce(
+        ok({
+          id: 're_9',
+          status: 'REFUNDED',
+          charge_id: 'chg_paid_1',
+          amount: 99,
+          currency: 'SAR',
+        }),
+      );
+      expect(await build().verifyRefund('re_9')).toMatchObject({
+        success: true,
+        status: 'succeeded',
+        reference: 're_9',
+        chargeReference: 'chg_paid_1',
+        amountMinorUnits: 9900,
+        currency: 'SAR',
+      });
+      expect(client.getRefund).toHaveBeenCalledWith('re_9');
+    });
+
+    it.each([
+      ['an outage', fail(503)],
+      ['a 404', fail(404)],
+      ['a 401', fail(401, '2104')],
+    ])('%s is "unknown" — never "the refund failed"', async (_l, response) => {
+      client.getRefund.mockResolvedValueOnce(response);
+      expect(await build().verifyRefund('re_9')).toMatchObject({
+        success: false,
+        status: 'unknown',
+        reference: 're_9',
+      });
     });
   });
 });

@@ -15,6 +15,7 @@ import { InvoiceItem } from '../../entities/Payments/InvoiceItem';
 import { Settlement } from '../../entities/Payments/Settlement';
 import { SettlementItem } from '../../entities/Payments/SettlementItem';
 import { MerchantAccount } from '../../entities/Payments/MerchantAccount';
+import { PaymentReconciliationException } from '../../entities/Payments/PaymentReconciliationException';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { SubscriptionInvoice } from '../../entities/SaaS-Core/SubscriptionInvoice';
 import { AuditLog } from '../../entities/Auth&RBAC/AuditLog';
@@ -24,6 +25,8 @@ import { PaymentService } from './payment.service';
 import { PaymentLinkService } from './payment-link.service';
 import { TransactionService } from './transaction.service';
 import { RefundService } from './refund.service';
+import { RefundCompletionService } from './refund-completion.service';
+import { RefundWebhookService } from './refund-webhook.service';
 import { InvoiceService } from './invoice.service';
 import { InvoiceItemService } from './invoice-item.service';
 import { InvoiceDocumentService } from './invoice-document.service';
@@ -39,6 +42,8 @@ import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { MerchantAccountService } from './merchant-account.service';
 import { TapOnboardingService } from './tap-onboarding.service';
 import { PublicPaymentService } from './public-payment.service';
+import { ReconciliationExceptionService } from './reconciliation/reconciliation-exception.service';
+import { ProviderReconciliationService } from './reconciliation/provider-reconciliation.service';
 
 import { PaymentGatewayController } from './payment-gateway.controller';
 import { PaymentsOpsController } from './payments-ops.controller';
@@ -53,6 +58,7 @@ import { MerchantAccountController } from './merchant-account.controller';
 import { MerchantAccountAdminController } from './merchant-account-admin.controller';
 import { TapOnboardingCallbackController } from './tap-onboarding-callback.controller';
 import { PublicPaymentController } from './public-payment.controller';
+import { PlatformReconciliationController } from './reconciliation/platform-reconciliation.controller';
 
 import { MoyasarProvider } from './providers/moyasar.provider';
 import { NoopGatewayProvider } from './providers/noop-gateway.provider';
@@ -95,6 +101,7 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
       Settlement,
       SettlementItem,
       MerchantAccount,
+      PaymentReconciliationException,
       TenantSetting,
       SubscriptionInvoice,
       AuditLog,
@@ -134,6 +141,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     TapOnboardingCallbackController,
     // Patient pay page API (public, authorised by the pay-link token).
     PublicPaymentController,
+    // The reconciliation queue + manual report import (super admin).
+    PlatformReconciliationController,
   ],
   providers: [
     PaymentGatewayService,
@@ -141,6 +150,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     PaymentLinkService,
     TransactionService,
     RefundService,
+    RefundCompletionService,
+    RefundWebhookService,
     InvoiceService,
     InvoiceItemService,
     InvoiceDocumentService,
@@ -156,6 +167,8 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     MerchantAccountService,
     TapOnboardingService,
     PublicPaymentService,
+    ReconciliationExceptionService,
+    ProviderReconciliationService,
     // PaymentsConfig (typed config), TapApiClient and OnlinePaymentCapabilityService
     // come from PaymentsCoreModule.
     // Gateway provider abstraction (Moyasar adapter + Noop fallback + factory).
@@ -195,6 +208,10 @@ import { PaymentsSchemaBootstrap } from './payments-schema.bootstrap';
     PaymentReconciliationService,
     // Exposed so the worker can write the reaper heartbeat.
     FinancialMetricsService,
+    // The daily provider reconciliation runs in the worker; the exception queue is
+    // also raised from the outcome consumer there.
+    ProviderReconciliationService,
+    ReconciliationExceptionService,
     // Exposed so the AI booking flow can auto-generate a payment link for
     // uninsured bookings when the tenant requires online payment (see
     // AiToolDispatchService.bookAppointment) — reuses the same

@@ -7,7 +7,11 @@ import { Transaction } from '../../entities/Payments/Transaction';
 import { Refund } from '../../entities/Payments/Refund';
 import { AppError, ErrorCode } from '../../common/errors';
 import { escapeSpreadsheetCell } from '../../common/import/spreadsheet-escape';
-import { round2 } from '../payments/payments.constants';
+import {
+  CLINIC_REVENUE_PURPOSES,
+  PLATFORM_REVENUE_PURPOSES,
+  round2,
+} from '../payments/payments.constants';
 import { QueryMarketplaceTransactionsDto } from './dto/query-marketplace-transactions.dto';
 import {
   FINANCE_METRICS,
@@ -50,7 +54,49 @@ export interface MarketplaceTransactionRow {
   settlementDate: string | null;
   paidAt: string | null;
   createdAt: string;
+  /** BOOKING / MANUAL (clinic money) or ADDON / BILLING_UPGRADE (platform revenue). */
+  purpose: string;
+  /** INTERNAL (we batch it), PROVIDER (the gateway settles to the clinic), NONE (platform revenue). */
+  settlementMode: string;
+  /**
+   * Whether the provider fee is final. `PROVISIONAL` = captured but the provider has not
+   * reported its fee yet; `RECONCILED` = written from the provider report;
+   * `NOT_APPLICABLE` = money was never captured.
+   */
+  feeStatus: FeeStatus;
+  /** The provider payout this payment was settled in, once the report names one. */
+  providerPayoutId: string | null;
+  /** Reconciliation exceptions still OPEN on this payment. */
+  openExceptions: number;
 }
+
+export type FeeStatus = 'PROVISIONAL' | 'RECONCILED' | 'NOT_APPLICABLE';
+
+/** What the platform itself collected in one currency (see `kpis().collectedRevenue`). */
+export interface PlatformRevenueRow {
+  currency: string;
+  subscriptions: number;
+  addOns: number;
+  total: number;
+}
+
+/** Statuses where money was captured, so a provider fee exists to be reconciled. */
+const CAPTURED_STATUSES = ['PAID', 'PARTIALLY_REFUNDED', 'REFUNDED'] as const;
+
+const feeStatusOf = (status: string, reconciledAt: unknown): FeeStatus =>
+  !(CAPTURED_STATUSES as readonly string[]).includes(status)
+    ? 'NOT_APPLICABLE'
+    : reconciledAt
+      ? 'RECONCILED'
+      : 'PROVISIONAL';
+
+/** Resolves a `purpose` filter (a purpose, or one of the two groups) to purposes. */
+export const purposesOf = (filter: string): string[] =>
+  filter === 'CLINIC_MONEY'
+    ? [...CLINIC_REVENUE_PURPOSES]
+    : filter === 'PLATFORM_REVENUE'
+      ? [...PLATFORM_REVENUE_PURPOSES]
+      : [filter];
 
 /**
  * Read-only marketplace financial reporting for super-admins. Aggregates ACROSS
@@ -109,6 +155,27 @@ export class MarketplaceFinanceService {
       qb.andWhere(
         `EXISTS (SELECT 1 FROM appointment_services aps WHERE aps."appointmentId" = p."appointmentId" AND aps."serviceId" = :serviceId)`,
         { serviceId: q.serviceId },
+      );
+    }
+    if (q.purpose) {
+      qb.andWhere('p.purpose IN (:...purposes)', {
+        purposes: purposesOf(q.purpose),
+      });
+    }
+    if (q.feeStatus) {
+      // A fee only exists for captured money, so the filter implies it.
+      qb.andWhere('p.status IN (:...capturedStatuses)', {
+        capturedStatuses: [...CAPTURED_STATUSES],
+      });
+      qb.andWhere(
+        q.feeStatus === 'RECONCILED'
+          ? 'p.fees_reconciled_at IS NOT NULL'
+          : 'p.fees_reconciled_at IS NULL',
+      );
+    }
+    if (q.hasOpenException === 'true') {
+      qb.andWhere(
+        `EXISTS (SELECT 1 FROM payment_reconciliation_exceptions rx WHERE rx.payment_id = p.id AND rx.status = 'OPEN')`,
       );
     }
 
@@ -205,6 +272,11 @@ export class MarketplaceFinanceService {
         'st.paid_at AS settlement_date',
         'p.paid_at AS paid_at',
         'p.created_at AS created_at',
+        'p.purpose AS purpose',
+        'p.settlement_mode AS settlement_mode',
+        'p.fees_reconciled_at AS fees_reconciled_at',
+        'p.provider_payout_id AS provider_payout_id',
+        `(SELECT COUNT(*)::int FROM payment_reconciliation_exceptions rx WHERE rx.payment_id = p.id AND rx.status = 'OPEN') AS open_exceptions`,
         `(SELECT s.name FROM appointment_services aps JOIN services s ON s.id = aps."serviceId" WHERE aps."appointmentId" = p."appointmentId" ORDER BY aps.created_at ASC LIMIT 1) AS service_name`,
       ])
       .orderBy(`p.${q.sortBy}`, q.sortDir)
@@ -250,6 +322,11 @@ export class MarketplaceFinanceService {
       settlementDate: iso(r.settlement_date),
       paidAt: iso(r.paid_at),
       createdAt: new Date(r.created_at as string).toISOString(),
+      purpose: (r.purpose as string) ?? 'BOOKING',
+      settlementMode: (r.settlement_mode as string) ?? 'INTERNAL',
+      feeStatus: feeStatusOf(r.payment_status as string, r.fees_reconciled_at),
+      providerPayoutId: (r.provider_payout_id as string) ?? null,
+      openExceptions: n(r.open_exceptions),
     };
   }
 
@@ -260,7 +337,7 @@ export class MarketplaceFinanceService {
     // parameter independently — none consumes another's result — so they run
     // concurrently (PERF-BE-005). `serviceRows` genuinely depends on
     // `payment.appointment.id` and stays sequential after.
-    const [payment, events, refunds, settlement] = await Promise.all([
+    const [payment, events, refunds, settlement, exceptions] = await Promise.all([
       this.payments.findOne({
         where: { id },
         relations: { tenant: true, branch: true, customer: true, appointment: true },
@@ -278,6 +355,14 @@ export class MarketplaceFinanceService {
               st.gross_amount, st.fee_amount, st.net_amount, st.currency
          FROM settlement_items si JOIN settlements st ON st.id = si.settlement_id
         WHERE si.payment_id = $1 LIMIT 1`,
+        [id],
+      ),
+      // What the provider reconciliation has flagged on this payment (any state, newest first).
+      this.dataSource.query(
+        `SELECT id, kind, status, occurrences, first_seen_at, last_seen_at
+           FROM payment_reconciliation_exceptions
+          WHERE payment_id = $1
+          ORDER BY last_seen_at DESC LIMIT 20`,
         [id],
       ),
     ]);
@@ -324,6 +409,11 @@ export class MarketplaceFinanceService {
         gatewayPaymentId: payment.gateway_payment_id ?? null,
         merchantId: payment.merchant_id ?? null,
         subMerchantId: payment.sub_merchant_id ?? null,
+        purpose: payment.purpose,
+        settlementMode: payment.settlement_mode,
+        feeStatus: feeStatusOf(payment.status, payment.fees_reconciled_at),
+        feesReconciledAt: payment.fees_reconciled_at?.toISOString() ?? null,
+        providerPayoutId: payment.provider_payout_id ?? null,
         failureReason: payment.failure_reason ?? null,
         paidAt: payment.paid_at?.toISOString() ?? null,
         createdAt: payment.created_at.toISOString(),
@@ -347,7 +437,16 @@ export class MarketplaceFinanceService {
         amount: round2(n(r.amount)),
         status: r.status,
         reason: r.reason ?? null,
+        gatewayRefundId: r.gateway_refund_id ?? null,
         createdAt: r.created_at.toISOString(),
+      })),
+      exceptions: (exceptions as Record<string, unknown>[]).map((e) => ({
+        id: e.id as string,
+        kind: e.kind as string,
+        status: e.status as string,
+        occurrences: n(e.occurrences),
+        firstSeenAt: new Date(e.first_seen_at as string).toISOString(),
+        lastSeenAt: new Date(e.last_seen_at as string).toISOString(),
       })),
       webhooks: events.map((e) => ({
         id: e.id,
@@ -397,10 +496,10 @@ export class MarketplaceFinanceService {
     // Four independent domains (payments, subscriptions, subscription-plan MRR,
     // tenants) — none depends on another's result, so they run concurrently
     // instead of as four sequential round-trips (PERF-BE-005).
-    const [[r], [subs], [mrrRow], [clinics], currencyRows] = await Promise.all([
+    const [[r], [subs], [mrrRow], [clinics], currencyRows, platformRows] = await Promise.all([
       // Payment-derived metrics — single pass over the PAID set (no per-card query).
       this.dataSource.query(`
-      WITH paid AS (SELECT * FROM payments WHERE status = 'PAID')
+      WITH paid AS (SELECT * FROM payments WHERE status = 'PAID' AND purpose = ANY($1))
       SELECT
         COALESCE((SELECT SUM(amount) FROM paid WHERE paid_at >= date_trunc('day', now())), 0) AS today_revenue,
         COALESCE((SELECT COUNT(*) FROM paid WHERE paid_at >= date_trunc('day', now())), 0) AS today_transactions,
@@ -408,16 +507,16 @@ export class MarketplaceFinanceService {
         COALESCE((SELECT SUM(platform_fee) FROM paid), 0) AS platform_fee_total,
         COALESCE((SELECT SUM(gateway_fee) FROM paid), 0) AS gateway_fee_total,
         COALESCE((SELECT SUM(amount - gateway_fee) FROM paid), 0) AS net_of_gateway_total,
-        COALESCE((SELECT SUM(COALESCE(net_amount, amount)) FROM payments WHERE status = 'PAID' AND settlement_status = 'UNSETTLED'), 0) AS waiting_split,
+        COALESCE((SELECT SUM(COALESCE(net_amount, amount)) FROM paid WHERE settlement_status = 'UNSETTLED'), 0) AS waiting_split,
         COALESCE((SELECT SUM(net_amount) FROM settlements WHERE status IN ('PENDING','PROCESSING')), 0) AS waiting_payout,
         COALESCE((SELECT SUM(net_amount) FROM settlements WHERE status = 'PAID'), 0) AS completed_payouts,
         COALESCE((SELECT COUNT(*) FROM settlements WHERE status IN ('PENDING','PROCESSING')), 0) AS pending_settlements,
-        COALESCE((SELECT COUNT(*) FROM payments WHERE status = 'FAILED'), 0) AS failed_payments,
-        COALESCE((SELECT SUM(amount) FROM refunds WHERE status = 'SUCCEEDED'), 0) AS refunds_total,
+        COALESCE((SELECT COUNT(*) FROM payments WHERE status = 'FAILED' AND purpose = ANY($1)), 0) AS failed_payments,
+        COALESCE((SELECT SUM(rf.amount) FROM refunds rf JOIN payments rp ON rp.id = rf."paymentId" WHERE rf.status = 'SUCCEEDED' AND rp.purpose = ANY($1)), 0) AS refunds_total,
         COALESCE((SELECT AVG(amount) FROM paid), 0) AS avg_booking_value,
         COALESCE((SELECT COUNT(DISTINCT "tenantId") FROM paid), 0) AS clinic_count,
         COALESCE((SELECT SUM(COALESCE(net_amount, amount)) FROM paid), 0) AS net_total
-    `),
+    `, [[...CLINIC_REVENUE_PURPOSES]]),
       // Subscription metrics (distinct domain — not a payment calculation).
       this.dataSource.query(`
       SELECT
@@ -440,8 +539,11 @@ export class MarketplaceFinanceService {
       // visible to the caller instead of leaving it to be discovered later; the
       // sums themselves are unchanged (additive field, no contract break).
       this.dataSource.query(
-        `SELECT DISTINCT currency FROM payments WHERE status = 'PAID' AND currency IS NOT NULL ORDER BY currency`,
+        `SELECT DISTINCT currency FROM payments WHERE status = 'PAID' AND purpose = ANY($1) AND currency IS NOT NULL ORDER BY currency`,
+        [[...CLINIC_REVENUE_PURPOSES]],
       ),
+      // What the platform itself collected, per currency (never summed across currencies).
+      this.platformRevenueByCurrency(),
     ]);
 
     const clinicCount = n(r.clinic_count);
@@ -480,7 +582,48 @@ export class MarketplaceFinanceService {
        * with a single currency symbol.
        */
       currencies: (currencyRows as { currency: string }[]).map((c) => c.currency),
+      /**
+       * What ZiyaraTech itself collected — NOT clinic money, so none of the figures above
+       * include it: paid subscription invoices and the clinics' add-on / billing-upgrade
+       * payments, net of refunds, one entry per currency.
+       */
+      collectedRevenue: platformRows,
     };
+  }
+
+  /** Paid subscription invoices + add-on / billing-upgrade payments, net of refunds, by currency. */
+  private async platformRevenueByCurrency(): Promise<PlatformRevenueRow[]> {
+    const [invoices, payments] = await Promise.all([
+      this.dataSource.query(
+        `SELECT currency, SUM(amount) AS amount
+           FROM subscription_invoices WHERE status = 'PAID' GROUP BY currency`,
+      ),
+      this.dataSource.query(
+        `SELECT currency, SUM(amount - COALESCE(refunded_amount, 0)) AS amount
+           FROM payments
+          WHERE status IN ('PAID', 'PARTIALLY_REFUNDED') AND purpose = ANY($1)
+          GROUP BY currency`,
+        [[...PLATFORM_REVENUE_PURPOSES]],
+      ),
+    ]);
+    const byCurrency = new Map<string, PlatformRevenueRow>();
+    const row = (currency: string) => {
+      let r = byCurrency.get(currency);
+      if (!r) {
+        r = { currency, subscriptions: 0, addOns: 0, total: 0 };
+        byCurrency.set(currency, r);
+      }
+      return r;
+    };
+    for (const i of invoices as Record<string, unknown>[]) {
+      row(i.currency as string).subscriptions = round2(n(i.amount));
+    }
+    for (const p of payments as Record<string, unknown>[]) {
+      row(p.currency as string).addOns = round2(n(p.amount));
+    }
+    return [...byCurrency.values()]
+      .map((r) => ({ ...r, total: round2(r.subscriptions + r.addOns) }))
+      .sort((a, b) => a.currency.localeCompare(b.currency));
   }
 
   // ─────────────────────── KPI drill-down (single path) ────────────────── //
@@ -506,6 +649,9 @@ export class MarketplaceFinanceService {
   /** Merge a metric's base filter into the user query; return the query + extras. */
   private applyBase(def: MetricDef, q: QueryMarketplaceTransactionsDto) {
     const merged: QueryMarketplaceTransactionsDto = { ...q };
+    // The marketplace metrics are about what patients paid clinics; the platform's own
+    // revenue (add-ons, billing upgrades) is reported separately in `collectedRevenue`.
+    if (!merged.purpose) merged.purpose = 'CLINIC_MONEY';
     if (def.base?.status && !merged.status) merged.status = def.base.status;
     if (def.base?.settlementStatus && !merged.settlementStatus) {
       merged.settlementStatus = def.base.settlementStatus;
@@ -787,7 +933,11 @@ export class MarketplaceFinanceService {
     q: QueryMarketplaceTransactionsDto,
   ) {
     // Revenue-by-clinic over PAID payments (reuses the payments aggregation path).
-    const merged: QueryMarketplaceTransactionsDto = { ...q, status: q.status ?? 'PAID' };
+    const merged: QueryMarketplaceTransactionsDto = {
+      ...q,
+      status: q.status ?? 'PAID',
+      purpose: q.purpose ?? 'CLINIC_MONEY',
+    };
     const byClinic = await this.breakdown(merged, undefined, MEASURE_SQL.net, {
       by: 't.id, t.name', key: 't.id', label: 't.name',
     });
@@ -836,25 +986,25 @@ export class MarketplaceFinanceService {
          COALESCE(MIN(amount) FILTER (WHERE status = 'PAID'), 0) AS lowest_booking,
          COALESCE(SUM(amount) FILTER (WHERE status = 'PAID' AND paid_at >= date_trunc('month', now())), 0) AS this_month,
          COALESCE(SUM(amount) FILTER (WHERE status = 'PAID' AND paid_at >= date_trunc('month', now()) - interval '1 month' AND paid_at < date_trunc('month', now())), 0) AS last_month
-       FROM payments WHERE "tenantId" = $1`,
-      [tenantId],
+       FROM payments WHERE "tenantId" = $1 AND purpose = ANY($2)`,
+      [tenantId, [...CLINIC_REVENUE_PURPOSES]],
     );
 
     const daily = await this.dataSource.query(
       `SELECT to_char(date_trunc('day', paid_at), 'YYYY-MM-DD') AS day,
               COALESCE(SUM(amount), 0) AS revenue, COUNT(*) AS count
          FROM payments
-        WHERE "tenantId" = $1 AND status = 'PAID' AND paid_at >= now() - interval '30 days'
+        WHERE "tenantId" = $1 AND purpose = ANY($2) AND status = 'PAID' AND paid_at >= now() - interval '30 days'
         GROUP BY 1 ORDER BY 1`,
-      [tenantId],
+      [tenantId, [...CLINIC_REVENUE_PURPOSES]],
     );
     const monthly = await this.dataSource.query(
       `SELECT to_char(date_trunc('month', paid_at), 'YYYY-MM') AS month,
               COALESCE(SUM(amount), 0) AS revenue, COUNT(*) AS count
          FROM payments
-        WHERE "tenantId" = $1 AND status = 'PAID' AND paid_at >= now() - interval '12 months'
+        WHERE "tenantId" = $1 AND purpose = ANY($2) AND status = 'PAID' AND paid_at >= now() - interval '12 months'
         GROUP BY 1 ORDER BY 1`,
-      [tenantId],
+      [tenantId, [...CLINIC_REVENUE_PURPOSES]],
     );
 
     const thisMonth = n(t.this_month);
@@ -899,6 +1049,8 @@ export class MarketplaceFinanceService {
       'Gateway', 'Method', 'Gross', 'Gateway Fee', 'Platform Fee', 'Net',
       'Currency', 'Payment Status', 'Split Status', 'Payout Status',
       'Refund Status', 'Settlement Date', 'Paid At', 'Created At',
+      'Purpose', 'Settlement Mode', 'Fee Status', 'Provider Payout',
+      'Provider Charge', 'Open Exceptions',
     ];
     const esc = (v: unknown): string => {
       // SEC-05: patient/clinic names are user-controlled — neutralise formulas.
@@ -912,6 +1064,8 @@ export class MarketplaceFinanceService {
         r.gateway, r.paymentMethod, r.grossAmount, r.gatewayFee, r.platformFee, r.netAmount,
         r.currency, r.paymentStatus, r.splitStatus, r.payoutStatus, r.refundStatus,
         r.settlementDate, r.paidAt, r.createdAt,
+        r.purpose, r.settlementMode, r.feeStatus, r.providerPayoutId,
+        r.gatewayPaymentId, r.openExceptions,
       ].map(esc).join(','),
     );
     const content = [headers.join(','), ...lines].join('\n');

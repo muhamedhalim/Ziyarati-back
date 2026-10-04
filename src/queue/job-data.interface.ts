@@ -26,6 +26,12 @@ export type RefundsReapJob = BaseJobData;
 // ── Payments (reconciliation sweep — platform-level, tenantId null) ─────────
 export type PaymentsReconcileJob = BaseJobData;
 
+/** Tap Phase 5 — the daily / weekly provider reconciliation (platform-level, tenantId null). */
+export interface PaymentsProviderReconcileJob extends BaseJobData {
+  /** How many days back to re-read (1–30). Defaults to the daily window. */
+  lookbackDays?: number;
+}
+
 /**
  * REL-005 — one durable post-payment effect (see `JOB.PAYMENTS_OUTCOME`). The
  * payload names WHAT happened; the consumer re-reads the payment and acts on its

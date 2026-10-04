@@ -4,6 +4,7 @@ import { PaymentsConfig } from '../../payments.config';
 import {
   GatewayCreatePaymentRequest,
   GatewayFeeInfo,
+  GatewayLookupResult,
   GatewayPaymentResult,
   GatewayRefundRequest,
   GatewayRefundResult,
@@ -19,12 +20,14 @@ import { sanitizeTapCharge, sanitizeTapRefund } from './tap-redaction';
 import {
   TAP_SOURCE,
   TapCharge,
+  TapRefund,
   toDomainMinorUnits,
   toTapAmount,
 } from './tap.types';
 
 /** User-safe text — Tap's own wording is never forwarded. */
 const MSG_UNAVAILABLE = 'Payment gateway is temporarily unavailable';
+const MSG_REFUND_REJECTED = 'Refund was rejected by the payment gateway';
 
 /**
  * Tap Payments gateway adapter (https://developers.tap.company).
@@ -145,7 +148,49 @@ export class TapGatewayProvider implements PaymentGatewayProvider {
       };
     }
 
-    const charge = res.json;
+    return this.verifiedCharge(res.json, gatewayPaymentId);
+  }
+
+  /**
+   * Finds a payment by the reference WE sent (`reference.transaction` = our Payment
+   * id) — Tap documents that filter on its charge list. Used for a payment whose
+   * create call reached Tap but whose id we never stored, when its webhook is lost.
+   *
+   * `not_found` only when Tap answered with an empty list: a refusal (a platform
+   * key asking about a sub-merchant, say), an outage and an ambiguous answer are all
+   * `unknown`, so the caller never concludes "nothing was charged" from silence.
+   */
+  async findPaymentByReference(
+    paymentId: string,
+  ): Promise<GatewayLookupResult> {
+    const res = await this.client.listCharges({
+      reference: { transaction: [paymentId] },
+      limit: 5,
+    });
+    if (!res.ok) return { status: 'unknown' };
+    const charges = (res.json?.charges ?? []).filter(
+      (c) => c?.id && c.reference?.transaction === paymentId,
+    );
+    if (charges.length === 0) return { status: 'not_found' };
+    // One idempotency key per payment means one charge. If there are several, prefer
+    // the single CAPTURED one; anything else is ambiguous and left to a human.
+    const captured = charges.filter(
+      (c) => mapChargeStatus(c.status) === 'paid',
+    );
+    const chosen =
+      charges.length === 1
+        ? charges[0]
+        : captured.length === 1
+          ? captured[0]
+          : undefined;
+    if (!chosen) return { status: 'unknown' };
+    return { status: 'found', result: this.verifiedCharge(chosen, chosen.id) };
+  }
+
+  private verifiedCharge(
+    charge: TapCharge,
+    gatewayPaymentId: string,
+  ): GatewayPaymentResult {
     const status = mapChargeStatus(charge.status);
     return {
       success: true,
@@ -208,25 +253,55 @@ export class TapGatewayProvider implements PaymentGatewayProvider {
         // A transport error / 5xx may mean the refund WAS created — unknown,
         // not failed. Anything else (e.g. 1161 amount too high) is definitive.
         status: res.transient ? 'unknown' : 'failed',
-        failureReason: res.transient
-          ? MSG_UNAVAILABLE
-          : 'Refund was rejected by the payment gateway',
+        failureReason: res.transient ? MSG_UNAVAILABLE : MSG_REFUND_REJECTED,
+        failureCode: res.errorCode ?? String(res.status),
       };
     }
 
-    const refund = res.json;
+    return this.refundResult(res.json);
+  }
+
+  /**
+   * One refund by Tap's id (`GET /v2/refunds/{id}`) — the reaper's and the refund
+   * webhook's source of truth. ANY non-2xx is `unknown`: a 404 can be a live id
+   * asked with a test key, a 401 a rotated secret, a 5xx an outage — none of
+   * which says the refund did not happen.
+   */
+  async verifyRefund(gatewayRefundId: string): Promise<GatewayRefundResult> {
+    const res = await this.client.getRefund(gatewayRefundId);
+    if (!res.ok || !res.json?.id) {
+      return {
+        success: false,
+        status: 'unknown',
+        gatewayRefundId,
+        failureReason: MSG_UNAVAILABLE,
+        failureCode: res.errorCode ?? String(res.status),
+      };
+    }
+    return this.refundResult(res.json);
+  }
+
+  /** Reduce a Tap refund object to the neutral result (shared by create and verify). */
+  private refundResult(refund: TapRefund): GatewayRefundResult {
     const outcome = mapRefundStatus(refund.status);
     return {
       // Only a COMPLETED refund is success; PENDING is not.
       success: outcome === 'succeeded',
       status: outcome,
       gatewayRefundId: refund.id,
+      gatewayPaymentId: refund.charge_id,
+      amountMinorUnits: toDomainMinorUnits(refund.amount),
+      currency: refund.currency,
       failureReason:
         outcome === 'failed'
-          ? 'Refund was rejected by the payment gateway'
+          ? MSG_REFUND_REJECTED
           : outcome === 'pending'
             ? 'Refund is pending at the payment gateway'
-            : undefined,
+            : outcome === 'unknown'
+              ? MSG_UNAVAILABLE
+              : undefined,
+      failureCode:
+        outcome === 'failed' ? (refund.response?.code ?? undefined) : undefined,
       raw: sanitizeTapRefund(refund),
     };
   }
