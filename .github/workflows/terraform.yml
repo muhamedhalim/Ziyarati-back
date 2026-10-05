@@ -45,9 +45,13 @@ jobs:
             terraform -chdir="infra/terraform/$d" init -backend=false -input=false
             terraform -chdir="infra/terraform/$d" validate
           done
+      - name: IaC security scan (HIGH/CRITICAL fail the build)
+        run: |
+          docker run --rm -v "$PWD/infra/terraform:/src:ro" aquasec/trivy:0.57.1 config /src --ignorefile /src/.trivyignore.yaml \
+            --severity HIGH,CRITICAL --exit-code 1 --skip-dirs "**/.terraform" --skip-files "**/*.tftest.hcl"
       - name: terraform test (mocked AWS — no account needed)
         run: |
-          for m in network rds elasticache s3-uploads ecs platform; do
+          for m in network rds elasticache s3-uploads ecs waf platform; do
             terraform -chdir="infra/terraform/modules/$m" init -backend=false -input=false
             terraform -chdir="infra/terraform/modules/$m" test
           done
@@ -92,8 +96,54 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  apply:
+  # Reviewers must approve what will change, not a blank check: the plan is
+  # produced BEFORE the environment gate (read-only role, no lock, no artifact —
+  # a saved plan file would carry the Valkey AUTH token), the diff is shown in
+  # the run summary, and the gated job re-plans and refuses to apply if the
+  # change set differs from what was reviewed.
+  preview:
     needs: static
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      summary: ${{ steps.plan.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Account id
+        id: acct
+        run: |
+          if [ "${{ inputs.environment }}" = production ]; then
+            echo "id=${{ vars.AWS_ACCOUNT_ID_PRODUCTION }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=${{ vars.AWS_ACCOUNT_ID_STAGING }}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/zt-${{ inputs.environment }}-tf-plan
+          aws-region: ${{ env.AWS_REGION }}
+      - name: plan (read-only)
+        id: plan
+        working-directory: infra/terraform/environments/${{ inputs.environment }}
+        env:
+          TF_VAR_account_id: ${{ steps.acct.outputs.id }}
+        run: |
+          terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}"
+          terraform plan -input=false -lock=false -no-color | tee plan.txt
+          SUMMARY="$(grep -E '^Plan:|^No changes' plan.txt | head -1 || true)"
+          echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Review before approving — ${{ inputs.environment }}"
+            echo '```'
+            grep -E '^  [#~+-]|^Plan:|^No changes|must be replaced|will be destroyed' plan.txt | head -200 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    needs: [static, preview]
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150 # first apply waits for ACM DNS validation
@@ -119,11 +169,17 @@ jobs:
           role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/zt-${{ inputs.environment }}-tf-apply
           aws-region: ${{ env.AWS_REGION }}
           role-duration-seconds: 7200
-      - name: plan + apply
+      - name: plan, verify it matches the reviewed preview, apply
         working-directory: infra/terraform/environments/${{ inputs.environment }}
         env:
           TF_VAR_account_id: ${{ steps.acct.outputs.id }}
+          REVIEWED: ${{ needs.preview.outputs.summary }}
         run: |
           terraform init -input=false -backend-config="bucket=zt-${{ inputs.environment }}-tfstate-${{ steps.acct.outputs.id }}"
-          terraform plan -input=false -out=tfplan
+          terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+          NOW="$(grep -E '^Plan:|^No changes' plan.txt | head -1 || true)"
+          if [ "$NOW" != "$REVIEWED" ]; then
+            echo "::error::The change set differs from the one reviewed (reviewed: '${REVIEWED}', now: '${NOW}'). Re-run the workflow and review again."
+            exit 1
+          fi
           terraform apply -input=false tfplan

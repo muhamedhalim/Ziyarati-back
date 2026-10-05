@@ -119,3 +119,22 @@ run "exec_forces_writable_root" {
     error_message = "ECS Exec's agent needs a writable root filesystem"
   }
 }
+
+# WELL-ARCHITECTED-REVIEW.md REL-02: the worker has no ALB, so without its own
+# container health check ECS only notices a process exit, never a wedged loop.
+run "worker_has_a_container_health_check" {
+  command = plan
+
+  assert {
+    condition = (
+      jsondecode(aws_ecs_task_definition.worker.container_definitions)[0].healthCheck.retries == 3 &&
+      jsondecode(aws_ecs_task_definition.worker.container_definitions)[0].healthCheck.startPeriod >= 60
+    )
+    error_message = "Worker container needs a health check with a generous startPeriod"
+  }
+
+  assert {
+    condition     = !can(jsondecode(aws_ecs_task_definition.api.container_definitions)[0].healthCheck)
+    error_message = "The API is health-checked by the ALB; do not double up in the task definition"
+  }
+}

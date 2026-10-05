@@ -464,6 +464,17 @@ export const validate = (config: Record<string, unknown>) => {
       .max(65536)
       .default(4096),
 
+    // ── Client-address trust (SEC-02) ─────────────────────────────────────
+    // Number of reverse-proxy hops Express may trust for `req.ip`. 0 keeps the
+    // legacy behaviour (socket peer). 1 = trust exactly the AWS ALB, which
+    // appends the true peer to X-Forwarded-For. Deliberately capped at 1: a
+    // larger count would trust a caller-controlled header entry. See
+    // src/config/trust-proxy.ts.
+    TRUST_PROXY_HOPS: Joi.number().integer().valid(0, 1).default(0),
+    // Optional shared secret proving a request came through the trusted edge
+    // (Vercel rewrite). Unset = inert. Requires TRUST_PROXY_HOPS=1.
+    EDGE_PROXY_TOKEN: Joi.string().min(32).max(256),
+
     // ── Payments / Moyasar (PLATFORM-level only) ──────────────────────────
     // PAYMENT_PROVIDER is the single, central gateway selection. In dev/test
     // the keys may stay unset (the factory falls back to the Noop provider so
@@ -1351,6 +1362,18 @@ export const validate = (config: Record<string, unknown>) => {
         );
       }
     }
+  }
+
+  // ── Edge token needs the ALB hop to be trusted (SEC-02) ───────────────────
+  // The token only makes sense when Express resolves `req.ip` to the
+  // ALB-appended address; with hops=0 the edge check could never match and the
+  // operator would believe per-user throttling was on when it is not.
+  if (value.EDGE_PROXY_TOKEN && Number(value.TRUST_PROXY_HOPS) !== 1) {
+    throw new Error(
+      `❌ Env validation error: EDGE_PROXY_TOKEN is set but TRUST_PROXY_HOPS is ` +
+        `not 1. The edge token is only meaningful behind the ALB; set ` +
+        `TRUST_PROXY_HOPS=1 or unset EDGE_PROXY_TOKEN.`,
+    );
   }
 
   // ── Register-owner endpoint ceiling (production-required, ZT-006) ─────────

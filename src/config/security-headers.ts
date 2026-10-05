@@ -40,8 +40,11 @@ export const API_CONTENT_SECURITY_POLICY = "default-src 'none'; frame-ancestors 
 /**
  * True only when the current request arrived over HTTPS. Reads the
  * forwarded-protocol REQUEST HEADER directly rather than Express's
- * `req.secure` / `trust proxy` — enabling `trust proxy` would change 009's
- * throttle key derivation (FR-058; research.md R6). `x-forwarded-proto` is
+ * `req.secure` rather than relying on Express's proxy-trust machinery:
+ * `TRUST_PROXY_HOPS` (SEC-02) now makes Express trust the ALB for `req.ip`,
+ * and 009's auth limiters are unaffected because they never key on an address
+ * (FR-013). Keeping this header read self-contained means a hop-count change can
+ * never alter a response header. `x-forwarded-proto` is
  * read raw and compared case-insensitively; it is never trusted as an
  * authentication or authorization signal, only as a hint for a
  * defence-in-depth transport header.

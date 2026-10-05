@@ -1,0 +1,59 @@
+{
+  "schema": "lt-run-manifest/1",
+  "tag": "f-smoke-dbg2",
+  "scenario": "smoke-campaign",
+  "startedAt": "2026-10-05T12:19:44.030Z",
+  "git": "2a6ba40",
+  "gitDirty": false,
+  "k6": {
+    "ref": "grafana/k6:latest",
+    "id": "sha256:5221b620a4f874faff6e32ba597aa667c058391fe4898b1c6f6377f062c6cdec",
+    "version": "k6 v2.2.0 (commit/00a9a1b7f5, go1.26.5, linux/amd64)",
+    "pinnedAt": "2026-10-05T12:09:33.548Z"
+  },
+  "lab": {
+    "ports": {
+      "api": 3101,
+      "pg": 5436,
+      "redis": 6382,
+      "tapStub": 4477,
+      "workerMetrics": 9191
+    },
+    "knobs": {
+      "workers": 1,
+      "pool": 15,
+      "workerPool": 10,
+      "payments": "tap",
+      "pgMaxConnections": 300
+    },
+    "db": "ziyarati_c20k",
+    "queuePrefix": "c20k"
+  },
+  "dataset": {
+    "tenants": 13,
+    "appointments": 12346,
+    "customers": 3748,
+    "users": 160
+  },
+  "segments": 1,
+  "host": {
+    "cpus": 16,
+    "memGB": 191,
+    "platform": "win32"
+  },
+  "env": {
+    "DURATION": "12s",
+    "LT_DEBUG_SLOTS": "true",
+    "BASE_URL": "http://host.docker.internal:3101",
+    "RUN_TAG": "f-smoke-dbg2",
+    "LT_RUN_SEED": "53379"
+  },
+  "throttleMode": "lifted via NODE_ENV=test",
+  "endedAt": "2026-10-05T12:19:59.322Z",
+  "k6ExitCodes": [
+    {
+      "seg": "0of1",
+      "code": 99
+    }
+  ]
+}

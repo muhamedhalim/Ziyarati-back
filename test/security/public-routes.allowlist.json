@@ -128,5 +128,150 @@
     "method": "POST",
     "path": "/public/payments/return",
     "reason": "Patient return page: takes a gateway charge id and reports what the gateway says about a booking payment. Cannot settle anything the gateway did not capture (amount/currency re-verified); an unknown charge is a uniform 404; per-IP throttled; the signed webhook stays the authority; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/appointments/action/:token",
+    "reason": "Patient action link: describes the appointment behind a cancel/reschedule link (clinic, branch, services, doctor name, time, status, per-action allowed flags, clinic contact — no patient identity or financial detail). Authorised by the 256-bit random single-use link token (only its sha256 digest is stored; PatientActionLinkService.resolve — expires at min(7d, appointment start), consumed on use); every unknown/expired/consumed token is the same uniform 404. Read-only, no side effect. Per-IP @Throttle; not JWT (the patient has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/appointments/action/:token/availability",
+    "reason": "Patient action link: lists free reschedule times for the link's own appointment (RESCHEDULE-purpose links only; branch/service/doctor fixed by the appointment, horizon capped at PUBLIC_AVAILABILITY_HORIZON_DAYS). Authorised by the 256-bit random single-use link token (only its sha256 digest is stored; PatientActionLinkService.resolve — expires at min(7d, appointment start), consumed on use); every unknown/expired/consumed token is the same uniform 404. Read-only, free times only. Per-IP @Throttle; not JWT (the patient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/appointments/action/:token/reschedule",
+    "reason": "Patient action link: moves the link's own appointment to a new time (RESCHEDULE-purpose links only). Authorised by the 256-bit random single-use link token (only its sha256 digest is stored; PatientActionLinkService.resolve — expires at min(7d, appointment start), consumed on use); every unknown/expired/consumed token is the same uniform 404. Body is only a start time; the appointment is read from the link, never the caller, and AppointmentsService.reschedule re-validates the clinic window and slot at write time; the link is consumed afterwards. @SkipCsrf because the credential is the token in the URL, not a cookie. Per-IP @Throttle; not JWT (the patient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/appointments/action/:token/cancel",
+    "reason": "Patient action link: cancels the link's own appointment (CANCEL-purpose links only). Authorised by the 256-bit random single-use link token (only its sha256 digest is stored; PatientActionLinkService.resolve — expires at min(7d, appointment start), consumed on use); every unknown/expired/consumed token is the same uniform 404. Body is only an optional reason; window/terminal-state rules are re-checked at request time, no refund is ever initiated, and the link is consumed afterwards. @SkipCsrf because the credential is the token in the URL, not a cookie. Per-IP @Throttle; not JWT (the patient has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/waitlist/offer/:token",
+    "reason": "Waitlist offer: shows the offered slot (clinic, branch, service, doctor, time, respond-by deadline, offer state — no patient identity). Authorised by the 256-bit random WAITLIST_OFFER link token (sha256-hashed at rest, PatientActionLinkService.resolve; purpose and offer binding re-checked); every invalid token is the same uniform 404. Read-only; a valid token on a no-longer-actionable offer returns 200 with its state. Per-IP @Throttle; not JWT (the waitlisted patient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/waitlist/offer/:token/accept",
+    "reason": "Waitlist offer: accepts the offer and books the slot for the waitlisted customer. Authorised by the 256-bit random WAITLIST_OFFER link token (sha256-hashed at rest, PatientActionLinkService.resolve; purpose and offer binding re-checked); every invalid token is the same uniform 404. Takes no body; acceptance is gated by a single conditional UPDATE (PENDING and before responds_by) so only one of two racing accepts wins, then the ordinary AppointmentsService.create path (conflict prevention, bot actor) runs; a non-actionable offer is a 409. @SkipCsrf because the credential is the token in the URL. Per-IP @Throttle; not JWT (the waitlisted patient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/waitlist/offer/:token/decline",
+    "reason": "Waitlist offer: declines the offer and returns the entry to the waitlist. Authorised by the 256-bit random WAITLIST_OFFER link token (sha256-hashed at rest, PatientActionLinkService.resolve; purpose and offer binding re-checked); every invalid token is the same uniform 404. Takes no body; a conditional UPDATE (PENDING only) makes it race-safe and a non-actionable offer is a 409. @SkipCsrf because the credential is the token in the URL. Per-IP @Throttle; not JWT (the waitlisted patient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/session",
+    "reason": "Public booking: starts or resumes the visitor's booking session (mints the guest_token / booking_session_id cookies when absent) and returns the current selection. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Only a conversation this same guest owns can be adopted; a foreign id is ignored. @SkipCsrf: no existing cookie credential is being exercised. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/booking/selection",
+    "reason": "Public booking: returns the visitor's own current booking selection. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Read-only; scoped to the caller's own conversation. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/select/clinic",
+    "reason": "Public booking: records the chosen clinic in the visitor's own session. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). The clinic is validated against the eligibility predicate first; an ineligible or unknown clinic is the same uniform 404. Writes only session state. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/select/branch",
+    "reason": "Public booking: records the chosen branch in the visitor's own session. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). The branch is resolved to its owning clinic server-side, must be bookable right now, and must agree with any selected clinic. Writes only session state. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/select/service",
+    "reason": "Public booking: records the chosen services in the visitor's own session. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Every id must be offered at the selected branch (live check). Writes only session state. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/select/doctor",
+    "reason": "Public booking: records the chosen doctor in the visitor's own session. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). The doctor must work at the selected branch (the same predicate the AI flow uses). Writes only session state. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/select/slot",
+    "reason": "Public booking: records the chosen start time in the visitor's own session. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Requires a doctor to be selected first; the time is only authoritative once re-validated at confirm. Writes only session state. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/booking/services",
+    "reason": "Public booking: lists the services offered at the visitor's selected branch, at branch prices. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Read-only; requires a selected branch. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/booking/doctors",
+    "reason": "Public booking: lists the doctors working at the visitor's selected branch. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Read-only anonymous-safe projection; requires selected services. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/booking/availability",
+    "reason": "Public booking: lists free slots for the selected doctor (anonymous-safe projection, horizon capped server-side). Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Read-only; requires a selected doctor. Most generous of the booking throttles (60/min). Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/booking/confirm",
+    "reason": "Public booking: creates the appointment for the anonymous visitor. Authorised by the HttpOnly guest_token JWT cookie (minted server-side under the data-less guest-discovery tenant, no roles/permissions) plus the server-held booking selection; the caller supplies no tenant identity as an authorisation input and the clinic must pass the live ELIGIBLE_CLINIC predicate (APPROVED, active, public_booking_enabled). Accepts NO resource ids (only name, phone, optional email/insurance/notes): clinic, branch, services, doctor and time come from the recorded selection, and AppointmentsService.create re-validates everything transactionally under the clinic's least-privilege bot actor in that clinic's own tenant context. Customer reuse requires phone AND name (F-19) so an existing patient's record is never overwritten. Tightest booking throttle (10/min). @SkipCsrf: the credential is the guest cookie, not a staff session. Per-IP @Throttle; not JWT (the visitor has no account)."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/marketplace/clinics/:idOrSlug",
+    "reason": "Public marketing/discovery read: clinic profile with branches, per-branch priced services and doctors for the Marketplace; clinic contact_email is deliberately withheld. Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (30/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/specialties",
+    "reason": "Public marketing/discovery read: specialties that have at least one eligible clinic. Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (60/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/specialties/:slug",
+    "reason": "Public marketing/discovery read: specialty detail with paginated eligible clinics and doctors. Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (30/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/doctors",
+    "reason": "Public marketing/discovery read: doctor search across eligible clinics (name, title, clinic, avatar proxy URL only; page size capped at 24). Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (30/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/doctors/:slug",
+    "reason": "Public marketing/discovery read: doctor profile (title, bio, branches, specialties, services); soft-deleted or not-available-for-booking staff are a uniform 404. Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (30/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/doctors/:slug/avatar",
+    "reason": "Public marketing/discovery read: streams a doctor's avatar through the API (never a redirect or presigned storage URL); eligibility is re-checked per request and an ineligible doctor, unknown slug and no-avatar are the same 404. Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (120/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/services",
+    "reason": "Public marketing/discovery read: service-offering search across eligible clinics, one row per service x branch (page size capped at 24). Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (30/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/discovery/clinics/:clinicSlug/services/:serviceSlug",
+    "reason": "Public marketing/discovery read: clinic-scoped service detail with branch-priced offerings. Read-only; every query is restricted to the ELIGIBLE_CLINIC predicate (APPROVED, active, undeleted, public_booking_enabled) so an ineligible clinic is indistinguishable from an unknown one; no user email, schedules, commissions or storage URLs are returned. Per-route @Throttle (30/min per IP; per-visitor for Marketplace server-side reads presenting a platform API key + visitor id). No tenant principal exists to authenticate; not JWT."
+  },
+  {
+    "method": "GET",
+    "path": "/public/unsubscribe/:token",
+    "reason": "Marketing unsubscribe: shows the clinic name, a MASKED address and whether it is already suppressed. Authorised by the stateless HMAC-SHA256 token over (tenantId, email) (UnsubscribeTokenService.verify — constant-time compare, so it cannot be forged or altered); every invalid token is the same uniform 404. Must work without signing in, permanently (FR-E006). Read-only; reveals nothing else about the recipient. Per-IP @Throttle; not JWT (the recipient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/unsubscribe/:token",
+    "reason": "Marketing unsubscribe: suppresses that one address for that one clinic's marketing mail and clears the matching customer's marketing opt-in. Authorised by the stateless HMAC-SHA256 token over (tenantId, email) (UnsubscribeTokenService.verify — constant-time compare, so it cannot be forged or altered); every invalid token is the same uniform 404. Must work without signing in, permanently (FR-E006). Idempotent; takes no body and can affect only the (tenant, address) pair the token encodes. @SkipCsrf because the credential is the token in the URL. Per-IP @Throttle; not JWT (the recipient has no account)."
+  },
+  {
+    "method": "POST",
+    "path": "/public/email/webhooks/resend",
+    "reason": "Resend bounce/complaint feedback webhook — authenticated by an HMAC-SHA256 signature over the exact raw body (EmailWebhookSignatureVerifier: constant-time compare, fail-closed when RESEND_WEBHOOK_SECRET is unset), checked BEFORE any state change; the tenant and address come from our own campaign_recipients row matched by provider_ref, never from the payload, and suppression is idempotent. Per-IP @Throttle (60/min); @SkipCsrf; not JWT."
   }
 ]

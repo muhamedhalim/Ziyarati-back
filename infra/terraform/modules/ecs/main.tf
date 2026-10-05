@@ -163,14 +163,25 @@ resource "aws_ecs_task_definition" "worker" {
   }
 
   container_definitions = jsonencode([{
-    name                   = "worker"
-    image                  = local.image
-    essential              = true
-    command                = ["node", "dist/src/worker.js"]
-    environment            = local.to_env.worker
-    secrets                = local.worker_secrets
-    logConfiguration       = local.log_options.worker
-    stopTimeout            = 90 # BullMQ drain of in-flight jobs
+    name             = "worker"
+    image            = local.image
+    essential        = true
+    command          = ["node", "dist/src/worker.js"]
+    environment      = local.to_env.worker
+    secrets          = local.worker_secrets
+    logConfiguration = local.log_options.worker
+    stopTimeout      = 90 # BullMQ drain of in-flight jobs
+    # The worker has no ALB, so without this ECS only notices a process EXIT. The
+    # /metrics listener (worker.ts, :WORKER_METRICS_PORT, default 9091) answers
+    # every request (401/404 without the bearer token), so ANY HTTP response
+    # proves the event loop is alive; no token is needed or logged.
+    healthCheck = {
+      command     = ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.WORKER_METRICS_PORT||9091)+'/healthz').then(()=>process.exit(0)).catch(()=>process.exit(1))\""]
+      interval    = 30
+      timeout     = 10
+      retries     = 3
+      startPeriod = 90
+    }
     readonlyRootFilesystem = local.readonly_root
     mountPoints            = local.tmp_mount
     linuxParameters        = { initProcessEnabled = var.enable_execute_command }

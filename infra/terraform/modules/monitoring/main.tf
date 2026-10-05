@@ -232,6 +232,33 @@ locals {
         op   = "GreaterThanThreshold", threshold = 50, period = 300, evals = 2, missing = "notBreaching"
         desc = "API ERROR log lines > 50 / 5 min for 10 min"
       }
+      "warning-worker-cpu" = {
+        ns   = "AWS/ECS", metric = "CPUUtilization", stat = "Average"
+        dims = { ClusterName = var.cluster_name, ServiceName = var.worker_service_name }
+        op   = "GreaterThanThreshold", threshold = 85, period = 300, evals = 3, missing = "notBreaching"
+        desc = "S-17: worker CPU > 85% for 15 min — jobs are queueing; autoscaling at max or not keeping up"
+      }
+      "warning-worker-memory" = {
+        ns   = "AWS/ECS", metric = "MemoryUtilization", stat = "Maximum"
+        dims = { ClusterName = var.cluster_name, ServiceName = var.worker_service_name }
+        op   = "GreaterThanThreshold", threshold = 85, period = 300, evals = 3, missing = "notBreaching"
+        desc = "Worker memory > 85% (OOM-kill risk; a killed worker re-runs its in-flight jobs)"
+      }
+      "warning-worker-error-lines" = {
+        ns   = "ZiyaraTech/${var.environment}", metric = "ErrorLines-worker", stat = "Sum", dims = {}
+        op   = "GreaterThanThreshold", threshold = 50, period = 300, evals = 2, missing = "notBreaching"
+        desc = "Worker ERROR log lines > 50 / 5 min for 10 min"
+      }
+      "warning-rds-cpu-credits" = {
+        ns   = "AWS/RDS", metric = "CPUCreditBalance", stat = "Minimum", dims = local.rds_dims
+        op   = "LessThanThreshold", threshold = 50, period = 300, evals = 3, missing = "notBreaching"
+        desc = "S-08: burstable DB CPU credit balance < 50 — the t4g throttle cliff is close (move to db.m7g.large)"
+      }
+      "critical-rds-disk-queue" = {
+        ns   = "AWS/RDS", metric = "DiskQueueDepth", stat = "Average", dims = local.rds_dims
+        op   = "GreaterThanThreshold", threshold = 5, period = 300, evals = 3, missing = "notBreaching"
+        desc = "S-10: DB disk queue depth > 5 for 15 min — storage IOPS throttled"
+      }
       # ── Payments (Tap) — runbook: infra/runbooks/tap-payments-rollout.md §7 ──
       "critical-payments-alert" = {
         ns   = "ZiyaraTech/${var.environment}", metric = "PaymentsAlerts", stat = "Sum", dims = {}
@@ -286,6 +313,27 @@ locals {
         desc = "S-13: Valkey engine CPU > 60%"
       }
     }]...),
+    # Keys come from the plan-time count, never from (apply-time) NAT ids.
+    { for i in range(var.nat_gateway_count) : "critical-nat-port-allocation-${i}" => {
+      ns   = "AWS/NATGateway", metric = "ErrorPortAllocation", stat = "Sum", dims = { NatGatewayId = var.nat_gateway_ids[i] }
+      op   = "GreaterThanThreshold", threshold = 0, period = 300, evals = 2, missing = "notBreaching"
+      desc = "S-21: NAT gateway ${i} ran out of ports — outbound connections (OpenAI, Meta, Tap, AWS APIs) are being dropped"
+    } },
+    !var.enable_acm_alarm ? {} : {
+      "critical-acm-certificate-expiry" = {
+        ns   = "AWS/CertificateManager", metric = "DaysToExpiry", stat = "Minimum", dims = { CertificateArn = var.certificate_arn }
+        op   = "LessThanThreshold", threshold = 21, period = 86400, evals = 1, missing = "notBreaching"
+        desc = "API TLS certificate expires in < 21 days — ACM could not renew; is the DNS validation CNAME (Vercel DNS) still present?"
+      }
+    },
+    !var.enable_ses_queue_alarm ? {} : {
+      "warning-ses-feedback-queue-age" = {
+        ns   = "AWS/SQS", metric = "ApproximateAgeOfOldestMessage", stat = "Maximum"
+        dims = { QueueName = var.ses_feedback_queue_name }
+        op   = "GreaterThanThreshold", threshold = 900, period = 300, evals = 2, missing = "notBreaching"
+        desc = "SES bounce/complaint events waiting > 15 min — the worker consumer is stalled (suppressions not being recorded)"
+      }
+    },
   )
 }
 
@@ -520,4 +568,102 @@ resource "aws_cloudwatch_dashboard" "this" {
       },
     ]
   })
+}
+
+# ── Infrastructure event routing (failovers, failed deploys, stopped tasks) ──
+# Alarms detect symptoms; these are the events that explain them (and the ones
+# with no metric at all: an RDS Multi-AZ failover, a circuit-breaker rollback).
+# Everything goes through EventBridge (RDS and ECS both emit there natively),
+# so no RDS event subscription and no extra KMS grants are needed: the data
+# key's policy already lets events.amazonaws.com publish to encrypted topics
+# (GuardDuty uses the same path). Payloads are resource names/status only.
+data "aws_caller_identity" "current" {}
+
+resource "aws_sns_topic" "infra_events" {
+  name              = "${var.name}-infra-events"
+  kms_master_key_id = var.kms_key_arn
+  tags              = local.tags
+}
+
+resource "aws_sns_topic_subscription" "infra_events_email" {
+  for_each  = toset(var.alert_emails)
+  topic_arn = aws_sns_topic.infra_events.arn
+  protocol  = "email"
+  endpoint  = each.value
+}
+
+data "aws_iam_policy_document" "infra_events" {
+  statement {
+    sid       = "AllowEventBridgeRules"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.infra_events.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "infra_events" {
+  arn    = aws_sns_topic.infra_events.arn
+  policy = data.aws_iam_policy_document.infra_events.json
+}
+
+locals {
+  infra_event_rules = {
+    rds-instance = {
+      description = "RDS instance failover / failure / availability / low storage / recovery / deletion"
+      pattern = {
+        source        = ["aws.rds"]
+        "detail-type" = ["RDS DB Instance Event"]
+        detail = {
+          SourceIdentifier = [var.rds_identifier]
+          EventCategories  = ["failover", "failure", "availability", "low storage", "recovery", "deletion"]
+        }
+      }
+    }
+    ecs-deployment-failed = {
+      description = "ECS service deployment failed (circuit breaker rolled back or gave up)"
+      pattern = {
+        source        = ["aws.ecs"]
+        "detail-type" = ["ECS Deployment State Change"]
+        detail        = { eventName = ["SERVICE_DEPLOYMENT_FAILED"] }
+        resources     = [{ wildcard = "*:service/${var.cluster_name}/*" }]
+      }
+    }
+    ecs-task-failed = {
+      description = "A SERVICE task stopped abnormally (failed to start, OOM, essential container exit). One-off migrate tasks are excluded: their group is not service:*"
+      pattern = {
+        source        = ["aws.ecs"]
+        "detail-type" = ["ECS Task State Change"]
+        detail = {
+          clusterArn = [{ wildcard = "*:cluster/${var.cluster_name}" }]
+          lastStatus = ["STOPPED"]
+          group      = [{ prefix = "service:" }]
+          stopCode   = ["TaskFailedToStart", "EssentialContainerExited"]
+        }
+      }
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "infra" {
+  for_each      = local.infra_event_rules
+  name          = "${var.name}-${each.key}"
+  description   = each.value.description
+  event_pattern = jsonencode(each.value.pattern)
+  tags          = local.tags
+}
+
+resource "aws_cloudwatch_event_target" "infra" {
+  for_each = local.infra_event_rules
+  rule     = aws_cloudwatch_event_rule.infra[each.key].name
+  arn      = aws_sns_topic.infra_events.arn
+
+  depends_on = [aws_sns_topic_policy.infra_events]
 }

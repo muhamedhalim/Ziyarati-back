@@ -1,0 +1,1012 @@
+{
+  "tag": "f-cal-1",
+  "samples": 82,
+  "intervalMs": 5000,
+  "series": {
+    "api.loopLagP99": {
+      "min": 0.014581759,
+      "max": 0.045187071,
+      "last": 0.024068095
+    },
+    "api.loopLag": {
+      "min": 0.0013888,
+      "max": 0.035488,
+      "last": 0.0034921
+    },
+    "api.cpuSec": {
+      "min": 211.89099999999993,
+      "max": 409.0149999999998,
+      "last": 409.0149999999998
+    },
+    "api.rssMB": {
+      "min": 345,
+      "max": 413,
+      "last": 388
+    },
+    "api.heapMB": {
+      "min": 108,
+      "max": 194,
+      "last": 156
+    },
+    "api.poolTotal": {
+      "min": 1,
+      "max": 14,
+      "last": 1
+    },
+    "api.poolIdle": {
+      "min": 1,
+      "max": 14,
+      "last": 1
+    },
+    "api.poolWaiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "api.dbQueries": {
+      "min": 310258,
+      "max": 310271,
+      "last": 310271
+    },
+    "api.http.2xx": {
+      "min": 35929,
+      "max": 680084,
+      "last": 680084
+    },
+    "api.http.4xx": {
+      "min": 2713,
+      "max": 2713,
+      "last": 2713
+    },
+    "api.throttlerEvents": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications:delayed": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    },
+    "worker.depth.notifications:completed": {
+      "min": 173,
+      "max": 180,
+      "last": 180
+    },
+    "worker.depth.notifications:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications.dlq:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications.dlq:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications.dlq:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications.dlq:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications.dlq:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.notifications.dlq:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-outbound:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-outbound:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-outbound:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-outbound:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-outbound:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-outbound:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-webhook:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-webhook:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-webhook:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-webhook:completed": {
+      "min": 874,
+      "max": 874,
+      "last": 874
+    },
+    "worker.depth.whatsapp-webhook:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-webhook:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-media:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-media:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-media:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-media:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-media:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp-media:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp.dlq:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp.dlq:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp.dlq:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp.dlq:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp.dlq:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.whatsapp.dlq:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.launch:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.launch:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.launch:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.launch:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.launch:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.launch:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.fanout:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.fanout:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.fanout:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.fanout:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.fanout:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.fanout:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.processRecipient:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.processRecipient:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.processRecipient:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.processRecipient:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.processRecipient:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.processRecipient:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.dlq:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.dlq:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.dlq:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.dlq:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.dlq:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.dlq:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.ai:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.ai:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.ai:delayed": {
+      "min": 3,
+      "max": 3,
+      "last": 3
+    },
+    "worker.depth.ai:completed": {
+      "min": 3,
+      "max": 4,
+      "last": 4
+    },
+    "worker.depth.ai:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.ai:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.analytics:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.analytics:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.analytics:delayed": {
+      "min": 4,
+      "max": 4,
+      "last": 4
+    },
+    "worker.depth.analytics:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.analytics:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.analytics:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.settlements:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.settlements:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.settlements:delayed": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    },
+    "worker.depth.settlements:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.settlements:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.settlements:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.subscriptions:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.subscriptions:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.subscriptions:delayed": {
+      "min": 2,
+      "max": 2,
+      "last": 2
+    },
+    "worker.depth.subscriptions:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.subscriptions:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.subscriptions:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.refunds:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.refunds:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.refunds:delayed": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    },
+    "worker.depth.refunds:completed": {
+      "min": 3,
+      "max": 4,
+      "last": 4
+    },
+    "worker.depth.refunds:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.refunds:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.payments:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.payments:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.payments:delayed": {
+      "min": 3,
+      "max": 3,
+      "last": 3
+    },
+    "worker.depth.payments:completed": {
+      "min": 518,
+      "max": 518,
+      "last": 518
+    },
+    "worker.depth.payments:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.payments:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.platform:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.platform:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.platform:delayed": {
+      "min": 7,
+      "max": 7,
+      "last": 7
+    },
+    "worker.depth.platform:completed": {
+      "min": 5,
+      "max": 6,
+      "last": 6
+    },
+    "worker.depth.platform:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.platform:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.email:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.email:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.email:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.email:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.email:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.email:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.usage-report:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.usage-report:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.usage-report:delayed": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    },
+    "worker.depth.usage-report:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.usage-report:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.usage-report:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.workflow:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.workflow:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.workflow:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.workflow:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.workflow:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.workflow:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.deliver:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.deliver:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.deliver:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.deliver:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.deliver:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.deliver:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.dlq:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.dlq:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.dlq:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.dlq:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.dlq:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.webhooks.dlq:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.import:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.import:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.import:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.import:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.import:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.import:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.sync:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.sync:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.sync:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.sync:completed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.sync:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.sync:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.inbound:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.inbound:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.inbound:delayed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.inbound:completed": {
+      "min": 472,
+      "max": 472,
+      "last": 472
+    },
+    "worker.depth.integration.inbound:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.inbound:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.maintenance:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.maintenance:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.maintenance:delayed": {
+      "min": 2,
+      "max": 2,
+      "last": 2
+    },
+    "worker.depth.integration.maintenance:completed": {
+      "min": 8,
+      "max": 11,
+      "last": 11
+    },
+    "worker.depth.integration.maintenance:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.integration.maintenance:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.maintenance:waiting": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.maintenance:active": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.maintenance:delayed": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    },
+    "worker.depth.campaigns.maintenance:completed": {
+      "min": 3,
+      "max": 4,
+      "last": 4
+    },
+    "worker.depth.campaigns.maintenance:failed": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.depth.campaigns.maintenance:paused": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "worker.jobs.integration.maintenance:completed": {
+      "min": 8,
+      "max": 11,
+      "last": 11
+    },
+    "worker.jobs.notifications:completed": {
+      "min": 173,
+      "max": 180,
+      "last": 180
+    },
+    "worker.jobs.payments:completed": {
+      "min": 518,
+      "max": 518,
+      "last": 518
+    },
+    "worker.jobs.whatsapp-webhook:completed": {
+      "min": 874,
+      "max": 874,
+      "last": 874
+    },
+    "worker.jobs.integration.inbound:completed": {
+      "min": 472,
+      "max": 472,
+      "last": 472
+    },
+    "worker.jobs.ai:completed": {
+      "min": 3,
+      "max": 4,
+      "last": 4
+    },
+    "worker.jobs.campaigns.maintenance:completed": {
+      "min": 3,
+      "max": 4,
+      "last": 4
+    },
+    "worker.jobs.refunds:completed": {
+      "min": 3,
+      "max": 4,
+      "last": 4
+    },
+    "worker.jobs.platform:completed": {
+      "min": 5,
+      "max": 6,
+      "last": 6
+    },
+    "worker.heartbeatAgeS": {
+      "min": 0,
+      "max": 115,
+      "last": 80
+    },
+    "worker.loopLagP99": {
+      "min": 0.021004287,
+      "max": 0.024952831,
+      "last": 0.024100863
+    },
+    "worker.rssMB": {
+      "min": 240,
+      "max": 242,
+      "last": 241
+    },
+    "pg.states.active": {
+      "min": 1,
+      "max": 2,
+      "last": 1
+    },
+    "pg.states.idle": {
+      "min": 2,
+      "max": 7,
+      "last": 3
+    },
+    "pg.ungrantedLocks": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "pg.idleInTx": {
+      "min": 0,
+      "max": 1,
+      "last": 0
+    },
+    "pg.db.numbackends": {
+      "min": 4,
+      "max": 8,
+      "last": 4
+    },
+    "pg.outbox.PUBLISHED": {
+      "min": 1146,
+      "max": 1146,
+      "last": 1146
+    },
+    "redis.usedMB": {
+      "min": 7,
+      "max": 8,
+      "last": 8
+    },
+    "redis.clients": {
+      "min": 141,
+      "max": 141,
+      "last": 141
+    },
+    "redis.blocked": {
+      "min": 48,
+      "max": 50,
+      "last": 50
+    },
+    "redis.opsPerSec": {
+      "min": 0,
+      "max": 356,
+      "last": 284
+    },
+    "redis.evicted": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "redis.commands": {
+      "min": 364253,
+      "max": 384586,
+      "last": 384586
+    },
+    "redis.rejected": {
+      "min": 0,
+      "max": 0,
+      "last": 0
+    },
+    "pg.states.idle in transaction": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    },
+    "pg.waitingOn.Client": {
+      "min": 1,
+      "max": 1,
+      "last": 1
+    }
+  }
+}

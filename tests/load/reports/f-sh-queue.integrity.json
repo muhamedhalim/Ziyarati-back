@@ -1,0 +1,122 @@
+{
+  "schema": "lt-integrity/1",
+  "tag": "f-sh-queue",
+  "scenario": "queue-workload",
+  "checkedAt": "2026-10-05T13:09:18.831Z",
+  "results": [
+    {
+      "id": "A1",
+      "sev": "P0",
+      "title": "exclusion guard appointments_no_overlap is installed",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "id": "A2",
+      "sev": "P0",
+      "title": "no two non-cancelled appointments overlap for one staff member",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "A3",
+      "sev": "P0",
+      "title": "at most ONE live booking per contended (staff, start) slot created by k6",
+      "status": "PASS",
+      "detail": "max rows in one slot=1"
+    },
+    {
+      "id": "T1",
+      "sev": "P0",
+      "title": "no appointment references a branches row of a DIFFERENT tenant",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "T2",
+      "sev": "P0",
+      "title": "no appointment references a customers row of a DIFFERENT tenant",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "T3",
+      "sev": "P0",
+      "title": "no appointment references a staff_profiles row of a DIFFERENT tenant",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "T4",
+      "sev": "P0",
+      "title": "no queue entry references an appointment of a different tenant",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "A4",
+      "sev": "P1",
+      "title": "every k6-created appointment has its status-log and history rows",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "O1",
+      "sev": "P0",
+      "title": "no outbox row is FAILED (exhausted retries = a lost follow-up action)",
+      "status": "PASS",
+      "detail": "{\"PUBLISHED\":8336}"
+    },
+    {
+      "id": "O2",
+      "sev": "P1",
+      "title": "outbox drained within 120s of the end of the run",
+      "status": "PASS",
+      "detail": "{\"PUBLISHED\":8336}"
+    },
+    {
+      "id": "P1",
+      "sev": "P0",
+      "title": "no gateway charge id is attached to more than one payment",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "P2",
+      "sev": "P1",
+      "title": "no PAID payment leaves its booking in PENDING_PAYMENT (captured webhook not applied)",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "P3",
+      "sev": "P0",
+      "title": "no payment is PAID twice in the ledger (one CHARGE success per payment)",
+      "status": "PASS",
+      "detail": "c=0"
+    },
+    {
+      "id": "P4",
+      "sev": "P0",
+      "title": "Tap stub saw no booking charged more than once (double-charge race)",
+      "status": "PASS",
+      "detail": "charges=0 dedupedByIdempotency=0 referencesWithMultipleCharges=0"
+    },
+    {
+      "id": "H1",
+      "sev": "P1",
+      "title": "no DB lock is left waiting and nothing idles in a transaction after the run",
+      "status": "PASS",
+      "detail": "ungranted=0 idleInTx=0"
+    },
+    {
+      "id": "H2",
+      "sev": "P0",
+      "title": "no external-effect table gained rows (webhook endpoints / workflows / rules / tokened WhatsApp accounts)",
+      "status": "PASS",
+      "detail": "{\"w\":0,\"f\":0,\"n\":0,\"t\":0}"
+    }
+  ],
+  "evidenceDump": "written f-sh-queue.integrity.txt",
+  "verdict": "PASS"
+}

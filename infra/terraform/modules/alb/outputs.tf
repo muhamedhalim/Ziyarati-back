@@ -30,3 +30,13 @@ output "acm_validation_records" {
     value = o.resource_record_value
   }]
 }
+
+output "certificate_arn" {
+  description = "ACM certificate on the HTTPS listener (expiry alarm)"
+  value       = aws_acm_certificate.api.arn
+}
+
+output "xff_mode" {
+  description = "ALB X-Forwarded-For processing mode (the app's TRUST_PROXY_HOPS=1 is only safe in \"append\")"
+  value       = aws_lb.this.xff_header_processing_mode
+}

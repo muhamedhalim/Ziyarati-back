@@ -1,0 +1,83 @@
+# The 20K campaign LAB datastores — NEW, ISOLATED, DISPOSABLE.
+#
+# Nothing here is shared with dev (5433/6379), the e2e stack, or the old perf-audit lab
+# (5434/6380): own project name, own volumes, own ports, bound to loopback.
+#
+#   node tests/load/lab/make-lab-env.mjs          # writes run/compose.env (ports, password)
+#   docker compose -p ziyarati-c20k -f tests/load/lab/docker-compose.lab.yml \
+#       --env-file tests/load/lab/run/compose.env up -d
+#
+# Images are PINNED to what the repo's own compose uses (pgvector/pgvector:pg18 — the
+# migrations need the `vector` extension, which plain postgres:18 lacks — and redis:7-alpine).
+#
+# The Postgres/Redis TUNING below is a LAB choice (the dataset is ~3-4 GB, so the default
+# 128 MB shared_buffers would measure the disk, not the app). It is NOT derived from
+# production: production Postgres/Redis sizing is NOT MEASURED, and every report that
+# quotes a database number must quote this configuration with it.
+name: ziyarati-c20k
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: ziyarati-c20k-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LAB_PG_PASSWORD:?run make-lab-env.mjs first}
+      POSTGRES_DB: ziyarati_c20k
+    command:
+      - postgres
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-300}
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-4GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE:-12GB}
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - track_io_timing=on
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=1s
+      - -c
+      - log_min_duration_statement=${PG_SLOW_MS:-1000}
+    ports:
+      - "${LAB_BIND:-127.0.0.1}:${LAB_PG_PORT:-5436}:5432"
+    shm_size: 2gb
+    volumes:
+      - c20k_pg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ziyarati_c20k"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: ziyarati-c20k-redis
+    restart: "no"
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec",
+              "--maxmemory", "${REDIS_MAXMEMORY:-4gb}", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "${LAB_BIND:-127.0.0.1}:${LAB_REDIS_PORT:-6382}:6379"
+    volumes:
+      - c20k_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  c20k_pg:
+  c20k_redis:

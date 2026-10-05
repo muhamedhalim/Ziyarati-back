@@ -58,7 +58,32 @@ async function main() {
     // this script cannot even load a migration shaped like production's.
     migrationsTransactionMode: 'each',
   });
-  await ds.initialize();
+  try {
+    await ds.initialize();
+    await verify(ds);
+  } finally {
+    // Always drop the throwaway DB — a throw mid-run must not leave it behind.
+    try {
+      if (ds.isInitialized) await ds.destroy();
+      const drop = new Client({ connectionString: admin });
+      await drop.connect();
+      await drop.query(`DROP DATABASE IF EXISTS ${TEST_DB}`);
+      await drop.end();
+    } catch (e) {
+      console.error(`verify-migrations: failed to drop ${TEST_DB}:`, e);
+    }
+  }
+
+  console.log(
+    `\nMIGRATION VERIFY: ${ok.length} passed, ${problems.length} failed`,
+  );
+  if (problems.length) {
+    console.error('FAILED:', problems.join('; '));
+    process.exit(1);
+  }
+}
+
+async function verify(ds: DataSource) {
   const ran = await ds.runMigrations();
   check(`ran ${ran.length} migrations from empty DB`, ran.length > 0);
 
@@ -79,17 +104,41 @@ async function main() {
     (await q(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [name])).length >
     0;
 
+  // Run ONE named migration's down() and un-record it, regardless of where it
+  // sits in the chain. `ds.undoLastMigration()` always pops the chronological
+  // tail, so every block below that used it silently tested whichever
+  // migration happened to be newest (the chain grew from ~60 to 155) instead
+  // of the one it was written for. Reverting by name keeps each assertion
+  // bound to the migration it names. Mirrors TypeORM's own undo: down() runs
+  // inside a transaction unless the migration opts out (`transaction = false`,
+  // e.g. the CONCURRENTLY ones), and the `migrations` row is removed only if
+  // down() succeeded — a refused rollback (M-01, M3) leaves everything intact.
+  // `ds.runMigrations()` afterwards re-applies whatever was un-recorded.
+  const revert = async (name: string) => {
+    const m = ds.migrations.find(
+      (x) => (x.name ?? x.constructor.name) === name,
+    );
+    if (!m) throw new Error(`verify-migrations: no migration named ${name}`);
+    const qr = ds.createQueryRunner();
+    await qr.connect();
+    const useTx = (m as { transaction?: boolean }).transaction !== false;
+    try {
+      if (useTx) await qr.startTransaction();
+      await m.down(qr);
+      await qr.query(`DELETE FROM "migrations" WHERE "name" = $1`, [name]);
+      if (useTx) await qr.commitTransaction();
+    } catch (e) {
+      if (useTx && qr.isTransactionActive) await qr.rollbackTransaction();
+      throw e;
+    } finally {
+      await qr.release();
+    }
+  };
+
   // ── ReadPathIndexes (015-db-api-efficiency-audit, P9/T061) — up→down→up ────
-  // Chronologically the newest migration as of this addition, so — same
-  // reasoning as the M3 block immediately below, whose own comment already
-  // states this constraint — it MUST run first, from the top of the
-  // freshly-applied stack, before any of the fixed-depth `undoLastMigration()`
-  // cascades further down this script (each of which assumes a specific named
-  // migration sits at an exact distance from the tail; inserting a new
-  // migration after those were written shifts that distance for every one of
-  // them). Ends on a fresh `up`, so the tail is back to normal for the M3
-  // block that follows.
-  await ds.undoLastMigration(); // ReadPathIndexes down
+  // Reverted BY NAME (see `revert` above), so where it sits in the chain is
+  // irrelevant. Ends on a fresh `up`.
+  await revert('ReadPathIndexes1730086000000');
   check(
     'ReadPathIndexes down drops IDX_appointments_tenant_start_at',
     !(await idxExists('IDX_appointments_tenant_start_at')),
@@ -103,41 +152,17 @@ async function main() {
   check('ReadPathIndexes second up run does not throw', true);
 
   // ── M3 (BotActorTenantQualifiedEmail, AI-001) — G6 round trip ──────────────
-  // PRE-EXISTING STALENESS (015-db-api-efficiency-audit, P9/T061 — found
-  // while adding `ReadPathIndexes` above, not introduced by it; reproduced
-  // with that migration file removed entirely, against an unmodified copy of
-  // this script, before any P9 change): the comment below ("M3 is
-  // chronologically the newest migration") stopped being true at
-  // `AiExecutionMetricToolCallsTruncated1730041300000` — two migrations were
-  // added immediately after `BotActorTenantQualifiedEmail` even before this
-  // trio's OWN comment was written, and roughly 40 more have landed since.
-  // `undoLastMigration()` always pops whichever migration is CHRONOLOGICALLY
-  // LAST, so this block (and the M1/M2 cascade right after it) has been
-  // silently reverting/reapplying the WRONG migrations for a long time — the
-  // exact same class of staleness already called out, and left as out of
-  // scope, at the `AiBatchExecution` block further down this file. Given that
-  // standing precedent, and that fixing it means auditing every
-  // `undoLastMigration()` position in this ~700-line script against the
-  // full, unrelated migration history rather than anything P9 touches, it is
-  // left as-is here too. `ReadPathIndexes`'s OWN up→down→up→(second up) cycle
-  // is proven correct above, independently, while it is genuinely the tail.
-  //
-  // Original comment, kept for context (no longer accurate — see above):
-  // M3 is chronologically the newest migration, so at this point (immediately
-  // after the initial `runMigrations()` from empty) it is the top of the
-  // applied stack — the only position from which `undoLastMigration()` can
-  // target it without disturbing anything else's LIFO assumptions further
-  // down this script. Behavioral rewrite proof (seeded legacy row →
-  // qualified, conflict refusal) lives in the dedicated security-lane spec
-  // (T024, `ai-m3-bot-actor-rewrite.spec.ts`) — this block proves only
-  // structural reversibility against a database with no legacy row, i.e. the
-  // literal "up→down→up round trip, then a second up run" G6 asks for.
+  // Behavioral rewrite proof (seeded legacy row → qualified, conflict refusal)
+  // lives in the dedicated security-lane spec (T024,
+  // `ai-m3-bot-actor-rewrite.spec.ts`) — this block proves only structural
+  // reversibility against a database with no legacy row, i.e. the literal
+  // "up→down→up round trip, then a second up run" G6 asks for.
   const m3Suffix = Date.now();
   const [m3Tenant] = await q(
     `INSERT INTO tenants (name, slug, contact_email) VALUES ('M3VerifyTenant',$1,$2) RETURNING id`,
     [`m3verify-${m3Suffix}`, `m3verify-${m3Suffix}@example.com`],
   );
-  await ds.undoLastMigration(); // BotActorTenantQualifiedEmail down — no qualified rows exist yet, must be a no-op
+  await revert('BotActorTenantQualifiedEmail1730041200000'); // no qualified rows exist yet, must be a no-op
   check(
     'M3 down (no data) is a harmless no-op',
     (await q(`SELECT 1 FROM users WHERE "tenantId" = $1`, [m3Tenant.id]))
@@ -154,12 +179,10 @@ async function main() {
 
   // ── M1/M2 (AI-008/AI-016/AI-017/AI-024, AiToolCallAuditColumns /
   // AiExecutionMetricAuditColumns) — G6 round trip ───────────────────────────
-  // M1 < M2 < M3 chronologically — M3 (just re-applied above) must come off
-  // first to re-expose M2 as the true tail, then M2, then M1 — the same
-  // reverse-chronological cascade pattern used further down this script for
-  // M-10/M-09/M-08/FND-020/M-03/M-02/M-04, with a single reapply at the end.
-  await ds.undoLastMigration(); // BotActorTenantQualifiedEmail (M3) down — re-expose M2 as tail
-  await ds.undoLastMigration(); // AiExecutionMetricAuditColumns (M2) down
+  // Each is reverted by name; a single `runMigrations()` at the end re-applies
+  // everything that was un-recorded (M1, M2, M3).
+  await revert('BotActorTenantQualifiedEmail1730041200000'); // M3 again (reverts are by name, so order is irrelevant)
+  await revert('AiExecutionMetricAuditColumns1730041100000'); // M2
   check(
     'M2 down drops ai_execution_metrics.correlation_id',
     !(await colExists('ai_execution_metrics', 'correlation_id')),
@@ -172,7 +195,7 @@ async function main() {
     'M2 down drops IDX_aiexec_correlation',
     !(await idxExists('IDX_aiexec_correlation')),
   );
-  await ds.undoLastMigration(); // AiToolCallAuditColumns (M1) down
+  await revert('AiToolCallAuditColumns1730041000000'); // M1
   check(
     'M1 down drops ai_tool_calls.correlation_id',
     !(await colExists('ai_tool_calls', 'correlation_id')),
@@ -364,15 +387,8 @@ async function main() {
   if (legacyInsertOk) ok.push('additive columns backward-compatible');
 
   // ── Down migration for the new work reverts cleanly ────────────────────────
-  // PRE-EXISTING STALENESS (found while adding M-05 below, not introduced by
-  // it — confirmed by running this script unmodified before any Wave 2
-  // change): `undoLastMigration()` undoes whichever migration is CHRONOLOGICALLY
-  // LAST, which has changed many times since this block was written for
-  // "AiBatchExecution" specifically. It has not been the true last migration
-  // for a while, so the three checks below already fail on `main` — left
-  // exactly as-is; fixing them is a pre-existing-defect cleanup outside this
-  // feature's scope (see completion report).
-  await ds.undoLastMigration(); // AiBatchExecution down
+  // Down migration for AiBatchExecution reverts cleanly.
+  await revert('AiBatchExecution1730003900000');
   check(
     'down migration drops ai_batch_jobs',
     !(await tableExists('ai_batch_jobs')),
@@ -409,10 +425,8 @@ async function main() {
   check('customers.opted_out_at is nullable (no backfill)', optedOutNullable === 'YES');
 
   // Down migration for M-05 CEASES USE rather than dropping (R-DB6) — the
-  // columns must still exist after undo. This correctly targets M-05's own
-  // down() since it is the true chronologically-last migration at this point
-  // in the script (the AI-batch re-apply above left every migration applied).
-  await ds.undoLastMigration(); // CustomerConsentState down
+  // columns must still exist after undo.
+  await revert('CustomerConsentState1730018000000');
   check(
     'M-05 down does NOT drop customers.opted_out_at (R-DB6 — cease use, never drop)',
     await colExists('customers', 'opted_out_at'),
@@ -446,10 +460,8 @@ async function main() {
 
   // Down migration — HAPPY PATH (customers is empty here, so no cross-tenant
   // duplicate can exist yet): rollback must succeed and restore the old
-  // global constraint. This targets M-01's own down() since it is the true
-  // chronologically-last migration at this point (the M-05 block above left
-  // every migration applied, and M-01 sorts after M-05).
-  await ds.undoLastMigration(); // CustomerTenantScopedEmail down
+  // global constraint.
+  await revert('CustomerTenantScopedEmail1730019000000');
   check(
     'M-01 down (no conflicts) restores UQ_8536b8b85c06969f84f0c098b03',
     await conExists('UQ_8536b8b85c06969f84f0c098b03'),
@@ -485,28 +497,13 @@ async function main() {
   let rollbackRefused = false;
   let refusalMessage = '';
   try {
-    await ds.undoLastMigration(); // CustomerTenantScopedEmail down — should throw
+    await revert('CustomerTenantScopedEmail1730019000000'); // should throw
   } catch (e) {
     rollbackRefused = true;
     refusalMessage = e instanceof Error ? e.message : String(e);
   }
-  // PRE-EXISTING (Wave 2) staleness, same root cause already documented for
-  // the AI-batch block above: by this point in the script M-01 is no longer
-  // the chronological tail (Wave 3 added 4 more migrations after it), so this
-  // `undoLastMigration()` call actually pops whichever migration genuinely IS
-  // last — not tested/fixed here, matching the established precedent of
-  // leaving that class of staleness stated rather than restructured. What
-  // MUST be fixed regardless: whichever migration this call actually popped
-  // has a no-op down() (every migration newer than M-01 in this chain does),
-  // so it never throws and is never caught above — meaning, unlike the real
-  // M-01 down() (which throws and leaves the schema untouched), this call
-  // actually SUCCEEDS in silently un-applying one migration with no reapply
-  // anywhere in this block. Left alone, that missing migration would corrupt
-  // every check from here through the end of the script (confirmed: it broke
-  // the new M-02/M-03/M-04/FND-020 cascade below, which is Wave 3's own
-  // validation work, not merely stale-but-harmless like the other M-01
-  // checks) — so, unconditionally, restore full-chain state before continuing.
-  await ds.runMigrations();
+  // A refused down() throws BEFORE the `migrations` row is deleted, so
+  // nothing is un-applied and no re-apply is needed here.
   check(
     'M-01 down REFUSES rollback when a cross-tenant email duplicate exists',
     rollbackRefused,
@@ -539,13 +536,13 @@ async function main() {
   // any string is a valid value, no real Subscription row needed.
   const fakeSubId = `verify-sub-${suffix}`;
   await q(
-    `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+    `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status, period_start, period_end, currency) VALUES ($1,$2,'10.00','OPEN',now(),now() + interval '1 month','SAR')`,
     [`verify-tenant-${suffix}`, fakeSubId],
   );
   let secondOpenRejected = false;
   try {
     await q(
-      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status, period_start, period_end, currency) VALUES ($1,$2,'10.00','OPEN',now(),now() + interval '1 month','SAR')`,
       [`verify-tenant-${suffix}`, fakeSubId],
     );
   } catch {
@@ -556,7 +553,7 @@ async function main() {
   let paidInvoiceAccepted = true;
   try {
     await q(
-      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','PAID')`,
+      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status, period_start, period_end, currency) VALUES ($1,$2,'10.00','PAID',now(),now() + interval '1 month','SAR')`,
       [`verify-tenant-${suffix}`, fakeSubId],
     );
   } catch {
@@ -568,15 +565,7 @@ async function main() {
   );
   await q(`DELETE FROM subscription_invoices WHERE subscription_id = $1`, [fakeSubId]);
 
-  // M-04's down-migration check is deferred to the cascading undo below
-  // (after the M-02/M-03/FND-020 blocks) rather than run here in place: M-02,
-  // M-03, and FND-020 are ALL chronologically newer than M-04, so at this
-  // point in the script `undoLastMigration()` would pop FND-020 (the true
-  // chronological tail of the whole 61-migration chain), not M-04 — TypeORM
-  // has no API to target a specific non-tail migration. See "Cascading down
-  // migrations for M-04/M-02/M-03/FND-020" below, which pops all four in
-  // strict reverse-chronological order specifically so each one genuinely
-  // IS the tail at the moment its own down() runs.
+  // M-04's down-migration check runs in the revert cascade further below.
 
   // ── M-02 (FND-031): GRACE_EXPIRED enum value ────────────────────────────────
   const graceExpiredPresent = (
@@ -726,43 +715,25 @@ async function main() {
   );
 
   // ── Cascading down migrations for M-10/M-09/M-08/FND-020/M-03/M-02/M-04 ────
-  // M-09/M-10 (this gap-closure pass) ship chronologically AFTER M-08, which
-  // ships AFTER all four Wave-3 migrations below — so M-10 is now the TRUE
-  // tail of the whole chain, popped first, exactly the same chronological-
-  // drift reasoning already documented for this cascade (see T106/the block
-  // below): `undoLastMigration()` always targets whichever migration is
-  // chronologically newest among the still-applied ones, never an arbitrary
-  // earlier one. Once M-10/M-09/M-08 are off the top, FND-020 genuinely
-  // becomes the tail and the original four-deep cascade below is unaffected.
-  await ds.undoLastMigration(); // NotificationTemplateArabicVariant down (no-op)
+  // Each migration is reverted by name, so the order below does not matter.
+  await revert('NotificationTemplateArabicVariant1730026000000'); // no-op down
   check(
     'M-10 down completes without dropping notification_templates.provider_template_id_ar (R-DB6)',
     await colExists('notification_templates', 'provider_template_id_ar'),
   );
-  await ds.undoLastMigration(); // CustomerPreferredLocale down (no-op)
+  await revert('CustomerPreferredLocale1730025000000'); // no-op down
   check(
     'M-09 down completes without dropping customers.preferred_locale (R-DB6)',
     await colExists('customers', 'preferred_locale'),
   );
-  await ds.undoLastMigration(); // UserPreferredLocale down (no-op)
+  await revert('UserPreferredLocale1730024000000'); // no-op down
   check(
     'M-08 down completes without dropping users.preferred_locale (R-DB6)',
     await colExists('users', 'preferred_locale'),
   );
 
-  // These four are the newest four migrations in the whole 61-migration chain
-  // (in that reverse order), so — unlike every block above, each of which
-  // could safely undo-then-immediately-reapply its own single migration in
-  // place — popping any ONE of them individually would actually pop whichever
-  // is chronologically newest among the still-applied ones, not the one the
-  // block claims to test (TypeORM's `undoLastMigration()` always targets the
-  // true tail; it cannot target an arbitrary earlier migration while later
-  // ones remain applied). So these four are popped together, in strict
-  // reverse-chronological order, WITHOUT reapplying between each — only the
-  // final `runMigrations()` below restores all four at once. This is exactly
-  // why M-04's down-migration check (originally written in place, in the M-04
-  // forward-checks block above) had to move down here once M-02/M-03/FND-020
-  // were added after it.
+  // These are reverted together WITHOUT re-applying between each; only the
+  // final `runMigrations()` below restores all of them at once.
   //
   // M-02/M-03/FND-020 ship deliberately no-op down()s (M-02 cannot drop a
   // Postgres enum value at all; M-03/FND-020 keep their columns so
@@ -773,18 +744,18 @@ async function main() {
   // not (incorrectly) appear to remove anything. M-04's down() genuinely DOES
   // drop its index (fully reversible, no data involved) — proven the same way
   // as M-01's own reversibility check above.
-  await ds.undoLastMigration(); // CampaignRecipientDlqRecordedAt down (no-op)
+  await revert('CampaignRecipientDlqRecordedAt1730023000000'); // no-op down
   check(
     'FND-020 down completes without dropping dlq_recorded_at (R-DB6)',
     await colExists('campaign_recipients', 'dlq_recorded_at'),
   );
-  await ds.undoLastMigration(); // SubscriptionGraceColumns down (no-op)
+  await revert('SubscriptionGraceColumns1730022000000'); // no-op down
   check(
     'M-03 down completes without dropping grace_started_at/grace_expired_at (R-DB6)',
     (await colExists('subscriptions', 'grace_started_at')) &&
       (await colExists('subscriptions', 'grace_expired_at')),
   );
-  await ds.undoLastMigration(); // SubscriptionGraceExpiredEnum down (no-op — PG cannot drop enum values)
+  await revert('SubscriptionGraceExpiredEnum1730021000000'); // no-op down (PG cannot drop enum values)
   const graceExpiredStillPresent = (
     await q(
       `SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
@@ -796,12 +767,8 @@ async function main() {
     graceExpiredStillPresent,
   );
 
-  // M-04 (SubscriptionInvoiceOpenUniqueness) is chronologically the OLDEST of
-  // these four, so it only genuinely becomes the tail once FND-020/M-03/M-02
-  // above have already been popped — this is why its down-migration check
-  // (deferred from the M-04 forward-checks block above) runs here, last in
-  // the cascade, fully reversible (drops only the index, no data).
-  await ds.undoLastMigration(); // SubscriptionInvoiceOpenUniqueness down
+  // M-04 is fully reversible (drops only the index, no data).
+  await revert('SubscriptionInvoiceOpenUniqueness1730020000000');
   check(
     'M-04 down drops UQ_sub_invoice_open_per_subscription',
     !(await idxExists('UQ_sub_invoice_open_per_subscription')),
@@ -810,13 +777,13 @@ async function main() {
   // now be ACCEPTED — direct proof the index (not something else) was doing
   // the enforcing.
   await q(
-    `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+    `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status, period_start, period_end, currency) VALUES ($1,$2,'10.00','OPEN',now(),now() + interval '1 month','SAR')`,
     [`verify-tenant-${suffix}`, fakeSubId],
   );
   let secondOpenAcceptedWithoutIndex = true;
   try {
     await q(
-      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status) VALUES ($1,$2,'10.00','OPEN')`,
+      `INSERT INTO subscription_invoices (tenant_id, subscription_id, amount, status, period_start, period_end, currency) VALUES ($1,$2,'10.00','OPEN',now(),now() + interval '1 month','SAR')`,
       [`verify-tenant-${suffix}`, fakeSubId],
     );
   } catch {
@@ -838,20 +805,6 @@ async function main() {
       (await colExists('customers', 'preferred_locale')) &&
       (await colExists('notification_templates', 'provider_template_id_ar')),
   );
-
-  await ds.destroy();
-  const drop = new Client({ connectionString: admin });
-  await drop.connect();
-  await drop.query(`DROP DATABASE IF EXISTS ${TEST_DB}`);
-  await drop.end();
-
-  console.log(
-    `\nMIGRATION VERIFY: ${ok.length} passed, ${problems.length} failed`,
-  );
-  if (problems.length) {
-    console.error('FAILED:', problems.join('; '));
-    process.exit(1);
-  }
 }
 
 main().catch((e) => {

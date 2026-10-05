@@ -37,6 +37,11 @@ data "aws_iam_policy_document" "execution_secrets" {
     sid       = "DecryptWithEnvKey"
     actions   = ["kms:Decrypt"]
     resources = [var.kms_key_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
   }
 }
 
@@ -70,6 +75,11 @@ data "aws_iam_policy_document" "ops_execution_secrets" {
     sid       = "DecryptWithEnvKey"
     actions   = ["kms:Decrypt"]
     resources = [var.kms_key_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
   }
 }
 

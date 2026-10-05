@@ -32,6 +32,9 @@ locals {
     API_BASE_URL                         = "https://${local.api_domain}"
     COOKIE_DOMAIN                        = var.cookie_domain
     COOKIE_SAMESITE                      = "lax"
+    # SEC-02: trust exactly one reverse proxy (the ALB, xff mode pinned to
+    # "append") so req.ip is the ALB's real peer, not the ALB itself.
+    TRUST_PROXY_HOPS = "1"
   }
 
   common_env = merge(var.app_environment, local.fixed_common_env)
@@ -257,6 +260,12 @@ module "monitoring" {
   redis_replication_group_id   = module.elasticache.replication_group_id
   redis_num_cache_clusters     = var.redis.num_cache_clusters
   ses_feedback_dlq_name        = module.ses.feedback_dlq_name
+  ses_feedback_queue_name      = module.ses.feedback_queue_name
+  enable_ses_queue_alarm       = true
+  certificate_arn              = module.alb.certificate_arn
+  enable_acm_alarm             = true
+  nat_gateway_count            = var.nat_gateway_count
+  nat_gateway_ids              = module.network.nat_gateway_ids
   api_domain                   = local.api_domain
   enable_external_health_check = var.enable_external_health_check
   tags                         = local.tags
@@ -271,7 +280,10 @@ module "account_baseline" {
   alerts_topic_arn   = module.monitoring.alerts_topic_arn
   monthly_budget_usd = var.monthly_budget_usd
   budget_emails      = var.alert_emails
-  tags               = local.tags
+
+  # Patient documents: record object-level access in CloudTrail.
+  audited_bucket_arns = [module.s3_uploads.bucket_arn]
+  tags                = local.tags
 }
 
 module "backup" {

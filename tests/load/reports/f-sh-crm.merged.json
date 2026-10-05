@@ -1,0 +1,228 @@
+{
+  "schema": "lt-campaign-merged/1",
+  "runTag": "f-sh-crm",
+  "generators": 1,
+  "segments": [
+    "0of1"
+  ],
+  "startedAt": "2026-10-05T13:00:10.779Z",
+  "durationMs": 271008.006827,
+  "config": {
+    "LT_SEGMENT": "0of1",
+    "LT_VUS": "40",
+    "LT_RUN_SEED": "53420",
+    "RUN_TAG": "f-sh-crm",
+    "LT_DURATION": "30s",
+    "BASE_URL": "http://host.docker.internal:3101"
+  },
+  "model": {
+    "thinkMs": 15000,
+    "tickS": 1,
+    "seed": 1,
+    "hotShare": 0,
+    "mix": "receptionist:38,doctor:20,owner:10,idle:5,public:20,marketplace:5,partner:2",
+    "ladder": [
+      100,
+      500,
+      1000,
+      2500,
+      5000,
+      10000,
+      15000,
+      20000
+    ],
+    "ramp": "120s",
+    "hold": "180s",
+    "queueTab": {
+      "receptionist": 0.5,
+      "doctor": 0.8
+    },
+    "ai": false,
+    "bookingConfirm": false,
+    "isolation": true
+  },
+  "precision": {
+    "percentiles": "bucket-estimated",
+    "bounds": [
+      5,
+      10,
+      25,
+      50,
+      100,
+      200,
+      300,
+      500,
+      800,
+      1200,
+      2000,
+      5000,
+      10000,
+      30000
+    ]
+  },
+  "totals": {
+    "http_reqs": 4334,
+    "http_req_failed_rate": 0,
+    "req_per_s_avg": 16
+  },
+  "outcomes": {
+    "tenant_isolation_violation": 0,
+    "http_429_rate_limited": 0,
+    "iterations": 4024
+  },
+  "statusDist": {
+    "200": 4332
+  },
+  "errorsByEndpoint": [],
+  "steps": [
+    {
+      "name": "steady",
+      "n": 4332,
+      "p50": 62,
+      "p95": 170,
+      "p99": 275,
+      "over1s": 0
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "crm_search_code",
+      "n": 778,
+      "p50": 67,
+      "p95": 149,
+      "p99": 241,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_deep",
+      "n": 580,
+      "p50": 39,
+      "p95": 115,
+      "p99": 183,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_email",
+      "n": 563,
+      "p50": 70,
+      "p95": 220,
+      "p99": 375,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_phone",
+      "n": 561,
+      "p50": 70,
+      "p95": 190,
+      "p99": 292,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_name",
+      "n": 366,
+      "p50": 52,
+      "p95": 167,
+      "p99": 317,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_broad",
+      "n": 305,
+      "p50": 55,
+      "p95": 168,
+      "p99": 265,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_prefix",
+      "n": 289,
+      "p50": 54,
+      "p95": 172,
+      "p99": 206,
+      "over1s": 0
+    },
+    {
+      "name": "activity_list",
+      "n": 152,
+      "p50": 67,
+      "p95": 161,
+      "p99": 197,
+      "over1s": 0
+    },
+    {
+      "name": "activity_actions",
+      "n": 152,
+      "p50": 46,
+      "p95": 99,
+      "p99": 175,
+      "over1s": 0
+    },
+    {
+      "name": "branches_list",
+      "n": 152,
+      "p50": 76,
+      "p95": 198,
+      "p99": 278,
+      "over1s": 0
+    },
+    {
+      "name": "staff_lookup",
+      "n": 152,
+      "p50": 81,
+      "p95": 198,
+      "p99": 278,
+      "over1s": 0
+    },
+    {
+      "name": "notifications_unread",
+      "n": 152,
+      "p50": 63,
+      "p95": 137,
+      "p99": 187,
+      "over1s": 0
+    },
+    {
+      "name": "activity_list_search",
+      "n": 130,
+      "p50": 50,
+      "p95": 166,
+      "p99": 198,
+      "over1s": 0
+    }
+  ],
+  "ladder": [
+    {
+      "vus": 100,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 1000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 2500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 5000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 10000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 15000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 20000,
+      "verdict": "NOT MEASURED"
+    }
+  ],
+  "recovery": null
+}

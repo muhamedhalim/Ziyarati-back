@@ -1,4 +1,5 @@
-import { ExecutionContext, Injectable, Logger } from '@nestjs/common';
+import { ExecutionContext, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import {
   InjectThrottlerOptions,
@@ -13,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { ApiKeyService } from '../../modules/platform/api-key.service';
 import { INTEGRATION_SCOPE } from '../../modules/platform/integration-scopes.constants';
 import { PublicDiscoveryController } from '../../modules/public-discovery/public-discovery.controller';
+import { resolveEdgeClientAddress } from '../../config/trust-proxy';
 
 const VISITOR_ID_HEADER = 'x-zt-visitor-id';
 /** Opaque, server-computed hash — bounds length without assuming a specific algorithm upstream. */
@@ -66,18 +68,28 @@ const VISITOR_ID_RE = /^[a-f0-9]{16,128}$/i;
 @Injectable()
 export class MarketplaceThrottlerGuard extends ThrottlerGuard {
   private readonly marketplaceLogger = new Logger(MarketplaceThrottlerGuard.name);
+  /** SEC-02: optional proof-of-edge secret; unset = the per-client path below is inert. */
+  private readonly edgeToken: string | undefined;
 
   constructor(
     @InjectThrottlerOptions() options: ThrottlerModuleOptions,
     @InjectThrottlerStorage() storage: ThrottlerStorage,
     reflector: Reflector,
     private readonly apiKeys: ApiKeyService,
+    @Optional() config?: ConfigService,
   ) {
     super(options, storage, reflector);
+    this.edgeToken = config?.get<string>('EDGE_PROXY_TOKEN') || undefined;
   }
 
   protected async getTracker(req: Request, context?: ExecutionContext): Promise<string> {
-    const fallback = () => super.getTracker(req);
+    // The ordinary tracker. With `trust proxy` = 1 (TRUST_PROXY_HOPS) the base
+    // class already resolves `req.ip` to the ALB-appended, unforgeable peer
+    // address (SEC-02). Only a request that PROVES it came through the trusted
+    // edge (X-ZT-Edge-Token) is keyed on the client address that edge forwarded
+    // — see src/config/trust-proxy.ts for why nothing weaker is acceptable.
+    const fallback = async () =>
+      resolveEdgeClientAddress(req, this.edgeToken) ?? super.getTracker(req);
 
     if (!context || context.getClass() !== PublicDiscoveryController) {
       return fallback();

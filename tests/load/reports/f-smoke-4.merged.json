@@ -1,0 +1,559 @@
+{
+  "schema": "lt-campaign-merged/1",
+  "runTag": "f-smoke-4",
+  "generators": 1,
+  "segments": [
+    "0of1"
+  ],
+  "startedAt": "2026-10-05T12:21:03.036Z",
+  "durationMs": 61221.260133,
+  "config": {
+    "BASE_URL": "http://host.docker.internal:3101",
+    "LT_SEGMENT": "0of1",
+    "LT_RUN_SEED": "53381",
+    "RUN_TAG": "f-smoke-4"
+  },
+  "model": {
+    "thinkMs": 15000,
+    "tickS": 1,
+    "seed": 1,
+    "hotShare": 0,
+    "mix": "receptionist:38,doctor:20,owner:10,idle:5,public:20,marketplace:5,partner:2",
+    "ladder": [
+      100,
+      500,
+      1000,
+      2500,
+      5000,
+      10000,
+      15000,
+      20000
+    ],
+    "ramp": "120s",
+    "hold": "180s",
+    "queueTab": {
+      "receptionist": 0.5,
+      "doctor": 0.8
+    },
+    "ai": false,
+    "bookingConfirm": false,
+    "isolation": true
+  },
+  "precision": {
+    "percentiles": "bucket-estimated",
+    "bounds": [
+      5,
+      10,
+      25,
+      50,
+      100,
+      200,
+      300,
+      500,
+      800,
+      1200,
+      2000,
+      5000,
+      10000,
+      30000
+    ]
+  },
+  "totals": {
+    "http_reqs": 7390,
+    "http_req_failed_rate": 0,
+    "req_per_s_avg": 120.7
+  },
+  "outcomes": {
+    "appt_created": 60,
+    "tenant_isolation_violation": 0,
+    "tenant_isolation_probe": 192,
+    "iterations": 192,
+    "partner_write_outcome": 156,
+    "webhook_deduplicated": 244,
+    "webhook_accepted": 244,
+    "http_429_rate_limited": 0,
+    "http_4xx": 192
+  },
+  "statusDist": {
+    "200": 6892,
+    "201": 60,
+    "202": 52,
+    "404": 192
+  },
+  "errorsByEndpoint": [
+    {
+      "name": "mkt_avatar",
+      "requests": 192,
+      "c4xx": 192,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 0,
+      "total": 192,
+      "unexpected": 0,
+      "expected4xx": true
+    }
+  ],
+  "steps": [
+    {
+      "name": "smoke",
+      "n": 7196,
+      "p50": 21,
+      "p95": 87,
+      "p99": 185,
+      "over1s": 0
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "public_cities",
+      "n": 384,
+      "p50": 7,
+      "p95": 21,
+      "p99": 34,
+      "over1s": 0
+    },
+    {
+      "name": "public_clinics",
+      "n": 384,
+      "p50": 7,
+      "p95": 20,
+      "p99": 25,
+      "over1s": 0
+    },
+    {
+      "name": "notifications_unread",
+      "n": 378,
+      "p50": 25,
+      "p95": 71,
+      "p99": 94,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_doctors",
+      "n": 192,
+      "p50": 29,
+      "p95": 48,
+      "p99": 50,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_doctor",
+      "n": 192,
+      "p50": 8,
+      "p95": 22,
+      "p99": 24,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_specialties",
+      "n": 192,
+      "p50": 7,
+      "p95": 19,
+      "p99": 24,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_session",
+      "n": 192,
+      "p50": 39,
+      "p95": 84,
+      "p99": 104,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_select_branch",
+      "n": 192,
+      "p50": 38,
+      "p95": 60,
+      "p99": 92,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_services",
+      "n": 192,
+      "p50": 23,
+      "p95": 48,
+      "p99": 68,
+      "over1s": 0
+    },
+    {
+      "name": "public_clinic_detail",
+      "n": 192,
+      "p50": 8,
+      "p95": 22,
+      "p99": 24,
+      "over1s": 0
+    },
+    {
+      "name": "pay_resolve",
+      "n": 192,
+      "p50": 19,
+      "p95": 42,
+      "p99": 48,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_availability",
+      "n": 192,
+      "p50": 165,
+      "p95": 279,
+      "p99": 296,
+      "over1s": 0
+    },
+    {
+      "name": "wa_status",
+      "n": 192,
+      "p50": 19,
+      "p95": 41,
+      "p99": 49,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_service",
+      "n": 192,
+      "p50": 8,
+      "p95": 23,
+      "p99": 26,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_avatar",
+      "n": 192,
+      "p50": 7,
+      "p95": 13,
+      "p99": 23,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_services",
+      "n": 192,
+      "p50": 8,
+      "p95": 17,
+      "p99": 24,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_select_doctor",
+      "n": 192,
+      "p50": 39,
+      "p95": 79,
+      "p99": 96,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_select_service",
+      "n": 192,
+      "p50": 39,
+      "p95": 80,
+      "p99": 96,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_select_clinic",
+      "n": 192,
+      "p50": 30,
+      "p95": 49,
+      "p99": 68,
+      "over1s": 0
+    },
+    {
+      "name": "wa_status_dup",
+      "n": 192,
+      "p50": 6,
+      "p95": 10,
+      "p99": 15,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_specialty",
+      "n": 192,
+      "p50": 10,
+      "p95": 24,
+      "p99": 25,
+      "over1s": 0
+    },
+    {
+      "name": "public_booking_select_slot",
+      "n": 192,
+      "p50": 38,
+      "p95": 63,
+      "p99": 93,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_clinic",
+      "n": 192,
+      "p50": 12,
+      "p95": 24,
+      "p99": 34,
+      "over1s": 0
+    },
+    {
+      "name": "mkt_doctors",
+      "n": 192,
+      "p50": 9,
+      "p95": 23,
+      "p99": 25,
+      "over1s": 0
+    },
+    {
+      "name": "dashboard",
+      "n": 159,
+      "p50": 40,
+      "p95": 94,
+      "p99": 147,
+      "over1s": 0
+    },
+    {
+      "name": "tenants_targets",
+      "n": 126,
+      "p50": 50,
+      "p95": 98,
+      "p99": 168,
+      "over1s": 0
+    },
+    {
+      "name": "queue_list",
+      "n": 126,
+      "p50": 22,
+      "p95": 67,
+      "p99": 98,
+      "over1s": 0
+    },
+    {
+      "name": "analytics_trend_revenue",
+      "n": 126,
+      "p50": 43,
+      "p95": 97,
+      "p99": 168,
+      "over1s": 0
+    },
+    {
+      "name": "analytics_trend_appointments",
+      "n": 126,
+      "p50": 43,
+      "p95": 97,
+      "p99": 168,
+      "over1s": 0
+    },
+    {
+      "name": "tenants_me",
+      "n": 126,
+      "p50": 39,
+      "p95": 88,
+      "p99": 98,
+      "over1s": 0
+    },
+    {
+      "name": "partner_customers_upsert",
+      "n": 104,
+      "p50": 52,
+      "p95": 97,
+      "p99": 148,
+      "over1s": 0
+    },
+    {
+      "name": "queue_branches",
+      "n": 93,
+      "p50": 17,
+      "p95": 25,
+      "p99": 44,
+      "over1s": 0
+    },
+    {
+      "name": "journey_summary",
+      "n": 66,
+      "p50": 20,
+      "p95": 48,
+      "p99": 134,
+      "over1s": 0
+    },
+    {
+      "name": "journey_breakdown",
+      "n": 66,
+      "p50": 19,
+      "p95": 42,
+      "p99": 48,
+      "over1s": 0
+    },
+    {
+      "name": "crm_search_term",
+      "n": 60,
+      "p50": 19,
+      "p95": 43,
+      "p99": 49,
+      "over1s": 0
+    },
+    {
+      "name": "staff_doctors",
+      "n": 60,
+      "p50": 39,
+      "p95": 81,
+      "p99": 96,
+      "over1s": 0
+    },
+    {
+      "name": "appointments_list",
+      "n": 60,
+      "p50": 40,
+      "p95": 83,
+      "p99": 97,
+      "over1s": 0
+    },
+    {
+      "name": "appointments_create",
+      "n": 60,
+      "p50": 83,
+      "p95": 180,
+      "p99": 196,
+      "over1s": 0
+    },
+    {
+      "name": "availability_windows",
+      "n": 60,
+      "p50": 39,
+      "p95": 80,
+      "p99": 140,
+      "over1s": 0
+    },
+    {
+      "name": "partner_availability",
+      "n": 52,
+      "p50": 37,
+      "p95": 50,
+      "p99": 87,
+      "over1s": 0
+    },
+    {
+      "name": "partner_customers",
+      "n": 52,
+      "p50": 18,
+      "p95": 39,
+      "p99": 48,
+      "over1s": 0
+    },
+    {
+      "name": "partner_inbound",
+      "n": 52,
+      "p50": 39,
+      "p95": 74,
+      "p99": 95,
+      "over1s": 0
+    },
+    {
+      "name": "partner_services_upsert",
+      "n": 52,
+      "p50": 36,
+      "p95": 49,
+      "p99": 50,
+      "over1s": 0
+    },
+    {
+      "name": "partner_staff",
+      "n": 52,
+      "p50": 19,
+      "p95": 42,
+      "p99": 48,
+      "over1s": 0
+    },
+    {
+      "name": "partner_inbound_dup",
+      "n": 52,
+      "p50": 21,
+      "p95": 46,
+      "p99": 49,
+      "over1s": 0
+    },
+    {
+      "name": "partner_services",
+      "n": 52,
+      "p50": 18,
+      "p95": 28,
+      "p99": 46,
+      "over1s": 0
+    },
+    {
+      "name": "partner_me",
+      "n": 52,
+      "p50": 18,
+      "p95": 34,
+      "p99": 47,
+      "over1s": 0
+    },
+    {
+      "name": "partner_appointments",
+      "n": 52,
+      "p50": 25,
+      "p95": 48,
+      "p99": 50,
+      "over1s": 0
+    },
+    {
+      "name": "staff_me_schedules",
+      "n": 33,
+      "p50": 27,
+      "p95": 59,
+      "p99": 92,
+      "over1s": 0
+    },
+    {
+      "name": "staff_me_time_off",
+      "n": 33,
+      "p50": 19,
+      "p95": 47,
+      "p99": 84,
+      "over1s": 0
+    },
+    {
+      "name": "doctor_appointments",
+      "n": 33,
+      "p50": 42,
+      "p95": 95,
+      "p99": 167,
+      "over1s": 0
+    },
+    {
+      "name": "staff_me",
+      "n": 33,
+      "p50": 20,
+      "p95": 59,
+      "p99": 92,
+      "over1s": 0
+    }
+  ],
+  "ladder": [
+    {
+      "vus": 100,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 1000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 2500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 5000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 10000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 15000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 20000,
+      "verdict": "NOT MEASURED"
+    }
+  ],
+  "recovery": null
+}

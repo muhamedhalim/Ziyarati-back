@@ -49,3 +49,7 @@ output "dns_records" {
     ],
   )
 }
+
+output "feedback_queue_name" {
+  value = aws_sqs_queue.feedback.name
+}

@@ -12,3 +12,7 @@ output "alarm_names" {
 output "dashboard_name" {
   value = aws_cloudwatch_dashboard.this.dashboard_name
 }
+
+output "infra_events_topic_arn" {
+  value = aws_sns_topic.infra_events.arn
+}

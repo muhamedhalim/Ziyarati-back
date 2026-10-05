@@ -1500,3 +1500,31 @@ describe('env.validation', () => {
     });
   });
 });
+
+describe('client-address trust (SEC-02)', () => {
+  const TOKEN = 'e'.repeat(40);
+
+  it('defaults to 0 hops (legacy behaviour) with no edge token', () => {
+    const value = validate({ ...base });
+    expect(value.TRUST_PROXY_HOPS).toBe(0);
+    expect(value.EDGE_PROXY_TOKEN).toBeUndefined();
+  });
+
+  it('accepts 1 hop (the ALB)', () => {
+    expect(validate({ ...base, TRUST_PROXY_HOPS: '1' }).TRUST_PROXY_HOPS).toBe(1);
+  });
+
+  it.each([2, 3, -1, 1.5, 'true'])('rejects TRUST_PROXY_HOPS=%s (would trust a caller-controlled entry)', (v) => {
+    expect(() => validate({ ...base, TRUST_PROXY_HOPS: v })).toThrow(/Env validation error/);
+  });
+
+  it('accepts an edge token only together with 1 hop', () => {
+    expect(validate({ ...base, TRUST_PROXY_HOPS: 1, EDGE_PROXY_TOKEN: TOKEN }).EDGE_PROXY_TOKEN).toBe(TOKEN);
+    expect(() => validate({ ...base, EDGE_PROXY_TOKEN: TOKEN })).toThrow(/TRUST_PROXY_HOPS/);
+    expect(() => validate({ ...base, TRUST_PROXY_HOPS: 0, EDGE_PROXY_TOKEN: TOKEN })).toThrow(/TRUST_PROXY_HOPS/);
+  });
+
+  it('rejects a short edge token', () => {
+    expect(() => validate({ ...base, TRUST_PROXY_HOPS: 1, EDGE_PROXY_TOKEN: 'short' })).toThrow(/Env validation error/);
+  });
+});

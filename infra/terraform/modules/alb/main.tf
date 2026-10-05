@@ -117,6 +117,12 @@ resource "aws_lb" "this" {
   enable_deletion_protection = var.deletion_protection
   desync_mitigation_mode     = "defensive"
 
+  # SEC-02: the app trusts the LAST X-Forwarded-For entry (TRUST_PROXY_HOPS=1),
+  # which is only unforgeable while the ALB APPENDS its peer. "preserve" would
+  # pass the caller's header through untouched and "remove" would drop it; both
+  # would make that trust wrong. Pinned so a console/default change cannot flip it.
+  xff_header_processing_mode = "append"
+
   access_logs {
     bucket  = aws_s3_bucket.logs.id
     prefix  = "alb"
