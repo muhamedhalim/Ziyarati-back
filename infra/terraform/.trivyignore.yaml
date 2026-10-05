@@ -1,0 +1,16 @@
+# Accepted IaC-scan findings. Every entry names the resource and WHY the control
+# cannot or should not apply — see infra/docs/WELL-ARCHITECTED-REVIEW.md.
+# Scoped by path so the same finding in a NEW file still fails the build.
+misconfigurations:
+  - id: AVD-AWS-0053
+    paths: ["modules/alb/main.tf"]
+    statement: "The API ALB is the public entry point by design (browsers' WebSockets, Vercel rewrite, Meta/Tap webhooks). Protected by WAF, TLS 1.3 policy, SG-chained backends."
+  - id: AVD-AWS-0132
+    paths: ["modules/alb/main.tf"]
+    statement: "ALB access-log delivery supports only SSE-S3 (AES256); a CMK is not accepted by the service."
+  - id: AVD-AWS-0132
+    paths: ["modules/network/flow_logs.tf"]
+    statement: "REJECT-only flow logs hold IPs/ports/byte counts, no payload or PHI; SSE-S3 avoids a second key policy for delivery.logs.amazonaws.com. Revisit if flow logs ever widen to ACCEPT."
+  - id: AVD-AWS-0095
+    paths: ["modules/monitoring/main.tf"]
+    statement: "us-east-1 alert topic for the Route 53 health-check alarm: CloudWatch cannot publish to AWS-managed-key topics and a CMK there would exist only for this topic. Payload = alarm name/state, no data."

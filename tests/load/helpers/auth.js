@@ -19,8 +19,11 @@
  */
 import http from 'k6/http';
 import { fail } from 'k6';
+// Importing the guard evaluates the target-host check at init time, so EVERY
+// scenario that uses this helper refuses a non-lab BASE_URL before sending anything.
+import { TARGET, preflight } from './guard.js';
 
-const BASE = __ENV.BASE_URL || 'http://host.docker.internal:3001';
+const BASE = TARGET;
 const PASSWORD = __ENV.TEST_PASSWORD;
 
 /** The 5 seeded perf tenants x 3 roles. Emails are non-secret test fixtures. */
@@ -158,6 +161,7 @@ export function pickPair(session, seed) {
 
 /** setup() helper: log every account in and attach its tenant context. */
 export function buildSessions() {
+  preflight();
   if (!PASSWORD) fail('TEST_PASSWORD env var is required (never hardcode it)');
   const sessions = [];
   for (const acct of accountList()) {

@@ -67,6 +67,43 @@ run "subnets_and_nat" {
   }
 }
 
+run "flow_logs_are_reject_only_and_private" {
+  command = plan
+
+  assert {
+    condition     = length(aws_flow_log.reject) == 1 && aws_flow_log.reject[0].traffic_type == "REJECT"
+    error_message = "A REJECT-only flow log is expected"
+  }
+
+  assert {
+    condition = (
+      aws_s3_bucket_public_access_block.flow_logs[0].block_public_acls &&
+      aws_s3_bucket_public_access_block.flow_logs[0].block_public_policy &&
+      aws_s3_bucket_public_access_block.flow_logs[0].ignore_public_acls &&
+      aws_s3_bucket_public_access_block.flow_logs[0].restrict_public_buckets
+    )
+    error_message = "Flow log bucket must block all public access"
+  }
+
+  assert {
+    condition     = one([for r in aws_s3_bucket_lifecycle_configuration.flow_logs[0].rule : r.expiration[0].days]) == 90
+    error_message = "Flow logs must expire (default 90 days)"
+  }
+}
+
+run "flow_logs_can_be_disabled" {
+  command = plan
+
+  variables {
+    enable_flow_logs = false
+  }
+
+  assert {
+    condition     = length(aws_flow_log.reject) == 0 && length(aws_s3_bucket.flow_logs) == 0
+    error_message = "enable_flow_logs=false must create nothing"
+  }
+}
+
 run "rejects_non_slash16" {
   command = plan
 

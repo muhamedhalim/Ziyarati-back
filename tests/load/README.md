@@ -1,5 +1,12 @@
 # ZiyaraTech k6 Load Test Suite
 
+> **2026-10 update — the 20K campaign.** The post-feature 20,000-VU campaign (Tap payments, queue,
+> marketplace, partner API, auth herd, worker/outbox, multi-generator runs, target guard) lives in
+> [`lab/README.md`](lab/README.md) and is started ONLY through `lab/run-campaign.mjs`. The September
+> scenarios below are kept as the regression baseline and now also pass through the target guard
+> (`helpers/guard.js`). Where this file and `lab/README.md` disagree — payments are Tap, not Moyasar;
+> the lab uses its own pgvector Postgres/Redis and a sanitized environment — `lab/README.md` is current.
+
 Runs entirely from Docker. Nothing is installed on the host.
 
 ```

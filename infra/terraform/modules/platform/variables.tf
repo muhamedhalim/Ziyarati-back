@@ -234,6 +234,11 @@ variable "dr_backup_region" {
   description = "Decision D-1: region for daily cross-region RDS backup copies (\"\" = disabled)"
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.dr_backup_region == "" || var.dr_backup_region != var.aws_region
+    error_message = "dr_backup_region must differ from aws_region: a same-region copy gives no protection against a regional loss (use \"\" to disable)."
+  }
 }
 
 variable "log_retention_days" {

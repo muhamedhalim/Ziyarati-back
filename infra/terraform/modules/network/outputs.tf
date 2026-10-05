@@ -32,3 +32,8 @@ output "security_group_ids" {
     redis  = aws_security_group.redis.id
   }
 }
+
+output "nat_gateway_ids" {
+  description = "NAT gateway ids (ErrorPortAllocation alarms)"
+  value       = aws_nat_gateway.this[*].id
+}

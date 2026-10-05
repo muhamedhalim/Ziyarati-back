@@ -109,6 +109,8 @@ app_secret_keys = [
 alert_emails       = ["alerts@ziyaratech.com"] # set the real on-call mailbox(es)
 monthly_budget_usd = 650
 
-# Decision D-1 (DISASTER-RECOVERY.md): e.g. "eu-central-1" once residency is
-# signed off. Empty = no cross-region copy (region loss => unbounded RPO).
+# Decision D-1 — OPEN (DISASTER-RECOVERY.md). Do NOT fill this in without the
+# residency sign-off: the copy moves encrypted patient data out of me-central-1.
+# Empty = no cross-region copy (region loss => unbounded RPO, accepted only if
+# recorded in writing). Must differ from aws_region.
 dr_backup_region = ""

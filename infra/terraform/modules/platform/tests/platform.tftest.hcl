@@ -110,6 +110,20 @@ run "production_phase1_plans" {
   }
 }
 
+run "client_address_trust_is_one_hop_behind_an_append_alb" {
+  command = plan
+
+  assert {
+    condition     = local.common_env.TRUST_PROXY_HOPS == "1"
+    error_message = "The app must trust exactly the ALB hop (SEC-02)"
+  }
+
+  assert {
+    condition     = module.alb.xff_mode == "append"
+    error_message = "Trusting the last X-Forwarded-For entry is only safe if the ALB appends"
+  }
+}
+
 run "connection_budget_blocks_unsafe_autoscaling" {
   command = plan
 
@@ -135,6 +149,16 @@ run "dr_copy_only_when_region_chosen" {
   }
 }
 
+run "dr_region_must_differ_from_primary" {
+  command = plan
+
+  variables {
+    dr_backup_region = "me-central-1"
+  }
+
+  expect_failures = [var.dr_backup_region]
+}
+
 run "rejects_frontend_origin_with_trailing_slash" {
   command = plan
 
@@ -143,4 +167,30 @@ run "rejects_frontend_origin_with_trailing_slash" {
   }
 
   expect_failures = [var.frontend_origins]
+}
+
+# WELL-ARCHITECTED-REVIEW.md fixes: they must be wired through the composition,
+# not just exist in their modules.
+run "review_fixes_are_wired" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      contains(module.monitoring.alarm_names, "zt-production-critical-acm-certificate-expiry"),
+      contains(module.monitoring.alarm_names, "zt-production-warning-worker-cpu"),
+      contains(module.monitoring.alarm_names, "zt-production-warning-ses-feedback-queue-age"),
+      contains(module.monitoring.alarm_names, "zt-production-critical-rds-disk-queue"),
+    ])
+    error_message = "The review's added alarms must be part of the catalogue"
+  }
+
+  assert {
+    condition     = length([for n in module.monitoring.alarm_names : n if startswith(n, "zt-production-critical-nat-port-allocation-")]) == 2
+    error_message = "One ErrorPortAllocation alarm per NAT gateway (test fixture has 2)"
+  }
+
+  assert {
+    condition     = length(module.account_baseline) == 1
+    error_message = "Account baseline (with the uploads-bucket data events) must be enabled by default"
+  }
 }

@@ -13,9 +13,17 @@ import { runClustered } from './cluster-bootstrap';
 import { mountApiDocs } from './config/api-docs';
 import { registerSecurityHeaders } from './config/security-headers';
 import { parseAllowedOrigins } from './config/cors-origins';
+import { applyTrustProxy } from './config/trust-proxy';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  // ---------------- Client address trust (SEC-02) ----------------
+  // Must precede every middleware/guard that reads `req.ip`. 0 (default) is
+  // the legacy socket-peer behaviour; 1 trusts exactly the AWS ALB (set by
+  // Terraform) so `req.ip` stops being the load balancer's own address for
+  // every caller. A hop COUNT, never `true` — see src/config/trust-proxy.ts.
+  applyTrustProxy(app, Number(app.get(ConfigService).get('TRUST_PROXY_HOPS') ?? 0));
 
   // ---------------- HTTP request duration (PERF-BE-002) ----------------
   // Registered before every other middleware/guard so it observes 100% of

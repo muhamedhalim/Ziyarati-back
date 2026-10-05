@@ -223,6 +223,58 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
+  # ── 4b. Rate: auth endpoints, per SOURCE IP ───────────────────────────────
+  #    Rule 4 trusts the FIRST X-Forwarded-For entry. That is correct behind
+  #    Vercel, but a client calling api.<domain> directly controls that value
+  #    (the ALB appends, WAF reads the first) and can rotate it to dodge rule 4,
+  #    or omit it (NO_MATCH => never counted). This rule keys on the TCP source,
+  #    which cannot be forged. The limit is deliberately high: Vercel egress IPs
+  #    front many users, so it only trips on one source hammering /auth/. It
+  #    does not replace origin verification (WELL-ARCHITECTED-REVIEW.md SEC-01).
+  rule {
+    name     = "rate-auth-source-ip"
+    priority = 45
+
+    action {
+      dynamic "block" {
+        for_each = local.blocking ? [1] : []
+        content {}
+      }
+      dynamic "count" {
+        for_each = local.blocking ? [] : [1]
+        content {}
+      }
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = var.rate_limit_auth_source_ip_per_5min
+        evaluation_window_sec = 300
+        aggregate_key_type    = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/api/v1/auth/"
+            positional_constraint = "STARTS_WITH"
+            field_to_match {
+              uri_path {}
+            }
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-rate-auth-source-ip"
+      sampled_requests_enabled   = true
+    }
+  }
+
   # ── 5. Rate: anonymous public surface (booking, guest AI REST) ────────────
   rule {
     name     = "rate-public"

@@ -25,6 +25,12 @@ variable "rate_limit_auth_per_5min" {
   default     = 100
 }
 
+variable "rate_limit_auth_source_ip_per_5min" {
+  description = "Requests per 5 min per SOURCE IP on /api/v1/auth/* (unforgeable key; high because Vercel egress IPs front many users)"
+  type        = number
+  default     = 1500
+}
+
 variable "rate_limit_public_per_5min" {
   description = "Requests per 5 min per forwarded client IP on /api/v1/public/*"
   type        = number

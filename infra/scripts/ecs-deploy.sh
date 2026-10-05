@@ -30,6 +30,29 @@ aws ecr describe-images --repository-name ziyaratech/backend --image-ids imageTa
   --query 'imageDetails[0].imageDigest' --output text >/dev/null
 log "image ${IMAGE}"
 
+# ── Image vulnerability gate ────────────────────────────────────────────────
+# ECR scans on push (basic scanning). Block a NEW image with CRITICAL findings.
+# Never block a ROLLBACK to an already-deployed tag: IMAGE_SCAN_GATE=skip is set
+# by the workflow when an existing image_tag is redeployed; "warn" reports only.
+GATE="${IMAGE_SCAN_GATE:-enforce}"
+if [[ "$GATE" != "skip" ]]; then
+  if aws ecr wait image-scan-complete --repository-name ziyaratech/backend \
+      --image-id imageTag="$TAG" 2>/dev/null; then
+    CRIT="$(aws ecr describe-image-scan-findings --repository-name ziyaratech/backend \
+      --image-id imageTag="$TAG" \
+      --query 'imageScanFindings.findingSeverityCounts.CRITICAL' --output text)"
+    if [[ "$CRIT" =~ ^[0-9]+$ && "$CRIT" -gt 0 ]]; then
+      log "image has ${CRIT} CRITICAL vulnerabilities (aws ecr describe-image-scan-findings ... imageTag=${TAG})"
+      [[ "$GATE" == "enforce" ]] && exit 1
+    else
+      log "image scan: no CRITICAL findings"
+    fi
+  else
+    log "image scan did not complete in time — gate could not be evaluated"
+    [[ "$GATE" == "enforce" ]] && exit 1
+  fi
+fi
+
 register_with_image() {
   local family="$1"
   aws ecs describe-task-definition --task-definition "$family" --include TAGS --output json \
@@ -84,6 +107,15 @@ RUNNING_TD="$(aws ecs describe-services --cluster "$CLUSTER" --services "${CLUST
   --query 'services[0].taskDefinition' --output text)"
 if [[ "$RUNNING_TD" != "$API_TD" ]]; then
   log "DEPLOYMENT ROLLED BACK: api is running ${RUNNING_TD##*/}, expected ${API_TD##*/}"
+  exit 1
+fi
+
+# Same check for the worker: its circuit breaker also rolls back silently, and a
+# worker stuck on the old revision means new job code is not running.
+RUNNING_WTD="$(aws ecs describe-services --cluster "$CLUSTER" --services "${CLUSTER}-worker" \
+  --query 'services[0].taskDefinition' --output text)"
+if [[ "$RUNNING_WTD" != "$WORKER_TD" ]]; then
+  log "DEPLOYMENT ROLLED BACK: worker is running ${RUNNING_WTD##*/}, expected ${WORKER_TD##*/}"
   exit 1
 fi
 

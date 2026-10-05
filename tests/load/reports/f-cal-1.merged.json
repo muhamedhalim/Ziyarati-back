@@ -1,0 +1,131 @@
+{
+  "schema": "lt-campaign-merged/1",
+  "runTag": "f-cal-1",
+  "generators": 1,
+  "segments": [
+    "0of1"
+  ],
+  "startedAt": "2026-10-05T12:23:48.345Z",
+  "durationMs": 330889.279821,
+  "config": {
+    "LT_CAL_RAMP": "30s",
+    "LT_CAL_LEVELS": "500,1000,2500,5000",
+    "BASE_URL": "http://host.docker.internal:3101",
+    "LT_SEGMENT": "0of1",
+    "LT_CAL_HOLD": "45s",
+    "RUN_TAG": "f-cal-1",
+    "LT_RUN_SEED": "53382"
+  },
+  "model": {
+    "thinkMs": 15000,
+    "tickS": 1,
+    "seed": 1,
+    "hotShare": 0,
+    "mix": "receptionist:38,doctor:20,owner:10,idle:5,public:20,marketplace:5,partner:2",
+    "ladder": [
+      100,
+      500,
+      1000,
+      2500,
+      5000,
+      10000,
+      15000,
+      20000
+    ],
+    "ramp": "120s",
+    "hold": "180s",
+    "queueTab": {
+      "receptionist": 0.5,
+      "doctor": 0.8
+    },
+    "ai": false,
+    "bookingConfirm": false,
+    "isolation": true
+  },
+  "precision": {
+    "percentiles": "bucket-estimated",
+    "bounds": [
+      5,
+      10,
+      25,
+      50,
+      100,
+      200,
+      300,
+      500,
+      800,
+      1200,
+      2000,
+      5000,
+      10000,
+      30000
+    ]
+  },
+  "totals": {
+    "http_reqs": 644074,
+    "http_req_failed_rate": 0,
+    "req_per_s_avg": 1946.5
+  },
+  "outcomes": {
+    "iterations": 644072
+  },
+  "statusDist": {
+    "200": 644072
+  },
+  "errorsByEndpoint": [],
+  "steps": [
+    {
+      "name": "calibrate",
+      "n": 644072,
+      "p50": 5,
+      "p95": 261,
+      "p99": 294,
+      "over1s": 0
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "health_raw",
+      "n": 644072,
+      "p50": 5,
+      "p95": 261,
+      "p99": 294,
+      "over1s": 0
+    }
+  ],
+  "ladder": [
+    {
+      "vus": 100,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 1000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 2500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 5000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 10000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 15000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 20000,
+      "verdict": "NOT MEASURED"
+    }
+  ],
+  "recovery": null
+}

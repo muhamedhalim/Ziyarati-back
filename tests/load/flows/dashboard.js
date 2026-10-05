@@ -9,6 +9,7 @@
  * serialising them would understate peak connection pressure.
  */
 import http from 'k6/http';
+import exec from 'k6/execution';
 import { BASE, authGet, can } from '../helpers/auth.js';
 import { observe, journeyLatency } from '../helpers/metrics.js';
 import { checkDashboardSummary, checkUnreadCount } from '../helpers/checks.js';
@@ -26,7 +27,8 @@ export function dashboardPageView(session, step) {
   const p = authGet(session, { step });
   // CACHE_BUST rotates the analytics cache key so the 60s Redis cache does not
   // mask real aggregation cost. Off by default: the realistic user hits cache.
-  const offset = __ENV.CACHE_BUST === 'true' ? (__VU * 7 + __ITER) % 300 : 0;
+  const bust = __ENV.CACHE_BUST === 'true' || (exec.scenario && exec.scenario.name === 'cold');
+  const offset = bust ? (__VU * 7 + __ITER) % 300 : 0;
   const r = trailingRange(14, offset);
 
   // The real page issues the analytics trio ONLY to a principal holding

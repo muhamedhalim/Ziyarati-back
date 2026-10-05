@@ -169,6 +169,21 @@ resource "aws_cloudtrail" "this" {
   enable_log_file_validation    = true
   tags                          = local.tags
 
+  # Management events say who changed the platform; data events say who READ a
+  # patient document. Scoped to the audited buckets only — account-wide S3 data
+  # events would bill every ALB/Terraform/CloudTrail write as well.
+  dynamic "event_selector" {
+    for_each = length(var.audited_bucket_arns) > 0 ? [1] : []
+    content {
+      read_write_type           = "All"
+      include_management_events = true
+      data_resource {
+        type   = "AWS::S3::Object"
+        values = [for arn in var.audited_bucket_arns : "${arn}/"]
+      }
+    }
+  }
+
   depends_on = [aws_s3_bucket_policy.trail]
 }
 

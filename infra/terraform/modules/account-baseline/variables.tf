@@ -39,3 +39,9 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "audited_bucket_arns" {
+  description = "S3 buckets whose OBJECT-level reads/writes are recorded as CloudTrail data events (the patient-document bucket). Empty = none."
+  type        = list(string)
+  default     = []
+}

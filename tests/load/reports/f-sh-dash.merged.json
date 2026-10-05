@@ -1,0 +1,347 @@
+{
+  "schema": "lt-campaign-merged/1",
+  "runTag": "f-sh-dash",
+  "generators": 1,
+  "segments": [
+    "0of1"
+  ],
+  "startedAt": "2026-10-05T12:54:06.952Z",
+  "durationMs": 360606.968413,
+  "config": {
+    "LT_STAMPEDE_VUS": "30",
+    "LT_SEGMENT": "0of1",
+    "LT_DURATION": "30s",
+    "LT_COLD_RATE": "5",
+    "LT_RUN_SEED": "53414",
+    "RUN_TAG": "f-sh-dash",
+    "LT_VUS": "40",
+    "BASE_URL": "http://host.docker.internal:3101"
+  },
+  "model": {
+    "thinkMs": 15000,
+    "tickS": 1,
+    "seed": 1,
+    "hotShare": 0,
+    "mix": "receptionist:38,doctor:20,owner:10,idle:5,public:20,marketplace:5,partner:2",
+    "ladder": [
+      100,
+      500,
+      1000,
+      2500,
+      5000,
+      10000,
+      15000,
+      20000
+    ],
+    "ramp": "120s",
+    "hold": "180s",
+    "queueTab": {
+      "receptionist": 0.5,
+      "doctor": 0.8
+    },
+    "ai": false,
+    "bookingConfirm": false,
+    "isolation": true
+  },
+  "precision": {
+    "percentiles": "bucket-estimated",
+    "bounds": [
+      5,
+      10,
+      25,
+      50,
+      100,
+      200,
+      300,
+      500,
+      800,
+      1200,
+      2000,
+      5000,
+      10000,
+      30000
+    ]
+  },
+  "totals": {
+    "http_reqs": 19287,
+    "http_req_failed_rate": 0.0009851195105511485,
+    "req_per_s_avg": 53.5
+  },
+  "outcomes": {
+    "http_timeout_or_conn": 19,
+    "tenant_isolation_violation": 0,
+    "http_429_rate_limited": 0,
+    "iterations": 2811
+  },
+  "statusDist": {
+    "0": 19,
+    "200": 19266
+  },
+  "errorsByEndpoint": [
+    {
+      "name": "dashboard",
+      "requests": 2549,
+      "c4xx": 0,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 5,
+      "total": 5,
+      "unexpected": 5,
+      "expected4xx": false
+    },
+    {
+      "name": "analytics_trend_revenue",
+      "requests": 2549,
+      "c4xx": 0,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 4,
+      "total": 4,
+      "unexpected": 4,
+      "expected4xx": false
+    },
+    {
+      "name": "analytics_trend_appointments",
+      "requests": 2549,
+      "c4xx": 0,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 3,
+      "total": 3,
+      "unexpected": 3,
+      "expected4xx": false
+    },
+    {
+      "name": "tenants_targets",
+      "requests": 2549,
+      "c4xx": 0,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 3,
+      "total": 3,
+      "unexpected": 3,
+      "expected4xx": false
+    },
+    {
+      "name": "tenants_me",
+      "requests": 2549,
+      "c4xx": 0,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 2,
+      "total": 2,
+      "unexpected": 2,
+      "expected4xx": false
+    },
+    {
+      "name": "notifications_unread",
+      "requests": 3049,
+      "c4xx": 0,
+      "c429": 0,
+      "c5xx": 0,
+      "net": 2,
+      "total": 2,
+      "unexpected": 2,
+      "expected4xx": false
+    }
+  ],
+  "steps": [
+    {
+      "name": "steady",
+      "n": 19285,
+      "p50": 85,
+      "p95": 865,
+      "p99": 1161,
+      "over1s": 0.05875032408607726
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "notifications_unread",
+      "n": 3049,
+      "p50": 84,
+      "p95": 826,
+      "p99": 1125,
+      "over1s": 0.05346015086913742
+    },
+    {
+      "name": "tenants_targets",
+      "n": 2549,
+      "p50": 97,
+      "p95": 972,
+      "p99": 1182,
+      "over1s": 0.08277755982738329
+    },
+    {
+      "name": "dashboard",
+      "n": 2549,
+      "p50": 84,
+      "p95": 932,
+      "p99": 1179,
+      "over1s": 0.07140054923499412
+    },
+    {
+      "name": "analytics_trend_revenue",
+      "n": 2549,
+      "p50": 86,
+      "p95": 982,
+      "p99": 1245,
+      "over1s": 0.08277755982738329
+    },
+    {
+      "name": "tenants_me",
+      "n": 2549,
+      "p50": 83,
+      "p95": 871,
+      "p99": 1134,
+      "over1s": 0.06080816006276971
+    },
+    {
+      "name": "analytics_trend_appointments",
+      "n": 2549,
+      "p50": 86,
+      "p95": 984,
+      "p99": 1297,
+      "over1s": 0.08277755982738329
+    },
+    {
+      "name": "journey_summary",
+      "n": 1922,
+      "p50": 42,
+      "p95": 225,
+      "p99": 392,
+      "over1s": 0
+    },
+    {
+      "name": "activity_list",
+      "n": 250,
+      "p50": 239,
+      "p95": 344,
+      "p99": 469,
+      "over1s": 0
+    },
+    {
+      "name": "staff_lookup",
+      "n": 250,
+      "p50": 345,
+      "p95": 484,
+      "p99": 497,
+      "over1s": 0
+    },
+    {
+      "name": "analytics_performance_staff",
+      "n": 250,
+      "p50": 100,
+      "p95": 194,
+      "p99": 263,
+      "over1s": 0
+    },
+    {
+      "name": "activity_actions",
+      "n": 250,
+      "p50": 153,
+      "p95": 274,
+      "p99": 295,
+      "over1s": 0
+    },
+    {
+      "name": "branches_list",
+      "n": 250,
+      "p50": 302,
+      "p95": 480,
+      "p99": 496,
+      "over1s": 0
+    },
+    {
+      "name": "journey_breakdown",
+      "n": 150,
+      "p50": 16,
+      "p95": 24,
+      "p99": 25,
+      "over1s": 0
+    },
+    {
+      "name": "activity_list_search",
+      "n": 109,
+      "p50": 76,
+      "p95": 145,
+      "p99": 189,
+      "over1s": 0
+    },
+    {
+      "name": "platform_sales_overview",
+      "n": 12,
+      "p50": 80,
+      "p95": 170,
+      "p99": 194,
+      "over1s": 0
+    },
+    {
+      "name": "platform_finance_transactions",
+      "n": 12,
+      "p50": 83,
+      "p95": 180,
+      "p99": 196,
+      "over1s": 0
+    },
+    {
+      "name": "platform_finance_kpis",
+      "n": 12,
+      "p50": 75,
+      "p95": 98,
+      "p99": 100,
+      "over1s": 0
+    },
+    {
+      "name": "platform_sales_employees",
+      "n": 12,
+      "p50": 75,
+      "p95": 98,
+      "p99": 100,
+      "over1s": 0
+    },
+    {
+      "name": "platform_finance_invoices",
+      "n": 12,
+      "p50": 80,
+      "p95": 170,
+      "p99": 194,
+      "over1s": 0
+    }
+  ],
+  "ladder": [
+    {
+      "vus": 100,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 1000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 2500,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 5000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 10000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 15000,
+      "verdict": "NOT MEASURED"
+    },
+    {
+      "vus": 20000,
+      "verdict": "NOT MEASURED"
+    }
+  ],
+  "recovery": null
+}

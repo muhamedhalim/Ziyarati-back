@@ -50,6 +50,18 @@ variable "allow_worker_egress_any_port" {
   default     = false
 }
 
+variable "enable_flow_logs" {
+  description = "REJECT-only VPC Flow Logs to a private S3 bucket (forensics for denied connections)"
+  type        = bool
+  default     = true
+}
+
+variable "flow_log_retention_days" {
+  description = "Flow log retention in S3 (IPs and ports only, no payload)"
+  type        = number
+  default     = 90
+}
+
 variable "tags" {
   description = "Extra tags"
   type        = map(string)

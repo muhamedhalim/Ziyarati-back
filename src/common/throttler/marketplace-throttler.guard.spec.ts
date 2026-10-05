@@ -15,12 +15,13 @@ import { INTEGRATION_SCOPE } from '../../modules/platform/integration-scopes.con
 class FakeDiscoveryController {}
 Object.defineProperty(FakeDiscoveryController, 'name', { value: 'FakeController' });
 
-function buildGuard(apiKeys: { authenticate: jest.Mock }) {
+function buildGuard(apiKeys: { authenticate: jest.Mock }, edgeToken?: string) {
   const guard = new MarketplaceThrottlerGuard(
     { throttlers: [{ ttl: 60_000, limit: 30 }] } as never,
     { increment: jest.fn() } as never,
     { getAllAndOverride: jest.fn() } as never,
     apiKeys as never,
+    edgeToken ? ({ get: (k: string) => (k === 'EDGE_PROXY_TOKEN' ? edgeToken : undefined) } as never) : undefined,
   );
   return guard;
 }
@@ -211,5 +212,58 @@ describe('MarketplaceThrottlerGuard (contract C11)', () => {
 
     expect(tracker).toMatch(/^mkt:k1:/);
     expect(apiKeys.authenticate).toHaveBeenCalledWith('zk_platform');
+  });
+});
+
+/**
+ * SEC-02 — the per-client key for traffic that proved it came through the
+ * trusted edge. Every other path (including a forged header) must be exactly
+ * the ordinary req.ip tracker.
+ */
+describe('MarketplaceThrottlerGuard — edge client address (SEC-02)', () => {
+  const TOKEN = 'e'.repeat(40);
+  const reqWith = (headers: Record<string, string>) =>
+    ({
+      ip: '76.76.21.1',
+      headers,
+      header: (n: string) => headers[n.toLowerCase()],
+    }) as any;
+
+  it('keys on the edge-forwarded client when the token matches (any route, not only discovery)', async () => {
+    const guard = buildGuard({ authenticate: jest.fn() }, TOKEN);
+    const req = reqWith({ 'x-zt-edge-token': TOKEN, 'x-forwarded-for': '198.51.100.1, 76.76.21.1' });
+
+    await expect((guard as any).getTracker(req, fakeContext(PublicBookingController))).resolves.toBe('198.51.100.1');
+  });
+
+  it('two users behind the same edge address get different keys', async () => {
+    const guard = buildGuard({ authenticate: jest.fn() }, TOKEN);
+    const a = reqWith({ 'x-zt-edge-token': TOKEN, 'x-forwarded-for': '198.51.100.1, 76.76.21.1' });
+    const b = reqWith({ 'x-zt-edge-token': TOKEN, 'x-forwarded-for': '198.51.100.2, 76.76.21.1' });
+
+    const ta = await (guard as any).getTracker(a, fakeContext(PublicBookingController));
+    const tb = await (guard as any).getTracker(b, fakeContext(PublicBookingController));
+    expect(ta).not.toBe(tb);
+  });
+
+  it('a forged X-Forwarded-For WITHOUT the token cannot choose its own bucket', async () => {
+    const guard = buildGuard({ authenticate: jest.fn() }, TOKEN);
+    const req = reqWith({ 'x-forwarded-for': '1.2.3.4, 76.76.21.1' });
+
+    await expect((guard as any).getTracker(req, fakeContext(PublicBookingController))).resolves.toBe('76.76.21.1');
+  });
+
+  it('with a WRONG token it is the ordinary req.ip tracker', async () => {
+    const guard = buildGuard({ authenticate: jest.fn() }, TOKEN);
+    const req = reqWith({ 'x-zt-edge-token': 'f'.repeat(40), 'x-forwarded-for': '1.2.3.4, 76.76.21.1' });
+
+    await expect((guard as any).getTracker(req, fakeContext(PublicBookingController))).resolves.toBe('76.76.21.1');
+  });
+
+  it('with no token configured the header is ignored entirely (inert by default)', async () => {
+    const guard = buildGuard({ authenticate: jest.fn() });
+    const req = reqWith({ 'x-zt-edge-token': TOKEN, 'x-forwarded-for': '198.51.100.1, 76.76.21.1' });
+
+    await expect((guard as any).getTracker(req, fakeContext(PublicBookingController))).resolves.toBe('76.76.21.1');
   });
 });

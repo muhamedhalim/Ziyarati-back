@@ -33,7 +33,12 @@ data "aws_partition" "current" {}
 
 locals {
   state_bucket = "zt-${var.environment}-tfstate-${var.account_id}"
-  gh_sub_plan  = "repo:${var.github_repository}:*"
+  # Plans run on pull requests and on pushes to the default branch only — not on
+  # arbitrary branches/tags/environments of the repository.
+  gh_sub_plan = [
+    "repo:${var.github_repository}:pull_request",
+    "repo:${var.github_repository}:ref:refs/heads/master",
+  ]
   gh_sub_apply = "repo:${var.github_repository}:environment:infra-${var.environment}"
 }
 
@@ -146,11 +151,12 @@ data "aws_iam_policy_document" "tf_plan_assume" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
-    # Plans run on PRs; the role is read-only, so any ref of THIS repo is fine.
+    # Plans run on PRs and on master; PR-supplied Terraform executes under this
+    # role, so it is read-only AND denied log/object content (see tf_plan_deny).
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.gh_sub_plan]
+      values   = local.gh_sub_plan
     }
   }
 }
@@ -176,10 +182,12 @@ data "aws_iam_policy_document" "tf_apply_assume" {
   }
 }
 
+# READ-ONLY: the plan job runs `terraform plan -lock=false`, so it never writes
+# state or a lockfile. A malicious PR therefore cannot tamper with state.
 data "aws_iam_policy_document" "state_access" {
   statement {
     sid       = "StateObjects"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.state.arn}/*"]
   }
   statement {
@@ -189,9 +197,40 @@ data "aws_iam_policy_document" "state_access" {
   }
   statement {
     sid       = "StateKey"
-    actions   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+    actions   = ["kms:Decrypt"]
     resources = [aws_kms_key.state.arn]
   }
+}
+
+# ReadOnlyAccess includes object reads on every bucket and log reads on every
+# log group — i.e. patient documents and application logs. The plan role needs
+# neither (Terraform reads configuration, not content).
+data "aws_iam_policy_document" "tf_plan_deny" {
+  statement {
+    sid           = "NoObjectContentExceptState"
+    effect        = "Deny"
+    actions       = ["s3:GetObject", "s3:GetObjectVersion"]
+    not_resources = ["${aws_s3_bucket.state.arn}/*"]
+  }
+  statement {
+    sid    = "NoLogContent"
+    effect = "Deny"
+    actions = [
+      "logs:GetLogEvents",
+      "logs:FilterLogEvents",
+      "logs:GetLogRecord",
+      "logs:StartQuery",
+      "logs:GetQueryResults",
+      "logs:StartLiveTail",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "tf_plan_deny" {
+  name   = "deny-content-reads"
+  role   = aws_iam_role.tf_plan.id
+  policy = data.aws_iam_policy_document.tf_plan_deny.json
 }
 
 resource "aws_iam_role" "tf_plan" {
