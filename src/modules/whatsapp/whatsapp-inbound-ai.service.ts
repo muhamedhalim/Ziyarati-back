@@ -5,6 +5,7 @@ import { IsNull, Repository } from 'typeorm';
 import { WhatsappContact } from '../../entities/WhatsApp/WhatsappContact';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { Conversation } from '../../entities/Conversations/Conversation';
 import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
 
@@ -346,22 +347,10 @@ export class WhatsappInboundAiService {
       return null;
     }
 
-    // The thread the contact's AI session is already bound to wins, so the AI
-    // session, the agent inbox and the patient's messages share one thread.
-    const aiSession = contact.ai_conversation_id
-      ? await this.aiConversations.findOne({
-          where: {
-            id: contact.ai_conversation_id,
-            tenant: { id: tenantId },
-          },
-          relations: { conversation: true },
-        })
-      : null;
-    const thread = await this.conversationExecution.resolveWhatsappThread(
+    const thread = await this.resolveThreadForContact(
       tenantId,
-      customerId,
+      contact,
       account.id,
-      aiSession?.conversation?.id,
     );
     await this.conversationExecution.recordChannelMessageOnce(
       tenantId,
@@ -372,6 +361,41 @@ export class WhatsappInboundAiService {
       { waMessageId: message.id, messageType: message.type },
     );
     return thread.id;
+  }
+
+  /**
+   * The timeline thread this contact's WhatsApp conversation lives on — the one
+   * place that is decided, so the patient's messages, the AI session, the agent
+   * inbox and a staff reply sent from the WhatsApp Business App (a coexistence
+   * echo) all land on, and are judged against, the same thread.
+   *
+   * The thread the contact's AI session is already bound to wins; otherwise the
+   * customer's thread for this account, created if there is none.
+   */
+  async resolveThreadForContact(
+    tenantId: string,
+    contact: WhatsappContact,
+    accountId: string,
+  ): Promise<Conversation> {
+    const customerId = contact.customer?.id;
+    if (!customerId) {
+      throw new Error('contact has no linked customer');
+    }
+    const aiSession = contact.ai_conversation_id
+      ? await this.aiConversations.findOne({
+          where: {
+            id: contact.ai_conversation_id,
+            tenant: { id: tenantId },
+          },
+          relations: { conversation: true },
+        })
+      : null;
+    return this.conversationExecution.resolveWhatsappThread(
+      tenantId,
+      customerId,
+      accountId,
+      aiSession?.conversation?.id,
+    );
   }
 
   /**
