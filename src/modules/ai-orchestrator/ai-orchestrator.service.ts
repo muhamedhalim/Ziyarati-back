@@ -299,6 +299,31 @@ export class AiOrchestratorService {
   }
 
   /**
+   * Persists an inbound message the assistant must NOT answer, without calling
+   * the model: into the AI's own history (so nothing is missing if the
+   * conversation is later returned to the AI) and, when a person is assigned, a
+   * "customer replied" notification for them.
+   *
+   * For a caller that has already decided — through its own policy check — that
+   * a person owns the conversation. It is the same persistence a HANDED_OVER
+   * turn performs inside `handle`/`handleStream`, reached before the turn
+   * instead of from within it; no parallel path.
+   */
+  recordInboundWithoutAnswer(
+    tenantId: string,
+    aiConversationId: string,
+    content: string,
+    origin?: OrchestrateInput['origin'],
+  ) {
+    return this.execution.recordInboundWhileHandedOver(
+      tenantId,
+      aiConversationId,
+      content,
+      origin,
+    );
+  }
+
+  /**
    * Live Agent Handover's SECOND trigger: the assistant told the patient a
    * clinic person will contact them, without calling `request_human_handover`
    * itself. Runs on the FINAL reply of every turn, for both `handle` and
