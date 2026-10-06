@@ -11,6 +11,14 @@ import { decimalTransformer } from '../../common/transformers/decimal.transforme
 
 @Entity('tenant_settings')
 @Check(
+  'CHK_tenant_settings_ai_schedule_mode',
+  `"ai_schedule_mode" IN ('ALWAYS','WORKING_HOURS','OUTSIDE_WORKING_HOURS')`,
+)
+@Check(
+  'CHK_tenant_settings_ai_assignment_mode',
+  `"ai_assignment_mode" IN ('ALL','ASSIGNED_ONLY')`,
+)
+@Check(
   'CHK_tenant_settings_ai_human_takeover_minutes',
   `"ai_human_takeover_minutes" BETWEEN 0 AND 1440`,
 )
@@ -51,6 +59,23 @@ export class TenantSetting {
    */
   @Column({ type: 'int', default: 0 })
   ai_human_takeover_minutes!: number;
+
+  /**
+   * When the WhatsApp AI may answer relative to the clinic's working hours:
+   * `ALWAYS` (default, today's behaviour), `WORKING_HOURS` (only while open) or
+   * `OUTSIDE_WORKING_HOURS` (only while closed — e.g. staff by day, AI at night).
+   * Read in exactly one place, `WhatsappAiPolicyService`.
+   */
+  @Column({ type: 'varchar', length: 24, default: 'ALWAYS' })
+  ai_schedule_mode!: string;
+
+  /**
+   * `ALL` (default) = the AI answers every conversation the other rules allow;
+   * `ASSIGNED_ONLY` = only conversations staff assigned to it
+   * (`conversations.ai_mode = 'ENABLED'`).
+   */
+  @Column({ type: 'varchar', length: 16, default: 'ALL' })
+  ai_assignment_mode!: string;
 
   /**
    * Whether this clinic is discoverable and bookable by ANONYMOUS visitors

@@ -4,6 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
 import { AI_POLICY_REASON } from './whatsapp-ai-policy.constants';
+import { WhatsappAiHoursService } from './whatsapp-ai-hours.service';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { Conversation } from '../../entities/Conversations/Conversation';
 import { Customer } from '../../entities/CRM/Customer';
@@ -32,6 +33,7 @@ describe('WhatsappAiPolicyService', () => {
   let customers: MockRepository;
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let metrics: { recordWhatsappAiDecision: jest.Mock };
+  let hours: { isOpen: jest.Mock };
 
   const granted = (key: FeatureKey | null) => ({
     allowed: true,
@@ -67,6 +69,7 @@ describe('WhatsappAiPolicyService', () => {
       shouldBlock: jest.fn().mockReturnValue(true),
     };
     metrics = { recordWhatsappAiDecision: jest.fn() };
+    hours = { isOpen: jest.fn().mockResolvedValue(true) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -83,6 +86,7 @@ describe('WhatsappAiPolicyService', () => {
         { provide: getRepositoryToken(Customer), useValue: customers },
         { provide: AccessControlService, useValue: access },
         { provide: MetricsService, useValue: metrics },
+        { provide: WhatsappAiHoursService, useValue: hours },
         { provide: TenantContextService, useValue: new TenantContextService() },
       ],
     }).compile();
@@ -754,6 +758,241 @@ describe('WhatsappAiPolicyService', () => {
         await policy.evaluate(TENANT, { conversationId: 'conv-1' }, 'pre_ai');
         expect(aiConversations.findOne).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('phase 2 — schedule and assignment modes', () => {
+    const settings = (over: Record<string, unknown>) =>
+      tenantSettings.findOne.mockResolvedValue({
+        id: 'ts',
+        bot_enabled: true,
+        ...over,
+      });
+
+    it('defaults (no modes on the row) change nothing and never read the hours', async () => {
+      await expect(policy.evaluate(TENANT, SUBJECT, 'pre_ai')).resolves.toEqual(
+        { allowed: true },
+      );
+      expect(hours.isOpen).not.toHaveBeenCalled();
+    });
+
+    it('ALWAYS / ALL explicitly: allowed, hours not read', async () => {
+      settings({ ai_schedule_mode: 'ALWAYS', ai_assignment_mode: 'ALL' });
+      await expect(policy.evaluate(TENANT, SUBJECT, 'pre_ai')).resolves.toEqual(
+        { allowed: true },
+      );
+      expect(hours.isOpen).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['WORKING_HOURS', true, true],
+      ['WORKING_HOURS', false, false],
+      ['OUTSIDE_WORKING_HOURS', true, false],
+      ['OUTSIDE_WORKING_HOURS', false, true],
+    ])(
+      '%s while the clinic is open=%s → allowed=%s',
+      async (mode, open, allowed) => {
+        settings({ ai_schedule_mode: mode });
+        hours.isOpen.mockResolvedValue(open);
+
+        const d = await policy.evaluate(TENANT, SUBJECT, 'pre_ai');
+
+        expect(d).toEqual(
+          allowed
+            ? { allowed: true }
+            : {
+                allowed: false,
+                reason: AI_POLICY_REASON.OUTSIDE_ALLOWED_HOURS,
+              },
+        );
+      },
+    );
+
+    it.each(['WORKING_HOURS', 'OUTSIDE_WORKING_HOURS'])(
+      '%s with NO working hours configured does not apply — the AI is not silently switched off',
+      async (mode) => {
+        settings({ ai_schedule_mode: mode });
+        hours.isOpen.mockResolvedValue(null);
+
+        await expect(
+          policy.evaluate(TENANT, SUBJECT, 'pre_ai'),
+        ).resolves.toEqual({ allowed: true });
+      },
+    );
+
+    it("judges the thread's own branch, else its number's branch, else the whole clinic", async () => {
+      settings({ ai_schedule_mode: 'WORKING_HOURS' });
+
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'AI',
+        branch: { id: 'b-thread' },
+        whatsapp_account: { id: 'a', branch: { id: 'b-number' } },
+      });
+      await policy.evaluate(TENANT, SUBJECT, 'pre_ai');
+      expect(hours.isOpen).toHaveBeenLastCalledWith(TENANT, 'b-thread');
+
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'AI',
+        whatsapp_account: { id: 'a', branch: { id: 'b-number' } },
+      });
+      await policy.evaluate(TENANT, SUBJECT, 'pre_ai');
+      expect(hours.isOpen).toHaveBeenLastCalledWith(TENANT, 'b-number');
+
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'AI',
+        whatsapp_account: { id: 'a', branch: null },
+      });
+      await policy.evaluate(TENANT, SUBJECT, 'pre_ai');
+      expect(hours.isOpen).toHaveBeenLastCalledWith(TENANT, null);
+    });
+
+    it('fails CLOSED when the hours cannot be read', async () => {
+      settings({ ai_schedule_mode: 'WORKING_HOURS' });
+      hours.isOpen.mockRejectedValue(new Error('db down'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation();
+
+      await expect(policy.evaluate(TENANT, SUBJECT, 'pre_ai')).resolves.toEqual(
+        { allowed: false, reason: AI_POLICY_REASON.POLICY_READ_FAILED },
+      );
+    });
+
+    it('ASSIGNED_ONLY refuses a conversation that is not assigned to the AI', async () => {
+      settings({ ai_assignment_mode: 'ASSIGNED_ONLY' });
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'AI',
+        ai_mode: 'DEFAULT',
+      });
+
+      await expect(policy.evaluate(TENANT, SUBJECT, 'pre_ai')).resolves.toEqual(
+        { allowed: false, reason: AI_POLICY_REASON.NOT_ASSIGNED_TO_AI },
+      );
+    });
+
+    it('ASSIGNED_ONLY allows a conversation staff assigned to the AI (ENABLED)', async () => {
+      settings({ ai_assignment_mode: 'ASSIGNED_ONLY' });
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'AI',
+        ai_mode: 'ENABLED',
+      });
+
+      await expect(policy.evaluate(TENANT, SUBJECT, 'pre_ai')).resolves.toEqual(
+        { allowed: true },
+      );
+    });
+
+    it('ASSIGNED_ONLY with no thread known refuses — nothing was assigned', async () => {
+      settings({ ai_assignment_mode: 'ASSIGNED_ONLY' });
+
+      await expect(policy.evaluate(TENANT, {}, 'pre_ai')).resolves.toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.NOT_ASSIGNED_TO_AI,
+      });
+    });
+
+    it('ENABLED lifts ONLY the assignment rule: clinic off, patient excluded, takeover and schedule still refuse', async () => {
+      const enabled = { id: 'conv-1', owner_type: 'AI', ai_mode: 'ENABLED' };
+
+      settings({ bot_enabled: false, ai_assignment_mode: 'ASSIGNED_ONLY' });
+      conversations.findOne.mockResolvedValue(enabled);
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_ai')).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.CLINIC_AI_DISABLED,
+      });
+
+      settings({ ai_assignment_mode: 'ASSIGNED_ONLY' });
+      customers.findOne.mockResolvedValue({
+        id: 'cust-1',
+        ai_replies_disabled: true,
+      });
+      expect(
+        await policy.evaluate(
+          TENANT,
+          { ...SUBJECT, customerId: 'cust-1' },
+          'pre_ai',
+        ),
+      ).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.PATIENT_AI_DISABLED,
+      });
+      customers.findOne.mockResolvedValue({
+        id: 'cust-1',
+        ai_replies_disabled: false,
+      });
+
+      conversations.findOne.mockResolvedValue({
+        ...enabled,
+        owner_type: 'HUMAN',
+      });
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_ai')).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.HUMAN_TAKEOVER,
+      });
+      conversations.findOne.mockResolvedValue(enabled);
+
+      settings({
+        ai_schedule_mode: 'WORKING_HOURS',
+        ai_assignment_mode: 'ASSIGNED_ONLY',
+      });
+      hours.isOpen.mockResolvedValue(false);
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_ai')).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.OUTSIDE_ALLOWED_HOURS,
+      });
+    });
+
+    it('precedence: takeover is reported before the schedule, the schedule before assignment', async () => {
+      settings({
+        ai_schedule_mode: 'WORKING_HOURS',
+        ai_assignment_mode: 'ASSIGNED_ONLY',
+      });
+      hours.isOpen.mockResolvedValue(false);
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'HUMAN',
+        ai_mode: 'DEFAULT',
+      });
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_ai')).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.HUMAN_TAKEOVER,
+      });
+
+      conversations.findOne.mockResolvedValue({
+        id: 'conv-1',
+        owner_type: 'AI',
+        ai_mode: 'DEFAULT',
+      });
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_ai')).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.OUTSIDE_ALLOWED_HOURS,
+      });
+    });
+
+    it('is re-evaluated at pre_send with a fresh read: closing time arriving mid-turn stops the reply', async () => {
+      settings({ ai_schedule_mode: 'WORKING_HOURS' });
+      hours.isOpen.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_ai')).toEqual({
+        allowed: true,
+      });
+      expect(await policy.evaluate(TENANT, SUBJECT, 'pre_send')).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.OUTSIDE_ALLOWED_HOURS,
+      });
+    });
+
+    it('explain() reports the new reasons without recording a decision', async () => {
+      settings({ ai_assignment_mode: 'ASSIGNED_ONLY' });
+
+      expect(await policy.explain(TENANT, SUBJECT)).toEqual({
+        allowed: false,
+        reason: AI_POLICY_REASON.NOT_ASSIGNED_TO_AI,
+      });
+      expect(metrics.recordWhatsappAiDecision).not.toHaveBeenCalled();
     });
   });
 });

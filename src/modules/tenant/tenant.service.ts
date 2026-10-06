@@ -23,7 +23,10 @@ import {
   AnalyticsCacheService,
   CACHE_NS,
 } from '../analytics/analytics-cache.service';
-import { currentMonthUtc, monthRangeUtc } from '../analytics/analytics.constants';
+import {
+  currentMonthUtc,
+  monthRangeUtc,
+} from '../analytics/analytics.constants';
 import {
   computeMetricProgress,
   type TargetMetricProgress,
@@ -250,6 +253,10 @@ export class TenantService {
   ): Promise<TenantSetting> {
     const settings = await this.getSettings(tenantId);
     const botWasEnabled = settings.bot_enabled;
+    const aiModesBefore = {
+      ai_schedule_mode: settings.ai_schedule_mode,
+      ai_assignment_mode: settings.ai_assignment_mode,
+    };
 
     // Switching the WhatsApp AI ON is only for a clinic whose plan includes it.
     // The inbound path refuses an un-entitled clinic regardless, but a switch
@@ -274,6 +281,8 @@ export class TenantService {
       bot_enabled: dto.botEnabled ?? settings.bot_enabled,
       ai_human_takeover_minutes:
         dto.aiHumanTakeoverMinutes ?? settings.ai_human_takeover_minutes,
+      ai_schedule_mode: dto.aiScheduleMode ?? settings.ai_schedule_mode,
+      ai_assignment_mode: dto.aiAssignmentMode ?? settings.ai_assignment_mode,
       enforce_staff_working_hours:
         dto.enforceStaffWorkingHours ?? settings.enforce_staff_working_hours,
       // The clinic's opt-in to the PUBLIC (anonymous) booking assistant. Every
@@ -307,6 +316,25 @@ export class TenantService {
         entityId: saved.id,
         before: { bot_enabled: botWasEnabled },
         after: { bot_enabled: dto.botEnabled },
+      });
+    }
+
+    const aiModesAfter = {
+      ai_schedule_mode: saved.ai_schedule_mode,
+      ai_assignment_mode: saved.ai_assignment_mode,
+    };
+    if (
+      aiModesBefore.ai_schedule_mode !== aiModesAfter.ai_schedule_mode ||
+      aiModesBefore.ai_assignment_mode !== aiModesAfter.ai_assignment_mode
+    ) {
+      await this.activityAudit.record({
+        tenantId,
+        actorUserId,
+        action: 'tenant.ai_policy_updated',
+        entityType: 'tenant_settings',
+        entityId: saved.id,
+        before: aiModesBefore,
+        after: aiModesAfter,
       });
     }
     return saved;
@@ -373,7 +401,11 @@ export class TenantService {
     );
 
     return {
-      period: { month: monthStr, start: start.toISOString(), end: end.toISOString() },
+      period: {
+        month: monthStr,
+        start: start.toISOString(),
+        end: end.toISOString(),
+      },
       currency: settings.currency,
       appointments: computeMetricProgress(
         settings.appointment_target ?? null,
@@ -407,7 +439,10 @@ export class TenantService {
         TenantApprovalStatus.APPROVED,
         TenantApprovalStatus.REJECTED,
       ],
-      [TenantApprovalStatus.PENDING_APPROVAL]: [TenantApprovalStatus.APPROVED, TenantApprovalStatus.REJECTED],
+      [TenantApprovalStatus.PENDING_APPROVAL]: [
+        TenantApprovalStatus.APPROVED,
+        TenantApprovalStatus.REJECTED,
+      ],
       [TenantApprovalStatus.APPROVED]: [TenantApprovalStatus.SUSPENDED],
       [TenantApprovalStatus.REJECTED]: [TenantApprovalStatus.APPROVED],
       [TenantApprovalStatus.SUSPENDED]: [TenantApprovalStatus.APPROVED],

@@ -27,6 +27,8 @@ import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
 import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
+import { WhatsappAiHoursService } from './whatsapp-ai-hours.service';
+import { WorkingHour } from '../../entities/Staff/WorkingHour';
 import { ContactTurnLockService } from './contact-turn-lock.service';
 import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
@@ -132,6 +134,9 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
       // READ-ONLY: `bot_enabled`, the clinic's own switch for the inbound AI
       // auto-reply (`WhatsappAiPolicyService`).
       TenantSetting,
+      // READ-ONLY: the clinic's working hours, for the AI schedule mode
+      // (`WhatsappAiHoursService`).
+      WorkingHour,
       // READ-ONLY: the contact's AI session, to find the timeline thread it is
       // already bound to (`WhatsappInboundAiService.storeOnTimeline`).
       AiConversation,
@@ -180,6 +185,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     // The single decision on whether the AI may answer (clinic switch, plan,
     // human takeover), asked before the model runs and again before the send.
     WhatsappAiPolicyService,
+    WhatsappAiHoursService,
     // Serializes AI turns per contact (the webhook worker runs concurrently).
     ContactTurnLockService,
     // F-16: per-contact admission for WhatsappInboundAiService. The realtime

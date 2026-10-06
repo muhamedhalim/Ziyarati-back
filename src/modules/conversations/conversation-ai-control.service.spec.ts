@@ -258,4 +258,81 @@ describe('ConversationAiControlService', () => {
       });
     });
   });
+
+  describe('enable — assign the conversation to the AI', () => {
+    it('sets ENABLED and ends any takeover window, in one tenant-scoped UPDATE, with the human-owner race guard', async () => {
+      repo.findOne
+        .mockResolvedValueOnce(row())
+        .mockResolvedValueOnce(row({ ai_mode: 'ENABLED' }));
+
+      const res = await service.enable(TENANT, USER, CONV);
+
+      expect(qb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ai_mode: 'ENABLED',
+          ai_paused_until: null,
+          ai_mode_changed_by: { id: USER },
+        }),
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith('"tenantId" = :tenantId', {
+        tenantId: TENANT,
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith('owner_type <> :human', {
+        human: 'HUMAN',
+      });
+      expect(res.mode).toBe('ENABLED');
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: USER,
+          action: 'conversation.ai_enabled',
+          before: { ai_mode: 'DEFAULT', takeover_active: false },
+          after: { ai_mode: 'ENABLED' },
+        }),
+      );
+    });
+
+    it('can lift a pause (DISABLED → ENABLED)', async () => {
+      repo.findOne.mockResolvedValue(row({ ai_mode: 'DISABLED' }));
+
+      await service.enable(TENANT, USER, CONV);
+
+      expect(qb.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses with 409 while a person owns the conversation', async () => {
+      repo.findOne.mockResolvedValue(row({ owner_type: 'HUMAN' }));
+
+      await expect(service.enable(TENANT, USER, CONV)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+      expect(qb.execute).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('refuses with 409 when a handover starts between the read and the write', async () => {
+      qb.execute.mockResolvedValue({ affected: 0 });
+
+      await expect(service.enable(TENANT, USER, CONV)).rejects.toMatchObject({
+        code: ErrorCode.CONFLICT,
+      });
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent: already ENABLED writes and audits nothing', async () => {
+      repo.findOne.mockResolvedValue(row({ ai_mode: 'ENABLED' }));
+
+      await service.enable(TENANT, USER, CONV);
+
+      expect(qb.execute).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('404s for a conversation of another clinic', async () => {
+      repo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.enable(TENANT, USER, 'foreign'),
+      ).rejects.toMatchObject({ code: ErrorCode.NOT_FOUND });
+    });
+  });
 });

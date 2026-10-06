@@ -12,6 +12,14 @@ import {
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
+import {
+  AI_ASSIGNMENT_MODE,
+  AI_SCHEDULE_MODE,
+} from '../../whatsapp/whatsapp-ai-policy.constants';
+
+const AI_SCHEDULE_MODE_VALUES = Object.values(AI_SCHEDULE_MODE);
+const AI_ASSIGNMENT_MODE_VALUES = Object.values(AI_ASSIGNMENT_MODE);
+
 /** The only supported reminder lead times, in minutes: 1 day, 3 hours, 1 hour. */
 export const SUPPORTED_REMINDER_LEAD_MINUTES = [1440, 180, 60] as const;
 
@@ -63,7 +71,8 @@ export class UpdateTenantSettingsDto {
   feedbackDelayMinutes?: number;
 
   @ApiPropertyOptional({
-    description: 'Default display language for the clinic\'s patient-facing interfaces (BCP 47 language tag).',
+    description:
+      "Default display language for the clinic's patient-facing interfaces (BCP 47 language tag).",
     example: 'ar',
     maxLength: 10,
   })
@@ -73,7 +82,8 @@ export class UpdateTenantSettingsDto {
   defaultLanguage?: string;
 
   @ApiPropertyOptional({
-    description: 'Default currency code (ISO 4217) used for billing and invoices.',
+    description:
+      'Default currency code (ISO 4217) used for billing and invoices.',
     example: 'SAR',
     maxLength: 10,
   })
@@ -103,6 +113,26 @@ export class UpdateTenantSettingsDto {
   @Min(0)
   @Max(1440)
   aiHumanTakeoverMinutes?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "When the WhatsApp AI may answer relative to the clinic's working hours (branch `working_hours` in the branch timezone): `ALWAYS` (default), `WORKING_HOURS` (only while open) or `OUTSIDE_WORKING_HOURS` (only while closed). Has no effect while the clinic has no working hours configured.",
+    enum: AI_SCHEDULE_MODE_VALUES,
+    example: 'ALWAYS',
+  })
+  @IsOptional()
+  @IsIn(AI_SCHEDULE_MODE_VALUES)
+  aiScheduleMode?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Which conversations the WhatsApp AI answers: `ALL` (default) or `ASSIGNED_ONLY` — only conversations staff have assigned to the AI.',
+    enum: AI_ASSIGNMENT_MODE_VALUES,
+    example: 'ALL',
+  })
+  @IsOptional()
+  @IsIn(AI_ASSIGNMENT_MODE_VALUES)
+  aiAssignmentMode?: string;
 
   @ApiPropertyOptional({
     description:
