@@ -74,6 +74,35 @@ export class AiConversationService {
     return this.setStatus(tenantId, id, AI_CONVERSATION_STATUS.ARCHIVED);
   }
 
+  /**
+   * Binds an AI session to its unified-timeline Conversation — only if it has
+   * none yet. A WhatsApp session started before the inbound bridge stored
+   * messages on the timeline has no linked thread, so its turns were never
+   * mirrored and an agent could not see them; the bridge calls this the first
+   * time it knows the thread.
+   *
+   * The `"conversationId" IS NULL` guard makes it a compare-and-set: it never
+   * re-points a session that is already linked (e.g. to a handover thread), and
+   * two concurrent callers cannot both win. The target conversation is
+   * validated against the tenant. Returns whether this call linked it.
+   */
+  async linkTimelineConversation(
+    tenantId: string,
+    id: string,
+    conversationId: string,
+  ): Promise<boolean> {
+    await this.assertConversation(tenantId, conversationId);
+    const res = await this.aiConversations
+      .createQueryBuilder()
+      .update(AiConversation)
+      .set({ conversation: { id: conversationId } as Conversation })
+      .where('id = :id', { id })
+      .andWhere('"tenantId" = :tenantId', { tenantId })
+      .andWhere('"conversationId" IS NULL')
+      .execute();
+    return (res.affected ?? 0) > 0;
+  }
+
   /** Sets the conversation status (used by the handover flow → HANDED_OVER). */
   async setStatus(tenantId: string, id: string, status: string): Promise<AiConversation> {
     const aiConv = await this.findOne(tenantId, id);
