@@ -1039,6 +1039,44 @@ export class AiExecutionService {
   }
 
   /**
+   * A person answered the patient directly from the inbox, on a conversation the
+   * AI has been serving. Adds their message to that AI session's own history
+   * (role `assistant`, attributed to the person via `agent_user_id`, exactly as a
+   * handover reply is), so that when the AI answers again it knows what the
+   * clinic already said instead of repeating or contradicting it.
+   *
+   * The timeline already holds the message (the caller saved it); this writes
+   * only the AI-side history. Returns false — and writes nothing — when the
+   * conversation has no AI session. Tenant-scoped.
+   */
+  async recordStaffMessage(
+    tenantId: string,
+    conversationId: string,
+    userId: string,
+    content: string,
+  ): Promise<boolean> {
+    const aiConv = await this.aiConversations.findOne({
+      where: { conversation: { id: conversationId }, tenant: { id: tenantId } },
+      order: { created_at: 'DESC' },
+      // `created_at` must be selected too: TypeORM sorts a relation-filtered
+      // lookup through a DISTINCT subquery and fails on an unselected sort column.
+      select: { id: true, created_at: true },
+    });
+    if (!aiConv) return false;
+    await this.messages.save(
+      this.messages.create({
+        ai_conversation_id: aiConv.id,
+        tenant: { id: tenantId } as Tenant,
+        role: AI_MESSAGE_ROLE.ASSISTANT,
+        content,
+        tokens_used: 0,
+        agent_user_id: userId,
+      }),
+    );
+    return true;
+  }
+
+  /**
    * Live Agent Handover: persist an inbound customer message WITHOUT calling the
    * model. Used by `AiOrchestratorService` when a conversation is HANDED_OVER —
    * the customer's message must still land in the AI's own history (so nothing

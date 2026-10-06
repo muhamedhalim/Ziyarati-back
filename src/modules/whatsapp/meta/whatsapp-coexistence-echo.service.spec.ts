@@ -6,6 +6,7 @@ import { Message } from '../../../entities/Conversations/Message';
 import { WhatsappAccount } from '../../../entities/WhatsApp/WhatsappAccount';
 import { WhatsappInboundAiService } from '../whatsapp-inbound-ai.service';
 import { ConversationExecutionService } from '../../conversations/conversation-execution.service';
+import { ConversationAiTakeoverService } from '../../conversations/conversation-ai-takeover.service';
 import {
   createMockRepository,
   MockRepository,
@@ -37,11 +38,10 @@ describe('WhatsappCoexistenceEchoService', () => {
   let inboundContacts: {
     findOrCreateContact: jest.Mock;
     extractContent: jest.Mock;
+    resolveThreadForContact: jest.Mock;
   };
-  let timeline: {
-    findOrCreateForWhatsapp: jest.Mock;
-    recordChannelMessage: jest.Mock;
-  };
+  let timeline: { recordChannelMessageOnce: jest.Mock };
+  let takeover: { stampStaffReply: jest.Mock };
 
   beforeEach(async () => {
     messages = createMockRepository();
@@ -55,11 +55,14 @@ describe('WhatsappCoexistenceEchoService', () => {
       extractContent: jest.fn(
         (m: { text?: { body?: string } }) => m.text?.body,
       ),
+      resolveThreadForContact: jest.fn().mockResolvedValue({ id: 'conv-1' }),
     };
     timeline = {
-      findOrCreateForWhatsapp: jest.fn().mockResolvedValue({ id: 'conv-1' }),
-      recordChannelMessage: jest.fn().mockResolvedValue({ id: 'msg-1' }),
+      recordChannelMessageOnce: jest
+        .fn()
+        .mockResolvedValue({ message: { id: 'msg-1' }, created: true }),
     };
+    takeover = { stampStaffReply: jest.fn().mockResolvedValue(new Date()) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +71,7 @@ describe('WhatsappCoexistenceEchoService', () => {
         { provide: getRepositoryToken(WhatsappAccount), useValue: accounts },
         { provide: WhatsappInboundAiService, useValue: inboundContacts },
         { provide: ConversationExecutionService, useValue: timeline },
+        { provide: ConversationAiTakeoverService, useValue: takeover },
       ],
     }).compile();
     service = moduleRef.get(WhatsappCoexistenceEchoService);
@@ -78,12 +82,12 @@ describe('WhatsappCoexistenceEchoService', () => {
   it('mirrors an echo onto the timeline as sender_type AGENT, linked to the resolved account', async () => {
     await service.handleEchoes(TENANT, echoValue());
 
-    expect(timeline.findOrCreateForWhatsapp).toHaveBeenCalledWith(
+    expect(inboundContacts.resolveThreadForContact).toHaveBeenCalledWith(
       TENANT,
-      'cust-1',
+      expect.objectContaining({ customer: { id: 'cust-1' } }),
       'acc-1',
     );
-    expect(timeline.recordChannelMessage).toHaveBeenCalledWith(
+    expect(timeline.recordChannelMessageOnce).toHaveBeenCalledWith(
       TENANT,
       'conv-1',
       'AGENT',
@@ -96,7 +100,7 @@ describe('WhatsappCoexistenceEchoService', () => {
   it('is never routed as an inbound/CUSTOMER message', async () => {
     await service.handleEchoes(TENANT, echoValue());
 
-    expect(timeline.recordChannelMessage).not.toHaveBeenCalledWith(
+    expect(timeline.recordChannelMessageOnce).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
       'CUSTOMER',
@@ -111,13 +115,14 @@ describe('WhatsappCoexistenceEchoService', () => {
 
     await service.handleEchoes(TENANT, echoValue());
 
-    expect(timeline.recordChannelMessage).not.toHaveBeenCalled();
+    expect(timeline.recordChannelMessageOnce).not.toHaveBeenCalled();
   });
 
-  it('recovers from a race — a 23505 on insert is treated as an already-recorded duplicate, not an error', async () => {
-    timeline.recordChannelMessage.mockRejectedValueOnce(
-      Object.assign(new Error('duplicate key'), { code: '23505' }),
-    );
+  it('an echo that lost a race with another delivery (already recorded) is not an error', async () => {
+    timeline.recordChannelMessageOnce.mockResolvedValueOnce({
+      message: { id: 'msg-1' },
+      created: false,
+    });
 
     await expect(
       service.handleEchoes(TENANT, echoValue()),
@@ -131,7 +136,7 @@ describe('WhatsappCoexistenceEchoService', () => {
         echoValue({ message_echoes: [{ type: 'text', text: { body: 'x' } }] }),
       ),
     ).resolves.toBeUndefined();
-    expect(timeline.recordChannelMessage).not.toHaveBeenCalled();
+    expect(timeline.recordChannelMessageOnce).not.toHaveBeenCalled();
   });
 
   it('skips an echo with no attributable recipient (no `to` and no contacts)', async () => {
@@ -143,7 +148,7 @@ describe('WhatsappCoexistenceEchoService', () => {
       }),
     );
 
-    expect(timeline.recordChannelMessage).not.toHaveBeenCalled();
+    expect(timeline.recordChannelMessageOnce).not.toHaveBeenCalled();
   });
 
   it('skips an echo whose phone_number_id matches no connected account for this tenant (tenant isolation)', async () => {
@@ -151,7 +156,7 @@ describe('WhatsappCoexistenceEchoService', () => {
 
     await service.handleEchoes(TENANT, echoValue());
 
-    expect(timeline.recordChannelMessage).not.toHaveBeenCalled();
+    expect(timeline.recordChannelMessageOnce).not.toHaveBeenCalled();
   });
 
   it('resolves the account WITHIN the given tenant only — never a cross-tenant match', async () => {
@@ -192,7 +197,7 @@ describe('WhatsappCoexistenceEchoService', () => {
       }),
     );
 
-    expect(timeline.recordChannelMessage).toHaveBeenCalledTimes(1);
+    expect(timeline.recordChannelMessageOnce).toHaveBeenCalledTimes(1);
   });
 
   it('skips an echo with no renderable content', async () => {
@@ -200,6 +205,73 @@ describe('WhatsappCoexistenceEchoService', () => {
 
     await service.handleEchoes(TENANT, echoValue());
 
-    expect(timeline.recordChannelMessage).not.toHaveBeenCalled();
+    expect(timeline.recordChannelMessageOnce).not.toHaveBeenCalled();
+  });
+
+  describe('automatic human takeover — a person answered from the Business App', () => {
+    it('stamps the takeover window on the conversation the echo was mirrored onto', async () => {
+      await service.handleEchoes(TENANT, echoValue());
+
+      expect(takeover.stampStaffReply).toHaveBeenCalledWith(TENANT, 'conv-1');
+    });
+
+    it('stamps the SAME thread the patient’s own messages use — it resolves it through the inbound service, not a second lookup', async () => {
+      inboundContacts.resolveThreadForContact.mockResolvedValue({
+        id: 'thread-ai-linked',
+      });
+
+      await service.handleEchoes(TENANT, echoValue());
+
+      expect(timeline.recordChannelMessageOnce).toHaveBeenCalledWith(
+        TENANT,
+        'thread-ai-linked',
+        'AGENT',
+        expect.anything(),
+        undefined,
+        expect.anything(),
+      );
+      expect(takeover.stampStaffReply).toHaveBeenCalledWith(
+        TENANT,
+        'thread-ai-linked',
+      );
+    });
+
+    it('does NOT stamp for an echo that was already on the timeline (a redelivery, or the mirror of a message Ziyarati sent itself)', async () => {
+      timeline.recordChannelMessageOnce.mockResolvedValueOnce({
+        message: { id: 'already' },
+        created: false,
+      });
+
+      await service.handleEchoes(TENANT, echoValue());
+
+      expect(takeover.stampStaffReply).not.toHaveBeenCalled();
+    });
+
+    it('does NOT stamp for an echo recognised by its wamid before it is even mirrored', async () => {
+      messages.findOne.mockResolvedValueOnce({ id: 'already-there' });
+
+      await service.handleEchoes(TENANT, echoValue());
+
+      expect(takeover.stampStaffReply).not.toHaveBeenCalled();
+    });
+
+    it('does not stamp when the echo could not be attributed or mirrored at all', async () => {
+      accounts.findOne.mockResolvedValueOnce(null);
+      await service.handleEchoes(TENANT, echoValue());
+      inboundContacts.extractContent.mockReturnValueOnce(undefined);
+      await service.handleEchoes(TENANT, echoValue());
+
+      expect(takeover.stampStaffReply).not.toHaveBeenCalled();
+    });
+
+    it('never makes the AI answer the echo — it is stored as AGENT and nothing else runs', async () => {
+      await service.handleEchoes(TENANT, echoValue());
+
+      expect(Object.keys(inboundContacts).sort()).toEqual([
+        'extractContent',
+        'findOrCreateContact',
+        'resolveThreadForContact',
+      ]);
+    });
   });
 });

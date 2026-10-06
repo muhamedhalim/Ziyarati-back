@@ -85,6 +85,10 @@ import { MessageStatusService } from '../conversations/message-status.service';
 // than importing ConversationsModule. Used by WhatsappInboundAiService to
 // attach a bot reply's provider message id once its send completes.
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
+// Same reasoning once more: the coexistence echo stamps the automatic human
+// takeover, and ConversationAiTakeoverService depends only on the Conversation
+// and TenantSetting repositories this module already registers.
+import { ConversationAiTakeoverService } from '../conversations/conversation-ai-takeover.service';
 import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 
 /**
@@ -201,6 +205,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     RecipientDeliveryService,
     MessageStatusService,
     ConversationExecutionService,
+    ConversationAiTakeoverService,
     // REAL provider registered into the strategy token (per-tenant credentials,
     // approved template sends). NoopWhatsappProvider stays only as the factory's
     // typed fallback dependency and is never resolved (Meta supports() === true).

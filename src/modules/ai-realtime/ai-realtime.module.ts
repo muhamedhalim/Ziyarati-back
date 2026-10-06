@@ -16,6 +16,9 @@ import { HandoverRealtimeListener } from './handover-realtime.listener';
 import { HandoverChatController } from './handover-chat.controller';
 import { HandoverReplyController } from './handover-reply.controller';
 import { ConversationAiControlController } from './conversation-ai-control.controller';
+import { StaffWhatsappReplyController } from './staff-whatsapp-reply.controller';
+import { StaffWhatsappReplyService } from './staff-whatsapp-reply.service';
+import { AgentWhatsappDispatcher } from './agent-whatsapp-dispatcher.service';
 import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
 
 /**
@@ -61,12 +64,15 @@ import { AiWsRateLimitService } from './ai-ws-rate-limit.service';
     HandoverChatController,
     HandoverReplyController,
     ConversationAiControlController,
+    StaffWhatsappReplyController,
   ],
   providers: [
     AiRealtimeGateway,
     WsAuthService,
     AgentPresenceService,
     HandoverChatService,
+    AgentWhatsappDispatcher,
+    StaffWhatsappReplyService,
     HandoverRealtimeListener,
     AiWsRateLimitService,
   ],

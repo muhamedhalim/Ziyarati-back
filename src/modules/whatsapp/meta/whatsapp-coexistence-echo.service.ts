@@ -7,6 +7,7 @@ import { WhatsappAccount } from '../../../entities/WhatsApp/WhatsappAccount';
 
 import { WhatsappInboundAiService } from '../whatsapp-inbound-ai.service';
 import { ConversationExecutionService } from '../../conversations/conversation-execution.service';
+import { ConversationAiTakeoverService } from '../../conversations/conversation-ai-takeover.service';
 import type {
   MetaWebhookChangeValue,
   MetaWebhookMessage,
@@ -15,8 +16,6 @@ import {
   extractMessageEchoes,
   resolveEchoRecipientWaId,
 } from '../webhooks/coexistence-webhook.adapter';
-
-const PG_UNIQUE_VIOLATION = '23505';
 
 /**
  * Coexistence `smb_message_echoes` — a message the clinic staff sent from
@@ -34,9 +33,14 @@ const PG_UNIQUE_VIOLATION = '23505';
  *  - Deduplication is two layers: the webhook-log idempotency key
  *    (`echo:{wamid}`, `WhatsappWebhookService.deriveIdempotencyKey`) stops a
  *    REDELIVERED event from reaching here twice; the `wa_message_id` check +
- *    the partial UNIQUE `messages(tenantId, wa_message_id)` index (caught
- *    below) additionally stop two DIFFERENT webhook deliveries that happen
- *    to embed the same echo.
+ *    the partial UNIQUE `messages(tenantId, wa_message_id)` index (absorbed
+ *    by `recordChannelMessageOnce`) additionally stop two DIFFERENT webhook
+ *    deliveries that happen to embed the same echo.
+ *  - A NEW echo means a person answered from the Business App, so the AI steps
+ *    aside for the clinic's takeover window on that conversation (the same rule
+ *    as a reply typed in the Ziyarati inbox). An echo that was already on the
+ *    timeline — a redelivery, or the mirror of a message Ziyarati sent itself —
+ *    does not.
  *  - Fails soft per echo (like `WhatsappInboundAiService.handleInboundValue`):
  *    one bad/unattributable echo must not lose the rest of the batch, and
  *    must never fail the webhook worker job.
@@ -52,6 +56,7 @@ export class WhatsappCoexistenceEchoService {
     private readonly accounts: Repository<WhatsappAccount>,
     private readonly inboundContacts: WhatsappInboundAiService,
     private readonly timeline: ConversationExecutionService,
+    private readonly takeover: ConversationAiTakeoverService,
   ) {}
 
   async handleEchoes(
@@ -126,27 +131,30 @@ export class WhatsappCoexistenceEchoService {
     );
     if (!contact.customer?.id) return;
 
-    const conversation = await this.timeline.findOrCreateForWhatsapp(
+    // The SAME thread the patient's own messages and the AI session use: the
+    // takeover below is only worth anything if it lands on the conversation the
+    // AI policy will look at.
+    const conversation = await this.inboundContacts.resolveThreadForContact(
       tenantId,
-      contact.customer.id,
+      contact,
       account.id,
     );
 
-    try {
-      await this.timeline.recordChannelMessage(
-        tenantId,
-        conversation.id,
-        'AGENT',
-        content,
-        undefined,
-        { waMessageId: echo.id, messageType: echo.type },
-      );
-    } catch (err) {
-      // Lost a race with another concurrent delivery of the SAME echo — the
-      // partial unique index (tenantId, wa_message_id) is what actually
-      // serializes this; the findOne above is only a fast-path.
-      if ((err as { code?: string })?.code === PG_UNIQUE_VIOLATION) return;
-      throw err;
+    const { created } = await this.timeline.recordChannelMessageOnce(
+      tenantId,
+      conversation.id,
+      'AGENT',
+      content,
+      undefined,
+      { waMessageId: echo.id, messageType: echo.type },
+    );
+
+    // A person answered from the Business App: the AI steps aside for the
+    // clinic's window. Only for a message that was NEW — an echo already on the
+    // timeline is either a redelivery or the mirror of a message Ziyarati sent
+    // itself (its provider id is recorded), and neither is a person taking over.
+    if (created) {
+      await this.takeover.stampStaffReply(tenantId, conversation.id);
     }
   }
 }
