@@ -22,6 +22,7 @@ describe('ConversationAiControlController', () => {
     getStatus: jest.fn(),
     pause: jest.fn(),
     resume: jest.fn(),
+    enable: jest.fn(),
   };
   const policy = { explain: jest.fn() };
   const ctx = { requireTenantId: jest.fn().mockReturnValue('t1') };
@@ -35,6 +36,7 @@ describe('ConversationAiControlController', () => {
     control.getStatus.mockResolvedValue(base);
     control.pause.mockResolvedValue({ ...base, mode: 'DISABLED' });
     control.resume.mockResolvedValue(base);
+    control.enable.mockResolvedValue({ ...base, mode: 'ENABLED' });
     policy.explain.mockResolvedValue({ allowed: true });
   });
   afterEach(() => jest.clearAllMocks());
@@ -101,6 +103,22 @@ describe('ConversationAiControlController', () => {
       });
     });
 
+    it('enable: assigns in the authenticated tenant as the authenticated user, and reports whether the AI will actually answer', async () => {
+      policy.explain.mockResolvedValue({
+        allowed: false,
+        reason: 'OUTSIDE_ALLOWED_HOURS',
+      });
+
+      const view = await controller.enable('conv-1', 'u1');
+
+      expect(control.enable).toHaveBeenCalledWith('t1', 'u1', 'conv-1');
+      expect(view.mode).toBe('ENABLED');
+      expect(view.effective).toEqual({
+        allowed: false,
+        reason: 'OUTSIDE_ALLOWED_HOURS',
+      });
+    });
+
     it('takes the tenant from the authenticated context, never from the request', async () => {
       await controller.pause('conv-1', 'u1');
 
@@ -144,7 +162,10 @@ describe('ConversationAiControlController', () => {
       expect(Reflect.getMetadata(PERMISSIONS_KEY, route('status'))).toEqual([
         PERMISSION.CONVERSATIONS_READ,
       ]);
-      for (const name of ['pause', 'resume'] as const) {
+      expect(Reflect.getMetadata(PATH_METADATA, route('enable'))).toBe(
+        ':id/ai/enable',
+      );
+      for (const name of ['pause', 'resume', 'enable'] as const) {
         expect(Reflect.getMetadata(METHOD_METADATA, route(name))).toBe(
           RequestMethod.POST,
         );

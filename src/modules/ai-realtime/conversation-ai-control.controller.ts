@@ -178,6 +178,33 @@ export class ConversationAiControlController {
     );
   }
 
+  @ApiOperation({
+    summary: 'Assign a conversation to the WhatsApp AI',
+    description: `**Protected — \`ai.handover.manage\`. Clinic active.** Marks the conversation as assigned to the AI (\`ENABLED\`). In the clinic's assigned-only mode this is what lets the AI answer; it never overrides the clinic switch, the patient exclusion, the schedule or an active handover — \`effective\` reports whether the AI will actually answer. Ends any automatic-takeover window. Idempotent. Audited.`,
+  })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid' })
+  @ApiOkResponse({ description: 'Assigned to the AI.', schema: S_AI_STATUS })
+  @ApiNotFoundResponse({
+    description: 'Conversation not found.',
+    schema: S_ERROR,
+  })
+  @ApiConflictResponse({
+    description:
+      'The conversation is handed over to a person — release it with "Return to AI".',
+    schema: S_ERROR,
+  })
+  @Post(':id/ai/enable')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(PERMISSION.AI_HANDOVER_MANAGE)
+  async enable(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser('id') userId: string,
+  ): Promise<ConversationAiStatusView> {
+    return this.withEffective(
+      await this.control.enable(this.ctx.requireTenantId(), userId, id),
+    );
+  }
+
   /**
    * Reuses the one decision the inbound path takes, so what staff are shown can
    * never drift from what the AI actually does. `explain` does not count as a
