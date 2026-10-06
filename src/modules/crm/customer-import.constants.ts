@@ -92,7 +92,7 @@ export interface CustomerImportColumn {
 export const CUSTOMER_IMPORT_COLUMNS: readonly CustomerImportColumn[] = [
   { field: 'full_name', headers: ['full name', 'name'], required: false },
   { field: 'phone', headers: ['phone', 'phone number'], required: true },
-  { field: 'email', headers: ['email', 'email address'], required: true },
+  { field: 'email', headers: ['email', 'email address'], required: false },
   {
     field: 'national_id',
     headers: ['national id', 'id number'],

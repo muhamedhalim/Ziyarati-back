@@ -261,7 +261,7 @@ export class NotificationDispatchService {
       channel: NOTIFICATION_CHANNEL.EMAIL,
       recipientType: notification.recipient_type,
       recipientId: notification.recipient_id,
-      recipientEmail: customer.email,
+      recipientEmail: customer.email ?? undefined,
       templateId: notification.template?.id,
       appointmentId: notification.appointment?.id,
       contentAr: content.ar,

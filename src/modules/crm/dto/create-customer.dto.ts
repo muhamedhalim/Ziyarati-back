@@ -16,7 +16,7 @@ import {
  * Create a customer for the caller's tenant.
  *
  * Schema notes (frozen entity): `phone` is required but NOT unique — multiple
- * customers may share one. `email` is required and unique per tenant among
+ * customers may share one. `email` is optional and, when provided, unique per tenant among
  * live customers; `national_id` is optional but, when provided, is the sole
  * hard identity key (unique per tenant among live customers). Tenant is NEVER
  * taken from input — it comes from TenantContext.
@@ -36,13 +36,16 @@ export class CreateCustomerDto {
   @MaxLength(20)
   phone!: string;
 
-  @ApiProperty({
-    description: 'Email (unique among this tenant\'s live customers).',
+  @ApiPropertyOptional({
+    description:
+      "Email (optional; unique among this tenant's live customers when provided).",
     example: 'sara@example.com',
+    nullable: true,
   })
+  @IsOptional()
   @IsEmail()
   @MaxLength(255)
-  email!: string;
+  email?: string | null;
 
   @ApiPropertyOptional({ description: 'WhatsApp id.' })
   @IsOptional()
