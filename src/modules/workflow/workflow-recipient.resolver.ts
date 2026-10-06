@@ -47,7 +47,7 @@ export class WorkflowRecipientResolver {
         where: { id: customerId, tenant: { id: tenantId } },
       });
       if (!customer) return null;
-      return { phone: customer.phone, email: customer.email };
+      return { phone: customer.phone, email: customer.email ?? undefined };
     }
 
     if (recipientType === WORKFLOW_RECIPIENT_TYPE.STAFF) {
