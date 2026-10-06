@@ -19,6 +19,8 @@ import {
   SENDER_TYPE,
 } from './conversation.constants';
 
+const PG_UNIQUE_VIOLATION = '23505';
+
 /**
  * Message-send orchestration (the write path + status lifecycle seam).
  *
@@ -201,15 +203,66 @@ export class ConversationExecutionService {
     manager?: EntityManager,
     origin?: { waMessageId?: string; messageType?: string },
   ): Promise<Message | null> {
-    const exec = async (m: EntityManager): Promise<Message | null> => {
+    const { message } = await this.recordChannelMessageOnce(
+      tenantId,
+      conversationId,
+      senderType,
+      content,
+      manager,
+      origin,
+    );
+    return message;
+  }
+
+  /**
+   * Same write as {@link recordChannelMessage}, but IDEMPOTENT on the provider
+   * `wamid` and it reports whether this call created the row.
+   *
+   * Why this exists: an inbound WhatsApp message is now stored on the timeline
+   * by the inbound bridge BEFORE any AI decision (so staff see it even when the
+   * AI is off), and the AI engine then "mirrors" the same message again as part
+   * of its turn. Without a lookup on the `wamid` the second write would be a
+   * duplicate row — and the partial UNIQUE `messages(tenantId, wa_message_id)`
+   * cannot be relied on to stop it, because the schema guard leaves that index
+   * out on a database that already holds duplicates.
+   *
+   * The lookup is tenant-scoped and spans conversations, matching the index. A
+   * concurrent writer that wins the race (23505) resolves to the winner's row.
+   * Inside a caller's transaction (`manager`) a 23505 cannot be recovered from,
+   * so it still propagates there.
+   */
+  async recordChannelMessageOnce(
+    tenantId: string,
+    conversationId: string,
+    senderType: Extract<
+      Message['sender_type'],
+      'CUSTOMER' | 'BOT' | 'SYSTEM' | 'AGENT'
+    >,
+    content: string,
+    manager?: EntityManager,
+    origin?: { waMessageId?: string; messageType?: string },
+  ): Promise<{ message: Message | null; created: boolean }> {
+    const exec = async (
+      m: EntityManager,
+    ): Promise<{ message: Message | null; created: boolean }> => {
       const convRepo = m.getRepository(Conversation);
       const conversation = await convRepo.findOne({
         where: { id: conversationId, tenant: { id: tenantId } },
         relations: { customer: true },
       });
-      if (!conversation) return null;
+      if (!conversation) return { message: null, created: false };
 
       const repo = m.getRepository(Message);
+      if (origin?.waMessageId) {
+        const existing = await repo.findOne({
+          where: {
+            tenant: { id: tenantId },
+            wa_message_id: origin.waMessageId,
+          },
+        });
+        if (existing) return { message: existing, created: false };
+      }
+
       const message = await repo.save(
         repo.create({
           conversation: { id: conversationId } as Conversation,
@@ -228,42 +281,134 @@ export class ConversationExecutionService {
       await this.status.append(tenantId, message.id, MESSAGE_STATUS.SENT, m);
       conversation.last_message_at = new Date();
       await convRepo.save(conversation);
-      return message;
+      return { message, created: true };
     };
 
-    return manager ? exec(manager) : this.dataSource.transaction(exec);
+    try {
+      return manager
+        ? await exec(manager)
+        : await this.dataSource.transaction(exec);
+    } catch (err) {
+      if (
+        !manager &&
+        origin?.waMessageId &&
+        (err as { code?: string })?.code === PG_UNIQUE_VIOLATION
+      ) {
+        const winner = await this.messages.findOne({
+          where: {
+            tenant: { id: tenantId },
+            wa_message_id: origin.waMessageId,
+          },
+        });
+        if (winner) return { message: winner, created: false };
+      }
+      throw err;
+    }
   }
 
   /**
-   * Find-or-create the unified timeline Conversation for a WhatsApp customer.
+   * Find-or-create the unified timeline Conversation for a WhatsApp customer
+   * on a given WhatsApp number.
    *
-   * The AI-only path (`AiConversation`) lazily creates a linked Conversation
-   * only at handover (see `HandoverRequestService.create`) — a coexistence
-   * echo has no `aiConversationId` to key off at all (it arrives from a
-   * business-app-initiated send, not an AI turn), so it resolves/creates the
-   * timeline Conversation directly from (tenant, customer). Reuses whichever
-   * conversation already exists for this customer (most recent) rather than
-   * creating a second one, so an echo lands in the same inbox thread the
-   * patient's own messages do once a handover happens to create one.
+   * Used by both directions of the WhatsApp bridge: an inbound patient message
+   * (`WhatsappInboundAiService`) and a coexistence echo of a message the staff
+   * sent from the native Business App (`WhatsappCoexistenceEchoService`). Both
+   * resolve the same (tenant, customer, account) thread, so the whole
+   * back-and-forth lands in one inbox conversation whether or not the AI is
+   * involved — the AI-only path (`AiConversation`) otherwise only creates a
+   * linked Conversation lazily, at handover.
    */
   async findOrCreateForWhatsapp(
     tenantId: string,
     customerId: string,
     whatsappAccountId: string,
   ): Promise<Conversation> {
-    const existing = await this.conversations.findOne({
-      where: { tenant: { id: tenantId }, customer: { id: customerId } },
-      order: { created_at: 'DESC' },
-    });
+    // Scoped to the number the customer is actually talking to: a reply must
+    // leave from the same WhatsApp account the patient wrote to, and a
+    // staff-created `direct` thread (no account) is not a WhatsApp thread.
+    const find = (repo: Repository<Conversation>) =>
+      repo.findOne({
+        where: {
+          tenant: { id: tenantId },
+          customer: { id: customerId },
+          whatsapp_account: { id: whatsappAccountId },
+        },
+        order: { created_at: 'DESC' },
+      });
+
+    const existing = await find(this.conversations);
     if (existing) return existing;
 
-    return this.conversations.save(
-      this.conversations.create({
-        tenant: { id: tenantId } as Tenant,
-        customer: { id: customerId } as Customer,
-        whatsapp_account: { id: whatsappAccountId } as WhatsappAccount,
-        type: 'whatsapp',
-      }),
+    // Two messages from a brand-new number can reach two workers at once, and
+    // there is no unique key on (tenant, customer, account) to arbitrate. A
+    // transaction-scoped advisory lock serializes just this create, so the
+    // loser re-reads the winner's thread instead of opening a second one.
+    return this.dataSource.transaction(async (m) => {
+      await m.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `wa-thread:${tenantId}:${customerId}:${whatsappAccountId}`,
+      ]);
+      const repo = m.getRepository(Conversation);
+      const raced = await find(repo);
+      if (raced) return raced;
+      return repo.save(
+        repo.create({
+          tenant: { id: tenantId } as Tenant,
+          customer: { id: customerId } as Customer,
+          whatsapp_account: { id: whatsappAccountId } as WhatsappAccount,
+          type: 'whatsapp',
+        }),
+      );
+    });
+  }
+
+  /**
+   * The timeline thread an inbound WhatsApp message belongs to.
+   *
+   * `preferredConversationId` is the thread the contact's AI session is
+   * ALREADY linked to (a handover on a WhatsApp chat used to create a bare
+   * `support` thread with no customer and no WhatsApp account, which is why an
+   * agent's reply on it was never delivered over WhatsApp). When it is a
+   * thread of this tenant it wins, so the AI session, the agent inbox and the
+   * patient's messages all stay on ONE thread, and any identity it is missing
+   * is filled in — only ever filled, never overwritten. Otherwise falls back to
+   * {@link findOrCreateForWhatsapp}.
+   */
+  async resolveWhatsappThread(
+    tenantId: string,
+    customerId: string,
+    whatsappAccountId: string,
+    preferredConversationId?: string | null,
+  ): Promise<Conversation> {
+    if (preferredConversationId) {
+      const preferred = await this.conversations.findOne({
+        where: { id: preferredConversationId, tenant: { id: tenantId } },
+        relations: { customer: true, whatsapp_account: true },
+      });
+      if (preferred) {
+        const patch: {
+          customer?: Customer;
+          whatsapp_account?: WhatsappAccount;
+        } = {};
+        if (!preferred.customer) {
+          patch.customer = { id: customerId } as Customer;
+        }
+        if (!preferred.whatsapp_account) {
+          patch.whatsapp_account = { id: whatsappAccountId } as WhatsappAccount;
+        }
+        if (Object.keys(patch).length > 0) {
+          await this.conversations.update(
+            { id: preferred.id, tenant: { id: tenantId } },
+            patch,
+          );
+          Object.assign(preferred, patch);
+        }
+        return preferred;
+      }
+    }
+    return this.findOrCreateForWhatsapp(
+      tenantId,
+      customerId,
+      whatsappAccountId,
     );
   }
 

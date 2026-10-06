@@ -170,6 +170,7 @@ export class AiOrchestratorService {
         tenantId,
         conversationId,
         input.content,
+        input.origin,
       );
       return this.handedOverEnvelope(
         input.channel,
@@ -245,6 +246,7 @@ export class AiOrchestratorService {
         tenantId,
         conversationId,
         input.content,
+        input.origin,
       );
       return this.handedOverEnvelope(
         input.channel,
@@ -387,6 +389,24 @@ export class AiOrchestratorService {
         input.aiConversationId,
         this.tenantContext.getUser(),
       );
+      // A trusted bridge that owns the unified-timeline thread binds a resumed
+      // session to it the first time it knows the thread (a WhatsApp session
+      // that predates timeline storage has none). `trustedChannel` is the same
+      // server-only flag that gates BRIDGE_OWNED_CHANNELS — `conversationId` is
+      // client-fillable on the HTTP/WS DTOs, so an untrusted caller can never
+      // re-bind a session through here. Compare-and-set: an already-linked
+      // session (e.g. to a handover thread) is left alone.
+      if (
+        input.trustedChannel === true &&
+        input.conversationId &&
+        !conv.conversation
+      ) {
+        await this.conversations.linkTimelineConversation(
+          tenantId,
+          conv.id,
+          input.conversationId,
+        );
+      }
     } else {
       let agentId = input.agentId;
       if (!agentId) {
