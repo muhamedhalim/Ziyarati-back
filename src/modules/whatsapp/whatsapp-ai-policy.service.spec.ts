@@ -6,6 +6,7 @@ import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
 import { AI_POLICY_REASON } from './whatsapp-ai-policy.constants';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { Conversation } from '../../entities/Conversations/Conversation';
+import { Customer } from '../../entities/CRM/Customer';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { AccessControlService } from '../subscription-billing/access-control.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
@@ -28,6 +29,7 @@ describe('WhatsappAiPolicyService', () => {
   let tenantSettings: MockRepository;
   let conversations: MockRepository;
   let aiConversations: MockRepository;
+  let customers: MockRepository;
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let metrics: { recordWhatsappAiDecision: jest.Mock };
 
@@ -53,6 +55,11 @@ describe('WhatsappAiPolicyService', () => {
     conversations.findOne.mockResolvedValue({ id: 'conv-1', owner_type: 'AI' });
     aiConversations = createMockRepository();
     aiConversations.findOne.mockResolvedValue({ id: 'ai-1', status: 'ACTIVE' });
+    customers = createMockRepository();
+    customers.findOne.mockResolvedValue({
+      id: 'cust-1',
+      ai_replies_disabled: false,
+    });
     access = {
       resolve: jest.fn(async (_t: string, key: FeatureKey | null) =>
         granted(key),
@@ -73,6 +80,7 @@ describe('WhatsappAiPolicyService', () => {
           provide: getRepositoryToken(AiConversation),
           useValue: aiConversations,
         },
+        { provide: getRepositoryToken(Customer), useValue: customers },
         { provide: AccessControlService, useValue: access },
         { provide: MetricsService, useValue: metrics },
         { provide: TenantContextService, useValue: new TenantContextService() },
@@ -475,6 +483,277 @@ describe('WhatsappAiPolicyService', () => {
       // The only identifiers it may carry are the ones the caller passed.
       expect(logged).toMatch(/tenant=t1/);
       expect(logged).not.toMatch(/\d{9,}/); // no phone-number-shaped value
+    });
+  });
+
+  /**
+   * P1c — patient-level and conversation-level controls. Defaults must be
+   * invisible: a clinic that never touched them gets exactly the old decision.
+   */
+  describe('patient and conversation controls', () => {
+    const FUTURE = () => new Date(Date.now() + 10 * 60_000);
+    const PAST = () => new Date(Date.now() - 10 * 60_000);
+    const conv = (over: Record<string, unknown> = {}) => ({
+      id: 'conv-1',
+      owner_type: 'AI',
+      ai_mode: 'DEFAULT',
+      ai_paused_until: null,
+      customer: { id: 'cust-1' },
+      ...over,
+    });
+    const reasonOf = async (
+      subject: object = SUBJECT,
+      stage: 'pre_ai' | 'pre_send' = 'pre_ai',
+    ) => {
+      const d = await policy.evaluate(TENANT, subject, stage);
+      return d.allowed ? 'ALLOWED' : d.reason;
+    };
+
+    beforeEach(() => conversations.findOne.mockResolvedValue(conv()));
+
+    it('answers with every control at its default', async () => {
+      expect(await reasonOf()).toBe('ALLOWED');
+    });
+
+    it('treats ENABLED like DEFAULT — it only matters once the assignment mode exists', async () => {
+      conversations.findOne.mockResolvedValue(conv({ ai_mode: 'ENABLED' }));
+      expect(await reasonOf()).toBe('ALLOWED');
+    });
+
+    describe('conversation paused by staff', () => {
+      it('refuses with CONVERSATION_AI_DISABLED', async () => {
+        conversations.findOne.mockResolvedValue(conv({ ai_mode: 'DISABLED' }));
+        expect(await reasonOf()).toBe('CONVERSATION_AI_DISABLED');
+      });
+
+      it('does not touch the conversation ownership — a paused thread is not a handover', async () => {
+        conversations.findOne.mockResolvedValue(
+          conv({ ai_mode: 'DISABLED', owner_type: 'AI' }),
+        );
+        const d = await policy.evaluate(TENANT, SUBJECT, 'pre_ai');
+        expect(d).toEqual({
+          allowed: false,
+          reason: 'CONVERSATION_AI_DISABLED',
+        });
+      });
+    });
+
+    describe('patient excluded', () => {
+      it('refuses with PATIENT_AI_DISABLED, taking the patient from the conversation', async () => {
+        customers.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+        expect(await reasonOf()).toBe('PATIENT_AI_DISABLED');
+        expect(customers.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'cust-1', tenant: { id: TENANT } },
+          }),
+        );
+      });
+
+      it('uses the patient the caller names when there is one', async () => {
+        customers.findOne.mockResolvedValue({
+          id: 'cust-9',
+          ai_replies_disabled: true,
+        });
+        expect(await reasonOf({ ...SUBJECT, customerId: 'cust-9' })).toBe(
+          'PATIENT_AI_DISABLED',
+        );
+        expect(customers.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'cust-9', tenant: { id: TENANT } },
+          }),
+        );
+      });
+
+      it('still applies when no thread is known, as long as the patient is', async () => {
+        customers.findOne.mockResolvedValue({
+          id: 'cust-9',
+          ai_replies_disabled: true,
+        });
+        expect(await reasonOf({ customerId: 'cust-9' })).toBe(
+          'PATIENT_AI_DISABLED',
+        );
+        expect(conversations.findOne).not.toHaveBeenCalled();
+      });
+
+      it('keeps a deleted patient excluded — an exclusion is not undone by deleting the record', async () => {
+        await reasonOf();
+        expect(customers.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({ withDeleted: true }),
+        );
+      });
+
+      it("never reads another clinic's patient: the lookup is tenant-scoped, and a foreign id finds nothing", async () => {
+        customers.findOne.mockResolvedValue(null);
+        expect(await reasonOf({ customerId: 'foreign-cust' })).toBe('ALLOWED');
+        expect(customers.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'foreign-cust', tenant: { id: TENANT } },
+          }),
+        );
+      });
+
+      it('does not exclude a patient who is not flagged', async () => {
+        customers.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: false,
+        });
+        expect(await reasonOf()).toBe('ALLOWED');
+      });
+    });
+
+    describe('automatic takeover window (ai_paused_until)', () => {
+      it('refuses with HUMAN_TAKEOVER while the deadline is in the future', async () => {
+        conversations.findOne.mockResolvedValue(
+          conv({ ai_paused_until: FUTURE() }),
+        );
+        expect(await reasonOf()).toBe('HUMAN_TAKEOVER');
+      });
+
+      it('answers again once the deadline has passed — there is no timer, so nothing to clean up', async () => {
+        conversations.findOne.mockResolvedValue(
+          conv({ ai_paused_until: PAST() }),
+        );
+        expect(await reasonOf()).toBe('ALLOWED');
+      });
+
+      it('a deadline arriving between the pre-AI and pre-send checks stops the reply', async () => {
+        conversations.findOne
+          .mockResolvedValueOnce(conv())
+          .mockResolvedValueOnce(conv({ ai_paused_until: FUTURE() }));
+        expect(await reasonOf(SUBJECT, 'pre_ai')).toBe('ALLOWED');
+        expect(await reasonOf(SUBJECT, 'pre_send')).toBe('HUMAN_TAKEOVER');
+      });
+
+      it('expires by the clock alone: the same row flips from refused to allowed as time passes', async () => {
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+        try {
+          jest.setSystemTime(new Date('2030-01-01T10:00:00Z'));
+          const until = new Date('2030-01-01T10:30:00Z');
+          conversations.findOne.mockResolvedValue(
+            conv({ ai_paused_until: until }),
+          );
+          expect(await reasonOf()).toBe('HUMAN_TAKEOVER');
+
+          jest.setSystemTime(new Date('2030-01-01T10:29:59Z'));
+          expect(await reasonOf()).toBe('HUMAN_TAKEOVER');
+          jest.setSystemTime(new Date('2030-01-01T10:30:01Z'));
+          expect(await reasonOf()).toBe('ALLOWED');
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+    });
+
+    describe('precedence: clinic → patient → conversation → takeover', () => {
+      it('the clinic switch outranks a patient exclusion', async () => {
+        tenantSettings.findOne.mockResolvedValue({
+          id: 'ts',
+          bot_enabled: false,
+        });
+        customers.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+        expect(await reasonOf()).toBe('CLINIC_AI_DISABLED');
+      });
+
+      it('a patient exclusion outranks a paused conversation and a takeover', async () => {
+        customers.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+        conversations.findOne.mockResolvedValue(
+          conv({
+            ai_mode: 'DISABLED',
+            owner_type: 'HUMAN',
+            ai_paused_until: FUTURE(),
+          }),
+        );
+        expect(await reasonOf()).toBe('PATIENT_AI_DISABLED');
+      });
+
+      it('a paused conversation outranks a takeover', async () => {
+        conversations.findOne.mockResolvedValue(
+          conv({
+            ai_mode: 'DISABLED',
+            owner_type: 'HUMAN',
+            ai_paused_until: FUTURE(),
+          }),
+        );
+        expect(await reasonOf()).toBe('CONVERSATION_AI_DISABLED');
+      });
+
+      it('entitlement outranks all of them and nothing more is read', async () => {
+        access.resolve.mockImplementation(
+          async (_t: string, key: FeatureKey | null) =>
+            key === FeatureKey.AI_ASSISTANT ? refused(key) : granted(key),
+        );
+        customers.findOne.mockResolvedValue({
+          id: 'cust-1',
+          ai_replies_disabled: true,
+        });
+        expect(await reasonOf()).toBe('FEATURE_DISABLED');
+        expect(customers.findOne).not.toHaveBeenCalled();
+        expect(conversations.findOne).not.toHaveBeenCalled();
+      });
+    });
+
+    it('fails closed when the patient cannot be read', async () => {
+      customers.findOne.mockRejectedValue(new Error('db down'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      expect(await reasonOf()).toBe('POLICY_READ_FAILED');
+    });
+
+    it('fails closed when the conversation cannot be read', async () => {
+      conversations.findOne.mockRejectedValue(new Error('db down'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      expect(await reasonOf()).toBe('POLICY_READ_FAILED');
+    });
+
+    describe('explain — the staff-facing read of the same decision', () => {
+      it('returns the same answer without counting a patient message the AI declined', async () => {
+        conversations.findOne.mockResolvedValue(conv({ ai_mode: 'DISABLED' }));
+        const logSpy = jest
+          .spyOn(Logger.prototype, 'log')
+          .mockImplementation(() => undefined);
+
+        const d = await policy.explain(TENANT, { conversationId: 'conv-1' });
+
+        expect(d).toEqual({
+          allowed: false,
+          reason: 'CONVERSATION_AI_DISABLED',
+        });
+        expect(metrics.recordWhatsappAiDecision).not.toHaveBeenCalled();
+        expect(logSpy).not.toHaveBeenCalled();
+      });
+
+      it('finds a HANDED_OVER session by its link when the caller only knows the thread', async () => {
+        aiConversations.findOne.mockResolvedValue({
+          id: 'ai-7',
+          status: 'HANDED_OVER',
+        });
+
+        const d = await policy.explain(TENANT, { conversationId: 'conv-1' });
+
+        expect(d).toEqual({ allowed: false, reason: 'HUMAN_TAKEOVER' });
+        expect(aiConversations.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              conversation: { id: 'conv-1' },
+              tenant: { id: TENANT },
+              status: 'HANDED_OVER',
+            },
+          }),
+        );
+      });
+
+      it('the hot path never does that extra lookup', async () => {
+        await policy.evaluate(TENANT, { conversationId: 'conv-1' }, 'pre_ai');
+        expect(aiConversations.findOne).not.toHaveBeenCalled();
+      });
     });
   });
 });

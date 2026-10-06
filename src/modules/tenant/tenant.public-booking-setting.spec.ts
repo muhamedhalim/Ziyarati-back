@@ -34,6 +34,8 @@ describe('TenantService.updateSettings — public booking opt-in', () => {
       {} as never, // dataSource
       {} as never, // analyticsAggregation
       {} as never, // analyticsCache
+      {} as never, // access (only used when switching the AI on)
+      { record: jest.fn() } as never, // activityAudit
     );
     return { service, saved };
   };

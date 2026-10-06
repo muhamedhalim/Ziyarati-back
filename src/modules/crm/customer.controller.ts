@@ -26,12 +26,15 @@ import {
 } from '@nestjs/swagger';
 
 import { CustomerService } from './customer.service';
+import { CustomerAiRepliesService } from './customer-ai-replies.service';
+import { UpdateCustomerAiRepliesDto } from './dto/update-customer-ai-replies.dto';
 import { ClinicalAccessLogService } from '../medical-records/clinical-access-log.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { QueryCustomersDto } from './dto/query-customers.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
 
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { RequireAnyPermission } from '../auth/decorators/require-any-permission.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -70,6 +73,7 @@ export class CustomerController {
     private readonly ctx: TenantContextService,
     // Residency plan P14 — reads of D4 data are accounted for (who, which patient, when).
     private readonly accessLog: ClinicalAccessLogService,
+    private readonly aiReplies: CustomerAiRepliesService,
   ) {}
 
   @ApiOperation({
@@ -247,6 +251,51 @@ export class CustomerController {
     return canManage
       ? this.customers.update(tenantId, id, dto)
       : this.customers.updateOwnPatient(tenantId, user.id, id, dto);
+  }
+
+  @ApiOperation({
+    summary: 'Exclude a patient from, or return them to, the WhatsApp AI',
+    description:
+      '**Protected — `crm.customers.manage`. Clinic active.** `disabled: true` stops the WhatsApp AI answering this patient on every conversation and number; their messages are still received and shown to staff. Idempotent. Audited. A dedicated route: the generic customer update cannot change it, so a role limited to `crm.customers.update_own` cannot flip it.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Customer UUID',
+    type: 'string',
+    format: 'uuid',
+  })
+  @ApiOkResponse({
+    description: "The patient's AI-replies state.",
+    schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        aiRepliesDisabled: { type: 'boolean' },
+        aiRepliesDisabledAt: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+        },
+      },
+    },
+  })
+  @ApiNotFoundResponse({
+    description: 'Customer not found in this tenant.',
+    schema: S_ERROR,
+  })
+  @Patch(':id/ai-replies')
+  @RequirePermissions(PERMISSION.CRM_CUSTOMERS_MANAGE)
+  setAiReplies(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCustomerAiRepliesDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.aiReplies.setDisabled(
+      this.ctx.requireTenantId(),
+      userId,
+      id,
+      dto.disabled,
+    );
   }
 
   @ApiOperation({

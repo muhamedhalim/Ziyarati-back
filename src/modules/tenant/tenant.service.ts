@@ -14,6 +14,9 @@ import { ListTenantsQueryDto } from './dto/list-tenants.query.dto';
 import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
 import { UpdateTenantTargetsDto } from './dto/update-tenant-targets.dto';
 import { AppError, ErrorCode } from '../../common/errors';
+import { AccessControlService } from '../subscription-billing/access-control.service';
+import { FeatureKey } from '../subscription-billing/feature-registry';
+import { ActivityAuditService } from '../activity-log/activity-audit.service';
 
 import { AnalyticsAggregationService } from '../analytics/analytics-aggregation.service';
 import {
@@ -61,6 +64,8 @@ export class TenantService {
     private readonly dataSource: DataSource,
     private readonly analyticsAggregation: AnalyticsAggregationService,
     private readonly analyticsCache: AnalyticsCacheService,
+    private readonly access: AccessControlService,
+    private readonly activityAudit: ActivityAuditService,
   ) {}
 
   // ----------------------------------------------------------------------- //
@@ -241,8 +246,22 @@ export class TenantService {
   async updateSettings(
     tenantId: string,
     dto: UpdateTenantSettingsDto,
+    actorUserId?: string,
   ): Promise<TenantSetting> {
     const settings = await this.getSettings(tenantId);
+    const botWasEnabled = settings.bot_enabled;
+
+    // Switching the WhatsApp AI ON is only for a clinic whose plan includes it.
+    // The inbound path refuses an un-entitled clinic regardless, but a switch
+    // that reads "on" while the AI can never answer would mislead the owner —
+    // so it is refused here, loudly, instead. Switching OFF is always allowed.
+    if (dto.botEnabled === true && !botWasEnabled) {
+      await this.access.assertAccess(tenantId, FeatureKey.AI_ASSISTANT, {
+        surface: 'http',
+        detail: 'PATCH /tenants/me/settings botEnabled',
+      });
+    }
+
     Object.assign(settings, {
       booking_confirmation:
         dto.bookingConfirmation ?? settings.booking_confirmation,
@@ -253,6 +272,8 @@ export class TenantService {
       default_language: dto.defaultLanguage ?? settings.default_language,
       currency: dto.currency ?? settings.currency,
       bot_enabled: dto.botEnabled ?? settings.bot_enabled,
+      ai_human_takeover_minutes:
+        dto.aiHumanTakeoverMinutes ?? settings.ai_human_takeover_minutes,
       enforce_staff_working_hours:
         dto.enforceStaffWorkingHours ?? settings.enforce_staff_working_hours,
       // The clinic's opt-in to the PUBLIC (anonymous) booking assistant. Every
@@ -275,7 +296,20 @@ export class TenantService {
         dto.reminderLeadMinutes ?? settings.reminder_lead_minutes,
       updated_at: new Date(),
     });
-    return this.settings.save(settings);
+    const saved = await this.settings.save(settings);
+
+    if (dto.botEnabled !== undefined && dto.botEnabled !== botWasEnabled) {
+      await this.activityAudit.record({
+        tenantId,
+        actorUserId,
+        action: 'tenant.ai_assistant_toggled',
+        entityType: 'tenant_settings',
+        entityId: saved.id,
+        before: { bot_enabled: botWasEnabled },
+        after: { bot_enabled: dto.botEnabled },
+      });
+    }
+    return saved;
   }
 
   // ----------------------------------------------------------------------- //

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { Conversation } from '../../entities/Conversations/Conversation';
+import { Customer } from '../../entities/CRM/Customer';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { TenantContextService } from '../../core/tenant-context/tenant-context.service';
@@ -11,7 +12,10 @@ import { MetricsService } from '../../metrics/metrics.service';
 import { AccessControlService } from '../subscription-billing/access-control.service';
 import { FeatureKey } from '../subscription-billing/feature-registry';
 import { AI_CONVERSATION_STATUS } from '../ai/ai.constants';
-import { CONVERSATION_OWNER_TYPE } from '../conversations/conversation.constants';
+import {
+  CONVERSATION_AI_MODE,
+  CONVERSATION_OWNER_TYPE,
+} from '../conversations/conversation.constants';
 import {
   AI_POLICY_REASON,
   AiPolicyDecision,
@@ -33,7 +37,9 @@ import {
  * reason:
  *   1. subscription / feature entitlement   → SUBSCRIPTION_DISABLED | FEATURE_DISABLED
  *   2. the clinic's own switch              → CLINIC_AI_DISABLED
- *   3. a person owns the conversation       → HUMAN_TAKEOVER
+ *   3. the patient is excluded              → PATIENT_AI_DISABLED
+ *   4. staff paused this conversation       → CONVERSATION_AI_DISABLED
+ *   5. a person owns the conversation       → HUMAN_TAKEOVER
  *
  * A refusal is a NORMAL outcome, never an error: the caller halts before the
  * model runs and sends nothing. Entitlement is never bypassed — a clinic's own
@@ -62,6 +68,8 @@ export class WhatsappAiPolicyService {
     private readonly conversations: Repository<Conversation>,
     @InjectRepository(AiConversation)
     private readonly aiConversations: Repository<AiConversation>,
+    @InjectRepository(Customer)
+    private readonly customers: Repository<Customer>,
     private readonly access: AccessControlService,
     private readonly metrics: MetricsService,
     private readonly ctx: TenantContextService,
@@ -77,9 +85,22 @@ export class WhatsappAiPolicyService {
     return decision;
   }
 
+  /**
+   * The same decision, without recording it. For a staff-facing "why is the AI
+   * silent here?" read: such a read is not a patient message the AI declined, so
+   * it must not move `whatsapp_ai_decisions_total` or write a decision log line.
+   */
+  explain(
+    tenantId: string,
+    subject: AiPolicySubject,
+  ): Promise<AiPolicyDecision> {
+    return this.decide(tenantId, subject, { findLinkedSession: true });
+  }
+
   private async decide(
     tenantId: string,
     subject: AiPolicySubject,
+    opts: { findLinkedSession?: boolean } = {},
   ): Promise<AiPolicyDecision> {
     try {
       const notEntitled = await this.entitlementRefusal(tenantId);
@@ -89,7 +110,17 @@ export class WhatsappAiPolicyService {
         return { allowed: false, reason: AI_POLICY_REASON.CLINIC_AI_DISABLED };
       }
 
-      if (await this.humanOwns(tenantId, subject)) {
+      const state = await this.loadConversationState(tenantId, subject, opts);
+      if (state.patientExcluded) {
+        return { allowed: false, reason: AI_POLICY_REASON.PATIENT_AI_DISABLED };
+      }
+      if (state.conversationPaused) {
+        return {
+          allowed: false,
+          reason: AI_POLICY_REASON.CONVERSATION_AI_DISABLED,
+        };
+      }
+      if (state.humanOwns) {
         return { allowed: false, reason: AI_POLICY_REASON.HUMAN_TAKEOVER };
       }
 
@@ -149,34 +180,85 @@ export class WhatsappAiPolicyService {
   }
 
   /**
-   * A person owns the conversation. Both flags are read because they are two
-   * views of one fact written together by the handover flow:
-   * `Conversation.owner_type` drives the inbox, `AiConversation.status` is what
-   * gates the AI engine — a state where only one is set must still stop the AI.
-   * Tenant-scoped, so a foreign id can never make a clinic look handed-over.
+   * Everything the per-patient and per-conversation rules need, read fresh and
+   * tenant-scoped, so a foreign id can never make a clinic's conversation look
+   * paused, excluded or handed over.
+   *
+   *  - `patientExcluded` — `customers.ai_replies_disabled`. The patient is the
+   *    one the caller named, else the conversation's own customer.
+   *  - `conversationPaused` — staff set `conversations.ai_mode = DISABLED`.
+   *  - `humanOwns` — a person owns the conversation. Several flags are read
+   *    because they are views of one fact written by different flows:
+   *    `Conversation.owner_type` drives the inbox, `AiConversation.status` is
+   *    what gates the AI engine, and `ai_paused_until` is the automatic
+   *    takeover window. A state where only one is set must still stop the AI.
+   *    `ai_paused_until` is compared to the clock here, at decision time — there
+   *    is no timer to fire, so it cannot be late, lost or doubled by a retry.
    */
-  private async humanOwns(
+  private async loadConversationState(
     tenantId: string,
     subject: AiPolicySubject,
-  ): Promise<boolean> {
-    const [conversation, aiConversation] = await Promise.all([
-      subject.conversationId
-        ? this.conversations.findOne({
-            where: { id: subject.conversationId, tenant: { id: tenantId } },
-            select: { id: true, owner_type: true },
-          })
-        : null,
-      subject.aiConversationId
+    opts: { findLinkedSession?: boolean },
+  ): Promise<{
+    patientExcluded: boolean;
+    conversationPaused: boolean;
+    humanOwns: boolean;
+  }> {
+    // The inbound bridge knows the contact's AI session. A staff-facing read
+    // only knows the thread, so it looks the session up by its link instead.
+    const aiConversationRead = subject.aiConversationId
+      ? this.aiConversations.findOne({
+          where: { id: subject.aiConversationId, tenant: { id: tenantId } },
+          select: { id: true, status: true },
+        })
+      : opts.findLinkedSession && subject.conversationId
         ? this.aiConversations.findOne({
-            where: { id: subject.aiConversationId, tenant: { id: tenantId } },
+            where: {
+              conversation: { id: subject.conversationId },
+              tenant: { id: tenantId },
+              status: AI_CONVERSATION_STATUS.HANDED_OVER,
+            },
             select: { id: true, status: true },
+          })
+        : null;
+
+    const conversation = subject.conversationId
+      ? await this.conversations.findOne({
+          where: { id: subject.conversationId, tenant: { id: tenantId } },
+          relations: { customer: true },
+          select: {
+            id: true,
+            owner_type: true,
+            ai_mode: true,
+            ai_paused_until: true,
+            customer: { id: true },
+          },
+        })
+      : null;
+
+    const customerId = subject.customerId ?? conversation?.customer?.id;
+    const [aiConversation, customer] = await Promise.all([
+      aiConversationRead,
+      customerId
+        ? this.customers.findOne({
+            where: { id: customerId, tenant: { id: tenantId } },
+            select: { id: true, ai_replies_disabled: true },
+            // An excluded patient who was later deleted must stay excluded.
+            withDeleted: true,
           })
         : null,
     ]);
-    return (
-      conversation?.owner_type === CONVERSATION_OWNER_TYPE.HUMAN ||
-      aiConversation?.status === AI_CONVERSATION_STATUS.HANDED_OVER
-    );
+
+    const pausedUntil = conversation?.ai_paused_until;
+    return {
+      patientExcluded: customer?.ai_replies_disabled === true,
+      conversationPaused:
+        conversation?.ai_mode === CONVERSATION_AI_MODE.DISABLED,
+      humanOwns:
+        conversation?.owner_type === CONVERSATION_OWNER_TYPE.HUMAN ||
+        aiConversation?.status === AI_CONVERSATION_STATUS.HANDED_OVER ||
+        (!!pausedUntil && new Date(pausedUntil).getTime() > Date.now()),
+    };
   }
 
   private observe(

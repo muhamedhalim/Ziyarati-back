@@ -11,7 +11,15 @@ export const AI_POLICY_REASON = {
   FEATURE_DISABLED: 'FEATURE_DISABLED',
   /** The clinic switched the assistant off (`tenant_settings.bot_enabled`). */
   CLINIC_AI_DISABLED: 'CLINIC_AI_DISABLED',
-  /** A person owns the conversation (handover / `owner_type = HUMAN`). */
+  /** This patient is excluded from the AI (`customers.ai_replies_disabled`). */
+  PATIENT_AI_DISABLED: 'PATIENT_AI_DISABLED',
+  /** Staff paused the AI on this conversation (`conversations.ai_mode = DISABLED`). */
+  CONVERSATION_AI_DISABLED: 'CONVERSATION_AI_DISABLED',
+  /**
+   * A person owns the conversation: handover (`owner_type = HUMAN` /
+   * `HANDED_OVER`), or a staff reply paused the AI for the clinic's takeover
+   * window (`conversations.ai_paused_until` in the future).
+   */
   HUMAN_TAKEOVER: 'HUMAN_TAKEOVER',
   /** A setting the decision depends on could not be read — fails closed. */
   POLICY_READ_FAILED: 'POLICY_READ_FAILED',
@@ -35,8 +43,13 @@ export type AiPolicyStage = 'pre_ai' | 'pre_send';
  * These ids come from the server's own lookups, never from a client.
  */
 export interface AiPolicySubject {
-  /** The unified-timeline Conversation (owner_type lives here). */
+  /** The unified-timeline Conversation (owner_type, ai_mode, ai_paused_until live here). */
   conversationId?: string | null;
+  /**
+   * The patient. Optional: when absent it is taken from the conversation, so a
+   * caller that only knows the thread is still covered by the patient rule.
+   */
+  customerId?: string | null;
   /** The contact's AI session (HANDED_OVER lives here). */
   aiConversationId?: string | null;
 }

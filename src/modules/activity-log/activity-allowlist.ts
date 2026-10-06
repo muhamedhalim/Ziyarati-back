@@ -69,6 +69,14 @@ export const ACTIVITY_VISIBLE_AUDIT_ACTIONS = [
   'subscription.renewal_attempted',
   'subscription.renewal_declined',
   'subscription.renewal_settled',
+  // ── WhatsApp AI controls ────────────────────────────────────────────────
+  // A clinic deciding when the AI may answer patients: the clinic-wide switch,
+  // a single conversation, or a single patient.
+  'tenant.ai_assistant_toggled',
+  'conversation.ai_paused',
+  'conversation.ai_resumed',
+  'customer.ai_replies_disabled',
+  'customer.ai_replies_enabled',
   // ── Data egress ─────────────────────────────────────────────────────────
   'report.exported',
   'invoice.document_downloaded',
