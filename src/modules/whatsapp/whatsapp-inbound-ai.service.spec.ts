@@ -8,6 +8,15 @@ import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 import { Message } from '../../entities/Conversations/Message';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
+import { Conversation } from '../../entities/Conversations/Conversation';
+import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
+import {
+  ContactTurnBusyError,
+  ContactTurnLockService,
+} from './contact-turn-lock.service';
+import { AppError, ErrorCode } from '../../common/errors';
+import { DistributedLockService } from '../../queue/distributed-lock.service';
+import { MessageStatusService } from '../conversations/message-status.service';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
@@ -37,7 +46,14 @@ const KEYWORDS = 'stop,unsubscribe,إلغاء,توقف';
 describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let service: WhatsappInboundAiService;
   let contacts: MockRepository;
-  let orchestrator: { handleStream: jest.Mock };
+  let orchestrator: {
+    handleStream: jest.Mock;
+    recordInboundWithoutAnswer: jest.Mock;
+  };
+  let locks: { acquire: jest.Mock; release: jest.Mock; renew: jest.Mock };
+  let messageStatus: { markFailed: jest.Mock };
+  let conversationsRepo: MockRepository;
+  let lockService: ContactTurnLockService;
   let customers: {
     recordOptOut: jest.Mock;
     search: jest.Mock;
@@ -57,7 +73,10 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   let messageRepo: MockRepository;
   let access: { resolve: jest.Mock; shouldBlock: jest.Mock };
   let tenantSettings: MockRepository;
-  let metrics: { recordWhatsappAiTurnFailure: jest.Mock };
+  let metrics: {
+    recordWhatsappAiTurnFailure: jest.Mock;
+    recordWhatsappAiDecision: jest.Mock;
+  };
   let rateLimit: { checkAndRecord: jest.Mock };
 
   const allowed = (featureKey: FeatureKey) => ({
@@ -76,7 +95,18 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
   };
 
   beforeEach(async () => {
-    metrics = { recordWhatsappAiTurnFailure: jest.fn() };
+    metrics = {
+      recordWhatsappAiTurnFailure: jest.fn(),
+      recordWhatsappAiDecision: jest.fn(),
+    };
+    // No other turn holds the contact's lock unless a test says so.
+    locks = {
+      acquire: jest.fn().mockResolvedValue('lock-token'),
+      release: jest.fn().mockResolvedValue(undefined),
+      renew: jest.fn().mockResolvedValue(true),
+    };
+    messageStatus = { markFailed: jest.fn().mockResolvedValue(undefined) };
+    conversationsRepo = createMockRepository();
     // F-16: admission is open unless a test closes it.
     rateLimit = { checkAndRecord: jest.fn().mockResolvedValue({ allowed: true }) };
     contacts = createMockRepository();
@@ -88,6 +118,9 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       handleStream: jest
         .fn()
         .mockResolvedValue({ reply: { content: 'AI reply' } }),
+      recordInboundWithoutAnswer: jest
+        .fn()
+        .mockResolvedValue({ handedOver: true }),
     };
     customers = {
       recordOptOut: jest.fn().mockResolvedValue(undefined),
@@ -166,9 +199,22 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         { provide: AccessControlService, useValue: access },
         { provide: MetricsService, useValue: metrics },
         { provide: AiWsRateLimitService, useValue: rateLimit },
+        // The REAL policy and lock, over mocked infrastructure: the assertions
+        // below are about what the bridge does with their answers.
+        WhatsappAiPolicyService,
+        ContactTurnLockService,
+        { provide: DistributedLockService, useValue: locks },
+        { provide: MessageStatusService, useValue: messageStatus },
+        {
+          provide: getRepositoryToken(Conversation),
+          useValue: conversationsRepo,
+        },
       ],
     }).compile();
     service = moduleRef.get(WhatsappInboundAiService);
+    lockService = moduleRef.get(ContactTurnLockService);
+    // Real timers, so keep the lock's waits short.
+    lockService.timings = { ttlMs: 1000, renewMs: 500, waitMs: 30, pollMs: 5 };
   });
 
   /**
@@ -277,8 +323,13 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
 
       expect(orchestrator.handleStream).not.toHaveBeenCalled();
       expect(messaging.sendSession).not.toHaveBeenCalled();
-      // The switch is checked before any entitlement work is spent on it.
-      expect(access.resolve).not.toHaveBeenCalled();
+      // Entitlement is decided first: a clinic's own switch can only narrow what
+      // its plan allows, so the plan is the outer gate (subscription → feature →
+      // clinic switch → conversation).
+      expect(access.resolve).toHaveBeenCalledWith(
+        TENANT,
+        FeatureKey.AI_ASSISTANT,
+      );
     });
 
     it("reads THIS tenant's row, never another clinic's", async () => {
@@ -949,6 +1000,467 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
         .map((call) => call.map(String).join(' '))
         .join('\n');
       expect(logged).not.toContain('966500000000');
+    });
+  });
+
+  /**
+   * P1b — the policy is enforced by the backend, before the model is called AND
+   * again right before the send. Checking only at the start is not enough: staff
+   * can pause the AI, take the chat, or the clinic can switch the assistant off
+   * while a turn is already running.
+   */
+  describe('policy enforcement', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    const inbound = (over: Record<string, unknown> = {}) =>
+      ({
+        metadata: { phone_number_id: 'p1' },
+        messages: [
+          {
+            id: 'wamid-p1',
+            from: '966500000000',
+            type: 'text',
+            text: { body: 'hello' },
+            ...over,
+          },
+        ],
+      }) as never;
+
+    const thread = (owner: 'AI' | 'HUMAN') => ({
+      id: 'thread-1',
+      owner_type: owner,
+    });
+    const withAiSession = () => {
+      contacts.findOne.mockResolvedValue({
+        ...EXISTING_CONTACT,
+        ai_conversation_id: 'ai-1',
+      });
+    };
+    const decisions = (stage: string) =>
+      metrics.recordWhatsappAiDecision.mock.calls.filter((c) => c[2] === stage);
+
+    describe('before the model is called', () => {
+      it('stops a conversation a person owns — no model call, no send, no bot user', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(botActor.ensureBotActor).not.toHaveBeenCalled();
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'HUMAN_TAKEOVER',
+          'pre_ai',
+        );
+        // …and it is not treated as an error.
+        expect(metrics.recordWhatsappAiTurnFailure).not.toHaveBeenCalled();
+      });
+
+      it('stops an AI session that is HANDED_OVER even if the conversation still says AI', async () => {
+        withAiSession();
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+        aiConversations.findOne.mockResolvedValue({
+          id: 'ai-1',
+          status: 'HANDED_OVER',
+          conversation: { id: 'thread-1' },
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+      });
+
+      it('still stores the message when a person owns the conversation', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(
+          conversationExecution.recordChannelMessageOnce,
+        ).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps the message in the AI history and notifies the agent, as a handed-over turn always did', async () => {
+        withAiSession();
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.recordInboundWithoutAnswer).toHaveBeenCalledWith(
+          TENANT,
+          'ai-1',
+          'hello',
+          { waMessageId: 'wamid-p1', messageType: 'text' },
+        );
+      });
+
+      it('has no AI history to add to when the contact never had an AI session', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.recordInboundWithoutAnswer).not.toHaveBeenCalled();
+      });
+
+      it('adds nothing for a refusal that is not a takeover (the clinic switched the assistant off)', async () => {
+        withAiSession();
+        tenantSettings.findOne.mockResolvedValue({
+          id: 'ts-1',
+          bot_enabled: false,
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.recordInboundWithoutAnswer).not.toHaveBeenCalled();
+      });
+
+      it('contains a failure while recording it — the batch carries on', async () => {
+        withAiSession();
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+        orchestrator.recordInboundWithoutAnswer.mockRejectedValue(
+          new Error('db hiccup'),
+        );
+        jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+
+        await expect(
+          service.handleInboundValue(TENANT, inbound()),
+        ).resolves.toBeUndefined();
+      });
+    });
+
+    describe('again, right before the send — the AI must not reply after being paused mid-turn', () => {
+      const answer = () =>
+        orchestrator.handleStream.mockResolvedValue({
+          reply: { content: 'AI reply' },
+          mirroredMessageId: 'bot-msg-1',
+        });
+
+      it('does not send when staff take the conversation while the model is answering', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+        orchestrator.handleStream.mockImplementation(async () => {
+          // The agent takes the chat during the model call.
+          conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+          return {
+            reply: { content: 'AI reply' },
+            mirroredMessageId: 'bot-msg-1',
+          };
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).toHaveBeenCalledTimes(1); // the model WAS spent
+        expect(messaging.sendSession).not.toHaveBeenCalled(); // …but nothing reached the patient
+        expect(decisions('pre_ai')).toContainEqual([
+          'ALLOW',
+          'ALLOWED',
+          'pre_ai',
+        ]);
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'HUMAN_TAKEOVER',
+          'pre_send',
+        );
+      });
+
+      it('does not send when the clinic switches the assistant off while the model is answering', async () => {
+        orchestrator.handleStream.mockImplementation(async () => {
+          tenantSettings.findOne.mockResolvedValue({
+            id: 'ts-1',
+            bot_enabled: false,
+          });
+          return {
+            reply: { content: 'AI reply' },
+            mirroredMessageId: 'bot-msg-1',
+          };
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(metrics.recordWhatsappAiDecision).toHaveBeenCalledWith(
+          'SKIP',
+          'CLINIC_AI_DISABLED',
+          'pre_send',
+        );
+      });
+
+      it('marks the already-mirrored bot reply FAILED, so the inbox does not show it as sent', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('AI'));
+        orchestrator.handleStream.mockImplementation(async () => {
+          conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+          return {
+            reply: { content: 'AI reply' },
+            mirroredMessageId: 'bot-msg-1',
+          };
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messageStatus.markFailed).toHaveBeenCalledWith(
+          TENANT,
+          'bot-msg-1',
+        );
+      });
+
+      it('has nothing to mark when the reply was never mirrored', async () => {
+        orchestrator.handleStream.mockImplementation(async () => {
+          conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+          return { reply: { content: 'AI reply' }, mirroredMessageId: null };
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(messageStatus.markFailed).not.toHaveBeenCalled();
+      });
+
+      it('contains a failure while marking — the suppressed reply is still not sent', async () => {
+        orchestrator.handleStream.mockImplementation(async () => {
+          conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+          return {
+            reply: { content: 'AI reply' },
+            mirroredMessageId: 'bot-msg-1',
+          };
+        });
+        messageStatus.markFailed.mockRejectedValue(
+          new Error('unique violation'),
+        );
+        jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+      });
+
+      it('sends normally when nothing changed during the turn', async () => {
+        answer();
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+        expect(decisions('pre_send')).toEqual([
+          ['ALLOW', 'ALLOWED', 'pre_send'],
+        ]);
+      });
+
+      it('applies to the "could not process" fallback too', async () => {
+        orchestrator.handleStream.mockImplementation(async () => {
+          conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+          throw new Error('boom');
+        });
+        jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(metrics.recordWhatsappAiTurnFailure).toHaveBeenCalledWith(
+          'not_sent',
+        );
+      });
+
+      it('applies to the rate-limit notice too', async () => {
+        rateLimit.checkAndRecord.mockResolvedValue({
+          allowed: false,
+          count: 6,
+          limit: 5,
+        });
+        jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+        // Allowed when the turn starts, taken over by the time the notice is due.
+        conversationsRepo.findOne
+          .mockResolvedValueOnce(thread('AI'))
+          .mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('a replayed turn does not deliver its answer twice', () => {
+      beforeEach(() =>
+        orchestrator.handleStream.mockResolvedValue({
+          reply: { content: 'AI reply' },
+          mirroredMessageId: 'bot-msg-1',
+        }),
+      );
+
+      it('skips the send when the mirrored reply already carries its provider id', async () => {
+        messageRepo.findOne.mockResolvedValue({
+          id: 'bot-msg-1',
+          wa_message_id: 'wamid.out.1',
+        });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(
+          conversationExecution.recordProviderMessageId,
+        ).not.toHaveBeenCalled();
+        expect(messageRepo.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'bot-msg-1', tenant: { id: TENANT } },
+          }),
+        );
+      });
+
+      it('sends when the first attempt never got as far as a provider id', async () => {
+        messageRepo.findOne.mockResolvedValue({ id: 'bot-msg-1' });
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('sends rather than going silent when the check itself fails', async () => {
+        messageRepo.findOne.mockRejectedValue(new Error('db hiccup'));
+        jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => undefined);
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('one AI turn per contact at a time', () => {
+      it('holds a per-contact lock for the turn and releases it afterwards', async () => {
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(locks.acquire).toHaveBeenCalledTimes(1);
+        const key = locks.acquire.mock.calls[0][0] as string;
+        expect(key).toContain(TENANT);
+        expect(key).not.toContain('966500000000');
+        expect(locks.release).toHaveBeenCalledWith(key, 'lock-token');
+        // The lock is held across the model call and the send.
+        expect(locks.acquire.mock.invocationCallOrder[0]).toBeLessThan(
+          orchestrator.handleStream.mock.invocationCallOrder[0],
+        );
+        expect(locks.release.mock.invocationCallOrder[0]).toBeGreaterThan(
+          messaging.sendSession.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('takes no lock — and spends nothing — for a message the policy refuses', async () => {
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(locks.acquire).not.toHaveBeenCalled();
+      });
+
+      it('releases the lock when the turn fails', async () => {
+        orchestrator.handleStream.mockRejectedValue(new Error('boom'));
+        jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(locks.release).toHaveBeenCalledTimes(1);
+      });
+
+      it('fails the job so it is retried — and answers nobody — when another turn keeps the lock too long', async () => {
+        locks.acquire.mockResolvedValue(null);
+
+        await expect(
+          service.handleInboundValue(TENANT, inbound()),
+        ).rejects.toBeInstanceOf(ContactTurnBusyError);
+
+        expect(orchestrator.handleStream).not.toHaveBeenCalled();
+        expect(messaging.sendSession).not.toHaveBeenCalled(); // no apology for a turn that will be retried
+        expect(metrics.recordWhatsappAiTurnFailure).not.toHaveBeenCalled();
+      });
+
+      it('re-checks the policy after queueing, because the world may have changed while it waited', async () => {
+        locks.acquire
+          .mockResolvedValueOnce(null)
+          .mockResolvedValue('lock-token');
+        conversationsRepo.findOne
+          .mockResolvedValueOnce(thread('AI')) // when the turn started
+          .mockResolvedValue(thread('HUMAN')); // staff took over while it queued
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(decisions('pre_ai')).toHaveLength(2);
+        expect(orchestrator.handleStream).not.toHaveBeenCalled(); // no OpenAI spend
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+      });
+
+      it('does not re-check when it never had to wait', async () => {
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(decisions('pre_ai')).toHaveLength(1);
+      });
+    });
+
+    describe('an identical request that is already running', () => {
+      it('lets BullMQ retry it instead of apologising to the patient', async () => {
+        const inFlight = new AppError(ErrorCode.CONFLICT, {
+          message: 'The same AI request is already in progress.',
+        });
+        orchestrator.handleStream.mockRejectedValue(inFlight);
+
+        await expect(
+          service.handleInboundValue(TENANT, inbound()),
+        ).rejects.toBe(inFlight);
+
+        expect(messaging.sendSession).not.toHaveBeenCalled();
+        expect(metrics.recordWhatsappAiTurnFailure).not.toHaveBeenCalled();
+        expect(locks.release).toHaveBeenCalledTimes(1);
+      });
+
+      it('still apologises for a genuine failure (not a conflict)', async () => {
+        orchestrator.handleStream.mockRejectedValue(
+          new AppError(ErrorCode.UNPROCESSABLE_ENTITY, { message: 'quota' }),
+        );
+        jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+
+        await service.handleInboundValue(TENANT, inbound());
+
+        expect(messaging.sendSession).toHaveBeenCalledTimes(1);
+        expect(metrics.recordWhatsappAiTurnFailure).toHaveBeenCalledWith(
+          'sent',
+        );
+      });
+    });
+
+    describe('observability', () => {
+      it('records a refusal with a closed reason and writes no phone number or message text to any log', async () => {
+        const spies = (['debug', 'log', 'warn', 'error'] as const).map(
+          (level) =>
+            jest
+              .spyOn(Logger.prototype, level)
+              .mockImplementation(() => undefined),
+        );
+        conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
+
+        await service.handleInboundValue(
+          TENANT,
+          inbound({ text: { body: 'my secret symptom' } }),
+        );
+
+        const logged = spies
+          .flatMap((spy) => spy.mock.calls)
+          .map((call) => call.map(String).join(' '))
+          .join('\n');
+        expect(logged).toContain('WHATSAPP_AI_DECISION');
+        expect(logged).not.toContain('966500000000');
+        expect(logged).not.toContain('my secret symptom');
+      });
     });
   });
 

@@ -205,6 +205,20 @@ export class MetricsService {
   });
 
   /**
+   * Every WhatsApp AI policy decision (`WhatsappAiPolicyService`) — the answer
+   * to "why didn't the assistant reply?" at fleet level. Labels are a closed set
+   * (`decision` ALLOW|SKIP, `reason` from AI_POLICY_REASON or ALLOWED, `stage`
+   * pre_ai|pre_send) and carry no tenant or contact; the WHATSAPP_AI_DECISION
+   * log line carries the tenant for triage.
+   */
+  private readonly whatsappAiDecisions = new Counter({
+    name: 'whatsapp_ai_decisions_total',
+    help: 'WhatsApp AI policy decisions, by outcome, refusal reason and the stage of the turn they were taken at.',
+    labelNames: ['decision', 'reason', 'stage'] as const,
+    registers: [this.registry],
+  });
+
+  /**
    * Free-access lifecycle notices (`FreeAccessNoticeService.deliver`).
    * `kind`: started | expiring. `channel`: in_app | email. `outcome`:
    * sent | duplicate (idempotent no-op) | stale (override changed/revoked/
@@ -298,6 +312,14 @@ export class MetricsService {
   /** F-25 — `fallback` = whether the patient was told the assistant could not answer. */
   recordWhatsappAiTurnFailure(fallback: 'sent' | 'not_sent'): void {
     this.whatsappAiTurnFailures.inc({ fallback });
+  }
+
+  recordWhatsappAiDecision(
+    decision: 'ALLOW' | 'SKIP',
+    reason: string,
+    stage: 'pre_ai' | 'pre_send',
+  ): void {
+    this.whatsappAiDecisions.inc({ decision, reason, stage });
   }
 
   recordFreeAccessNotice(
