@@ -7,7 +7,6 @@ import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { AiConversation } from '../../entities/AI Agent/AiConversation';
 import { Message } from '../../entities/Conversations/Message';
 import { Tenant } from '../../entities/SaaS-Core/Tenant';
-import { TenantSetting } from '../../entities/SaaS-Core/TenantSetting';
 
 import { AiOrchestratorService } from '../ai-orchestrator/ai-orchestrator.service';
 import { ConversationExecutionService } from '../conversations/conversation-execution.service';
@@ -19,11 +18,21 @@ import { WhatsappMessageRouter } from './routing/whatsapp-message.router';
 import { WhatsappMediaService } from './meta/whatsapp-media.service';
 import { SystemSettingService } from '../platform/system-setting.service';
 import { SettingKey } from '../platform/settings.registry';
-import { AccessControlService } from '../subscription-billing/access-control.service';
 import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
 import { MetricsService } from '../../metrics/metrics.service';
-import { FeatureKey } from '../subscription-billing/feature-registry';
+import { MessageStatusService } from '../conversations/message-status.service';
+import { AppError, ErrorCode } from '../../common/errors';
 import { isOptOutMessage } from './opt-out.util';
+import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
+import {
+  AI_POLICY_REASON,
+  AiPolicyReason,
+  AiPolicySubject,
+} from './whatsapp-ai-policy.constants';
+import {
+  ContactTurnBusyError,
+  ContactTurnLockService,
+} from './contact-turn-lock.service';
 import type {
   WhatsappListSection,
   WhatsappSessionPayload,
@@ -114,8 +123,6 @@ export class WhatsappInboundAiService {
     private readonly contacts: Repository<WhatsappContact>,
     @InjectRepository(Message)
     private readonly messages: Repository<Message>,
-    @InjectRepository(TenantSetting)
-    private readonly tenantSettings: Repository<TenantSetting>,
     @InjectRepository(AiConversation)
     private readonly aiConversations: Repository<AiConversation>,
     @InjectRepository(WhatsappAccount)
@@ -129,8 +136,13 @@ export class WhatsappInboundAiService {
     private readonly customers: CustomerService,
     private readonly ctx: TenantContextService,
     private readonly settings: SystemSettingService,
-    private readonly access: AccessControlService,
     private readonly metrics: MetricsService,
+    /** The single decision on whether the AI may answer — see its docblock. */
+    private readonly policy: WhatsappAiPolicyService,
+    /** Serializes AI turns per contact. */
+    private readonly turnLock: ContactTurnLockService,
+    /** Marks a bot reply the policy stopped at the last moment as FAILED. */
+    private readonly messageStatus: MessageStatusService,
     /**
      * F-16: per-contact admission. The same stateless class the realtime gateway
      * uses, provided again by this module (importing AiRealtimeModule would be a
@@ -171,33 +183,71 @@ export class WhatsappInboundAiService {
       ingested.push(await this.ingestOne(tenantId, value, message));
     }
 
-    // `&&` keeps the original short-circuit: the entitlement lookup is skipped
-    // (and not logged) when the clinic itself has the assistant switched off.
-    const aiOn =
-      (await this.botSwitchedOn(tenantId)) &&
-      (await this.mayAutoReply(tenantId));
-
     for (const item of ingested) {
+      if (item.kind === 'skip') continue;
       if (item.kind === 'failed') {
-        if (aiOn) {
-          // Unchanged for a clinic whose assistant is on: the same ERROR log,
-          // counter and one plain "we could not answer" message as any turn
-          // that throws.
-          await this.onTurnFailed(tenantId, item.message, item.error);
-        } else {
-          // The assistant is off, so the patient must not be answered — but a
-          // message that could not even be stored is still worth an alert.
-          this.logger.error(
-            `inbound message could not be stored on the timeline (tenant=${tenantId}): ${(item.error as Error)?.message}`,
-          );
-        }
+        await this.onStoreFailed(tenantId, item.message, item.error);
         continue;
       }
-      if (!aiOn || item.kind === 'skip') continue;
-      await this.handleOne(tenantId, item).catch((err) =>
-        this.onTurnFailed(tenantId, item.message, err),
-      );
+      await this.handleOne(tenantId, item).catch((err) => {
+        // A turn that only had to wait its turn, or that raced an identical
+        // in-flight attempt, has run and sent nothing: failing the job lets
+        // BullMQ retry it with backoff. Answering the patient with an apology
+        // for something that is still going to work would be wrong.
+        if (this.shouldRetryJob(err)) throw err;
+        return this.onTurnFailed(
+          tenantId,
+          item.message,
+          err,
+          this.subjectOf(item),
+        );
+      });
     }
+  }
+
+  /** What the policy needs to know about a stored message's conversation. */
+  private subjectOf(
+    item: Extract<IngestedMessage, { kind: 'ready' }>,
+  ): AiPolicySubject {
+    return {
+      conversationId: item.conversationId,
+      aiConversationId: item.contact.ai_conversation_id,
+    };
+  }
+
+  /**
+   * True for the two failures that mean "not now" rather than "this failed":
+   * another turn for the same contact still holds the lock, or an identical AI
+   * request is already in flight / has an unverified outcome (the AI request
+   * claim raises CONFLICT for both).
+   */
+  private shouldRetryJob(err: unknown): boolean {
+    return (
+      err instanceof ContactTurnBusyError ||
+      (err instanceof AppError && err.code === ErrorCode.CONFLICT)
+    );
+  }
+
+  /**
+   * A message that could not be stored. If the assistant may answer, behave as
+   * for any turn that throws (ERROR log, counter, one plain "we could not
+   * answer" message). If it may not, the patient must not be answered — but a
+   * message that never reached the inbox is still worth an alert. Nothing is
+   * known about the thread here, so only the clinic-wide rules can apply.
+   */
+  private async onStoreFailed(
+    tenantId: string,
+    message: MetaWebhookMessage,
+    error: unknown,
+  ): Promise<void> {
+    const decision = await this.policy.evaluate(tenantId, {}, 'pre_ai');
+    if (decision.allowed) {
+      await this.onTurnFailed(tenantId, message, error, {});
+      return;
+    }
+    this.logger.error(
+      `inbound message could not be stored on the timeline (tenant=${tenantId}): ${(error as Error)?.message}`,
+    );
   }
 
   /**
@@ -380,6 +430,7 @@ export class WhatsappInboundAiService {
     tenantId: string,
     message: MetaWebhookMessage,
     err: unknown,
+    subject: AiPolicySubject,
   ): Promise<void> {
     this.logger.error(
       `inbound AI turn failed (tenant=${tenantId}): ${(err as Error)?.message}`,
@@ -388,7 +439,14 @@ export class WhatsappInboundAiService {
     let sent = false;
     if (waId) {
       try {
-        sent = await this.sendReply(tenantId, waId, TURN_FAILED_FALLBACK_TEXT);
+        // The fallback is a message to the patient like any other: if the
+        // policy stops it (switched off, a person owns the chat), it is not sent.
+        sent = await this.sendReply(
+          tenantId,
+          waId,
+          TURN_FAILED_FALLBACK_TEXT,
+          subject,
+        );
       } catch (sendErr) {
         this.logger.warn(
           `could not send the turn-failed fallback (tenant=${tenantId}): ${(sendErr as Error)?.message}`,
@@ -399,83 +457,28 @@ export class WhatsappInboundAiService {
   }
 
   /**
-   * The clinic's OWN switch (Settings → Booking & operations → "AI assistant",
-   * `tenant_settings.bot_enabled`): when off, inbound WhatsApp messages are still
-   * stored on the timeline (ingest happens before this bridge) but the bot does
-   * not answer them — a human replies from the inbox. Distinct from
-   * {@link mayAutoReply}, which is the PLAN/entitlement decision.
-   *
-   * A clinic with no settings row yet has the column default (`true`); an
-   * unreadable row fails CLOSED, like the entitlement check below — an answer
-   * the clinic switched off must never go out because the read failed.
-   */
-  private async botSwitchedOn(tenantId: string): Promise<boolean> {
-    try {
-      const row = await this.tenantSettings.findOne({
-        where: { tenant: { id: tenantId } },
-        select: { id: true, bot_enabled: true },
-      });
-      if (row?.bot_enabled ?? true) return true;
-      this.logger.log(
-        `Skipping inbound WhatsApp AI auto-reply for tenant ${tenantId}: the clinic turned the AI assistant off ` +
-          `(tenant_settings.bot_enabled = false). The inbound message itself is still stored.`,
-      );
-      return false;
-    } catch (err) {
-      this.logger.error(
-        `Could not read bot_enabled for tenant ${tenantId} — skipping the auto-reply (fail closed): ${(err as Error)?.message}`,
-      );
-      return false;
-    }
-  }
-
-  /**
-   * Both capabilities this bridge exercises: the AI turn and the WhatsApp
-   * reply. Fails CLOSED — a webhook path that cannot read the decision must not
-   * proceed to run AI and send messages on the clinic's behalf.
-   */
-  private async mayAutoReply(tenantId: string): Promise<boolean> {
-    for (const key of [FeatureKey.AI_ASSISTANT, FeatureKey.WHATSAPP]) {
-      let decision;
-      try {
-        decision = await this.access.resolve(tenantId, key);
-      } catch (err) {
-        this.logger.error(
-          `Access check failed for inbound WhatsApp AI (tenant=${tenantId}, feature=${key}) — ` +
-            `skipping the auto-reply (fail closed): ${(err as Error)?.message}`,
-        );
-        return false;
-      }
-      if (decision.allowed) continue;
-      if (
-        !this.access.shouldBlock(decision, {
-          surface: 'webhook',
-          detail: 'whatsapp.inbound.aiReply',
-        })
-      ) {
-        continue; // ACCESS_POLICY_MODE=shadow — recorded, not enforced
-      }
-      this.logger.warn(
-        `Skipping inbound WhatsApp AI auto-reply for tenant ${tenantId}: not entitled to "${key}" ` +
-          `(source=${decision.source}). The inbound message itself is still stored.`,
-      );
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * The AI step for one stored message: restores the tenant's AI Bot Actor as a
-   * REAL authenticated principal for the whole turn — every downstream check
-   * (booking permission gates, actorUserId on the appointment row) sees a real,
-   * auditable user instead of an anonymous context, exactly as an HTTP request
-   * would. Only reached for a clinic whose assistant is on and entitled, so a
+   * The AI step for one stored message. First the policy decides — before
+   * anything is spent and before a bot user could be provisioned. Only a message
+   * the assistant may answer restores the tenant's AI Bot Actor as a REAL
+   * authenticated principal for the whole turn: every downstream check (booking
+   * permission gates, actorUserId on the appointment row) sees a real, auditable
+   * user instead of an anonymous context, exactly as an HTTP request would. A
    * clinic that never uses the AI never gets a bot user provisioned.
    */
   private async handleOne(
     tenantId: string,
     item: Extract<IngestedMessage, { kind: 'ready' }>,
   ): Promise<void> {
+    const decision = await this.policy.evaluate(
+      tenantId,
+      this.subjectOf(item),
+      'pre_ai',
+    );
+    if (!decision.allowed) {
+      await this.recordSuppressed(tenantId, item, decision.reason);
+      return;
+    }
+
     const bot = await this.botActor.ensureBotActor(tenantId);
     await this.ctx.run(async () => {
       this.ctx.setPrincipal(bot);
@@ -483,16 +486,73 @@ export class WhatsappInboundAiService {
     });
   }
 
+  /**
+   * A message the assistant must not answer. Where a PERSON owns the
+   * conversation it still belongs in the AI's own history (so nothing is missing
+   * if the chat is later returned to the AI) and, when someone is assigned, they
+   * are notified that the customer replied — exactly what a handed-over turn did
+   * inside the orchestrator before the policy stopped it earlier. Any other
+   * reason needs nothing beyond what storing already did. Best-effort.
+   */
+  private async recordSuppressed(
+    tenantId: string,
+    item: Extract<IngestedMessage, { kind: 'ready' }>,
+    reason: AiPolicyReason,
+  ): Promise<void> {
+    const aiConversationId = item.contact.ai_conversation_id;
+    if (reason !== AI_POLICY_REASON.HUMAN_TAKEOVER || !aiConversationId) return;
+    try {
+      await this.orchestrator.recordInboundWithoutAnswer(
+        tenantId,
+        aiConversationId,
+        item.content,
+        { waMessageId: item.message.id, messageType: item.message.type },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `could not record an unanswered inbound message (tenant=${tenantId}): ${(err as Error)?.message}`,
+      );
+    }
+  }
+
   private async processTurn(
     tenantId: string,
     item: Extract<IngestedMessage, { kind: 'ready' }>,
   ): Promise<void> {
-    const { message, waId, content, contact, conversationId } = item;
+    const { waId } = item;
 
     // F-16: after the opt-out check (a "STOP" must always be honoured) and before
     // anything that costs money. A refused message is already stored on the
     // timeline, so a human can still read it.
-    if (!(await this.admitContactTurn(tenantId, waId))) return;
+    if (!(await this.admitContactTurn(tenantId, waId, this.subjectOf(item)))) {
+      return;
+    }
+
+    // One AI turn per contact at a time, so a second message sees the first
+    // turn's reply in its history and replies leave in order.
+    await this.turnLock.run(tenantId, waId, async ({ waited }) => {
+      // A turn that queued behind another may now be looking at a different
+      // world: staff can have paused the AI or taken the chat while it waited.
+      if (waited) {
+        const again = await this.policy.evaluate(
+          tenantId,
+          this.subjectOf(item),
+          'pre_ai',
+        );
+        if (!again.allowed) {
+          await this.recordSuppressed(tenantId, item, again.reason);
+          return;
+        }
+      }
+      await this.runTurn(tenantId, item);
+    });
+  }
+
+  private async runTurn(
+    tenantId: string,
+    item: Extract<IngestedMessage, { kind: 'ready' }>,
+  ): Promise<void> {
+    const { message, waId, content, contact, conversationId } = item;
 
     // Continue the contact's single conversation (shared history/session/memory/
     // agent). First inbound turn has none → the orchestrator creates + routes one,
@@ -555,6 +615,7 @@ export class WhatsappInboundAiService {
       tenantId,
       waId,
       reply,
+      this.subjectOf(item),
       interactive,
       result.mirroredMessageId,
     );
@@ -573,6 +634,7 @@ export class WhatsappInboundAiService {
   private async admitContactTurn(
     tenantId: string,
     waId: string,
+    subject: AiPolicySubject,
   ): Promise<boolean> {
     for (const tier of ['whatsapp-contact', 'whatsapp-contact-day'] as const) {
       const decision = await this.rateLimit.checkAndRecord(
@@ -593,6 +655,7 @@ export class WhatsappInboundAiService {
             tier === 'whatsapp-contact'
               ? CONTACT_RATE_LIMITED_TEXT
               : CONTACT_DAILY_LIMIT_TEXT,
+            subject,
           );
         } catch (err) {
           this.logger.warn(
@@ -645,14 +708,45 @@ export class WhatsappInboundAiService {
     }
   }
 
-  /** Send the AI reply back over WhatsApp as a free-form session message. */
+  /**
+   * Send a bot message back over WhatsApp as a free-form session message — the
+   * ONE place this bridge sends, so every kind of bot message (the AI's answer,
+   * the "could not process" fallback, the rate-limit notice) passes the same two
+   * gates:
+   *
+   *  1. The policy, asked AGAIN here. The decision taken before the model ran can
+   *     be stale by the time the answer is ready: staff may have paused the AI,
+   *     taken the chat or switched the assistant off during the turn. A refusal
+   *     sends nothing and marks the already-mirrored bot message FAILED, so the
+   *     inbox does not show a reply as sent that the patient never received.
+   *  2. De-duplication: a replayed turn (job retry) gets the stored answer back
+   *     from the AI request claim, and its mirrored message already carries the
+   *     provider id once the first attempt sent it. Sending again would deliver
+   *     the same answer twice.
+   */
   private async sendReply(
     tenantId: string,
     to: string,
     text: string,
+    subject: AiPolicySubject,
     interactive?: WhatsappSessionPayload['interactive'],
     mirroredMessageId?: string | null,
   ): Promise<boolean> {
+    const decision = await this.policy.evaluate(tenantId, subject, 'pre_send');
+    if (!decision.allowed) {
+      await this.markReplySuppressed(tenantId, mirroredMessageId);
+      return false;
+    }
+    if (
+      mirroredMessageId &&
+      (await this.alreadySent(tenantId, mirroredMessageId))
+    ) {
+      this.logger.log(
+        `bot reply already delivered by an earlier attempt — not sending again (tenant=${tenantId})`,
+      );
+      return true;
+    }
+
     // A reply can only go out from THIS clinic's own connected number — there is
     // no shared platform number to fall back to. If the tenant has no usable
     // account, abort loudly rather than attempting a send that cannot succeed.
@@ -695,6 +789,40 @@ export class WhatsappInboundAiService {
         );
     }
     return true;
+  }
+
+  /** Whether this mirrored bot message already went out (it carries the provider id). */
+  private async alreadySent(
+    tenantId: string,
+    mirroredMessageId: string,
+  ): Promise<boolean> {
+    try {
+      const row = await this.messages.findOne({
+        where: { id: mirroredMessageId, tenant: { id: tenantId } },
+        select: { id: true, wa_message_id: true },
+      });
+      return Boolean(row?.wa_message_id);
+    } catch (err) {
+      this.logger.warn(
+        `could not check whether a bot reply was already sent (tenant=${tenantId}) — sending: ${(err as Error)?.message}`,
+      );
+      return false;
+    }
+  }
+
+  /** Best-effort: a reply the policy stopped must not stay shown as sent. */
+  private async markReplySuppressed(
+    tenantId: string,
+    mirroredMessageId?: string | null,
+  ): Promise<void> {
+    if (!mirroredMessageId) return;
+    try {
+      await this.messageStatus.markFailed(tenantId, mirroredMessageId);
+    } catch (err) {
+      this.logger.warn(
+        `could not mark a suppressed bot reply as failed (tenant=${tenantId}): ${(err as Error)?.message}`,
+      );
+    }
   }
 
   /**
