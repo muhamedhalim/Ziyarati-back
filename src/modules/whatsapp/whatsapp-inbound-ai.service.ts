@@ -211,6 +211,7 @@ export class WhatsappInboundAiService {
   ): AiPolicySubject {
     return {
       conversationId: item.conversationId,
+      customerId: item.contact.customer?.id ?? null,
       aiConversationId: item.contact.ai_conversation_id,
     };
   }
@@ -487,12 +488,15 @@ export class WhatsappInboundAiService {
   }
 
   /**
-   * A message the assistant must not answer. Where a PERSON owns the
-   * conversation it still belongs in the AI's own history (so nothing is missing
-   * if the chat is later returned to the AI) and, when someone is assigned, they
-   * are notified that the customer replied — exactly what a handed-over turn did
+   * A message the assistant must not answer. Where the conversation is one the
+   * AI is expected to come back to — a person owns it, or staff paused it — the
+   * message still belongs in the AI's own history (so nothing is missing when
+   * the chat is returned or resumed) and, when someone is assigned, they are
+   * notified that the customer replied: exactly what a handed-over turn did
    * inside the orchestrator before the policy stopped it earlier. Any other
-   * reason needs nothing beyond what storing already did. Best-effort.
+   * reason (the clinic switched the assistant off, the patient is excluded)
+   * needs nothing beyond what storing already did — and an excluded patient's
+   * message is deliberately not fed into an AI history. Best-effort.
    */
   private async recordSuppressed(
     tenantId: string,
@@ -500,7 +504,10 @@ export class WhatsappInboundAiService {
     reason: AiPolicyReason,
   ): Promise<void> {
     const aiConversationId = item.contact.ai_conversation_id;
-    if (reason !== AI_POLICY_REASON.HUMAN_TAKEOVER || !aiConversationId) return;
+    const resumable =
+      reason === AI_POLICY_REASON.HUMAN_TAKEOVER ||
+      reason === AI_POLICY_REASON.CONVERSATION_AI_DISABLED;
+    if (!resumable || !aiConversationId) return;
     try {
       await this.orchestrator.recordInboundWithoutAnswer(
         tenantId,

@@ -23,6 +23,7 @@ import { StorageModule } from '../storage/storage.module';
 import { VerificationAuditModule } from '../verification-audit/verification-audit.module';
 import { AdminNotificationModule } from '../admin-notifications/admin-notification.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 
 /**
  * Tenant aggregate root: the clinic and everything it directly owns —
@@ -55,6 +56,8 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     // Provides AnalyticsAggregationService/AnalyticsCacheService for the
     // dashboard target-progress read (GET/PATCH /tenants/me/targets).
     AnalyticsModule,
+    // Audit record when the clinic switches the WhatsApp AI on or off.
+    ActivityLogModule,
   ],
   controllers: [
     TenantController,

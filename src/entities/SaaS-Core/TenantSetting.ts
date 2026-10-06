@@ -4,11 +4,16 @@ import {
   Column,
   OneToOne,
   JoinColumn,
+  Check,
 } from 'typeorm';
 import { Tenant } from '../SaaS-Core/Tenant';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('tenant_settings')
+@Check(
+  'CHK_tenant_settings_ai_human_takeover_minutes',
+  `"ai_human_takeover_minutes" BETWEEN 0 AND 1440`,
+)
 export class TenantSetting {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -37,6 +42,15 @@ export class TenantSetting {
 
   @Column({ default: true })
   bot_enabled!: boolean;
+
+  /**
+   * How long the WhatsApp AI stays silent on a conversation after a staff member
+   * replies to it, in minutes (0–1440). `0` (the default) = no automatic
+   * takeover, which is exactly today's behaviour. Applied as a timestamp on the
+   * conversation (`ai_paused_until`), not a timer.
+   */
+  @Column({ type: 'int', default: 0 })
+  ai_human_takeover_minutes!: number;
 
   /**
    * Whether this clinic is discoverable and bookable by ANONYMOUS visitors

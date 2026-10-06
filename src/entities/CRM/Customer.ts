@@ -138,6 +138,21 @@ export class Customer {
   @Column({ type: 'boolean', nullable: true })
   has_health_insurance?: boolean | null;
 
+  /**
+   * Patient-level exclusion from the WhatsApp AI. When `true` the AI never
+   * answers this patient — on any conversation, and for any number linked to
+   * them — while their messages are still received, stored and visible to staff.
+   * Read in exactly one place, `WhatsappAiPolicyService`; written only by the
+   * dedicated `PATCH /crm/customers/:id/ai-replies` route, never by the generic
+   * customer update.
+   */
+  @Column({ default: false })
+  ai_replies_disabled!: boolean;
+
+  /** When the exclusion was last switched on; `NULL` when not excluded. */
+  @Column({ type: 'timestamptz', nullable: true })
+  ai_replies_disabled_at?: Date | null;
+
   @OneToOne(() => CustomerProfile, (profile) => profile.customer)
   profile?: CustomerProfile;
 
