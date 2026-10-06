@@ -26,6 +26,8 @@ import { WhatsappContactService } from './whatsapp-contact.service';
 import { WhatsappMessagingService } from './whatsapp-messaging.service';
 import { WhatsappExecutionService } from './whatsapp-execution.service';
 import { WhatsappInboundAiService } from './whatsapp-inbound-ai.service';
+import { WhatsappAiPolicyService } from './whatsapp-ai-policy.service';
+import { ContactTurnLockService } from './contact-turn-lock.service';
 import { AiBotActorModule } from '../ai-bot-actor/ai-bot-actor.module';
 import { WhatsappAnalyticsService } from './whatsapp-analytics.service';
 
@@ -124,7 +126,7 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
       // DLQ admin actions write a safe audit record (FND-002, FR-013).
       AuditLog,
       // READ-ONLY: `bot_enabled`, the clinic's own switch for the inbound AI
-      // auto-reply (`WhatsappInboundAiService.botSwitchedOn`).
+      // auto-reply (`WhatsappAiPolicyService`).
       TenantSetting,
       // READ-ONLY: the contact's AI session, to find the timeline thread it is
       // already bound to (`WhatsappInboundAiService.storeOnTimeline`).
@@ -171,6 +173,11 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     WhatsappMessagingService,
     WhatsappExecutionService,
     WhatsappInboundAiService,
+    // The single decision on whether the AI may answer (clinic switch, plan,
+    // human takeover), asked before the model runs and again before the send.
+    WhatsappAiPolicyService,
+    // Serializes AI turns per contact (the webhook worker runs concurrently).
+    ContactTurnLockService,
     // F-16: per-contact admission for WhatsappInboundAiService. The realtime
     // gateway provides the same class; it depends only on Redis and config, and
     // importing AiRealtimeModule here would be a cycle (it imports this module).
@@ -222,6 +229,8 @@ import { AiWsRateLimitService } from '../ai-realtime/ai-ws-rate-limit.service';
     WhatsappWebhookService,
     WhatsappMediaService,
     WhatsappCoexistenceSyncService,
+    // Other modules (conversation controls) ask the same question the bridge does.
+    WhatsappAiPolicyService,
   ],
 })
 export class WhatsappModule {}

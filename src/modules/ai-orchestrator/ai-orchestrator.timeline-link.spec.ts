@@ -146,4 +146,19 @@ describe('AiOrchestratorService — binding a session to its timeline thread', (
       origin,
     );
   });
+
+  it('recordInboundWithoutAnswer persists a message the policy refused to answer, without calling the model', async () => {
+    const { service, execution } = setup(linked);
+    const origin = { waMessageId: 'wamid.2', messageType: 'text' };
+
+    await service.recordInboundWithoutAnswer('t1', 'ai-1', 'hello', origin);
+
+    expect(execution.recordInboundWhileHandedOver).toHaveBeenCalledWith(
+      't1',
+      'ai-1',
+      'hello',
+      origin,
+    );
+    expect(execution.streamMessage).not.toHaveBeenCalled();
+  });
 });
