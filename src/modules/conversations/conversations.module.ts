@@ -11,6 +11,7 @@ import { Customer } from '../../entities/CRM/Customer';
 import { WhatsappAccount } from '../../entities/WhatsApp/WhatsappAccount';
 import { User } from '../../entities/Auth&RBAC/User';
 import { StorageModule } from '../storage/storage.module';
+import { ActivityLogModule } from '../activity-log/activity-log.module';
 
 import { ConversationService } from './conversation.service';
 import { ConversationParticipantService } from './conversation-participant.service';
@@ -19,6 +20,7 @@ import { MessageAttachmentService } from './message-attachment.service';
 import { MessageStatusService } from './message-status.service';
 import { ConversationExecutionService } from './conversation-execution.service';
 import { ConversationAnalyticsService } from './conversation-analytics.service';
+import { ConversationAiControlService } from './conversation-ai-control.service';
 import { ConversationsSchemaBootstrap } from './conversations-schema.bootstrap';
 
 import { ConversationController } from './conversation.controller';
@@ -53,6 +55,8 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
       User,
     ]),
     StorageModule,
+    // Audit records for pausing/resuming the AI. Acyclic: ActivityLogModule imports only TypeORM.
+    ActivityLogModule,
   ],
   controllers: [
     ConversationController,
@@ -69,10 +73,12 @@ import { ConversationAnalyticsController } from './conversation-analytics.contro
     MessageStatusService,
     ConversationExecutionService,
     ConversationAnalyticsService,
+    ConversationAiControlService,
     ConversationsSchemaBootstrap,
   ],
   exports: [
     ConversationService,
+    ConversationAiControlService,
     MessageService,
     MessageStatusService,
     ConversationExecutionService,

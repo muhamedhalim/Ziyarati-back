@@ -93,6 +93,19 @@ export class UpdateTenantSettingsDto {
 
   @ApiPropertyOptional({
     description:
+      'How many minutes the WhatsApp AI stays silent on a conversation after a staff member replies to it (automatic human takeover). 0 — the default — turns automatic takeover off. Maximum 1440 (24 hours).',
+    minimum: 0,
+    maximum: 1440,
+    example: 30,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1440)
+  aiHumanTakeoverMinutes?: number;
+
+  @ApiPropertyOptional({
+    description:
       'Whether a staff member must have a configured working window (staff schedule ∩ branch working hours, or a calendar slot) before they can be booked at a given time. When false (the default), a staff member with nothing configured for that day has no working-hours constraint — holidays, time off, blocked periods and double-booking are still enforced. Turn this on once the clinic maintains its schedules.',
     example: false,
   })
