@@ -1260,6 +1260,81 @@ describe('WhatsappInboundAiService — opt-out short-circuit (FND-024)', () => {
       });
     });
 
+    /**
+     * The thread a contact's WhatsApp conversation lives on is decided in ONE
+     * place, so a staff reply sent from the WhatsApp Business App (an echo) is
+     * stamped against — and judged on — the same thread as the patient's messages.
+     */
+    describe('resolveThreadForContact', () => {
+      it('prefers the thread the contact’s AI session is already bound to', async () => {
+        aiConversations.findOne.mockResolvedValue({
+          id: 'ai-1',
+          conversation: { id: 'thread-bound' },
+        });
+        conversationExecution.resolveWhatsappThread.mockResolvedValue({
+          id: 'thread-bound',
+        });
+
+        const thread = await service.resolveThreadForContact(
+          TENANT,
+          { ...EXISTING_CONTACT, ai_conversation_id: 'ai-1' } as never,
+          'acc-1',
+        );
+
+        expect(thread).toEqual({ id: 'thread-bound' });
+        expect(
+          conversationExecution.resolveWhatsappThread,
+        ).toHaveBeenCalledWith(
+          TENANT,
+          EXISTING_CONTACT.customer?.id,
+          'acc-1',
+          'thread-bound',
+        );
+      });
+
+      it('falls back to the customer’s thread for the account when the contact has no AI session', async () => {
+        await service.resolveThreadForContact(
+          TENANT,
+          { ...EXISTING_CONTACT, ai_conversation_id: undefined } as never,
+          'acc-1',
+        );
+
+        expect(aiConversations.findOne).not.toHaveBeenCalled();
+        expect(
+          conversationExecution.resolveWhatsappThread,
+        ).toHaveBeenCalledWith(
+          TENANT,
+          EXISTING_CONTACT.customer?.id,
+          'acc-1',
+          undefined,
+        );
+      });
+
+      it('reads the AI session inside the clinic only', async () => {
+        await service.resolveThreadForContact(
+          TENANT,
+          { ...EXISTING_CONTACT, ai_conversation_id: 'ai-1' } as never,
+          'acc-1',
+        );
+
+        expect(aiConversations.findOne).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'ai-1', tenant: { id: TENANT } },
+          }),
+        );
+      });
+
+      it('refuses a contact with no customer rather than guessing a thread', async () => {
+        await expect(
+          service.resolveThreadForContact(
+            TENANT,
+            { ...EXISTING_CONTACT, customer: undefined } as never,
+            'acc-1',
+          ),
+        ).rejects.toThrow('no linked customer');
+      });
+    });
+
     describe('before the model is called', () => {
       it('stops a conversation a person owns — no model call, no send, no bot user', async () => {
         conversationsRepo.findOne.mockResolvedValue(thread('HUMAN'));
